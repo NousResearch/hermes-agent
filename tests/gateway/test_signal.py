@@ -2413,6 +2413,63 @@ class TestSignalSyncMessageHandling:
         assert 3000000000 not in adapter._recent_sent_timestamps
 
     @pytest.mark.asyncio
+    async def test_note_to_self_destination_uuid_is_promoted(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",
+                "sourceUuid": "uuid-self",
+                "timestamp": 2000000001,
+                "syncMessage": {
+                    "sentMessage": {
+                        "destinationUuid": "uuid-self",
+                        "timestamp": 2000000001,
+                        "message": "note to self via uuid",
+                    }
+                },
+            }
+        })
+
+        assert "event" in captured, "destinationUuid self-chat must reach handle_message"
+        assert captured["event"].text == "note to self via uuid"
+
+    @pytest.mark.asyncio
+    async def test_note_to_self_destination_uuid_echo_is_suppressed(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        adapter._track_sent_timestamp({"timestamp": 3000000001})
+        called = []
+
+        async def fake_handle(event):
+            called.append(event)
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",
+                "sourceUuid": "uuid-self",
+                "timestamp": 3000000001,
+                "syncMessage": {
+                    "sentMessage": {
+                        "destinationUuid": "uuid-self",
+                        "timestamp": 3000000001,
+                        "message": "bot uuid echo",
+                    }
+                },
+            }
+        })
+
+        assert called == [], "destinationUuid echo of bot's own reply must be suppressed"
+        assert 3000000001 not in adapter._recent_sent_timestamps
+
+    @pytest.mark.asyncio
     async def test_group_sync_sent_promoted_to_inbound(self, monkeypatch):
         """User sends a message in a group from their primary phone; the
         linked device receives it as a sync-sent with destination=None and
@@ -2520,6 +2577,39 @@ class TestSignalSyncMessageHandling:
         })
 
         assert called == [], "Non-promotable sync messages must be filtered"
+
+    @pytest.mark.asyncio
+    async def test_self_uuid_data_message_is_filtered(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, account="+155****4567")
+        called = []
+
+        async def fake_handle(event):
+            called.append(event)
+
+        adapter.handle_message = fake_handle
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+155****4567",
+                "sourceUuid": "uuid-self",
+                "timestamp": 6000000002,
+                "dataMessage": {
+                    "message": "prime own uuid",
+                },
+            }
+        })
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceUuid": "uuid-self",
+                "timestamp": 6000000003,
+                "dataMessage": {
+                    "message": "bot reply reflected as uuid sender",
+                },
+            }
+        })
+
+        assert called == [], "Self sender UUID must be filtered like own phone number"
 
 
 class TestRecentSentTimestampRing:

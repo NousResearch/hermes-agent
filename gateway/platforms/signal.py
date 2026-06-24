@@ -326,6 +326,9 @@ class SignalAdapter(BasePlatformAdapter):
         # Signal increasingly exposes ACI/PNI UUIDs as stable recipient IDs.
         # Keep a best-effort mapping so outbound sends can upgrade from a
         # phone number to the corresponding UUID when signal-cli prefers it.
+        self._self_identifiers: set[str] = set()
+        if self._account_normalized:
+            self._self_identifiers.add(self._account_normalized)
         self._recipient_uuid_by_number: Dict[str, str] = {}
         self._recipient_number_by_uuid: Dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
@@ -531,6 +534,9 @@ class SignalAdapter(BasePlatformAdapter):
         """Process an incoming signal-cli envelope."""
         # Unwrap nested envelope if present
         envelope_data = envelope.get("envelope", envelope)
+        source_number = envelope_data.get("sourceNumber") or envelope_data.get("source")
+        source_uuid = envelope_data.get("sourceUuid")
+        self._remember_own_identifiers(source_number, source_uuid)
 
         # Handle syncMessage: extract "Note to Self" messages (sent to own account)
         # while still filtering other sync events (read receipts, typing, etc.)
@@ -540,11 +546,15 @@ class SignalAdapter(BasePlatformAdapter):
             if sync_msg and isinstance(sync_msg, dict):
                 sent_msg = sync_msg.get("sentMessage")
                 if sent_msg and isinstance(sent_msg, dict):
-                    dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
+                    dest_candidates = (
+                        sent_msg.get("destinationNumber"),
+                        sent_msg.get("destination"),
+                        sent_msg.get("destinationUuid"),
+                    )
                     sent_ts = sent_msg.get("timestamp")
                     sent_msg_group_info = sent_msg.get("groupInfo") or {}
                     sent_msg_group_id = sent_msg_group_info.get("groupId") if sent_msg_group_info else None
-                    if dest == self._account_normalized or sent_msg_group_id:
+                    if any(self._is_own_identifier(dest) for dest in dest_candidates) or sent_msg_group_id:
                         # Check if this is an echo of our own outbound reply
                         if self._consume_sent_timestamp(sent_ts):
                             return
@@ -556,20 +566,19 @@ class SignalAdapter(BasePlatformAdapter):
 
         # Extract sender info
         sender = (
-            envelope_data.get("sourceNumber")
-            or envelope_data.get("sourceUuid")
-            or envelope_data.get("source")
+            source_number
+            or source_uuid
         )
+        sender_uuid = source_uuid or ""
         sender_name = envelope_data.get("sourceName", "")
-        sender_uuid = envelope_data.get("sourceUuid", "")
-        self._remember_recipient_identifiers(sender, sender_uuid)
+        self._remember_recipient_identifiers(source_number, source_uuid)
 
         if not sender:
             logger.debug("Signal: ignoring envelope with no sender")
             return
 
         # Self-message filtering — prevent reply loops (but allow Note to Self)
-        if self._account_normalized and sender == self._account_normalized and not is_note_to_self:
+        if self._is_own_identifier(sender) and not is_note_to_self:
             return
 
         # Filter stories
@@ -768,6 +777,21 @@ class SignalAdapter(BasePlatformAdapter):
             return
         self._recipient_uuid_by_number[number] = service_id
         self._recipient_number_by_uuid[service_id] = number
+
+    def _remember_own_identifiers(self, number: Optional[str], service_id: Optional[str]) -> None:
+        """Track stable identifiers for this account across linked-device envelopes."""
+        if not self._account_normalized:
+            return
+        if number == self._account_normalized:
+            self._self_identifiers.add(self._account_normalized)
+            if service_id and service_id != self._account_normalized:
+                self._self_identifiers.add(service_id)
+                if _is_signal_service_id(service_id):
+                    self._remember_recipient_identifiers(number, service_id)
+
+    def _is_own_identifier(self, value: Optional[str]) -> bool:
+        """Return True when *value* belongs to this Signal account."""
+        return bool(value) and value in self._self_identifiers
 
     @staticmethod
     def _extract_quote_author(quote_data: Any) -> Optional[str]:

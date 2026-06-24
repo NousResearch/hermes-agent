@@ -199,3 +199,140 @@ class TestLiveOsvQuery:
             assert len(result) == 0
         except Exception:
             pytest.skip("OSV API unreachable")
+
+
+# ── Additional coverage for uncovered paths ────────────────────────────
+
+
+class TestInferEcosystemExtra:
+    def test_npx_cmd_windows(self):
+        assert _infer_ecosystem("npx.cmd") == "npm"
+
+    def test_uvx_cmd_windows(self):
+        assert _infer_ecosystem("uvx.cmd") == "PyPI"
+
+    def test_empty_command(self):
+        assert _infer_ecosystem("") is None
+
+
+class TestParseNpmPackageEdgeCases:
+    def test_scoped_no_match_returns_token(self):
+        """A scoped token that doesn't match the regex returns (token, None)."""
+        # @invalid (no slash) doesn't match the scoped regex
+        result = _parse_npm_package("@invalid")
+        assert result == ("@invalid", None)
+
+    def test_unscoped_no_at_returns_token(self):
+        result = _parse_npm_package("plain-name")
+        assert result == ("plain-name", None)
+
+
+class TestParsePypiPackageEdgeCases:
+    def test_no_match_returns_token(self):
+        """A token that doesn't match the PyPI regex returns (token, None)."""
+        result = _parse_pypi_package("++invalid++")
+        assert result == ("++invalid++", None)
+
+
+class TestParsePackageFromArgsEdgeCases:
+    def test_non_string_arg_skipped(self):
+        """Non-string args (e.g. numbers) are skipped."""
+        name, ver = _parse_package_from_args([42, "react@1.0"], "npm")
+        assert name == "react"
+        assert ver == "1.0"
+
+    def test_unknown_ecosystem_returns_token_without_version(self):
+        """Unknown ecosystem returns (package_token, None)."""
+        name, ver = _parse_package_from_args(["some-pkg@1.0"], "unknown")
+        assert name == "some-pkg@1.0"
+        assert ver is None
+
+    def test_all_non_string_args(self):
+        """All non-string args returns (None, None)."""
+        assert _parse_package_from_args([42, 3.14], "npm") == (None, None)
+
+
+class TestCheckPackageForMalwareEdgeCases:
+    def test_unparseable_package_returns_none(self):
+        """When package can't be parsed, returns None (allow)."""
+        result = check_package_for_malware("npx", [])
+        assert result is None
+
+    def test_malware_without_summary_uses_id(self):
+        """Malware advisory without summary falls back to id in the message."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            "vulns": [
+                {"id": "MAL-2024-0001"},  # no summary
+            ]
+        }).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
+            result = check_package_for_malware("npx", ["evil-pkg"])
+        assert result is not None
+        assert "MAL-2024-0001" in result
+
+    def test_multiple_malware_capped_at_three(self):
+        """Only first 3 malware advisories are shown."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            "vulns": [
+                {"id": f"MAL-2024-{i:04d}", "summary": f"malware {i}"}
+                for i in range(5)
+            ]
+        }).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
+            result = check_package_for_malware("npx", ["evil-pkg"])
+        assert result is not None
+        assert "MAL-2024-0000" in result
+        assert "MAL-2024-0002" in result
+        assert "MAL-2024-0004" not in result
+
+
+class TestQueryOsvWithVersion:
+    def test_version_included_in_payload(self):
+        """When version is provided, it's included in the OSV query payload."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({"vulns": []}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
+            _query_osv("some-pkg", "npm", "1.2.3")
+            call_data = json.loads(mock_url.call_args[0][0].data)
+            assert call_data["version"] == "1.2.3"
+
+    def test_no_version_omitted_from_payload(self):
+        """When version is None, it's not in the payload."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({"vulns": []}).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response) as mock_url:
+            _query_osv("some-pkg", "npm")
+            call_data = json.loads(mock_url.call_args[0][0].data)
+            assert "version" not in call_data
+
+    def test_only_mal_advisories_returned(self):
+        """Non-MAL advisories are filtered out."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = json.dumps({
+            "vulns": [
+                {"id": "MAL-2024-0001", "summary": "malware"},
+                {"id": "CVE-2024-1234", "summary": "regular vuln"},
+                {"id": "GHSA-1234", "summary": "github advisory"},
+            ]
+        }).encode()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+
+        with patch("tools.osv_check.urllib.request.urlopen", return_value=mock_response):
+            result = _query_osv("some-pkg", "npm")
+        assert len(result) == 1
+        assert result[0]["id"] == "MAL-2024-0001"

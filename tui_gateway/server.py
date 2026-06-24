@@ -344,7 +344,7 @@ def _load_busy_input_mode() -> str:
     if not isinstance(display, dict):
         display = {}
     raw = str(display.get("busy_input_mode", "") or "").strip().lower()
-    return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
+    return raw if raw in {"queue", "steer", "interrupt", "menu"} else "interrupt"
 
 
 def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
@@ -8478,7 +8478,7 @@ def _(rid, params: dict) -> dict:
         raw = str(value or "").strip().lower()
         if raw in {"", "status"}:
             return _ok(rid, {"key": key, "value": _load_busy_input_mode()})
-        if raw not in {"queue", "steer", "interrupt"}:
+        if raw not in {"queue", "steer", "interrupt", "menu"}:
             return _err(rid, 4002, f"unknown busy mode: {value}")
         _write_config_key("display.busy_input_mode", raw)
         return _ok(rid, {"key": key, "value": raw})

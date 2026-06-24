@@ -54,6 +54,7 @@ from typing import Dict, Optional, Any, List, Union
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.async_utils import safe_schedule_threadsafe
 from agent.i18n import t
+from gateway.busy_input import BusyInputManager
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
@@ -2589,6 +2590,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # /new and /reset.  /model and other mid-session operations
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
+        self._busy_input_manager = BusyInputManager()
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
@@ -3542,10 +3544,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return "restarting" if self._restart_requested else "shutting down"
 
     def _queue_during_drain_enabled(self) -> bool:
-        # Both "queue" and "steer" modes imply the user doesn't want messages
-        # to be lost during restart — queue them for the newly-spawned gateway
+        # Both "queue", "steer", and "menu" modes imply the user doesn't want
+        # messages to be lost during restart — queue them for the newly-spawned gateway
         # process to pick up.  "interrupt" mode drops them (current behaviour).
-        return self._restart_requested and self._busy_input_mode in {"queue", "steer"}
+        return self._restart_requested and self._busy_input_mode in {"queue", "steer", "menu"}
 
     # -------- /queue FIFO helpers --------------------------------------
     # /queue must produce one full agent turn per invocation, in FIFO
@@ -3954,6 +3956,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "queue"
         if mode == "steer":
             return "steer"
+        if mode == "menu":
+            return "menu"
         return "interrupt"
 
     @staticmethod
@@ -4207,6 +4211,191 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._enqueue_fifo(session_key, event, adapter)
 
+    def _busy_input_prompt_state(self, session_key: str, running_agent: Any = None) -> tuple[bool, bool, int]:
+        """Return (has_active_run, has_active_subagents, current_generation)."""
+        has_active_run = session_key in getattr(self, "_running_agents", {})
+        if running_agent is None:
+            running_agent = getattr(self, "_running_agents", {}).get(session_key)
+        has_subagents = self._agent_has_active_subagents(running_agent)
+        generations = self.__dict__.get("_session_run_generation") or {}
+        generation = int(generations.get(session_key, 0) or 0)
+        return has_active_run, has_subagents, generation
+
+    async def _send_busy_input_menu(self, event: MessageEvent, session_key: str) -> bool:
+        """Send a platform action menu for busy follow-up handling."""
+        adapter = self.adapters.get(event.source.platform)
+        if not adapter:
+            return False
+        send_menu = getattr(adapter, "send_busy_input_menu", None)
+        if not callable(send_menu):
+            logger.debug("Busy menu requested but %s adapter has no renderer; falling back to queue", event.source.platform)
+            self._queue_or_replace_pending_event(session_key, event)
+            return True
+
+        running_agent = self._running_agents.get(session_key)
+        has_active_run, has_subagents, generation = self._busy_input_prompt_state(session_key, running_agent)
+        manager = getattr(self, "_busy_input_manager", None)
+        if manager is None:
+            manager = BusyInputManager()
+            self._busy_input_manager = manager
+        prompt = manager.new_prompt(
+            session_key=session_key,
+            event=event,
+            run_generation=generation,
+            metadata={
+                "platform": event.source.platform.value if event.source.platform else "unknown",
+                "chat_id": event.source.chat_id,
+                "thread_id": event.source.thread_id,
+                "user_id": event.source.user_id,
+                "has_active_run": has_active_run,
+                "has_subagents": has_subagents,
+            },
+        )
+        actions = list(manager.actions_for_state(has_active_run=has_active_run, has_subagents=has_subagents))
+        reply_anchor = self._reply_anchor_for_event(event)
+        thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
+        result = await send_menu(
+            event.source.chat_id,
+            prompt,
+            actions=actions,
+            metadata=thread_meta,
+            reply_to=(
+                reply_anchor
+                if event.source.platform == Platform.TELEGRAM
+                and event.source.chat_type == "dm"
+                and event.source.thread_id
+                else (None if event.source.platform == Platform.TELEGRAM and event.source.thread_id else event.message_id)
+            ),
+        )
+        if getattr(result, "success", False):
+            return True
+        manager.expire(prompt.prompt_id)
+        logger.warning("Failed to send busy-input menu for %s: %s", session_key, getattr(result, "error", "unknown error"))
+        # Preserve the user's input even if the menu could not be rendered.
+        self._queue_or_replace_pending_event(session_key, event)
+        return True
+
+    async def resolve_busy_input_choice(self, prompt_id: str, action: str, *, resolved_by: str | None = None) -> str:
+        """Apply a busy-input inline-menu choice.
+
+        Stale/duplicate callbacks are explicit and idempotent.  If the original
+        run already finished, actions that represent user input (Queue, Steer,
+        Interrupt, Context) replay the held event as a normal new turn instead
+        of leaving it stranded in the pending queue.
+        """
+        manager = getattr(self, "_busy_input_manager", None)
+        if manager is None:
+            return "This busy prompt expired after the gateway restarted."
+        existing_prompt = manager.get(prompt_id)
+        if existing_prompt is not None:
+            owner_id = str((getattr(existing_prompt, "metadata", {}) or {}).get("user_id") or "").strip()
+            caller_id = str(resolved_by or "").strip()
+            if owner_id and caller_id and owner_id != caller_id:
+                return "Only the user who sent that follow-up can use this busy menu."
+        status, prompt = manager.resolve(prompt_id, action, resolved_by=resolved_by)
+        if status == "invalid_action":
+            return "Invalid busy-menu action."
+        if status == "missing":
+            return "This busy prompt expired after the gateway restarted."
+        if status == "expired":
+            return "This busy prompt expired. Please send the message again."
+        if status == "already_resolved":
+            chosen = getattr(prompt, "resolved_action", None) or "another action"
+            return f"This busy prompt was already handled with {chosen}."
+        assert prompt is not None
+
+        event = prompt.event
+        session_key = prompt.session_key
+        running_agent = self._running_agents.get(session_key)
+        has_active_run = session_key in self._running_agents
+        current_generation = int((self.__dict__.get("_session_run_generation") or {}).get(session_key, 0) or 0)
+        prompt_generation = int(getattr(prompt, "run_generation", 0) or 0)
+        stale_for_current_run = bool(
+            has_active_run
+            and prompt_generation
+            and current_generation
+            and prompt_generation != current_generation
+        )
+        action = (action or "").strip().lower()
+
+        if action == "cancel":
+            return "Discarded that busy follow-up."
+
+        if stale_for_current_run and action in {"stop", "interrupt", "steer", "context"}:
+            # The button belonged to an older run.  Do not let a stale menu stop,
+            # steer, or interrupt a newer task; preserve the user's text as an
+            # ordinary queued follow-up instead.
+            self._queue_or_replace_pending_event(session_key, event)
+            return "That busy menu belonged to an earlier run, so I queued the follow-up behind the current task."
+
+        if action == "stop":
+            if has_active_run:
+                await self._interrupt_and_clear_session(
+                    session_key,
+                    event.source,
+                    interrupt_reason=_INTERRUPT_REASON_STOP,
+                    invalidation_reason="busy menu stop",
+                    release_running_state=True,
+                )
+                return "Stopped the current task and discarded that follow-up."
+            return "That task had already finished; discarded the follow-up."
+
+        if action == "delete_queued":
+            adapter = self.adapters.get(event.source.platform)
+            if adapter and hasattr(adapter, "get_pending_message"):
+                adapter.get_pending_message(session_key)
+            self._queued_events.pop(session_key, None)
+            return "Deleted queued follow-ups for this session."
+
+        if action == "context":
+            try:
+                event = dataclasses.replace(event, text=f"[Context note while you were busy]\n{event.text or ''}")
+            except Exception:
+                pass
+            action = "steer"
+
+        if has_active_run and action == "steer":
+            steer_text = (event.text or "").strip()
+            can_steer = (
+                steer_text
+                and running_agent is not None
+                and running_agent is not _AGENT_PENDING_SENTINEL
+                and hasattr(running_agent, "steer")
+            )
+            if can_steer:
+                try:
+                    if running_agent.steer(steer_text):
+                        return "Steered that message into the current run."
+                except Exception as exc:
+                    logger.warning("Busy-menu steer failed for session %s: %s", session_key, exc)
+            # If steering failed, keep the message by queueing it.
+            action = "queue"
+
+        if has_active_run and action == "interrupt":
+            if self._agent_has_active_subagents(running_agent):
+                self._queue_or_replace_pending_event(session_key, event)
+                return "Subagents are active, so I queued that follow-up instead of interrupting them."
+            self._queue_or_replace_pending_event(session_key, event)
+            if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+                try:
+                    running_agent.interrupt(event.text)
+                except Exception:
+                    pass
+            return "Interrupting the current task; your message is next."
+
+        if has_active_run and action == "queue":
+            self._queue_or_replace_pending_event(session_key, event)
+            return "Queued that follow-up for the next turn."
+
+        # No active run remains.  Do not place the event into the pending slot,
+        # because nothing will drain it; replay through the adapter's normal
+        # entry point so the message starts immediately and gets normal delivery.
+        adapter = self.adapters.get(event.source.platform)
+        if adapter and hasattr(adapter, "handle_message"):
+            await adapter.handle_message(event)
+            return "The previous task already finished, so I’m starting that message now."
+        return "The previous task already finished. Please send the message again."
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -4274,6 +4463,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
+        if effective_mode == "menu":
+            return await self._send_busy_input_menu(event, session_key)
+
         busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
         if (
             event.message_type == MessageType.TEXT
@@ -4382,7 +4574,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _load_gateway_config(),
                 _platform_config_key(event.source.platform),
                 "busy_ack_detail",
-                True,
+                False,
             )
         )
 
@@ -5637,6 +5829,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            adapter.set_work_status_preprocessor(self._preprocess_work_status_event)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
             
@@ -6404,6 +6597,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    adapter.set_work_status_preprocessor(self._preprocess_work_status_event)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter._busy_text_mode = self._busy_text_mode
 
@@ -7907,6 +8101,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if self._queue_during_drain_enabled()
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
+            if self._busy_input_mode == "menu":
+                await self._send_busy_input_menu(event, _quick_key)
+                return None
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
@@ -8245,6 +8442,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "bundles":
             return await self._handle_bundles_command(event)
+
+        if canonical == "download":
+            return await self._handle_download_command(event)
 
         if canonical == "approve":
             return await self._handle_approve_command(event)
@@ -8641,10 +8841,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
 
             if audio_paths:
-                message_text, _successful_transcripts = await self._enrich_message_with_transcription(
-                    message_text,
-                    audio_paths,
-                )
+                if getattr(event, "voice_transcripts", None):
+                    _successful_transcripts = list(event.voice_transcripts or [])
+                    _prefix = "\n\n".join(
+                        f'[The user sent a voice message~ Here\'s what they said: "{tx}"]'
+                        for tx in _successful_transcripts
+                    )
+                    if _prefix:
+                        _placeholder = "(The user sent a message with no text content)"
+                        if message_text and message_text.strip() == _placeholder:
+                            message_text = _prefix
+                        elif message_text:
+                            message_text = f"{_prefix}\n\n{message_text}"
+                        else:
+                            message_text = _prefix
+                else:
+                    message_text, _successful_transcripts = await self._enrich_message_with_transcription(
+                        message_text,
+                        audio_paths,
+                    )
+                    if _successful_transcripts:
+                        event.voice_transcripts = list(_successful_transcripts)
                 # Echo each successful transcript back to the user immediately,
                 # before the agent loop runs. Lets the user verify STT quality
                 # in real-time and see the raw whisper output verbatim.
@@ -8772,7 +8989,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            reply_snippet = event.reply_to_text
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'
@@ -12904,6 +13121,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prefix
         return user_text
 
+    def _voice_audio_paths_for_event(self, event: MessageEvent) -> List[str]:
+        """Return local audio paths that should be treated as voice input for STT."""
+        audio_paths: List[str] = []
+        for i, path in enumerate(getattr(event, "media_urls", None) or []):
+            mtype = event.media_types[i] if i < len(event.media_types) else ""
+            if event.message_type == MessageType.VOICE or (
+                mtype.startswith("audio/")
+                and event.message_type not in {MessageType.AUDIO, MessageType.DOCUMENT}
+            ):
+                audio_paths.append(path)
+        return audio_paths
+
+    async def _preprocess_work_status_event(self, event: MessageEvent) -> None:
+        """Populate voice transcripts before live work-status text is built.
+
+        The normal inbound agent path still owns final message construction, but
+        live work-status messages are created before that path finishes.  For
+        voice messages, run the same STT enrichment early and store transcripts
+        on the event so the status describes the spoken request.  The later
+        agent path reuses ``event.voice_transcripts`` when available.
+        """
+        if getattr(event, "voice_transcripts", None):
+            return
+        audio_paths = self._voice_audio_paths_for_event(event)
+        if not audio_paths:
+            return
+        _, transcripts = await self._enrich_message_with_transcription("", audio_paths)
+        if transcripts:
+            event.voice_transcripts = transcripts
+
     async def _enrich_message_with_transcription(
         self,
         user_text: str,
@@ -16904,11 +17151,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
-                            await adapter.send(
-                                source.chat_id,
-                                first_response,
-                                metadata=_status_thread_metadata,
-                            )
+                            send_final_once = getattr(adapter, "_send_final_once", None)
+                            if callable(send_final_once):
+                                await send_final_once(
+                                    chat_id=source.chat_id,
+                                    content=first_response,
+                                    session_key=session_key or "",
+                                    run_generation=run_generation,
+                                    metadata=_status_thread_metadata,
+                                )
+                            else:
+                                await adapter.send(
+                                    source.chat_id,
+                                    first_response,
+                                    metadata=_status_thread_metadata,
+                                )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:

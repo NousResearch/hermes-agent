@@ -1305,8 +1305,8 @@ class TestCancelledConsumerSetsFlags:
     """
 
     @pytest.mark.asyncio
-    async def test_cancelled_with_already_sent_marks_final_response_sent(self):
-        """Cancelling after content was sent should set final_response_sent."""
+    async def test_cancelled_with_already_sent_before_done_keeps_resend_possible(self):
+        """Cancelling a partial preview before DONE should not mark final sent."""
         adapter = MagicMock()
         adapter.send = AsyncMock(
             return_value=SimpleNamespace(success=True, message_id="msg_1")
@@ -1336,9 +1336,9 @@ class TestCancelledConsumerSetsFlags:
         except asyncio.CancelledError:
             pass
 
-        # The fix: final_response_sent should be True even though _DONE
-        # was never processed, preventing a duplicate message.
-        assert consumer.final_response_sent is True
+        # The fix: before DONE, a visible preview is only a prefix.  The
+        # gateway must still be allowed to deliver the full final response.
+        assert consumer.final_response_sent is False
 
     @pytest.mark.asyncio
     async def test_cancelled_without_any_sends_does_not_mark_final(self):

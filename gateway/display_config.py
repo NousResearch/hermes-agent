@@ -47,6 +47,17 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "interim_assistant_messages": True,
     "long_running_notifications": True,
     "busy_ack_detail": True,
+    # Gateway Live Work Status.  When enabled, adapters may show a compact
+    # in-progress status while a turn is running.  Telegram renders this as a
+    # temporary pinned message; other platforms can render it as an edited
+    # status message/card.  Off by default because chat pins/status cards are
+    # prominent.
+    "work_status": {},
+    # Legacy Atom prototype compatibility. Prefer display.work_status.* for new
+    # configs; these remain overrideable so existing configs migrate safely.
+    "pinned_work_summary": False,
+    "pinned_work_summary_ai": False,
+    "pinned_work_summary_delay_seconds": 0,
     # When true, delete tool-progress / "⏳ Working — N min" / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
@@ -240,6 +251,8 @@ def _normalise(setting: str, value: Any) -> Any:
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
+        "pinned_work_summary",
+        "pinned_work_summary_ai",
     }:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}

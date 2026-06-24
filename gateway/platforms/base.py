@@ -6,6 +6,7 @@ and implement the required methods.
 """
 
 import asyncio
+import hashlib
 import inspect
 import ipaddress
 import logging
@@ -492,6 +493,14 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
+from gateway.work_status import (
+    WorkStatusConfig,
+    WorkStatusHandle,
+    maybe_ai_status_text,
+    maybe_await_callback,
+    resolve_work_status_config,
+    should_suppress_status_for_event,
+)
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 
@@ -1743,6 +1752,11 @@ class SendResult:
     # stream consumer can send the missing tail instead of marking a clipped
     # response complete.
     retryable: bool = False  # True for transient connection errors — base will retry automatically
+    # Platform-directed retry delay (e.g. Telegram RetryAfter / flood
+    # control). When present, BasePlatformAdapter waits this long instead of
+    # using generic exponential backoff; retrying earlier just burns attempts
+    # while the platform is still rejecting sends.
+    retry_after: Optional[float] = None
     # When the adapter had to split an oversized payload across multiple
     # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
     # ``message_id`` is the LAST visible message id (so subsequent edits target
@@ -2186,8 +2200,19 @@ class BasePlatformAdapter(ABC):
         # deliveries generation-aware and avoid stale runs clearing callbacks
         # registered by a fresher run for the same session.
         self._post_delivery_callbacks: Dict[str, Any] = {}
+        # Delivery idempotency ledger for canonical final messages. Keyed by
+        # session/run/chat/thread so cleanup callbacks, queued-followup drains,
+        # or retry paths cannot send the exact same final twice for one run.
+        self._final_delivery_ledger: Dict[tuple, Dict[str, Any]] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
+        self._work_status_preprocessor: Optional[Callable[[MessageEvent], Awaitable[None] | None]] = None
+        # Persistent pinned work-status messages, keyed by platform/chat/thread.
+        # These let a Telegram pin remain stable across short turns when the
+        # work description has not changed, instead of deleting/reposting every
+        # turn and making the pinned message flicker.
+        self._work_status_pins: Dict[tuple[str, str, Optional[str]], WorkStatusHandle] = {}
+        self._work_status_pin_content: Dict[tuple[str, str, Optional[str]], str] = {}
         # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
         # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
         # Per-chat overrides live in two sets populated from ``_voice_mode``:
@@ -2587,6 +2612,20 @@ class BasePlatformAdapter(ABC):
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
         self._busy_session_handler = handler
+
+    def set_work_status_preprocessor(
+        self,
+        handler: Optional[Callable[[MessageEvent], Awaitable[None] | None]],
+    ) -> None:
+        """Set an optional hook that enriches events before live work-status text is built."""
+        self._work_status_preprocessor = handler
+
+    def set_pinned_work_summary_preprocessor(
+        self,
+        handler: Optional[Callable[[MessageEvent], Awaitable[None] | None]],
+    ) -> None:
+        """Backward-compatible alias for Atom's prototype hook name."""
+        self.set_work_status_preprocessor(handler)
     
     def set_session_store(self, session_store: Any) -> None:
         """
@@ -2717,6 +2756,26 @@ class BasePlatformAdapter(ABC):
         Subclasses should override for platforms with a deletion API
         (e.g. Telegram ``deleteMessage``).
         """
+        return False
+
+    async def pin_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Pin a previously sent message. Optional; default is unsupported."""
+        return False
+
+    async def unpin_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Unpin a previously pinned message. Optional; default is unsupported."""
         return False
 
     def _get_ephemeral_system_ttl_default(self) -> int:
@@ -3661,6 +3720,184 @@ class BasePlatformAdapter(ABC):
         self._post_delivery_callbacks.pop(session_key, None)
         return entry if callable(entry) else None
 
+    def _work_status_platform_key(self) -> str:
+        return getattr(self.platform, "value", str(self.platform)).lower()
+
+    def _resolve_work_status_config(self, event: MessageEvent) -> WorkStatusConfig:
+        try:
+            from hermes_cli.config import load_config as _load_config
+
+            return resolve_work_status_config(
+                _load_config(),
+                self._work_status_platform_key(),
+                chat_id=getattr(getattr(event, "source", None), "chat_id", None),
+            )
+        except Exception:
+            logger.debug("[%s] Failed to resolve work-status config", self.name, exc_info=True)
+            return WorkStatusConfig(enabled=False)
+
+    async def _prepare_work_status_event(self, event: MessageEvent) -> None:
+        """Best-effort event enrichment before status text is built."""
+        await maybe_await_callback(getattr(self, "_work_status_preprocessor", None), event)
+
+    async def _start_work_status(
+        self,
+        event: MessageEvent,
+        metadata: Optional[Dict[str, Any]],
+        session_key: str,
+        generation_provider: Callable[[], Optional[int]],
+    ) -> Optional[WorkStatusHandle]:
+        """Create the visible live work-status message after any configured delay."""
+        cfg = self._resolve_work_status_config(event)
+        if not cfg.enabled:
+            return None
+        if getattr(event, "internal", False) or event.is_command():
+            return None
+        if should_suppress_status_for_event(event):
+            return None
+        if cfg.delay_seconds > 0:
+            await asyncio.sleep(cfg.delay_seconds)
+        await self._prepare_work_status_event(event)
+        content = await maybe_ai_status_text(cfg, event)
+        platform_key = self._work_status_platform_key()
+        chat_id = str(event.source.chat_id)
+        thread_id = str(getattr(event.source, "thread_id", "") or "") or None
+        mode = cfg.mode
+        if mode == "auto":
+            mode = "pinned" if platform_key == "telegram" else "message"
+        pin_key = (platform_key, chat_id, thread_id)
+
+        if mode == "pinned":
+            existing = self._work_status_pins.get(pin_key)
+            existing_content = self._work_status_pin_content.get(pin_key)
+            if existing and existing.message_id:
+                if existing_content == content:
+                    existing.session_key = session_key
+                    existing.run_generation = generation_provider()
+                    return existing
+                try:
+                    result = await self.edit_message(
+                        chat_id,
+                        existing.message_id,
+                        content,
+                        finalize=False,
+                    )
+                    if getattr(result, "success", False):
+                        existing.session_key = session_key
+                        existing.run_generation = generation_provider()
+                        existing.updated_at = time.time()
+                        self._work_status_pin_content[pin_key] = content
+                        return existing
+                except Exception:
+                    logger.debug("[%s] Failed to update persistent work-status pin", self.name, exc_info=True)
+                    self._work_status_pins.pop(pin_key, None)
+                    self._work_status_pin_content.pop(pin_key, None)
+
+        send_metadata = dict(metadata or {})
+        # Status messages should not buzz the phone; the final answer will.
+        send_metadata.setdefault("notify", False)
+        result = await self.send(
+            chat_id=event.source.chat_id,
+            content=content,
+            metadata=send_metadata,
+        )
+        if not getattr(result, "success", False) or not getattr(result, "message_id", None):
+            return None
+        pinned = False
+        if mode == "pinned":
+            try:
+                pinned = bool(await self.pin_message(
+                    event.source.chat_id,
+                    str(result.message_id),
+                    metadata=send_metadata,
+                ))
+            except Exception:
+                logger.debug("[%s] Failed to pin work-status message", self.name, exc_info=True)
+                pinned = False
+        try:
+            await asyncio.wait_for(self.send_typing(event.source.chat_id, metadata=metadata), timeout=1.0)
+        except Exception:
+            logger.debug("[%s] Failed to refresh typing after work-status", self.name, exc_info=True)
+        handle = WorkStatusHandle(
+            status_id=uuid.uuid4().hex,
+            platform=platform_key,
+            chat_id=chat_id,
+            thread_id=thread_id,
+            session_key=session_key,
+            run_generation=generation_provider(),
+            message_id=str(result.message_id),
+            mode=mode,
+            pinned=pinned,
+        )
+        if mode == "pinned" and pinned:
+            self._work_status_pins[pin_key] = handle
+            self._work_status_pin_content[pin_key] = content
+        return handle
+
+    async def _finish_work_status(
+        self,
+        handle: Optional[WorkStatusHandle],
+        cfg: Optional[WorkStatusConfig],
+        outcome: ProcessingOutcome,
+        generation_provider: Callable[[], Optional[int]],
+    ) -> None:
+        """Best-effort status cleanup/update with stale-generation protection."""
+        if handle is None or not handle.message_id:
+            return
+        current_generation = generation_provider()
+        if (
+            handle.run_generation is not None
+            and current_generation is not None
+            and int(handle.run_generation) != int(current_generation)
+        ):
+            logger.debug(
+                "[%s] Skipping stale work-status cleanup for %s (handle gen=%s current=%s)",
+                self.name,
+                handle.session_key,
+                handle.run_generation,
+                current_generation,
+            )
+            return
+        cfg = cfg or WorkStatusConfig()
+        pin_key = (handle.platform, handle.chat_id, handle.thread_id)
+        if outcome == ProcessingOutcome.SUCCESS:
+            policy = cfg.cleanup_on_success
+            done_text = "✅ Done"
+        elif outcome == ProcessingOutcome.CANCELLED:
+            policy = cfg.cleanup_on_interrupt
+            done_text = "⏹ Interrupted"
+        else:
+            policy = cfg.cleanup_on_failure
+            done_text = "⚠️ Stopped"
+
+        try:
+            if policy == "keep":
+                return
+            if policy == "edit_done_then_delete":
+                try:
+                    await self.edit_message(handle.chat_id, handle.message_id, done_text, finalize=True)
+                except Exception:
+                    logger.debug("[%s] Failed to mark work-status done", self.name, exc_info=True)
+                if cfg.delete_delay_seconds > 0:
+                    await asyncio.sleep(cfg.delete_delay_seconds)
+                policy = "delete"
+            if policy in {"delete", "unpin_keep"} and handle.pinned:
+                try:
+                    await self.unpin_message(handle.chat_id, handle.message_id, metadata={"thread_id": handle.thread_id} if handle.thread_id else None)
+                except Exception:
+                    logger.debug("[%s] Failed to unpin work-status", self.name, exc_info=True)
+                self._work_status_pins.pop(pin_key, None)
+                self._work_status_pin_content.pop(pin_key, None)
+            if policy == "delete":
+                try:
+                    await self.delete_message(handle.chat_id, handle.message_id)
+                except Exception:
+                    logger.debug("[%s] Failed to delete work-status", self.name, exc_info=True)
+                self._work_status_pins.pop(pin_key, None)
+                self._work_status_pin_content.pop(pin_key, None)
+        except Exception:
+            logger.debug("[%s] Failed to finish work-status", self.name, exc_info=True)
+
     # ── Processing lifecycle hooks ──────────────────────────────────────────
     # Subclasses override these to react to message processing events
     # (e.g. Discord adds 👀/✅/❌ reactions).
@@ -3723,6 +3960,79 @@ class BasePlatformAdapter(ABC):
             return response.text, int(ttl or 0)
         return response, 0
 
+    def _final_delivery_key(
+        self,
+        *,
+        chat_id: str,
+        session_key: str,
+        run_generation: int | None,
+        metadata: Any = None,
+    ) -> tuple | None:
+        """Return the idempotency key for one canonical final delivery."""
+        if not session_key or run_generation is None:
+            return None
+        thread_id = None
+        if isinstance(metadata, dict):
+            thread_id = metadata.get("thread_id") or metadata.get("direct_messages_topic_id")
+        return (str(session_key), int(run_generation), str(chat_id), str(thread_id or ""))
+
+    @staticmethod
+    def _final_content_hash(content: str) -> str:
+        return hashlib.sha256(str(content or "").encode("utf-8")).hexdigest()
+
+    async def _send_final_once(
+        self,
+        *,
+        chat_id: str,
+        content: str,
+        session_key: str,
+        run_generation: int | None,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+    ) -> "SendResult":
+        """Send a canonical final response at most once per session run.
+
+        If the same run attempts to deliver identical final text again, return a
+        successful synthetic SendResult pointing at the original message instead
+        of creating visible Telegram/Discord/etc. clutter.  Different content
+        for the same run is treated as an intentional correction/follow-up and
+        is sent, replacing the ledger entry.
+        """
+        key = self._final_delivery_key(
+            chat_id=chat_id,
+            session_key=session_key,
+            run_generation=run_generation,
+            metadata=metadata,
+        )
+        content_hash = self._final_content_hash(content)
+        if key is not None:
+            existing = self._final_delivery_ledger.get(key)
+            if existing and existing.get("content_hash") == content_hash:
+                logger.info(
+                    "[%s] Suppressing duplicate final delivery for session %s generation %s",
+                    self.name,
+                    session_key,
+                    run_generation,
+                )
+                return SendResult(
+                    success=True,
+                    message_id=existing.get("message_id"),
+                    raw_response={"duplicate_suppressed": True},
+                )
+
+        result = await self._send_with_retry(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+        if key is not None and result.success:
+            self._final_delivery_ledger[key] = {
+                "content_hash": content_hash,
+                "message_id": result.message_id,
+            }
+        return result
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -3760,9 +4070,23 @@ class BasePlatformAdapter(ABC):
             return result
 
         if is_network:
-            # Retry with exponential backoff for transient errors
+            # Retry with platform-directed delays when available.  For
+            # Telegram flood control, using the generic 2s/4s backoff just
+            # burns all attempts before RetryAfter expires, leaving the user
+            # with only the streaming preview/cursor.
             for attempt in range(1, max_retries + 1):
-                delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                retry_after = result.retry_after
+                if retry_after is None:
+                    match = re.search(r"retry\s+(?:after|in)\s+(\d+(?:\.\d+)?)", error_str, re.IGNORECASE)
+                    if match:
+                        try:
+                            retry_after = float(match.group(1))
+                        except ValueError:
+                            retry_after = None
+                if retry_after is not None:
+                    delay = max(float(retry_after), 0.0) + random.uniform(0.25, 1.0)
+                else:
+                    delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 logger.warning(
                     "[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s",
                     self.name, attempt, max_retries, delay, error_str,
@@ -4486,6 +4810,23 @@ class BasePlatformAdapter(ABC):
                 event.source.chat_id,
                 typing_task,
             )
+
+        def _work_status_generation() -> Optional[int]:
+            return getattr(interrupt_event, "_hermes_run_generation", None)
+
+        work_status_cfg = self._resolve_work_status_config(event)
+        work_status_task: asyncio.Task | None = None
+        work_status_handle: WorkStatusHandle | None = None
+        work_status_outcome = ProcessingOutcome.FAILURE
+        if work_status_cfg.enabled and not getattr(event, "internal", False) and not event.is_command():
+            work_status_task = asyncio.create_task(
+                self._start_work_status(
+                    event,
+                    _thread_metadata,
+                    session_key,
+                    _work_status_generation,
+                )
+            )
         
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -4638,9 +4979,11 @@ class BasePlatformAdapter(ABC):
                 if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
-                    result = await self._send_with_retry(
+                    result = await self._send_final_once(
                         chat_id=event.source.chat_id,
                         content=text_content,
+                        session_key=session_key,
+                        run_generation=_work_status_generation(),
                         reply_to=_reply_anchor,
                         metadata=_final_thread_metadata,
                     )
@@ -4785,10 +5128,11 @@ class BasePlatformAdapter(ABC):
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            work_status_outcome = ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE
             await self._run_processing_hook(
                 "on_processing_complete",
                 event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
+                work_status_outcome,
             )
 
             # The active drain owns debounce state. If a queue-mode timer has
@@ -4840,9 +5184,11 @@ class BasePlatformAdapter(ABC):
             outcome = ProcessingOutcome.CANCELLED
             if current_task is None or current_task not in self._expected_cancelled_tasks:
                 outcome = ProcessingOutcome.FAILURE
+            work_status_outcome = outcome
             await self._run_processing_hook("on_processing_complete", event, outcome)
             raise
         except Exception as e:
+            work_status_outcome = ProcessingOutcome.FAILURE
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
@@ -4862,6 +5208,27 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            if work_status_task is not None:
+                if work_status_task.done():
+                    try:
+                        work_status_handle = await work_status_task
+                    except Exception:
+                        logger.debug("[%s] Work-status start failed", self.name, exc_info=True)
+                else:
+                    try:
+                        work_status_handle = await asyncio.wait_for(asyncio.shield(work_status_task), timeout=0.5)
+                    except asyncio.TimeoutError:
+                        work_status_task.cancel()
+                        try:
+                            await asyncio.wait_for(asyncio.shield(work_status_task), timeout=0.5)
+                        except (asyncio.CancelledError, asyncio.TimeoutError):
+                            pass
+                        except Exception:
+                            logger.debug("[%s] Work-status start cancellation failed", self.name, exc_info=True)
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        logger.debug("[%s] Work-status start failed", self.name, exc_info=True)
             # Stop typing before any deferred callback work.  Post-delivery
             # callbacks may perform platform I/O; a stuck callback must not
             # leave the typing refresh task running indefinitely.
@@ -4899,6 +5266,12 @@ class BasePlatformAdapter(ABC):
                         )
                 except (asyncio.TimeoutError, Exception):
                     pass
+            await self._finish_work_status(
+                work_status_handle,
+                work_status_cfg,
+                work_status_outcome,
+                _work_status_generation,
+            )
             # Some adapters keep platform-level typing tasks.  If callback
             # work or a late refresh recreated one, make one final bounded stop
             # before releasing the session guard.

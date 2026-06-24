@@ -1573,7 +1573,7 @@ DEFAULT_CONFIG = {
         # when an exchange was tool-heavy. Set False to restore the legacy
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
-        "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        "busy_input_mode": "interrupt",  # interrupt | queue | steer | menu
         # Which interface bare `hermes` (and `hermes chat`) launches by default:
         #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
         #   "tui" — the modern Ink TUI (same as passing `--tui`)
@@ -1673,6 +1673,33 @@ DEFAULT_CONFIG = {
         # defaults to "subtext"; override per-platform via
         # display.platforms.<platform>.reasoning_style.
         "reasoning_style": "code",
+        # Gateway Live Work Status: show a compact in-progress status while a
+        # turn runs. Telegram renders this as a temporary pinned message; other
+        # adapters can render it as an edited status/card. Off by default because
+        # pins/status cards are prominent. Legacy pinned_work_summary* keys below
+        # are kept for Atom prototype compatibility; prefer this structured key.
+        "work_status": {
+            "enabled": False,
+            "mode": "auto",  # auto | pinned | message | off
+            "delay_seconds": 8,
+            "ai_summary": False,
+            "update_progress": False,
+            "update_min_interval_seconds": 10,
+            "max_updates_per_turn": 6,
+            "cleanup": {
+                "on_success": "edit_done_then_delete",  # delete | unpin_keep | keep | edit_done_then_delete
+                "on_failure": "unpin_keep",
+                "on_interrupt": "unpin_keep",
+                "delete_delay_seconds": 5,
+            },
+            "chats": {"allow": ["*"], "deny": []},
+            "platforms": {
+                "telegram": {"mode": "pinned", "telegram": {"disable_notification": True}},
+            },
+        },
+        "pinned_work_summary": False,
+        "pinned_work_summary_ai": False,
+        "pinned_work_summary_delay_seconds": 0,
         # Auto-delete system-notice replies (e.g. "✨ New session started!",
         # "♻ Restarting gateway…", "⚡ Stopped…") after N seconds on platforms
         # that support message deletion (currently Telegram; other platforms

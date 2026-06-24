@@ -1004,7 +1004,7 @@ class GatewaySlashCommandsMixin:
 
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         from gateway.run import _telegramize_command_mentions
-        from hermes_cli.commands import gateway_help_lines
+        from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
 
         raw_args = event.get_command_args().strip()
         if raw_args:
@@ -1015,42 +1015,94 @@ class GatewaySlashCommandsMixin:
         else:
             requested_page = 1
 
-        # Build combined entry list: built-in commands + skill commands
-        entries = list(gateway_help_lines())
+        def _trim_desc(value: str, limit: int = 58) -> str:
+            text = " ".join((value or "").split())
+            if len(text) <= limit:
+                return text
+            return text[: limit - 1].rstrip() + "…"
+
+        # Build structured entries first, then render after pagination.  The
+        # old /commands output was a long flat wall of nearly-identical lines;
+        # grouping by category makes Telegram's narrow chat view much easier
+        # to scan and avoids dangling section headers at page boundaries.
+        entries: list[tuple[str, str]] = []
+        buckets: dict[str, list[str]] = {}
+        category_order = [
+            "Session",
+            "Configuration",
+            "Tools",
+            "Gateway",
+            "Utility",
+            "Info",
+        ]
+
+        def _add_entry(category: str, rendered: str) -> None:
+            buckets.setdefault(category, []).append(rendered)
+        try:
+            overrides = _resolve_config_gates()
+        except Exception:
+            overrides = {}
+        for cmd in COMMAND_REGISTRY:
+            if not _is_gateway_available(cmd, overrides):
+                continue
+            # Keep slash commands as bare plain text (not inline code, and no
+            # argument placeholders) so Telegram recognizes them as tappable
+            # bot-command entities.  Argument hints in brackets make Telegram's
+            # Markdown renderer escape/collapse the line; the command itself is
+            # the clickable target and the description explains the intent.
+            _add_entry(cmd.category, f"- /{cmd.name} — {_trim_desc(cmd.description)}")
+
         try:
             from agent.skill_commands import get_skill_commands
             skill_cmds = get_skill_commands()
-            if skill_cmds:
-                entries.append("")
-                entries.append(t("gateway.commands.skill_header"))
-                for cmd in sorted(skill_cmds):
-                    desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
-                    entries.append(f"`{cmd}` — {desc}")
+            for cmd in sorted(skill_cmds):
+                desc = skill_cmds[cmd].get("description", "").strip() or t("gateway.commands.default_desc")
+                _add_entry("Skills", f"• {cmd} — {_trim_desc(desc)}")
         except Exception:
             pass
+
+        for category in category_order:
+            for rendered in buckets.pop(category, []):
+                entries.append((category, rendered))
+        for category in sorted(buckets):
+            if category == "Skills":
+                continue
+            for rendered in buckets[category]:
+                entries.append((category, rendered))
+        for rendered in buckets.pop("Skills", []):
+            entries.append(("Skills", rendered))
 
         if not entries:
             return t("gateway.commands.none")
 
         from gateway.config import Platform
-        page_size = 15 if event.source.platform == Platform.TELEGRAM else 20
+        page_size = 12 if event.source.platform == Platform.TELEGRAM else 16
         total_pages = max(1, (len(entries) + page_size - 1) // page_size)
         page = max(1, min(requested_page, total_pages))
         start = (page - 1) * page_size
         page_entries = entries[start:start + page_size]
 
         lines = [
-            t("gateway.commands.header", total=len(entries), page=page, total_pages=total_pages),
+            f"**Slash commands** · page {page}/{total_pages}",
+            f"{len(entries)} total. Tap a command, then edit/add args if needed.",
             "",
-            *page_entries,
         ]
+        current_category: str | None = None
+        for category, rendered in page_entries:
+            if category != current_category:
+                if current_category is not None:
+                    lines.append("")
+                lines.append(f"**{category}**")
+                current_category = category
+            lines.append(rendered)
+
         if total_pages > 1:
             nav_parts = []
             if page > 1:
-                nav_parts.append(t("gateway.commands.nav_prev", page=page - 1))
+                nav_parts.append(f"← /commands {page - 1}")
             if page < total_pages:
-                nav_parts.append(t("gateway.commands.nav_next", page=page + 1))
-            lines.extend(["", " | ".join(nav_parts)])
+                nav_parts.append(f"/commands {page + 1} →")
+            lines.extend(["", " · ".join(nav_parts)])
         if page != requested_page:
             lines.append(t("gateway.commands.out_of_range", requested=requested_page, page=page))
         return _telegramize_command_mentions(
@@ -3781,6 +3833,116 @@ class GatewaySlashCommandsMixin:
         lines.append("")
         lines.append("Invoke a bundle with `/<slug>` to load all its skills.")
         return "\n".join(lines)
+
+    async def _download_media_from_url(self, url: str, mode: str) -> dict[str, Any]:
+        """Download URL media with yt-dlp into temporary upload workspaces."""
+
+        def _download_variant(kind: str) -> dict[str, Any]:
+            import shutil
+            import subprocess
+            import tempfile
+            from urllib.parse import urlparse
+
+            from tools.url_safety import is_safe_url
+
+            normalized_kind = (kind or "").strip().lower()
+            if normalized_kind not in {"audio", "video"}:
+                return {"ok": False, "error": f"unknown download kind: {kind!r}"}
+            if not is_safe_url(url):
+                return {"ok": False, "error": "unsafe URL blocked"}
+            if not shutil.which("yt-dlp"):
+                return {"ok": False, "error": "yt-dlp is not installed on the gateway host"}
+            if not shutil.which("ffmpeg"):
+                return {"ok": False, "error": "ffmpeg is not installed on the gateway host"}
+
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                return {"ok": False, "error": "valid http/https URL required"}
+
+            download_dir = Path(tempfile.mkdtemp(prefix=f"hermes_download_{normalized_kind}_"))
+            output_template = str(download_dir / f"{normalized_kind}.%(ext)s")
+            if normalized_kind == "audio":
+                cmd = [
+                    "yt-dlp",
+                    "--no-playlist",
+                    "--restrict-filenames",
+                    "-x",
+                    "--audio-format",
+                    "mp3",
+                    "-o",
+                    output_template,
+                    url,
+                ]
+            else:
+                cmd = [
+                    "yt-dlp",
+                    "--no-playlist",
+                    "--restrict-filenames",
+                    "-f",
+                    "bv*+ba/best",
+                    "--merge-output-format",
+                    "mp4",
+                    "-o",
+                    output_template,
+                    url,
+                ]
+
+            proc = subprocess.run(cmd, text=True, capture_output=True, timeout=900)
+            if proc.returncode != 0:
+                return {
+                    "ok": False,
+                    "error": f"yt-dlp {normalized_kind} download failed",
+                    "stderr": (proc.stderr or proc.stdout or "")[-1200:],
+                    "download_dir": str(download_dir),
+                }
+
+            files = [
+                p for p in sorted(download_dir.glob(f"{normalized_kind}.*"))
+                if p.is_file() and not str(p).endswith(".part")
+            ]
+            if not files:
+                return {
+                    "ok": False,
+                    "error": f"yt-dlp did not produce a {normalized_kind} file",
+                    "download_dir": str(download_dir),
+                }
+
+            primary = files[0]
+            return {
+                "ok": True,
+                "kind": normalized_kind,
+                "file_path": str(primary),
+                "download_dir": str(download_dir),
+                "files": [str(p) for p in files],
+            }
+
+        normalized_mode = (mode or "").strip().lower()
+        if normalized_mode not in {"audio", "video", "both"}:
+            return {"ok": False, "error": f"unsupported download mode: {mode!r}"}
+
+        if normalized_mode == "both":
+            audio = await asyncio.to_thread(_download_variant, "audio")
+            if not audio.get("ok"):
+                return audio
+            video = await asyncio.to_thread(_download_variant, "video")
+            if not video.get("ok"):
+                import shutil
+
+                for item in (audio, video):
+                    download_dir = item.get("download_dir")
+                    if download_dir:
+                        shutil.rmtree(str(download_dir), ignore_errors=True)
+                return video
+            return {"ok": True, "kind": "both", "downloads": [audio, video]}
+
+        return await asyncio.to_thread(_download_variant, normalized_mode)
+
+    async def _handle_download_command(self, event: MessageEvent) -> str | None:
+        """Handle /download fallback outside Telegram's interactive menu."""
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return "Usage: `/download <url>`"
+        return "Send `/download <url>` in Telegram, then choose audio, video, or both from the buttons."
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).

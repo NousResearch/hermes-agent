@@ -372,6 +372,7 @@ class TestCancelledBestEffortDeliveryFinalizes:
         consumer.on_delta("Reply with **bold** and `code` markers.")
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.05)  # preview lands; message_id set
+        consumer.finish()
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
 
@@ -387,6 +388,38 @@ class TestCancelledBestEffortDeliveryFinalizes:
         assert consumer.final_content_delivered is True
 
     @pytest.mark.asyncio
+    async def test_cancel_before_done_keeps_gateway_resend_possible(self):
+        """A cancelled partial preview is not the final answer.
+
+        This reproduces the clipped Telegram symptom: the preview may end at a
+        prefix such as ``**root`` and still be successfully finalized on cancel.
+        Unless DONE was observed, the gateway must be allowed to send the full
+        response from the agent result instead of suppressing it.
+        """
+        adapter = _make_adapter()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        consumer = GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=0.01, buffer_threshold=5, cursor=" ▉",
+            ),
+        )
+        consumer.on_delta("**TL;DR:** Pascal is healthy except cloud-init failed on boot. Our current Hermes lockdown config overrides it, so **root")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)  # partial preview lands; no finish()/DONE
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+        finalize_edits = [
+            c for c in adapter.edit_message.call_args_list
+            if c.kwargs.get("finalize")
+        ]
+        assert finalize_edits
+        assert consumer.final_response_sent is False
+        assert consumer.final_content_delivered is False
+
+    @pytest.mark.asyncio
     async def test_cancel_best_effort_failure_keeps_gateway_resend_possible(self):
         adapter = _make_adapter()
         adapter.REQUIRES_EDIT_FINALIZE = True
@@ -400,6 +433,7 @@ class TestCancelledBestEffortDeliveryFinalizes:
         consumer.on_delta("Reply with **bold** and `code` markers.")
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.05)
+        consumer.finish()
         # Best-effort delivery at cancel time fails.
         adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
             success=False, error="boom",
@@ -454,6 +488,7 @@ class TestCancelledBestEffortDeliveryFinalizes:
         consumer.on_delta("Reply with **bold** and `code` markers.")
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.05)
+        consumer.finish()
         consumer._message_created_ts = 0.0  # force the preview stale
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)

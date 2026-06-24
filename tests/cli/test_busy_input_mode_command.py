@@ -119,5 +119,5 @@ class TestBusyCommandRegistry(unittest.TestCase):
         from hermes_cli.commands import COMMAND_REGISTRY
 
         busy = next(c for c in COMMAND_REGISTRY if c.name == "busy")
-        assert busy.args_hint == "[queue|steer|interrupt|status]"
+        assert busy.args_hint == "[queue|steer|interrupt|menu|status]"
         assert busy.category == "Configuration"

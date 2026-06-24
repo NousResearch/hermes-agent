@@ -3489,12 +3489,15 @@ class GatewaySlashCommandsMixin:
                 pass
 
             # Context window and compressions
-            ctx = agent.context_compressor
-            if ctx.last_prompt_tokens:
-                pct = min(100, ctx.last_prompt_tokens / ctx.context_length * 100) if ctx.context_length else 0
-                lines.append(t("gateway.usage.label_context", used=f"{ctx.last_prompt_tokens:,}", total=f"{ctx.context_length:,}", pct=f"{pct:.0f}"))
-            if ctx.compression_count:
-                lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
+            ctx = getattr(agent, "context_compressor", None)
+            if ctx is not None:
+                last_prompt_tokens = int(getattr(ctx, "last_prompt_tokens", 0) or 0)
+                context_length = int(getattr(ctx, "context_length", 0) or 0)
+                compression_count = int(getattr(ctx, "compression_count", 0) or 0)
+                if last_prompt_tokens > 0:
+                    pct = min(100, last_prompt_tokens / context_length * 100) if context_length else 0
+                    lines.append(t("gateway.usage.label_context", used=f"{last_prompt_tokens:,}", total=f"{context_length:,}", pct=f"{pct:.0f}"))
+                lines.append(t("gateway.usage.label_compressions", count=compression_count))
 
             if account_lines:
                 lines.append("")
@@ -3512,10 +3515,25 @@ class GatewaySlashCommandsMixin:
             from agent.model_metadata import estimate_messages_tokens_rough
             msgs = [m for m in history if m.get("role") in {"user", "assistant"} and m.get("content")]
             approx = estimate_messages_tokens_rough(msgs)
+            compression_count = 0
+            session_db = getattr(self, "_session_db", None)
+            if session_db is not None:
+                try:
+                    from acp_adapter.provenance import build_session_provenance
+
+                    provenance = build_session_provenance(
+                        session_db,
+                        session_entry.session_id,
+                        session_entry.session_id,
+                    )
+                    compression_count = int((provenance or {}).get("compressionDepth", 0) or 0)
+                except Exception:
+                    compression_count = 0
             lines = [
                 t("gateway.usage.header_session_info"),
                 t("gateway.usage.label_messages", count=len(msgs)),
                 t("gateway.usage.label_estimated_context", count=f"{approx:,}"),
+                t("gateway.usage.label_compressions", count=compression_count),
                 t("gateway.usage.detailed_after_first"),
             ]
             if account_lines:

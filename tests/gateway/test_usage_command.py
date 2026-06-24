@@ -92,6 +92,21 @@ class TestUsageCachedAgent:
         assert "Compressions: 1" in result
 
     @pytest.mark.asyncio
+    async def test_zero_compressions_are_shown(self):
+        """Compression count should be visible even before any compression fires."""
+        agent = _make_mock_agent()
+        agent.context_compressor.compression_count = 0
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+            mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
+            result = await runner._handle_usage_command(event)
+
+        assert "Compressions: 0" in result
+
+    @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):
         """When agent is in both dicts, the running one wins."""
         running = _make_mock_agent(session_api_calls=10, session_total_tokens=80_000)
@@ -145,6 +160,31 @@ class TestUsageCachedAgent:
         assert "Session Info" in result
         assert "Messages: 2" in result
         assert "~500" in result
+        assert "Compressions: 0" in result
+
+    @pytest.mark.asyncio
+    async def test_no_agent_history_shows_compression_depth(self):
+        """When only persisted history is available, derive compressions from session provenance."""
+        runner = _make_runner(SK)
+        runner._session_db = MagicMock()
+        runner._session_db.get_session.side_effect = lambda sid: {
+            "sess-child": {"parent_session_id": "sess-parent", "end_reason": None},
+            "sess-parent": {"parent_session_id": None, "end_reason": "compression"},
+        }.get(sid)
+        event = MagicMock()
+
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-child"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = [
+            {"role": "user", "content": "after compression"},
+        ]
+
+        with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=250):
+            result = await runner._handle_usage_command(event)
+
+        assert "Session Info" in result
+        assert "Compressions: 1" in result
 
     @pytest.mark.asyncio
     async def test_cache_read_write_hidden_when_zero(self):

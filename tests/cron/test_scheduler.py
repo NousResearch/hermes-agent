@@ -3526,8 +3526,8 @@ class TestCronDeliveryMirror:
 
         with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
             _maybe_mirror_cron_delivery(
-                {"id": "j1"}, "telegram", "123", "Daily brief Task #2",
-                thread_id=None, enabled=True,
+                {"id": "j1", "name": "Daily Brief"}, "telegram", "123",
+                "Daily brief Task #2", thread_id=None, enabled=True,
             )
         m.assert_called_once()
         args, kwargs = m.call_args
@@ -3535,6 +3535,27 @@ class TestCronDeliveryMirror:
         assert args[1] == "123"
         assert "Task #2" in args[2]
         assert kwargs.get("source_label") == "cron"
+
+    def test_mirror_writes_user_role_with_label_not_assistant(self):
+        """Regression for #2221 / #2313: the cron brief must mirror as a USER
+        turn (with a [Cron delivery: ...] label), NOT assistant — an
+        assistant-role mirror lands as assistant->assistant after the agent's
+        last turn and breaks strict alternation on non-Anthropic providers."""
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1", "name": "Morning Brief"}, "telegram", "123",
+                "Market movers today", thread_id=None, enabled=True,
+            )
+        m.assert_called_once()
+        args, kwargs = m.call_args
+        assert kwargs.get("role") == "user", "cron mirror must be a user turn, not assistant"
+        # The brief text is prefixed with a human-readable cron-delivery label
+        # so replay (where the mirror metadata is dropped at the SQLite
+        # boundary) still distinguishes it from a genuine user message.
+        assert args[2].startswith("[Cron delivery: Morning Brief]")
+        assert "Market movers today" in args[2]
 
     def test_mirror_noop_when_disabled(self):
         from cron.scheduler import _maybe_mirror_cron_delivery

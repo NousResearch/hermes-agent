@@ -896,7 +896,8 @@ async def web_extract_tool(
     format: str = None,
     use_llm_processing: bool = True,
     model: Optional[str] = None,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
+    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
+    treat_empty_as_error: bool = False,
 ) -> str:
     """
     Extract content from specific web pages using available extraction API backend.
@@ -910,6 +911,8 @@ async def web_extract_tool(
         use_llm_processing (bool): Whether to process content with LLM for summarization (default: True)
         model (Optional[str]): The model to use for LLM processing (defaults to current auxiliary backend model)
         min_length (int): Minimum content length to trigger LLM processing (default: 5000)
+        treat_empty_as_error (bool): If True, results with empty content and no error
+            are marked with an error field instead of returned as empty (default: False)
 
     Security: URLs are checked for embedded secrets before fetching.
     
@@ -1047,7 +1050,15 @@ async def web_extract_tool(
             results = ssrf_blocked + results
 
         response = {"results": results}
-        
+
+        # When treat_empty_as_error is set, mark results with empty content
+        # and no existing error as extraction failures so the caller can treat
+        # them as actionable errors instead of silently empty results.
+        if treat_empty_as_error:
+            for r in response.get("results", []):
+                if not r.get("error") and not r.get("raw_content", "") and not r.get("content", ""):
+                    r["error"] = "Empty content returned by extraction backend"
+
         pages_extracted = len(response.get('results', []))
         logger.info("Extracted content from %d pages", pages_extracted)
         

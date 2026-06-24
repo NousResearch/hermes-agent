@@ -3,8 +3,42 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from typing import Optional
+
+
+def _fs_case_insensitive() -> bool:
+    """True when the host filesystem compares paths case-insensitively.
+
+    macOS (APFS/HFS+) and Windows default to case-insensitive filesystems, so a
+    credential path addressed via a case variant (``~/.SSH/authorized_keys`` vs
+    ``~/.ssh/authorized_keys``) resolves to the SAME on-disk file. The deny
+    comparisons below operate on ``os.path.realpath`` / ``Path.resolve`` output,
+    which preserves the typed case rather than canonicalizing it, so they must
+    casefold on these platforms or the guard is silently bypassed. On
+    case-sensitive POSIX filesystems (default Linux) the variants are genuinely
+    different files and are left untouched.
+    """
+    return sys.platform == "darwin" or os.name == "nt"
+
+
+def _denycmp(path) -> str:
+    """Normalize a path string for case-aware denylist comparison."""
+    text = os.fspath(path)
+    return text.casefold() if _fs_case_insensitive() else text
+
+
+def _denied_paths_equal(a, b) -> bool:
+    """Return True if two resolved paths refer to the same denylist entry."""
+    return _denycmp(a) == _denycmp(b)
+
+
+def _denied_path_within(child, root) -> bool:
+    """Return True if ``child`` equals or is contained under ``root``."""
+    c = _denycmp(child)
+    r = _denycmp(root)
+    return c == r or c.startswith(r + os.sep)
 
 
 def _hermes_home_path() -> Path:
@@ -92,11 +126,12 @@ def is_write_denied(path: str) -> bool:
     """Return True if path is blocked by the write denylist or safe root."""
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
+    rc = _denycmp(resolved)
 
-    if resolved in build_write_denied_paths(home):
+    if rc in {_denycmp(p) for p in build_write_denied_paths(home)}:
         return True
     for prefix in build_write_denied_prefixes(home):
-        if resolved.startswith(prefix):
+        if rc.startswith(_denycmp(prefix)):
             return True
 
     mcp_tokens_dir_name = "mcp-tokens"
@@ -113,19 +148,19 @@ def is_write_denied(path: str) -> bool:
     for base_real in hermes_dirs:
         try:
             mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
-            if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
+            if _denied_path_within(resolved, mcp_real):
                 return True
         except Exception:
             pass
         try:
             pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
-            if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
+            if _denied_path_within(resolved, pairing_real):
                 return True
         except Exception:
             pass
 
     safe_root = get_safe_write_root()
-    if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
+    if safe_root and not _denied_path_within(resolved, safe_root):
         return True
 
     return False
@@ -213,9 +248,7 @@ def get_read_block_error(path: str) -> Optional[str]:
             hd / "skills" / ".hub",
         ]
         for blocked in blocked_dirs:
-            try:
-                resolved.relative_to(blocked)
-            except ValueError:
+            if not _denied_path_within(resolved, blocked):
                 continue
             return (
                 f"Access denied: {path} is an internal Hermes cache file "
@@ -243,7 +276,7 @@ def get_read_block_error(path: str) -> Optional[str]:
                 blocked = (hd / name).resolve()
             except Exception:
                 continue
-            if resolved == blocked:
+            if _denied_paths_equal(resolved, blocked):
                 return (
                     f"Access denied: {path} is a Hermes credential store "
                     "and cannot be read directly. Provider tools consume "
@@ -259,15 +292,13 @@ def get_read_block_error(path: str) -> Optional[str]:
             mcp_tokens = (hd / "mcp-tokens").resolve()
         except Exception:
             continue
-        if resolved == mcp_tokens:
+        if _denied_paths_equal(resolved, mcp_tokens):
             return (
                 f"Access denied: {path} is the Hermes MCP token directory "
                 "and cannot be read directly. (Defense-in-depth — not a "
                 "security boundary; the terminal tool can still bypass.)"
             )
-        try:
-            resolved.relative_to(mcp_tokens)
-        except ValueError:
+        if not _denied_path_within(resolved, mcp_tokens):
             continue
         return (
             f"Access denied: {path} is a Hermes MCP token file "
@@ -280,7 +311,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     # .env contents — .env.example is the documented-shape substitute. The
     # terminal tool can still ``cat .env``; this is defense-in-depth, not a
     # boundary (see module docstring).
-    if resolved.name in _BLOCKED_PROJECT_ENV_BASENAMES:
+    if _denycmp(resolved.name) in {_denycmp(b) for b in _BLOCKED_PROJECT_ENV_BASENAMES}:
         return (
             f"Access denied: {path} is a secret-bearing environment file "
             "and cannot be read to prevent credential leakage. "

@@ -1080,6 +1080,35 @@ def skill_view(
                     _record(None, found_md)
 
         if len(candidates) > 1:
+            def _candidate_relative_path(smd: Path) -> Path | None:
+                for root in all_dirs:
+                    try:
+                        return smd.relative_to(root)
+                    except ValueError:
+                        continue
+                return None
+
+            rel_paths = {_candidate_relative_path(smd) for _, smd in candidates}
+            if (
+                len(rel_paths) == 1
+                and rel_paths != {None}
+                and all(rel_path is not None and len(rel_path.parts) >= 3 for rel_path in rel_paths)
+            ):
+                try:
+                    local_root = SKILLS_DIR.resolve()
+                except Exception:
+                    local_root = SKILLS_DIR
+                local_candidates = []
+                for sd, smd in candidates:
+                    try:
+                        smd.resolve().relative_to(local_root)
+                        local_candidates.append((sd, smd))
+                    except ValueError:
+                        continue
+                if len(local_candidates) == 1:
+                    candidates = local_candidates
+
+        if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]
             logging.getLogger(__name__).warning(
                 "Skill name collision for '%s': %d candidates — %s",

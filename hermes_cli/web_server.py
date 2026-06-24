@@ -234,6 +234,11 @@ def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 
+# Memory-provider OAuth connect routes live in the memory layer, not here.
+from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402
+
+app.include_router(_memory_oauth_router)
+
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
 # The desktop shell mints the token and injects it via
@@ -7911,7 +7916,7 @@ async def cron_fire_webhook(request: Request):
     Returns 202 immediately and runs the job in the background so a long agent
     turn never trips NAS's HTTP timeout.
     """
-    from plugins.cron.chronos.verify import get_fire_verifier
+    from plugins.cron_providers.chronos.verify import get_fire_verifier
 
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
@@ -8349,6 +8354,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
 
 # Register the mcp-install action log so /api/actions/mcp-install/status works.
 _ACTION_LOG_FILES.setdefault("mcp-install", "action-mcp-install.log")
+_ACTION_LOG_FILES.setdefault("computer-use-grant", "action-computer-use-grant.log")
 
 
 # ---------------------------------------------------------------------------
@@ -10669,6 +10675,63 @@ async def run_toolset_post_setup(
             status_code=500, detail=f"Failed to run post-setup: {exc}"
         )
     return {"ok": True, "pid": proc.pid, "name": "tools-post-setup", "key": body.key}
+
+
+# ---------------------------------------------------------------------------
+# Computer Use (cua-driver) — cross-platform readiness + macOS permission grant
+#
+# cua-driver runs on macOS, Windows, and Linux. The desktop card reflects
+# per-OS readiness: on macOS the Accessibility + Screen Recording TCC grants
+# (which attach to cua-driver's OWN identity, com.trycua.driver — not Hermes,
+# so no app entitlement is involved); elsewhere, driver health from
+# `cua-driver doctor`. The grant flow is macOS-only (no TCC toggles to request
+# on Windows/Linux).
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/tools/computer-use/status")
+async def get_computer_use_status(profile: Optional[str] = None):
+    """Cross-platform Computer Use readiness for the desktop card.
+
+    See ``tools.computer_use.permissions.computer_use_status`` for the payload
+    shape. Read-only and fast (shells ``cua-driver doctor`` + macOS
+    ``permissions status``).
+    """
+    from tools.computer_use.permissions import computer_use_status
+
+    with _profile_scope(profile):
+        return computer_use_status()
+
+
+@app.post("/api/tools/computer-use/permissions/grant")
+async def grant_computer_use_permissions(profile: Optional[str] = None):
+    """Spawn ``hermes computer-use permissions grant`` as a background action.
+
+    macOS-only: ``cua-driver permissions grant`` launches CuaDriver via
+    LaunchServices so the TCC dialog is attributed to com.trycua.driver, then
+    waits for approval. The frontend polls ``GET /api/actions/computer-use-
+    grant/status`` and re-reads ``/status`` once it exits. Windows/Linux have
+    no TCC toggles to grant, so this returns 400 there.
+    """
+    if sys.platform != "darwin":
+        raise HTTPException(
+            status_code=400,
+            detail="Computer Use permission grants are a macOS concept.",
+        )
+    try:
+        proc = _spawn_hermes_action(
+            _profile_cli_args(profile)
+            + ["computer-use", "permissions", "grant"],
+            "computer-use-grant",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn computer-use permissions grant")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to request permissions: {exc}"
+        )
+    return {"ok": True, "pid": proc.pid, "name": "computer-use-grant"}
 
 
 # ---------------------------------------------------------------------------
@@ -13011,4 +13074,45 @@ def start_server(
             if server.started:
                 await server.shutdown()
 
-    asyncio.run(_serve())
+    # On POSIX, keep the long-standing ``asyncio.run(_serve())`` behavior
+    # unchanged — Python's default loop there is already a SelectorEventLoop
+    # (or uvloop when uvicorn[standard] installs it), which is exactly what
+    # uvicorn serves on. Touching that path would only widen the blast radius
+    # for no benefit.
+    #
+    # On Windows it is broken: ``asyncio.run`` defaults to a ProactorEventLoop,
+    # but uvicorn's socket-serving stack assumes a SelectorEventLoop on win32
+    # (``uvicorn/loops/asyncio.py`` forces it, and ``uvicorn.Server.run`` threads
+    # ``config.get_loop_factory()`` into its runner for exactly this reason).
+    # Driving uvicorn on the proactor loop makes ``server.startup()`` bind a
+    # socket that never accepts — the dashboard / desktop backend prints
+    # "Skipping web UI build" and then hangs forever with the port LISTENING but
+    # no TCP handshake completing (#50641). So *only on Windows* we mirror
+    # uvicorn's own machinery and run on the loop factory it picks.
+    if sys.platform != "win32":
+        asyncio.run(_serve())
+        return
+
+    # Windows-only path. Resolve the runner + loop factory FIRST (and fall back
+    # to a hand-installed Windows selector policy only when uvicorn predates the
+    # loop-factory API, < 0.36). The actual serve call is then OUTSIDE the
+    # try/except so genuine serve-time errors (port in use, KeyboardInterrupt)
+    # propagate normally instead of being swallowed and double-run.
+    try:
+        from uvicorn._compat import asyncio_run as _runner
+
+        _loop_factory = config.get_loop_factory()
+    except Exception:
+        _runner = None
+        _loop_factory = None
+        try:
+            asyncio.set_event_loop_policy(
+                asyncio.WindowsSelectorEventLoopPolicy()  # type: ignore[attr-defined]
+            )
+        except Exception:
+            pass
+
+    if _runner is not None:
+        _runner(_serve(), loop_factory=_loop_factory)
+    else:
+        asyncio.run(_serve())

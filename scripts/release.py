@@ -45,6 +45,10 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "145739220+wgu9@users.noreply.github.com": "wgu9",  # PR #51468 salvage (WSL/no-systemd orphan gateway tracking, #51325)
+    "165020384+uperLu@users.noreply.github.com": "uperLu",  # PR #50958 salvage (rename plugins/cron → plugins/cron_providers; #50872)
+    "minz0721@outlook.com": "s010mn",  # PR #29221 salvage (ollama-cloud reasoning_effort xhigh→max)
+    "jeevesassistant00@gmail.com": "jeeves-assistant",  # PR #50771 (computer-use CuaDriver vision capture routing)
     "21178861+ScotterMonk@users.noreply.github.com": "ScotterMonk",  # PR #50145 salvage (cron output truncation: adapter-aware chunking, #50126)
     "rrandqua@gmail.com": "TutkuEroglu",  # PR #50481 salvage (AGENTS.md stale token-lock adapter path)
     "f@trycua.com": "f-trycua",  # PR #50507 salvage (cross-platform computer_use; supersedes #44221/#30660)
@@ -115,6 +119,7 @@ AUTHOR_MAP = {
     "123150002+deaneeth@users.noreply.github.com": "deaneeth",
     "157839748+psionic73@users.noreply.github.com": "psionic73",
     "manishbyatroy@gmail.com": "manishbyatroy",
+    "manusjs@users.noreply.github.com": "manus-use",  # PR #51129 salvage (Discord thread-starter dedup, #51057)
     "chilltulpa@gmail.com": "TheGardenGallery",
     "al@randomsnowflake.me": "randomsnowflake",
     "zakame@zakame.net": "zakame",
@@ -127,6 +132,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "mucio@mucio.net": "francescomucio",
     "tkwong@inspiresynergy.com": "tkwong",
     "buihongduc132@gmail.com": "buihongduc132",
     "etheraura@protonmail.com": "EtherAura",  # PR #45205 salvage (Linux in-app update relaunch / GUI-skew terminal state)
@@ -806,6 +812,7 @@ AUTHOR_MAP = {
     "brooklyn.bb.nicholson@gmail.com": "OutThisLife",
     "withapurpose37@gmail.com": "StefanIsMe",
     "4317663+helix4u@users.noreply.github.com": "helix4u",
+    "sunxusidney@gmail.com": "SidUParis",
     "ifkellx@users.noreply.github.com": "Ifkellx",
     "331214+counterposition@users.noreply.github.com": "counterposition",
     "blspear@gmail.com": "BrennerSpear",
@@ -980,6 +987,7 @@ AUTHOR_MAP = {
     "hmbown@gmail.com": "Hmbown",
     "iacobs@m0n5t3r.info": "m0n5t3r",
     "jiayuw794@gmail.com": "JiayuuWang",
+    "jinhyuk9714@gmail.com": "sjh9714",
     "jonny@nousresearch.com": "yoniebans",
     "jake@nousresearch.com": "simpolism",
     "juan.ovalle@mistral.ai": "jjovalle99",

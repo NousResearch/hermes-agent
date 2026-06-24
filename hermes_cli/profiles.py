@@ -53,9 +53,21 @@ _PROFILE_DIRS = [
 ]
 
 # Files copied during --clone (if they exist in the source)
+#
+# auth.json carries the per-profile credential pool — including OAuth tokens
+# (Anthropic `claude /login`, Codex, xAI) that never land in .env. Cloning
+# .env but not auth.json silently dropped those credentials from the clone,
+# so a profile cloned from an OAuth-authenticated default resolved a
+# different provider (or none) than the source. The global-root fallback in
+# read_credential_pool only masks this while the clone's HERMES_HOME still
+# resolves to the same default root and the user hasn't run `hermes auth add`
+# locally. Copying it here makes selective --clone match `.env` semantics and
+# the full --clone-all copytree (which already carries auth.json). Both are
+# credential files and get tightened to owner-only (0o600) after copy.
 _CLONE_CONFIG_FILES = [
     "config.yaml",
     ".env",
+    "auth.json",
     "SOUL.md",
 ]
 
@@ -612,10 +624,34 @@ def _read_config_model(profile_dir: Path) -> tuple:
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
-    """Check if a gateway is running for a given profile directory."""
+    """Check if a gateway is running for a given profile directory.
+
+    Primary signal is the profile's ``gateway.pid`` (verified against the
+    runtime lock).  That check fails closed whenever the lock isn't held by
+    *this* reader — which is exactly the case for a dashboard process that is
+    a separate s6 service from the gateway it's reporting on (Docker), or any
+    launch-service-managed gateway that left a fresh ``gateway_state.json`` but
+    no live PID file.  In those cases fall back to validating the PID recorded
+    in the profile's own ``gateway_state.json`` against the live process table,
+    mirroring the ``/api/status`` sidebar's liveness logic so the two surfaces
+    agree.  Parameterized by ``profile_dir`` so it never mutates ``HERMES_HOME``.
+    """
     try:
         from gateway.status import get_running_pid
-        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+        if (
+            get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False)
+            is not None
+        ):
+            return True
+    except Exception:
+        pass
+    try:
+        from gateway.status import (
+            get_runtime_status_running_pid,
+            read_runtime_status,
+        )
+        runtime = read_runtime_status(profile_dir / "gateway_state.json")
+        return get_runtime_status_running_pid(runtime) is not None
     except Exception:
         return False
 
@@ -914,11 +950,12 @@ def create_profile(
                 if src.exists():
                     dst = profile_dir / filename
                     shutil.copy2(src, dst)
-                    # Tighten .env to owner-only after copy. shutil.copy2
-                    # preserves source mode bits, but if the source's .env
-                    # was loose (host umask 0o022 leaving 0o644), tighten
-                    # explicitly so the clone doesn't inherit weak perms.
-                    if filename == ".env":
+                    # Tighten credential files to owner-only after copy.
+                    # shutil.copy2 preserves source mode bits, but if the
+                    # source's .env / auth.json was loose (host umask 0o022
+                    # leaving 0o644), tighten explicitly so the clone doesn't
+                    # inherit weak perms.
+                    if filename in {".env", "auth.json"}:
                         try:
                             os.chmod(str(dst), 0o600)
                         except OSError:

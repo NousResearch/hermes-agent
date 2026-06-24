@@ -7731,8 +7731,9 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
 
     The normal path (``ensure_uv()`` in managed_uv) installs the managed
     standalone uv into ``$HERMES_HOME/bin/uv``, but on Termux the official
-    installer may not work (glibc vs bionic).  Fall back to ``pip install uv``
-    which gets a Termux-compatible binary.
+    installer may not work (glibc vs bionic).  Prefer a uv already on PATH
+    (e.g. ``pkg install uv``); only if there is none do we fall back to a
+    wheel-only ``pip install uv`` so we never source-build the Rust crate.
     """
     from hermes_cli.managed_uv import resolve_uv
 
@@ -7741,9 +7742,21 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
         return existing
     if not _is_termux_env():
         return None
+    # A Termux-packaged uv lands on PATH but not in the managed bin dir, so
+    # resolve_uv() misses it. Use it before pip, which has no Android wheel and
+    # would otherwise build uv from source on a low-memory device.
+    system_uv = shutil.which("uv")
+    if system_uv:
+        return system_uv
     try:
         print("  → Termux detected: trying to install uv for faster dependency updates...")
-        subprocess.run(pip_cmd + ["install", "uv"], cwd=PROJECT_ROOT, check=False)
+        result = subprocess.run(
+            pip_cmd + ["install", "uv", "--only-binary", ":all:"],
+            cwd=PROJECT_ROOT,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
     except Exception:
         pass
     # After pip install, check managed path first, then PATH
@@ -11535,7 +11548,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
+        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -12428,6 +12441,26 @@ def main():
         logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
 
     # =========================================================================
+    # pets command — petdex animated mascots (CLI / TUI / desktop display)
+    # =========================================================================
+    pets_parser = subparsers.add_parser(
+        "pets",
+        help="Browse, install, and select petdex animated pets",
+        description=(
+            "Petdex (https://github.com/crafter-station/petdex) is a public "
+            "gallery of animated sprite pets for coding agents. Install one "
+            "and Hermes shows it reacting to agent activity across the CLI, "
+            "TUI, and desktop app."
+        ),
+    )
+    try:
+        from hermes_cli.pets import register_cli as _register_pets_cli
+
+        _register_pets_cli(pets_parser)
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("pets CLI wiring failed: %s", _exc)
+
+    # =========================================================================
     # memory command  (parser built in hermes_cli/subcommands/memory.py)
     # =========================================================================
     build_memory_parser(subparsers, cmd_memory=cmd_memory)
@@ -12514,6 +12547,33 @@ def main():
         action="store_true",
         help="Emit the raw structured payload as JSON (same shape as `tools/call`).",
     )
+    computer_use_perms = computer_use_sub.add_parser(
+        "permissions",
+        help="Check or grant macOS Accessibility + Screen Recording (macOS)",
+        description=(
+            "Computer Use drives the Mac through cua-driver, whose TCC grants\n"
+            "attach to cua-driver's own identity (com.trycua.driver) — not the\n"
+            "terminal or the Hermes app. `status` reports the driver's grant\n"
+            "state; `grant` launches CuaDriver via LaunchServices so the macOS\n"
+            "permission dialog is attributed to the process that does the work."
+        ),
+    )
+    computer_use_perms_sub = computer_use_perms.add_subparsers(
+        dest="computer_use_perms_action"
+    )
+    computer_use_perms_status = computer_use_perms_sub.add_parser(
+        "status",
+        help="Report Accessibility + Screen Recording grant state (read-only)",
+    )
+    computer_use_perms_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the normalized permission payload as JSON.",
+    )
+    computer_use_perms_sub.add_parser(
+        "grant",
+        help="Request the grants (opens the dialog attributed to CuaDriver)",
+    )
 
     def cmd_computer_use(args):
         action = getattr(args, "computer_use_action", None)
@@ -12571,6 +12631,41 @@ def main():
                 json_output=bool(getattr(args, "json", False)),
             )
             sys.exit(code)
+        if action == "permissions":
+            perms_action = getattr(args, "computer_use_perms_action", None)
+            if perms_action == "grant":
+                from tools.computer_use.permissions import request_permissions_grant
+                sys.exit(request_permissions_grant())
+            if perms_action == "status":
+                import json as _json
+                from tools.computer_use.permissions import computer_use_status
+                st = computer_use_status()
+                if bool(getattr(args, "json", False)):
+                    print(_json.dumps(st, indent=2, sort_keys=True))
+                    sys.exit(0 if st["ready"] else 1)
+                if not st["platform_supported"]:
+                    print(f"Computer Use is not supported on {st['platform']}.")
+                    sys.exit(1)
+                if not st["installed"]:
+                    print("cua-driver: not installed. Run: hermes computer-use install")
+                    sys.exit(1)
+                glyph = lambda v: "✅" if v is True else ("❌" if v is False else "•")  # noqa: E731
+                print(f"cua-driver: {st['version'] or 'installed'} ({st['platform']})")
+                if st["can_grant"]:  # macOS TCC permissions
+                    print(f"  {glyph(st['accessibility'])} Accessibility")
+                    print(f"  {glyph(st['screen_recording'])} Screen Recording")
+                    if not st["ready"]:
+                        print("  Grant: hermes computer-use permissions grant")
+                else:  # no TCC model — readiness is driver health
+                    print(f"  {glyph(st['ready'])} driver health (no permission toggles on {st['platform']})")
+                for c in st["checks"]:
+                    if c["status"] != "ok":
+                        print(f"  ⚠ {c['label']}: {c['message']}")
+                if st["error"]:
+                    print(f"  ⚠ {st['error']}")
+                sys.exit(0 if st["ready"] else 1)
+            computer_use_perms.print_help()
+            return
         # No subcommand → show help
         computer_use_parser.print_help()
 

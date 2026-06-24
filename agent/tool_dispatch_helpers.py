@@ -106,7 +106,14 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
         return False
 
     tool_names = [tc.function.name for tc in tool_calls]
+    logger.debug(
+        "[parallel-gate] evaluating batch of %d tools: %s",
+        len(tool_names),
+        tool_names,
+    )
+
     if any(name in _NEVER_PARALLEL_TOOLS for name in tool_names):
+        logger.debug("[parallel-gate] SEQUENTIAL — batch contains never-parallel tool")
         return False
 
     reserved_paths: list[Path] = []
@@ -140,9 +147,20 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
 
         if tool_name not in _PARALLEL_SAFE_TOOLS:
             # Check if it's an MCP tool from a server that opted into parallel calls.
-            if not _is_mcp_tool_parallel_safe(tool_name):
+            mcp_safe = _is_mcp_tool_parallel_safe(tool_name)
+            logger.debug(
+                "[parallel-gate] tool=%s not in _PARALLEL_SAFE_TOOLS; mcp_safe=%s",
+                tool_name,
+                mcp_safe,
+            )
+            if not mcp_safe:
+                logger.debug(
+                    "[parallel-gate] SEQUENTIAL — tool %s is not parallel-safe",
+                    tool_name,
+                )
                 return False
 
+    logger.debug("[parallel-gate] CONCURRENT — all tools cleared")
     return True
 
 

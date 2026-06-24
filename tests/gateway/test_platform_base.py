@@ -1364,6 +1364,53 @@ class TestTruncateMessage:
                 f"Chunk {i} too long: {len(chunk)} > {max_len}"
             )
 
+    def test_split_does_not_break_bold_entity(self):
+        """Split must not land inside a *bold* entity."""
+        # Build a message where the split boundary falls inside **bold text**.
+        # Padding pushes the bold entity so the opening * is in chunk 0
+        # and the closing * would be in chunk 1 without the guard.
+        padding = "x" * 1900
+        content = padding + " **important bold text** " + "y" * 1900
+        chunks = BasePlatformAdapter.truncate_message(content, max_length=2000)
+        assert len(chunks) > 1
+        import re
+        for i, chunk in enumerate(chunks):
+            # Count unescaped '*' (not preceded by backslash)
+            unescaped = re.sub(r"\\.", "", chunk)
+            star_count = unescaped.count("*")
+            assert star_count % 2 == 0, (
+                f"Chunk {i} has odd ({star_count}) unescaped '*' — "
+                f"bold entity split: ...{chunk[-60:]!r}"
+            )
+
+    def test_split_does_not_break_inline_entities_sweep(self):
+        """Boundary sweep: no split position should break _italic_, ~strike~, or ||spoiler||."""
+        for marker, name in [("_", "italic"), ("~", "strike"), ("||", "spoiler")]:
+            open_m = marker
+            close_m = marker
+            entity = f"{open_m}entity{name}{close_m}"
+            # Repeat the entity enough times to exceed 200 chars
+            content = (f"word {entity} word ") * 30  # ~600 chars
+            chunks = BasePlatformAdapter.truncate_message(content, max_length=200)
+            assert len(chunks) > 1, f"Expected split for {name}"
+            import re
+            for i, chunk in enumerate(chunks):
+                stripped = re.sub(r"\\.", "", chunk)
+                # Count unescaped marker occurrences
+                mlen = len(marker)
+                count = 0
+                idx = 0
+                while True:
+                    pos = stripped.find(marker, idx)
+                    if pos < 0:
+                        break
+                    count += 1
+                    idx = pos + mlen
+                assert count % 2 == 0, (
+                    f"Chunk {i} has odd ({count}) unescaped '{marker}' — "
+                    f"{name} entity split: ...{chunk[-60:]!r}"
+                )
+
 
 # ---------------------------------------------------------------------------
 # _get_human_delay

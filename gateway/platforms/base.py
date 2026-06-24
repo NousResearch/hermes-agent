@@ -5216,6 +5216,51 @@ class BasePlatformAdapter(ABC):
                     if safe_split > _cp_limit // 4:
                         split_at = safe_split
 
+            # Avoid splitting inside a MarkdownV2 inline-formatting entity
+            # (*bold*, _italic_, ~strike~, ||spoiler||).  The same hazard the
+            # backtick guard above prevents for code spans: if the text before
+            # split_at has an odd number of *unescaped* entity markers, the
+            # split falls inside an open entity, leaving one chunk with the
+            # opening marker and the next with the closing one.  Both chunks
+            # then have an unbalanced delimiter and Telegram rejects them with
+            # "can't parse entities", forcing a plain-text fallback that strips
+            # all formatting.  Walk the markers (longest first so "||" is tried
+            # before "|") and, when one is unbalanced, back the split up to just
+            # before its last (opening) occurrence — mirroring the backtick
+            # guard, including the _cp_limit // 4 floor so we never rewind too
+            # far.  Markers are matched only when unescaped (not preceded by an
+            # odd run of backslashes), so escaped literals produced by
+            # format_message are correctly ignored.
+            def _unescaped_marker_positions(text: str, marker: str) -> list:
+                positions = []
+                idx = 0
+                mlen = len(marker)
+                while True:
+                    found = text.find(marker, idx)
+                    if found < 0:
+                        break
+                    bs = 0
+                    k = found - 1
+                    while k >= 0 and text[k] == "\\":
+                        bs += 1
+                        k -= 1
+                    if bs % 2 == 0:
+                        positions.append(found)
+                    idx = found + mlen
+                return positions
+
+            for _marker in ("||", "*", "_", "~"):
+                _cand = remaining[:split_at]
+                _positions = _unescaped_marker_positions(_cand, _marker)
+                if len(_positions) % 2 == 1:
+                    _open_at = _positions[-1]
+                    _safe = max(
+                        _cand.rfind(" ", 0, _open_at),
+                        _cand.rfind("\n", 0, _open_at),
+                    )
+                    if _safe > _cp_limit // 4:
+                        split_at = _safe
+
             chunk_body = remaining[:split_at]
             remaining = remaining[split_at:].lstrip()
 

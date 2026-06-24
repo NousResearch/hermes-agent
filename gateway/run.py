@@ -9826,6 +9826,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _footer_err:
                 logger.debug("runtime_footer build failed: %s", _footer_err)
                 _footer_line = ""
+            # Telegram OpenRouter cost footer — always on for Telegram when the
+            # active runtime provider is OpenRouter. This is separate from the
+            # opt-in runtime footer: it answers "what did this request cost?".
+            _openrouter_cost_line = ""
+            try:
+                from gateway.openrouter_cost_footer import build_openrouter_cost_line as _borcl
+                _openrouter_cost_line = _borcl(
+                    platform_key=_platform_config_key(source.platform),
+                    agent_result=agent_result,
+                )
+            except Exception as _cost_footer_err:
+                logger.debug("OpenRouter cost footer build failed: %s", _cost_footer_err)
+                _openrouter_cost_line = ""
+
+            _tail_lines = [line for line in (_footer_line, _openrouter_cost_line) if line]
+            _footer_line = "\n".join(_tail_lines)
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
 
@@ -15662,6 +15678,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
             _bg_review_pending_lock = threading.Lock()
+            _openrouter_cost_context = {
+                "ready": threading.Event(),
+                "main_agent_result": None,
+            }
 
             def _deliver_bg_review_message(message: str) -> None:
                 if not _status_adapter or not _run_still_current():
@@ -15696,7 +15716,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             return
                 _deliver_bg_review_message(message)
 
+            def _bg_review_complete(metadata: dict) -> None:
+                """Send a Telegram OpenRouter total-cost follow-up after bg review."""
+                try:
+                    ready = _openrouter_cost_context.get("ready")
+                    if ready is not None:
+                        ready.wait(timeout=60)
+                    main_result = _openrouter_cost_context.get("main_agent_result")
+                    if not isinstance(main_result, dict):
+                        return
+                    from gateway.openrouter_cost_footer import (
+                        build_openrouter_background_review_cost_line as _borbrcl,
+                    )
+                    line = _borbrcl(
+                        platform_key=_platform_config_key(source.platform),
+                        main_agent_result=main_result,
+                        background_review_result=metadata or {},
+                    )
+                    if line:
+                        _bg_review_send(line)
+                except Exception as _e:
+                    logger.debug("background_review_completion_callback error: %s", _e)
+
             agent.background_review_callback = _bg_review_send
+            agent.background_review_completion_callback = _bg_review_complete
             # Register the release hook on the adapter so base.py's finally
             # block can fire it after delivering the main response.
             if _status_adapter and session_key:
@@ -16085,6 +16128,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _conversation_kwargs["persist_user_message"] = _persist_user_message_override
                 elif observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
+                _turn_cost_before = float(
+                    getattr(agent, "session_estimated_cost_usd", 0.0) or 0.0
+                )
+                _turn_api_calls_before = int(
+                    getattr(agent, "session_api_calls", 0) or 0
+                )
                 if _persist_user_timestamp_override is not None:
                     _conversation_kwargs["persist_user_timestamp"] = _persist_user_timestamp_override
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
@@ -16120,6 +16169,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
+            _billing_provider = getattr(_agent, "provider", None) if _agent else None
+            _billing_base_url = getattr(_agent, "base_url", None) if _agent else None
+            _turn_cost_after = float(
+                getattr(_agent, "session_estimated_cost_usd", 0.0) or 0.0
+            ) if _agent else 0.0
+            _turn_api_calls_after = int(
+                getattr(_agent, "session_api_calls", 0) or 0
+            ) if _agent else 0
+            _turn_cost_delta = max(
+                0.0,
+                _turn_cost_after - float(locals().get("_turn_cost_before", 0.0) or 0.0),
+            )
+            _turn_api_calls_delta = max(
+                0,
+                _turn_api_calls_after - int(locals().get("_turn_api_calls_before", 0) or 0),
+            )
+            _turn_cost_status = getattr(_agent, "session_cost_status", "unknown") if _agent else "unknown"
+            _turn_cost_source = getattr(_agent, "session_cost_source", "none") if _agent else "none"
+            _openrouter_cost_context["main_agent_result"] = {
+                "billing_provider": _billing_provider,
+                "billing_base_url": _billing_base_url,
+                "turn_estimated_cost_usd": _turn_cost_delta,
+                "turn_cost_status": _turn_cost_status,
+                "turn_cost_source": _turn_cost_source,
+                "turn_api_calls": _turn_api_calls_delta,
+            }
+            _openrouter_cost_context["ready"].set()
 
             # Sync session_id immediately after run_conversation(). Compression
             # can rotate before a follow-up model call fails; the failure return
@@ -16212,6 +16288,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "billing_provider": _billing_provider,
+                    "billing_base_url": _billing_base_url,
+                    "turn_estimated_cost_usd": _turn_cost_delta,
+                    "turn_cost_status": _turn_cost_status,
+                    "turn_cost_source": _turn_cost_source,
+                    "turn_api_calls": _turn_api_calls_delta,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -16315,6 +16397,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
                 "response_transformed": result.get("response_transformed", False),
+                "billing_provider": _billing_provider,
+                "billing_base_url": _billing_base_url,
+                "turn_estimated_cost_usd": _turn_cost_delta,
+                "turn_cost_status": _turn_cost_status,
+                "turn_cost_source": _turn_cost_source,
+                "turn_api_calls": _turn_api_calls_delta,
             }
         
         # Start progress message sender if enabled

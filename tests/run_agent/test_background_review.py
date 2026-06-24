@@ -27,6 +27,7 @@ def _bare_agent() -> AIAgent:
     agent._SKILL_REVIEW_PROMPT = "review skills"
     agent._COMBINED_REVIEW_PROMPT = "review both"
     agent.background_review_callback = None
+    agent.background_review_completion_callback = None
     agent.status_callback = None
     agent._safe_print = lambda *_args, **_kwargs: None
     return agent
@@ -359,6 +360,55 @@ def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
         "the fork leaks harness prompts into the user's real memory "
         "namespace via on_turn_start / prefetch_all / sync_all."
     )
+
+
+def test_background_review_completion_callback_reports_review_cost(monkeypatch):
+    captured_completion: list[dict] = []
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+            self.session_api_calls = 1
+            self.session_estimated_cost_usd = 0.0184
+            self.session_cost_status = "estimated"
+            self.session_cost_source = "catalog"
+            self.provider = "openrouter"
+            self.base_url = "https://openrouter.ai/api/v1"
+            self.model = "anthropic/claude-sonnet-4.6"
+
+        def run_conversation(self, **kwargs):
+            pass
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    agent = _bare_agent()
+    agent.background_review_completion_callback = captured_completion.append
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hi"}],
+        review_memory=True,
+    )
+
+    assert captured_completion == [
+        {
+            "api_calls": 1,
+            "estimated_cost_usd": 0.0184,
+            "cost_status": "estimated",
+            "cost_source": "catalog",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "model": "anthropic/claude-sonnet-4.6",
+            "actions": [],
+        }
+    ]
 
 
 # ---------------------------------------------------------------------------

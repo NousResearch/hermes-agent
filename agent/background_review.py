@@ -601,6 +601,7 @@ def _run_review_in_thread(
 
     review_agent = None
     review_messages: List[Dict] = []
+    review_completion: Dict[str, Any] = {}
     try:
         with open(os.devnull, "w", encoding="utf-8") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
@@ -763,6 +764,17 @@ def _run_review_in_thread(
             # clean per-session state, but the user-visible self-improvement
             # summary still needs the completed review agent's tool results.
             review_messages = list(getattr(review_agent, "_session_messages", []))
+            review_completion = {
+                "api_calls": int(getattr(review_agent, "session_api_calls", 0) or 0),
+                "estimated_cost_usd": float(
+                    getattr(review_agent, "session_estimated_cost_usd", 0.0) or 0.0
+                ),
+                "cost_status": getattr(review_agent, "session_cost_status", "unknown"),
+                "cost_source": getattr(review_agent, "session_cost_source", "none"),
+                "provider": getattr(review_agent, "provider", ""),
+                "base_url": getattr(review_agent, "base_url", ""),
+                "model": getattr(review_agent, "model", ""),
+            }
 
             # Tear down memory providers while stdout is still
             # redirected so background thread teardown (Honcho flush,
@@ -801,6 +813,15 @@ def _run_review_in_thread(
                     _bg_cb(
                         f"💾 Self-improvement review: {summary}"
                     )
+                except Exception:
+                    pass
+
+        if review_completion:
+            review_completion["actions"] = actions
+            _bg_done_cb = getattr(agent, "background_review_completion_callback", None)
+            if _bg_done_cb:
+                try:
+                    _bg_done_cb(review_completion)
                 except Exception:
                     pass
 

@@ -547,7 +547,7 @@ async def test_rich_gate_tolerates_minimal_bot_without_raw_endpoint():
 
 @pytest.mark.asyncio
 async def test_details_with_math_skips_rich_draft_to_avoid_tdesktop_crash():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"rich_drafts": True})
     bot = adapter._bot
     assert bot is not None
     bot.do_api_request = AsyncMock(return_value=True)
@@ -560,8 +560,20 @@ async def test_details_with_math_skips_rich_draft_to_avoid_tdesktop_crash():
 
 
 @pytest.mark.asyncio
-async def test_rich_draft_happy_path_sends_raw_markdown():
+async def test_rich_draft_default_uses_legacy_to_avoid_tdesktop_reflow_glitches():
     adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(return_value=True)
+
+    result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
+
+    assert result.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message_draft.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rich_draft_opt_in_sends_raw_markdown():
+    adapter = _make_adapter(extra={"rich_drafts": True})
     adapter._bot.do_api_request = AsyncMock(return_value=True)
 
     result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
@@ -579,7 +591,7 @@ async def test_rich_draft_happy_path_sends_raw_markdown():
 
 @pytest.mark.asyncio
 async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"rich_drafts": True})
     adapter._bot.do_api_request = AsyncMock(return_value=True)
 
     result = await adapter.send_draft("12345", draft_id=7, content=CJK_RICH_CONTENT)
@@ -591,7 +603,7 @@ async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
 
 @pytest.mark.asyncio
 async def test_rich_draft_capability_failure_falls_back_and_latches_off():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"rich_drafts": True})
     adapter._bot.do_api_request = AsyncMock(side_effect=BadRequest("Method not found"))
 
     result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
@@ -611,7 +623,7 @@ async def test_rich_draft_capability_failure_falls_back_and_latches_off():
 
 @pytest.mark.asyncio
 async def test_rich_draft_transient_failure_does_not_latch_off():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"rich_drafts": True})
     adapter._bot.do_api_request = AsyncMock(side_effect=TimedOut("timed out"))
 
     result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
@@ -624,7 +636,7 @@ async def test_rich_draft_transient_failure_does_not_latch_off():
 
 @pytest.mark.asyncio
 async def test_rich_draft_oversized_uses_legacy():
-    adapter = _make_adapter()
+    adapter = _make_adapter(extra={"rich_drafts": True})
     oversized = "a" * 40000
 
     result = await adapter.send_draft("12345", draft_id=7, content=oversized)

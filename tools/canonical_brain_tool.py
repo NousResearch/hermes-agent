@@ -139,6 +139,66 @@ def _normalize_dict(value: Optional[Dict[str, Any]], name: str) -> Dict[str, Any
     return value
 
 
+def _get_session_env(name: str, default: str = "") -> str:
+    """Read gateway session context without making tool discovery depend on it."""
+    try:
+        from gateway.session_context import get_session_env
+
+        return str(get_session_env(name, default) or default)
+    except Exception:
+        return default
+
+
+def _augment_source_refs_from_session_context(source_refs: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill mechanical source refs from the current gateway session when omitted.
+
+    The model should pass exact refs when it has them. In live gateway runs the
+    runtime already carries platform/chat/thread/message context; use that as a
+    deterministic fallback before validation so operational appends do not fail
+    merely because the model forgot to copy boilerplate refs into the tool call.
+    """
+    refs = dict(source_refs)
+    changed = False
+
+    env_fields = {
+        "platform": "HERMES_SESSION_PLATFORM",
+        "chat_id": "HERMES_SESSION_CHAT_ID",
+        "thread_id": "HERMES_SESSION_THREAD_ID",
+        "session_id": "HERMES_SESSION_ID",
+        "session_key": "HERMES_SESSION_KEY",
+        "user_id": "HERMES_SESSION_USER_ID",
+        "user_name": "HERMES_SESSION_USER_NAME",
+    }
+    for ref_key, env_key in env_fields.items():
+        if refs.get(ref_key):
+            continue
+        value = _get_session_env(env_key, "").strip()
+        if value:
+            refs[ref_key] = value
+            changed = True
+
+    if not (refs.get("message_id") or refs.get("event_ref") or refs.get("manual_ref")):
+        message_id = _get_session_env("HERMES_SESSION_MESSAGE_ID", "").strip()
+        if message_id:
+            refs["message_id"] = message_id
+            changed = True
+        else:
+            manual_parts = [
+                str(refs.get("platform") or "").strip(),
+                str(refs.get("chat_id") or "").strip(),
+                str(refs.get("thread_id") or "").strip(),
+                str(refs.get("session_id") or refs.get("session_key") or "").strip(),
+            ]
+            manual_ref = ":".join(part for part in manual_parts if part)
+            if manual_ref:
+                refs["manual_ref"] = f"hermes_session:{manual_ref}"
+                changed = True
+
+    if changed:
+        refs.setdefault("source_ref_source", "hermes_session_context")
+    return refs
+
+
 def _normalize_list(value: Any, name: str) -> list[Any]:
     if value is None:
         return []
@@ -197,6 +257,7 @@ def canonical_event_append_tool(
     """
     try:
         source_refs = _normalize_dict(source_refs, "source_refs")
+        source_refs = _augment_source_refs_from_session_context(source_refs)
         actors = _normalize_dict(actors, "actors")
         payload = _normalize_dict(payload, "payload")
         safety = _normalize_dict(safety, "safety")

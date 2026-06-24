@@ -198,6 +198,13 @@ class _FakeHelper:
         return {"rows": [], "command_tag": "INSERT 0 1"}
 
 
+def _session_env(values):
+    def getter(name, default=""):
+        return values.get(name, default)
+
+    return getter
+
+
 def test_append_uses_helper_and_returns_readback(monkeypatch):
     fake = _FakeHelper()
     monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
@@ -214,6 +221,94 @@ def test_append_uses_helper_and_returns_readback(monkeypatch):
     assert data["idempotency_key"] == "idem"
     assert data["inserted"] is True
     assert any("INSERT INTO canonical_event_log" in q for q in fake.queries)
+
+
+def test_append_fills_missing_source_refs_from_session_context(monkeypatch):
+    fake = _FakeHelper()
+    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+    monkeypatch.setattr(
+        cbt,
+        "_get_session_env",
+        _session_env(
+            {
+                "HERMES_SESSION_PLATFORM": "discord",
+                "HERMES_SESSION_CHAT_ID": "1518976443168854146",
+                "HERMES_SESSION_THREAD_ID": "1518976443168854146",
+                "HERMES_SESSION_MESSAGE_ID": "msg-123",
+                "HERMES_SESSION_ID": "sess-abc",
+                "HERMES_SESSION_USER_NAME": "Plamenka",
+            }
+        ),
+    )
+
+    out = cbt.canonical_event_append_tool(
+        event_type="case.note",
+        case_id="case:video-mp4",
+        summary="Пламенка asks route-back to Emil's Home channel",
+        source_refs={},
+        idempotency_key="idem-session-ref",
+    )
+    data = json.loads(out)
+
+    assert data["success"] is True
+    sql = "\n".join(fake.queries)
+    assert '"platform":"discord"' in sql
+    assert '"chat_id":"1518976443168854146"' in sql
+    assert '"thread_id":"1518976443168854146"' in sql
+    assert '"message_id":"msg-123"' in sql
+    assert '"source_ref_source":"hermes_session_context"' in sql
+
+
+def test_append_uses_manual_session_ref_when_message_id_missing(monkeypatch):
+    fake = _FakeHelper()
+    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+    monkeypatch.setattr(
+        cbt,
+        "_get_session_env",
+        _session_env(
+            {
+                "HERMES_SESSION_PLATFORM": "discord",
+                "HERMES_SESSION_CHAT_ID": "1504852355588423801",
+                "HERMES_SESSION_THREAD_ID": "1518976443168854146",
+                "HERMES_SESSION_KEY": "session-key-abc",
+            }
+        ),
+    )
+
+    out = cbt.canonical_event_append_tool(
+        event_type="case.note",
+        case_id="case:video-mp4",
+        summary="manual session source fallback",
+        source_refs={},
+        idempotency_key="idem-manual-ref",
+    )
+    data = json.loads(out)
+
+    assert data["success"] is True
+    sql = "\n".join(fake.queries)
+    assert '"manual_ref":"hermes_session:discord:1504852355588423801:1518976443168854146:session-key-abc"' in sql
+
+
+def test_append_missing_source_refs_without_context_fails_before_helper(monkeypatch):
+    called = {"helper": False}
+
+    def boom():
+        called["helper"] = True
+        raise AssertionError("helper must not be loaded when source refs are unresolved")
+
+    monkeypatch.setattr(cbt, "_load_helper", boom)
+    monkeypatch.setattr(cbt, "_get_session_env", lambda name, default="": default)
+
+    out = cbt.canonical_event_append_tool(
+        event_type="case.note",
+        case_id="case:test",
+        summary="summary",
+        source_refs={},
+    )
+    data = json.loads(out)
+
+    assert "source_refs.platform is required" in data["error"]
+    assert called["helper"] is False
 
 
 def test_check_requirements_false_when_private_helper_absent(monkeypatch, tmp_path):

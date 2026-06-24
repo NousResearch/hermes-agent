@@ -357,7 +357,8 @@ class TestResolveDeliveryTarget:
             "thread_id": None,
         }
 
-    def test_bare_platform_uses_matching_origin_chat(self):
+    def test_bare_platform_uses_home_channel_not_matching_origin_chat(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "-2002")
         job = {
             "deliver": "telegram",
             "origin": {
@@ -369,8 +370,8 @@ class TestResolveDeliveryTarget:
 
         assert _resolve_delivery_target(job) == {
             "platform": "telegram",
-            "chat_id": "-1001",
-            "thread_id": "17585",
+            "chat_id": "-2002",
+            "thread_id": None,
         }
 
     def test_bare_platform_falls_back_to_home_channel(self, monkeypatch):
@@ -516,6 +517,46 @@ class TestRoutingIntents:
             monkeypatch.delenv(var, raising=False)
 
         assert _resolve_delivery_targets({"deliver": "all", "origin": None}) == []
+
+    def test_bare_platform_delivery_uses_home_even_when_origin_same_platform(self, monkeypatch):
+        """Bare 'discord' targets the configured home channel, not the source thread."""
+        from cron.scheduler import _resolve_delivery_target
+
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "1504852355588423801")
+        job = {
+            "deliver": "discord",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "1518976443168854146",
+                "thread_id": "1518976443168854146",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "discord",
+            "chat_id": "1504852355588423801",
+            "thread_id": None,
+        }
+
+    def test_origin_delivery_still_uses_source_thread_even_with_home(self, monkeypatch):
+        """Only the explicit 'origin' token routes back to the source thread."""
+        from cron.scheduler import _resolve_delivery_target
+
+        monkeypatch.setenv("DISCORD_HOME_CHANNEL", "1504852355588423801")
+        job = {
+            "deliver": "origin",
+            "origin": {
+                "platform": "discord",
+                "chat_id": "1518976443168854146",
+                "thread_id": "1518976443168854146",
+            },
+        }
+
+        assert _resolve_delivery_target(job) == {
+            "platform": "discord",
+            "chat_id": "1518976443168854146",
+            "thread_id": "1518976443168854146",
+        }
 
     def test_origin_comma_all_preserves_origin_first(self, monkeypatch):
         """'origin,all' delivers to the origin platform plus every other home channel."""

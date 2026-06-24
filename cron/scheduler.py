@@ -577,13 +577,6 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         }
 
     platform_name = deliver_value
-    if origin and origin.get("platform") == platform_name:
-        return {
-            "platform": platform_name,
-            "chat_id": str(origin["chat_id"]),
-            "thread_id": origin.get("thread_id"),
-        }
-
     if not _is_known_delivery_platform(platform_name):
         return None
     chat_id = _get_home_target_chat_id(platform_name)
@@ -663,10 +656,33 @@ def _resolve_delivery_targets(job: dict) -> List[dict]:
     for raw in raw_parts:
         parts.extend(_expand_routing_tokens(raw))
 
-    seen = set()
-    targets = []
+    resolved_parts = []
     for part in parts:
         target = _resolve_single_delivery_target(job, part)
+        if target:
+            resolved_parts.append((part, target))
+
+    # Bare platform names (``discord``) mean "configured home channel"; only
+    # the explicit ``origin`` token means "send back to the source thread".
+    # When callers combine ``origin,all``, preserve the origin target and skip
+    # the same-platform home target unless they wrote an explicit
+    # ``platform:channel`` target.
+    origin_platform = None
+    for part, target in resolved_parts:
+        if part.lower() == "origin":
+            origin_platform = str(target["platform"]).lower()
+            break
+
+    seen = set()
+    targets = []
+    for part, target in resolved_parts:
+        if (
+            origin_platform
+            and part.lower() != "origin"
+            and ":" not in part
+            and str(target["platform"]).lower() == origin_platform
+        ):
+            continue
         if target:
             key = (target["platform"].lower(), str(target["chat_id"]), target.get("thread_id"))
             if key not in seen:

@@ -531,10 +531,17 @@ def finalize_turn(
     # observation after the turn). No-op default, fail-open.
     try:
         from agent.conversation_loop import _notify_context_engine_turn_complete
+        # Forward the turn's canonical usage when the host has it. The loop
+        # stashes the most recent API response's usage dict (the same
+        # canonical buckets fed to ``update_from_response``) on the agent as
+        # ``_last_turn_usage``. It is ``None`` on turns that never reached a
+        # provider response (early failure / interrupt), which is exactly the
+        # contract: real usage when available, ``None`` otherwise.
+        _turn_usage = getattr(agent, "_last_turn_usage", None)
         _notify_context_engine_turn_complete(
             agent,
             messages,
-            usage=None,
+            usage=_turn_usage,
             logger=logger,
             turn_id=turn_id,
             task_id=effective_task_id,

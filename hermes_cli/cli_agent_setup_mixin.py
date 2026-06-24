@@ -518,7 +518,45 @@ class CLIAgentSetupMixin:
         except Exception:
             pass
 
+        # Notify the gateway session store so the session appears active in the
+        # Web UI "Chats" tab (mirrors the gateway /resume path). #14501
+        try:
+            self._notify_gateway_session_resumed(self.session_id)
+        except Exception:
+            pass
+
         return True
+
+    def _notify_gateway_session_resumed(self, session_id: str) -> None:
+        """Notify the gateway session store that a session was resumed via CLI.
+
+        This mirrors the gateway /resume path so the session appears active in
+        the Web UI "Chats" tab. #14501
+        """
+        import os
+        import urllib.request
+        import json
+
+        host = os.environ.get("API_SERVER_HOST", "127.0.0.1")
+        port = os.environ.get("API_SERVER_PORT", "8642")
+        api_key = os.environ.get("API_SERVER_KEY", "")
+
+        if not api_key:
+            return
+
+        url = f"http://{host}:{port}/api/sessions/{session_id}"
+        data = json.dumps({"reopen": True}).encode("utf-8")
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            req = urllib.request.Request(url, data=data, headers=headers, method="PATCH")
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                resp.read()
+        except Exception:
+            pass
 
     def _display_resumed_history(self):
         """Render a compact recap of previous conversation messages.

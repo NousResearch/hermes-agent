@@ -13074,4 +13074,45 @@ def start_server(
             if server.started:
                 await server.shutdown()
 
-    asyncio.run(_serve())
+    # On POSIX, keep the long-standing ``asyncio.run(_serve())`` behavior
+    # unchanged — Python's default loop there is already a SelectorEventLoop
+    # (or uvloop when uvicorn[standard] installs it), which is exactly what
+    # uvicorn serves on. Touching that path would only widen the blast radius
+    # for no benefit.
+    #
+    # On Windows it is broken: ``asyncio.run`` defaults to a ProactorEventLoop,
+    # but uvicorn's socket-serving stack assumes a SelectorEventLoop on win32
+    # (``uvicorn/loops/asyncio.py`` forces it, and ``uvicorn.Server.run`` threads
+    # ``config.get_loop_factory()`` into its runner for exactly this reason).
+    # Driving uvicorn on the proactor loop makes ``server.startup()`` bind a
+    # socket that never accepts — the dashboard / desktop backend prints
+    # "Skipping web UI build" and then hangs forever with the port LISTENING but
+    # no TCP handshake completing (#50641). So *only on Windows* we mirror
+    # uvicorn's own machinery and run on the loop factory it picks.
+    if sys.platform != "win32":
+        asyncio.run(_serve())
+        return
+
+    # Windows-only path. Resolve the runner + loop factory FIRST (and fall back
+    # to a hand-installed Windows selector policy only when uvicorn predates the
+    # loop-factory API, < 0.36). The actual serve call is then OUTSIDE the
+    # try/except so genuine serve-time errors (port in use, KeyboardInterrupt)
+    # propagate normally instead of being swallowed and double-run.
+    try:
+        from uvicorn._compat import asyncio_run as _runner
+
+        _loop_factory = config.get_loop_factory()
+    except Exception:
+        _runner = None
+        _loop_factory = None
+        try:
+            asyncio.set_event_loop_policy(
+                asyncio.WindowsSelectorEventLoopPolicy()  # type: ignore[attr-defined]
+            )
+        except Exception:
+            pass
+
+    if _runner is not None:
+        _runner(_serve(), loop_factory=_loop_factory)
+    else:
+        asyncio.run(_serve())

@@ -1,6 +1,7 @@
 """Tests for agent/nous_rate_guard.py — cross-session Nous Portal rate limit guard."""
 
 import json
+import math
 import os
 import time
 
@@ -99,6 +100,19 @@ class TestRecordNousRateLimit:
             state = json.load(f)
         assert state["reset_seconds"] == pytest.approx(120, abs=2)
 
+    def test_non_finite_header_reset_falls_back_to_default(self, rate_guard_env):
+        from agent.nous_rate_guard import record_nous_rate_limit, _state_path
+
+        record_nous_rate_limit(
+            headers={"retry-after": "inf"},
+            default_cooldown=123.0,
+        )
+
+        with open(_state_path()) as f:
+            state = json.load(f)
+        assert math.isfinite(state["reset_at"])
+        assert state["reset_seconds"] == pytest.approx(123, abs=2)
+
     def test_creates_directory_if_missing(self, rate_guard_env):
         from agent.nous_rate_guard import record_nous_rate_limit, _state_path
 
@@ -133,6 +147,24 @@ class TestNousRateLimitRemaining:
 
         assert nous_rate_limit_remaining() is None
         # File should be cleaned up
+        assert not os.path.exists(_state_path())
+
+    def test_returns_none_and_cleans_up_non_finite_state(self, rate_guard_env):
+        from agent.nous_rate_guard import nous_rate_limit_remaining, _state_path
+
+        state_dir = os.path.dirname(_state_path())
+        os.makedirs(state_dir, exist_ok=True)
+        with open(_state_path(), "w") as f:
+            json.dump(
+                {
+                    "reset_at": float("inf"),
+                    "recorded_at": time.time(),
+                    "reset_seconds": float("inf"),
+                },
+                f,
+            )
+
+        assert nous_rate_limit_remaining() is None
         assert not os.path.exists(_state_path())
 
     def test_handles_corrupt_file(self, rate_guard_env):
@@ -194,6 +226,12 @@ class TestFormatRemaining:
 
         assert format_remaining(3720) == "1h 2m"
 
+    def test_non_finite_seconds(self):
+        from agent.nous_rate_guard import format_remaining
+
+        assert format_remaining(float("inf")) == "0s"
+        assert format_remaining(float("nan")) == "0s"
+
 
 class TestParseResetSeconds:
     """Test header parsing for reset times."""
@@ -221,6 +259,16 @@ class TestParseResetSeconds:
 
         headers = {"x-ratelimit-reset-requests-1h": "not-a-number"}
         assert _parse_reset_seconds(headers) is None
+
+    def test_ignores_non_finite_values(self):
+        from agent.nous_rate_guard import _parse_reset_seconds
+
+        headers = {
+            "x-ratelimit-reset-requests-1h": "inf",
+            "x-ratelimit-reset-requests": "nan",
+            "retry-after": "60",
+        }
+        assert _parse_reset_seconds(headers) == 60.0
 
 
 class TestAuxiliaryClientIntegration:
@@ -330,6 +378,28 @@ class TestIsGenuineNousRateLimit:
             "x-ratelimit-reset-requests": "30",
         }
         assert is_genuine_nous_rate_limit(headers=headers) is False
+
+    def test_non_finite_bucket_values_are_ignored(self):
+        from agent.nous_rate_guard import is_genuine_nous_rate_limit
+
+        assert (
+            is_genuine_nous_rate_limit(
+                headers={
+                    "x-ratelimit-remaining-requests": "inf",
+                    "x-ratelimit-reset-requests": "120",
+                }
+            )
+            is False
+        )
+        assert (
+            is_genuine_nous_rate_limit(
+                headers={
+                    "x-ratelimit-remaining-requests": "0",
+                    "x-ratelimit-reset-requests": "inf",
+                }
+            )
+            is False
+        )
 
     def test_last_known_state_with_exhausted_bucket_triggers_genuine(self):
         # Headers on the 429 lack rate-limit info, but the previous

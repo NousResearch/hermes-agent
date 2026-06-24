@@ -687,6 +687,62 @@ _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
 
+def _describe_media_for_delivery_mirror(media_files: list) -> str:
+    """Return a compact transcript summary when a cron delivery only sent media."""
+    if not media_files:
+        return ""
+    if len(media_files) == 1:
+        media_path, _is_voice = media_files[0]
+        ext = Path(media_path).suffix.lower()
+        if ext in _IMAGE_EXTS:
+            return "[Cronjob sent image attachment]"
+        if ext in _VIDEO_EXTS:
+            return "[Cronjob sent video attachment]"
+        if ext in _AUDIO_EXTS:
+            return "[Cronjob sent audio attachment]"
+        return "[Cronjob sent document attachment]"
+    return f"[Cronjob sent {len(media_files)} media attachments]"
+
+
+def _mirror_delivered_result_to_session(
+    job: dict,
+    target: dict,
+    content: str,
+    media_files: list,
+) -> None:
+    """Record a successfully delivered cron response in the target chat session."""
+    mirror_text = (content or "").strip() or _describe_media_for_delivery_mirror(media_files)
+    if not mirror_text:
+        return
+
+    try:
+        from gateway.mirror import mirror_to_session
+
+        mirrored = mirror_to_session(
+            str(target["platform"]),
+            str(target["chat_id"]),
+            mirror_text,
+            source_label="cron",
+            thread_id=target.get("thread_id"),
+        )
+        if mirrored:
+            logger.info(
+                "Job '%s': mirrored delivered cron response to %s:%s",
+                job.get("id", "?"),
+                target.get("platform"),
+                target.get("chat_id"),
+            )
+        else:
+            logger.debug(
+                "Job '%s': no matching gateway session for cron delivery mirror to %s:%s",
+                job.get("id", "?"),
+                target.get("platform"),
+                target.get("chat_id"),
+            )
+    except Exception as exc:
+        logger.debug("Job '%s': cron delivery mirror failed: %s", job.get("id", "?"), exc)
+
+
 def _send_media_via_adapter(
     adapter,
     chat_id: str,
@@ -1091,6 +1147,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
+                    _mirror_delivered_result_to_session(job, target, cleaned_delivery_content, media_files)
             except Exception as e:
                 err_msg = f"live adapter delivery to {platform_name}:{chat_id} failed: {e}"
                 if not any(err_msg in err for err in target_errors):
@@ -1129,6 +1186,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            _mirror_delivered_result_to_session(job, target, cleaned_delivery_content, media_files)
 
     if delivery_errors:
         return "; ".join(delivery_errors)

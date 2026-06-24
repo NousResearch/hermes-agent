@@ -730,7 +730,7 @@ def write_profile_meta(
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
     with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
+        yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False, allow_unicode=True)
 
 
 # ---------------------------------------------------------------------------

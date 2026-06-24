@@ -154,6 +154,31 @@ describe('refreshOnboarding', () => {
     expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBeNull()
   })
 
+  it('shows a non-blocking notification when preserving configured on fallback', async () => {
+    const notifyErrorSpy = vi.spyOn(
+      await import('@/store/notifications'),
+      'notifyError'
+    )
+
+    installApiMock(vi.fn())
+    $desktopOnboarding.set(
+      baseState({
+        configured: true,
+        providers: [provider('cached')],
+        reason: null,
+        requested: false
+      })
+    )
+
+    await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+
+    expect(notifyErrorSpy).toHaveBeenCalledWith(
+      'runtime-not-ready',
+      expect.stringContaining('could not verify the running backend')
+    )
+    expect($desktopOnboarding.get().configured).toBe(true)
+  })
+
   it('still surfaces onboarding when fallback failure happens before configured state', async () => {
     const api = vi.fn(async ({ path }: { path: string }) => {
       if (path === '/api/providers/oauth') {

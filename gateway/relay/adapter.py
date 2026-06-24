@@ -67,6 +67,12 @@ class RelayAdapter(BasePlatformAdapter):
         # (channel) since that's what send() receives. See routedEgressGuard.ts.
         self._scope_by_chat: Dict[str, str] = {}
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
+        # Phase 7 Unit 7d-B: watches the transport for a terminal auth revocation
+        # (a 4401 close after a successful handshake = the operator opted this
+        # instance out of the relay). On revocation we surface a clean,
+        # non-retryable "relay disabled" fatal so the dashboard stops showing a
+        # red "retrying" spin against a dead credential.
+        self._revocation_monitor: Optional[asyncio.Task[None]] = None
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property
@@ -114,7 +120,58 @@ class RelayAdapter(BasePlatformAdapter):
         # the connector's relay bus — there is NO inbound HTTP endpoint (hosted
         # gateways have no public IP). The transport's reader already dispatches
         # `inbound` / `interrupt_inbound` frames to the handlers wired above.
+        # Phase 7 Unit 7d-B: start watching for a terminal auth revocation
+        # (opt-out). Only meaningful when the transport exposes `auth_revoked`
+        # (the production WebSocket transport); the test/stub transports don't.
+        if hasattr(self._transport, "auth_revoked"):
+            self._start_revocation_monitor()
         return True
+
+    def _start_revocation_monitor(self) -> None:
+        """Spawn (once) the task that turns a transport auth-revocation into a
+        clean non-retryable 'relay disabled' fatal. Idempotent."""
+        if self._revocation_monitor is not None and not self._revocation_monitor.done():
+            return
+        try:
+            self._revocation_monitor = asyncio.create_task(
+                self._watch_for_revocation(), name="relay-revocation-monitor"
+            )
+        except RuntimeError:
+            # No running loop (e.g. a unit test calling connect() synchronously
+            # via a stub) — nothing to monitor.
+            self._revocation_monitor = None
+
+    async def _watch_for_revocation(self, poll_interval_s: float = 1.0) -> None:
+        """Poll the transport for a terminal 4401 revocation (opt-out). On
+        revocation, surface a non-retryable `relay_disabled` fatal so the
+        dashboard renders a clean 'Relay disabled' state instead of a red
+        'retrying' spin, and notify the gateway's fatal-error handler so the
+        adapter is cleanly removed (it is NOT queued for reconnection, because
+        the credential is dead until the instance is recreated)."""
+        transport = self._transport
+        try:
+            while True:
+                if transport is None or getattr(transport, "auth_revoked", False):
+                    break
+                await asyncio.sleep(poll_interval_s)
+        except asyncio.CancelledError:
+            raise
+        if transport is None or not getattr(transport, "auth_revoked", False):
+            return
+        logger.warning(
+            "relay credential revoked (opt-out) — marking the relay adapter disabled"
+        )
+        # Non-retryable: a revoked secret never comes back without a recreate, so
+        # _handle_adapter_fatal_error must NOT queue it for reconnection.
+        self._set_fatal_error(
+            "relay_disabled",
+            "Relay disabled (opted out — recreate the instance to re-enable)",
+            retryable=False,
+        )
+        try:
+            await self._notify_fatal_error()
+        except Exception:  # noqa: BLE001 - notification is best-effort
+            logger.debug("relay revocation fatal-error notify failed", exc_info=True)
 
     def _apply_descriptor(self, descriptor: CapabilityDescriptor) -> None:
         """Adopt a (re)negotiated descriptor into the live capability surface."""
@@ -254,6 +311,15 @@ class RelayAdapter(BasePlatformAdapter):
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
     async def disconnect(self) -> None:
+        # Phase 7 Unit 7d-B: stop the revocation monitor first so it can't fire a
+        # spurious fatal during/after a deliberate teardown.
+        if self._revocation_monitor is not None:
+            self._revocation_monitor.cancel()
+            try:
+                await self._revocation_monitor
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                pass
+            self._revocation_monitor = None
         if self._transport is not None:
             # Phase 5 §5.3: emit going_idle as part of the gateway's EXISTING
             # drain/shutdown transition (the runner calls adapter.disconnect()

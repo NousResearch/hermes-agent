@@ -45,6 +45,9 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "145739220+wgu9@users.noreply.github.com": "wgu9",  # PR #51468 salvage (WSL/no-systemd orphan gateway tracking, #51325)
+    "165020384+uperLu@users.noreply.github.com": "uperLu",  # PR #50958 salvage (rename plugins/cron → plugins/cron_providers; #50872)
+    "277269729+yusekiotacode@users.noreply.github.com": "yusekiotacode",  # PR #48706 salvage (anthropic OAuth login token endpoint → platform.claude.com; #45250/#49821)
     "minz0721@outlook.com": "s010mn",  # PR #29221 salvage (ollama-cloud reasoning_effort xhigh→max)
     "jeevesassistant00@gmail.com": "jeeves-assistant",  # PR #50771 (computer-use CuaDriver vision capture routing)
     "21178861+ScotterMonk@users.noreply.github.com": "ScotterMonk",  # PR #50145 salvage (cron output truncation: adapter-aware chunking, #50126)
@@ -130,6 +133,8 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "157689911+itsflownium@users.noreply.github.com": "itsflownium",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "mucio@mucio.net": "francescomucio",
+    "291572938+thestral123@users.noreply.github.com": "thestral123",
     "tkwong@inspiresynergy.com": "tkwong",
     "buihongduc132@gmail.com": "buihongduc132",
     "etheraura@protonmail.com": "EtherAura",  # PR #45205 salvage (Linux in-app update relaunch / GUI-skew terminal state)
@@ -1544,6 +1549,7 @@ AUTHOR_MAP = {
     "6666242+bird@users.noreply.github.com": "bird",  # PR #25219 (gateway docker exit-75 restart)
     "david@loadmagic.ai": "davidcampbelldc",  # PR #26834 (web_server proxy_headers=False)
     "165905879+davidcampbelldc@users.noreply.github.com": "davidcampbelldc",
+    "chazmaniandinkle@gmail.com": "chazmaniandinkle",  # PR #43888 (launchd /restart detection)
     "hoangv.pham0803@gmail.com": "hehehe0803",  # PR #26212 salvage (codex kanban writable root)
     "26063003+hehehe0803@users.noreply.github.com": "hehehe0803",
     "kasunvinod@users.noreply.github.com": "kasunvinod",  # PR #24126 salvage (codex timeout propagation)

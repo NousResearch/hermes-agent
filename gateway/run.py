@@ -1701,6 +1701,7 @@ from gateway.platforms.base import (
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
 )
@@ -3472,9 +3473,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.fatal_error_code or "unknown",
             adapter.fatal_error_message or "unknown error",
         )
+        # Phase 7 Unit 7d-B: a relay credential revoked by opt-out is not an
+        # error to retry — render it as a clean "disabled" state, not red
+        # "fatal"/"retrying". (The code is set non-retryable, so it also drops
+        # out of the reconnect queue below.)
+        if adapter.fatal_error_code == "relay_disabled":
+            platform_state = "disabled"
+        elif adapter.fatal_error_retryable:
+            platform_state = "retrying"
+        else:
+            platform_state = "fatal"
         self._update_platform_runtime_status(
             adapter.platform.value,
-            platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
+            platform_state=platform_state,
             error_code=adapter.fatal_error_code,
             error_message=adapter.fatal_error_message,
         )
@@ -5747,6 +5758,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
             except Exception:
                 pass
+            self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
             self._request_clean_exit(reason)
             self._startup_restore_in_progress = False
             return True
@@ -5762,6 +5774,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
                 except Exception:
                     pass
+                self._exit_code = GATEWAY_FATAL_CONFIG_EXIT_CODE
                 self._request_clean_exit(reason)
                 self._startup_restore_in_progress = False
                 return True
@@ -17780,6 +17793,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     if runner.should_exit_cleanly:
         if runner.exit_reason:
             logger.error("Gateway exiting cleanly: %s", runner.exit_reason)
+        # A clean exit that carries an explicit exit code (e.g. a fatal
+        # config error stamped with GATEWAY_FATAL_CONFIG_EXIT_CODE) must
+        # propagate that code to the process so the s6 finish script can
+        # translate it (78 → 125) and stop the supervisor restart loop.
+        # Without this, the early `return True` below makes main() exit 0,
+        # the finish script's `[ "$1" = "78" ]` check never matches, and
+        # s6 crash-loops the gateway anyway (#51228).
+        if runner.exit_code is not None:
+            raise SystemExit(runner.exit_code)
         return True
     
     # Start the background cron scheduler via the resolved provider so

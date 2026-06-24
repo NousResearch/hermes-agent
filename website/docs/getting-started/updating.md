@@ -8,8 +8,6 @@ description: "How to update Hermes Agent to the latest version or uninstall it"
 
 ## Updating
 
-### Git installs
-
 Update to the latest version with a single command:
 
 ```bash
@@ -18,26 +16,11 @@ hermes update
 
 This pulls the latest code from `main`, updates dependencies, and prompts you to configure any new options that were added since your last update.
 
-### pip installs
-
-PyPI releases track **tagged versions** (major and minor releases), not every commit on `main`. Check for updates and upgrade with:
-
-```bash
-hermes update --check    # see if a newer release is on PyPI
-hermes update            # runs pip install --upgrade hermes-agent
-```
-
-Or manually:
-
-```bash
-pip install --upgrade hermes-agent    # or: uv pip install --upgrade hermes-agent
-```
-
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::
 
-### What happens during an update (git installs)
+### What happens during an update
 
 When you run `hermes update`, the following steps occur:
 
@@ -79,7 +62,7 @@ In the desktop app this is **Settings → Advanced → In-App Update Local Chang
 
 ### Preview-only: `hermes update --check`
 
-Want to know if an update is available before pulling? Run `hermes update --check` — for git installs it fetches and compares commits against `origin/main`; for pip installs it queries PyPI for the latest release. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+Want to know if an update is available before pulling? Run `hermes update --check` — it fetches and compares commits against `origin/main`. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
 
 ### Full pre-update backup: `--backup`
 
@@ -254,20 +237,11 @@ See [Nix Setup](./nix-setup.md) for more details.
 
 ## Uninstalling
 
-### Git installs
-
 ```bash
 hermes uninstall
 ```
 
 The uninstaller gives you the option to keep your configuration files (`~/.hermes/`) for a future reinstall.
-
-### pip installs
-
-```bash
-pip uninstall hermes-agent
-rm -rf ~/.hermes            # Optional — keep if you plan to reinstall
-```
 
 ### Manual Uninstall
 

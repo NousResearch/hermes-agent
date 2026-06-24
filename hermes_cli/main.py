@@ -62,6 +62,7 @@ except ModuleNotFoundError:
     pass
 
 import os
+import re
 import sys
 
 
@@ -5377,11 +5378,10 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     bundle also inherits the com.apple.quarantine flag from the downloaded
     installer process chain. Both make the relaunch fail.
 
-    Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
-    (omitting the hardened-runtime flag, which is meaningless without a real
-    Developer ID) lets the rebuilt app relaunch. No-op when a real signing
-    identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
-    signed/notarized build is never clobbered. Best-effort: never raises.
+    Clearing the quarantine xattrs and re-applying a clean signature lets the
+    rebuilt app relaunch. Prefer a configured or locally installed Developer ID
+    identity, falling back to ad-hoc only when no real identity is available.
+    Best-effort: never raises.
     """
     if sys.platform != "darwin":
         return
@@ -5399,9 +5399,55 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         return
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+        if _desktop_macos_has_real_signature(app):
+            return
+        signing_identity = os.environ.get("APPLE_SIGNING_IDENTITY") or _desktop_macos_developer_id_identity()
+        sign_args = [codesign, "--force", "--deep", "--sign", signing_identity or "-", str(app)]
+        if signing_identity:
+            sign_args.insert(3, "--options")
+            sign_args.insert(4, "runtime")
+        subprocess.run(sign_args, check=False)
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
+
+
+def _desktop_macos_has_real_signature(app: Path) -> bool:
+    """Return true when the app already has a non-ad-hoc Apple code signature."""
+    codesign = shutil.which("codesign")
+    if not codesign:
+        return False
+    try:
+        result = subprocess.run(
+            [codesign, "-dv", str(app)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return False
+    output = f"{result.stdout}\n{result.stderr}"
+    return result.returncode == 0 and "TeamIdentifier=not set" not in output and "TeamIdentifier=" in output
+
+
+def _desktop_macos_developer_id_identity() -> str | None:
+    """Return the first locally available Developer ID Application identity."""
+    security = shutil.which("security")
+    if not security:
+        return None
+    try:
+        result = subprocess.run(
+            [security, "find-identity", "-v", "-p", "codesigning"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    for line in result.stdout.splitlines():
+        match = re.search(r'"(Developer ID Application: [^"]+)"', line)
+        if match:
+            return match.group(1)
+    return None
 
 
 def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:

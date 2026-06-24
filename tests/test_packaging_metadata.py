@@ -265,3 +265,52 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
     assert on_disk, "expected locales/*.yaml catalogs on disk"
 
+
+def test_mcp_catalog_manifests_ship_in_both_wheel_and_sdist():
+    """Regression test for the MCP catalog packaging gap.
+
+    optional-mcps/ is a bare data directory (no __init__.py), so -- exactly like
+    locales/ -- its manifests reach sealed installs (pip wheel, Nix store venv)
+    only when declared as setuptools data-files. ``hermes mcp catalog`` resolves
+    the packaged dir via hermes_cli/mcp_catalog.py::_catalog_root and
+    list_catalog() simply skips any entry whose manifest.yaml didn't ship, so a
+    missing data-files line silently drops that MCP from the catalog and the
+    dashboard catalog screen on packaged installs while source checkouts still
+    show it.
+
+    data-files flattens each glob into its single target dir, so every entry
+    needs its OWN ``optional-mcps/<name>`` target (a shared ``optional-mcps/*/*``
+    glob would collapse all manifests into one colliding file). This enforces
+    one target per on-disk optional-mcps/<name>/manifest.yaml -- a new catalog
+    entry added without the matching data-files line fails here instead of in a
+    user's wheel.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    data_files = data["tool"]["setuptools"].get("data-files", {})
+
+    on_disk = sorted(
+        m.parent.name for m in (REPO_ROOT / "optional-mcps").glob("*/manifest.yaml")
+    )
+    assert on_disk, "expected optional-mcps/<name>/manifest.yaml entries on disk"
+
+    missing = [
+        name
+        for name in on_disk
+        if data_files.get(f"optional-mcps/{name}")
+        != [f"optional-mcps/{name}/manifest.yaml"]
+    ]
+    assert not missing, (
+        "These optional-mcps/ catalog entries exist on disk but are dropped from "
+        "the wheel because [tool.setuptools.data-files] is missing a per-entry "
+        "target. Add a line per entry in pyproject.toml: "
+        + ", ".join(
+            f'"optional-mcps/{name}" = ["optional-mcps/{name}/manifest.yaml"]'
+            for name in missing
+        )
+    )
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft optional-mcps" in manifest, (
+        "MANIFEST.in must `graft optional-mcps` so the sdist ships the MCP catalog"
+    )
+

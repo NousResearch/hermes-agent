@@ -90,6 +90,86 @@ class TestParseSchedule:
         assert result["kind"] == "interval"
         assert result["minutes"] == 30
 
+    # ---- Natural-language weekday/daily phrases → cron (issue: documented
+    # "every monday 9am" format was rejected because the "every" branch only
+    # accepted durations). ----
+
+    def test_every_weekday_time_becomes_cron(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("every monday 9am")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 9 * * 1"
+        # Display preserves the user's natural phrasing.
+        assert result["display"] == "every monday 9am"
+
+    def test_every_sunday_maps_to_zero(self):
+        pytest.importorskip("croniter")
+        # Cron weekday numbering puts Sunday at 0.
+        assert parse_schedule("every sunday 9am")["expr"] == "0 9 * * 0"
+
+    def test_every_weekday_abbreviations(self):
+        pytest.importorskip("croniter")
+        assert parse_schedule("every mon 9am")["expr"] == "0 9 * * 1"
+        assert parse_schedule("every fri 5pm")["expr"] == "0 17 * * 5"
+
+    def test_every_day_keyword_is_daily(self):
+        pytest.importorskip("croniter")
+        assert parse_schedule("every day at 9am")["expr"] == "0 9 * * *"
+        assert parse_schedule("every day 7am")["expr"] == "0 7 * * *"
+
+    def test_every_weekday_keyword_is_business_days(self):
+        pytest.importorskip("croniter")
+        assert parse_schedule("every weekday at 9am")["expr"] == "0 9 * * 1-5"
+
+    def test_every_weekend_keyword(self):
+        pytest.importorskip("croniter")
+        assert parse_schedule("every weekend at 10am")["expr"] == "0 10 * * 0,6"
+
+    def test_every_time_formats(self):
+        pytest.importorskip("croniter")
+        # 24-hour, explicit minutes, noon/midnight, bare hour.
+        assert parse_schedule("every monday 14:30")["expr"] == "30 14 * * 1"
+        assert parse_schedule("every monday 9:05am")["expr"] == "5 9 * * 1"
+        assert parse_schedule("every monday noon")["expr"] == "0 12 * * 1"
+        assert parse_schedule("every monday midnight")["expr"] == "0 0 * * 1"
+        assert parse_schedule("every monday at 7")["expr"] == "0 7 * * 1"
+
+    def test_every_12_hour_boundaries(self):
+        pytest.importorskip("croniter")
+        # 12am is midnight (00:00), 12pm is noon (12:00).
+        assert parse_schedule("every monday 12am")["expr"] == "0 0 * * 1"
+        assert parse_schedule("every monday 12pm")["expr"] == "0 12 * * 1"
+
+    def test_every_weekday_time_is_case_insensitive(self):
+        pytest.importorskip("croniter")
+        assert parse_schedule("Every Monday 9AM")["expr"] == "0 9 * * 1"
+
+    def test_every_weekday_schedule_computes_next_run(self):
+        pytest.importorskip("croniter")
+        # End-to-end: the produced cron schedule is usable by compute_next_run.
+        schedule = parse_schedule("every monday 9am")
+        next_run = compute_next_run(schedule)
+        assert next_run is not None
+        dt = datetime.fromisoformat(next_run)
+        assert dt.weekday() == 0  # Python: Monday == 0
+        assert (dt.hour, dt.minute) == (9, 0)
+
+    def test_every_duration_still_interval(self):
+        # The interval path must keep working unchanged.
+        assert parse_schedule("every 30m")["kind"] == "interval"
+        assert parse_schedule("every 1d")["minutes"] == 1440
+
+    def test_every_weekday_without_time_raises(self):
+        # A weekday with no time is ambiguous — reject rather than guess.
+        with pytest.raises(ValueError):
+            parse_schedule("every monday")
+
+    def test_every_invalid_time_raises(self):
+        with pytest.raises(ValueError):
+            parse_schedule("every monday 25am")
+        with pytest.raises(ValueError):
+            parse_schedule("every monday 9pm pizza")
+
     def test_cron_expression(self):
         pytest.importorskip("croniter")
         result = parse_schedule("0 9 * * *")

@@ -296,9 +296,97 @@ def parse_duration(s: str) -> int:
     
     value = int(match.group(1))
     unit = match.group(2)[0]  # First char: m, h, or d
-    
+
     multipliers = {'m': 1, 'h': 60, 'd': 1440}
     return value * multipliers[unit]
+
+
+# Natural-language day-spec phrases for the documented "every monday 9am" /
+# "every day at 9am" schedule forms. Cron weekday numbering is
+# 0=Sunday … 6=Saturday (croniter's default).
+_WEEKDAY_TO_CRON_DOW = {
+    "sunday": "0", "sun": "0",
+    "monday": "1", "mon": "1",
+    "tuesday": "2", "tue": "2", "tues": "2",
+    "wednesday": "3", "wed": "3", "weds": "3",
+    "thursday": "4", "thu": "4", "thur": "4", "thurs": "4",
+    "friday": "5", "fri": "5",
+    "saturday": "6", "sat": "6",
+}
+
+# Keyword day-specs that expand to a cron weekday field.
+_DAYSPEC_TO_CRON_DOW = {
+    "day": "*", "daily": "*", "everyday": "*",
+    "weekday": "1-5", "weekdays": "1-5",
+    "weekend": "0,6", "weekends": "0,6",
+}
+
+
+def _parse_clock_time(text: str) -> Optional[tuple]:
+    """Parse a wall-clock time into a ``(hour, minute)`` 24-hour tuple.
+
+    Accepts ``9am``, ``9:30am``, ``9 am``, ``14:00``, ``7`` (bare hour, 24h),
+    ``noon``/``midday``, and ``midnight``. Returns None when the text is not a
+    recognized clock time so the caller can reject the schedule cleanly.
+    """
+    t = text.strip().lower().replace(" ", "")
+    if not t:
+        return None
+    if t in ("noon", "midday"):
+        return (12, 0)
+    if t == "midnight":
+        return (0, 0)
+    match = re.match(r'^(\d{1,2})(?::(\d{2}))?(am|pm)?$', t)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    meridiem = match.group(3)
+    if meridiem:
+        if not 1 <= hour <= 12:
+            return None
+        if meridiem == "am":
+            hour = 0 if hour == 12 else hour
+        else:  # pm
+            hour = 12 if hour == 12 else hour + 12
+    if hour > 23 or minute > 59:
+        return None
+    return (hour, minute)
+
+
+def _natural_every_to_cron(rest: str) -> Optional[str]:
+    """Convert a documented ``every <when> [at] <time>`` phrase to a 5-field
+    cron expression, or None when *rest* is not such a phrase.
+
+    Examples::
+
+        "monday 9am"      -> "0 9 * * 1"
+        "day at 9am"      -> "0 9 * * *"
+        "weekday at 9am"  -> "0 9 * * 1-5"
+
+    Returning None lets ``parse_schedule`` fall back to the interval
+    (``every 30m``) path, so existing duration schedules are unaffected.
+    """
+    tokens = rest.lower().split()
+    if not tokens:
+        return None
+    day_token = tokens[0]
+    dow = _WEEKDAY_TO_CRON_DOW.get(day_token) or _DAYSPEC_TO_CRON_DOW.get(day_token)
+    if dow is None:
+        return None
+
+    time_tokens = tokens[1:]
+    # Optional "at" separator: "every day at 9am".
+    if time_tokens and time_tokens[0] == "at":
+        time_tokens = time_tokens[1:]
+    if not time_tokens:
+        return None
+
+    parsed = _parse_clock_time(" ".join(time_tokens))
+    if parsed is None:
+        return None
+    hour, minute = parsed
+    return f"{minute} {hour} * * {dow}"
 
 
 def parse_schedule(schedule: str) -> Dict[str, Any]:
@@ -316,17 +404,36 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         "2h"               → once in 2 hours
         "every 30m"        → recurring every 30 minutes
         "every 2h"         → recurring every 2 hours
+        "every monday 9am" → recurring weekly (cron)
+        "every day at 9am" → recurring daily (cron)
         "0 9 * * *"        → cron expression
         "2026-02-03T14:00" → once at timestamp
     """
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
-    
-    # "every X" pattern → recurring interval
+
+    # "every X" pattern → recurring interval, OR a documented natural-language
+    # day/time phrase ("every monday 9am", "every day at 9am") → cron.
     if schedule_lower.startswith("every "):
-        duration_str = schedule[6:].strip()
-        minutes = parse_duration(duration_str)
+        rest = schedule[6:].strip()
+        cron_expr = _natural_every_to_cron(rest)
+        if cron_expr is not None:
+            if not HAS_CRONITER:
+                raise ValueError(
+                    "Weekday/time schedules like 'every monday 9am' require the "
+                    "'croniter' package. Install with: pip install croniter"
+                )
+            try:
+                croniter(cron_expr)
+            except Exception as e:
+                raise ValueError(f"Invalid schedule '{original}': {e}")
+            return {
+                "kind": "cron",
+                "expr": cron_expr,
+                "display": original,
+            }
+        minutes = parse_duration(rest)
         return {
             "kind": "interval",
             "minutes": minutes,
@@ -385,6 +492,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         f"Invalid schedule '{original}'. Use:\n"
         f"  - Duration: '30m', '2h', '1d' (one-shot)\n"
         f"  - Interval: 'every 30m', 'every 2h' (recurring)\n"
+        f"  - Weekly/daily: 'every monday 9am', 'every day at 9am' (recurring)\n"
         f"  - Cron: '0 9 * * *' (cron expression)\n"
         f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
     )

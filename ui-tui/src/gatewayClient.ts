@@ -341,6 +341,7 @@ export class GatewayClient extends EventEmitter {
     const python = resolvePython(root)
     const cwd = process.env.HERMES_CWD || root
     const env = { ...process.env }
+    env.PYTHONIOENCODING = 'utf-8'
     const pyPath = env.PYTHONPATH?.trim()
 
     env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root

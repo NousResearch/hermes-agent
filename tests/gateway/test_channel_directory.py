@@ -25,10 +25,10 @@ import pytest
 def _isolate_channel_aliases(tmp_path_factory):
     """Point the alias overlay at a nonexistent path by default so a real
     ~/.hermes/channel_aliases.json never leaks into directory tests. Tests
-    that exercise aliases patch CHANNEL_ALIASES_PATH themselves inside the
+    that exercise aliases patch the alias path themselves inside the
     test body, which takes precedence over this outer patch."""
     missing = tmp_path_factory.mktemp("aliases") / "none.json"
-    with patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", missing):
+    with patch("gateway.channel_directory._channel_aliases_path", return_value=missing):
         yield
 
 
@@ -42,7 +42,7 @@ def _write_directory(tmp_path, platforms):
 
 class TestLoadDirectory:
     def test_missing_file(self, tmp_path):
-        with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "nope.json"):
+        with patch("gateway.channel_directory._directory_path", return_value=tmp_path / "nope.json"):
             result = load_directory()
         assert result["updated_at"] is None
         assert result["platforms"] == {}
@@ -51,14 +51,14 @@ class TestLoadDirectory:
         cache_file = _write_directory(tmp_path, {
             "telegram": [{"id": "123", "name": "John", "type": "dm"}]
         })
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+        with patch("gateway.channel_directory._directory_path", return_value=cache_file):
             result = load_directory()
         assert result["platforms"]["telegram"][0]["name"] == "John"
 
     def test_corrupt_file(self, tmp_path):
         cache_file = tmp_path / "channel_directory.json"
         cache_file.write_text("{bad json")
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+        with patch("gateway.channel_directory._directory_path", return_value=cache_file):
             result = load_directory()
         assert result["updated_at"] is None
 
@@ -77,7 +77,7 @@ class TestBuildChannelDirectoryWrites:
 
         monkeypatch.setattr(json, "dump", broken_dump)
 
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+        with patch("gateway.channel_directory._directory_path", return_value=cache_file):
             asyncio.run(build_channel_directory({}))
             result = load_directory()
 
@@ -87,7 +87,7 @@ class TestBuildChannelDirectoryWrites:
 class TestResolveChannelName:
     def _setup(self, tmp_path, platforms):
         cache_file = _write_directory(tmp_path, platforms)
-        return patch("gateway.channel_directory.DIRECTORY_PATH", cache_file)
+        return patch("gateway.channel_directory._directory_path", return_value=cache_file)
 
     def test_exact_match(self, tmp_path):
         platforms = {
@@ -283,7 +283,7 @@ class TestBuildFromSessions:
 
 class TestFormatDirectoryForDisplay:
     def test_empty_directory(self, tmp_path):
-        with patch("gateway.channel_directory.DIRECTORY_PATH", tmp_path / "nope.json"):
+        with patch("gateway.channel_directory._directory_path", return_value=tmp_path / "nope.json"):
             result = format_directory_for_display()
         assert "No messaging platforms" in result
 
@@ -295,7 +295,7 @@ class TestFormatDirectoryForDisplay:
                 {"id": "-1001:17585", "name": "Coaching Chat / topic 17585", "type": "group"},
             ]
         })
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+        with patch("gateway.channel_directory._directory_path", return_value=cache_file):
             result = format_directory_for_display()
 
         assert "Telegram:" in result
@@ -311,7 +311,7 @@ class TestFormatDirectoryForDisplay:
                 {"id": "3", "name": "chat", "guild": "Server2", "type": "channel"},
             ]
         })
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+        with patch("gateway.channel_directory._directory_path", return_value=cache_file):
             result = format_directory_for_display()
 
         assert "Discord (Server1):" in result
@@ -322,7 +322,7 @@ class TestFormatDirectoryForDisplay:
 class TestLookupChannelType:
     def _setup(self, tmp_path, platforms):
         cache_file = _write_directory(tmp_path, platforms)
-        return patch("gateway.channel_directory.DIRECTORY_PATH", cache_file)
+        return patch("gateway.channel_directory._directory_path", return_value=cache_file)
 
     def test_forum_channel(self, tmp_path):
         platforms = {
@@ -504,13 +504,13 @@ class TestChannelAliases:
     def _setup_aliases(self, tmp_path, aliases):
         alias_file = tmp_path / "channel_aliases.json"
         alias_file.write_text(json.dumps(aliases))
-        return patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", alias_file)
+        return patch("gateway.channel_directory._channel_aliases_path", return_value=alias_file)
 
     def test_alias_renames_existing_entry_on_load(self, tmp_path):
         cache_file = _write_directory(tmp_path, {
             "whatsapp": [{"id": "120363@g.us", "name": "120363", "type": "group"}]
         })
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+        with patch("gateway.channel_directory._directory_path", return_value=cache_file), \
              self._setup_aliases(tmp_path, {"whatsapp": {"120363@g.us": "general"}}):
             result = load_directory()
             assert result["platforms"]["whatsapp"][0]["name"] == "general"
@@ -522,7 +522,7 @@ class TestChannelAliases:
         """A group named in the alias file but not yet seen in any session is
         still addressable by name (pre-naming before first traffic)."""
         cache_file = _write_directory(tmp_path, {"whatsapp": []})
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+        with patch("gateway.channel_directory._directory_path", return_value=cache_file), \
              self._setup_aliases(tmp_path, {"whatsapp": {"999@g.us": "marketing"}}):
             assert resolve_channel_name("whatsapp", "marketing") == "999@g.us"
             entries = load_directory()["platforms"]["whatsapp"]
@@ -533,8 +533,8 @@ class TestChannelAliases:
         cache_file = _write_directory(tmp_path, {
             "whatsapp": [{"id": "120363@g.us", "name": "120363", "type": "group"}]
         })
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
-             patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", tmp_path / "nope.json"):
+        with patch("gateway.channel_directory._directory_path", return_value=cache_file), \
+             patch("gateway.channel_directory._channel_aliases_path", return_value=tmp_path / "nope.json"):
             result = load_directory()
             assert result["platforms"]["whatsapp"][0]["name"] == "120363"
 
@@ -544,8 +544,8 @@ class TestChannelAliases:
         })
         bad = tmp_path / "channel_aliases.json"
         bad.write_text("{not json")
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
-             patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", bad):
+        with patch("gateway.channel_directory._directory_path", return_value=cache_file), \
+             patch("gateway.channel_directory._channel_aliases_path", return_value=bad):
             result = load_directory()
             assert result["platforms"]["whatsapp"][0]["name"] == "120363"
 
@@ -557,7 +557,7 @@ class TestChannelAliases:
                             lambda plat: [{"id": "120363@g.us", "name": "120363",
                                            "type": "group", "thread_id": None}]
                             if plat == "whatsapp" else [])
-        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+        with patch("gateway.channel_directory._directory_path", return_value=cache_file), \
              self._setup_aliases(tmp_path, {"whatsapp": {"120363@g.us": "general"}}):
             asyncio.run(build_channel_directory({}))
             on_disk = json.loads(cache_file.read_text())
@@ -576,3 +576,68 @@ class TestChannelAliases:
                    }):
             _apply_channel_aliases(platforms)  # should not raise
         assert platforms["whatsapp"][0]["name"] == "1"
+
+
+class TestHermesHomeOverrideResolution:
+    """The directory and alias paths must follow an in-process
+    ``set_hermes_home_override()`` (the dashboard / multi-profile flow),
+    not a value cached when the module was first imported.
+
+    These exercise the real bug directly: no module-level path is patched,
+    so they only pass when reads/writes resolve ``get_hermes_home()`` per
+    call. Before the fix the import-time constant stayed pinned to whichever
+    profile was active at first import, so a profile-scoped request would
+    read/write the wrong profile's files.
+    """
+
+    def test_load_and_resolve_follow_home_override(self, tmp_path):
+        from hermes_constants import (
+            set_hermes_home_override,
+            reset_hermes_home_override,
+        )
+
+        profile_a = tmp_path / "profile_a"
+        profile_b = tmp_path / "profile_b"
+        profile_a.mkdir()
+        profile_b.mkdir()
+
+        # Only profile B has a cached directory, naming a Slack channel.
+        (profile_b / "channel_directory.json").write_text(json.dumps({
+            "updated_at": "2026-01-01T00:00:00",
+            "platforms": {
+                "slack": [{"id": "C123", "name": "engineering", "type": "channel"}]
+            },
+        }))
+
+        # Scoped to A: A has no cache, so nothing resolves.
+        token = set_hermes_home_override(str(profile_a))
+        try:
+            assert load_directory()["platforms"] == {}
+            assert resolve_channel_name("slack", "engineering") is None
+        finally:
+            reset_hermes_home_override(token)
+
+        # Scoped to B: B's cache is read and the friendly name resolves.
+        token = set_hermes_home_override(str(profile_b))
+        try:
+            assert resolve_channel_name("slack", "engineering") == "C123"
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_build_writes_into_overridden_home(self, tmp_path):
+        from hermes_constants import (
+            set_hermes_home_override,
+            reset_hermes_home_override,
+        )
+
+        profile_a = tmp_path / "profile_a"
+        profile_a.mkdir()
+
+        token = set_hermes_home_override(str(profile_a))
+        try:
+            asyncio.run(build_channel_directory({}))
+        finally:
+            reset_hermes_home_override(token)
+
+        # The cache lands in the scoped profile, not the import-time home.
+        assert (profile_a / "channel_directory.json").exists()

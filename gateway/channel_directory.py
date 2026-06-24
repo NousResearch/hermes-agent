@@ -9,6 +9,7 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
@@ -16,21 +17,35 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
-DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+
+# Paths are resolved per call rather than cached at import time. The dashboard
+# and other multi-profile flows scope a request to another profile in-process
+# via ``set_hermes_home_override()`` (a ContextVar), which never mutates the
+# HERMES_HOME env var — so an import-time constant would stay pinned to the
+# profile that happened to be active when this module was first imported and
+# read/write the wrong profile's files. Resolving at call time keeps this in
+# step with ``_build_from_sessions()`` below, which already calls
+# ``get_hermes_home()`` per invocation.
+def _directory_path() -> Path:
+    return get_hermes_home() / "channel_directory.json"
+
+
 # User-maintained friendly-name overlay. The directory is fully regenerated
 # from live adapters + session data on a timer, so hand-edits to
 # channel_directory.json don't survive. Aliases declared here are re-applied
 # on every build AND every load, giving durable human-friendly names (and
 # letting you pre-name a chat before it has produced any traffic).
 # Format: {"<platform>": {"<chat_id>": "<friendly name>", ...}, ...}
-CHANNEL_ALIASES_PATH = get_hermes_home() / "channel_aliases.json"
+def _channel_aliases_path() -> Path:
+    return get_hermes_home() / "channel_aliases.json"
 
 
 def _load_channel_aliases() -> Dict[str, Dict[str, str]]:
-    if not CHANNEL_ALIASES_PATH.exists():
+    aliases_path = _channel_aliases_path()
+    if not aliases_path.exists():
         return {}
     try:
-        with open(CHANNEL_ALIASES_PATH, encoding="utf-8") as f:
+        with open(aliases_path, encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
     except Exception:
@@ -112,7 +127,8 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     """
     Build a channel directory from connected platform adapters and session data.
 
-    Returns the directory dict and writes it to DIRECTORY_PATH.
+    Returns the directory dict and writes it to ``channel_directory.json`` under
+    the active Hermes home.
     """
     from gateway.config import Platform
 
@@ -156,7 +172,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     }
 
     try:
-        atomic_json_write(DIRECTORY_PATH, directory)
+        atomic_json_write(_directory_path(), directory)
     except Exception as e:
         logger.warning("Channel directory: failed to write: %s", e)
 
@@ -304,12 +320,13 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 
 def load_directory() -> Dict[str, Any]:
     """Load the cached channel directory from disk."""
-    if not DIRECTORY_PATH.exists():
+    directory_path = _directory_path()
+    if not directory_path.exists():
         base = {"updated_at": None, "platforms": {}}
         _apply_channel_aliases(base["platforms"])
         return base
     try:
-        with open(DIRECTORY_PATH, encoding="utf-8") as f:
+        with open(directory_path, encoding="utf-8") as f:
             data = json.load(f)
         # Re-apply aliases on read so friendly names take effect immediately,
         # even between timed rebuilds and for brand-new alias entries.

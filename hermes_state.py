@@ -3972,6 +3972,32 @@ class SessionDB:
         self._execute_write(_do)
 
     @staticmethod
+    def _session_id_maps_inside(sessions_dir: Path, session_id: str) -> bool:
+        """True when files named after *session_id* stay directly inside
+        *sessions_dir*.
+
+        Session IDs are DB keys and may be client-supplied — the REST API's
+        create/fork endpoints accept an arbitrary ``id`` and gateways derive
+        IDs from platform identifiers. When such an ID is reused as a
+        filename (``{id}.json`` / ``{id}.jsonl`` and the
+        ``request_dump_{id}_*`` glob), a value containing path separators or
+        ``..`` would let cleanup unlink files *outside* the sessions
+        directory, turning a routine prune/delete into data loss. Resolve the
+        candidate path and require its parent to be the sessions directory —
+        the same realpath-containment idiom used for write-path access
+        control. Resolving both sides also defeats drive-letter and symlink
+        escapes cross-platform.
+        """
+        if not session_id:
+            return False
+        try:
+            base = sessions_dir.resolve()
+            probe = (sessions_dir / f"{session_id}.jsonl").resolve()
+        except (OSError, ValueError):
+            return False
+        return probe.parent == base
+
+    @staticmethod
     def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
         """Remove on-disk transcript files for a session.
 
@@ -3979,8 +4005,21 @@ class SessionDB:
         ``request_dump_{session_id}_*.json`` files left by the gateway.
         Silently skips files that don't exist and swallows OSError so a
         filesystem hiccup never blocks a DB operation.
+
+        Session IDs that don't map to a path *inside* ``sessions_dir`` (e.g. a
+        client-supplied id containing ``/`` or ``..``) are skipped with a
+        warning instead of being followed: the DB row is still removed by the
+        caller, but the on-disk sweep must never escape the sessions
+        directory.
         """
         if sessions_dir is None:
+            return
+        if not SessionDB._session_id_maps_inside(sessions_dir, session_id):
+            logger.warning(
+                "Skipping on-disk cleanup for session id %r: it does not "
+                "resolve to a file inside the sessions directory",
+                session_id,
+            )
             return
         for suffix in (".json", ".jsonl"):
             p = sessions_dir / f"{session_id}{suffix}"

@@ -1559,6 +1559,43 @@ class TestDeleteAndExport:
     def test_delete_nonexistent(self, db):
         assert db.delete_session("nope") is False
 
+    def test_delete_session_with_traversal_id_stays_inside_sessions_dir(
+        self, db, tmp_path
+    ):
+        """A client-supplied session id containing ``..`` must not let
+        on-disk cleanup unlink files outside ``sessions_dir``. The DB row is
+        still removed; the file sweep is skipped (see ``_remove_session_files``
+        containment guard). Regression for the session-cleanup path-traversal
+        data-loss bug."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        # A file a sibling directory above sessions_dir — must survive.
+        victim = tmp_path / "victim.jsonl"
+        victim.write_text("precious")
+
+        # Escapes sessions_dir: sessions/../victim.jsonl -> tmp_path/victim.jsonl
+        bad_id = "../victim"
+        db.create_session(session_id=bad_id, source="cli")
+
+        assert db.delete_session(bad_id, sessions_dir=sessions_dir) is True
+        # DB row gone, but the out-of-tree file is untouched.
+        assert db.get_session(bad_id) is None
+        assert victim.exists()
+        assert victim.read_text() == "precious"
+
+    def test_delete_session_cleans_normal_id_files(self, db, tmp_path):
+        """The containment guard must not regress the happy path: a normal id
+        still has its ``.json`` / ``.jsonl`` transcripts swept."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        db.create_session(session_id="s1", source="cli")
+        (sessions_dir / "s1.jsonl").write_text("")
+        (sessions_dir / "s1.json").write_text("{}")
+
+        assert db.delete_session("s1", sessions_dir=sessions_dir) is True
+        assert not (sessions_dir / "s1.jsonl").exists()
+        assert not (sessions_dir / "s1.json").exists()
+
     def test_resolve_session_id_exact(self, db):
         db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
         assert db.resolve_session_id("20260315_092437_c9a6ff") == "20260315_092437_c9a6ff"

@@ -907,3 +907,45 @@ class TestNousRecommendedModels:
             patch("hermes_cli.models.check_nous_free_tier", side_effect=RuntimeError("boom")),
         ):
             assert get_nous_recommended_aux_model(vision=False) == "paid-model"
+
+
+class TestCodexSoftAcceptPlausibilityGate:
+    """#45006 kernel (b): the openai-codex / xai-oauth hidden-model soft-accept
+    (#16172 / #19729) must only accept slugs that plausibly belong to that
+    provider's family. An undeclared, unrelated typed name (e.g. a local model
+    name) must be REJECTED with actionable --provider guidance instead of being
+    fake-accepted as a hidden Codex/Grok model (which would 400 on the next turn
+    and mislabel the provider as 'OpenAI Codex')."""
+
+    def test_unrelated_name_rejected_on_openai_codex(self):
+        from hermes_cli.models import validate_requested_model
+        r = validate_requested_model("qwen3.5-4b", "openai-codex")
+        assert r["accepted"] is False
+        assert r["persist"] is False
+        assert "--provider" in (r["message"] or "")
+
+    def test_unrelated_name_rejected_on_xai_oauth(self):
+        from hermes_cli.models import validate_requested_model
+        r = validate_requested_model("llama-3.1-8b", "xai-oauth")
+        assert r["accepted"] is False
+        assert "--provider" in (r["message"] or "")
+
+    def test_family_shaped_hidden_slug_still_soft_accepted_codex(self):
+        """#16172 intent preserved: a gpt-/codex-shaped unknown slug is still
+        soft-accepted (entitlement-gated hidden models)."""
+        from hermes_cli.models import validate_requested_model
+        r = validate_requested_model("gpt-5.9-codex-hidden", "openai-codex")
+        assert r["accepted"] is True
+        assert r["recognized"] is False
+
+    def test_family_shaped_hidden_slug_still_soft_accepted_xai(self):
+        from hermes_cli.models import validate_requested_model
+        r = validate_requested_model("grok-9-hidden", "xai-oauth")
+        assert r["accepted"] is True
+        assert r["recognized"] is False
+
+    def test_real_catalog_model_unaffected(self):
+        from hermes_cli.models import validate_requested_model
+        r = validate_requested_model("gpt-5.5", "openai-codex")
+        assert r["accepted"] is True
+        assert r["recognized"] is True

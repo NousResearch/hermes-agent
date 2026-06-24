@@ -57,6 +57,30 @@ def _cron_api(**kwargs):
     return json.loads(cronjob_tool(**kwargs))
 
 
+def _warn_if_gateway_not_running() -> None:
+    """Warn that scheduled jobs won't fire unless the gateway is running.
+
+    The cron ticker only runs inside the gateway (``_start_cron_ticker`` in
+    gateway/run.py); there is no standalone cron daemon. Without a running
+    gateway, ``next_run_at`` passes but jobs never fire and ``last_run_at``
+    stays null — the most common cron support report (#51038). Surfacing this
+    at create/list time, when the user is right there, prevents it.
+    """
+    try:
+        from hermes_cli.gateway import find_gateway_pids
+
+        if find_gateway_pids():
+            return
+    except Exception:
+        # If we can't determine gateway state, stay quiet rather than nag.
+        return
+
+    print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
+    print(color("     Start it with: hermes gateway install", Colors.DIM))
+    print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
+    print(color("     Check status:  hermes cron status", Colors.DIM))
+
+
 def cron_list(show_all: bool = False):
     """List all scheduled jobs."""
     from cron.jobs import list_jobs
@@ -137,12 +161,7 @@ def cron_list(show_all: bool = False):
 
         print()
 
-    from hermes_cli.gateway import find_gateway_pids
-    if not find_gateway_pids():
-        print(color("  ⚠  Gateway is not running — jobs won't fire automatically.", Colors.YELLOW))
-        print(color("     Start it with: hermes gateway install", Colors.DIM))
-        print(color("                    sudo hermes gateway install --system  # Linux servers", Colors.DIM))
-        print()
+    _warn_if_gateway_not_running()
 
 
 def cron_tick():
@@ -276,6 +295,7 @@ def cron_create(args):
     if job_data.get("workdir"):
         print(f"  Workdir: {job_data['workdir']}")
     print(f"  Next run: {result['next_run_at']}")
+    _warn_if_gateway_not_running()
     return 0
 
 

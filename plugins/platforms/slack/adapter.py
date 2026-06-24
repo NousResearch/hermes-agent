@@ -1223,6 +1223,29 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+    def _slack_ignored_channels(self) -> set[str]:
+        """Configured Slack channels the generic gateway must never touch."""
+        raw = self.config.extra.get("ignored_channels")
+        if raw is None:
+            return set()
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _is_ignored_channel(self, channel_id: str) -> bool:
+        """Return True when generic Slack gateway must stay silent here.
+
+        Most Slack call sites pass the parent channel ID directly, but some
+        gateway/session paths carry a thread-scoped identifier like
+        ``C123:1712345678.000001``. Ignored-channel matching is channel-level,
+        so normalize defensively before checking the configured blacklist.
+        """
+        if not channel_id:
+            return False
+        parent_channel_id = str(channel_id).split(":", 1)[0]
+        ignored = self._slack_ignored_channels()
+        return "*" in ignored or parent_channel_id in ignored
+
     async def send(
         self,
         chat_id: str,
@@ -1231,6 +1254,12 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a message to a Slack channel or DM."""
+        if self._is_ignored_channel(chat_id):
+            logger.warning(
+                "[Slack] Suppressed outbound generic send to configured ignored channel %s",
+                chat_id,
+            )
+            return SendResult(success=False, error="ignored_channel")
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
@@ -1310,6 +1339,12 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a Slack ephemeral message visible only to one user."""
+        if self._is_ignored_channel(chat_id):
+            logger.warning(
+                "[Slack] Suppressed outbound generic ephemeral notice to configured ignored channel %s",
+                chat_id,
+            )
+            return SendResult(success=False, error="ignored_channel")
         if not self._app:
             return SendResult(success=False, error="Not connected")
         if not chat_id or not user_id:
@@ -1346,6 +1381,12 @@ class SlackAdapter(BasePlatformAdapter):
         finalize: bool = False,
     ) -> SendResult:
         """Edit a previously sent Slack message."""
+        if self._is_ignored_channel(chat_id):
+            logger.warning(
+                "[Slack] Suppressed message edit in configured ignored channel %s",
+                chat_id,
+            )
+            return SendResult(success=False, error="ignored_channel")
         if not self._app:
             return SendResult(success=False, error="Not connected")
         try:
@@ -1375,6 +1416,9 @@ class SlackAdapter(BasePlatformAdapter):
         Requires the assistant:write or chat:write scope.
         Auto-clears when the bot sends a reply to the thread.
         """
+        if self._is_ignored_channel(chat_id):
+            logger.debug("[Slack] Suppressed typing/status in configured ignored channel %s", chat_id)
+            return
         if not self._app:
             return
 
@@ -1399,6 +1443,10 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
         """Clear the assistant thread status indicator."""
+        if self._is_ignored_channel(chat_id):
+            logger.debug("[Slack] Suppressed status clear in configured ignored channel %s", chat_id)
+            self._active_status_threads.pop(chat_id, None)
+            return
         if not self._app:
             return
         thread_ts = self._active_status_threads.pop(chat_id, None)
@@ -1474,6 +1522,12 @@ class SlackAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Upload a local file to Slack."""
+        if self._is_ignored_channel(chat_id):
+            logger.warning(
+                "[Slack] Suppressed file upload in configured ignored channel %s",
+                chat_id,
+            )
+            return SendResult(success=False, error="ignored_channel")
         if not self._app:
             return SendResult(success=False, error="Not connected")
 
@@ -1523,6 +1577,12 @@ class SlackAdapter(BasePlatformAdapter):
 
         The batch limit is 10 file uploads per call (Slack server-side cap).
         """
+        if self._is_ignored_channel(chat_id):
+            logger.warning(
+                "[Slack] Suppressed multi-image upload in configured ignored channel %s",
+                chat_id,
+            )
+            return
         if not self._app:
             return
         if not images:
@@ -2281,6 +2341,9 @@ class SlackAdapter(BasePlatformAdapter):
         this lifecycle event.
         """
         channel_id = event.get("channel_id") or event.get("channel") or ""
+        if self._is_ignored_channel(channel_id):
+            logger.info("[Slack] Ignoring file_shared event in configured ignored channel %s", channel_id)
+            return
         file_id = event.get("file_id") or (event.get("file") or {}).get("id") or ""
         if not channel_id or not file_id:
             return
@@ -2354,6 +2417,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
         event_ts = event.get("ts", "")
         if event_ts and self._dedup.is_duplicate(event_ts):
+            return
+
+        channel_id = event.get("channel", "")
+        if self._is_ignored_channel(channel_id):
+            logger.info("[Slack] Ignoring message in configured ignored channel %s", channel_id)
             return
 
         # Bot message filtering (SLACK_ALLOW_BOTS / config allow_bots):

@@ -21,6 +21,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SUPPORTED_VIDEO_TYPES,
+    SendResult,
     is_host_excluded_by_no_proxy,
 )
 
@@ -69,6 +70,86 @@ import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
 from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# TestIgnoredChannelOutboundSuppression
+# ---------------------------------------------------------------------------
+
+
+class TestIgnoredChannelOutboundSuppression:
+    """Ignored Slack channels must be a hard generic-gateway kill switch."""
+
+    def _ignored_adapter(self):
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"ignored_channels": ["C_PRD"]},
+        )
+        adapter = SlackAdapter(config)
+        adapter._app = MagicMock()
+        adapter._app.client = AsyncMock()
+        adapter._bot_user_id = "U_BOT"
+        adapter._running = True
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_send_suppressed_for_ignored_channel(self):
+        adapter = self._ignored_adapter()
+
+        result = await adapter.send("C_PRD", "Acknowledged", reply_to="123.456")
+
+        assert result.success is False
+        assert result.error == "ignored_channel"
+        adapter._app.client.chat_postMessage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_private_notice_suppressed_for_ignored_channel(self):
+        adapter = self._ignored_adapter()
+
+        result = await adapter.send_private_notice(
+            "C_PRD", "U_USER", "No home channel is set", reply_to="123.456"
+        )
+
+        assert result.success is False
+        assert result.error == "ignored_channel"
+        adapter._app.client.chat_postEphemeral.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_edit_status_and_media_paths_suppressed(self, tmp_path):
+        adapter = self._ignored_adapter()
+        adapter._active_status_threads["C_PRD"] = "123.456"
+        file_path = tmp_path / "note.txt"
+        file_path.write_text("secret")
+
+        edit = await adapter.edit_message("C_PRD", "123.999", "updated", finalize=True)
+        await adapter.send_typing("C_PRD", {"thread_ts": "123.456"})
+        await adapter.stop_typing("C_PRD")
+        upload = await adapter._upload_file("C_PRD", str(file_path))
+        await adapter.send_multiple_images("C_PRD", [("https://example.com/image.png", "alt")])
+
+        assert edit.success is False
+        assert upload.success is False
+        assert edit.error == "ignored_channel"
+        assert upload.error == "ignored_channel"
+        adapter._app.client.chat_update.assert_not_awaited()
+        adapter._app.client.assistant_threads_setStatus.assert_not_awaited()
+        adapter._app.client.files_upload_v2.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_inbound_message_suppressed_for_ignored_channel(self):
+        adapter = self._ignored_adapter()
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_slack_message({
+            "text": "<@U_BOT> review this",
+            "user": "U_USER",
+            "channel": "C_PRD",
+            "channel_type": "channel",
+            "ts": "123.456",
+        })
+
+        adapter.handle_message.assert_not_awaited()
 
 
 async def _pending_for_fake_task():

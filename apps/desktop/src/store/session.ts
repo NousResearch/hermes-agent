@@ -166,7 +166,21 @@ export function mergeSessionPage(
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 
-  return survivors.length ? [...survivors, ...incoming] : incoming
+  // Sort survivors by last_active descending so they interleave correctly
+  // with the server's order=recent page instead of appearing as a stale block
+  // at the top of the sidebar (fixes #47203).
+  if (!survivors.length) return incoming
+  const sorted = [...survivors].sort((a, b) => b.last_active - a.last_active)
+  // Merge two arrays that are both sorted by last_active descending.
+  const merged: SessionInfo[] = []
+  let si = 0, ii = 0
+  while (si < sorted.length && ii < incoming.length) {
+    if (sorted[si].last_active >= incoming[ii].last_active) merged.push(sorted[si++])
+    else merged.push(incoming[ii++])
+  }
+  while (si < sorted.length) merged.push(sorted[si++])
+  while (ii < incoming.length) merged.push(incoming[ii++])
+  return merged
 }
 
 export const $connection = atom<HermesConnection | null>(null)

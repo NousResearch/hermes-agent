@@ -181,6 +181,43 @@ describe('mergeSessionPage', () => {
 
     expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
   })
+
+  it('sorts survivors by last_active so they interleave with incoming instead of forming a stale block', () => {
+    // Repro of #47203: two survivors (B and C) have different last_active
+    // timestamps. B settled more recently than C. Without sorting, survivors
+    // are prepended in their old order from `previous`, which may be stale.
+    // With sorting, B (more recent) should appear before C.
+    const previous = [
+      session({ id: 'c', last_active: 100 }),
+      session({ id: 'b', last_active: 200 }),
+      session({ id: 'a', last_active: 300 }),
+    ]
+    // Server returns A (fresh page, order=recent), omits B and C (min_messages=1)
+    const incoming = [session({ id: 'a', last_active: 300, message_count: 2 })]
+
+    const merged = mergeSessionPage(previous, incoming, ['b', 'c'])
+
+    // B (last_active 200) should come before C (last_active 100)
+    expect(merged.map(s => s.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('places a very recent survivor in correct position among incoming sessions', () => {
+    // A survivor with last_active between two incoming sessions should be
+    // interleaved, not prepended as a block.
+    const previous = [
+      session({ id: 'survivor', last_active: 150 }),
+      session({ id: 'old', last_active: 50 }),
+    ]
+    const incoming = [
+      session({ id: 'newest', last_active: 200 }),
+      session({ id: 'older', last_active: 100 }),
+    ]
+
+    const merged = mergeSessionPage(previous, incoming, ['survivor'])
+
+    // survivor (150) should be between newest (200) and older (100)
+    expect(merged.map(s => s.id)).toEqual(['newest', 'survivor', 'older'])
+  })
 })
 
 describe('workspaceCwdForNewSession', () => {

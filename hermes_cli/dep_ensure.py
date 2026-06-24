@@ -22,12 +22,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+from hermes_constants import agent_browser_runnable
+
 _IS_WINDOWS = platform.system() == "Windows"
 
 _DEP_CHECKS = {
     "node": lambda: shutil.which("node") is not None,
     "browser": lambda: (
-        shutil.which("agent-browser") is not None
+        agent_browser_runnable(shutil.which("agent-browser"))
         or _has_system_browser()
         or _has_hermes_agent_browser()
     ),

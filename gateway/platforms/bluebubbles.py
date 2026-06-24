@@ -217,13 +217,15 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         return text
 
     async def _api_get(self, path: str) -> Dict[str, Any]:
-        assert self.client is not None
+        if self.client is None:
+                raise RuntimeError("client not connected")
         res = await self.client.get(self._api_url(path))
         res.raise_for_status()
         return res.json()
 
     async def _api_post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        assert self.client is not None
+        if self.client is None:
+                raise RuntimeError("client not connected")
         res = await self.client.post(self._api_url(path), json=payload)
         res.raise_for_status()
         return res.json()
@@ -476,7 +478,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         payload = {
             "addresses": [address],
             "message": message,
-            "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
+            "tempGuid": f"temp-{datetime.now(timezone.utc).timestamp()}",
         }
         try:
             res = await self._api_post("/api/v1/chat/new", payload)
@@ -532,7 +534,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 )
             payload: Dict[str, Any] = {
                 "chatGuid": guid,
-                "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
+                "tempGuid": f"temp-{datetime.now(timezone.utc).timestamp()}",
                 "message": chunk,
             }
             if reply_to and self._private_api_enabled and self._helper_connected:

@@ -51,6 +51,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/tasks",
 ]
 
 
@@ -948,6 +949,215 @@ def sheets_create(args):
 
 
 # =========================================================================
+# Google Tasks
+# =========================================================================
+
+
+def _tasks_service():
+    return build_service("tasks", "v1")
+
+
+def _normalize_tasklist(item: dict) -> dict:
+    return {
+        "id": item.get("id", ""),
+        "title": item.get("title", ""),
+        "updated": item.get("updated", ""),
+        "selfLink": item.get("selfLink", ""),
+    }
+
+
+def _normalize_task(item: dict) -> dict:
+    return {
+        "id": item.get("id", ""),
+        "title": item.get("title", ""),
+        "notes": item.get("notes", ""),
+        "status": item.get("status", ""),
+        "due": item.get("due", ""),
+        "completed": item.get("completed", ""),
+        "updated": item.get("updated", ""),
+        "parent": item.get("parent", ""),
+        "position": item.get("position", ""),
+        "links": item.get("links", []),
+        "selfLink": item.get("selfLink", ""),
+    }
+
+
+def tasks_lists(args):
+    if _gws_binary():
+        result = _run_gws(["tasks", "tasklists", "list"], params={"maxResults": args.max})
+    else:
+        result = _tasks_service().tasklists().list(maxResults=args.max).execute()
+    print(json.dumps([_normalize_tasklist(item) for item in result.get("items", [])], indent=2, ensure_ascii=False))
+
+
+def tasks_list_create(args):
+    body = {"title": args.title}
+    if _gws_binary():
+        result = _run_gws(["tasks", "tasklists", "insert"], body=body)
+    else:
+        result = _tasks_service().tasklists().insert(body=body).execute()
+    output = _normalize_tasklist(result)
+    output["status"] = "created"
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+def tasks_list_update(args):
+    body = {"title": args.title}
+    if _gws_binary():
+        result = _run_gws(["tasks", "tasklists", "patch"], params={"tasklist": args.tasklist_id}, body=body)
+    else:
+        result = _tasks_service().tasklists().patch(tasklist=args.tasklist_id, body=body).execute()
+    output = _normalize_tasklist(result)
+    output["status"] = "updated"
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+def tasks_list_delete(args):
+    if _gws_binary():
+        _run_gws(["tasks", "tasklists", "delete"], params={"tasklist": args.tasklist_id})
+    else:
+        _tasks_service().tasklists().delete(tasklist=args.tasklist_id).execute()
+    print(json.dumps({"status": "deleted", "tasklistId": args.tasklist_id}, indent=2))
+
+
+def tasks_tasks(args):
+    params = {
+        "tasklist": args.tasklist_id,
+        "maxResults": args.max,
+        "showCompleted": args.show_completed,
+        "showHidden": args.show_hidden,
+    }
+    if args.updated_min:
+        params["updatedMin"] = args.updated_min
+    if args.due_min:
+        params["dueMin"] = args.due_min
+    if args.due_max:
+        params["dueMax"] = args.due_max
+
+    if _gws_binary():
+        result = _run_gws(["tasks", "tasks", "list"], params=params)
+    else:
+        result = _tasks_service().tasks().list(**params).execute()
+    print(json.dumps([_normalize_task(item) for item in result.get("items", [])], indent=2, ensure_ascii=False))
+
+
+def tasks_get(args):
+    params = {"tasklist": args.tasklist_id, "task": args.task_id}
+    if _gws_binary():
+        result = _run_gws(["tasks", "tasks", "get"], params=params)
+    else:
+        result = _tasks_service().tasks().get(**params).execute()
+    print(json.dumps(_normalize_task(result), indent=2, ensure_ascii=False))
+
+
+def _task_body_from_args(args, *, include_status: bool = True) -> dict:
+    body = {"title": args.title}
+    if args.notes:
+        body["notes"] = args.notes
+    if args.due:
+        body["due"] = _tasks_due(args.due)
+    if include_status and getattr(args, "status", ""):
+        body["status"] = args.status
+    return body
+
+
+def _tasks_due(value: str) -> str:
+    if not value:
+        return value
+    if "T" not in value:
+        return f"{value}T00:00:00.000Z"
+    normalized = _datetime_with_timezone(value)
+    if normalized.endswith("Z") and "." not in normalized.rsplit("T", 1)[-1]:
+        return normalized[:-1] + ".000Z"
+    return normalized
+
+
+def tasks_create(args):
+    body = _task_body_from_args(args, include_status=False)
+    params = {"tasklist": args.tasklist_id}
+    if args.parent:
+        params["parent"] = args.parent
+    if args.previous:
+        params["previous"] = args.previous
+
+    if _gws_binary():
+        result = _run_gws(["tasks", "tasks", "insert"], params=params, body=body)
+    else:
+        result = _tasks_service().tasks().insert(body=body, **params).execute()
+    output = _normalize_task(result)
+    output["operationStatus"] = "created"
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+def tasks_update(args):
+    body = {}
+    if args.title:
+        body["title"] = args.title
+    if args.notes is not None:
+        body["notes"] = args.notes
+    if args.due is not None:
+        body["due"] = _tasks_due(args.due) if args.due else None
+    if args.status:
+        body["status"] = args.status
+    if not body:
+        print("ERROR: provide at least one of --title, --notes, --due, or --status", file=sys.stderr)
+        sys.exit(1)
+
+    params = {"tasklist": args.tasklist_id, "task": args.task_id}
+    if _gws_binary():
+        result = _run_gws(["tasks", "tasks", "patch"], params=params, body=body)
+    else:
+        result = _tasks_service().tasks().patch(body=body, **params).execute()
+    print(json.dumps(_normalize_task(result), indent=2, ensure_ascii=False))
+
+
+def tasks_complete(args):
+    body = {"status": "completed"}
+    params = {"tasklist": args.tasklist_id, "task": args.task_id}
+    if _gws_binary():
+        result = _run_gws(["tasks", "tasks", "patch"], params=params, body=body)
+    else:
+        result = _tasks_service().tasks().patch(body=body, **params).execute()
+    output = _normalize_task(result)
+    output["operationStatus"] = "completed"
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+def tasks_delete(args):
+    params = {"tasklist": args.tasklist_id, "task": args.task_id}
+    if _gws_binary():
+        _run_gws(["tasks", "tasks", "delete"], params=params)
+    else:
+        _tasks_service().tasks().delete(**params).execute()
+    print(json.dumps({"status": "deleted", "tasklistId": args.tasklist_id, "taskId": args.task_id}, indent=2))
+
+
+def tasks_clear_completed(args):
+    params = {"tasklist": args.tasklist_id}
+    if _gws_binary():
+        _run_gws(["tasks", "tasks", "clear"], params=params)
+    else:
+        _tasks_service().tasks().clear(**params).execute()
+    print(json.dumps({"status": "cleared", "tasklistId": args.tasklist_id}, indent=2))
+
+
+def tasks_move(args):
+    params = {"tasklist": args.tasklist_id, "task": args.task_id}
+    if args.parent:
+        params["parent"] = args.parent
+    if args.previous:
+        params["previous"] = args.previous
+
+    if _gws_binary():
+        result = _run_gws(["tasks", "tasks", "move"], params=params)
+    else:
+        result = _tasks_service().tasks().move(**params).execute()
+    output = _normalize_task(result)
+    output["operationStatus"] = "moved"
+    print(json.dumps(output, indent=2, ensure_ascii=False))
+
+
+# =========================================================================
 # Docs
 # =========================================================================
 
@@ -1198,6 +1408,81 @@ def main():
     p.add_argument("--title", required=True, help="Spreadsheet title")
     p.add_argument("--sheet-name", default="", help="Name of the first tab (defaults to 'Sheet1')")
     p.set_defaults(func=sheets_create)
+
+    # --- Google Tasks ---
+    tsk = sub.add_parser("tasks")
+    tsk_sub = tsk.add_subparsers(dest="action", required=True)
+
+    p = tsk_sub.add_parser("lists")
+    p.add_argument("--max", type=int, default=100, help="Maximum task lists to return")
+    p.set_defaults(func=tasks_lists)
+
+    p = tsk_sub.add_parser("create-list")
+    p.add_argument("--title", required=True, help="Task list title")
+    p.set_defaults(func=tasks_list_create)
+
+    p = tsk_sub.add_parser("update-list")
+    p.add_argument("tasklist_id")
+    p.add_argument("--title", required=True, help="New task list title")
+    p.set_defaults(func=tasks_list_update)
+
+    p = tsk_sub.add_parser("delete-list")
+    p.add_argument("tasklist_id")
+    p.set_defaults(func=tasks_list_delete)
+
+    p = tsk_sub.add_parser("list")
+    p.add_argument("tasklist_id")
+    p.add_argument("--max", type=int, default=100, help="Maximum tasks to return")
+    p.add_argument("--show-completed", action="store_true", help="Include completed tasks")
+    p.add_argument("--show-hidden", action="store_true", help="Include hidden tasks")
+    p.add_argument("--updated-min", default="", help="Lower bound for updated time (RFC3339)")
+    p.add_argument("--due-min", default="", help="Lower bound for due time (RFC3339)")
+    p.add_argument("--due-max", default="", help="Upper bound for due time (RFC3339)")
+    p.set_defaults(func=tasks_tasks)
+
+    p = tsk_sub.add_parser("get")
+    p.add_argument("tasklist_id")
+    p.add_argument("task_id")
+    p.set_defaults(func=tasks_get)
+
+    p = tsk_sub.add_parser("create")
+    p.add_argument("tasklist_id")
+    p.add_argument("--title", required=True, help="Task title")
+    p.add_argument("--notes", default="", help="Task notes")
+    p.add_argument("--due", default="", help="Due time/date (RFC3339 or ISO 8601; date-only is accepted by Google)")
+    p.add_argument("--parent", default="", help="Parent task ID for subtasks")
+    p.add_argument("--previous", default="", help="Previous sibling task ID for positioning")
+    p.set_defaults(func=tasks_create)
+
+    p = tsk_sub.add_parser("update")
+    p.add_argument("tasklist_id")
+    p.add_argument("task_id")
+    p.add_argument("--title", default="", help="New task title")
+    p.add_argument("--notes", default=None, help="New task notes; pass empty string to clear")
+    p.add_argument("--due", default=None, help="New due time/date; pass empty string to clear")
+    p.add_argument("--status", choices=["needsAction", "completed"], default="", help="New task status")
+    p.set_defaults(func=tasks_update)
+
+    p = tsk_sub.add_parser("complete")
+    p.add_argument("tasklist_id")
+    p.add_argument("task_id")
+    p.set_defaults(func=tasks_complete)
+
+    p = tsk_sub.add_parser("move")
+    p.add_argument("tasklist_id")
+    p.add_argument("task_id")
+    p.add_argument("--parent", default="", help="New parent task ID")
+    p.add_argument("--previous", default="", help="Insert after this sibling task ID")
+    p.set_defaults(func=tasks_move)
+
+    p = tsk_sub.add_parser("delete")
+    p.add_argument("tasklist_id")
+    p.add_argument("task_id")
+    p.set_defaults(func=tasks_delete)
+
+    p = tsk_sub.add_parser("clear-completed")
+    p.add_argument("tasklist_id")
+    p.set_defaults(func=tasks_clear_completed)
 
     # --- Docs ---
     docs = sub.add_parser("docs")

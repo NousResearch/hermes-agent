@@ -1,7 +1,7 @@
 ---
 name: google-workspace
-description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
-version: 1.1.0
+description: "Gmail, Calendar, Drive, Docs, Sheets, Contacts, and Google Tasks via gws CLI or Python."
+version: 1.2.0
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
@@ -12,14 +12,14 @@ required_credential_files:
     description: Google OAuth2 client credentials (downloaded from Google Cloud Console)
 metadata:
   hermes:
-    tags: [Google, Gmail, Calendar, Drive, Sheets, Docs, Contacts, Email, OAuth]
+    tags: [Google, Gmail, Calendar, Drive, Sheets, Docs, Contacts, Tasks, Email, OAuth]
     homepage: https://github.com/NousResearch/hermes-agent
     related_skills: [himalaya]
 ---
 
 # Google Workspace
 
-Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
+Gmail, Calendar, Drive, Contacts, Sheets, Docs, and Google Tasks — through Hermes-managed OAuth and a thin CLI wrapper. When `gws` is installed, the skill uses it as the execution backend for broader Google Workspace coverage; otherwise it falls back to the bundled Python client implementation.
 
 ## References
 
@@ -90,7 +90,7 @@ Tell the user:
 > 2. Enable the required APIs from the API Library:
 >    https://console.cloud.google.com/apis/library
 >    Enable: Gmail API, Google Calendar API, Google Drive API,
->    Google Sheets API, Google Docs API, People API
+>    Google Sheets API, Google Docs API, People API, Google Tasks API
 > 3. Create the OAuth client here:
 >    https://console.cloud.google.com/apis/credentials
 >    Credentials → Create Credentials → OAuth 2.0 Client ID
@@ -120,7 +120,7 @@ Use the service set chosen in Step 1. Examples:
 
 ```bash
 $GSETUP --auth-url --services email,calendar --format json
-$GSETUP --auth-url --services calendar,drive,sheets,docs --format json
+$GSETUP --auth-url --services calendar,drive,sheets,docs,tasks --format json
 $GSETUP --auth-url --services all --format json
 ```
 
@@ -286,6 +286,30 @@ $GAPI docs create --title "Draft" --body "First paragraph..."
 $GAPI docs append DOC_ID --text "Additional content to append"
 ```
 
+### Google Tasks
+
+```bash
+# Task lists
+$GAPI tasks lists
+$GAPI tasks create-list --title "Work"
+$GAPI tasks update-list TASKLIST_ID --title "Work Projects"
+$GAPI tasks delete-list TASKLIST_ID
+
+# Tasks
+$GAPI tasks list TASKLIST_ID --max 20
+$GAPI tasks list TASKLIST_ID --show-completed --show-hidden
+$GAPI tasks get TASKLIST_ID TASK_ID
+$GAPI tasks create TASKLIST_ID --title "Follow up" --notes "Call Alice" --due 2026-03-01
+$GAPI tasks create TASKLIST_ID --title "Subtask" --parent PARENT_TASK_ID
+$GAPI tasks update TASKLIST_ID TASK_ID --title "Updated" --notes "New notes" --due 2026-03-02 --status needsAction
+$GAPI tasks complete TASKLIST_ID TASK_ID
+$GAPI tasks move TASKLIST_ID TASK_ID --previous OTHER_TASK_ID
+$GAPI tasks delete TASKLIST_ID TASK_ID
+$GAPI tasks clear-completed TASKLIST_ID
+```
+
+`tasks delete`, `tasks delete-list`, and `tasks clear-completed` have no trash/undo path. Treat them as irreversible and confirm the exact task list/task IDs before running.
+
 ## Output Format
 
 All commands return JSON. Parse with `jq` or read directly. Key fields:
@@ -307,10 +331,13 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Sheets create**: `{status: "created", spreadsheetId, title, spreadsheetUrl}`
 - **Docs create**: `{status: "created", documentId, title, url}`
 - **Docs append**: `{status: "appended", documentId, inserted_at, characters}`
+- **Tasks lists**: `[{id, title, updated, selfLink}]`
+- **Tasks list**: `[{id, title, notes, status, due, completed, updated, parent, position, links, selfLink}]`
+- **Tasks create/update/get/complete/move**: `{id, title, notes, status, due, ...}`
 
 ## Rules
 
-1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
+1. **Never send email, create/delete calendar events, delete Drive files, share files, modify Docs/Sheets, or create/update/delete Google Tasks without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role, task list/task IDs) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`. For Tasks, `delete`, `delete-list`, and `clear-completed` are irreversible.
 2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
 3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
 4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
@@ -323,7 +350,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 | `NOT_AUTHENTICATED` | Run setup Steps 2-5 above |
 | `REFRESH_FAILED` | Token revoked or expired — redo Steps 3-5 |
 | `HttpError 403: Insufficient Permission` | Missing API scope — `$GSETUP --revoke` then redo Steps 3-5 |
-| `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
+| `AUTHENTICATED (partial)` or "Token missing scopes" | New write capabilities (Drive write/delete, Docs create/edit, Google Tasks) require re-authorization. `$GSETUP --revoke` then redo Steps 3-5 to grant the upgraded scopes. |
 | `HttpError 403: Access Not Configured` | API not enabled — user needs to enable it in Google Cloud Console |
 | `ModuleNotFoundError` | Run `$GSETUP --install-deps` |
 | Advanced Protection blocks auth | Workspace admin must allowlist the OAuth client ID |

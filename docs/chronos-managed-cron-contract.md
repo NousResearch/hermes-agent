@@ -40,9 +40,21 @@ agent verifies the NAS JWT → store CAS claim → run_one_job → re-arm next o
 
 | Hop | Who calls whom | Auth mechanism | Verified by |
 |---|---|---|---|
-| 1 | agent → NAS (`provision`/`cancel`/`list`) | the agent's existing **Nous Portal access token** (Bearer) | NAS (its normal agent-token path) |
+| 1 | agent → NAS (`provision`/`cancel`/`list`) | the agent's existing **Nous Portal access token** (Bearer) — for a hosted agent this is the **bootstrap-session token** NAS planted in `auth.json` (client `hermes-cli-vps`), NOT an `agent:*` client token | NAS (its normal agent-token path) |
 | 2 | scheduler → NAS (`relay`) | the scheduler's request **signature** | NAS (the signature path it already has) |
 | 3 | NAS → agent (`/api/cron/fire`) | a **short-lived NAS-minted JWT** (`aud=agent:{instance_id}`, `purpose=cron_fire`) | agent (PyJWT against NAS JWKS) |
+
+> **Which token, exactly (hop 1).** A hosted agent never holds an `agent:{instance_id}`
+> OAuth client credential — that shape is minted only by the interactive dashboard
+> auth-code grant (a browser user). For all of its own outbound portal calls the
+> agent uses the **bootstrap-session access token** (`resolve_nous_access_token`),
+> minted under the bootstrap-only client `hermes-cli-vps` and seeded into the
+> container on first boot. NAS therefore must resolve the calling agent's instance
+> id from EITHER an `agent:{id}` client (self-hosted/dashboard callers) OR — for the
+> bootstrap token — from `AgentInstance.bootstrapSessionId` matching the token's
+> session id (`sid`), org-scoped. The fire JWT minted at hop 3 still carries
+> `aud=agent:{instance_id}` regardless. (Gating hop 1 on an `agent:*` client alone
+> 403s every real hosted-agent provision — see `src/server/agent-cron/instance-auth.ts`.)
 
 Why NAS-mediated rather than scheduler→agent direct: the scheduler signs with
 **NAS's** keys, which the agent does not (and should not) hold. The agent can

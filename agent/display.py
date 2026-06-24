@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from utils import safe_json_loads
+from agent.redact import redact_sensitive_text
 from agent.tool_result_classification import file_mutation_result_landed
 
 # ANSI escape codes for coloring tool failure indicators
@@ -339,6 +340,58 @@ def _read_file_line_label(args: dict) -> str:
     return f"L{offset}-{offset + limit - 1}"
 
 
+def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
+    """Apply secret redaction to browser_type text in display-facing payloads.
+
+    Backends sometimes echo the attempted input in error strings or fallback
+    metadata.  When the raw typed value contains a recognizable secret (API
+    key, token, JWT, etc.) the redacted form differs from the raw value, so we
+    replace every occurrence of the raw value with its redacted form before a
+    browser_type result reaches logs, callbacks, the model, or chat history.
+
+    Normal typed text (search queries, addresses, form fields) matches no
+    secret pattern, so it passes through unchanged and stays readable.
+    """
+    if typed_text is None:
+        return value
+    needle = str(typed_text)
+    if needle == "":
+        return value
+    redacted = redact_sensitive_text(needle)
+    if redacted == needle:
+        # Nothing secret-looking in the typed text; leave payload untouched.
+        return value
+    if isinstance(value, str):
+        return value.replace(needle, redacted)
+    if isinstance(value, dict):
+        return {
+            key: redact_browser_typed_text_for_display(item, typed_text)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_browser_typed_text_for_display(item, typed_text) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_browser_typed_text_for_display(item, typed_text) for item in value)
+    return value
+
+
+def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
+    """Return a copy of tool args safe for logs/progress UI.
+
+    For ``browser_type`` the ``text`` argument is run through the same
+    secret-pattern redactor used for logs.  Recognizable credentials (API
+    keys, tokens) are masked before the value reaches tool progress
+    notifications; normal typed text is left intact for debuggability.
+    """
+    if not isinstance(args, dict):
+        return args
+    if tool_name == "browser_type" and isinstance(args.get("text"), str):
+        safe_args = dict(args)
+        safe_args["text"] = redact_sensitive_text(args["text"])
+        return safe_args
+    return args
+
+
 def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:
     if not isinstance(tasks, list):
         return 0, []
@@ -362,6 +415,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         max_len = _tool_preview_max_len
     if not args:
         return None
+    args = redact_tool_args_for_display(tool_name, args) or args
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
@@ -1085,6 +1139,7 @@ def get_cute_tool_message(
     When *result* is provided the line is checked for failure indicators.
     Failed tool calls get a red prefix and an informational suffix.
     """
+    args = redact_tool_args_for_display(tool_name, args) or args
     dur = f"{duration:.1f}s"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     skin_prefix = get_skin_tool_prefix()

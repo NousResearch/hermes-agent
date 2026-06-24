@@ -2589,6 +2589,30 @@ class TestConcurrentToolExecution:
         assert starts == [("c1", "web_search", {"query": "hello"})]
         assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
 
+    def test_sequential_browser_type_callbacks_never_echo_typed_text(self, agent):
+        typed_text = "my_secret_password_123"
+        tool_call = _mock_tool_call(
+            name="browser_type",
+            arguments=json.dumps({"ref": "@password", "text": typed_text}),
+            call_id="c-secret",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        starts = []
+        completes = []
+        progress = []
+        agent.tool_start_callback = lambda tool_call_id, function_name, function_args: starts.append((tool_call_id, function_name, function_args))
+        agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
+        agent.tool_progress_callback = lambda event, name, preview, args, **kw: progress.append((event, name, preview, args))
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true, "typed": "[redacted typed text]"}'):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert starts == [("c-secret", "browser_type", {"ref": "@password", "text": "[redacted typed text]"})]
+        assert completes[0][2] == {"ref": "@password", "text": "[redacted typed text]"}
+        assert progress[0][2] == "[redacted typed text]"
+        assert typed_text not in repr(starts + completes + progress)
+
     def test_concurrent_tool_callbacks_fire_for_each_tool(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='{"query":"two"}', call_id="c2")
@@ -2609,6 +2633,30 @@ class TestConcurrentToolExecution:
         assert len(completes) == 2
         assert {entry[0] for entry in completes} == {"c1", "c2"}
         assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
+
+    def test_concurrent_browser_type_callbacks_never_echo_typed_text(self, agent):
+        typed_text = "my_secret_password_123"
+        tc = _mock_tool_call(
+            name="browser_type",
+            arguments=json.dumps({"ref": "@password", "text": typed_text}),
+            call_id="c-secret",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        starts = []
+        completes = []
+        progress = []
+        agent.tool_start_callback = lambda tool_call_id, function_name, function_args: starts.append((tool_call_id, function_name, function_args))
+        agent.tool_complete_callback = lambda tool_call_id, function_name, function_args, function_result: completes.append((tool_call_id, function_name, function_args, function_result))
+        agent.tool_progress_callback = lambda event, name, preview, args, **kw: progress.append((event, name, preview, args))
+
+        with patch("run_agent.handle_function_call", return_value='{"success": true, "typed": "[redacted typed text]"}'):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert starts == [("c-secret", "browser_type", {"ref": "@password", "text": "[redacted typed text]"})]
+        assert completes[0][2] == {"ref": "@password", "text": "[redacted typed text]"}
+        assert progress[0][2] == "[redacted typed text]"
+        assert typed_text not in repr(starts + completes + progress)
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""

@@ -642,6 +642,20 @@ def is_container() -> bool:
                 return True
     except OSError:
         pass
+    # ── WSL + Docker Desktop false-positive guard ─────────────────
+    # Docker Desktop on Windows mounts its containerd overlay filesystems into
+    # the WSL2 kernel.  These paths contain the string "containerd" and would
+    # trigger a false positive two blocks below, even though the process is
+    # running natively on the WSL2 host (not inside a container).
+    #
+    # A *real* container running inside WSL (Docker/Podman) is caught earlier
+    # by /.dockerenv, /run/.containerenv, or /proc/1/cgroup markers, so this
+    # guard is safe — it only affects the host WSL process that Docker Desktop
+    # polluted the mount table of.
+    if is_wsl():
+        _container_detected = False
+        return False
+
     # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
     # runtime still shows up in the mount table (overlay rootfs, runtime mount
     # paths), so scan mountinfo as a last resort.

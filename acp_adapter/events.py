@@ -143,7 +143,8 @@ def make_tool_progress_cb(
         if not isinstance(args, dict):
             args = {}
 
-        tc_id = make_tool_call_id()
+        raw_tool_call_id = kwargs.get("tool_call_id")
+        tc_id = str(raw_tool_call_id).strip() if raw_tool_call_id else make_tool_call_id()
         queue = tool_call_ids.get(name)
         if queue is None:
             queue = deque()
@@ -180,6 +181,67 @@ def make_tool_progress_cb(
         _send_update(conn, session_id, loop, update)
 
     return _tool_progress
+
+
+def _pop_next_tool_call_id(
+    tool_call_ids: Dict[str, Deque[str]],
+    tool_name: str,
+    preferred_tool_call_id: str | None = None,
+) -> str | None:
+    queue = tool_call_ids.get(tool_name or "")
+    if queue is None:
+        return None
+    if isinstance(queue, str):
+        queue = deque([queue])
+        tool_call_ids[tool_name] = queue
+    if not queue:
+        return None
+    if preferred_tool_call_id and preferred_tool_call_id in queue:
+        queue.remove(preferred_tool_call_id)
+        tool_call_id = preferred_tool_call_id
+    else:
+        tool_call_id = queue.popleft()
+    if not queue:
+        tool_call_ids.pop(tool_name, None)
+    return tool_call_id
+
+
+def make_tool_complete_cb(
+    conn: acp.Client,
+    session_id: str,
+    loop: asyncio.AbstractEventLoop,
+    tool_call_ids: Dict[str, Deque[str]],
+    tool_call_meta: Dict[str, Dict[str, Any]],
+) -> Callable:
+    """Create a ``tool_complete_callback`` that emits ACP completion updates."""
+
+    def _tool_complete(
+        tool_call_id: str,
+        function_name: str,
+        function_args: Any,
+        function_result: Any,
+    ) -> None:
+        preferred = str(tool_call_id).strip() if tool_call_id else None
+        acp_tool_call_id = _pop_next_tool_call_id(tool_call_ids, function_name, preferred)
+        if not acp_tool_call_id:
+            return
+
+        meta = tool_call_meta.pop(acp_tool_call_id, {})
+        result = str(function_result) if function_result is not None else None
+        update = build_tool_complete(
+            acp_tool_call_id,
+            function_name,
+            result=result,
+            function_args=function_args if isinstance(function_args, dict) else meta.get("args"),
+            snapshot=meta.get("snapshot"),
+        )
+        _send_update(conn, session_id, loop, update)
+        if function_name == "todo":
+            plan_update = _build_plan_update_from_todo_result(result)
+            if plan_update is not None:
+                _send_update(conn, session_id, loop, plan_update)
+
+    return _tool_complete
 
 
 # ------------------------------------------------------------------

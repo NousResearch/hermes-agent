@@ -17,6 +17,7 @@ from acp_adapter.events import (
     make_message_cb,
     make_step_cb,
     make_thinking_cb,
+    make_tool_complete_cb,
     make_tool_progress_cb,
 )
 
@@ -126,6 +127,46 @@ class TestToolProgressCallback:
             step_cb(2, [{"name": "terminal", "result": "ok-2"}])
             assert "terminal" not in tool_call_ids
 
+
+class TestToolLifecycleCallbacks:
+    def test_tool_complete_emits_update_without_waiting_for_step(self, mock_conn, event_loop_fixture):
+        """Tool completion callback should immediately emit ACP completion."""
+        tool_call_ids = {}
+        tool_call_meta = {}
+        progress_cb = make_tool_progress_cb(
+            mock_conn, "session-1", event_loop_fixture, tool_call_ids, tool_call_meta
+        )
+        complete_cb = make_tool_complete_cb(
+            mock_conn,
+            "session-1",
+            event_loop_fixture,
+            tool_call_ids,
+            tool_call_meta,
+        )
+
+        with patch("acp_adapter.events._send_update"):
+            progress_cb(
+                "tool.started",
+                "read_file",
+                "read: /tmp/a.txt",
+                {"path": "/tmp/a.txt"},
+                tool_call_id="provider-read",
+            )
+
+        with patch("acp_adapter.events._send_update") as mock_send, \
+             patch("acp_adapter.events.build_tool_complete") as mock_btc:
+            complete_cb("provider-read", "read_file", {"path": "/tmp/a.txt"}, "file contents")
+
+        mock_btc.assert_called_once_with(
+            "provider-read",
+            "read_file",
+            result="file contents",
+            function_args={"path": "/tmp/a.txt"},
+            snapshot=None,
+        )
+        mock_send.assert_called_once()
+        assert "read_file" not in tool_call_ids
+        assert tool_call_meta == {}
 
 # ---------------------------------------------------------------------------
 # Thinking callback

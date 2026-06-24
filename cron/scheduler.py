@@ -1861,11 +1861,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
-        from dotenv import load_dotenv
-        try:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
-        except UnicodeDecodeError:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
+        # In multiplex mode, skip load_dotenv() — writing one profile's .env
+        # into the process-global os.environ would pollute concurrent requests
+        # from other profiles.  Credentials are already available via the scope
+        # installed below (build_profile_secret_scope).
+        from agent.secret_scope import is_multiplex_active as _is_multiplex_active
+        if not _is_multiplex_active():
+            from dotenv import load_dotenv
+            try:
+                load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
+            except UnicodeDecodeError:
+                load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:

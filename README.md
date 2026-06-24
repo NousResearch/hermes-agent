@@ -120,6 +120,47 @@ hermes doctor       # Diagnose any issues
 
 ---
 
+## Polytrader: Polymarket CLOB v2 dry-run trading core
+
+This checkout includes `polytrader`, a **DRY_RUN-first** Python core for short-interval Polymarket crypto up/down markets. It is intentionally modular so live execution is isolated from market selection, fee-aware strategy evaluation, and risk gates:
+
+```text
+polytrader/
+  config.py            DRY_RUN defaults, SAFE_ADDRESS/funder handling, collateral limits
+  models.py            dataclasses for selected markets, metadata, decisions, receipts
+  market_selection.py  chosen 5-minute crypto up/down market selector
+  market_data.py       CLOB v2 metadata enrichment: tick size, neg-risk, fee metadata
+  strategy.py          fee-aware buy evaluation after tick rounding
+  risk.py              collateral-balance and open-position risk gates
+  execution.py         py_clob_client_v2 live adapter with a hard dry-run guard
+  agent.py             one-cycle orchestration core
+```
+
+Safety defaults:
+
+- `DRY_RUN=true` by default; dry-run execution returns a receipt and never calls `create_and_post_order`.
+- Live execution imports `py_clob_client_v2` and passes CLOB v2 order options: `tick_size` and `neg_risk`.
+- `SAFE_ADDRESS` is treated as the Polymarket Safe/proxy wallet funder; if set, `SIGNATURE_TYPE` defaults to `2` unless explicitly overridden.
+- Risk settings use **collateral balance** terminology: `MAX_COLLATERAL_PER_TRADE`, `MIN_COLLATERAL_BALANCE`, and `MAX_OPEN_POSITIONS`.
+- Trade evaluation subtracts fee impact from edge using CLOB v2 market metadata from `get_fee_rate_bps()` and `get_fee_exponent()`.
+- `MARKET_SLUG` pins one exact 5-minute market; otherwise `CRYPTO_SYMBOL` selects the active chosen crypto 5-minute up/down market.
+
+Install the optional execution SDK only when you are preparing live trading:
+
+```bash
+pip install '.[polymarket]'
+```
+
+Core behavior is covered by:
+
+```bash
+scripts/run_tests.sh tests/test_polytrader_core.py
+```
+
+Trading risk: this code is not financial advice. Keep dry-run logs boring before considering live mode, and never put private keys or API credentials in chat, screenshots, docs, tests, or logs.
+
+---
+
 ## Skip the API-key collection — Nous Portal
 
 Hermes works with whatever provider you want — that's not changing. But if you'd rather not collect five separate API keys for the model, web search, image generation, TTS, and a cloud browser, **[Nous Portal](https://portal.nousresearch.com)** covers all of them under one subscription:

@@ -1553,7 +1553,7 @@ async def _standalone_send(
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 webhook_url,
-                json={"msgtype": "text", "text": {"content": message}},
+                json={"msgtype": "markdown", "markdown": {"title": "Hermes", "text": message}},
             )
             resp.raise_for_status()
             data = resp.json()

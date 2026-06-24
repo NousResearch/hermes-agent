@@ -1642,16 +1642,27 @@ def init_agent(
             for t in agent.tools
             if isinstance(t, dict)
         }
-        for _schema in agent.context_compressor.get_tool_schemas():
-            _tname = _schema.get("name", "")
-            if _tname and _tname in _existing_tool_names:
+        from agent.memory_manager import normalize_tool_schema as _normalize_tool_schema
+        for _raw_schema in agent.context_compressor.get_tool_schemas():
+            _schema = _normalize_tool_schema(_raw_schema)
+            if _schema is None:
+                # A schema with no resolvable name (e.g. an already-wrapped
+                # entry) would append a nameless tool that strict providers
+                # 400 on, disabling the whole toolset (#47707). Skip it.
+                _ra().logger.warning(
+                    "Context engine returned a tool schema with no resolvable "
+                    "name; skipping to avoid poisoning the request (%r)",
+                    _raw_schema,
+                )
+                continue
+            _tname = _schema["name"]
+            if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
             _wrapped = {"type": "function", "function": _schema}
             agent.tools.append(_wrapped)
-            if _tname:
-                agent.valid_tool_names.add(_tname)
-                agent._context_engine_tool_names.add(_tname)
-                _existing_tool_names.add(_tname)
+            agent.valid_tool_names.add(_tname)
+            agent._context_engine_tool_names.add(_tname)
+            _existing_tool_names.add(_tname)
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:

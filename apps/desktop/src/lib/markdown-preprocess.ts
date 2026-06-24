@@ -1,3 +1,5 @@
+import { escapeCurrencyDollars, normalizeMathDelimiters } from '@assistant-ui/react-streamdown'
+
 import { isLikelyProseFence, sanitizeLanguageTag } from '@/lib/markdown-code'
 import { stripPreviewTargets } from '@/lib/preview-targets'
 
@@ -310,41 +312,6 @@ function normalizeFenceBlocks(text: string): string {
   return out.join('\n')
 }
 
-// Convert LaTeX bracket delimiters to remark-math's dollar-sign syntax.
-// Models often emit `\(...\)` for inline math and `\[...\]` for display
-// math (the standard LaTeX convention) instead of `$...$` / `$$...$$`.
-// remark-math only natively recognizes the dollar form, so we rewrite at
-// preprocess time. Done with simple non-greedy matches keyed on the
-// escaped-bracket sequences — these are rare enough in non-math content
-// (you'd have to write a literal `\(` followed eventually by a literal
-// `\)` with NO interleaving newline-paragraph-break) that false positives
-// are extremely unlikely.
-const LATEX_INLINE_RE = /\\\(([^\n]+?)\\\)/g
-const LATEX_DISPLAY_RE = /\\\[([\s\S]+?)\\\]/g
-
-function rewriteLatexBracketDelimiters(text: string): string {
-  return text
-    .replace(LATEX_INLINE_RE, (_, body: string) => `$${body}$`)
-    .replace(LATEX_DISPLAY_RE, (_, body: string) => `$$${body}$$`)
-}
-
-// Escape `$<digit>` patterns so they don't get eaten as math delimiters.
-// Models commonly write currency amounts ($5, $19.99, $1,299) in prose.
-// With `singleDollarTextMath: true`, remark-math is greedy and matches
-// EVERY pair of `$`s — including the open of `$5` to the next `$10`,
-// rendering "5 in my pocket and you have " as italicized math text.
-// The de-facto convention across math-supporting LLM UIs is to treat
-// `$` followed by a digit as currency rather than math, since math
-// expressions almost always start with a letter or `\command`. Trade-
-// off: a math expression like `$5x = 10$` would have its leading 5
-// escaped — annoying but rare. The escape `\$` survives to render as
-// a literal `$` in the final output.
-const CURRENCY_DOLLAR_RE = /(^|[^\\])\$(?=\d)/g
-
-function escapeCurrencyDollars(text: string): string {
-  return text.replace(CURRENCY_DOLLAR_RE, '$1\\$')
-}
-
 export function preprocessMarkdown(text: string): string {
   const cleaned = text.replace(REASONING_BLOCK_RE, '').replace(PREVIEW_MARKER_RE, '')
   const scrubbed = scrubBacktickNoise(cleaned)
@@ -377,12 +344,12 @@ export function preprocessMarkdown(text: string): string {
       const leading = part.match(/^\s*/)?.[0] ?? ''
       const trailing = part.match(/\s*$/)?.[0] ?? ''
 
-      // rewriteLatexBracketDelimiters runs only on prose segments so
-      // we don't accidentally touch `\(` inside a code block.
-      // escapeCurrencyDollars likewise only runs on prose, so legit
-      // `$5` literals inside fenced code stay intact.
+      // normalizeMathDelimiters rewrites LaTeX bracket delimiters and
+      // custom math tags to dollar form. escapeCurrencyDollars escapes
+      // `$<digit>` so currency isn't eaten as math. Both run only on
+      // prose segments so code blocks stay untouched.
       const transformed = normalizeVisibleProse(
-        stripPreviewTargets(rewriteLatexBracketDelimiters(escapeCurrencyDollars(part)))
+        stripPreviewTargets(normalizeMathDelimiters(escapeCurrencyDollars(part)))
       )
 
       return leading + transformed + trailing

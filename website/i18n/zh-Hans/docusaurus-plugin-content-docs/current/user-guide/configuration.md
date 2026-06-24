@@ -650,6 +650,7 @@ context:
 agent:
   max_turns: 90                # 每次对话轮次的最大迭代次数（默认：90）
   api_max_retries: 3           # 回退启动前每个 provider 的重试次数（默认：3）
+  rate_limit_retry_before_fallback: 0   # 瞬时 429 时先重试主 provider 再回退（默认：0=关闭）
 ```
 
 预算压力默认启用。Agent 自然地将警告视为工具结果的一部分，鼓励它在耗尽迭代之前整合工作并提供响应。

@@ -403,6 +403,7 @@ export const zh: Translations = {
         maxTurns: '最大智能体步数',
         imageInputMode: '图片附件',
         apiMaxRetries: 'API 重试次数',
+        rateLimitRetryBeforeFallback: '速率限制时重试主要供应商',
         serviceTier: '服务等级',
         toolUseEnforcement: '工具调用强制'
       },

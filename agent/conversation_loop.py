@@ -100,6 +100,26 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     return None
 
 
+def _rate_limit_looks_transient(api_error: Any, classified: Any, window_seconds: float = 120.0) -> bool:
+    resp_headers = getattr(getattr(api_error, "response", None), "headers", None)
+    if resp_headers and hasattr(resp_headers, "get"):
+        raw = resp_headers.get("retry-after") or resp_headers.get("Retry-After")
+        if raw:
+            try:
+                return 0 < float(raw) <= window_seconds
+            except (TypeError, ValueError):
+                pass
+    reset_at = getattr(classified, "error_context", None)
+    if isinstance(reset_at, dict):
+        candidate = reset_at.get("reset_at") or reset_at.get("resets_at")
+        try:
+            if candidate is not None:
+                return 0 < (float(candidate) - time.time()) <= window_seconds
+        except (TypeError, ValueError):
+            pass
+    return False
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -2809,7 +2829,14 @@ def run_conversation(
                         provider=agent.provider,
                         base_url=getattr(agent, "base_url", None),
                     )
-                    if not pool_may_recover:
+                    _rl_retry_budget = getattr(agent, "_rate_limit_retry_before_fallback", 0)
+                    _retry_primary_first = (
+                        _rl_retry_budget > 0
+                        and classified.reason == FailoverReason.rate_limit
+                        and retry_count < _rl_retry_budget
+                        and _rate_limit_looks_transient(api_error, classified)
+                    )
+                    if not pool_may_recover and not _retry_primary_first:
                         if classified.reason == FailoverReason.billing:
                             agent._buffer_status(
                                 "⚠️ Billing or credits exhausted — switching to fallback provider..."

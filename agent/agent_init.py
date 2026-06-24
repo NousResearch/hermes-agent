@@ -1291,6 +1291,13 @@ def init_agent(
         _api_retries = 3
     agent._api_max_retries = _api_retries
 
+    try:
+        _rl_retry_before_fb = int(_agent_section.get("rate_limit_retry_before_fallback", 0))
+        _rl_retry_before_fb = max(_rl_retry_before_fb, 0)
+    except (TypeError, ValueError):
+        _rl_retry_before_fb = 0
+    agent._rate_limit_retry_before_fallback = _rl_retry_before_fb
+
     # Initialize context compressor for automatic context management
     # Compresses conversation when approaching model's context limit
     # Configuration via config.yaml (compression section)

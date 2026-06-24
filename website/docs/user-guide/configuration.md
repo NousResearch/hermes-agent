@@ -834,6 +834,7 @@ Warnings are injected into the last tool result's JSON (as a `_budget_warning` f
 agent:
   max_turns: 90                # Max iterations per conversation turn (default: 90)
   api_max_retries: 3           # Retries per provider before fallback engages (default: 3)
+  rate_limit_retry_before_fallback: 0   # Retry primary on transient 429 before fallback (default: 0 = off)
 ```
 
 Budget pressure is enabled by default. The agent sees warnings naturally as part of tool results, encouraging it to consolidate its work and deliver a response before running out of iterations.
@@ -841,6 +842,8 @@ Budget pressure is enabled by default. The agent sees warnings naturally as part
 When the iteration budget is fully exhausted, the CLI shows a notification to the user: `⚠ Iteration budget reached (90/90) — response may be incomplete`. If the budget runs out during active work, the agent generates a summary of what was accomplished before stopping.
 
 `agent.api_max_retries` controls how many times Hermes retries a provider API call on transient errors (rate limits, connection drops, 5xx) **before** fallback-provider switching engages. The default is `3` — four attempts total. If you have [fallback providers](/user-guide/features/fallback-providers) configured and want to fail over faster, drop this to `0` so the first transient error on your primary immediately hands off to the fallback instead of churning retries against the flaky endpoint.
+
+`agent.rate_limit_retry_before_fallback` is the inverse knob, scoped to rate limits. By default (`0`), a `429` on the primary switches to the fallback provider immediately rather than consuming `api_max_retries`. If your primary is a single-credential provider that returns *transient* burst `429`s (a short `Retry-After` window) and you'd rather give it a few retries before handing off, set this to `N > 0`. It only applies when the `429` looks transient — a short `Retry-After` header or a near-future reset window; quota-exhaustion `429`s still fall back immediately so you never burn retries against a wall that won't clear for hours.
 
 ### API Timeouts
 

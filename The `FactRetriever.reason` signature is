@@ -1,0 +1,1 @@
+def reason(self, entities: list[str], category: str | None = None, limit: int = 10) -> list[dict]:

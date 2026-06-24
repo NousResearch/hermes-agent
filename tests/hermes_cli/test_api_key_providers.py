@@ -1,6 +1,8 @@
 """Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax)."""
 
+import copy
 import os
+from contextlib import nullcontext
 
 import pytest
 
@@ -17,6 +19,7 @@ from hermes_cli.auth import (
     STEPFUN_STEP_PLAN_INTL_BASE_URL,
     STEPFUN_STEP_PLAN_CN_BASE_URL,
     _resolve_kimi_base_url,
+    _resolve_zai_base_url,
 )
 from hermes_cli.copilot_auth import _try_gh_cli_token
 
@@ -995,6 +998,51 @@ class TestZaiEndpointAutoDetect:
         monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", lambda *a, **kw: None)
         creds = resolve_api_key_provider_credentials("zai")
         assert creds["api_key"] == ""
+
+    def test_probe_success_persists_cache_and_reuses_it(self, monkeypatch):
+        store = {}
+        saves = []
+
+        monkeypatch.setattr("hermes_cli.auth._auth_store_lock", lambda: nullcontext())
+        monkeypatch.setattr("hermes_cli.auth._load_auth_store", lambda: store)
+        monkeypatch.setattr(
+            "hermes_cli.auth._save_auth_store",
+            lambda auth_store: saves.append(copy.deepcopy(auth_store)),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.auth.detect_zai_endpoint",
+            lambda *a, **kw: {
+                "id": "coding-global",
+                "base_url": "https://api.z.ai/api/coding/paas/v4",
+                "model": "glm-4.7",
+                "label": "Global (Coding Plan)",
+            },
+        )
+
+        first = _resolve_zai_base_url(
+            "glm-coding-key",
+            "https://api.z.ai/api/paas/v4",
+            "",
+        )
+
+        assert first == "https://api.z.ai/api/coding/paas/v4"
+        assert saves, "successful auto-detection should persist auth store"
+        cached = store["providers"]["zai"]["detected_endpoint"]
+        assert cached["base_url"] == "https://api.z.ai/api/coding/paas/v4"
+        assert cached["endpoint_id"] == "coding-global"
+
+        def _never_called(*_args, **_kwargs):
+            raise AssertionError("cached endpoint should skip probe")
+
+        monkeypatch.setattr("hermes_cli.auth.detect_zai_endpoint", _never_called)
+        second = _resolve_zai_base_url(
+            "glm-coding-key",
+            "https://api.z.ai/api/paas/v4",
+            "",
+        )
+
+        assert second == "https://api.z.ai/api/coding/paas/v4"
+        assert len(saves) == 1
 
 
 # =============================================================================

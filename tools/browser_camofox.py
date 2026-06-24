@@ -234,7 +234,11 @@ def _rewrite_loopback_url_for_camofox(url: str) -> tuple[str, Optional[Dict[str,
             userinfo += f":{parsed.password}"
         userinfo += "@"
     host_part = f"[{alias}]" if ":" in alias and not alias.startswith("[") else alias
-    port_part = f":{parsed.port}" if parsed.port else ""
+    try:
+        port = parsed.port
+    except ValueError:
+        return url, None
+    port_part = f":{port}" if port else ""
     rewritten = urlunsplit(
         SplitResult(parsed.scheme, f"{userinfo}{host_part}{port_part}", parsed.path, parsed.query, parsed.fragment)
     )

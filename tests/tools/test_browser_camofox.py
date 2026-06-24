@@ -114,6 +114,16 @@ class TestCamofoxLoopbackRewrite:
         assert metadata is None
 
     @patch("tools.browser_camofox.load_config")
+    def test_invalid_loopback_port_fails_closed(self, mock_config, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_REWRITE_LOOPBACK_URLS", raising=False)
+        mock_config.return_value = _config_with_camofox(rewrite_loopback_urls=True)
+
+        rewritten, metadata = _rewrite_loopback_url_for_camofox("http://127.0.0.1:bad/path")
+
+        assert rewritten == "http://127.0.0.1:bad/path"
+        assert metadata is None
+
+    @patch("tools.browser_camofox.load_config")
     def test_env_alias_takes_precedence(self, mock_config, monkeypatch):
         monkeypatch.setenv("CAMOFOX_REWRITE_LOOPBACK_URLS", "true")
         monkeypatch.setenv("CAMOFOX_LOOPBACK_HOST_ALIAS", "192.168.1.10")

@@ -6,7 +6,7 @@ from providers.base import ProviderProfile
 zai = ProviderProfile(
     name="zai",
     aliases=("glm", "z-ai", "z.ai", "zhipu"),
-    env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"),
+    env_vars=("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
     display_name="Z.AI (GLM)",
     description="Z.AI / GLM — Zhipu AI models",
     signup_url="https://z.ai/",

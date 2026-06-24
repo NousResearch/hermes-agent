@@ -126,3 +126,16 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_ws_write_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("HERMES_TUI_WS_WRITE_TIMEOUT_S", "30.5")
+
+    assert ws_mod._resolve_ws_write_timeout() == 30.5
+
+
+def test_ws_write_timeout_env_falls_back_for_invalid_values(monkeypatch):
+    for raw in ("", "0", "-1", "nan", "inf", "slow"):
+        monkeypatch.setenv("HERMES_TUI_WS_WRITE_TIMEOUT_S", raw)
+
+        assert ws_mod._resolve_ws_write_timeout() == 10.0

@@ -27,17 +27,30 @@ import asyncio
 import concurrent.futures
 import json
 import logging
+import math
 import socket
 from typing import Any
 
 from tui_gateway import server
+from utils import env_float
 
 _log = logging.getLogger(__name__)
 
 # Max seconds a pool-dispatched handler will block waiting for the event loop
 # to flush a WS frame before we mark the transport dead. Protects handler
 # threads from a wedged socket.
-_WS_WRITE_TIMEOUT_S = 10.0
+_DEFAULT_WS_WRITE_TIMEOUT_S = 10.0
+_WS_WRITE_TIMEOUT_ENV = "HERMES_TUI_WS_WRITE_TIMEOUT_S"
+
+
+def _resolve_ws_write_timeout() -> float:
+    value = env_float(_WS_WRITE_TIMEOUT_ENV, _DEFAULT_WS_WRITE_TIMEOUT_S)
+    if not math.isfinite(value) or value <= 0:
+        return _DEFAULT_WS_WRITE_TIMEOUT_S
+    return value
+
+
+_WS_WRITE_TIMEOUT_S = _resolve_ws_write_timeout()
 _WS_LOG_PAYLOAD_PREVIEW = 240
 
 # Keep starlette optional at import time; handle_ws uses the real class when

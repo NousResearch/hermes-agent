@@ -528,8 +528,95 @@ class TestWebSearchSchema:
              patch.object(tools.web_tools._debug, "save"):
             result = json.loads(tools.web_tools.web_search_tool("docs", limit=500))
 
-        assert result == {"success": True, "data": {"web": []}}
+        assert result == {"success": True, "data": {"web": []}, "provider": "parallel"}
         fake_search.assert_called_once_with("docs", 100)
+
+    def test_web_search_normalizes_and_deduplicates_provider_results(self):
+        import tools.web_tools
+
+        fake_search = MagicMock(return_value={
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "First",
+                        "url": "https://example.com/docs#intro",
+                        "description": "first hit",
+                        "position": 99,
+                    },
+                    {
+                        "title": "Duplicate",
+                        "url": "https://example.com/docs#usage",
+                        "description": "duplicate canonical URL",
+                        "position": 100,
+                    },
+                    {
+                        "title": "Blank URL should be dropped",
+                        "url": "",
+                        "description": "not useful",
+                    },
+                    {
+                        "title": 123,
+                        "url": "https://other.example/page?utm_source=newsletter&a=1",
+                        "description": None,
+                    },
+                ]
+            },
+        })
+        fake_provider = MagicMock(
+            name="test-provider",
+            supports_search=MagicMock(return_value=True),
+        )
+        fake_provider.search = fake_search
+        fake_provider.name = "test-provider"
+
+        with patch("tools.web_tools._get_search_backend", return_value="test-provider"), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("docs", limit=3))
+
+        assert result == {
+            "success": True,
+            "data": {
+                "web": [
+                    {
+                        "title": "First",
+                        "url": "https://example.com/docs#intro",
+                        "description": "first hit",
+                        "position": 1,
+                    },
+                    {
+                        "title": "123",
+                        "url": "https://other.example/page?utm_source=newsletter&a=1",
+                        "description": "",
+                        "position": 2,
+                    },
+                ]
+            },
+            "provider": "test-provider",
+        }
+
+    def test_web_search_preserves_provider_error_shape(self):
+        import tools.web_tools
+
+        fake_search = MagicMock(return_value={"success": False, "error": "quota exceeded"})
+        fake_provider = MagicMock(
+            name="test-provider",
+            supports_search=MagicMock(return_value=True),
+        )
+        fake_provider.search = fake_search
+        fake_provider.name = "test-provider"
+
+        with patch("tools.web_tools._get_search_backend", return_value="test-provider"), \
+             patch("agent.web_search_registry.get_provider", return_value=fake_provider), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.object(tools.web_tools._debug, "log_call"), \
+             patch.object(tools.web_tools._debug, "save"):
+            result = json.loads(tools.web_tools.web_search_tool("docs", limit=3))
+
+        assert result == {"success": False, "error": "quota exceeded", "provider": "test-provider"}
 
 
 class TestWebSearchErrorHandling:

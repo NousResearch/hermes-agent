@@ -257,6 +257,87 @@ def _ddgs_package_importable() -> bool:
     except ImportError:
         return False
 
+
+def _search_dedupe_key(url: str) -> str:
+    """Return a stable key for web-search de-duplication.
+
+    Providers sometimes return the same document multiple times with
+    different fragments (``#overview`` vs ``#install``).  The tool should keep
+    the first useful hit while avoiding repeated URLs in the limited result
+    budget.  Query strings are preserved because they can identify distinct
+    pages on search-heavy sites; fragments are dropped because they only point
+    inside the same fetched document.
+    """
+    from urllib.parse import urlsplit, urlunsplit
+
+    try:
+        parts = urlsplit(url.strip())
+    except Exception:
+        return url.strip()
+    path = parts.path.rstrip("/") or parts.path
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), path, parts.query, ""))
+
+
+def _normalize_web_search_response(
+    response_data: Any,
+    *,
+    provider_name: str,
+    limit: int,
+) -> Dict[str, Any]:
+    """Normalize provider search output before returning it to the model.
+
+    Individual providers already try to emit the legacy shape, but the central
+    dispatcher is the last chance to make the model-facing result dependable:
+    - preserve provider errors at top level;
+    - include the provider name for debuggability;
+    - drop unusable blank-URL hits;
+    - de-duplicate repeated URLs (ignoring fragments);
+    - coerce title/description to strings;
+    - renumber positions after filtering and enforce the requested limit.
+    """
+    if not isinstance(response_data, dict):
+        return {
+            "success": False,
+            "error": f"{provider_name} returned an invalid search response",
+            "provider": provider_name,
+        }
+
+    if response_data.get("success") is False:
+        normalized_error = dict(response_data)
+        normalized_error.setdefault("provider", provider_name)
+        return normalized_error
+
+    raw_results = response_data.get("data", {}).get("web", [])
+    if not isinstance(raw_results, list):
+        raw_results = []
+
+    seen: set[str] = set()
+    normalized_results: List[Dict[str, Any]] = []
+    for raw in raw_results:
+        if not isinstance(raw, dict):
+            continue
+        url = str(raw.get("url") or "").strip()
+        if not url:
+            continue
+        key = _search_dedupe_key(url)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized_results.append({
+            "title": str(raw.get("title") or ""),
+            "url": url,
+            "description": str(raw.get("description") or ""),
+            "position": len(normalized_results) + 1,
+        })
+        if len(normalized_results) >= limit:
+            break
+
+    normalized = dict(response_data)
+    normalized["success"] = bool(response_data.get("success", True))
+    normalized["data"] = {"web": normalized_results}
+    normalized["provider"] = provider_name
+    return normalized
+
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -871,13 +952,18 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "Web search via %s: '%s' (limit: %d)",
                 provider.name, query, limit,
             )
-            response_data = provider.search(query, limit)
+            response_data = _normalize_web_search_response(
+                provider.search(query, limit),
+                provider_name=provider.name,
+                limit=limit,
+            )
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
         debug_call_data["final_response_size"] = len(result_json)
         _debug.log_call("web_search_tool", debug_call_data)
         _debug.save()
+
         return result_json
 
     except Exception as e:

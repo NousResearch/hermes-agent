@@ -1578,13 +1578,21 @@ function Install-Venv {
             # `pythonw.exe -m hermes_cli.main gateway run` straight out of
             # venv\Scripts\, so its image name is python/pythonw, not hermes.exe.
             # That process holds the venv's .pyd files open and re-triggers the
-            # access-denied failure. Kill anything whose executable lives under
-            # THIS venv, matched by path so the image name does not matter and a
-            # global/system python outside the venv is never touched.
-            $venvRoot = (Join-Path $InstallDir "venv")
+            # access-denied failure. Stop anything whose executable lives under
+            # this venv, matched by path prefix so the image name does not matter
+            # and a global/system python outside the venv is never touched.
+            #
+            # The gateway autostart task registers with /RL LIMITED as the current
+            # user (see hermes_cli/gateway_windows.py), so the installer always
+            # runs at equal-or-higher integrity and can read its executable path.
+            # Get-CimInstance is used over Get-Process because it returns a null
+            # ExecutablePath for a process it cannot inspect (a different session)
+            # instead of throwing, so an unreadable process is skipped rather than
+            # aborting the whole sweep.
+            $venvPrefix = [System.IO.Path]::GetFullPath((Join-Path $InstallDir "venv")).TrimEnd('\') + '\'
             try {
                 Get-CimInstance Win32_Process -ErrorAction Stop |
-                    Where-Object { $_.ProcessId -ne $myPid -and $_.ExecutablePath -and $_.ExecutablePath -like "$venvRoot\*" } |
+                    Where-Object { $_.ProcessId -ne $myPid -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($venvPrefix, [System.StringComparison]::OrdinalIgnoreCase) } |
                     ForEach-Object {
                         Write-Info "  stopping PID $($_.ProcessId) ($($_.Name)) running from venv"
                         Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
@@ -1594,7 +1602,14 @@ function Install-Venv {
             }
             Start-Sleep -Milliseconds 800
         }
-        Remove-Item -Recurse -Force "venv"
+        Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
+        # A killed process can take a moment to release its file handles, so a
+        # first Remove-Item may still hit a locked .pyd. Retry once after a short
+        # pause before giving up and letting the stage fail loudly.
+        if (Test-Path "venv") {
+            Start-Sleep -Seconds 2
+            Remove-Item -Recurse -Force "venv"
+        }
     }
     
     # uv creates the venv and pins the Python version in one step.  uv emits

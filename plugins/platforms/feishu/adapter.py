@@ -4671,6 +4671,44 @@ class FeishuAdapter(BasePlatformAdapter):
                 last_error = exc
                 if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
                     raise
+                # When a reply target has been withdrawn/missing, the Lark SDK
+                # may raise an exception instead of returning an error response
+                # with code 230011/231003.  Fall back to creating a new message
+                # so the response is not silently dropped.
+                if active_reply_to:
+                    if (metadata or {}).get("thread_id"):
+                        logger.warning(
+                            "[Feishu] Reply to %s raised in thread %s (%s); "
+                            "skipping top-level fallback to avoid creating a new topic",
+                            active_reply_to,
+                            (metadata or {}).get("thread_id"),
+                            exc,
+                        )
+                        raise
+                    logger.warning(
+                        "[Feishu] Reply to %s raised (%s); "
+                        "falling back to new message in chat %s",
+                        active_reply_to,
+                        exc,
+                        chat_id,
+                    )
+                    active_reply_to = None
+                    try:
+                        response = await self._send_raw_message(
+                            chat_id=chat_id,
+                            msg_type=msg_type,
+                            payload=payload,
+                            reply_to=None,
+                            metadata=metadata,
+                        )
+                        return response
+                    except Exception as fallback_exc:
+                        logger.warning(
+                            "[Feishu] Fallback send also failed for chat %s: %s",
+                            chat_id,
+                            fallback_exc,
+                        )
+                        raise fallback_exc from exc
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise
                 wait_seconds = 2 ** attempt

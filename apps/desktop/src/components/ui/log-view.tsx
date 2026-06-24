@@ -8,6 +8,8 @@ import { cn } from '@/lib/utils'
 export function LogView({ className, ...props }: ComponentProps<'div'>) {
   return (
     <div
+      role="log"
+      aria-label="Log output"
       className={cn(
         'overflow-auto rounded-lg border border-(--ui-stroke-tertiary) px-2.5 py-1.5 font-mono text-[0.6875rem] leading-[1.5] whitespace-pre-wrap break-words text-(--ui-text-tertiary) [scrollbar-width:thin]',
         className

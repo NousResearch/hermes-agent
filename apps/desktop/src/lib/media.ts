@@ -121,7 +121,7 @@ export function isRemoteGateway(): boolean {
 export async function gatewayMediaDataUrl(path: string): Promise<string> {
   const file = filePathFromMediaPath(path)
 
-  const result = await window.hermesDesktop!.api<{ data_url: string }>({
+  const result = await window.hermesDesktop?.api<{ data_url: string }>({
     path: `/api/media?path=${encodeURIComponent(file)}`
   })
 

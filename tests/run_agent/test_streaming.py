@@ -1657,3 +1657,132 @@ class TestBedrockIamStreamingFallback:
 
         client.converse.assert_not_called()
         assert getattr(agent, "_disable_streaming", False) is False
+
+
+# ── Test: Stale-stream watchdog kill ceiling ─────────────────────────────
+
+
+class _SleepingStream:
+    """An SSE-style stream that never yields a real chunk and never errors.
+
+    Each ``__next__`` blocks (simulating a provider that holds the connection
+    open with keep-alive pings but delivers no data), so the worker thread is
+    wedged inside ``for chunk in stream`` while the outer poll loop's
+    stale-stream watchdog runs.  Mirrors the real wedge: chunks_seen never
+    advances, so the watchdog must eventually give up rather than kill forever.
+    """
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        import time as _t
+        _t.sleep(20)  # longer than the test's stale timeout; watchdog acts first
+        raise StopIteration
+
+    # The streaming code snapshots stream.response for rate-limit/diag capture.
+    response = None
+
+
+class TestStaleStreamWatchdogCeiling:
+    """Regression: a provider that keeps the SSE connection alive with pings
+    but never yields a real chunk used to wedge the gateway — the watchdog
+    killed-and-reconnected forever because the worker never returned. The
+    bounded kill ceiling (HERMES_STREAM_MAX_STALE_KILLS) aborts with a
+    TimeoutError after N fruitless kills instead of hanging indefinitely.
+    """
+
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    @patch("run_agent.AIAgent._abort_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    def test_streaming_watchdog_aborts_after_max_stale_kills(
+        self, mock_create, mock_close, mock_abort, mock_replace, monkeypatch,
+    ):
+        """A stream that never yields a real chunk and never errors must raise
+        TimeoutError within a few seconds — not hang forever."""
+        from run_agent import AIAgent
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.3")
+        monkeypatch.setenv("HERMES_STREAM_MAX_STALE_KILLS", "2")
+        # Don't let the inner retry loop turn a (hypothetical) error into more
+        # work — we're exercising the watchdog ceiling, not retries.
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _SleepingStream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        import time as _time
+        _t0 = _time.time()
+        with pytest.raises(TimeoutError) as exc_info:
+            agent._interruptible_streaming_api_call({})
+        _elapsed = _time.time() - _t0
+
+        assert "stalled" in str(exc_info.value).lower(), (
+            f"Unexpected TimeoutError message: {exc_info.value!r}"
+        )
+        # 2 kills × 0.3s stale each, plus poll granularity — should be well
+        # under 10s.  The whole point is that it does NOT hang on the 20s sleep.
+        assert _elapsed < 10.0, (
+            f"Watchdog took {_elapsed:.1f}s to abort — expected <10s; "
+            f"the kill ceiling may not be bounding the loop."
+        )
+
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    @patch("run_agent.AIAgent._abort_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    def test_streaming_watchdog_aborts_even_when_retries_bump_timer(
+        self, mock_create, mock_close, mock_abort, mock_replace, monkeypatch,
+    ):
+        """Even if the inner retry machinery would refresh last_chunk_time on
+        each (re)attempt, the watchdog still aborts: the ceiling keys off the
+        monotonic real-chunk counter (which never advances here), not the
+        timestamp.  With retries enabled, a no-real-chunk stream must STILL
+        terminate in TimeoutError rather than loop forever."""
+        from run_agent import AIAgent
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.3")
+        monkeypatch.setenv("HERMES_STREAM_MAX_STALE_KILLS", "2")
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "2")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _SleepingStream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        import time as _time
+        _t0 = _time.time()
+        with pytest.raises(TimeoutError):
+            agent._interruptible_streaming_api_call({})
+        _elapsed = _time.time() - _t0
+        assert _elapsed < 10.0, (
+            f"Watchdog took {_elapsed:.1f}s — retries should not let a "
+            f"no-real-chunk stream evade the kill ceiling."
+        )

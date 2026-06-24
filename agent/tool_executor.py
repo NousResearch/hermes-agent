@@ -606,9 +606,21 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if block_result is None
         ]
         futures = []
+        # Aggregate deadline for the whole concurrent batch.  Without it, a
+        # single wedged tool (one that ignores the per-thread interrupt signal —
+        # e.g. a hung network call) would block forever: the ThreadPoolExecutor
+        # ``with`` __exit__ calls shutdown(wait=True), which never returns while
+        # that tool's worker is alive.  We manage the executor manually so we
+        # can shut down WITHOUT waiting once the batch deadline trips.
+        _batch_timeout = float(os.getenv("HERMES_TOOL_BATCH_TIMEOUT", "900.0"))
+        _batch_timed_out = False
+        # Maps each submitted future → (results[] slot index, name, args) so the
+        # deadline handler can synthesize a timeout result into the right slot.
+        _future_meta = {}
         if runnable_calls:
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+            try:
                 for submit_index, (i, tc, name, args) in enumerate(runnable_calls):
                     # Propagate the agent turn's ContextVars (e.g.
                     # _approval_session_key) AND thread-local approval/sudo
@@ -644,6 +656,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                                 )
                         break
                     futures.append(f)
+                    _future_meta[f] = (i, name, args)
 
                 # Wait for all to complete with periodic heartbeats so the
                 # gateway's inactivity monitor doesn't kill us during long
@@ -679,6 +692,45 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         concurrent.futures.wait(not_done, timeout=3.0)
                         break
 
+                    # Aggregate batch deadline: if the whole batch has run
+                    # longer than _batch_timeout, give up on the still-pending
+                    # tools instead of blocking the turn forever on a wedged
+                    # one.  Cancel what we can and synthesize a timeout result
+                    # into each unfinished slot so downstream assembly has a
+                    # value.  An abandoned daemon worker may later overwrite
+                    # results[index] with its real result — that's harmless,
+                    # results are assembled downstream after this loop.
+                    if (time.time() - _conc_start) > _batch_timeout:
+                        _batch_timed_out = True
+                        logger.error(
+                            "concurrent tool batch exceeded %.0fs deadline; "
+                            "abandoning %d unfinished tool(s): %s",
+                            _batch_timeout, len(not_done),
+                            ", ".join(
+                                _future_meta.get(f, (None, "unknown", None))[1]
+                                for f in not_done
+                            ),
+                        )
+                        for f in not_done:
+                            f.cancel()
+                            _meta = _future_meta.get(f)
+                            if _meta is None:
+                                continue
+                            _idx, _name, _args = _meta
+                            if results[_idx] is None:
+                                results[_idx] = (
+                                    _name,
+                                    _args,
+                                    f"Error executing tool '{_name}': "
+                                    f"tool batch exceeded {int(_batch_timeout)}s "
+                                    "deadline and was abandoned",
+                                    float(_batch_timeout),
+                                    True,
+                                    False,
+                                    parsed_calls[_idx][3],
+                                )
+                        break
+
                     _conc_elapsed = int(time.time() - _conc_start)
                     # Heartbeat every ~30s (6 × 5s poll intervals)
                     if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
@@ -691,6 +743,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             f"concurrent tools running ({_conc_elapsed}s, "
                             f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
                         )
+            finally:
+                # On a clean run, shut down WAITING so worker FDs/threads are
+                # reaped before we move on.  On a batch timeout, shut down
+                # WITHOUT waiting (and cancel queued-but-unstarted futures) —
+                # waiting would re-block on the very wedged tool we just
+                # abandoned, defeating the deadline.
+                executor.shutdown(
+                    wait=not _batch_timed_out, cancel_futures=True
+                )
     finally:
         if spinner:
             # Build a summary message for the spinner stop

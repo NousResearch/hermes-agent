@@ -27,7 +27,6 @@ from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt
 from agent.context_engine import ContextEngine
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
-    get_configurable_minimum_context,
     get_model_context_length,
     estimate_messages_tokens_rough,
 )
@@ -684,7 +683,6 @@ class ContextCompressor(ContextEngine):
             self.max_tokens = self._coerce_max_tokens(max_tokens)
         self.threshold_tokens = self._compute_threshold_tokens(
             context_length, self.threshold_percent, self.max_tokens,
-            minimum_floor=self._minimum_context_floor,
         )
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
@@ -743,7 +741,6 @@ class ContextCompressor(ContextEngine):
     @staticmethod
     def _compute_threshold_tokens(
         context_length: int, threshold_percent: float, max_tokens: int | None = None,
-        minimum_floor: int = MINIMUM_CONTEXT_LENGTH,
     ) -> int:
         """Compute the compaction trigger threshold in tokens.
 
@@ -773,7 +770,7 @@ class ContextCompressor(ContextEngine):
         if effective_window <= 0:
             effective_window = context_length
         pct_value = int(effective_window * threshold_percent)
-        floored = max(pct_value, minimum_floor)
+        floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
         # If flooring pushed the threshold to/over the effective window it can
         # never be reached. Trigger at 85% of the effective input budget so a
         # minimum-context model rides most of its budget before compacting
@@ -799,7 +796,6 @@ class ContextCompressor(ContextEngine):
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
         max_tokens: int | None = None,
-        minimum_context_floor: int | None = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -824,30 +820,19 @@ class ContextCompressor(ContextEngine):
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
 
-        # Configurable compression floor — allows users with large-context
-        # models that degrade before 64K tokens to lower the bar (never below
-        # the hard-coded safety limit of 16K).  When None, the default
-        # MINIMUM_CONTEXT_LENGTH (64K) applies.
-        self._minimum_context_floor = get_configurable_minimum_context(
-            minimum_context_floor
-        )
-
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
             config_context_length=config_context_length,
             provider=provider,
         )
-        # Floor: never compress below the configured minimum context floor
-        # even if the percentage would suggest a lower value.  This prevents
-        # premature compression on large-context models at 50% while keeping
-        # the % sane for models right at the minimum. _compute_threshold_tokens
-        # also guards the degenerate case where the floor would equal/exceed the
+        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
+        # the percentage would suggest a lower value.  This prevents premature
+        # compression on large-context models at 50% while keeping the % sane
+        # for models right at the minimum. _compute_threshold_tokens also
+        # guards the degenerate case where the floor would equal/exceed the
         # window (small models), so auto-compression can still fire (#14690).
-        # The floor is configurable via compression.minimum_context_floor for
-        # models whose structured output degrades well below 64K tokens.
         self.threshold_tokens = self._compute_threshold_tokens(
             self.context_length, threshold_percent, self.max_tokens,
-            minimum_floor=self._minimum_context_floor,
         )
         self.compression_count = 0
 

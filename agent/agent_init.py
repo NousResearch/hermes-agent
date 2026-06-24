@@ -1358,17 +1358,6 @@ def init_agent(
     compression_in_place = is_truthy_value(
         _compression_cfg.get("in_place"), default=False
     )
-    # Allow users to lower the compression floor for models whose
-    # structured output degrades well before the default 64K tokens.
-    # Clamped to a hard-coded safety limit of 16K by the compressor.
-    _raw_floor = _compression_cfg.get("minimum_context_floor", None)
-    if _raw_floor is not None:
-        try:
-            compression_minimum_context_floor = int(_raw_floor)
-        except (TypeError, ValueError):
-            compression_minimum_context_floor = None
-    else:
-        compression_minimum_context_floor = None
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1587,7 +1576,6 @@ def init_agent(
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
             max_tokens=agent.max_tokens,
-            minimum_context_floor=compression_minimum_context_floor,
         )
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place

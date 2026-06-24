@@ -12,7 +12,8 @@ import argparse
 import pytest
 
 from hermes_cli.config import get_env_value, save_env_value
-from plugins.platforms.photon.adapter import _env_enablement
+from gateway.config import PlatformConfig
+from plugins.platforms.photon.adapter import _env_enablement, validate_config
 from plugins.platforms.photon import cli
 
 
@@ -69,6 +70,22 @@ def test_env_enablement_home_channel_defaults_name(monkeypatch: pytest.MonkeyPat
         "chat_id": "+15551234567",
         "name": "Home",
     }
+
+
+def test_local_mode_env_enablement_without_cloud_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PHOTON_IMESSAGE_MODE", "local")
+    monkeypatch.delenv("PHOTON_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PHOTON_PROJECT_SECRET", raising=False)
+    monkeypatch.setenv("PHOTON_HOME_CHANNEL", "+15551234567")
+
+    seed = _env_enablement()
+
+    assert seed is not None
+    assert seed["imessage_mode"] == "local"
+    assert seed["home_channel"]["chat_id"] == "+15551234567"
+    assert validate_config(PlatformConfig(enabled=True, token="", extra=seed))
 
 
 def test_setup_hint_uses_gateway_service_command(monkeypatch: pytest.MonkeyPatch, capsys) -> None:

@@ -42,11 +42,14 @@
 // ships breaking majors; see README "Upgrading spectrum-ts".
 //
 // Env vars (required):
-//   PHOTON_PROJECT_ID      (== the project's spectrumProjectId)
-//   PHOTON_PROJECT_SECRET
 //   PHOTON_SIDECAR_PORT
 //   PHOTON_SIDECAR_TOKEN
 // Optional:
+//   PHOTON_IMESSAGE_MODE   "cloud" (default) or "local". Local mode uses the
+//                          open-source macOS Messages path and the Apple ID
+//                          signed in on this Mac.
+//   PHOTON_PROJECT_ID      (== the project's spectrumProjectId; cloud only)
+//   PHOTON_PROJECT_SECRET  (cloud only)
 //   PHOTON_SIDECAR_BIND    (default 127.0.0.1)
 //   PHOTON_SIDECAR_WATCH_STDIN  "1" = exit when stdin hits EOF (set by the
 //                          adapter, which holds our stdin pipe — parent-death
@@ -61,6 +64,10 @@ import { patchSpectrumTs } from "./patch-spectrum-mixed-attachments.mjs";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
 const projectSecret = process.env.PHOTON_PROJECT_SECRET;
+const imessageMode = (process.env.PHOTON_IMESSAGE_MODE || "cloud")
+  .trim()
+  .toLowerCase();
+const localMode = imessageMode === "local";
 const port = parseInt(process.env.PHOTON_SIDECAR_PORT || "8789", 10);
 const bind = process.env.PHOTON_SIDECAR_BIND || "127.0.0.1";
 const sharedToken = process.env.PHOTON_SIDECAR_TOKEN;
@@ -203,10 +210,12 @@ console.log = (...args) => {
   originalConsoleLog(...args);
 };
 
-if (!projectId || !projectSecret || !sharedToken) {
+if (!sharedToken || (!localMode && (!projectId || !projectSecret))) {
   console.error(
-    "photon-sidecar: PHOTON_PROJECT_ID, PHOTON_PROJECT_SECRET and " +
-      "PHOTON_SIDECAR_TOKEN must all be set."
+    localMode
+      ? "photon-sidecar: PHOTON_SIDECAR_TOKEN must be set."
+      : "photon-sidecar: PHOTON_PROJECT_ID, PHOTON_PROJECT_SECRET and " +
+          "PHOTON_SIDECAR_TOKEN must all be set."
   );
   process.exit(2);
 }
@@ -258,13 +267,16 @@ try {
   process.exit(3);
 }
 
-const app = await Spectrum({
-  projectId,
-  projectSecret,
-  providers: [imessage.config()],
+const spectrumConfig = {
+  providers: [localMode ? imessage.config({ local: true }) : imessage.config()],
   options: { flattenGroups: true },
   telemetry,
-});
+};
+if (!localMode) {
+  spectrumConfig.projectId = projectId;
+  spectrumConfig.projectSecret = projectSecret;
+}
+const app = await Spectrum(spectrumConfig);
 
 // ---------------------------------------------------------------------------
 // Inbound: forward `app.messages` (gRPC stream) to the Python consumer.
@@ -305,8 +317,9 @@ function rememberKnownMessage(message) {
 
 function phoneTargetFromSpaceId(spaceId) {
   if (typeof spaceId !== "string") return null;
-  if (E164_RE.test(spaceId)) return spaceId;
-  const dmGuid = spaceId.match(DM_CHAT_GUID_RE);
+  const trimmed = spaceId.trim();
+  if (E164_RE.test(trimmed)) return trimmed;
+  const dmGuid = trimmed.match(DM_CHAT_GUID_RE);
   return dmGuid ? dmGuid[1] : null;
 }
 
@@ -727,11 +740,12 @@ const server = http.createServer(async (req, res) => {
       if (format !== "text" && format !== "markdown") {
         return badRequest(res, "format must be text or markdown");
       }
-      const space = await resolveSpace(spaceId);
+
       // iMessage renders markdown natively; spectrum-ts degrades it to
       // readable plain text on platforms that don't.
       const builder =
         format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
+      const space = await resolveSpace(spaceId);
       const result = await space.send(builder);
       return ok(res, { messageId: result?.id || null });
     }
@@ -741,6 +755,7 @@ const server = http.createServer(async (req, res) => {
       if (!spaceId || typeof path !== "string" || !path) {
         return badRequest(res, "spaceId and path are required");
       }
+
       const space = await resolveSpace(spaceId);
 
       // spectrum-ts infers name + MIME from the file extension; pass

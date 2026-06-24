@@ -87,3 +87,85 @@ describe('MessagingView setup-guide link', () => {
     await waitFor(() => expect(openExternalLink).toHaveBeenCalledWith(docsUrl))
   })
 })
+
+describe('MessagingView option fields', () => {
+  it('uses a segmented mode control and hides cloud-only Photon credentials in local mode', async () => {
+    getMessagingPlatforms.mockResolvedValue({
+      platforms: [
+        platform({
+          id: 'photon',
+          name: 'iMessage via Photon',
+          env_vars: [
+            {
+              advanced: false,
+              default_value: 'cloud',
+              description: 'Choose the iMessage connection.',
+              is_password: false,
+              is_set: false,
+              key: 'PHOTON_IMESSAGE_MODE',
+              options: [
+                { label: 'Photon cloud', value: 'cloud' },
+                { label: 'Local Mac', value: 'local' }
+              ],
+              prompt: 'iMessage connection',
+              redacted_value: null,
+              required: false,
+              url: null,
+              value: null,
+              visible_when: null
+            },
+            {
+              advanced: false,
+              description: 'Cloud project id.',
+              is_password: false,
+              is_set: false,
+              key: 'PHOTON_PROJECT_ID',
+              prompt: 'Photon Spectrum project id',
+              redacted_value: null,
+              required: true,
+              url: null,
+              visible_when: { key: 'PHOTON_IMESSAGE_MODE', values: ['cloud'] }
+            },
+            {
+              advanced: false,
+              description: 'Cloud project secret.',
+              is_password: true,
+              is_set: false,
+              key: 'PHOTON_PROJECT_SECRET',
+              prompt: 'Photon project secret',
+              redacted_value: null,
+              required: true,
+              url: null,
+              visible_when: { key: 'PHOTON_IMESSAGE_MODE', values: ['cloud'] }
+            }
+          ]
+        })
+      ]
+    })
+
+    await renderMessaging()
+
+    expect((await screen.findByRole('button', { name: 'Photon cloud' })).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.getByText('Photon Spectrum project id')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Local Mac' }))
+
+    expect(screen.getByRole('button', { name: 'Local Mac' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.queryByText('Photon Spectrum project id')).toBeNull()
+    expect(screen.queryByText('Photon project secret')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Photon cloud' }))
+    expect(screen.getByText('Photon Spectrum project id')).toBeTruthy()
+    expect(screen.getByText('Photon project secret')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Local Mac' }))
+
+    fireEvent.click(screen.getByRole('button', { name: /save changes/i }))
+
+    await waitFor(() =>
+      expect(updateMessagingPlatform).toHaveBeenCalledWith('photon', {
+        env: { PHOTON_IMESSAGE_MODE: 'local' }
+      })
+    )
+  })
+})

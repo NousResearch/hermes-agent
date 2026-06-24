@@ -2883,6 +2883,14 @@ _SLACK_MEMBER_ID_RE = re.compile(r"[UW][A-Z0-9]{2,}")
 
 def _validate_messaging_env_value(platform_id: str, key: str, value: str) -> None:
     """Reject platform credentials that are clearly in the wrong field."""
+    options = _messaging_env_info(key).get("options") or []
+    allowed = {str(option.get("value")) for option in options if option.get("value")}
+    if allowed and value not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{key} must be one of: {', '.join(sorted(allowed))}.",
+        )
+
     if platform_id != "slack" or not value:
         return
 
@@ -5657,7 +5665,22 @@ def _messaging_env_info(key: str) -> dict[str, Any]:
         "url": info.get("url"),
         "is_password": info.get("password", False),
         "advanced": info.get("advanced", False),
+        "default_value": info.get("default"),
+        "options": info.get("options") or [],
+        "visible_when": info.get("visible_when"),
     }
+
+
+def _messaging_field_visible(key: str, values: dict[str, str]) -> bool:
+    condition = _messaging_env_info(key).get("visible_when")
+    if not isinstance(condition, dict) or not condition.get("key"):
+        return True
+    dependency = str(condition["key"])
+    actual = values.get(dependency) or str(
+        _messaging_env_info(dependency).get("default_value") or ""
+    )
+    expected = {str(value) for value in condition.get("values") or []}
+    return not expected or actual in expected
 
 
 def _gateway_platform_config(platform_id: str):
@@ -5688,19 +5711,26 @@ def _messaging_platform_payload(
     )
     env_vars = []
 
+    values = {
+        key: env_on_disk.get(key) or ("" if scoped else os.getenv(key, ""))
+        for key in entry["env_vars"]
+    }
+
     for key in entry["env_vars"]:
         # When profile-scoped, judge only the profile's own .env — the
         # dashboard process's os.environ carries the ROOT install's .env
         # (loaded at startup) and would falsely report the root credentials
         # as the profile's.
-        value = env_on_disk.get(key) or ("" if scoped else os.getenv(key, ""))
+        value = values[key]
+        info = _messaging_env_info(key)
         env_vars.append(
             {
                 "key": key,
                 "required": key in entry["required_env"],
                 "is_set": bool(value),
                 "redacted_value": redact_key(value) if value else None,
-                **_messaging_env_info(key),
+                "value": value if info.get("options") else None,
+                **info,
             }
         )
 
@@ -5721,7 +5751,11 @@ def _messaging_platform_payload(
         except Exception:
             enabled = False
             home_channel = None
-        configured = all(env_on_disk.get(key) for key in entry["required_env"])
+        configured = all(
+            values.get(key)
+            for key in entry["required_env"]
+            if _messaging_field_visible(key, values)
+        )
     else:
         try:
             gateway_config, platform, platform_config = _gateway_platform_config(

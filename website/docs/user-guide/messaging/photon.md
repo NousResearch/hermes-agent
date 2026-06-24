@@ -41,13 +41,46 @@ automatically.
 
 ## Prerequisites
 
-- A Photon account — sign up at [app.photon.codes][app]
 - **Node.js 18.17 or newer** on PATH (`node --version`)
-- A phone number that can receive iMessage (used to bind your account)
+- For managed cloud mode, a [Photon account][app] and a phone number that can
+  receive iMessage
+- For local mode, a Mac signed in to Messages with Full Disk Access granted to
+  the process that starts Hermes
 
-That's it — there is no public URL or tunnel to set up.
+There is no public URL or tunnel to set up in either mode.
 
 ## First-time setup
+
+### Open-source local mode
+
+Use local mode when Hermes is running on a Mac signed in to your own
+Apple ID and you want messages to send through that local Messages.app
+account instead of Photon's managed/shared line pool:
+
+```bash
+PHOTON_IMESSAGE_MODE=local
+PHOTON_ALLOWED_USERS=+15551234567
+```
+
+Local mode uses Spectrum's open-source macOS Messages path
+(`imessage.config({ local: true })`). It does not use Photon dashboard
+login, `PHOTON_PROJECT_ID`, or `PHOTON_PROJECT_SECRET`. Grant Full Disk
+Access to the process that starts Hermes so the sidecar can read the
+Messages database.
+
+Spectrum local mode can start a DM from a bare E.164 number and rehydrate an
+existing DM or group from its chat GUID. That means cold cron delivery works
+with `PHOTON_HOME_CHANNEL=+1555...` for DMs. Creating a new group from a list
+of recipients still requires managed Photon mode.
+
+Then install the sidecar dependencies and start the gateway:
+
+```bash
+hermes photon install-sidecar
+hermes gateway start
+```
+
+Cloud mode remains the default when `PHOTON_IMESSAGE_MODE` is unset.
 
 Either run the unified gateway wizard and pick **Photon iMessage**:
 
@@ -215,6 +248,7 @@ Common issues:
 | `PHOTON_SIDECAR_PORT`     | `8789`             | Loopback port for the sidecar control + inbound channel |
 | `PHOTON_SIDECAR_AUTOSTART`| `true`             | Whether the adapter spawns the sidecar     |
 | `PHOTON_NODE_BIN`         | `which node`       | Override the Node binary path              |
+| `PHOTON_IMESSAGE_MODE`    | `cloud`            | `cloud` for managed Photon, `local` for the open-source macOS Messages path |
 | `PHOTON_HOME_CHANNEL`     | (unset)            | Default space id for cron / notifications  |
 | `PHOTON_HOME_CHANNEL_NAME`| (unset)            | Human label for the home channel           |
 | `PHOTON_ALLOWED_USERS`    | (unset)            | Comma-separated E.164 allowlist            |

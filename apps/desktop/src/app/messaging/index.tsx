@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import { Switch } from '@/components/ui/switch'
 import {
   getMessagingPlatforms,
@@ -372,9 +373,28 @@ function PlatformDetail({
   const m = t.messaging
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const requiredFields = platform.env_vars.filter(field => field.required)
-  const optionalFields = platform.env_vars.filter(field => !field.required && !fieldCopy(field, m).advanced)
-  const advancedFields = platform.env_vars.filter(field => !field.required && fieldCopy(field, m).advanced)
+  const effectiveValues = Object.fromEntries(
+    platform.env_vars.map(field => [field.key, edits[field.key] || field.value || field.default_value || ''])
+  )
+
+  const isVisible = (field: MessagingEnvVarInfo) => {
+    const condition = field.visible_when
+
+    return !condition || condition.values.includes(effectiveValues[condition.key] || '')
+  }
+
+  const choiceFields = platform.env_vars.filter(field => (field.options?.length ?? 0) > 0 && isVisible(field))
+
+  const requiredFields = platform.env_vars.filter(field => field.required && isVisible(field))
+
+  const optionalFields = platform.env_vars.filter(
+    field => !field.required && !field.options?.length && isVisible(field) && !fieldCopy(field, m).advanced
+  )
+
+  const advancedFields = platform.env_vars.filter(
+    field => !field.required && !field.options?.length && isVisible(field) && fieldCopy(field, m).advanced
+  )
+
   const hiddenCount = advancedFields.length
 
   return (
@@ -397,6 +417,17 @@ function PlatformDetail({
       </header>
 
       {platform.error_message && <ErrorBanner>{platform.error_message}</ErrorBanner>}
+
+      {choiceFields.map(field => (
+        <MessagingField
+          edits={edits}
+          field={field}
+          key={field.key}
+          onClear={onClear}
+          onEdit={onEdit}
+          saving={saving}
+        />
+      ))}
 
       <section>
         <SectionTitle>{m.getCredentials}</SectionTitle>
@@ -595,38 +626,48 @@ function MessagingField({
   const m = t.messaging
   const copy = fieldCopy(field, m)
   const fieldId = `messaging-field-${field.key}`
+  const options = field.options || []
+  const selectedValue = edits[field.key] || field.value || field.default_value || options[0]?.value || ''
 
   return (
     <ListRow
       action={
-        <div className="flex items-center gap-2">
-          <Input
-            className={CREDENTIAL_CONTROL_CLASS}
-            id={fieldId}
-            onChange={event => onEdit(field.key, event.target.value)}
-            placeholder={field.is_set ? field.redacted_value || m.replaceValue : copy.placeholder}
-            type={field.is_password ? 'password' : 'text'}
-            value={edits[field.key] || ''}
+        options.length > 0 ? (
+          <SegmentedControl
+            onChange={value => onEdit(field.key, value)}
+            options={options.map(option => ({ id: option.value, label: option.label }))}
+            value={selectedValue}
           />
-          {field.url && (
-            <Button asChild className="size-8 shrink-0" title={m.openDocs} variant="ghost">
-              <a href={field.url} rel="noreferrer" target="_blank">
-                <ExternalLink className="size-3.5" />
-              </a>
-            </Button>
-          )}
-          {field.is_set && (
-            <Button
-              className="size-8 shrink-0"
-              disabled={saving === `clear:${field.key}`}
-              onClick={() => onClear(field.key)}
-              title={m.clearField(field.key)}
-              variant="ghost"
-            >
-              <Trash2 className="size-3.5" />
-            </Button>
-          )}
-        </div>
+        ) : (
+          <div className="flex items-center gap-2">
+            <Input
+              className={CREDENTIAL_CONTROL_CLASS}
+              id={fieldId}
+              onChange={event => onEdit(field.key, event.target.value)}
+              placeholder={field.is_set ? field.redacted_value || m.replaceValue : copy.placeholder}
+              type={field.is_password ? 'password' : 'text'}
+              value={edits[field.key] || ''}
+            />
+            {field.url && (
+              <Button asChild className="size-8 shrink-0" title={m.openDocs} variant="ghost">
+                <a href={field.url} rel="noreferrer" target="_blank">
+                  <ExternalLink className="size-3.5" />
+                </a>
+              </Button>
+            )}
+            {field.is_set && (
+              <Button
+                className="size-8 shrink-0"
+                disabled={saving === `clear:${field.key}`}
+                onClick={() => onClear(field.key)}
+                title={m.clearField(field.key)}
+                variant="ghost"
+              >
+                <Trash2 className="size-3.5" />
+              </Button>
+            )}
+          </div>
+        )
       }
       description={copy.help}
       title={

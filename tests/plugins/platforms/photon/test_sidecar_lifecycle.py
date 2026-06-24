@@ -25,6 +25,13 @@ def _make_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
     return PhotonAdapter(cfg)
 
 
+def _make_local_adapter(monkeypatch: pytest.MonkeyPatch) -> PhotonAdapter:
+    monkeypatch.delenv("PHOTON_PROJECT_ID", raising=False)
+    monkeypatch.delenv("PHOTON_PROJECT_SECRET", raising=False)
+    cfg = PlatformConfig(enabled=True, token="", extra={"imessage_mode": "local"})
+    return PhotonAdapter(cfg)
+
+
 class _ProbeClient:
     """Fake httpx.AsyncClient whose /healthz probe behavior is injectable."""
 
@@ -169,3 +176,50 @@ async def test_start_sidecar_spawns_with_stdin_pipe(
     kwargs = spawned["kwargs"]
     assert kwargs["stdin"] is subprocess.PIPE
     assert kwargs["env"]["PHOTON_SIDECAR_WATCH_STDIN"] == "1"
+
+
+@pytest.mark.asyncio
+async def test_start_sidecar_local_mode_omits_cloud_credentials(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    adapter = _make_local_adapter(monkeypatch)
+
+    async def _no_reap() -> None:
+        pass
+
+    monkeypatch.setattr(adapter, "_reap_stale_sidecar", _no_reap)
+    (tmp_path / "node_modules").mkdir()
+    monkeypatch.setattr(photon_adapter, "_SIDECAR_DIR", tmp_path)
+
+    spawned: Dict[str, Any] = {}
+
+    class _FakeProc:
+        pid = 999
+        stdout = None
+        stdin = None
+
+        @staticmethod
+        def poll() -> None:
+            return None
+
+    def _fake_popen(cmd: List[str], **kwargs: Any) -> _FakeProc:
+        spawned["kwargs"] = kwargs
+        return _FakeProc()
+
+    monkeypatch.setattr(photon_adapter.subprocess, "Popen", _fake_popen)
+
+    class _HealthyClient(_ProbeClient):
+        async def post(self, *a: Any, **k: Any) -> Any:
+            class _Resp:
+                status_code = 200
+
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _HealthyClient)
+
+    await adapter._start_sidecar()
+
+    env = spawned["kwargs"]["env"]
+    assert env["PHOTON_IMESSAGE_MODE"] == "local"
+    assert "PHOTON_PROJECT_ID" not in env
+    assert "PHOTON_PROJECT_SECRET" not in env

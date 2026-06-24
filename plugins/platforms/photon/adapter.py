@@ -139,6 +139,8 @@ def check_requirements() -> bool:
 
 def validate_config(cfg: PlatformConfig) -> bool:
     extra = cfg.extra or {}
+    if _imessage_mode(extra) == "local":
+        return True
     project_id = extra.get("project_id") or os.getenv("PHOTON_PROJECT_ID")
     project_secret = extra.get("project_secret") or os.getenv("PHOTON_PROJECT_SECRET")
     if not project_id or not project_secret:
@@ -152,12 +154,36 @@ def is_connected(cfg: PlatformConfig) -> bool:
     return validate_config(cfg)
 
 
+def _imessage_mode(extra: Optional[dict] = None) -> str:
+    """Return the configured iMessage connection mode.
+
+    ``cloud`` is the managed Photon/Spectrum default. ``local`` uses
+    spectrum-ts' open-source macOS Messages path, so the Apple ID signed in
+    on this Mac owns delivery.
+    """
+    raw = (extra or {}).get("imessage_mode") or os.getenv("PHOTON_IMESSAGE_MODE")
+    mode = str(raw or "cloud").strip().lower()
+    if mode == "local":
+        return "local"
+    return "cloud"
+
+
 def _env_enablement() -> Optional[dict]:
     """Seed PlatformConfig.extra from env so env-only setups appear in status.
 
     The special ``home_channel`` key is handled by the core plugin hook and
     becomes a proper ``HomeChannel`` on ``PlatformConfig``.
     """
+    if _imessage_mode() == "local":
+        seed: dict = {"imessage_mode": "local"}
+        home = os.getenv("PHOTON_HOME_CHANNEL", "").strip()
+        if home:
+            seed["home_channel"] = {
+                "chat_id": home,
+                "name": os.getenv("PHOTON_HOME_CHANNEL_NAME", "Home"),
+            }
+        return seed
+
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None
@@ -199,6 +225,7 @@ class PhotonAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("photon"))
         extra = config.extra or {}
+        self._imessage_mode = _imessage_mode(extra)
 
         # Project credentials (env wins, then config.extra, then auth.json).
         # ``project_id`` here is the project's spectrumProjectId — the value
@@ -340,7 +367,9 @@ class PhotonAdapter(BasePlatformAdapter):
                 "MISSING_DEP", "httpx not installed", retryable=False
             )
             return False
-        if not self._project_id or not self._project_secret:
+        if self._imessage_mode != "local" and (
+            not self._project_id or not self._project_secret
+        ):
             self._set_fatal_error(
                 "MISSING_CREDENTIALS",
                 "PHOTON_PROJECT_ID and PHOTON_PROJECT_SECRET are required. "
@@ -844,8 +873,11 @@ class PhotonAdapter(BasePlatformAdapter):
         await self._reap_stale_sidecar()
 
         env = os.environ.copy()
-        env["PHOTON_PROJECT_ID"] = self._project_id
-        env["PHOTON_PROJECT_SECRET"] = self._project_secret
+        env["PHOTON_IMESSAGE_MODE"] = self._imessage_mode
+        if self._project_id:
+            env["PHOTON_PROJECT_ID"] = self._project_id
+        if self._project_secret:
+            env["PHOTON_PROJECT_SECRET"] = self._project_secret
         env["PHOTON_SIDECAR_PORT"] = str(self._sidecar_port)
         env["PHOTON_SIDECAR_BIND"] = self._sidecar_bind
         env["PHOTON_SIDECAR_TOKEN"] = self._sidecar_token

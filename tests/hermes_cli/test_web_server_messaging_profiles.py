@@ -91,6 +91,35 @@ class TestProfileScopedMessagingReads:
         )
         assert resp.status_code == 404
 
+    def test_local_photon_does_not_require_cloud_credentials(self):
+        from hermes_cli.web_server import _messaging_platform_payload
+
+        photon = _messaging_platform_payload(
+            {
+                "id": "photon",
+                "name": "iMessage via Photon",
+                "description": "",
+                "docs_url": "",
+                "env_vars": (
+                    "PHOTON_IMESSAGE_MODE",
+                    "PHOTON_PROJECT_ID",
+                    "PHOTON_PROJECT_SECRET",
+                ),
+                "required_env": (
+                    "PHOTON_PROJECT_ID",
+                    "PHOTON_PROJECT_SECRET",
+                ),
+            },
+            {"PHOTON_IMESSAGE_MODE": "local"},
+            runtime=None,
+            scoped=True,
+        )
+
+        assert photon["configured"] is True
+        assert _env_field(photon, "PHOTON_IMESSAGE_MODE")["value"] == "local"
+        assert _env_field(photon, "PHOTON_PROJECT_ID")["required"] is True
+        assert _env_field(photon, "PHOTON_PROJECT_SECRET")["required"] is True
+
     def test_scoped_read_returns_profile_path_command_and_startup_failure(
         self, client, isolated_profiles, monkeypatch
     ):

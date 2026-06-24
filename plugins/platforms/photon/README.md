@@ -115,6 +115,7 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_PROJECT_SECRET`   | from .env / auth.json      | Project secret                       |
 | `PHOTON_SIDECAR_PORT`     | 8789                       | Loopback port for the sidecar        |
 | `PHOTON_SIDECAR_AUTOSTART`| true                       | Spawn the sidecar on connect         |
+| `PHOTON_IMESSAGE_MODE`    | cloud                      | `cloud` for managed Photon, `local` for Spectrum's open-source macOS Messages path |
 | `PHOTON_DASHBOARD_HOST`   | https://app.photon.codes   | Dashboard API host                   |
 | `PHOTON_SPECTRUM_HOST`    | https://spectrum.photon.codes | Spectrum API host                 |
 | `PHOTON_HOME_CHANNEL`     | your number (set by setup) | Default space for cron delivery — a space id, or a bare E.164 number (resolved to a DM) |
@@ -152,7 +153,11 @@ All env vars are documented in `plugin.yaml`. The most important:
   as a synthetic `reaction:added:<emoji>` event. Removal after a sidecar
   restart is best-effort — the live reaction handle is lost, so a stale
   tapback heals when the next reaction replaces it. Group spaces stay
-  reachable across restarts via spectrum-ts' `space.get(id)`.
+  reachable across restarts via spectrum-ts' `space.get(id)`. Local iMessage
+  currently reports `react` as unsupported.
+- **Local cold sends support DMs and existing groups.** Use a bare E.164 number
+  to start a DM, or an existing chat GUID to rehydrate a group. Local mode
+  cannot create a new group from a list of recipients.
 - **Message effects, polls** — supported by `spectrum-ts` but not yet
   exposed; the sidecar is the natural place to add them.
 

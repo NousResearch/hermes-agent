@@ -24,12 +24,28 @@ requires_env:
     prompt: "Photon Spectrum project id"
     url: "https://app.photon.codes/"
     password: false
+    visible_when:
+      key: PHOTON_IMESSAGE_MODE
+      values: [cloud]
   - name: PHOTON_PROJECT_SECRET
     description: "Project secret paired with the Spectrum project id (set by `hermes photon setup`)"
     prompt: "Photon project secret"
     url: "https://app.photon.codes/"
     password: true
+    visible_when:
+      key: PHOTON_IMESSAGE_MODE
+      values: [cloud]
 optional_env:
+  - name: PHOTON_IMESSAGE_MODE
+    description: "Use managed Photon cloud delivery or this Mac's signed-in Messages account"
+    prompt: "iMessage connection"
+    password: false
+    default: cloud
+    options:
+      - value: cloud
+        label: Photon cloud
+      - value: local
+        label: Local Mac
   - name: PHOTON_SIDECAR_PORT
     description: "Loopback port for the Node sidecar control + inbound channel (default 8789)"
     prompt: "Sidecar control port"

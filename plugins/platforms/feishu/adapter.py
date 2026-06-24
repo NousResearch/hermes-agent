@@ -2001,6 +2001,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
         formatted = self.format_message(content)
 
+        # Suppress gateway heartbeat & system messages in card mode — even after live card finalized
+        if getattr(self, "_card_mode_enabled", False):
+            _prefix = formatted.lstrip()
+            if _prefix.startswith("⏳ Working") or _prefix.startswith("💾"):
+                return SendResult(success=True, message_id="suppressed")
+
         # Live card interception
         _meta = metadata or {}
         live = self._live_cards.get(chat_id)
@@ -2147,6 +2153,12 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         content = self.format_message(content)
+
+        # Suppress gateway heartbeat & system messages in card mode — even after live card finalized
+        if getattr(self, "_card_mode_enabled", False):
+            _prefix = content.lstrip()
+            if _prefix.startswith("⏳ Working") or _prefix.startswith("💾"):
+                return SendResult(success=True, message_id="suppressed")
 
         # Live card interception — streaming text updates (skip gateway heartbeat & system msgs)
         _meta = metadata or {}

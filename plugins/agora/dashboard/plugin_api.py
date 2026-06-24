@@ -985,15 +985,17 @@ def _post_system_message_to_channel(
 def _on_kanban_task_blocked(
     *,
     task_id: str,
-    title: str,
-    assignee: Optional[str],
-    reason: Optional[str],
-    blocked_at: int,
+    title: Optional[str] = None,
+    assignee: Optional[str] = None,
+    reason: Optional[str] = None,
+    blocked_at: Optional[int] = None,
+    **kwargs: Any,
 ) -> None:
     """Post a blocked handoff to Ágora and notify the next owner.
 
     Registered as a ``kanban_db`` blocked callback so the notification fires
-    from the existing blocked event without polling.
+    from the existing blocked event without polling. The callback is defensive:
+    if the hook caller does not supply task metadata, it is loaded from Kanban.
     """
     try:
         if not _task_exists_in_any_board(task_id):
@@ -1003,6 +1005,27 @@ def _on_kanban_task_blocked(
                 task_id,
             )
             return
+
+        # Backfill metadata when the hook caller only supplies the task id.
+        if title is None or assignee is None:
+            from hermes_cli import kanban_db as kb
+
+            try:
+                conn = kb.connect()
+                task = kb.get_task(conn, task_id)
+                conn.close()
+            except Exception:
+                task = None
+            if task:
+                if hasattr(task, "get"):
+                    title = title or task.get("title") or "(sem título)"
+                    assignee = assignee if assignee is not None else task.get("assignee")
+                else:
+                    title = title or getattr(task, "title", None) or "(sem título)"
+                    assignee = assignee if assignee is not None else getattr(task, "assignee", None)
+            else:
+                title = title or "(sem título)"
+                assignee = assignee if assignee is not None else None
 
         next_profile = _resolve_handoff_mention(reason)
         body = _format_blocked_handoff(
@@ -1115,19 +1138,22 @@ def _task_exists_in_any_board(task_id: str) -> bool:
 def _on_kanban_task_completed(
     *,
     task_id: str,
-    title: str,
-    assignee: Optional[str],
-    status: str,
-    result: Optional[str],
-    summary: Optional[str],
-    metadata: Optional[dict],
-    completed_at: int,
+    title: Optional[str] = None,
+    assignee: Optional[str] = None,
+    status: Optional[str] = None,
+    result: Optional[str] = None,
+    summary: Optional[str] = None,
+    metadata: Optional[dict] = None,
+    completed_at: Optional[int] = None,
     verified_cards: Optional[list[str]] = None,
+    **kwargs: Any,
 ) -> None:
     """Post a delivery report to Ágora and notify agent-techlead.
 
     Registered as a ``kanban_db`` completion callback so the notification
-    fires from the existing completion event without polling.
+    fires from the existing completion event without polling. The callback is
+    defensive: if the hook caller does not supply task metadata, it is loaded
+    from Kanban.
     """
     try:
         if not _task_exists_in_any_board(task_id):
@@ -1137,6 +1163,25 @@ def _on_kanban_task_completed(
                 task_id,
             )
             return
+
+        # Backfill metadata when the hook caller only supplies the task id.
+        if title is None or assignee is None or summary is None:
+            from hermes_cli import kanban_db as kb
+
+            try:
+                conn = kb.connect()
+                task = kb.get_task(conn, task_id)
+                conn.close()
+            except Exception:
+                task = None
+            if task:
+                title = title or task.title or "(sem título)"
+                assignee = assignee if assignee is not None else task.assignee
+                summary = summary or task.result or "(sem resumo)"
+            else:
+                title = title or "(sem título)"
+                assignee = assignee if assignee is not None else None
+                summary = summary or "(sem resumo)"
 
         channel_slug = _AGORA_COMPLETION_NOTIFY_CHANNEL
         body = _format_delivery_report(

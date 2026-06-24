@@ -25,7 +25,7 @@ from fastapi.testclient import TestClient
 
 
 def _load_plugin_router():
-    """Dynamically load plugins/agora/dashboard/plugin_api.py and return its router."""
+    """Dynamically load plugins/agora/dashboard/plugin_api.py and return (module, router)."""
     repo_root = Path(__file__).resolve().parents[2]
     plugin_file = repo_root / "plugins" / "agora" / "dashboard" / "plugin_api.py"
     assert plugin_file.exists(), f"plugin file missing: {plugin_file}"
@@ -38,7 +38,7 @@ def _load_plugin_router():
     mod = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
-    return mod.router
+    return mod, mod.router
 
 
 @pytest.fixture
@@ -59,7 +59,26 @@ def agora_home(tmp_path, monkeypatch):
 @pytest.fixture
 def client(agora_home):
     app = FastAPI()
-    app.include_router(_load_plugin_router(), prefix="/api/plugins/agora")
+    router_mod, router = _load_plugin_router()
+    app.include_router(router, prefix="/api/plugins/agora")
+
+    # Tests mount the router directly, which bypasses the plugin manager's
+    # discovery/registration phase. Register the Kanban lifecycle hooks so
+    # integration tests that exercise kanban_db.complete_task/block_task also
+    # exercise the Ágora callbacks.
+    import hermes_cli.plugins as _plugins
+
+    pm = _plugins.get_plugin_manager()
+    if not pm.has_hook("kanban_task_completed"):
+        ctx = _plugins.PluginContext(
+            manifest=_plugins.PluginManifest(
+                name="agora-dashboard",
+                provides_hooks=["kanban_task_completed", "kanban_task_blocked"],
+            ),
+            manager=pm,
+        )
+        router_mod.register(ctx)
+
     return TestClient(app)
 
 
@@ -779,7 +798,8 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
     monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
 
     app = FastAPI()
-    app.include_router(_load_plugin_router(), prefix="/api/plugins/agora")
+    _router_mod, router = _load_plugin_router()
+    app.include_router(router, prefix="/api/plugins/agora")
     c = TestClient(app)
 
     from starlette.websockets import WebSocketDisconnect
@@ -815,7 +835,8 @@ def test_ws_events_stream_message_creation(tmp_path, monkeypatch):
     monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
 
     app = FastAPI()
-    app.include_router(_load_plugin_router(), prefix="/api/plugins/agora")
+    _router_mod, router = _load_plugin_router()
+    app.include_router(router, prefix="/api/plugins/agora")
     c = TestClient(app)
 
     # Shorten polling so the test receives events quickly.

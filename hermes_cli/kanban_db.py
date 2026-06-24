@@ -3950,7 +3950,9 @@ def complete_task(
         board=get_current_board(),
         assignee=_done_task.assignee if _done_task else None,
         run_id=run_id,
+        result=result,
         summary=(summary if summary is not None else result),
+        metadata=metadata,
     )
     return True
 

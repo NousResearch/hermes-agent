@@ -696,13 +696,13 @@ async def test_fetch_channel_context_skips_self_improvement_boundary_message(ada
             ),
             make_history_message(
                 author=codex,
-                content="💾 Self-improvement review: Memory updated",
+                content="💾 自己改善レビュー: メモリを更新しました",
                 msg_id=6,
             ),
             make_history_message(author=human, content="question after reply", msg_id=5),
             make_history_message(
                 author=adapter._client.user,
-                content="💾 Self-improvement review: Skill 'hermes-gateway-display-config' patched",
+                content="💾 自己改善レビュー: スキル「hermes-gateway-display-config」を更新しました",
                 msg_id=4,
             ),
             make_history_message(author=codex, content="Codex final answer", msg_id=3),
@@ -802,6 +802,9 @@ async def test_fetch_channel_context_reply_target_in_primary_window_not_duplicat
 
 
 def test_nonconversational_fallback_requires_self_improvement_emoji():
+    assert discord_platform._looks_like_nonconversational_history_message(
+        "💾 自己改善レビュー: メモリを更新しました"
+    )
     assert discord_platform._looks_like_nonconversational_history_message(
         "💾 Self-improvement review: Memory updated"
     )

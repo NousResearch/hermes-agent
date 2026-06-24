@@ -64,6 +64,7 @@ _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
 # metadata flag, not rely on a regex here.
 _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
     re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
+    re.compile(r"^\s*💾\s*自己改善レビュー:\s+\S[\s\S]*$", re.IGNORECASE),
     # Legacy/background-review test doubles used this shorter form before the
     # self-improvement prefix became the stable emitter contract.
     re.compile(

@@ -511,6 +511,18 @@ class TestToolProgressGrouping:
             == "separate"
         )
 
+    def test_discord_progress_is_latest_only_in_gateway_runner(self):
+        """Discord progress edits one status line instead of accumulating rows."""
+        from pathlib import Path
+
+        source = Path("gateway/run.py").read_text(encoding="utf-8")
+        assert "is_discord_progress =" in source
+        assert '_gateway_platform_value(source.platform) == "discord"' in source
+        assert 'progress_grouping = "latest"' in source
+        assert "latest_only = progress_grouping == \"latest\"" in source
+        assert "if latest_only:" in source
+        assert "progress_lines = [msg]" in source
+
 
 class TestReasoningStyle:
     """Per-platform reasoning render style (code | blockquote | subtext)."""

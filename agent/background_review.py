@@ -456,22 +456,46 @@ def summarize_background_review_actions(
         is_skill = detail.get("tool") == "skill_manage"
 
         message_lower = message.lower()
+        if is_skill:
+            label = "スキル"
+        elif target:
+            label = "メモリ" if target == "memory" else "ユーザープロフィール" if target == "user" else target
+        else:
+            label = ""
+            if "memory" in message_lower:
+                label = "メモリ"
+            elif "user profile" in message_lower:
+                label = "ユーザープロフィール"
+            elif "skill" in message_lower:
+                label = "スキル"
+
         if not verbose:
-            if "created" in message_lower:
-                actions.append(message)
+            skill_name = detail.get("name", "")
+            if is_skill and "created" in message_lower:
+                actions.append(
+                    f"スキル「{skill_name}」を作成しました" if skill_name else "スキルを作成しました"
+                )
                 continue
-            if "updated" in message_lower:
-                actions.append(message)
+            if is_skill and ("patched" in message_lower or "updated" in message_lower):
+                actions.append(
+                    f"スキル「{skill_name}」を更新しました" if skill_name else "スキルを更新しました"
+                )
                 continue
-            if is_skill and "patched" in message_lower:
-                actions.append(message)
+            if is_skill and "rewritten" in message_lower:
+                actions.append(
+                    f"スキル「{skill_name}」を書き換えました" if skill_name else "スキルを書き換えました"
+                )
+                continue
+            if label and "created" in message_lower:
+                actions.append(f"{label}を作成しました")
+                continue
+            if label and "updated" in message_lower:
+                actions.append(f"{label}を更新しました")
+                continue
+            if not label and ("created" in message_lower or "updated" in message_lower):
                 continue
 
-        if is_skill:
-            label = "Skill"
-        elif target:
-            label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-        else:
+        if not label:
             continue
 
         if verbose:
@@ -494,15 +518,15 @@ def summarize_background_review_actions(
                         "…" if len(new_string) > 80 else ""
                     )
                     actions.append(
-                        f"📝 Skill '{skill_name}' patched: "
+                        f"📝 スキル「{skill_name}」を更新しました: "
                         f"\"{old_preview}\" → \"{new_preview}\""
                     )
                 elif action == "create" and description:
-                    actions.append(f"📝 Skill '{skill_name}' created: {description}")
+                    actions.append(f"📝 スキル「{skill_name}」を作成しました: {description}")
                 elif action == "edit" and description:
-                    actions.append(f"📝 Skill '{skill_name}' rewritten: {description}")
+                    actions.append(f"📝 スキル「{skill_name}」を書き換えました: {description}")
                 else:
-                    actions.append(f"📝 {message}" if message else f"Skill {action}")
+                    actions.append(f"📝 {message}" if message else f"スキルを{action}しました")
             elif operations:
                 for op in operations:
                     op = op or {}
@@ -528,7 +552,7 @@ def summarize_background_review_actions(
                 preview = old_text[:60] + ("…" if len(old_text) > 60 else "")
                 actions.append(f"{label} ➖ {preview}")
             else:
-                actions.append(f"{label} updated")
+                actions.append(f"{label}を更新しました")
         elif (
             "added" in message_lower
             or "replaced" in message_lower
@@ -537,7 +561,7 @@ def summarize_background_review_actions(
             or (target and "add" in message.lower())
             or "Entry added" in message
         ):
-            actions.append(f"{label} updated")
+            actions.append(f"{label}を更新しました")
     return actions
 
 
@@ -793,13 +817,13 @@ def _run_review_in_thread(
         if actions:
             summary = " · ".join(dict.fromkeys(actions))
             agent._safe_print(
-                f"  💾 Self-improvement review: {summary}"
+                f"  💾 自己改善レビュー: {summary}"
             )
             _bg_cb = agent.background_review_callback
             if _bg_cb:
                 try:
                     _bg_cb(
-                        f"💾 Self-improvement review: {summary}"
+                        f"💾 自己改善レビュー: {summary}"
                     )
                 except Exception:
                     pass

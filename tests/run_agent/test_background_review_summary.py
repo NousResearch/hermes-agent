@@ -43,7 +43,7 @@ def test_skips_prior_tool_messages_by_tool_call_id():
     actions = _summarize(review_messages, snapshot)
 
     assert "Cron job 'remind-me' created." not in actions
-    assert "User profile updated" in actions
+    assert "ユーザープロフィールを更新しました" in actions
 
 
 def test_includes_genuinely_new_actions():
@@ -55,7 +55,7 @@ def test_includes_genuinely_new_actions():
 
     actions = _summarize(review_messages, prior_snapshot=[])
 
-    assert actions == ["Memory entry created."]
+    assert actions == ["メモリを作成しました"]
 
 
 def test_falls_back_to_content_equality_when_tool_call_id_missing():
@@ -71,7 +71,7 @@ def test_falls_back_to_content_equality_when_tool_call_id_missing():
     actions = _summarize(review_messages, [prior_msg])
 
     assert "Cron job 'X' created." not in actions
-    assert "Skill created." in actions
+    assert "スキルを作成しました" in actions
 
 
 def test_ignores_failed_tool_results():
@@ -91,7 +91,7 @@ def test_handles_non_json_tool_content_gracefully():
 
     actions = _summarize(review_messages, [])
 
-    assert actions == ["Memory updated."]
+    assert actions == ["メモリを更新しました"]
 
 
 def test_empty_inputs():
@@ -109,7 +109,7 @@ def test_added_message_relabels_by_target():
 
     actions = _summarize(review_messages, [])
 
-    assert actions == ["Memory updated"]
+    assert actions == ["メモリを更新しました"]
 
 
 def test_removed_or_replaced_relabels_by_target():
@@ -126,5 +126,5 @@ def test_removed_or_replaced_relabels_by_target():
 
     actions = _summarize(review_messages, [])
 
-    assert "User profile updated" in actions
-    assert "Memory updated" in actions
+    assert "ユーザープロフィールを更新しました" in actions
+    assert "メモリを更新しました" in actions

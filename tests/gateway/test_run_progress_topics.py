@@ -15,6 +15,18 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from gateway.session import SessionSource
 
 
+def test_localize_background_review_message_converts_legacy_english():
+    from gateway.run import _localize_background_review_message
+
+    assert (
+        _localize_background_review_message(
+            "💾 Self-improvement review: Skill 'technical-delivery-followthrough' created."
+        )
+        == "💾 スキル「technical-delivery-followthrough」を作成しました"
+    )
+    assert _localize_background_review_message("💾 Memory updated") == "💾 メモリを更新しました"
+
+
 class ProgressCaptureAdapter(BasePlatformAdapter):
     def __init__(self, platform=Platform.TELEGRAM):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
@@ -646,7 +658,7 @@ class BackgroundReviewAgent:
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
         if self.background_review_callback:
-            self.background_review_callback("💾 Skill 'prospect-scanner' created.")
+            self.background_review_callback("💾 Self-improvement review: Skill 'prospect-scanner' created.")
         return {
             "final_response": "done",
             "messages": [],

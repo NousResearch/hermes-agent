@@ -5,7 +5,7 @@ calls ``_pt_print`` directly can race with the input-area redraw and the
 printed line can end up visually buried behind the prompt.  ``_cprint`` now
 routes cross-thread prints through ``run_in_terminal`` via
 ``loop.call_soon_threadsafe`` so the self-improvement background review's
-``💾 Self-improvement review: …`` summary actually surfaces to the user.
+``💾 自己改善レビュー: …`` summary actually surfaces to the user.
 
 These tests verify the routing logic without spinning up a real PT app.
 """
@@ -107,7 +107,7 @@ def test_cprint_bg_thread_schedules_on_app_loop(monkeypatch):
     fake_pt_app.run_in_terminal = _fake_run_in_terminal
     monkeypatch.setitem(sys.modules, "prompt_toolkit.application", fake_pt_app)
 
-    cli._cprint("💾 Self-improvement review: Skill updated")
+    cli._cprint("💾 自己改善レビュー: スキルを更新しました")
 
     # call_soon_threadsafe must have been called with a scheduling cb.
     assert len(scheduled) == 1
@@ -117,7 +117,7 @@ def test_cprint_bg_thread_schedules_on_app_loop(monkeypatch):
     assert len(run_in_terminal_calls) == 1
 
     # And run_in_terminal's inner func should have emitted a pt_print.
-    assert direct_prints == ["💾 Self-improvement review: Skill updated"]
+    assert direct_prints == ["💾 自己改善レビュー: スキルを更新しました"]
 
 
 def test_cprint_same_thread_as_app_loop_direct_print(monkeypatch):

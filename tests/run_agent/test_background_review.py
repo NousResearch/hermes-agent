@@ -255,7 +255,7 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
 
     Users who miss the line in their terminal have no way to tell that the
     background review was what modified their skill/memory stores. The
-    summary prefix ``💾 Self-improvement review: …`` makes the origin
+    summary prefix ``💾 自己改善レビュー: …`` makes the origin
     explicit so both the CLI and gateway deliveries are unambiguous.
     """
     import json
@@ -303,12 +303,12 @@ def test_background_review_summary_is_attributed_to_self_improvement_loop(monkey
     # the self-improvement review explicitly.
     assert len(captured_prints) == 1, captured_prints
     printed = captured_prints[0]
-    assert "Self-improvement review" in printed, printed
-    assert "Memory updated" in printed, printed
+    assert "自己改善レビュー" in printed, printed
+    assert "メモリを更新しました" in printed, printed
 
     # Gateway path gets the same prefix.
     assert len(captured_bg_callback) == 1
-    assert captured_bg_callback[0].startswith("💾 Self-improvement review:"), (
+    assert captured_bg_callback[0].startswith("💾 自己改善レビュー:"), (
         captured_bg_callback[0]
     )
 
@@ -442,7 +442,7 @@ def test_memory_notifications_on_returns_generic_line():
     actions = summarize_background_review_actions(
         _memory_add_review(), [], notification_mode="on"
     )
-    assert actions == ["Memory updated"]
+    assert actions == ["メモリを更新しました"]
 
 
 def test_memory_notifications_verbose_includes_content_preview():
@@ -452,13 +452,13 @@ def test_memory_notifications_verbose_includes_content_preview():
     assert len(actions) == 1
     # Verbose surfaces the actual content that was saved.
     assert "User prefers terse replies" in actions[0]
-    assert actions[0] != "Memory updated"
+    assert actions[0] != "メモリを更新しました"
 
 
 def test_memory_notifications_default_is_on():
     """No mode passed → behaves like 'on' (generic line, not empty/verbose)."""
     actions = summarize_background_review_actions(_memory_add_review(), [])
-    assert actions == ["Memory updated"]
+    assert actions == ["メモリを更新しました"]
 
 
 def test_skill_patch_off_silent_verbose_shows_diff():

@@ -415,6 +415,30 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     return text
 
 
+def _localize_background_review_message(message: str) -> str:
+    """Localize legacy background self-improvement notifications for chat."""
+    text = str(message or "").strip()
+    if not text:
+        return text
+    prefix = "💾 " if text.startswith("💾") else ""
+    body = text[2:].strip() if prefix else text
+    if body.lower().startswith("self-improvement review:"):
+        body = body.split(":", 1)[1].strip()
+    lower = body.lower().rstrip(".")
+    skill_match = re.search(r"skill\s+'([^']+)'\s+(created|patched|updated|rewritten)", body, re.IGNORECASE)
+    if skill_match:
+        name, action = skill_match.group(1), skill_match.group(2).lower()
+        verb = "作成しました" if action == "created" else "書き換えました" if action == "rewritten" else "更新しました"
+        return f"💾 スキル「{name}」を{verb}"
+    if lower in {"memory updated", "memory updated successfully"}:
+        return "💾 メモリを更新しました"
+    if lower in {"user profile updated", "profile updated"}:
+        return "💾 ユーザープロフィールを更新しました"
+    if lower in {"skill updated", "skill created"}:
+        return "💾 スキルを更新しました" if "updated" in lower else "💾 スキルを作成しました"
+    return text
+
+
 def _discord_tool_progress_message(tool_name: Optional[str]) -> str:
     """Return a compact Japanese one-line progress message for Discord.
 
@@ -15461,8 +15485,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _env_tp and not _tool_progress_configured
             else (_resolved_tp or _env_tp or "all")
         )
-        # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool)
+        is_discord_progress = _gateway_platform_value(source.platform) == "discord"
+        # Tool progress grouping: "accumulate" (edit one bubble) or "separate" (one msg per tool).
+        # Discord is a shared chat surface: progress must stay as a single
+        # edited status line, never a growing multi-line transcript.
         progress_grouping = resolve_display_setting(user_config, platform_key, "tool_progress_grouping") or "accumulate"
+        if is_discord_progress:
+            progress_grouping = "latest"
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
@@ -15664,7 +15693,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
 
-            if _gateway_platform_value(source.platform) == "discord":
+            if is_discord_progress:
                 msg = _discord_tool_progress_message(tool_name)
                 last_was_terminal_block[0] = False
                 if msg == last_progress_msg[0]:
@@ -15824,6 +15853,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
+            latest_only = progress_grouping == "latest"
             can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
@@ -15993,7 +16023,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         continue
                     else:
                         msg = raw
-                        if _gateway_platform_value(source.platform) == "discord":
+                        if latest_only:
                             progress_lines = [msg]
                         else:
                             progress_lines.append(msg)
@@ -16588,10 +16618,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 for queued in pending:
                     _deliver_bg_review_message(queued)
 
-            # Background review delivery — send "💾 Memory updated" etc. to user
+            # Background review delivery — send Japanese memory/skill update notes to the user.
             def _bg_review_send(message: str) -> None:
                 if not _status_adapter or not _run_still_current():
                     return
+                message = _localize_background_review_message(message)
                 if not _bg_review_release.is_set():
                     with _bg_review_pending_lock:
                         if not _bg_review_release.is_set():

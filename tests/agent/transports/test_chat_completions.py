@@ -290,6 +290,26 @@ class TestChatCompletionsBuildKwargs:
         # Nous rejects enabled=false; reasoning omitted entirely
         assert "reasoning" not in kw.get("extra_body", {})
 
+    def test_reasoning_disabled_via_config_legacy(self, transport):
+        """Legacy path (no profile): reasoning_config disables reasoning."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            supports_reasoning=True,
+            reasoning_config={"enabled": False},
+        )
+        assert "reasoning" not in kw.get("extra_body", {})
+
+    def test_reasoning_custom_effort_via_config_legacy(self, transport):
+        """Legacy path (no profile): reasoning_config overrides effort."""
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            supports_reasoning=True,
+            reasoning_config={"enabled": True, "effort": "high"},
+        )
+        assert kw["extra_body"]["reasoning"] == {"enabled": True, "effort": "high"}
+
     def test_ollama_num_ctx(self, transport):
         from providers import get_provider_profile
         profile = get_provider_profile("custom")

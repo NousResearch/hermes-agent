@@ -418,7 +418,24 @@ class ChatCompletionsTransport(ProviderTransport):
         # Reasoning. LM Studio is handled above via top-level reasoning_effort,
         # so skip emitting extra_body.reasoning for it.
         if params.get("supports_reasoning", False) and not params.get("is_lmstudio", False):
-            if is_github_models:
+            # Honor reasoning_config when present (e.g. delegation.reasoning_effort
+            # override). Without this check, the legacy path unconditionally emits
+            # reasoning: {enabled: true, effort: "medium"}, ignoring the caller's
+            # explicit disable.  See #51903.
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    pass  # reasoning explicitly disabled — omit entirely
+                else:
+                    _effort = str(
+                        reasoning_config.get("effort", "medium")
+                    ).strip().lower()
+                    extra_body["reasoning"] = {
+                        "enabled": True,
+                        "effort": _effort if _effort in {
+                            "low", "medium", "high", "xhigh",
+                        } else "medium",
+                    }
+            elif is_github_models:
                 gh_reasoning = params.get("github_reasoning_extra")
                 if gh_reasoning is not None:
                     extra_body["reasoning"] = gh_reasoning

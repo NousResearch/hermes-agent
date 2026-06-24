@@ -710,7 +710,7 @@ class TestSyncSkills:
         with patch("tools.skills_sync._get_bundled_dir", return_value=tmp_path / "nope"):
             result = sync_skills(quiet=True)
         assert result == {
-            "copied": [], "updated": [], "skipped": 0,
+            "copied": [], "updated": [], "skipped": 0, "skipped_auto": 0,
             "user_modified": [], "cleaned": [], "suppressed": [], "total_bundled": 0,
             "optional_provenance_backfilled": [],
         }
@@ -1280,3 +1280,163 @@ class TestUpdateBackupRecovery:
             result2 = sync_skills(quiet=True)
         assert "old-skill" in result2["updated"]
         assert result2["user_modified"] == []
+
+
+class TestAutoSyncBundled:
+    """Tests for the auto_sync_bundled config flag."""
+
+    @staticmethod
+    def _setup_bundled(tmp_path):
+        """Create a minimal bundled skills structure with two skills."""
+        bundled = tmp_path / "bundled_skills"
+        for name in ("existing-skill", "brand-new-skill"):
+            d = bundled / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(f"---\nname: {name}\n---\n# {name}")
+        return bundled
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        import contextlib
+        stack = contextlib.ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", lambda: bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", lambda: bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    def test_auto_sync_false_skips_new_skills(self, tmp_path):
+        """When auto_sync_bundled=false, new bundled skills should NOT be copied."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        # existing-skill is in manifest + on disk
+        existing = skills_dir / "existing-skill"
+        existing.mkdir(parents=True)
+        (existing / "SKILL.md").write_text("old content")
+        orig_hash = _dir_hash(existing)
+        manifest_file.write_text(f"existing-skill:{orig_hash}\n")
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("skills:\n  auto_sync_bundled: false\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync.HERMES_HOME", tmp_path):
+                result = sync_skills(quiet=True)
+
+        assert "brand-new-skill" not in result["copied"]
+        assert result["skipped_auto"] == 1
+        assert not (skills_dir / "brand-new-skill").exists()
+        # Existing skill still updates normally
+        assert "existing-skill" in result["updated"]
+
+    def test_auto_sync_false_string_is_parsed_as_false(self, tmp_path):
+        """Quoted string 'false' should still disable auto-sync."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("skills:\n  auto_sync_bundled: 'false'\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync.HERMES_HOME", tmp_path):
+                result = sync_skills(quiet=True)
+
+        assert "brand-new-skill" not in result["copied"]
+        assert result["skipped_auto"] == 2
+
+    def test_auto_sync_true_copies_new_skills(self, tmp_path):
+        """Default (auto_sync_bundled=true) should copy new bundled skills."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("skills:\n  auto_sync_bundled: true\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync.HERMES_HOME", tmp_path):
+                result = sync_skills(quiet=True)
+
+        assert "brand-new-skill" in result["copied"]
+        assert result.get("skipped_auto", 0) == 0
+
+    def test_auto_sync_false_then_reenable_picks_up(self, tmp_path):
+        """After disabling then re-enabling auto_sync_bundled, new skills sync."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        config_path = tmp_path / "config.yaml"
+
+        # Phase 1: auto_sync=false
+        config_path.write_text("skills:\n  auto_sync_bundled: false\n")
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync.HERMES_HOME", tmp_path):
+                result1 = sync_skills(quiet=True)
+        assert "brand-new-skill" not in result1["copied"]
+        assert not (skills_dir / "brand-new-skill").exists()
+
+        # Phase 2: auto_sync=true
+        config_path.write_text("skills:\n  auto_sync_bundled: true\n")
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync.HERMES_HOME", tmp_path):
+                result2 = sync_skills(quiet=True)
+        assert "brand-new-skill" in result2["copied"]
+        assert (skills_dir / "brand-new-skill").exists()
+
+    def test_missing_config_defaults_to_true(self, tmp_path):
+        """No config file -> auto_sync_bundled defaults to True."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        # No config.yaml exists
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync.HERMES_HOME", tmp_path):
+                result = sync_skills(quiet=True)
+
+        assert "brand-new-skill" in result["copied"]
+        assert result.get("skipped_auto", 0) == 0
+
+
+class TestResetBypassAutoSync:
+    """Explicit reset/restore must work even when auto_sync_bundled=false."""
+
+    def _setup_bundled(self, tmp_path):
+        bundled = tmp_path / "bundled_skills"
+        (bundled / "productivity" / "google-workspace").mkdir(parents=True)
+        (bundled / "productivity" / "google-workspace" / "SKILL.md").write_text(
+            "---\nname: google-workspace\n---\n# GW v2 (upstream)\n"
+        )
+        return bundled
+
+    def _patches(self, bundled, skills_dir, manifest_file):
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch("tools.skills_sync._get_bundled_dir", return_value=bundled))
+        stack.enter_context(patch("tools.skills_sync._get_optional_dir", return_value=bundled.parent / "optional-skills"))
+        stack.enter_context(patch("tools.skills_sync.SKILLS_DIR", skills_dir))
+        stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
+        return stack
+
+    def test_reset_restore_works_when_auto_sync_bundled_false(self, tmp_path):
+        """Explicit restore should bypass auto_sync_bundled=false."""
+        bundled = self._setup_bundled(tmp_path)
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+        config_path = tmp_path / "config.yaml"
+
+        dest = skills_dir / "productivity" / "google-workspace"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_text("# heavily edited by user\n")
+        manifest_file.write_text("google-workspace:STALEHASH000000000000000000000000\n")
+        config_path.write_text("skills:\n  auto_sync_bundled: false\n")
+
+        with self._patches(bundled, skills_dir, manifest_file):
+            with patch("tools.skills_sync.HERMES_HOME", tmp_path):
+                result = reset_bundled_skill("google-workspace", restore=True)
+
+        assert result["ok"] is True
+        assert result["action"] == "restored"
+        assert "GW v2 (upstream)" in (dest / "SKILL.md").read_text()

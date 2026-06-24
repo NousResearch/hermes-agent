@@ -2062,6 +2062,10 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # When false, new bundled skills added upstream are NOT auto-installed
+        # into ~/.hermes/skills/ during sync/update. Existing tracked skills
+        # still update normally. Default: true.
+        "auto_sync_bundled": True,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
         # background self-improvement review fork.

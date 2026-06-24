@@ -214,6 +214,37 @@ def _dir_hash(directory: Path) -> str:
     return hasher.hexdigest()
 
 
+def _load_auto_sync_bundled() -> bool:
+    """Check if auto_sync_bundled is enabled in config.yaml.
+
+    Returns True (default) if config doesn't exist or key is missing.
+    """
+    try:
+        import yaml
+        # Derive config path from SKILLS_DIR so tests/profile overrides that patch
+        # SKILLS_DIR automatically isolate config lookup too.
+        config_path = SKILLS_DIR.parent / "config.yaml"
+        if config_path.exists():
+            with open(config_path, encoding="utf-8") as f:
+                config = yaml.safe_load(f) or {}
+            skills_cfg = config.get("skills", {})
+            if not isinstance(skills_cfg, dict):
+                return True
+            value = skills_cfg.get("auto_sync_bundled", True)
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {"0", "false", "no", "off"}:
+                    return False
+                if normalized in {"1", "true", "yes", "on"}:
+                    return True
+            return bool(value)
+    except Exception:
+        pass
+    return True
+
+
 def _safe_rel_install_path(path: Path, base: Path) -> str:
     """Return a normalized relative POSIX path, rejecting traversal/absolute paths."""
     rel = path.relative_to(base)
@@ -451,13 +482,14 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
     return backfilled
 
 
-def sync_skills(quiet: bool = False) -> dict:
+def sync_skills(quiet: bool = False, bypass_auto_sync: bool = False) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
 
     Returns:
         dict with keys: copied (list), updated (list), skipped (int),
-                        user_modified (list), cleaned (list), total_bundled (int)
+                        skipped_auto (int), user_modified (list), cleaned (list),
+                        total_bundled (int)
     """
     # Opt-out: a profile (named or the default ~/.hermes) that wrote the
     # .no-bundled-skills marker gets zero bundled-skill seeding. Returning the
@@ -468,7 +500,7 @@ def sync_skills(quiet: bool = False) -> dict:
         if not quiet:
             print("  (skipped — profile opted out of bundled skills via .no-bundled-skills)")
         return {
-            "copied": [], "updated": [], "skipped": 0,
+            "copied": [], "updated": [], "skipped": 0, "skipped_auto": 0,
             "user_modified": [], "cleaned": [], "total_bundled": 0,
             "optional_provenance_backfilled": [], "skipped_opt_out": True,
         }
@@ -492,6 +524,8 @@ def sync_skills(quiet: bool = False) -> dict:
     user_modified = []
     suppressed_skipped: List[str] = []
     skipped = 0
+    auto_sync = _load_auto_sync_bundled()
+    skipped_auto = 0
 
     for skill_name, skill_src in bundled_skills:
         # Curator-pruned built-ins: do not re-seed. The suppression list
@@ -526,6 +560,12 @@ def sync_skills(quiet: bool = False) -> dict:
 
         if skill_name not in manifest:
             # ── New skill — never offered before ──
+            if not auto_sync and not bypass_auto_sync:
+                # Auto-sync disabled: skip new skills without adding to manifest,
+                # so they can be picked up later if auto_sync_bundled is re-enabled.
+                skipped += 1
+                skipped_auto += 1
+                continue
             try:
                 if dest.exists():
                     # User already has a skill with the same name — don't overwrite.
@@ -654,6 +694,7 @@ def sync_skills(quiet: bool = False) -> dict:
         "copied": copied,
         "updated": updated,
         "skipped": skipped,
+        "skipped_auto": skipped_auto,
         "user_modified": user_modified,
         "cleaned": cleaned,
         "suppressed": suppressed_skipped,
@@ -790,8 +831,9 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         del manifest[name]
         _write_manifest(manifest)
 
-    # Step 3: run sync to re-baseline (or re-copy if we deleted)
-    synced = sync_skills(quiet=True)
+    # Step 3: run sync to re-baseline (or re-copy if we deleted).
+    # Explicit reset/restore bypasses auto_sync_bundled suppression.
+    synced = sync_skills(quiet=True, bypass_auto_sync=True)
 
     if restore and deleted_user_copy:
         action = "restored"
@@ -1110,6 +1152,8 @@ if __name__ == "__main__":
         f"{len(result['updated'])} updated",
         f"{result['skipped']} unchanged",
     ]
+    if result.get("skipped_auto"):
+        parts.append(f"{result['skipped_auto']} auto-skipped (auto_sync_bundled=false)")
     if result["user_modified"]:
         names = result["user_modified"]
         MAX_SHOW = 5

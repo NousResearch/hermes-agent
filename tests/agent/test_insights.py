@@ -320,6 +320,35 @@ class TestInsightsPopulated:
         claude = next(m for m in models if "claude-sonnet" in m["model"])
         assert claude["sessions"] == 2
 
+    def test_model_breakdown_splits_mid_session_switch(self, db):
+        """A session that switches models mid-flight is split across both
+        models in the breakdown, not dumped on the initial model (#51607).
+        """
+        now = time.time()
+        db.create_session(session_id="sw", source="cli",
+                          model="deepseek/deepseek-v4-pro")
+        # 40k tokens on deepseek, then switch and 50k on opus.
+        db.update_token_counts("sw", input_tokens=40000, output_tokens=8000,
+                               model="deepseek/deepseek-v4-pro",
+                               billing_provider="deepseek", api_call_count=2)
+        db.update_session_model("sw", "anthropic/claude-opus-4.8")
+        db.update_token_counts("sw", input_tokens=50000, output_tokens=4000,
+                               model="anthropic/claude-opus-4.8",
+                               billing_provider="openrouter", api_call_count=3)
+        db._conn.commit()
+
+        report = InsightsEngine(db).generate(days=30)
+        models = {m["model"]: m for m in report["models"]}
+        assert "deepseek-v4-pro" in models
+        assert "claude-opus-4.8" in models
+        # Tokens attributed to the model that actually incurred them.
+        assert models["deepseek-v4-pro"]["input_tokens"] == 40000
+        assert models["claude-opus-4.8"]["input_tokens"] == 50000
+        assert models["claude-opus-4.8"]["api_calls"] == 3
+        # The summary row's single model would have hidden one of these.
+        assert models["deepseek-v4-pro"]["total_tokens"] == 48000
+        assert models["claude-opus-4.8"]["total_tokens"] == 54000
+
     def test_platform_breakdown(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)

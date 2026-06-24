@@ -1086,6 +1086,24 @@ def _safe_getcwd() -> str:
         return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
 
 
+def _is_host_path(path: str) -> bool:
+    """Detect host-local paths that won't resolve inside a container.
+
+    Covers POSIX home directories (``/Users/``, ``/home/``) and any
+    Windows drive-letter path (``C:\\``, ``D:\\``, …, ``Z:\\`` and
+    their forward-slash variants).  Only ``C:`` was checked previously,
+    silently passing ``D:\\``-style paths through as the container cwd.
+    """
+    if path.startswith(("/Users/", "/home/")):
+        return True
+    return (
+        len(path) >= 3
+        and path[0].isalpha()
+        and path[1] == ":"
+        and path[2] in ("\\", "/")
+    )
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
@@ -1138,19 +1156,18 @@ def _get_env_config() -> Dict[str, Any]:
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
-    host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
-            any(candidate.startswith(p) for p in host_prefixes)
+            _is_host_path(candidate)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
         ):
             host_cwd = candidate
             cwd = "/workspace"
     elif env_type in {"modal", "docker", "singularity", "daytona"} and cwd:
         # Host paths and relative paths that won't work inside containers
-        is_host_path = any(cwd.startswith(p) for p in host_prefixes)
+        is_host_path = _is_host_path(cwd)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
         if (is_host_path or is_relative) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "

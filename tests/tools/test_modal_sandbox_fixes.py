@@ -101,6 +101,45 @@ class TestCwdHandling:
         config = _tt_mod._get_env_config()
         assert config["cwd"] == "/root"
 
+    def test_windows_non_c_drive_replaced_for_modal(self, monkeypatch):
+        """D:\\ paths must be treated as host paths, not just C:\\.
+
+        On a Windows host, D:\\ is absolute — so the is_relative fallback
+        does NOT catch it.  The host-path check must detect any drive letter.
+        See #49703.
+        """
+        # Simulate Windows path semantics where D:\ is absolute
+        _real_isabs = os.path.isabs
+
+        def _win_isabs(path):
+            if len(path) >= 3 and path[0].isalpha() and path[1] == ":" and path[2] in ("\\", "/"):
+                return True
+            return _real_isabs(path)
+
+        monkeypatch.setattr("tools.terminal_tool.os.path.isabs", _win_isabs)
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        monkeypatch.setenv("TERMINAL_CWD", "D:\\Users\\someone\\projects")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/root", (
+            f"Expected /root, got {config['cwd']}. "
+            "D:\\ paths should be replaced for modal backend."
+        )
+
+    def test_windows_forward_slash_drive_replaced_for_modal(self, monkeypatch):
+        """E:/ paths (forward-slash variant) must also be detected."""
+        _real_isabs = os.path.isabs
+
+        def _win_isabs(path):
+            if len(path) >= 3 and path[0].isalpha() and path[1] == ":" and path[2] in ("\\", "/"):
+                return True
+            return _real_isabs(path)
+
+        monkeypatch.setattr("tools.terminal_tool.os.path.isabs", _win_isabs)
+        monkeypatch.setenv("TERMINAL_ENV", "modal")
+        monkeypatch.setenv("TERMINAL_CWD", "E:/dev/code")
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/root"
+
     @pytest.mark.parametrize("backend", ["modal", "docker", "singularity", "daytona"])
     def test_default_cwd_is_root_for_container_backends(self, backend, monkeypatch):
         """Container backends should default to /root, not ~."""
@@ -274,17 +313,24 @@ class TestEnsurepipFix:
 # =========================================================================
 
 class TestHostPrefixList:
-    """Verify the host prefix list catches common host-only paths."""
+    """Verify host path detection catches common host-only paths."""
 
     def test_all_common_host_prefixes_caught(self):
-        """The host prefix check should catch /Users/, /home/, C:\\, C:/."""
-        # Read the actual source to verify the prefixes
-        import inspect
-        source = inspect.getsource(_tt_mod._get_env_config)
-        for prefix in ["/Users/", "/home/", 'C:\\\\"', "C:/"]:
-            # Normalize for source comparison
-            check = prefix.rstrip('"')
-            assert check in source or prefix in source, (
-                f"Host prefix {prefix!r} not found in _get_env_config. "
-                "Container backends need this to avoid using host paths."
-            )
+        """_is_host_path must detect /Users/, /home/, and all Windows drive letters."""
+        is_host = _tt_mod._is_host_path
+        # POSIX home directories
+        assert is_host("/Users/someone/projects")
+        assert is_host("/home/user/work")
+        # Windows C: drive (the original case from #34097)
+        assert is_host("C:\\Users\\someone")
+        assert is_host("C:/Users/someone")
+        # Other Windows drive letters — the generalization from #49703
+        assert is_host("D:\\Users\\someone")
+        assert is_host("E:/dev/code")
+        assert is_host("Z:\\data\\repos")
+        # Non-host paths should return False
+        assert not is_host("/root")
+        assert not is_host("/workspace")
+        assert not is_host("/tmp")
+        assert not is_host("relative/path")
+        assert not is_host("")

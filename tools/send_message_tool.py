@@ -446,7 +446,8 @@ def _handle_send(args):
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
-        # Mirror the sent message into the target's gateway session
+        # Mirror the sent message into the target's gateway session for
+        # transcript continuity.
         if isinstance(result, dict) and result.get("success") and mirror_text:
             try:
                 from gateway.mirror import mirror_to_session
@@ -470,6 +471,105 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+async def _trigger_gateway_agent(
+    platform_name: str,
+    chat_id: str,
+    text: str,
+    *,
+    thread_id: str | None = None,
+    chat_type: str | None = None,
+    user_id: str | None = None,
+) -> dict:
+    """Schedule a synthetic inbound event so a live gateway agent takes a turn.
+
+    Instead of a passive ``adapter.send`` (which delivers a string but never
+    runs the agent), this forges an ``internal=True`` ``MessageEvent`` and hands
+    it to the destination adapter's ``handle_message`` on the gateway event
+    loop, so the agent reads it, reasons, and replies in its own voice.
+
+    ``chat_type`` and ``user_id`` must mirror the originating source (persisted
+    on the subscription): ``handle_message`` derives the session key from them
+    via ``build_session_key``, so a mismatch routes the woken turn into a
+    separate, context-less session instead of the operator's real channel.
+    ``user_id`` is passed through verbatim (``None`` included), since for
+    group/channel keys an absent user_id is significant.
+
+    Not exposed to the model, so an LLM cannot wake itself. Returns
+    ``{"triggered_agent": True}`` once the turn is queued, or
+    ``{"trigger_error": ...}`` when no live gateway is reachable.
+    """
+    if not chat_id:
+        return {"trigger_error": "missing destination chat_id"}
+    if not text:
+        return {"trigger_error": "missing trigger text"}
+
+    try:
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent, MessageType
+        from gateway.session import SessionSource
+        from gateway.run import _gateway_runner_ref
+    except Exception as exc:
+        return {"trigger_error": _sanitize_error_text(f"gateway imports unavailable: {exc}")}
+
+    runner = _gateway_runner_ref()
+    if runner is None:
+        return {"trigger_error": "no live gateway runner in this process"}
+
+    try:
+        platform = Platform(platform_name)
+    except Exception as exc:
+        return {"trigger_error": _sanitize_error_text(f"unknown platform for trigger: {exc}")}
+
+    adapter = getattr(runner, "adapters", {}).get(platform)
+    if adapter is None:
+        return {"trigger_error": f"no live adapter for {platform_name}"}
+
+    loop = getattr(runner, "_gateway_loop", None) or getattr(runner, "_loop", None)
+    if loop is None or not getattr(loop, "is_running", lambda: False)():
+        return {"trigger_error": "no live gateway event loop"}
+
+    source = SessionSource(
+        platform=platform,
+        chat_id=str(chat_id),
+        # Mirror the subscription's source so the session key matches the
+        # operator's channel; default to "dm" only when none was recorded.
+        chat_type=chat_type or "dm",
+        user_id=user_id,
+        user_name="Hermes internal handoff",
+        thread_id=thread_id,
+        is_bot=False,
+    )
+    event = MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=source,
+        internal=True,
+    )
+
+    # Schedule on the gateway loop. If we are already running on it, create the
+    # task directly; otherwise hop threads safely (the notifier watcher may run
+    # on a different loop/thread than the gateway's).
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    def _spawn_wake_task() -> None:
+        # Retain the task so asyncio can't garbage-collect it mid-run and
+        # silently drop the wake.
+        task = loop.create_task(adapter.handle_message(event))
+        bg_tasks = getattr(runner, "_background_tasks", None)
+        if bg_tasks is not None:
+            bg_tasks.add(task)
+            task.add_done_callback(bg_tasks.discard)
+
+    if running_loop is loop:
+        _spawn_wake_task()
+    else:
+        loop.call_soon_threadsafe(_spawn_wake_task)
+    return {"triggered_agent": True}
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):

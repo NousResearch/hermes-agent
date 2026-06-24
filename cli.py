@@ -2910,6 +2910,10 @@ def _preserve_ctrl_enter_newline() -> bool:
         return True
     if os.environ.get("TERM_PROGRAM", "").lower() == "ghostty":
         return True
+    # VTE-based terminals (GNOME Terminal, Tilix, Terminator, etc.) expose
+    # VTE_VERSION and use the same Ctrl+Enter -> bare LF convention.
+    if os.environ.get("VTE_VERSION"):
+        return True
     if "microsoft" in os.environ.get("WSL_DISTRO_NAME", "").lower():
         return True
     # WSL detection — env vars can be scrubbed under sudo, also peek /proc.

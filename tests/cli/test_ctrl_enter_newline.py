@@ -115,3 +115,27 @@ def test_install_ctrl_enter_alias_idempotent():
     install_ctrl_enter_alias()
     second = install_ctrl_enter_alias()
     assert second == 0  # no further changes after first install
+
+
+# ---------------------------------------------------------------------------
+# VTE-based terminals (issue #51545)
+# ---------------------------------------------------------------------------
+
+
+def test_vte_version_preserves_newline():
+    """VTE-based terminals (GNOME Terminal, Tilix, Terminator) expose
+    VTE_VERSION and use the same Ctrl+Enter -> bare LF convention as
+    Windows Terminal / Ghostty / WSL."""
+    import cli as cli_mod
+    with patch.object(sys, "platform", "linux"):
+        with patch.dict(os.environ, {"VTE_VERSION": "6000", "TERM": "xterm-256color"}, clear=True):
+            assert cli_mod._preserve_ctrl_enter_newline() is True
+
+
+def test_vte_version_zero_still_preserves_newline():
+    """VTE_VERSION=0 is the documented sentinel for 'no VTE library', but in
+    practice terminals that set it explicitly are VTE-based — preserve."""
+    import cli as cli_mod
+    with patch.object(sys, "platform", "linux"):
+        with patch.dict(os.environ, {"VTE_VERSION": "0", "TERM": "xterm-256color"}, clear=True):
+            assert cli_mod._preserve_ctrl_enter_newline() is True

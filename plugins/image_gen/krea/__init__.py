@@ -86,6 +86,11 @@ _ASPECT_MAP = {
 # Only resolution Krea currently supports.
 DEFAULT_RESOLUTION = "1K"
 
+# Krea's image_style_references entries are objects ({"url", "strength"}), not
+# bare URL strings. When the caller supplies a URL without an explicit strength
+# we apply Krea's recommended starting value. Range per Krea docs is -2..2.
+_DEFAULT_STYLE_REFERENCE_STRENGTH = 0.6
+
 # Valid creativity levels per Krea docs. Default is "medium".
 _VALID_CREATIVITY = {"raw", "low", "medium", "high"}
 
@@ -402,8 +407,19 @@ class KreaImageGenProvider(ImageGenProvider):
 
         if style_refs:
             # Reference-guided generation (image-to-image style transfer).
-            # Krea caps at 10 refs per request (already clamped above).
-            payload["image_style_references"] = style_refs
+            # Krea requires each entry to be an object ({"url", "strength"}),
+            # NOT a bare URL string — a string yields a 422 "Expected object,
+            # received string". Convert URL strings to the object form and pass
+            # already-object refs through verbatim (clamped to 10 above).
+            normalized_refs: List[Any] = []
+            for ref in style_refs:
+                if isinstance(ref, str):
+                    normalized_refs.append(
+                        {"url": ref, "strength": _DEFAULT_STYLE_REFERENCE_STRENGTH}
+                    )
+                else:
+                    normalized_refs.append(ref)
+            payload["image_style_references"] = normalized_refs
 
         moodboards = kwargs.get("moodboards")
         if isinstance(moodboards, list) and moodboards:

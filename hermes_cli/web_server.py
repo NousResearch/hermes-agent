@@ -866,6 +866,23 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     canonical = normalize_provider(prov_in)
 
     if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
+        # A configured custom provider (self-hosted OpenAI-compatible gateway,
+        # e.g. litellm / Bifrost / vLLM) may serve this vendor-prefixed model
+        # id. Prefer it over the OpenRouter fallback so the Models page does not
+        # silently re-route a user's gateway model to OpenRouter (which then
+        # fails at agent init with "No LLM provider configured" when OpenRouter
+        # is not configured).
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+            from hermes_cli.providers import custom_provider_slug
+            for _cp in get_compatible_custom_providers(load_config()) or []:
+                _served = list((_cp.get("models") or {}))
+                if _cp.get("model"):
+                    _served.append(_cp.get("model"))
+                if model_in in _served:
+                    return custom_provider_slug(_cp.get("name", "")), model_in
+        except Exception:
+            _log.debug("custom-provider model resolution failed", exc_info=True)
         # Vendor prefix posing as a provider (analytics fallback). Resolve
         # against the user's current provider when it's an aggregator that
         # serves vendor-prefixed slugs; otherwise default to openrouter.

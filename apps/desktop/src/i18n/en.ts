@@ -211,6 +211,7 @@ export const en: Translations = {
       'session.togglePin': 'Pin / unpin current session',
       'composer.focus': 'Focus composer',
       'composer.modelPicker': 'Open model picker',
+      'composer.voice': 'Start / stop voice conversation',
       'view.toggleSidebar': 'Toggle sessions sidebar',
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.showFiles': 'Show file browser',

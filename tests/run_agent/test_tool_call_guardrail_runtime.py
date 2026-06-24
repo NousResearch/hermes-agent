@@ -107,7 +107,8 @@ def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_e
     assert len(messages) == 1
     assert messages[0]["role"] == "tool"
     assert messages[0]["tool_call_id"] == "c-soft"
-    assert "repeated_exact_failure_warning" in messages[0]["content"]
+    # count=3 triggers tool_call_self_check_required (was repeated_exact_failure_warning)
+    assert "tool_call_self_check_required" in messages[0]["content"]
     assert "repeated_exact_failure_block" not in messages[0]["content"]
     assert agent._tool_guardrail_halt_decision is None
 

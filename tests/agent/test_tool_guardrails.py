@@ -39,6 +39,7 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
     assert cfg.warnings_enabled is True
     assert cfg.hard_stop_enabled is False
     assert cfg.exact_failure_warn_after == 2
+    assert cfg.exact_failure_selfcheck_after == 3
     assert cfg.same_tool_failure_warn_after == 3
     assert cfg.no_progress_warn_after == 2
     assert cfg.exact_failure_block_after == 5
@@ -87,7 +88,11 @@ def test_default_repeated_identical_failed_call_warns_without_blocking():
 
     assert decisions[0].action == "allow"
     assert [d.action for d in decisions[1:]] == ["warn", "warn", "warn", "warn"]
-    assert {d.code for d in decisions[1:]} == {"repeated_exact_failure_warning"}
+    # count=2: repeated_exact_failure_warning, count>=3: tool_call_self_check_required
+    assert decisions[1].code == "repeated_exact_failure_warning"
+    assert decisions[2].code == "tool_call_self_check_required"
+    assert decisions[3].code == "tool_call_self_check_required"
+    assert decisions[4].code == "tool_call_self_check_required"
     assert controller.before_call("web_search", args).action == "allow"
     assert controller.halt_decision is None
 
@@ -501,3 +506,148 @@ def test_output_indicates_task_failure_traceback_at_end_of_long_output():
 
     long_output = "Some normal log output\n" * 300 + "Traceback (most recent call last):\n  File 'app.py', line 1"
     assert output_indicates_task_failure(long_output)
+
+
+def test_selfcheck_observation_at_count_3_with_structured_failure_history():
+    """At count=3, after_call returns a structured self-check observation with failure history."""
+    from agent.tool_guardrails import (
+        ToolCallGuardrailController,
+        append_toolguard_guidance,
+    )
+    import json as _json
+
+    controller = ToolCallGuardrailController()
+    args = {"command": "python3 server.py --port 8189"}
+
+    # First 2 failures: allow + warn
+    d1 = controller.after_call("terminal", args, '{"output":"","exit_code":124}', failed=True)
+    assert d1.action == "allow"
+
+    d2 = controller.after_call("terminal", args, '{"output":"timeout","exit_code":124}', failed=True)
+    assert d2.action == "warn"
+    assert d2.code == "repeated_exact_failure_warning"
+
+    # Count=3: self-check observation
+    d3 = controller.after_call("terminal", args, '{"output":"Agent Service Gateway :8189","exit_code":124}', failed=True)
+    assert d3.action == "warn"
+    assert d3.code == "tool_call_self_check_required"
+    assert d3.count == 3
+    assert d3.last_tool_call_args == args
+    assert d3.recent_failures is not None
+    assert len(d3.recent_failures) == 3
+
+    # Verify failure history contains structured data
+    assert all("exit_code" in f for f in d3.recent_failures)
+    assert d3.recent_failures[0]["exit_code"] == 124
+    assert d3.recent_failures[0]["exit_code_meaning"] == "Command timed out"
+
+    # Verify the appended guidance contains structured JSON
+    result = '{"output":"timeout","exit_code":124}'
+    guided = append_toolguard_guidance(result, d3)
+    # The guidance should contain the self-check JSON block
+    assert "Tool-call self-check required before retrying" in guided
+    parsed_guidance = _json.loads(guided.split("\n\n")[1])
+    assert parsed_guidance["guardrail"]["code"] == "tool_call_self_check_required"
+    assert parsed_guidance["last_tool_call"]["tool_name"] == "terminal"
+    assert parsed_guidance["last_tool_call"]["args"] == args
+    assert len(parsed_guidance["recent_failures"]) == 3
+    assert "required_self_check" in parsed_guidance
+    assert "required_next_step" in parsed_guidance
+
+
+def test_stronger_selfcheck_warning_at_count_4():
+    """At count=4, self-check message escalates to stronger warning."""
+    controller = ToolCallGuardrailController()
+    args = {"command": "python3 server.py"}
+
+    for i in range(4):
+        controller.after_call("terminal", args, '{"output":"timeout","exit_code":124}', failed=True)
+
+    d4 = controller.after_call("terminal", args, '{"output":"timeout","exit_code":124}', failed=True)
+    assert d4.action == "warn"
+    assert d4.code == "tool_call_self_check_required"
+    assert d4.count == 5
+    assert "confirmed loop" in d4.message
+    assert "MUST change strategy" in d4.message
+
+
+def test_selfcheck_configurable_threshold():
+    """exact_failure_selfcheck_after can be configured to delay self-check."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+    cfg = ToolCallGuardrailConfig(exact_failure_selfcheck_after=4)
+    controller = ToolCallGuardrailController(cfg)
+    args = {"command": "cmd"}
+
+    # count=1: allow
+    d1 = controller.after_call("terminal", args, '{"exit_code":1}', failed=True)
+    assert d1.action == "allow"
+
+    # count=2: repeated_exact_failure_warning (warn_after=2)
+    d2 = controller.after_call("terminal", args, '{"exit_code":1}', failed=True)
+    assert d2.action == "warn"
+    assert d2.code == "repeated_exact_failure_warning"
+
+    # count=3: repeated_exact_failure_warning (selfcheck_after=4, so not yet)
+    d3 = controller.after_call("terminal", args, '{"exit_code":1}', failed=True)
+    assert d3.action == "warn"
+    assert d3.code == "repeated_exact_failure_warning"
+
+    # count=4: tool_call_self_check_required (selfcheck_after=4)
+    d4 = controller.after_call("terminal", args, '{"exit_code":1}', failed=True)
+    assert d4.action == "warn"
+    assert d4.code == "tool_call_self_check_required"
+
+
+def test_failure_history_capped_at_5_entries():
+    """Recent failure history is capped at 5 entries to avoid unbounded growth."""
+    controller = ToolCallGuardrailController()
+    args = {"command": "cmd"}
+
+    for i in range(8):
+        controller.after_call("terminal", args, '{"exit_code":124}', failed=True)
+
+    d = controller.after_call("terminal", args, '{"exit_code":124}', failed=True)
+    if d.recent_failures is not None:
+        assert len(d.recent_failures) <= 5
+
+
+def test_failure_history_records_execute_code_status():
+    """Failure history captures execute_code status field."""
+    controller = ToolCallGuardrailController()
+    args = {"code": "print(1/0)"}
+
+    d1 = controller.after_call("execute_code", args, '{"status":"error","output":"ZeroDivisionError"}', failed=True)
+    d2 = controller.after_call("execute_code", args, '{"status":"error","output":"ZeroDivisionError"}', failed=True)
+    d3 = controller.after_call("execute_code", args, '{"status":"error","output":"ZeroDivisionError"}', failed=True)
+
+    assert d3.code == "tool_call_self_check_required"
+    assert d3.recent_failures is not None
+    assert d3.recent_failures[0]["status"] == "error"
+    assert "ZeroDivisionError" in d3.recent_failures[0]["output_tail"]
+
+
+def test_selfcheck_guidance_includes_required_steps():
+    """Self-check guidance includes concrete required self-check steps."""
+    from agent.tool_guardrails import (
+        ToolCallGuardrailController,
+        append_toolguard_guidance,
+    )
+    import json as _json
+
+    controller = ToolCallGuardrailController()
+    args = {"command": "python3 server.py"}
+
+    for _ in range(3):
+        controller.after_call("terminal", args, '{"exit_code":124}', failed=True)
+
+    d = controller.after_call("terminal", args, '{"exit_code":124}', failed=True)
+    guided = append_toolguard_guidance('{"exit_code":124}', d)
+    parsed = _json.loads(guided.split("\n\n")[1])
+
+    required = parsed["required_self_check"]
+    assert any("concrete change" in step for step in required)
+    assert any("args.background" in step for step in required)
+    assert any("unchanged" in step for step in required)
+
+    assert "materially different" in parsed["required_next_step"]

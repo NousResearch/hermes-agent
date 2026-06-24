@@ -74,6 +74,7 @@ class ToolCallGuardrailConfig:
     warnings_enabled: bool = True
     hard_stop_enabled: bool = False
     exact_failure_warn_after: int = 2
+    exact_failure_selfcheck_after: int = 3
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
     same_tool_failure_halt_after: int = 8
@@ -102,6 +103,10 @@ class ToolCallGuardrailConfig:
             exact_failure_warn_after=_positive_int(
                 warn_after.get("exact_failure", data.get("exact_failure_warn_after")),
                 defaults.exact_failure_warn_after,
+            ),
+            exact_failure_selfcheck_after=_positive_int(
+                warn_after.get("exact_failure_selfcheck", data.get("exact_failure_selfcheck_after")),
+                defaults.exact_failure_selfcheck_after,
             ),
             same_tool_failure_warn_after=_positive_int(
                 warn_after.get("same_tool_failure", data.get("same_tool_failure_warn_after")),
@@ -153,6 +158,9 @@ class ToolGuardrailDecision:
     tool_name: str = ""
     count: int = 0
     signature: ToolCallSignature | None = None
+    # Optional structured context for self-check observations.
+    last_tool_call_args: dict | None = None
+    recent_failures: list[dict] | None = None
 
     @property
     def allows_execution(self) -> bool:
@@ -301,6 +309,9 @@ class ToolCallGuardrailController:
         self._recovery_attempts: int = 0
         self._max_recovery_attempts: int = 2
         self._blocked_signatures: set[ToolCallSignature] = set()  # signatures blocked this turn
+        # Recent failure history per signature for structured self-check observations.
+        # Value: list of dicts with {exit_code, output_tail, status} — most recent last.
+        self._recent_failures: dict[ToolCallSignature, list[dict]] = {}
 
     def reset_for_turn(self) -> None:
         self._turn_counter += 1
@@ -311,6 +322,7 @@ class ToolCallGuardrailController:
         # Reset recovery budget for each new turn
         self._recovery_attempts = 0
         self._blocked_signatures = set()
+        self._recent_failures = {}
         # Prune stale cross-turn entries so the dict doesn't grow unbounded.
         _cutoff = self._turn_counter - self._cross_turn_ttl
         self._no_progress_cross_turn = {
@@ -449,6 +461,9 @@ class ToolCallGuardrailController:
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
 
+            # Record failure history for structured self-check
+            _record_failure(self._recent_failures, signature, tool_name, result)
+
             if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
                 decision = ToolGuardrailDecision(
                     action="halt",
@@ -463,6 +478,16 @@ class ToolCallGuardrailController:
                 )
                 self._halt_decision = decision
                 return decision
+
+            # Count >= exact_failure_block_after: handled by before_call block
+            # (we don't block here, we just warn — before_call does the actual block)
+
+            # Count >= selfcheck_after: structured self-check observation
+            if self.config.warnings_enabled and exact_count >= self.config.exact_failure_selfcheck_after:
+                return _build_selfcheck_decision(
+                    tool_name, exact_count, signature, args,
+                    self._recent_failures.get(signature, []),
+                )
 
             if self.config.warnings_enabled and exact_count >= self.config.exact_failure_warn_after:
                 return ToolGuardrailDecision(
@@ -553,6 +578,101 @@ class ToolCallGuardrailController:
         return tool_name in self.config.idempotent_tools
 
 
+def _record_failure(
+    recent_failures: dict[ToolCallSignature, list[dict]],
+    signature: ToolCallSignature,
+    tool_name: str,
+    result: str | None,
+) -> None:
+    """Record a structured failure entry for a tool call signature."""
+    if signature not in recent_failures:
+        recent_failures[signature] = []
+
+    entry: dict[str, Any] = {}
+    parsed = safe_json_loads(result or "")
+    if isinstance(parsed, dict):
+        if tool_name == "terminal":
+            exit_code = parsed.get("exit_code")
+            if exit_code is not None:
+                entry["exit_code"] = exit_code
+                meaning = _exit_code_meaning(exit_code)
+                if meaning:
+                    entry["exit_code_meaning"] = meaning
+            output = parsed.get("output", "")
+            if output:
+                entry["output_tail"] = output[-300:] if len(output) > 300 else output
+        elif tool_name == "execute_code":
+            status = parsed.get("status")
+            if status:
+                entry["status"] = status
+            output = parsed.get("output", "")
+            if output:
+                entry["output_tail"] = output[-300:] if len(output) > 300 else output
+    else:
+        # Non-JSON result — store tail
+        if result:
+            entry["output_tail"] = result[-300:] if len(result) > 300 else result
+
+    recent_failures[signature].append(entry)
+    # Keep last 5 entries to avoid unbounded growth
+    if len(recent_failures[signature]) > 5:
+        recent_failures[signature] = recent_failures[signature][-5:]
+
+
+def _exit_code_meaning(code: int) -> str | None:
+    """Return a human-readable meaning for common exit codes."""
+    meanings = {
+        1: "General error",
+        2: "Misuse of shell builtins",
+        7: "Failed to connect to host",
+        124: "Command timed out",
+        126: "Command invoked cannot execute",
+        127: "Command not found",
+        137: "Process killed (SIGKILL)",
+        139: "Process segfaulted (SIGSEGV)",
+        143: "Process terminated (SIGTERM)",
+    }
+    return meanings.get(code)
+
+
+def _build_selfcheck_decision(
+    tool_name: str,
+    exact_count: int,
+    signature: ToolCallSignature,
+    args: Mapping[str, Any],
+    recent_failures: list[dict],
+) -> ToolGuardrailDecision:
+    """Build a structured self-check observation for repeated failures.
+
+    At count >= 3, this replaces the regular warning with a structured
+    observation that forces the model to self-check before retrying.
+    """
+    # Build the self-check message based on count
+    if exact_count >= 4:
+        # Stronger warning at count 4+
+        message = (
+            f"{tool_name} has failed {exact_count} times with identical arguments. "
+            "You have been warned but have not changed the arguments. "
+            "This is a confirmed loop — you MUST change strategy before calling this tool again."
+        )
+    else:
+        message = (
+            f"{tool_name} has failed {exact_count} times with identical arguments. "
+            "Before retrying, compare your intended fix with the actual tool arguments you are about to emit."
+        )
+
+    return ToolGuardrailDecision(
+        action="warn",
+        code="tool_call_self_check_required",
+        message=message,
+        tool_name=tool_name,
+        count=exact_count,
+        signature=signature,
+        last_tool_call_args=dict(args),
+        recent_failures=list(recent_failures),
+    )
+
+
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:
     """Build a synthetic role=tool content string for a blocked tool call."""
     return json.dumps(
@@ -568,11 +688,54 @@ def append_toolguard_guidance(result: str, decision: ToolGuardrailDecision) -> s
     """Append runtime guidance to the current tool result content."""
     if decision.action not in {"warn", "halt"} or not decision.message:
         return result
+
+    # For self-check observations, embed structured JSON data
+    if decision.code == "tool_call_self_check_required":
+        return _append_selfcheck_guidance(result, decision)
+
     label = "Tool loop hard stop" if decision.action == "halt" else "Tool loop warning"
     suffix = (
         f"\n\n[{label}: "
         f"{decision.code}; count={decision.count}; {decision.message}]"
     )
+    return (result or "") + suffix
+
+
+def _append_selfcheck_guidance(result: str, decision: ToolGuardrailDecision) -> str:
+    """Append structured self-check guidance for repeated tool failures.
+
+    Embeds a JSON block with the failure history and required self-check steps
+    so the model has structured evidence to self-correct.
+    """
+    # Build the structured self-check observation
+    selfcheck = {
+        "error": "Tool-call self-check required before retrying.",
+        "guardrail": {
+            "action": decision.action,
+            "code": decision.code,
+            "message": decision.message,
+            "tool_name": decision.tool_name,
+            "count": decision.count,
+        },
+        "last_tool_call": {
+            "tool_name": decision.tool_name,
+            "args": decision.last_tool_call_args or {},
+        },
+        "recent_failures": decision.recent_failures or [],
+        "required_self_check": [
+            "State the concrete change you will make before calling another tool.",
+            "Verify the next tool arguments actually contain that change.",
+            f"If you intend to run a long-lived service in background, verify args.background is true.",
+            f"If you intend to change port/config/path/mode, verify the args reflect that exact change.",
+            "Do not call the tool again if the args are unchanged.",
+        ],
+        "required_next_step": (
+            "Either emit a materially different tool call, or explain the blocker to the user. "
+            "Do not repeat the same args."
+        ),
+    }
+
+    suffix = f"\n\n{json.dumps(selfcheck, ensure_ascii=False, indent=2)}"
     return (result or "") + suffix
 
 

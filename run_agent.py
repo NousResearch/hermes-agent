@@ -488,6 +488,21 @@ class AIAgent:
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
         )
+        try:
+            from agent.finalization_barrier import initialize_protected_finalization_state
+            self._protected_finalization_initialization = initialize_protected_finalization_state(self)
+        except Exception as exc:
+            # Fail closed: the finalization barrier reports red when startup
+            # cannot build a non-empty protected path/hash baseline.
+            self._protected_finalization_paths = []
+            self._protected_finalization_before_hashes = {}
+            self._authorized_finalization_changed_paths = []
+            self._protected_finalization_initialization = {
+                "gate": "red",
+                "error": str(exc),
+                "protected_path_count": 0,
+                "before_hash_count": 0,
+            }
 
     def _get_session_db_for_recall(self):
         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.

@@ -153,6 +153,85 @@ def _proposal_dir() -> Path:
     return _home() / "system-improvement-proposals"
 
 
+def is_protected_mutation_path(path: str) -> bool:
+    """Return True for canonical personalization/rule/config paths.
+
+    This helper is intentionally broader than skill-only writes so tests and
+    future tool-layer call sites have one policy predicate for references,
+    profiles, memories, MCP config, operating rules, and tool permissions.
+    """
+    raw = str(Path(path).expanduser()).replace("\\", "/")
+    home = str(_home()).replace("\\", "/")
+    protected_roots = [
+        f"{home}/skills/",
+        f"{home}/profiles/",
+        f"{home}/memories/",
+        f"{home}/references/",
+        str(Path.home() / ".cursor" / "mcp.json").replace("\\", "/"),
+        str(Path.home() / ".openclaw").replace("\\", "/"),
+    ]
+    return any(hint in raw for hint in PROTECTED_PATH_HINTS) or any(raw.startswith(root) for root in protected_roots)
+
+
+def quarantine_protected_path_mutation(
+    *,
+    path: str,
+    proposed_content: Optional[str] = None,
+    proposed_diff: Optional[str] = None,
+    current_sha256: Optional[str] = None,
+    expected_current_sha256: Optional[str] = None,
+    proposed_change_type: str = "protected_path_write",
+) -> QuarantineDecision:
+    """Convert a background protected-path write into a governed proposal.
+
+    Foreground writes are not blocked here; this is the background/self-review
+    quarantine boundary.  Symlinks and stale-version writes fail safely even
+    before proposal creation.
+    """
+    if not is_background_review_context():
+        return QuarantineDecision(True)
+    target = Path(path).expanduser()
+    try:
+        if target.is_symlink():
+            return QuarantineDecision(False, json.dumps({"success": False, "rejected": True, "reason": "symlink_escape_forbidden"}))
+    except OSError as exc:
+        return QuarantineDecision(False, json.dumps({"success": False, "rejected": True, "reason": f"path_check_failed: {exc}"}))
+    actual_sha = _hash_file(target)
+    if expected_current_sha256 is not None and actual_sha != expected_current_sha256:
+        return QuarantineDecision(False, json.dumps({
+            "success": False,
+            "rejected": True,
+            "reason": "stale_version_write_rejected",
+            "actual_sha256": actual_sha,
+            "expected_current_sha256": expected_current_sha256,
+        }))
+    if not is_protected_mutation_path(str(target)):
+        return QuarantineDecision(True)
+    before = _read_file(target)
+    if proposed_diff is None:
+        after = proposed_content if proposed_content is not None else before
+        proposed_diff = _safe_unified_diff(target, before, after)
+    proposal = build_system_improvement_proposal(
+        problem="Background review attempted a protected-path mutation.",
+        proposed_change_type=proposed_change_type,
+        proposed_paths=[str(target)],
+        current_file_hashes={str(target): current_sha256 or actual_sha},
+        proposed_diff=proposed_diff,
+        tests_required=["protected path quarantine test", "stale-version test", "rollback required"],
+        rollback="No rollback needed unless later approved; current operation performs no mutation.",
+    )
+    proposal_path = _proposal_dir() / f"{proposal['proposal_id']}.json"
+    _atomic_write(proposal_path, proposal)
+    return QuarantineDecision(False, json.dumps({
+        "success": True,
+        "quarantined": True,
+        "proposal_path": str(proposal_path),
+        "proposal_id": proposal["proposal_id"],
+        "execute_approved": False,
+        "message": "Protected-path mutation was converted to a system-improvement proposal; no canonical file was changed.",
+    }, ensure_ascii=False))
+
+
 def build_system_improvement_proposal(
     *,
     problem: str,

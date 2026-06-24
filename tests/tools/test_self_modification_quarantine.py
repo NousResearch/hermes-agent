@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.finalization_barrier import changed_paths, hash_protected_files, run_finalization_barrier
-from agent.self_modification_quarantine import PROPOSAL_SCHEMA
+from agent.finalization_barrier import changed_paths, hash_protected_files, initialize_protected_finalization_state, run_finalization_barrier
+from agent.self_modification_quarantine import PROPOSAL_SCHEMA, quarantine_protected_path_mutation
 from tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
 
 
@@ -195,15 +195,68 @@ def test_13_sentinel_before_hooks_is_insufficient(tmp_path):
 
 
 def test_14_finalization_waits_for_background_hooks(tmp_path, monkeypatch):
-    home = _bind_home(monkeypatch, tmp_path)
+    _bind_home(monkeypatch, tmp_path)
+    p = tmp_path / "protected"
+    p.write_text("a")
+    before = hash_protected_files([str(p)])
     done = []
     def worker():
         time.sleep(0.05); done.append(True)
     t = threading.Thread(target=worker, name="bg-review")
     t.start()
-    result = run_finalization_barrier(protected_paths=[], quiescence_seconds=0.01, wait_timeout=1)
+    result = run_finalization_barrier(protected_paths=[str(p)], before_hashes=before, quiescence_seconds=0.01, wait_timeout=1)
     assert done == [True]
     assert result["gate"] == "green"
+
+
+def test_14a_empty_protected_set_fails_closed(tmp_path, monkeypatch):
+    _bind_home(monkeypatch, tmp_path)
+    result = run_finalization_barrier(protected_paths=[], before_hashes={}, quiescence_seconds=0.01)
+    assert result["gate"] == "red"
+    assert "empty_protected_path_set" in result["fail_closed_reasons"]
+    assert "empty_before_hash_map" in result["fail_closed_reasons"]
+
+
+def test_14b_missing_before_hashes_fail_closed(tmp_path, monkeypatch):
+    _bind_home(monkeypatch, tmp_path)
+    p = tmp_path / "protected"
+    p.write_text("a")
+    result = run_finalization_barrier(protected_paths=[str(p)], before_hashes={}, quiescence_seconds=0.01)
+    assert result["gate"] == "red"
+    assert "empty_before_hash_map" in result["fail_closed_reasons"]
+
+
+def test_14c_unreadable_or_missing_protected_path_fails_closed(tmp_path, monkeypatch):
+    _bind_home(monkeypatch, tmp_path)
+    p = tmp_path / "protected"
+    p.write_text("a")
+    before = hash_protected_files([str(p)])
+    p.unlink()
+    result = run_finalization_barrier(protected_paths=[str(p)], before_hashes=before, quiescence_seconds=0.01)
+    assert result["gate"] == "red"
+    assert "unreadable_or_missing_protected_path" in result["fail_closed_reasons"]
+
+
+def test_14d_post_run_hook_incomplete_fails_closed(tmp_path, monkeypatch):
+    _bind_home(monkeypatch, tmp_path)
+    p = tmp_path / "protected"
+    p.write_text("a")
+    before = hash_protected_files([str(p)])
+    result = run_finalization_barrier(protected_paths=[str(p)], before_hashes=before, quiescence_seconds=0.01, post_hooks_completed=False)
+    assert result["gate"] == "red"
+    assert "post_run_hook_incomplete" in result["fail_closed_reasons"]
+
+
+def test_14e_startup_initializes_non_empty_protected_state(tmp_path, monkeypatch):
+    home = _bind_home(monkeypatch, tmp_path)
+    _make_skill(home)
+    class Agent:
+        pass
+    agent = Agent()
+    init = initialize_protected_finalization_state(agent)
+    assert init["gate"] == "green"
+    assert agent._protected_finalization_paths
+    assert agent._protected_finalization_before_hashes
 
 
 def test_15_post_receipt_write_invalidates_prior_gate(tmp_path, monkeypatch):
@@ -273,3 +326,42 @@ def test_20_active_protected_files_remain_unchanged_throughout(tmp_path, monkeyp
     skill_manage("patch", "demo", old_string="old", new_string="new")
     after_hash = hash_protected_files([str(path)])
     assert after_hash == before_hash
+
+
+
+def test_21_profile_rule_mcp_tool_permission_bypass_becomes_proposal(monkeypatch, tmp_path, background_origin):
+    home = _bind_home(monkeypatch, tmp_path)
+    protected = home / "profiles" / "default" / "tool-permissions.json"
+    protected.parent.mkdir(parents=True)
+    protected.write_text('{"allow": []}\n')
+    decision = quarantine_protected_path_mutation(path=str(protected), proposed_content='{"allow": ["all"]}\n')
+    result = json.loads(decision.response)
+    assert result["quarantined"] is True
+    assert protected.read_text() == '{"allow": []}\n'
+    _, proposal = _latest_proposal(home)
+    assert proposal["schema"] == PROPOSAL_SCHEMA
+    assert proposal["execute_approved"] is False
+
+
+def test_22_symlink_escape_fails_safely(monkeypatch, tmp_path, background_origin):
+    home = _bind_home(monkeypatch, tmp_path)
+    outside = tmp_path / "outside"
+    outside.write_text("outside")
+    link = home / "skills" / "demo" / "SKILL.md"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(outside)
+    decision = quarantine_protected_path_mutation(path=str(link), proposed_content="changed")
+    result = json.loads(decision.response)
+    assert result["rejected"] is True
+    assert result["reason"] == "symlink_escape_forbidden"
+    assert outside.read_text() == "outside"
+
+
+def test_23_stale_version_write_is_rejected(monkeypatch, tmp_path, background_origin):
+    home = _bind_home(monkeypatch, tmp_path)
+    path = _make_skill(home)
+    decision = quarantine_protected_path_mutation(path=str(path), proposed_content="changed", expected_current_sha256="not-current")
+    result = json.loads(decision.response)
+    assert result["rejected"] is True
+    assert result["reason"] == "stale_version_write_rejected"
+    assert path.read_text().endswith("old\n")

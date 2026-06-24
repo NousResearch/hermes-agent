@@ -20,10 +20,12 @@ import email as email_lib
 import imaplib
 import logging
 import os
+import socket
 import re
 import smtplib
 import socket
 import ssl
+import time
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -46,6 +48,45 @@ from gateway.config import Platform, PlatformConfig
 from utils import env_int, env_bool
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_EMAIL_IMAP_TIMEOUT = 30
+_DEFAULT_EMAIL_IMAP_FETCH_ATTEMPTS = 3
+_DEFAULT_EMAIL_IMAP_RETRY_DELAY = 2.0
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _is_transient_imap_error(error: Exception) -> bool:
+    if isinstance(error, (TimeoutError, socket.timeout, imaplib.IMAP4.abort)):
+        return True
+    lowered = str(error).lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "timed out",
+            "timeout",
+            "temporarily unavailable",
+            "try again",
+            "connection reset",
+            "connection aborted",
+            "connection unexpectedly closed",
+            "socket error",
+        )
+    )
+
+
 # Automated sender patterns — emails from these are silently ignored
 _NOREPLY_PATTERNS = (
     "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
@@ -441,6 +482,15 @@ class EmailAdapter(BasePlatformAdapter):
         self._smtp_host = (os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
         self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
         self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
+        self._imap_timeout = _env_int("EMAIL_IMAP_TIMEOUT", _DEFAULT_EMAIL_IMAP_TIMEOUT)
+        self._imap_fetch_attempts = max(
+            1,
+            _env_int("EMAIL_IMAP_FETCH_ATTEMPTS", _DEFAULT_EMAIL_IMAP_FETCH_ATTEMPTS),
+        )
+        self._imap_retry_delay = max(
+            0.0,
+            _env_float("EMAIL_IMAP_RETRY_DELAY", _DEFAULT_EMAIL_IMAP_RETRY_DELAY),
+        )
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -582,7 +632,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=self._imap_timeout)
             imap.login(self._address, self._password)
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
@@ -649,9 +699,34 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
+        last_error: Exception | None = None
+        attempts_used = 0
+        for attempt in range(1, self._imap_fetch_attempts + 1):
+            attempts_used = attempt
+            try:
+                return self._fetch_new_messages_once()
+            except Exception as e:
+                last_error = e
+                if not _is_transient_imap_error(e) or attempt >= self._imap_fetch_attempts:
+                    break
+                wait = self._imap_retry_delay * attempt
+                logger.warning(
+                    "[Email] IMAP fetch transient error (attempt %d/%d), retrying in %.1fs: %s",
+                    attempt,
+                    self._imap_fetch_attempts,
+                    wait,
+                    e,
+                )
+                time.sleep(wait)
+        if last_error is not None:
+            logger.error("[Email] IMAP fetch error after %d attempt(s): %s", attempts_used, last_error)
+        return []
+
+    def _fetch_new_messages_once(self) -> List[Dict[str, Any]]:
+        """Fetch new messages once; caller handles transient retries."""
         results = []
         try:
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=self._imap_timeout)
             try:
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)

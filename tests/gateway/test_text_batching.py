@@ -26,11 +26,17 @@ def _make_event(
     platform: Platform,
     chat_id: str = "12345",
     msg_type: MessageType = MessageType.TEXT,
+    is_bot: bool = False,
 ) -> MessageEvent:
     return MessageEvent(
         text=text,
         message_type=msg_type,
-        source=SessionSource(platform=platform, chat_id=chat_id, chat_type="dm"),
+        source=SessionSource(
+            platform=platform,
+            chat_id=chat_id,
+            chat_type="dm",
+            is_bot=is_bot,
+        ),
     )
 
 
@@ -110,6 +116,27 @@ class TestDiscordTextBatching:
         assert "chunk 1" in text
         assert "chunk 2" in text
         assert "chunk 3" in text
+
+    @pytest.mark.asyncio
+    async def test_bot_messages_use_longer_batch_delay(self):
+        """Bot-to-bot relay chunks get extra time to arrive before dispatch."""
+        adapter = _make_discord_adapter()
+        adapter._text_batch_bot_delay_seconds = 0.3
+
+        adapter._enqueue_text_event(_make_event("<@1> part one", Platform.DISCORD, is_bot=True))
+        await asyncio.sleep(0.15)
+        adapter.handle_message.assert_not_called()
+
+        adapter._enqueue_text_event(_make_event("<@1> part two", Platform.DISCORD, is_bot=True))
+        await asyncio.sleep(0.15)
+        adapter.handle_message.assert_not_called()
+
+        await asyncio.sleep(0.25)
+        adapter.handle_message.assert_called_once()
+        text = adapter.handle_message.call_args[0][0].text
+        assert "part one" in text
+        assert "part two" in text
+
 
     @pytest.mark.asyncio
     async def test_different_chats_not_merged(self):

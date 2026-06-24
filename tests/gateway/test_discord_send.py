@@ -123,6 +123,81 @@ async def test_send_retries_without_reference_when_reply_target_is_deleted():
 
 
 @pytest.mark.asyncio
+async def test_send_repeats_leading_mention_on_split_continuations(monkeypatch):
+    """Bot-to-bot relay chunks must all keep the target mention."""
+    monkeypatch.setenv("DISCORD_REPEAT_MENTIONS_ON_SPLIT", "true")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.MAX_MESSAGE_LENGTH = 40
+
+    send_calls = []
+
+    async def fake_send(*, content, reference=None):
+        send_calls.append({"content": content, "reference": reference})
+        return SimpleNamespace(id=2000 + len(send_calls))
+
+    channel = SimpleNamespace(send=AsyncMock(side_effect=fake_send))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "<@999> " + ("alpha " * 20))
+
+    assert result.success is True
+    assert len(send_calls) > 1
+    assert all(
+        call["content"].startswith("<@999>\n")
+        for call in send_calls
+    )
+    assert all(
+        call["content"].count("<@999>") == 1
+        for call in send_calls
+    )
+    assert all(
+        len(call["content"]) <= adapter.MAX_MESSAGE_LENGTH
+        for call in send_calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_moves_in_body_mention_to_each_split_chunk(monkeypatch):
+    """A preface before the target mention must not strand later chunks."""
+    monkeypatch.setenv("DISCORD_REPEAT_MENTIONS_ON_SPLIT", "true")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.MAX_MESSAGE_LENGTH = 40
+
+    send_calls = []
+
+    async def fake_send(*, content, reference=None):
+        send_calls.append({"content": content, "reference": reference})
+        return SimpleNamespace(id=3000 + len(send_calls))
+
+    channel = SimpleNamespace(send=AsyncMock(side_effect=fake_send))
+    adapter._client = SimpleNamespace(
+        get_channel=lambda _chat_id: channel,
+        fetch_channel=AsyncMock(),
+    )
+
+    result = await adapter.send("555", "oke aku tanyain ya <@999> " + ("beta " * 20))
+
+    assert result.success is True
+    assert len(send_calls) > 1
+    assert all(
+        call["content"].startswith("<@999>\n")
+        for call in send_calls
+    )
+    assert "oke aku tanyain ya" in "\n".join(call["content"] for call in send_calls)
+    assert all(
+        call["content"].count("<@999>") == 1
+        for call in send_calls
+    )
+    assert all(
+        len(call["content"]) <= adapter.MAX_MESSAGE_LENGTH
+        for call in send_calls
+    )
+
+
+@pytest.mark.asyncio
 async def test_send_does_not_retry_on_unrelated_errors():
     """Regression guard: errors unrelated to the reply reference (e.g. 50013
     Missing Permissions) must NOT trigger the no-reference retry path — they

@@ -154,20 +154,24 @@ class TestConfigPrompt:
     def test_image_gen_satisfied_by_plugin_provider(self, monkeypatch, tmp_path):
         """When a plugin provider reports is_available(), the picker should
         not force a setup prompt on the user."""
+        from hermes_cli import plugins as plugins_module
         from hermes_cli import tools_config
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("FAL_KEY", raising=False)
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
 
         image_gen_registry.register_provider(_FakeProvider("avail-img", available=True))
 
         assert tools_config._toolset_needs_configuration_prompt("image_gen", {}) is False
 
     def test_image_gen_still_prompts_when_nothing_available(self, monkeypatch, tmp_path):
+        from hermes_cli import plugins as plugins_module
         from hermes_cli import tools_config
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.delenv("FAL_KEY", raising=False)
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
 
         image_gen_registry.register_provider(_FakeProvider("unavail-img", available=False))
 

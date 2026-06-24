@@ -9766,19 +9766,61 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # (single source of truth); only the reset reason needs clearing here.
             session_entry.auto_reset_reason = None
 
-        # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
-        # Discord channel_skill_bindings).  Supports a single name or ordered list.
+        # Auto-load the profile core bundle plus any topic/channel skill(s).
         # Only inject on NEW sessions — ongoing conversations already have the
         # skill content in their conversation history from the first message.
         _auto = getattr(event, "auto_skill", None)
-        if _is_new_session and _auto:
-            _skill_names = [_auto] if isinstance(_auto, str) else list(_auto)
+        _skill_names: list[str] = []
+        if _is_new_session:
+            if _auto:
+                _skill_names.extend([_auto] if isinstance(_auto, str) else list(_auto))
+
+            # Enforce the SOUL-declared bundle-first baseline for gateway sessions.
+            # The active HERMES_HOME determines which core bundle exists: default
+            # profile has /keiya-core, Galyarder profile has /galyarder-core.
+            try:
+                from agent.skill_bundles import get_skill_bundles
+
+                _bundles_for_baseline = get_skill_bundles()
+                _existing_keys = {
+                    (str(_s).strip() if str(_s).strip().startswith("/") else f"/{str(_s).strip().replace('_', '-')}")
+                    for _s in _skill_names
+                    if str(_s or "").strip()
+                }
+                for _candidate in ("/galyarder-core", "/keiya-core"):
+                    if _candidate in _bundles_for_baseline and _candidate not in _existing_keys:
+                        _skill_names.insert(0, _candidate)
+                        break
+            except Exception as e:
+                logger.debug("[Gateway] Failed to resolve profile core bundle: %s", e)
+
+        if _is_new_session and _skill_names:
             try:
                 from agent.skill_commands import _load_skill_payload, _build_skill_message
+                from agent.skill_bundles import build_bundle_invocation_message, get_skill_bundles
                 _combined_parts: list[str] = []
                 _loaded_names: list[str] = []
+                _bundles = get_skill_bundles()
                 for _sname in _skill_names:
-                    _loaded = _load_skill_payload(_sname, task_id=_quick_key)
+                    _raw_sname = str(_sname or "").strip()
+                    if not _raw_sname:
+                        continue
+                    _bundle_key = _raw_sname if _raw_sname.startswith("/") else f"/{_raw_sname.replace('_', '-')}"
+                    if _bundle_key in _bundles:
+                        _bundle_msg = build_bundle_invocation_message(_bundle_key, "", task_id=_quick_key)
+                        if _bundle_msg:
+                            _message, _loaded_bundle_skills, _missing_bundle_skills = _bundle_msg
+                            _combined_parts.append(_message)
+                            _loaded_names.append(_bundle_key)
+                            if _missing_bundle_skills:
+                                logger.warning(
+                                    "[Gateway] Auto-bundle '%s' skipped missing skill(s): %s",
+                                    _bundle_key,
+                                    _missing_bundle_skills,
+                                )
+                            continue
+
+                    _loaded = _load_skill_payload(_raw_sname, task_id=_quick_key)
                     if _loaded:
                         _loaded_skill, _skill_dir, _display_name = _loaded
                         _note = (
@@ -9788,9 +9830,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _part = _build_skill_message(_loaded_skill, _skill_dir, _note)
                         if _part:
                             _combined_parts.append(_part)
-                            _loaded_names.append(_sname)
+                            _loaded_names.append(_raw_sname)
                     else:
-                        logger.warning("[Gateway] Auto-skill '%s' not found", _sname)
+                        logger.warning("[Gateway] Auto-skill '%s' not found", _raw_sname)
                 if _combined_parts:
                     # Append the user's original text after all skill payloads
                     _combined_parts.append(event.text)

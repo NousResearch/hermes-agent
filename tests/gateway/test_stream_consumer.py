@@ -1379,6 +1379,55 @@ class TestCancelledConsumerSetsFlags:
 # ── Think-block filtering unit tests ─────────────────────────────────────
 
 
+class TestDiscordMentionStreaming:
+    """Discord bot-to-bot mentions must survive streaming chunking."""
+
+    def _adapter(self):
+        adapter = MagicMock()
+        adapter.platform = SimpleNamespace(value="discord")
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="msg_1"))
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_mention_after_preface_starts_fresh_message(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_REPEAT_MENTIONS_ON_SPLIT", "true")
+        adapter = self._adapter()
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ]
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(cursor=""))
+
+        await consumer._send_or_edit("oke aku siap")
+        await consumer._send_or_edit("oke aku tanyain ya <@999> beta beta")
+
+        assert adapter.send.await_count == 2
+        adapter.edit_message.assert_not_called()
+        second_content = adapter.send.await_args_list[1].kwargs["content"]
+        assert second_content.startswith("<@999>\n")
+        assert "oke aku tanyain ya" in second_content
+
+    @pytest.mark.asyncio
+    async def test_followup_stream_chunk_reuses_detected_mention(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_REPEAT_MENTIONS_ON_SPLIT", "true")
+        adapter = self._adapter()
+        adapter.send.side_effect = [
+            SimpleNamespace(success=True, message_id="msg_1"),
+            SimpleNamespace(success=True, message_id="msg_2"),
+        ]
+        consumer = GatewayStreamConsumer(adapter, "chat_123", StreamConsumerConfig(cursor=""))
+
+        await consumer._send_new_chunk("<@999> first chunk", None)
+        await consumer._send_new_chunk("second chunk", "msg_1")
+
+        assert adapter.send.await_count == 2
+        assert adapter.send.await_args_list[0].kwargs["content"].startswith("<@999>\n")
+        assert adapter.send.await_args_list[1].kwargs["content"].startswith("<@999>\n")
+        assert adapter.send.await_args_list[1].kwargs["content"].count("<@999>") == 1
+
+
 def _make_consumer() -> GatewayStreamConsumer:
     """Create a bare consumer for unit-testing the filter (no adapter needed)."""
     adapter = MagicMock()

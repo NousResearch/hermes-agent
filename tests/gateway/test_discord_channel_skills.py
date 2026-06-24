@@ -61,3 +61,46 @@ class TestResolveChannelSkills:
             ]
         }
         assert adapter._resolve_channel_skills("100") == ["a", "b", "c"]
+
+    def test_channel_skills_alias_dict(self):
+        adapter = _make_adapter()
+        adapter.config.extra = {
+            "channel_skills": {
+                "100": ["keiya-core", "verification-before-completion"],
+            }
+        }
+        assert adapter._resolve_channel_skills("100") == [
+            "keiya-core",
+            "verification-before-completion",
+        ]
+
+    def test_channel_skills_alias_parent_id(self):
+        adapter = _make_adapter()
+        adapter.config.extra = {
+            "channel_skills": {
+                "200": "galyarder-core",
+            }
+        }
+        assert adapter._resolve_channel_skills("999", parent_id="200") == ["galyarder-core"]
+
+
+def test_config_bridges_discord_channel_skills_alias(monkeypatch, tmp_path):
+    from gateway.config import Platform, load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "discord:\n"
+        "  channel_skills:\n"
+        "    '100':\n"
+        "    - keiya-core\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("DISCORD_BOT_TOKEN", "discord-test-token")
+
+    config = load_gateway_config()
+
+    discord_config = config.platforms[Platform.DISCORD]
+    assert discord_config.extra.get("channel_skills") == {"100": ["keiya-core"]}

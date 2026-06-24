@@ -301,6 +301,52 @@ class TestSendMessageTool:
         send_mock.assert_not_awaited()
         mirror_mock.assert_not_called()
 
+    def test_discord_relay_duplicate_for_same_trigger_is_skipped(self, monkeypatch):
+        import tools.send_message_tool as send_module
+
+        if hasattr(send_module._discord_seen_relay_send, "_cache"):
+            delattr(send_module._discord_seen_relay_send, "_cache")
+
+        discord_cfg = SimpleNamespace(enabled=True, token="***", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
+        monkeypatch.setenv("HERMES_SESSION_MESSAGE_ID", "trigger-1")
+        monkeypatch.setenv("DISCORD_RELAY_DEDUPE_ENABLED", "true")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            first = json.loads(send_message_tool({
+                "action": "send",
+                "target": "discord:1509802293824847963",
+                "message": "<@1502245129153679390> sekali aja",
+            }))
+            second = json.loads(send_message_tool({
+                "action": "send",
+                "target": "discord:1509802293824847963",
+                "message": "<@1502245129153679390> sekali aja",
+            }))
+
+        assert first["success"] is True
+        assert first.get("skipped") is not True
+        assert second["success"] is True
+        assert second["skipped"] is True
+        assert second["reason"] == "discord_relay_duplicate_for_trigger"
+        send_mock.assert_awaited_once_with(
+            Platform.DISCORD,
+            discord_cfg,
+            "1509802293824847963",
+            "<@1502245129153679390> sekali aja",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_resolved_telegram_topic_name_preserves_thread_id(self):
         config, telegram_cfg = _make_config()
 

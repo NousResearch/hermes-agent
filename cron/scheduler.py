@@ -2148,6 +2148,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+    # Cron runs are internal runtime sessions.  They must never permanently
+    # become the process-wide "current" conversation for a gateway platform
+    # thread.  Agent init still mirrors session_id into os.environ for legacy
+    # tool paths, so save it here and restore it in finally.  Otherwise a cron
+    # run can poison later resumed chats (and terminal snapshots) with
+    # HERMES_SESSION_ID=cron_* even though the live chat session is different.
+    _prior_hermes_session_id = os.environ.get("HERMES_SESSION_ID")
+    _prior_cron_session_flag = os.environ.get("HERMES_CRON_SESSION")
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
@@ -2699,6 +2707,16 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
+        # Restore process-wide session identity before any later non-cron turn
+        # or tool call can observe the cron runtime id.
+        if _prior_hermes_session_id is None:
+            os.environ.pop("HERMES_SESSION_ID", None)
+        else:
+            os.environ["HERMES_SESSION_ID"] = _prior_hermes_session_id
+        if _prior_cron_session_flag is None:
+            os.environ.pop("HERMES_CRON_SESSION", None)
+        else:
+            os.environ["HERMES_CRON_SESSION"] = _prior_cron_session_flag
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
         # only ever mutate it when the job has a workdir; see the setup block
         # at the top of run_job for the serialization guarantee.

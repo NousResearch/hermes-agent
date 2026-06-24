@@ -154,6 +154,7 @@ class TestResolveChannelPrompts:
 
         event = adapter._build_slash_event(interaction, "/retry")
 
+        assert event.auto_skill is None
         assert event.channel_prompt == "Command prompt"
 
     @pytest.mark.asyncio

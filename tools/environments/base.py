@@ -481,12 +481,17 @@ class BaseEnvironment(ABC):
         parts.append("__hermes_ec=$?")
 
         # Re-dump env vars to snapshot (atomic replacement to avoid races).
+        # Runtime identity variables are deliberately excluded: HERMES_SESSION_*
+        # and HERMES_CRON_* describe the *current* agent/chat/cron execution,
+        # not durable shell state.  Persisting them caused cron runtime IDs such
+        # as ``cron_<job>_<time>`` to leak into later resumed platform sessions
+        # when the same terminal environment snapshot was re-sourced.
         # Chain mv on the export succeeding so a failed/partial dump never
         # replaces a good snapshot; drop the temp on failure so it isn't
         # orphaned (cleaned up wholesale in LocalEnvironment.cleanup too).
         if self._snapshot_ready:
             parts.append(
-                f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
+                f"{{ export -p | grep -Ev '^declare -x HERMES_(SESSION|CRON)_' > {_snap_tmp} && mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"
             )
 

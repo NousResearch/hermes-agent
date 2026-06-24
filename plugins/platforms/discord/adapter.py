@@ -328,6 +328,54 @@ def _build_allowed_mentions():
     )
 
 
+_DISCORD_USER_MENTION_RE = re.compile(r"<@!?\d+>")
+
+
+def _discord_split_mention_prefix_and_body(content: str) -> Tuple[str, str]:
+    """Move the first raw Discord user mention into a split prefix.
+
+    Hermes splits long Discord messages before sending. In bot-to-bot
+    ``DISCORD_ALLOW_BOTS=mentions`` mode, only the first split chunk would
+    contain the target mention unless we repeat it. Agents sometimes write a
+    short preface before the raw mention, so use the first explicit user
+    mention in the outgoing text and place it at the start of every chunk.
+    """
+    content = content or ""
+    match = _DISCORD_USER_MENTION_RE.search(content)
+    if not match:
+        return "", content
+
+    body = f"{content[:match.start()]}{content[match.end():]}".strip()
+    return f"{match.group(0)}\n", body
+
+
+def _message_explicitly_mentions_user(message, user) -> bool:
+    """Return True only for mentions typed into message content.
+
+    Discord reply references can populate ``message.mentions`` via replied-user
+    pings. Bot-to-bot admission must not treat that implicit reply ping as a
+    handoff, or two agents can bounce replies forever.
+    """
+    if not user:
+        return False
+
+    user_id = getattr(user, "id", None)
+    if user_id is None:
+        return False
+
+    user_id_str = str(user_id)
+    raw_mentions = getattr(message, "raw_mentions", None)
+    if raw_mentions is not None:
+        try:
+            if any(str(mention_id) == user_id_str for mention_id in raw_mentions):
+                return True
+        except TypeError:
+            pass
+
+    content = getattr(message, "content", "") or ""
+    return f"<@{user_id_str}>" in content or f"<@!{user_id_str}>" in content
+
+
 class VoiceReceiver:
     """Captures and decodes voice audio from a Discord voice channel.
 
@@ -751,6 +799,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Text batching: merge rapid successive messages (Telegram-style)
         self._text_batch_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_DELAY_SECONDS", 0.6)
         self._text_batch_split_delay_seconds = env_float("HERMES_DISCORD_TEXT_BATCH_SPLIT_DELAY_SECONDS", 2.0)
+        self._text_batch_bot_delay_seconds = env_float("HERMES_DISCORD_BOT_TEXT_BATCH_DELAY_SECONDS", 2.5)
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
@@ -875,6 +924,27 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
 
         asyncio.create_task(_notify())
+
+    def _split_text_for_send(self, formatted: str, max_length: Optional[int] = None) -> List[str]:
+        """Split outgoing text, preserving bot-to-bot mentions on chunks."""
+        repeat_raw = os.getenv(
+            "DISCORD_REPEAT_MENTIONS_ON_SPLIT",
+            os.getenv("DISCORD_REPEAT_LEADING_MENTIONS_ON_SPLIT", "false"),
+        )
+        repeat = repeat_raw.lower().strip() in ("true", "1", "yes", "on")
+
+        max_length = max_length or self.MAX_MESSAGE_LENGTH
+        if not repeat or len(formatted) <= max_length:
+            return self.truncate_message(formatted, max_length)
+
+        mention_prefix, body = _discord_split_mention_prefix_and_body(formatted)
+        if not mention_prefix or len(mention_prefix) >= max_length:
+            return self.truncate_message(formatted, max_length)
+
+        split_length = max_length - len(mention_prefix)
+        chunks = self.truncate_message(body, split_length)
+
+        return [f"{mention_prefix}{chunk.lstrip()}" for chunk in chunks]
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Discord and start receiving events."""
@@ -1047,7 +1117,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     if allow_bots == "none":
                         return
                     elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                        if not _message_explicitly_mentions_user(message, self._client.user):
                             return
                     # "all" falls through; bot is permitted — skip the
                     # human-user allowlist below (bots aren't in it).
@@ -1840,7 +1910,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Format and split message if needed
             formatted = self.format_message(content)
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            chunks = self._split_text_for_send(formatted)
 
             message_ids = []
             reference = None
@@ -1923,7 +1993,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # module — no cross-module import needed.
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = self._split_text_for_send(formatted)
 
         thread_name = _derive_forum_thread_name(content)
 
@@ -4163,6 +4233,7 @@ class DiscordAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=interaction,
+            auto_skill=self._resolve_channel_skills(channel_id, parent_id or None),
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
         )
 
@@ -5795,6 +5866,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 delay = self._text_batch_split_delay_seconds
             else:
                 delay = self._text_batch_delay_seconds
+            if pending and getattr(getattr(pending, "source", None), "is_bot", False):
+                delay = max(delay, self._text_batch_bot_delay_seconds)
             await asyncio.sleep(delay)
             event = self._pending_text_batches.pop(key, None)
             if not event:

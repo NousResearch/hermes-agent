@@ -613,6 +613,27 @@ class TestSanitizeEnvLines:
         assert result[0].startswith("GLM_API_KEY=")
         assert result[1].startswith("LM_API_KEY=")
 
+    def test_openai_compatible_image_env_keys_are_known_for_sanitize(self):
+        """OpenAI-compatible image setup keys survive .env sanitize/update flows."""
+        from hermes_cli.config import _EXTRA_ENV_KEYS
+
+        required = {
+            "OPENAI_COMPATIBLE_IMAGE_API_KEY",
+            "OPENAI_COMPATIBLE_IMAGE_BASE_URL",
+            "OPENAI_COMPATIBLE_IMAGE_MODEL",
+        }
+        assert required <= set(_EXTRA_ENV_KEYS)
+
+        lines = [
+            "OPENAI_COMPATIBLE_IMAGE_BASE_URL=http://localhost:20128/v1"
+            "OPENAI_COMPATIBLE_IMAGE_MODEL=together/black-forest-labs/FLUX.2-pro\n"
+        ]
+        result = _sanitize_env_lines(lines)
+        assert result == [
+            "OPENAI_COMPATIBLE_IMAGE_BASE_URL=http://localhost:20128/v1\n",
+            "OPENAI_COMPATIBLE_IMAGE_MODEL=together/black-forest-labs/FLUX.2-pro\n",
+        ]
+
     def test_save_env_value_fixes_corruption_on_write(self, tmp_path):
         """save_env_value sanitizes corrupted lines when writing a new key."""
         env_file = tmp_path / ".env"

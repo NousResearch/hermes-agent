@@ -417,6 +417,23 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_propagates_embeddings_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "embeddings_provider": "openai",
+            "embeddings_openai_api_key": "embed-key",
+            "embeddings_openai_model": "mistral/mistral-embed",
+            "embeddings_openai_base_url": "http://localhost:20128/v1",
+            "embeddings_openai_batch_size": 32,
+        })
+
+        assert env["HINDSIGHT_API_EMBEDDINGS_PROVIDER"] == "openai"
+        assert env["HINDSIGHT_API_EMBEDDINGS_OPENAI_API_KEY"] == "embed-key"
+        assert env["HINDSIGHT_API_EMBEDDINGS_OPENAI_MODEL"] == "mistral/mistral-embed"
+        assert env["HINDSIGHT_API_EMBEDDINGS_OPENAI_BASE_URL"] == "http://localhost:20128/v1"
+        assert env["HINDSIGHT_API_EMBEDDINGS_OPENAI_BATCH_SIZE"] == "32"
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 

@@ -1125,6 +1125,35 @@ class TestImagegenBackendRegistry:
                 f"{p['name']} missing imagegen_backend tag"
             )
 
+    def test_openai_compatible_backend_surfaces_in_plugin_picker(self, monkeypatch):
+        from hermes_cli import plugins as plugins_module
+        from hermes_cli.tools_config import _plugin_image_gen_providers
+
+        monkeypatch.setattr(plugins_module, "_ensure_plugins_discovered", lambda force=False: None)
+
+        class FakeProvider:
+            name = "openai-compatible"
+            display_name = "OpenAI-compatible image proxy"
+            def get_setup_schema(self):
+                return {
+                    "name": self.display_name,
+                    "badge": "local",
+                    "tag": "local image proxy",
+                    "env_vars": [],
+                }
+
+        monkeypatch.setattr("agent.image_gen_registry.list_providers", lambda: [FakeProvider()])
+
+        rows = _plugin_image_gen_providers()
+
+        assert {
+            "name": "OpenAI-compatible image proxy",
+            "badge": "local",
+            "tag": "local image proxy",
+            "env_vars": [],
+            "image_gen_plugin_name": "openai-compatible",
+        } in rows
+
 
 class TestImagegenModelPicker:
     """_configure_imagegen_model writes selection to config and respects

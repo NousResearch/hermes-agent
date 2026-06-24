@@ -3168,6 +3168,32 @@ def _interpolate_env_vars(value):
     return value
 
 
+def _profile_mcp_json_servers() -> Dict[str, dict]:
+    """Load optional profile-local ``mcp.json`` servers.
+
+    Profile distributions ship MCP server definitions in ``mcp.json`` so the
+    profile can be reviewed and versioned independently of user-owned
+    ``config.yaml``.  Runtime remains backward-compatible: config.yaml wins,
+    and mcp.json only provides fallback / additional entries.
+    """
+    try:
+        import json
+        from hermes_cli.config import get_hermes_home
+
+        path = get_hermes_home() / "mcp.json"
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        servers = data.get("mcp_servers", data)
+        if not isinstance(servers, dict):
+            logger.warning("Ignoring %s: expected object or mcp_servers object", path)
+            return {}
+        return {name: cfg for name, cfg in servers.items() if isinstance(cfg, dict)}
+    except Exception as exc:
+        logger.debug("Failed to load profile mcp.json: %s", exc)
+        return {}
+
+
 def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
     """Drop exfiltration-shaped MCP configs before any stdio spawn path."""
     try:
@@ -3196,15 +3222,11 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
 
 
 def _load_mcp_config() -> Dict[str, dict]:
-    """Read ``mcp_servers`` from the Hermes config file.
+    """Read MCP servers from config.yaml plus optional profile ``mcp.json``.
 
-    Returns a dict of ``{server_name: server_config}`` or empty dict.
-    Server config can contain either ``command``/``args``/``env`` for stdio
-    transport or ``url``/``headers`` for HTTP transport, plus optional
-    ``timeout``, ``connect_timeout``, and ``auth`` overrides.
-
-    ``${ENV_VAR}`` placeholders in string values are resolved from
-    ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).
+    ``config.yaml`` remains authoritative for runtime/user overrides.
+    Profile-local ``mcp.json`` is merged underneath so profile distributions
+    can carry MCP defaults without breaking existing setups.
     """
     try:
         from hermes_cli.config import load_config
@@ -3214,8 +3236,14 @@ def _load_mcp_config() -> Dict[str, dict]:
         if _env_enabled("HERMES_SAFE_MODE"):
             return {}
         config = load_config()
-        servers = config.get("mcp_servers")
-        if not servers or not isinstance(servers, dict):
+        json_servers = _profile_mcp_json_servers()
+        config_servers = config.get("mcp_servers")
+        servers: Dict[str, dict] = {}
+        if isinstance(json_servers, dict):
+            servers.update(json_servers)
+        if isinstance(config_servers, dict):
+            servers.update(config_servers)
+        if not servers:
             return {}
         # Ensure .env vars are available for interpolation
         try:

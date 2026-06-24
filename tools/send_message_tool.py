@@ -73,6 +73,7 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+_DISCORD_USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
 
 
 def _sanitize_error_text(text) -> str:
@@ -86,6 +87,75 @@ def _sanitize_error_text(text) -> str:
 def _error(message: str) -> dict:
     """Build a standardized error payload with redacted content."""
     return {"error": _sanitize_error_text(message)}
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _discord_relay_dedupe_ttl_seconds() -> float:
+    raw = os.getenv("DISCORD_RELAY_DEDUPE_TTL_SECONDS", "600").strip()
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 600.0
+
+
+def _discord_current_message_is_bot_relay() -> bool:
+    if not _bool_env("DISCORD_RELAY_DEDUPE_ENABLED", True):
+        return False
+    try:
+        from gateway.session_context import get_session_env
+        return get_session_env("HERMES_SESSION_PLATFORM", "").strip().lower() == "discord"
+    except Exception:
+        return False
+
+
+def _discord_relay_dedupe_key(chat_id: str, thread_id: str | None, message: str) -> tuple[str, str, str] | None:
+    if not _discord_current_message_is_bot_relay():
+        return None
+    try:
+        from gateway.session_context import get_session_env
+        trigger_message_id = get_session_env("HERMES_SESSION_MESSAGE_ID", "").strip()
+    except Exception:
+        trigger_message_id = ""
+    if not trigger_message_id:
+        return None
+
+    mention_ids = sorted(set(_DISCORD_USER_MENTION_RE.findall(message or "")))
+    if not mention_ids:
+        return None
+
+    # One explicit bot-to-bot relay packet per triggering Discord message.
+    # This stops an agent from repeatedly calling send_message with the same
+    # peer mention after provider retries, context compaction, or model loops.
+    return (str(chat_id), str(thread_id or ""), f"{trigger_message_id}:{','.join(mention_ids)}")
+
+
+def _discord_seen_relay_send(chat_id: str, thread_id: str | None, message: str) -> bool:
+    key = _discord_relay_dedupe_key(chat_id, thread_id, message)
+    if key is None:
+        return False
+
+    ttl = _discord_relay_dedupe_ttl_seconds()
+    if ttl <= 0:
+        return False
+
+    now = time.time()
+    cache = getattr(_discord_seen_relay_send, "_cache", None)
+    if cache is None:
+        cache = {}
+        setattr(_discord_seen_relay_send, "_cache", cache)
+    for old_key, seen_at in list(cache.items()):
+        if now - seen_at > ttl:
+            cache.pop(old_key, None)
+    if key in cache:
+        return True
+    cache[key] = now
+    return False
 
 
 def _display_chat_id(platform_name: str, chat_id: str) -> str:
@@ -330,6 +400,15 @@ def _handle_send(args):
                 "error": f"Could not resolve '{target_ref}' on {platform_name}. "
                 f"Try using a numeric channel ID instead."
             })
+
+    if platform_name == "discord" and chat_id and _discord_seen_relay_send(chat_id, thread_id, message):
+        return json.dumps({
+            "success": True,
+            "skipped": True,
+            "reason": "discord_relay_duplicate_for_trigger",
+            "target": f"discord:{chat_id}" + (f":{thread_id}" if thread_id else ""),
+            "note": "Skipped duplicate Discord relay send for this triggering message.",
+        })
 
     from tools.interrupt import is_interrupted
     if is_interrupted():

@@ -75,14 +75,39 @@ def _prompt(question: str, *, password: bool = False, default: str = "") -> str:
 
 # ─── Config Helpers ───────────────────────────────────────────────────────────
 
+def _get_profile_mcp_json_servers() -> Dict[str, dict]:
+    """Return servers from optional profile-local ``mcp.json``.
+
+    The CLI still writes changes to config.yaml.  This loader makes list/test
+    aware of profile distribution defaults while letting config.yaml override
+    them.
+    """
+    try:
+        import json
+
+        path = get_hermes_home() / "mcp.json"
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        servers = data.get("mcp_servers", data)
+        if not isinstance(servers, dict):
+            return {}
+        return {name: cfg for name, cfg in servers.items() if isinstance(cfg, dict)}
+    except Exception as exc:
+        logger.debug("Failed to load profile mcp.json: %s", exc)
+        return {}
+
+
 def _get_mcp_servers(config: Optional[dict] = None) -> Dict[str, dict]:
-    """Return the ``mcp_servers`` dict from config, or empty dict."""
+    """Return merged MCP servers from profile mcp.json and config.yaml."""
     if config is None:
         config = load_config()
+    merged: Dict[str, dict] = {}
+    merged.update(_get_profile_mcp_json_servers())
     servers = config.get("mcp_servers")
-    if not servers or not isinstance(servers, dict):
-        return {}
-    return servers
+    if isinstance(servers, dict):
+        merged.update(servers)
+    return merged
 
 
 def _save_mcp_server(name: str, server_config: dict) -> bool:

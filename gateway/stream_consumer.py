@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import os
 import queue
 import re
 import time
@@ -34,6 +35,7 @@ from gateway.config import (
 )
 
 logger = logging.getLogger("gateway.stream_consumer")
+_DISCORD_USER_MENTION_RE = re.compile(r"<@!?\d+>")
 
 # Sentinel to signal the stream is complete
 _DONE = object()
@@ -183,6 +185,7 @@ class GatewayStreamConsumer:
         self._adapter_requires_finalize: bool = (
             getattr(adapter, "REQUIRES_EDIT_FINALIZE", False) is True
         )
+        self._discord_stream_mention_prefix = ""
 
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
@@ -319,6 +322,7 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        self._discord_stream_mention_prefix = ""
         self._fallback_preserve_partial_messages = False
         # #29346: a tool/segment boundary means what we delivered was an interim
         # preamble, not the final answer — clear the flags so a premature setter
@@ -326,6 +330,7 @@ class GatewayStreamConsumer:
         # run.py reads these only after the consumer task exits.
         self._final_response_sent = False
         self._final_content_delivered = False
+
         # Native draft streaming: bump the draft_id so the next text segment
         # animates as a fresh preview below the tool-progress bubbles, not
         # over the prior segment's already-finalized draft.  This is how
@@ -336,6 +341,48 @@ class GatewayStreamConsumer:
         if self._use_draft_streaming:
             type(self)._draft_id_counter += 1
             self._draft_id = type(self)._draft_id_counter
+
+    def _is_discord_stream_mention_repeat_enabled(self) -> bool:
+        platform = getattr(self.adapter, "platform", None)
+        platform_value = getattr(platform, "value", platform)
+        if str(platform_value).lower() != "discord":
+            return False
+        repeat_raw = os.getenv(
+            "DISCORD_REPEAT_MENTIONS_ON_SPLIT",
+            os.getenv("DISCORD_REPEAT_LEADING_MENTIONS_ON_SPLIT", "true"),
+        )
+        return repeat_raw.lower().strip() in ("true", "1", "yes", "on")
+
+    def _apply_discord_stream_mention_prefix(self, text: str) -> str:
+        if not text or not self._is_discord_stream_mention_repeat_enabled():
+            return text
+
+        match = _DISCORD_USER_MENTION_RE.search(text)
+        if match:
+            self._discord_stream_mention_prefix = f"{match.group(0)}\n"
+            body = f"{text[:match.start()]}{text[match.end():]}".strip()
+            return f"{self._discord_stream_mention_prefix}{body}".rstrip()
+
+        if self._discord_stream_mention_prefix and text.strip():
+            return f"{self._discord_stream_mention_prefix}{text.lstrip()}"
+        return text
+
+    def _split_text_chunks_for_platform(
+        self,
+        text: str,
+        limit: int,
+        len_fn: "Callable[[str], int]" = len,
+    ) -> list[str]:
+        splitter = getattr(self.adapter, "_split_text_for_send", None)
+        if callable(splitter):
+            try:
+                return splitter(text, max_length=limit)
+            except TypeError:
+                return splitter(text)
+        try:
+            return self.adapter.truncate_message(text, limit, len_fn=len_fn)
+        except TypeError:
+            return self.adapter.truncate_message(text, limit)
 
     def on_delta(self, text: str) -> None:
         """Thread-safe callback — called from the agent's worker thread.
@@ -551,8 +598,8 @@ class GatewayStreamConsumer:
                         # helper the non-streaming path uses — to split with
                         # proper word/code-fence boundaries and chunk
                         # indicators like "(1/2)".
-                        chunks = self.adapter.truncate_message(
-                            self._accumulated, _safe_limit, len_fn=_len_fn,
+                        chunks = self._split_text_chunks_for_platform(
+                            self._accumulated, _safe_limit, len_fn=_len_fn
                         )
                         chunks_delivered = False
                         reply_to = self._message_id or self._initial_reply_to_id
@@ -811,6 +858,7 @@ class GatewayStreamConsumer:
         Returns the message_id so callers can thread subsequent chunks.
         """
         text = self._clean_for_display(text)
+        text = self._apply_discord_stream_mention_prefix(text)
         if not text.strip():
             return reply_to_id
         try:
@@ -936,7 +984,7 @@ class GatewayStreamConsumer:
             for attempt in range(2):
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
-                    content=chunk,
+                    content=self._apply_discord_stream_mention_prefix(chunk),
                     metadata=self._metadata_for_send(final=True),
                 )
                 if result.success:
@@ -1124,7 +1172,7 @@ class GatewayStreamConsumer:
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
-                content=tail,
+                content=self._apply_discord_stream_mention_prefix(tail),
                 metadata=self.metadata,
             )
             if result.success:
@@ -1355,6 +1403,15 @@ class GatewayStreamConsumer:
         # Media files are delivered as native attachments after the stream
         # finishes (via _deliver_media_from_response in gateway/run.py).
         text = self._clean_for_display(text)
+        last_sent_had_discord_mention = bool(_DISCORD_USER_MENTION_RE.search(self._last_sent_text or ""))
+        text = self._apply_discord_stream_mention_prefix(text)
+        if (
+            self._discord_stream_mention_prefix
+            and self._message_id is not None
+            and not last_sent_had_discord_mention
+        ):
+            self._message_id = None
+            self._message_created_ts = None
         # A bare streaming cursor is not meaningful user-visible content and
         # can render as a stray tofu/white-box message on some clients.
         visible_without_cursor = text

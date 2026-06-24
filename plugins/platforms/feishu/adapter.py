@@ -1775,6 +1775,23 @@ class FeishuAdapter(BasePlatformAdapter):
     def _cache_file_exists(self) -> bool:
         return (get_hermes_home() / self._BOT_MAP_CACHE_FILE).is_file()
 
+    async def _register_bot_name(self, oid: str, name: str) -> tuple[bool, Optional[str]]:
+        """Register or rename a bot in ``_bot_mention_map`` under lock.
+
+        Returns ``(is_new, old_name_if_renamed)``.  The caller is
+        responsible for logging and calling ``_save_bot_map_cache()``
+        afterwards.
+        """
+        async with self._map_lock:
+            old = next(
+                (n for n, o in self._bot_mention_map.items() if o == oid), None
+            )
+            if old and old != name:
+                del self._bot_mention_map[old]
+            self._bot_mention_map[name] = oid
+            self._bot_name_fetch_time[oid] = time.time()
+        return (old is None), (old if old != name else None)
+
     # ── Two-phase bot discovery (message history API) ─────────────────
 
     def _discover_bots_from_mentions(self, raw_message: Any) -> int:
@@ -1831,16 +1848,16 @@ class FeishuAdapter(BasePlatformAdapter):
             return
         discovered = 0
         checked = 0
-        async with self._map_lock:
-            for oid, name in names.items():
-                if oid not in self._bot_mention_map.values():
-                    self._bot_mention_map[name] = oid
-                    self._bot_name_fetch_time[oid] = time.time()
-                    discovered += 1
-                    logger.info("[Feishu] Mention-discovered bot: %s → %s", name, oid)
-                else:
+        for oid, name in names.items():
+            oid_in_map = oid in self._bot_mention_map.values()
+            if not oid_in_map:
+                await self._register_bot_name(oid, name)
+                discovered += 1
+                logger.info("[Feishu] Mention-discovered bot: %s → %s", name, oid)
+            else:
+                async with self._map_lock:
                     self._mentions_checked.add(oid)
-                    checked += 1
+                checked += 1
         if discovered or checked:
             self._save_bot_map_cache()
 
@@ -1851,10 +1868,10 @@ class FeishuAdapter(BasePlatformAdapter):
         """
         if chat_id in self._cold_start_completed_chats:
             return
-        self._cold_start_completed_chats.add(chat_id)
 
         try:
             discovered = await self._scan_message_history_for_bots(chat_id)
+            self._cold_start_completed_chats.add(chat_id)  # mark complete only on success
             if discovered:
                 self._save_bot_map_cache()
                 logger.info(
@@ -2677,14 +2694,11 @@ class FeishuAdapter(BasePlatformAdapter):
                 if names:
                     name = (names.get(new_open_id) or "").strip()
                     if name:
-                        now = time.time()
-                        old = next((n for n, oid in self._bot_mention_map.items()
-                                    if oid == new_open_id), None)
-                        if old and old != name:
-                            del self._bot_mention_map[old]
-                        self._bot_mention_map[name] = new_open_id
-                        self._bot_name_fetch_time[new_open_id] = now
-                        logger.info("[Feishu] Event-discovered bot: %s → %s", name, new_open_id)
+                        is_new, renamed_from = await self._register_bot_name(new_open_id, name)
+                        if renamed_from:
+                            logger.info("[Feishu] Bot renamed: %s → %s", renamed_from, name)
+                        if is_new:
+                            logger.info("[Feishu] Event-discovered bot: %s → %s", name, new_open_id)
                         self._save_bot_map_cache()
             asyncio.run_coroutine_threadsafe(_register(), loop)
 
@@ -3375,21 +3389,13 @@ class FeishuAdapter(BasePlatformAdapter):
                 if names:
                     new_name = (names.get(sender_open_id) or "").strip()
                     if new_name:
-                        self._bot_name_fetch_time[sender_open_id] = time.time()
-                        old_name = next(
-                            (n for n, oid in self._bot_mention_map.items()
-                             if oid == sender_open_id),
-                            None,
-                        )
-                        async with self._map_lock:
-                            if old_name and old_name != new_name:
-                                del self._bot_mention_map[old_name]
-                                logger.info(
-                                    "[Feishu] Bot renamed: %s → %s",
-                                    old_name, new_name,
-                                )
-                            self._bot_mention_map[new_name] = sender_open_id
-                        if not old_name:
+                        is_new, renamed_from = await self._register_bot_name(sender_open_id, new_name)
+                        if renamed_from:
+                            logger.info(
+                                "[Feishu] Bot renamed: %s → %s",
+                                renamed_from, new_name,
+                            )
+                        if is_new:
                             logger.info(
                                 "[Feishu] Auto-discovered bot: %s → %s",
                                 new_name, sender_open_id,

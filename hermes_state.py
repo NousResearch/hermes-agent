@@ -734,6 +734,13 @@ class SessionDB:
                 )
                 self._conn.row_factory = sqlite3.Row
                 apply_wal_with_fallback(self._conn, db_label="state.db")
+                # SQLite performance tuning for large state.db (1.8GB, 140K+ msgs)
+                # Defaults (cache_size=-2000→8MB, mmap_size=0, temp_store=0→file)
+                # are crippling on 3.6GB servers — dbstat takes 60s+, OOMs gateway.
+                # 256MB page cache + 256MB mmap fit comfortably with 1.8GB available.
+                self._conn.execute("PRAGMA cache_size=-262144")     # 256 MiB (262144 KiB)
+                self._conn.execute("PRAGMA mmap_size=268435456")    # 256 MB
+                self._conn.execute("PRAGMA temp_store=2")           # MEMORY
                 self._conn.execute("PRAGMA foreign_keys=ON")
                 self._init_schema()
 

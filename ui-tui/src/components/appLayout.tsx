@@ -20,11 +20,11 @@ import { PerfPane } from '../lib/perfPane.js'
 import { composerPromptText } from '../lib/prompt.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
-import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
+import { GoodVibesHeart, ScrollbackHint, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { FpsOverlay } from './fpsOverlay.js'
-import { HelpHint } from './helpHint.js'
+import { HelpHint, HelpOverlay } from './helpHint.js'
 import { MessageLine } from './messageLine.js'
 import { PetKitty, PetSprite } from './petSprite.js'
 import { QueuedMessages } from './queuedMessages.js'
@@ -174,8 +174,9 @@ const TranscriptPane = memo(function TranscriptPane({
         </Box>
       </ScrollBox>
 
-      <NoSelect flexShrink={0} marginLeft={1}>
+      <NoSelect flexDirection="column" flexShrink={0} marginLeft={1}>
         <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />
+        <ScrollbackHint scrollRef={transcript.scrollRef} t={ui.theme} />
       </NoSelect>
 
       <StickyPromptTracker
@@ -240,6 +241,14 @@ const ComposerPane = memo(function ComposerPane({
   }
 
   const endInputDrag = () => inputMouseRef.current?.end()
+
+  // When the agent is busy, the composer is technically editable (you can
+  // type into the queue) but you can't submit. Visual dim is the cheapest
+  // way to telegraph "you can type, but submission is blocked" without
+  // adding another status line. The dim only kicks in when there is NO
+  // input yet — once the user starts typing, the queue logic takes over
+  // and the dim disappears to signal "your text is captured".
+  const composerDimmed = ui.busy && composer.empty
 
   return (
     <NoSelect
@@ -311,7 +320,7 @@ const ComposerPane = memo(function ComposerPane({
             ))}
 
             <Box
-              borderColor={ui.theme.color.border}
+              borderColor={composerDimmed ? ui.theme.color.muted : ui.theme.color.border}
               borderStyle="round"
               onMouseDown={captureInputDrag}
               onMouseDrag={dragFromPromptRow}
@@ -469,6 +478,8 @@ export const AppLayout = memo(function AppLayout({
             )}
           </>
         )}
+
+        {overlay.help ? <HelpOverlay onClose={() => patchOverlayState({ help: false })} t={ui.theme} /> : null}
       </Box>
     </Shell>
   )

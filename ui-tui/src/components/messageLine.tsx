@@ -198,7 +198,17 @@ export const MessageLine = memo(function MessageLine({
     <Box
       flexDirection="column"
       marginBottom={msg.role === 'user' || isDiffSegment ? 1 : 0}
-      marginTop={msg.role === 'user' || msg.kind === 'slash' || isDiffSegment || leadGap ? 1 : 0}
+      marginTop={
+        // User messages, slash commands, diff segments, and the first message
+        // after a lead gap all want a visible breath of whitespace. The
+        // standard rule below worked fine until we also wanted to space
+        // every assistant message by 1 row for TDAH readability — the rule
+        // becomes "add 1 row above EVERY message" by default, which makes
+        // the transcript feel like a contact sheet of equal-weight cards.
+        // Switched to a flat 1-row margin so the visual rhythm reads
+        // consistently regardless of role.
+        1
+      }
     >
       {showDetails && (
         <Box flexDirection="column" marginBottom={1}>

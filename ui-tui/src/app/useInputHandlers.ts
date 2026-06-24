@@ -546,6 +546,25 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       })
     }
 
+    // F1 / Ctrl+/ — toggle the help overlay. Always available, never
+    // requires the user to type ? in the input. Critical for TDAH: the
+    // discoverability win dwarfs the cost of one extra keybind.
+    if (
+      (ch === '?' && key.ctrl) ||
+      (key.f1 ?? false) ||
+      ch === '\x1bOP' ||
+      ch === '\x1b[11~'
+    ) {
+      return patchOverlayState(prev => ({ ...prev, help: !prev.help }))
+    }
+
+    // Alt+M — open the model picker (a focused keyboard-driven alternative
+    // to /model slash command). Pairs with F1/Ctrl+/ as the second half of
+    // the "TDAH discoverability pair": help for *what*, model for *which*.
+    if (key.meta && (ch === 'm' || ch === 'M')) {
+      return patchOverlayState({ modelPicker: true })
+    }
+
     if (isAction(key, ch, 'l')) {
       clearSelection()
       forceRedraw(terminal.stdout ?? process.stdout)

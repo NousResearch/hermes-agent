@@ -799,6 +799,64 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
   )
 }
 
+// `ScrollbackHint` — small affordance that appears when the user has
+// scrolled the transcript away from the live edge.  Clicks (or any pointer
+// activation) snap the viewport back to the bottom.  Critical for TDAH
+// users: without it, scrolling up to re-read an earlier message leaves
+// the user unsure whether new replies arrived while they were away.
+//
+// Hidden when sticky or when there's no content below the current
+// viewport (both mean the user is already at the live edge).
+export function ScrollbackHint({ scrollRef, t, onHoverChange }: ScrollbackHintProps) {
+  const { atBottom, scrollHeight, viewportHeight, top } = useViewportSnapshot(scrollRef)
+  const [hover, setHover] = useState(false)
+
+  // Pixels between the current viewport bottom and the live edge.
+  // Positive when the user has scrolled up away from the latest content.
+  const distance = scrollHeight - top - viewportHeight
+
+  if (atBottom || distance <= 0) {
+    return null
+  }
+
+  const jump = () => {
+    const s = scrollRef.current
+
+    if (s) {
+      s.scrollTo(scrollHeight)
+    }
+  }
+
+  const handleHover = (next: boolean) => {
+    setHover(next)
+    onHoverChange?.(next)
+  }
+
+  return (
+    <Box
+      alignSelf="flex-end"
+      backgroundColor={hover ? t.color.completionCurrentBg : undefined}
+      borderColor={t.color.accent}
+      borderStyle="round"
+      marginRight={1}
+      onClick={jump}
+      onMouseEnter={() => handleHover(true)}
+      onMouseLeave={() => handleHover(false)}
+      paddingX={1}
+    >
+      <Text bold={hover} color={t.color.accent}>
+        ↓ newer messages
+      </Text>
+    </Box>
+  )
+}
+
+interface ScrollbackHintProps {
+  scrollRef: RefObject<ScrollBoxHandle | null>
+  t: Theme
+  onHoverChange?: (hover: boolean) => void
+}
+
 interface StatusRuleProps {
   bgCount: number
   lastTurnEndedAt?: null | number

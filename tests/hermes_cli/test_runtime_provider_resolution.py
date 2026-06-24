@@ -1506,6 +1506,19 @@ def test_opencode_go_model_derivation_beats_stale_persisted_api_mode(monkeypatch
     assert resolved["api_mode"] == "anthropic_messages"
 
 
+def test_opencode_go_returns_target_model_in_delegation(monkeypatch):
+    """resolve_runtime_provider must include model in return dict so delegation.model
+    is not lost when subagents are built. Regression for #51540."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-go")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": "deepseek-v4-pro"})
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "test-opencode-go-key")
+    monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="opencode-go", target_model="deepseek-v4-flash")
+
+    assert resolved.get("model") == "deepseek-v4-flash"
+
+
 def test_named_custom_provider_anthropic_api_mode(monkeypatch):
     """Custom providers should accept api_mode: anthropic_messages."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-anthropic-proxy")

@@ -9119,6 +9119,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
+        # Adaptive context window: surface live router-tracking state when
+        # the feature is enabled. The compressor's context_length above
+        # already reflects any rebudget, so this line is purely informative
+        # ("which backend is currently driving that number").
+        _adapt = getattr(agent, "_adaptive_context", None)
+        if _adapt is not None:
+            _summary = _adapt.summary()
+            if _summary["last_seen"]:
+                if _summary["change_count"] == 0:
+                    print(f"  Adaptive ctx:     enabled — baseline: {_summary['last_seen']}")
+                else:
+                    _changes = _summary["change_count"]
+                    _plural = "" if _changes == 1 else "s"
+                    print(
+                        f"  Adaptive ctx:     enabled — last seen: {_summary['last_seen']} "
+                        f"({_changes} backend change{_plural})"
+                    )
+            else:
+                print("  Adaptive ctx:     enabled (no responses observed yet)")
         if cost_result.status == "unknown":
             print(f"  Note:             Pricing unknown for {agent.model}")
 

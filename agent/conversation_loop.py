@@ -1178,7 +1178,36 @@ def run_conversation(
                     # Log response with provider info if available
                     resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
                     logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
-                
+
+                # Adaptive context window: if the router picked a
+                # different backend this call, rebudget the compressor
+                # to the new backend's context_length.
+                if getattr(agent, "_adaptive_context", None) is not None and response is not None:
+                    try:
+                        _new_model = agent._adaptive_context.observe(
+                            getattr(response, "model", None)
+                        )
+                        if _new_model:
+                            from agent.model_metadata import get_model_context_length
+                            _new_ctx = get_model_context_length(
+                                _new_model,
+                                base_url=agent.base_url,
+                                api_key=getattr(agent, "api_key", ""),
+                                provider=agent.provider,
+                            )
+                            _cc = getattr(agent, "context_compressor", None)
+                            if _cc is not None and _new_ctx:
+                                _cc.update_model(
+                                    model=_new_model,
+                                    context_length=_new_ctx,
+                                    base_url=agent.base_url,
+                                    api_key=getattr(agent, "api_key", ""),
+                                    provider=agent.provider,
+                                    api_mode=agent.api_mode,
+                                )
+                    except Exception as _ace_loop:
+                        logger.debug("adaptive-context observe failed: %s", _ace_loop)
+
                 # Validate response shape before proceeding
                 response_invalid = False
                 error_details = []

@@ -35,6 +35,10 @@ import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
+import {
+  nextLiveSessionId,
+  shouldDropSidebarEvent,
+} from "@/lib/sidebar-event-routing";
 
 import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
@@ -50,7 +54,7 @@ interface SessionInfo {
 
 interface RpcEnvelope {
   method?: string;
-  params?: { type?: string; payload?: unknown };
+  params?: { type?: string; session_id?: string; payload?: unknown };
 }
 
 const TOOL_LIMIT = 20;
@@ -155,6 +159,14 @@ export function ChatSidebar({
   // socket's close handler can leave a stale error banner after a switch.
   const scopeKey = `${channel}\0${profile ?? ""}`;
   const prevScopeKey = useRef<string | null>(null);
+  // The PTY child's live runtime session id, learned from `session.info`
+  // frames on the channel feed. Used as the match target so a backgrounded
+  // session's `tool.*` (which carry their OWN session_id) don't render in the
+  // focused session's tool list — the web analogue of the desktop/TUI
+  // match-by-id guard. Stays null until the first `session.info` arrives;
+  // while null (and for any frame without a session_id) we let events through
+  // so we never swallow the legitimate live feed (the #42359 regression).
+  const liveSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     if (prevScopeKey.current === null) {
       prevScopeKey.current = scopeKey;
@@ -162,6 +174,7 @@ export function ChatSidebar({
     }
     if (prevScopeKey.current === scopeKey) return;
     prevScopeKey.current = scopeKey;
+    liveSessionIdRef.current = null;
     setError(null);
     setTools([]);
     setVersion((v) => v + 1);
@@ -282,7 +295,25 @@ export function ChatSidebar({
           return;
         }
 
-        const { type, payload } = frame.params;
+        const { type, session_id: frameSid, payload } = frame.params;
+
+        // Learn the PTY child's live runtime session id from its `session.info`
+        // heartbeats (mirrored onto this channel feed) — the match target for
+        // the guard below, NOT `resumeParam` (which can differ after descendant
+        // resolution + PTY-side resume).
+        liveSessionIdRef.current = nextLiveSessionId(
+          type,
+          frameSid,
+          liveSessionIdRef.current,
+        );
+
+        // Match-by-id: drop a scoped frame from a DIFFERENT session (a
+        // backgrounded session in the same PTY child still emits its `tool.*`
+        // on this shared channel). Unscoped frames and pre-learning frames
+        // fall through so the live feed is never swallowed (#42359).
+        if (shouldDropSidebarEvent(type, frameSid, liveSessionIdRef.current)) {
+          return;
+        }
 
         if (type === "session.info") {
           const title = titleFromSessionInfoPayload(payload);

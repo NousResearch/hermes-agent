@@ -199,7 +199,9 @@ class TestPluginDispatch:
         )
         payload = json.loads(result)
 
-        assert payload["success"] is False
-        assert payload["error_type"] == "invalid_reference_image"
-        assert "local file path" in payload["error"]
-        assert provider.calls == []
+        assert payload["success"] is True
+        assert provider.calls == [{
+            "prompt": "draw cat",
+            "aspect_ratio": "square",
+            "kwargs": {"image_url": "https://example.com/reference.png"},
+        }]

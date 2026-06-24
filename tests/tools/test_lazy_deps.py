@@ -448,3 +448,566 @@ class TestRefreshActiveFeatures:
         result = ld.refresh_active_features()
         assert result["a.ok"] == "current"
         assert result["b.fail"].startswith("failed:")
+
+
+# ---------------------------------------------------------------------------
+# _specifier_from_spec edge cases
+# ---------------------------------------------------------------------------
+
+
+class TestSpecifierFromSpec:
+    def test_extracts_version_specifier(self):
+        assert ld._specifier_from_spec("honcho-ai==2.0.1") == "==2.0.1"
+
+    def test_extracts_range(self):
+        assert ld._specifier_from_spec("slack-bolt>=1.18.0,<2") == ">=1.18.0,<2"
+
+    def test_strips_extras_block(self):
+        assert ld._specifier_from_spec("mautrix[encryption]>=0.20,<1") == ">=0.20,<1"
+
+    def test_bare_package_returns_empty(self):
+        assert ld._specifier_from_spec("somepkg") == ""
+
+    def test_no_match_returns_empty(self):
+        # First char invalid → regex doesn't match → empty string.
+        assert ld._specifier_from_spec("==1.0") == ""
+
+
+# ---------------------------------------------------------------------------
+# _is_satisfied fallback branches
+# ---------------------------------------------------------------------------
+
+
+class TestIsSatisfiedFallbacks:
+    def test_importlib_metadata_import_error_returns_false(self, monkeypatch):
+        # importlib.metadata is always present on 3.8+, but the branch
+        # exists for defence. Simulate by making the import raise.
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "importlib.metadata":
+                raise ImportError("blocked for test")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        assert ld._is_satisfied("any-pkg==1.0") is False
+
+    def test_version_raises_generic_exception_returns_false(self, monkeypatch):
+        import importlib.metadata as _md
+
+        def _raise(pkg):
+            raise RuntimeError("metadata DB corrupted")
+
+        monkeypatch.setattr(_md, "version", _raise)
+        assert ld._is_satisfied("any-pkg==1.0") is False
+
+    def test_packaging_unavailable_returns_true(self, monkeypatch):
+        # packaging import fails → fall back to "installed counts as satisfied".
+        import importlib.metadata as _md
+
+        monkeypatch.setattr(_md, "version", lambda pkg: "1.0.0")
+
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "packaging.specifiers":
+                raise ImportError("packaging not installed")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        assert ld._is_satisfied("any-pkg==2.0.0") is True
+
+    def test_invalid_specifier_returns_true(self, monkeypatch):
+        # Malformed spec tail → don't churn, treat as satisfied.
+        import importlib.metadata as _md
+
+        monkeypatch.setattr(_md, "version", lambda pkg: "1.0.0")
+        # Inject a spec whose tail parses but the installed version is
+        # unparseable. We patch Version to raise InvalidVersion.
+        from packaging.version import InvalidVersion
+
+        import packaging.version as pv
+
+        def _bad_version(s):
+            raise InvalidVersion(f"unparseable: {s}")
+
+        monkeypatch.setattr(pv, "Version", _bad_version)
+        assert ld._is_satisfied("any-pkg==1.0.0") is True
+
+
+# ---------------------------------------------------------------------------
+# _is_present all branches
+# ---------------------------------------------------------------------------
+
+
+class TestIsPresent:
+    def test_present_returns_true(self, monkeypatch):
+        import importlib.metadata as _md
+
+        monkeypatch.setattr(_md, "version", lambda pkg: "1.0.0")
+        assert ld._is_present("any-pkg") is True
+
+    def test_not_found_returns_false(self, monkeypatch):
+        from importlib.metadata import PackageNotFoundError
+        import importlib.metadata as _md
+
+        def _raise(pkg):
+            raise PackageNotFoundError(pkg)
+
+        monkeypatch.setattr(_md, "version", _raise)
+        assert ld._is_present("any-pkg") is False
+
+    def test_generic_exception_returns_false(self, monkeypatch):
+        import importlib.metadata as _md
+
+        def _raise(pkg):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(_md, "version", _raise)
+        assert ld._is_present("any-pkg") is False
+
+    def test_importlib_metadata_import_error_returns_false(self, monkeypatch):
+        import builtins
+
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "importlib.metadata":
+                raise ImportError("blocked for test")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", fake_import)
+        assert ld._is_present("any-pkg") is False
+
+
+# ---------------------------------------------------------------------------
+# _venv_pip_install — all tiers
+# ---------------------------------------------------------------------------
+
+
+class TestVenvPipInstall:
+    def test_empty_specs_is_noop_success(self):
+        result = ld._venv_pip_install(())
+        assert result.success is True
+        assert result.stdout == ""
+        assert result.stderr == ""
+
+    def test_uv_success(self, monkeypatch):
+        from types import SimpleNamespace
+
+        monkeypatch.setattr("shutil.which", lambda name: "/fake/uv")
+        monkeypatch.setattr(
+            "subprocess.run",
+            lambda *a, **kw: SimpleNamespace(returncode=0, stdout="ok", stderr=""),
+        )
+        result = ld._venv_pip_install(("pkg==1.0",))
+        assert result.success is True
+        assert result.stdout == "ok"
+
+    def test_uv_fail_falls_back_to_pip(self, monkeypatch):
+        from types import SimpleNamespace
+
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(list(cmd))
+            if cmd[0] == "/fake/uv":
+                return SimpleNamespace(returncode=1, stdout="", stderr="uv fail")
+            if "--version" in cmd:
+                return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
+            return SimpleNamespace(returncode=0, stdout="pip ok", stderr="")
+
+        monkeypatch.setattr("shutil.which", lambda name: "/fake/uv")
+        monkeypatch.setattr("subprocess.run", fake_run)
+        result = ld._venv_pip_install(("pkg==1.0",))
+        assert result.success is True
+        assert result.stdout == "pip ok"
+
+    def test_uv_timeout_falls_back_to_pip(self, monkeypatch):
+        import subprocess
+        from types import SimpleNamespace
+
+        def fake_run(cmd, **kw):
+            if cmd[0] == "/fake/uv":
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=300)
+            if "--version" in cmd:
+                return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
+            return SimpleNamespace(returncode=0, stdout="pip ok", stderr="")
+
+        monkeypatch.setattr("shutil.which", lambda name: "/fake/uv")
+        monkeypatch.setattr("subprocess.run", fake_run)
+        result = ld._venv_pip_install(("pkg==1.0",))
+        assert result.success is True
+
+    def test_uv_not_found_uses_pip(self, monkeypatch):
+        from types import SimpleNamespace
+
+        def fake_run(cmd, **kw):
+            if "--version" in cmd:
+                return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
+            return SimpleNamespace(returncode=0, stdout="pip ok", stderr="")
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("subprocess.run", fake_run)
+        result = ld._venv_pip_install(("pkg==1.0",))
+        assert result.success is True
+
+    def test_pip_probe_fails_ensurepip_bootstraps(self, monkeypatch):
+        import subprocess
+        from types import SimpleNamespace
+
+        def fake_run(cmd, **kw):
+            if "--version" in cmd:
+                return SimpleNamespace(returncode=1, stdout="", stderr="no pip")
+            if "ensurepip" in cmd:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="pip ok", stderr="")
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("subprocess.run", fake_run)
+        result = ld._venv_pip_install(("pkg==1.0",))
+        assert result.success is True
+
+    def test_pip_probe_timeout_ensurepip_bootstraps(self, monkeypatch):
+        import subprocess
+        from types import SimpleNamespace
+
+        def fake_run(cmd, **kw):
+            if "--version" in cmd:
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=15)
+            if "ensurepip" in cmd:
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            return SimpleNamespace(returncode=0, stdout="pip ok", stderr="")
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("subprocess.run", fake_run)
+        result = ld._venv_pip_install(("pkg==1.0",))
+        assert result.success is True
+
+    def test_ensurepip_fails_returns_error(self, monkeypatch):
+        import subprocess
+        from types import SimpleNamespace
+
+        def fake_run(cmd, **kw):
+            if "--version" in cmd:
+                return SimpleNamespace(returncode=1, stdout="", stderr="no pip")
+            if "ensurepip" in cmd:
+                raise subprocess.CalledProcessError(1, cmd, stderr="ensurepip fail")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("subprocess.run", fake_run)
+        result = ld._venv_pip_install(("pkg==1.0",))
+        assert result.success is False
+        assert "ensurepip failed" in result.stderr
+
+    def test_ensurepip_timeout_returns_error(self, monkeypatch):
+        import subprocess
+        from types import SimpleNamespace
+
+        def fake_run(cmd, **kw):
+            if "--version" in cmd:
+                return SimpleNamespace(returncode=1, stdout="", stderr="no pip")
+            if "ensurepip" in cmd:
+                raise subprocess.TimeoutExpired(cmd=cmd, timeout=120)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("subprocess.run", fake_run)
+        result = ld._venv_pip_install(("pkg==1.0",))
+        assert result.success is False
+        assert "ensurepip failed" in result.stderr
+
+    def test_pip_install_failure_returns_error(self, monkeypatch):
+        from types import SimpleNamespace
+
+        def fake_run(cmd, **kw):
+            if "--version" in cmd:
+                return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
+            return SimpleNamespace(returncode=1, stdout="", stderr="pip fail")
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("subprocess.run", fake_run)
+        result = ld._venv_pip_install(("pkg==1.0",))
+        assert result.success is False
+        assert result.stderr == "pip fail"
+
+    def test_pip_install_timeout_returns_error(self, monkeypatch):
+        import subprocess
+        from types import SimpleNamespace
+
+        def fake_run(cmd, **kw):
+            if "--version" in cmd:
+                return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
+            raise subprocess.TimeoutExpired(cmd=cmd, timeout=300)
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("subprocess.run", fake_run)
+        result = ld._venv_pip_install(("pkg==1.0",))
+        assert result.success is False
+        assert "timed out" in result.stderr
+
+    def test_pip_install_generic_exception_returns_error(self, monkeypatch):
+        from types import SimpleNamespace
+
+        def fake_run(cmd, **kw):
+            if "--version" in cmd:
+                return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
+            raise OSError("disk full")
+
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("subprocess.run", fake_run)
+        result = ld._venv_pip_install(("pkg==1.0",))
+        assert result.success is False
+        assert "pip install failed" in result.stderr
+
+
+# ---------------------------------------------------------------------------
+# feature_specs KeyError
+# ---------------------------------------------------------------------------
+
+
+class TestFeatureSpecs:
+    def test_unknown_feature_raises_keyerror(self):
+        with pytest.raises(KeyError, match="Unknown lazy feature"):
+            ld.feature_specs("not.a.real.feature")
+
+    def test_known_feature_returns_specs(self):
+        specs = ld.feature_specs("memory.honcho")
+        assert specs == ld.LAZY_DEPS["memory.honcho"]
+
+
+# ---------------------------------------------------------------------------
+# ensure() unsafe-spec guard + prompt paths
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureEdgeCases:
+    def test_unsafe_spec_raises(self, monkeypatch):
+        # Inject a spec that fails the safety regex into a registered feature.
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.unsafe", ("git+https://evil/",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        with pytest.raises(ld.FeatureUnavailable, match="unsafe spec"):
+            ld.ensure("test.unsafe", prompt=False)
+
+    def test_prompt_yes_installs(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.prompt", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
+        # _is_satisfied True → no install needed, prompt never reached.
+        # To exercise the prompt yes-path we need missing→install→satisfied.
+        states = iter([False, True])
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(states))
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
+        )
+        monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr("sys.stdout", type("S", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr("builtins.input", lambda *a, **kw: "y")
+        ld.ensure("test.prompt", prompt=True)
+
+    def test_prompt_no_declines(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.decline", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called on decline"),
+        )
+        monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr("sys.stdout", type("S", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr("builtins.input", lambda *a, **kw: "n")
+        with pytest.raises(ld.FeatureUnavailable, match="user declined"):
+            ld.ensure("test.decline", prompt=True)
+
+    def test_prompt_eof_declines(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.eof", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda *a, **kw: pytest.fail("pip should not be called on EOF"),
+        )
+        monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": lambda self: True})())
+        monkeypatch.setattr("sys.stdout", type("S", (), {"isatty": lambda self: True})())
+
+        def _raise_eof(*a, **kw):
+            raise EOFError()
+
+        monkeypatch.setattr("builtins.input", _raise_eof)
+        with pytest.raises(ld.FeatureUnavailable, match="user declined"):
+            ld.ensure("test.eof", prompt=True)
+
+    def test_prompt_skipped_when_prompt_toolkit_active(self, monkeypatch):
+        # When prompt_toolkit application is running, the input() prompt
+        # is skipped (would deadlock). Install proceeds without prompting.
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.pt", ("zzzfake>=1",))
+        states = iter([False, True])
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(states))
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
+        )
+
+        # Simulate prompt_toolkit being loaded and an app running.
+        import sys
+
+        class _FakeApp:
+            is_running = True
+
+        class _FakePtModule:
+            @staticmethod
+            def get_app_or_none():
+                return _FakeApp()
+
+        monkeypatch.setitem(
+            sys.modules, "prompt_toolkit.application.current", _FakePtModule
+        )
+        # If the prompt were reached, input() would block. We don't mock
+        # input, so reaching it would hang — passing means prompt was skipped.
+        ld.ensure("test.pt", prompt=True)
+
+    def test_prompt_toolkit_import_exception_skips_prompt(self, monkeypatch):
+        # prompt_toolkit in sys.modules but get_app_or_none raises →
+        # _pt_active stays False, but stdin not a tty → prompt still skipped.
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.pterr", ("zzzfake>=1",))
+        states = iter([False, True])
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(states))
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
+        )
+
+        import sys
+
+        class _FakePtModule:
+            @staticmethod
+            def get_app_or_none():
+                raise RuntimeError("pt broken")
+
+        monkeypatch.setitem(
+            sys.modules, "prompt_toolkit.application.current", _FakePtModule
+        )
+        # stdin is not a tty under pytest → prompt skipped regardless.
+        ld.ensure("test.pterr", prompt=True)
+
+
+# ---------------------------------------------------------------------------
+# importlib.metadata _cache_clear post-install
+# ---------------------------------------------------------------------------
+
+
+class TestPostInstallCacheClear:
+    def test_cache_clear_called_when_present(self, monkeypatch):
+        import importlib.metadata as _md
+
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.cache2", ("zzzfake>=1",))
+        states = iter([False, True])
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(states))
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
+        )
+        cleared = {"called": False}
+
+        def _cache_clear():
+            cleared["called"] = True
+
+        monkeypatch.setattr(_md, "_cache_clear", _cache_clear, raising=False)
+        ld.ensure("test.cache2", prompt=False)
+        assert cleared["called"] is True
+
+    def test_cache_clear_exception_swallowed(self, monkeypatch):
+        # _cache_clear raises → defensive except Exception: pass must
+        # swallow it so the post-install verify still runs.
+        import importlib.metadata as _md
+
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.cache3", ("zzzfake>=1",))
+        states = iter([False, True])
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: next(states))
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
+        )
+
+        def _boom():
+            raise RuntimeError("cache clear broken")
+
+        monkeypatch.setattr(_md, "_cache_clear", _boom, raising=False)
+        # Must not raise — the except Exception: pass guards it.
+        ld.ensure("test.cache3", prompt=False)
+
+
+# ---------------------------------------------------------------------------
+# refresh_active_features — generic Exception branch
+# ---------------------------------------------------------------------------
+
+
+class TestRefreshActiveFeaturesErrors:
+    def test_generic_exception_recorded_not_raised(self, monkeypatch):
+        monkeypatch.setattr(ld, "active_features", lambda: ["test.boom"])
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.boom", ("zzzfake==1.0",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+
+        def _boom(feature, *, prompt=True):
+            raise RuntimeError("unexpected boom")
+
+        monkeypatch.setattr(ld, "ensure", _boom)
+        result = ld.refresh_active_features()
+        assert result["test.boom"].startswith("failed:")
+        assert "unexpected boom" in result["test.boom"]
+
+
+# ---------------------------------------------------------------------------
+# ensure_and_bind
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureAndBind:
+    def test_success_binds_names(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.bind", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
+
+        def _importer():
+            return {"FOO": 42, "BAR": "x"}
+
+        target = {}
+        ok = ld.ensure_and_bind("test.bind", _importer, target, prompt=False)
+        assert ok is True
+        assert target == {"FOO": 42, "BAR": "x"}
+
+    def test_feature_unavailable_returns_false(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.bindfail", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: False)
+
+        def _importer():
+            raise AssertionError("importer should not be called on install failure")
+
+        target = {}
+        ok = ld.ensure_and_bind("test.bindfail", _importer, target, prompt=False)
+        assert ok is False
+        assert target == {}
+
+    def test_import_error_returns_false(self, monkeypatch):
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.bindimport", ("zzzfake>=1",))
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: True)
+
+        def _importer():
+            raise ImportError("module not found after install")
+
+        target = {"EXISTING": 1}
+        ok = ld.ensure_and_bind("test.bindimport", _importer, target, prompt=False)
+        assert ok is False
+        # Existing globals untouched.
+        assert target == {"EXISTING": 1}

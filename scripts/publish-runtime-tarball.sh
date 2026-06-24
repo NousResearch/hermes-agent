@@ -113,8 +113,15 @@ if [ "$WITH_UV" = true ]; then
     for triple in $TARGETS; do
         out="$OUT_DIR/uv-${triple}.tar.gz"
         url="${UV_BASE}/uv-${triple}.tar.gz"
-        log "Fetching uv ($triple) from $url"
-        curl -fSL --retry 3 "$url" -o "$out" || die "uv download failed: $url"
+        if [ -s "$out" ]; then
+            log "Reusing cached uv ($triple) at $out"
+        else
+            log "Fetching uv ($triple) from $url"
+            # --http1.1: GitHub release downloads intermittently stall on HTTP/2
+            # framing errors from some networks; forcing HTTP/1.1 + more retries
+            # makes the fetch reliable (the asset itself is not blocked).
+            curl -fSL --http1.1 --retry 5 "$url" -o "$out" || die "uv download failed: $url"
+        fi
         UV_ARTIFACTS+=("$out")
     done
 fi
@@ -124,7 +131,9 @@ upload_one() {
     local local_path="$1" key="$2"
     local dest="cos://${BUCKET}/${PREFIX%/}/${key}"
     log "Uploading $(basename "$local_path") -> $dest"
-    coscli cp "$local_path" "$dest" ${REGION:+--region "$REGION"} \
+    # Region/endpoint come from coscli's own config (~/.cos.yaml); `coscli cp`
+    # has no --region flag (it resolves the bucket alias from config).
+    coscli cp "$local_path" "$dest" \
         || die "coscli upload failed for $key (is coscli configured + bucket public-read?)"
 }
 

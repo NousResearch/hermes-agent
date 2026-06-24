@@ -390,6 +390,58 @@ def test_nous_dashboard_poller_preserves_effective_scope_when_token_omits_scope(
         ws._oauth_sessions.pop(session_id, None)
 
 
+def test_nous_dashboard_poller_defaults_malformed_token_ttl(monkeypatch):
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    session_id = "nous-malformed-token-ttl-test"
+    ws._oauth_sessions[session_id] = {
+        "session_id": session_id,
+        "provider": "nous",
+        "flow": "device_code",
+        "created_at": time.time(),
+        "status": "pending",
+        "error_message": None,
+        "portal_base_url": "https://portal.nousresearch.com",
+        "client_id": "hermes-cli",
+        "device_code": "device-code",
+        "interval": 5,
+        "expires_at": time.time() + 600,
+        "scope": auth_mod.DEFAULT_NOUS_SCOPE,
+    }
+    captured_state = {}
+
+    def fake_refresh_nous_oauth_from_state(state, **kwargs):
+        captured_state.update(state)
+        return {**state, "agent_key": "jwt-agent-key"}
+
+    monkeypatch.setattr(
+        auth_mod,
+        "_poll_for_token",
+        lambda **kwargs: {
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "expires_in": "soon",
+            "token_type": "Bearer",
+        },
+    )
+    monkeypatch.setattr(
+        auth_mod,
+        "refresh_nous_oauth_from_state",
+        fake_refresh_nous_oauth_from_state,
+    )
+    monkeypatch.setattr(auth_mod, "persist_nous_credentials", lambda state: None)
+
+    try:
+        ws._nous_poller(session_id)
+        assert ws._oauth_sessions[session_id]["status"] == "approved"
+        assert captured_state["access_token"] == "access-token"
+        assert captured_state["expires_in"] == 0
+        assert captured_state["expires_at"] is None
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
 def test_minimax_dashboard_poller_accepts_absolute_ms_expired_in():
     """Dashboard MiniMax completion must accept unix-ms token expiry values."""
     from hermes_cli import web_server as ws

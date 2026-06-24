@@ -6757,6 +6757,7 @@ def _add_xai_oauth_pool_entry(
 def _nous_poller(session_id: str) -> None:
     """Background poller that drives a Nous device-code flow to completion."""
     from hermes_cli.auth import (
+        _coerce_ttl_seconds,
         _poll_for_token,
         refresh_nous_oauth_from_state,
     )
@@ -6784,7 +6785,7 @@ def _nous_poller(session_id: str) -> None:
             )
         # Same post-processing as _nous_device_code_login (validate/refresh JWT)
         now = datetime.now(timezone.utc)
-        token_ttl = int(token_data.get("expires_in") or 0)
+        token_ttl = _coerce_ttl_seconds(token_data.get("expires_in"))
         auth_state = {
             "portal_base_url": portal_base_url,
             "inference_base_url": token_data.get("inference_base_url"),

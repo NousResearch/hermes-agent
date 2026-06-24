@@ -529,6 +529,30 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
+    // IME composition guard (fixes #52111).
+    //
+    // React 18's root-level event delegation intercepts keydown events with
+    // keyCode 229 (the "composition in progress" signal sent by the browser
+    // during non-Latin IME input) and synthesises an onCompositionStart
+    // event.  That synthetic path sets internal composing state that
+    // interferes with xterm.js's own IME handling on its hidden textarea,
+    // causing the first keystroke of each composition chunk to be silently
+    // dropped — most visible with Cyrillic (Ukrainian/Russian) on
+    // Firefox-based browsers, but affects any locale that uses composition
+    // events (CJK, Arabic, Hebrew).
+    //
+    // xterm.js relies on native compositionstart/compositionend on its
+    // internal textarea, not on keydown, so blocking the keyCode-229
+    // keydown from reaching React's delegation layer is safe.  The listener
+    // sits in the *capture* phase on the terminal host so it fires before
+    // the event bubbles up to the React root.
+    const _imeCompositionGuard = (e: KeyboardEvent) => {
+      if (e.keyCode === 229 || e.key === "Process") {
+        e.stopPropagation();
+      }
+    };
+    host.addEventListener("keydown", _imeCompositionGuard, true);
+
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
@@ -813,6 +837,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
+      host.removeEventListener("keydown", _imeCompositionGuard, true);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

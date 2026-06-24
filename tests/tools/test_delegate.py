@@ -11,8 +11,10 @@ Run with:  python -m pytest tests/test_delegate.py -v
 
 import json
 import os
+import sys
 import threading
 import time
+import types
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -21,6 +23,7 @@ from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
     DelegateEvent,
     _get_max_concurrent_children,
+    _load_config,
     _LEGACY_EVENT_MAP,
     MAX_DEPTH,
     check_delegate_requirements,
@@ -1927,6 +1930,28 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
 class TestDelegationReasoningEffort(unittest.TestCase):
     """Tests for delegation.reasoning_effort config override."""
+
+    def test_load_config_fills_missing_reasoning_effort_from_persistent_config(self):
+        """Runtime CLI defaults must not hide profile delegation.reasoning_effort."""
+        fake_cli = types.SimpleNamespace(
+            CLI_CONFIG={"delegation": {"max_iterations": 45, "model": ""}}
+        )
+
+        with patch.dict(sys.modules, {"cli": fake_cli}):
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "delegation": {
+                        "max_iterations": 50,
+                        "reasoning_effort": "none",
+                    }
+                },
+            ):
+                cfg = _load_config()
+
+        self.assertEqual(cfg["max_iterations"], 45)
+        self.assertEqual(cfg["model"], "")
+        self.assertEqual(cfg["reasoning_effort"], "none")
 
     @patch("tools.delegate_tool._load_config")
     @patch("run_agent.AIAgent")

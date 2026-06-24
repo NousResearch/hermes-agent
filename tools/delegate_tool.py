@@ -2816,21 +2816,29 @@ def _load_config() -> dict:
     ``delegation.model`` / ``delegation.provider`` are picked up regardless
     of the entry point (CLI, gateway, cron).
     """
+    runtime_cfg = None
     try:
         from cli import CLI_CONFIG
 
         cfg = CLI_CONFIG.get("delegation") or {}
         if cfg:
-            return cfg
+            runtime_cfg = cfg
     except Exception:
         pass
     try:
         from hermes_cli.config import load_config
 
         full = load_config()
-        return full.get("delegation") or {}
+        persistent_cfg = full.get("delegation") or {}
     except Exception:
-        return {}
+        persistent_cfg = {}
+    if runtime_cfg:
+        merged = dict(runtime_cfg)
+        for key, value in persistent_cfg.items():
+            if key not in merged:
+                merged[key] = value
+        return merged
+    return persistent_cfg
 
 
 # ---------------------------------------------------------------------------

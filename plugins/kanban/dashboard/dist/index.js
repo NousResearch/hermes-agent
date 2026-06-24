@@ -1050,6 +1050,7 @@
           taskId: selectedTaskId,
           boardSlug: board,
           onClose: function () { setSelectedTaskId(null); },
+          onOpen: setSelectedTaskId,
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
@@ -3032,6 +3033,7 @@
           allTasks: props.allTasks,
           assignees: props.assignees || [],
           boardSlug: boardSlug,
+          onOpen: props.onOpen,
           onPatch: doPatch,
           onSpecify: doSpecify,
           onDecompose: doDecompose,
@@ -3248,6 +3250,7 @@
       h(DependencyEditor, {
         task: t,
         links, allTasks: props.allTasks,
+        onOpen: props.onOpen,
         onAddParent: props.onAddParent,
         onRemoveParent: props.onRemoveParent,
         onAddChild: props.onAddChild,
@@ -3600,6 +3603,35 @@
     );
   }
 
+  function depChipLabel(allTasks, id) {
+    const tk = (allTasks || []).find(function (t) { return t.id === id; });
+    if (tk && tk.title) {
+      return `${id} — ${(tk.title || "").slice(0, 50)}`;
+    }
+    return id;
+  }
+
+  function DepChip(props) {
+    const label = depChipLabel(props.allTasks, props.id);
+    const canOpen = typeof props.onOpen === "function";
+    return h("span", { key: props.id, className: "hermes-kanban-dep-chip" },
+      canOpen
+        ? h("button", {
+            type: "button",
+            className: "hermes-kanban-dep-chip-link",
+            onClick: function () { props.onOpen(props.id); },
+            title: label,
+          }, label)
+        : label,
+      h("button", {
+        type: "button",
+        className: "hermes-kanban-dep-chip-x",
+        onClick: function () { props.onRemove(props.id); },
+        title: tx(props.t, "removeDependency", "Remove dependency"),
+      }, "×"),
+    );
+  }
+
   function DependencyEditor(props) {
     const { t } = useI18n();
     const { task, links, allTasks } = props;
@@ -3622,15 +3654,14 @@
           (links.parents || []).length === 0
             ? h("span", { className: "hermes-kanban-deps-empty" }, tx(t, "none", "none"))
             : (links.parents || []).map(function (id) {
-                return h("span", { key: id, className: "hermes-kanban-dep-chip" },
-                  id,
-                  h("button", {
-                    type: "button",
-                    className: "hermes-kanban-dep-chip-x",
-                    onClick: function () { props.onRemoveParent(id); },
-                    title: tx(t, "removeDependency", "Remove dependency"),
-                  }, "×"),
-                );
+                return h(DepChip, {
+                  key: id,
+                  id: id,
+                  allTasks: allTasks,
+                  onOpen: props.onOpen,
+                  onRemove: props.onRemoveParent,
+                  t: t,
+                });
               }),
         ),
       ),
@@ -3660,15 +3691,14 @@
           (links.children || []).length === 0
             ? h("span", { className: "hermes-kanban-deps-empty" }, tx(t, "none", "none"))
             : (links.children || []).map(function (id) {
-                return h("span", { key: id, className: "hermes-kanban-dep-chip" },
-                  id,
-                  h("button", {
-                    type: "button",
-                    className: "hermes-kanban-dep-chip-x",
-                    onClick: function () { props.onRemoveChild(id); },
-                    title: tx(t, "removeDependency", "Remove dependency"),
-                  }, "×"),
-                );
+                return h(DepChip, {
+                  key: id,
+                  id: id,
+                  allTasks: allTasks,
+                  onOpen: props.onOpen,
+                  onRemove: props.onRemoveChild,
+                  t: t,
+                });
               }),
         ),
       ),

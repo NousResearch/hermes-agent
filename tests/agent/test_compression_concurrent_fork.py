@@ -77,6 +77,10 @@ def _build_agent_with_db(db: SessionDB, session_id: str):
     compressor._last_aux_model_failure_model = None
     compressor._last_aux_model_failure_error = None
     agent.context_compressor = compressor
+    # These tests cover the ROTATION fallback path (forking, child sessions,
+    # lock contention) — pin in_place=False so they keep exercising it
+    # regardless of the global default (which flipped to True in #38763).
+    agent.compression_in_place = False
     return agent
 
 

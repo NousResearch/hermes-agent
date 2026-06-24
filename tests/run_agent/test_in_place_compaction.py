@@ -184,9 +184,11 @@ class TestInPlaceCompaction:
             assert calls["n"] == 1
 
 
-class TestRotationStillDefault:
+class TestRotationFallbackWhenFlagOff:
     def test_rotation_when_flag_off(self):
-        """Regression guard: flag off => legacy rotation is unchanged."""
+        """Rotation is now the OPT-OUT fallback (default flipped to in-place in
+        #38763). With in_place=False explicitly set, legacy rotation is
+        unchanged — forks a renamed continuation session."""
         from hermes_state import SessionDB
         from agent.conversation_compression import compress_context
 
@@ -247,10 +249,12 @@ class TestInPlaceSignalForGateway:
 
 
 class TestInPlaceConfigDefault:
-    def test_flag_defaults_off(self):
+    def test_flag_defaults_on(self):
+        """In-place is the default as of #38763 (rotation is now opt-out via
+        compression.in_place: false)."""
         from hermes_cli.config import DEFAULT_CONFIG
 
-        assert DEFAULT_CONFIG["compression"].get("in_place") is False
+        assert DEFAULT_CONFIG["compression"].get("in_place") is True
 
 
 class TestCompactedTurnsStaySearchable:

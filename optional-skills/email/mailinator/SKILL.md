@@ -18,7 +18,6 @@ metadata:
 - None. No API key required. Agent needs access to 'curl' or similar
 - [Optional] Alternatively, install the Mailinator CLI for mcp access - npm install -g mailinator-cli
 
-
 ## Quick Start
 
 ```bash

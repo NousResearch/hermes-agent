@@ -2833,7 +2833,17 @@ def run_conversation(
                             agent._flush_status_buffer()
                             time.sleep(_delay)
                             retry_count += 1
-                            continue
+                            # ── Transient retry budget guard ─────────────────────
+                            # Each transient retry consumes the main retry budget
+                            # (retry_count). When the budget is exhausted, do not
+                            # continue — fall through to the fallback path below
+                            # instead of exiting the while loop without ever
+                            # attempting fallback.  Fixes the bug where all 5
+                            # api_max_retries were burned on transient backoffs
+                            # and the user got "no reply" despite a configured
+                            # fallback provider.
+                            if retry_count < max_retries:
+                                continue
 
                         if classified.reason == FailoverReason.billing:
                             agent._buffer_status(

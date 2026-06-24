@@ -187,6 +187,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     syntax). The Baileys adapter does the same.
     """
 
+    splits_long_messages = True  # send() chunks via truncate_message()
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP_CLOUD)
         extra = config.extra or {}

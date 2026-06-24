@@ -555,8 +555,8 @@ def _format_context_length(tokens: int) -> str:
         if abs(val - rounded) < 0.05:
             return f"{rounded}M"
         return f"{val:.1f}M"
-    elif tokens >= 1_000:
-        val = tokens / 1_000
+    elif tokens >= 1_024:
+        val = tokens / 1_024
         rounded = round(val)
         if abs(val - rounded) < 0.05:
             return f"{rounded}K"

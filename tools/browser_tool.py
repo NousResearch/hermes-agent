@@ -335,8 +335,10 @@ def _get_dialog_policy_config() -> Tuple[str, float]:
             policy = DEFAULT_DIALOG_POLICY
         timeout_raw = browser_cfg.get("dialog_timeout_s")
         try:
+            import math
+
             timeout_s = float(timeout_raw) if timeout_raw is not None else DEFAULT_DIALOG_TIMEOUT_S
-            if timeout_s <= 0:
+            if not math.isfinite(timeout_s) or timeout_s <= 0:
                 timeout_s = DEFAULT_DIALOG_TIMEOUT_S
         except (TypeError, ValueError):
             timeout_s = DEFAULT_DIALOG_TIMEOUT_S

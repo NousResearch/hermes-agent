@@ -147,6 +147,29 @@ class TestSessionInactivityTimeout:
             assert _get_session_inactivity_timeout() == 240
 
 
+class TestDialogPolicyConfig:
+
+    @pytest.mark.parametrize("timeout_raw", [float("inf"), float("-inf"), float("nan"), "inf", "nan"])
+    def test_non_finite_dialog_timeout_uses_default(self, timeout_raw):
+        from tools.browser_supervisor import (
+            DEFAULT_DIALOG_TIMEOUT_S,
+            DIALOG_POLICY_AUTO_DISMISS,
+        )
+        from tools.browser_tool import _get_dialog_policy_config
+
+        cfg = {
+            "browser": {
+                "dialog_policy": DIALOG_POLICY_AUTO_DISMISS,
+                "dialog_timeout_s": timeout_raw,
+            }
+        }
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            policy, timeout_s = _get_dialog_policy_config()
+
+        assert policy == DIALOG_POLICY_AUTO_DISMISS
+        assert timeout_s == DEFAULT_DIALOG_TIMEOUT_S
+
+
 # ---------------------------------------------------------------------------
 # Caching: _discover_homebrew_node_dirs
 # ---------------------------------------------------------------------------

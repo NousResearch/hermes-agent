@@ -365,6 +365,7 @@ def cmd_mcp_add(args):
 
     # ── Authentication ────────────────────────────────────────────────
 
+    oauth_just_configured = False
     if url and auth_type == "oauth":
         print()
         _info(f"Starting OAuth flow for '{name}'...")
@@ -389,6 +390,8 @@ def cmd_mcp_add(args):
             else:
                 _info("Cancelled.")
                 return
+        else:
+            oauth_just_configured = True
 
     elif url:
         # Prompt for API key / Bearer token for HTTP servers
@@ -416,6 +419,16 @@ def cmd_mcp_add(args):
                     }
 
     # ── Discovery: connect and list tools ─────────────────────────────
+    # Skip the connection probe when OAuth was just configured but tokens
+    # haven't been acquired yet — the server will return 405/401 for
+    # unauthenticated requests.  Tokens are obtained on first real
+    # connection (triggered by the agent), so save the server as enabled.
+    if oauth_just_configured:
+        server_config["enabled"] = True
+        if _save_mcp_server(name, server_config):
+            _success(f"Saved '{name}' to config (OAuth — tokens will be acquired on first use)")
+            _info("Test later with: hermes mcp test " + name)
+        return
 
     print()
     print(color(f"  Connecting to '{name}'...", Colors.CYAN))

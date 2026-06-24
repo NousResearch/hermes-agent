@@ -168,6 +168,7 @@ def _get_backend() -> str:
         ("searxng", _has_env("SEARXNG_URL")),
         ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
         ("ddgs", _ddgs_package_importable()),
+        ("crawl4ai", _has_env("CRAWL4AI_URL") and _has_env("CRAWL4AI_API_TOKEN")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -230,6 +231,10 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("BRAVE_SEARCH_API_KEY")
     if backend == "ddgs":
         return _ddgs_package_importable()
+    if backend == "crawl4ai":
+        # Crawl4AI 0.9.0+ requires Bearer auth by default; both URL + token
+        # must be present before the dispatcher will route /crawl calls.
+        return _has_env("CRAWL4AI_URL") and _has_env("CRAWL4AI_API_TOKEN")
     if backend == "xai":
         # Cheap probe — env var OR auth.json has OAuth tokens. Must not
         # call resolve_xai_http_credentials() here because the OAuth path

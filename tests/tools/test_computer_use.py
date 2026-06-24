@@ -1522,6 +1522,27 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
 
+    def test_linux_windows_without_app_name_skip_untargetable_overlays(self):
+        windows = [
+            {"pid": 325015, "window_id": 10485764, "title": "Calculator",
+             "is_on_screen": True, "z_index": 0},
+            {"pid": None, "window_id": 8388609,
+             "title": "Cua.AgentCursorOverlay.default",
+             "is_on_screen": True, "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": '✅ Calculator — 0 elements\n', "images": [], "isError": False,
+             "structuredContent": None},
+        ]
+
+        cap = backend.capture(mode="ax", app="Calculator")
+
+        assert backend._active_pid == 325015
+        assert backend._active_window_id == 10485764
+
     def test_no_app_filter_still_picks_frontmost(self):
         """When no app= is given, capture continues to pick the frontmost
         window — the no-match early-return must not fire on the empty case."""
@@ -1579,6 +1600,22 @@ class TestFocusAppFilterNoMatch:
         assert res.ok is True
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
+
+    def test_focus_app_linux_windows_without_app_name_skip_untargetable_overlays(self):
+        windows = [
+            {"pid": 325015, "window_id": 10485764, "title": "Calculator",
+             "is_on_screen": True, "z_index": 0},
+            {"pid": None, "window_id": 8388609,
+             "title": "Cua.AgentCursorOverlay.default",
+             "is_on_screen": True, "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        res = backend.focus_app("Calculator")
+
+        assert res.ok is True
+        assert backend._active_pid == 325015
+        assert backend._active_window_id == 10485764
 
 
 class TestCuaEnvironmentScrubbing:

@@ -341,6 +341,34 @@ def _parse_elements_from_tree(markdown: str) -> List[UIElement]:
     return elements
 
 
+def _parse_window_from_structured(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Normalize one cua-driver ``list_windows`` structured record.
+
+    Linux/X11 builds can surface utility/overlay records that do not have a
+    backing process (``pid=None``). Older wrapper code coerced every record's
+    pid/window_id with ``int(...)`` before filtering, so one overlay could make
+    every capture fail. Skip records that cannot be targeted by subsequent
+    ``get_window_state`` calls and fall back to ``title`` as the display name
+    only when the driver omits ``app_name`` entirely.
+    """
+    try:
+        pid = int(record["pid"])
+        window_id = int(record["window_id"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    app_name = str(record.get("app_name") or "")
+    title = str(record.get("title") or "")
+    return {
+        "app_name": app_name or title,
+        "pid": pid,
+        "window_id": window_id,
+        "off_screen": not record.get("is_on_screen", True),
+        "title": title,
+        "z_index": record.get("z_index", 0),
+    }
+
+
 def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[UIElement]:
     """Surface 2 of NousResearch/hermes-agent#47072: read the canonical
     ``structuredContent.elements`` array cua-driver-rs emits on every
@@ -1028,17 +1056,7 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "off_screen": not w.get("is_on_screen", True),
-                "title": w.get("title", ""),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
+        windows = [w for w in (_parse_window_from_structured(r) for r in raw_windows) if w]
         # Sort by z_index descending (lowest z_index = frontmost on macOS).
         windows.sort(key=lambda w: w["z_index"])
 
@@ -1433,15 +1451,7 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
+        windows = [w for w in (_parse_window_from_structured(r) for r in raw_windows) if w]
         windows.sort(key=lambda w: w["z_index"])
 
         app_lower = app.lower()

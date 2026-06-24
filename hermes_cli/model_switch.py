@@ -1057,8 +1057,10 @@ def switch_model(
 
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
-        is_custom = current_provider in {"custom", "local"} or (
-            "localhost" in _base or "127.0.0.1" in _base
+        is_custom = (
+            current_provider in {"custom", "local"}
+            or current_provider.startswith("custom:")
+            or ("localhost" in _base or "127.0.0.1" in _base)
         )
 
         if (

@@ -68,6 +68,24 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+_VOICE_REPLY_CODE_BLOCK_RE = re.compile(r"```[\s\S]*?```")
+_VOICE_REPLY_MEDIA_RE = re.compile(r"MEDIA:\S+")
+_VOICE_REPLY_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]+\)")
+_VOICE_REPLY_URL_RE = re.compile(r"https?://\S+")
+_VOICE_REPLY_INLINE_CODE_RE = re.compile(r"`[^`]+`")
+_VOICE_REPLY_PATH_RE = re.compile(
+    r"(?<!\w)(?:~|\.|[A-Za-z]:)?(?:/[\w .@()+\-=]+){2,}(?:\.\w+)?"
+)
+_VOICE_REPLY_FILE_RE = re.compile(
+    r"\b[\w .@()+\-=]+\.(?:md|markdown|txt|json|ya?ml|toml|py|ts|tsx|js|jsx|go|rs|sh|bash|env|db|sqlite|log|csv|pdf|docx?)\b",
+    re.IGNORECASE,
+)
+_VOICE_REPLY_TECH_LINE_RE = re.compile(
+    r"(?:\b(?:file|path|traceback|exception|permissionerror|warning|error|stack|diff|patch|media|rid|nid|uuid|token|credential|secret)\b|/workspace|/opt/|/home/|MEDIA:|```)",
+    re.IGNORECASE,
+)
+_VOICE_REPLY_SENTENCE_RE = re.compile(r"(?<=[.!?])\s+")
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -1130,6 +1148,67 @@ def _collect_auto_append_media_tags(
             has_voice_directive = True
 
     return media_tags, has_voice_directive
+
+
+def _prepare_voice_reply_text(text: str, *, max_chars: int = 900) -> str:
+    """Return a conversational version of a rich text reply for TTS.
+
+    Text replies can carry markdown, routes, file names, code fragments, icons,
+    and detailed audit output. Speaking that verbatim sounds broken in chat
+    apps ("barra workspace barra identity punto eme de"). Voice should be a
+    human companion to the text, not an exact transcript of it.
+    """
+    if not text:
+        return ""
+
+    raw = _VOICE_REPLY_CODE_BLOCK_RE.sub(" ", text)
+    raw = _VOICE_REPLY_MEDIA_RE.sub(" ", raw)
+    raw = _VOICE_REPLY_MD_LINK_RE.sub(r"\1", raw)
+    raw = _VOICE_REPLY_URL_RE.sub(" ", raw)
+    raw = _VOICE_REPLY_INLINE_CODE_RE.sub(" ", raw)
+
+    kept_lines: List[str] = []
+    dropped_technical = False
+    for original_line in raw.splitlines():
+        line = original_line.strip()
+        if not line:
+            continue
+        if _VOICE_REPLY_TECH_LINE_RE.search(line):
+            dropped_technical = True
+            continue
+        if _VOICE_REPLY_PATH_RE.search(line) or _VOICE_REPLY_FILE_RE.search(line):
+            dropped_technical = True
+            continue
+        line = re.sub(r"^\s*[-*•✅☑️✔️❌⚠️🚨]+\s*", "", line)
+        line = re.sub(r"[*_~#>]+", "", line)
+        line = re.sub(r"\s*/\s*", " o ", line)
+        line = re.sub(r"[{}\[\]<>|\\]+", " ", line)
+        line = re.sub(r"\b(?:MED|RID|NID)\b", " ", line, flags=re.IGNORECASE)
+        line = re.sub(r"\s+", " ", line).strip(" -–—:;")
+        if line:
+            kept_lines.append(line)
+
+    spoken = " ".join(kept_lines)
+    spoken = _VOICE_REPLY_PATH_RE.sub(" ", spoken)
+    spoken = _VOICE_REPLY_FILE_RE.sub(" ", spoken)
+    spoken = re.sub(r"\s+", " ", spoken).strip()
+
+    if not spoken:
+        return "Te dejé los detalles por escrito para no leerte rutas ni símbolos."
+
+    sentences = [s.strip() for s in _VOICE_REPLY_SENTENCE_RE.split(spoken) if s.strip()]
+    if len(sentences) > 3:
+        spoken = " ".join(sentences[:3])
+        dropped_technical = True
+    if len(spoken) > max_chars:
+        cut = spoken[:max_chars].rsplit(" ", 1)[0].strip()
+        spoken = cut or spoken[:max_chars].strip()
+        dropped_technical = True
+
+    if dropped_technical and "por escrito" not in spoken.lower():
+        spoken = f"{spoken} Te dejo los detalles técnicos por escrito."
+
+    return spoken.strip()
 
 
 def _collect_history_media_paths(agent_history: List[Dict[str, Any]]) -> set:
@@ -11052,7 +11131,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            tts_text = _prepare_voice_reply_text(text[:4000])
+            tts_text = _strip_markdown_for_tts(tts_text)
             if not tts_text:
                 return
 

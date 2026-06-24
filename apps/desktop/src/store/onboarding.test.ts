@@ -2,6 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { OAuthProvider } from '@/types/hermes'
 
+import * as notifications from '@/store/notifications'
+
 import {
   $desktopOnboarding,
   type DesktopOnboardingState,
@@ -63,6 +65,16 @@ function onboardingContext(requestGateway: OnboardingContext['requestGateway']):
   return { requestGateway }
 }
 
+function fallbackTimeoutGateway(): OnboardingContext['requestGateway'] {
+  return async method => {
+    if (method === 'setup.status' || method === 'setup.runtime_check') {
+      throw new Error(`request timed out: ${method}`)
+    }
+
+    throw new Error(`unexpected gateway method: ${method}`)
+  }
+}
+
 describe('refreshOnboarding', () => {
   beforeEach(() => {
     window.localStorage.clear()
@@ -114,6 +126,108 @@ describe('refreshOnboarding', () => {
     expect(ready).toBe(false)
     expect(api).not.toHaveBeenCalled()
     expect($desktopOnboarding.get().providers?.map(p => p.id)).toEqual(['cached'])
+  })
+
+  it('does not downgrade configured=true on fallback-only readiness failures', async () => {
+    const api = vi.fn(async ({ path }: { path: string }) => {
+      if (path === '/api/providers/oauth') {
+        return { providers: [provider('fresh')] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    installApiMock(api)
+    // Simulate a returning user: cache is set and store is configured.
+    window.localStorage.setItem('hermes-desktop-onboarded-v1', '1')
+    $desktopOnboarding.set(
+      baseState({
+        configured: true,
+        providers: [provider('cached')],
+        reason: null,
+        requested: false
+      })
+    )
+
+    const ready = await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+
+    expect(ready).toBe(false)
+    expect(api).not.toHaveBeenCalled()
+    expect($desktopOnboarding.get().configured).toBe(true)
+    expect($desktopOnboarding.get().reason).toBeNull()
+    // The cache must survive the refresh — proving we didn't downgrade.
+    expect(window.localStorage.getItem('hermes-desktop-onboarded-v1')).toBe('1')
+  })
+
+  it('shows a non-blocking notification when preserving configured on fallback', async () => {
+    const notifySpy = vi.spyOn(notifications, 'notify')
+
+    installApiMock(vi.fn())
+    $desktopOnboarding.set(
+      baseState({
+        configured: true,
+        providers: [provider('cached')],
+        reason: null,
+        requested: false
+      })
+    )
+
+    await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+
+    expect(notifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'runtime-not-ready',
+        kind: 'error'
+      })
+    )
+    expect($desktopOnboarding.get().configured).toBe(true)
+  })
+
+  it('does not preserve configured when onboarding was explicitly requested', async () => {
+    const api = vi.fn(async ({ path }: { path: string }) => {
+      if (path === '/api/providers/oauth') {
+        return { providers: [provider('fresh')] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    installApiMock(api)
+    $desktopOnboarding.set(
+      baseState({
+        configured: true,
+        providers: [provider('cached')],
+        reason: null,
+        requested: true
+      })
+    )
+
+    const ready = await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+
+    expect(ready).toBe(false)
+    // requested overrides preservation — should downgrade.
+    expect($desktopOnboarding.get().configured).toBe(false)
+    expect(api).toHaveBeenCalledTimes(1)
+  })
+
+  it('still surfaces onboarding when fallback failure happens before configured state', async () => {
+    const api = vi.fn(async ({ path }: { path: string }) => {
+      if (path === '/api/providers/oauth') {
+        return { providers: [provider('fresh')] }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    installApiMock(api)
+    $desktopOnboarding.set(baseState({ configured: false, providers: null, requested: true }))
+
+    const ready = await refreshOnboarding(onboardingContext(fallbackTimeoutGateway()))
+
+    expect(ready).toBe(false)
+    expect(api).toHaveBeenCalledTimes(1)
+    expect($desktopOnboarding.get().configured).toBe(false)
+    expect($desktopOnboarding.get().reason).toContain('request timed out')
   })
 
   it('deduplicates concurrent provider refresh calls', async () => {

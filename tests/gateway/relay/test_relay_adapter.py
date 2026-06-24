@@ -140,3 +140,61 @@ async def test_send_preserves_explicit_guild_id():
     a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
     await a.send("chan-1", "hi", metadata={"guild_id": "explicit-1"})
     assert t.sent["metadata"]["guild_id"] == "explicit-1"
+
+
+# ── Phase 7 Unit 7d-B: terminal auth revocation → clean "relay disabled" ─────
+
+
+class _RevokedTransport:
+    """Transport stand-in that reports a terminal auth revocation (the
+    production WebSocketRelayTransport latches this after a 4401 close that
+    follows a successful handshake)."""
+
+    def __init__(self):
+        self.auth_revoked = True
+
+    def set_inbound_handler(self, h):  # noqa: D401
+        self._h = h
+
+
+@pytest.mark.asyncio
+async def test_revocation_marks_relay_disabled_non_retryable():
+    """When the transport reports auth_revoked, the adapter surfaces a clean,
+    NON-retryable `relay_disabled` fatal and fires the fatal-error handler."""
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=_RevokedTransport())
+    notified = []
+    a.set_fatal_error_handler(lambda adapter: notified.append(adapter))
+
+    # Drive the monitor body directly (poll loop breaks immediately on the
+    # already-revoked transport).
+    await a._watch_for_revocation(poll_interval_s=0.01)
+
+    assert a.has_fatal_error is True
+    assert a.fatal_error_code == "relay_disabled"
+    assert a.fatal_error_retryable is False
+    assert "disabled" in (a.fatal_error_message or "").lower()
+    assert notified == [a]
+
+
+@pytest.mark.asyncio
+async def test_no_revocation_no_fatal():
+    """A transport that has NOT been revoked never trips the disabled fatal."""
+
+    class _LiveTransport:
+        auth_revoked = False
+
+        def set_inbound_handler(self, h):  # noqa: D401
+            self._h = h
+
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=_LiveTransport())
+    # Run the monitor with a tiny window then cancel — it should never fire.
+    import asyncio
+
+    task = asyncio.create_task(a._watch_for_revocation(poll_interval_s=0.01))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert a.has_fatal_error is False

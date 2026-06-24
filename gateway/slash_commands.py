@@ -1158,7 +1158,11 @@ class GatewaySlashCommandsMixin:
 
             if has_picker:
                 try:
-                    providers = list_picker_providers(
+                    # Offload blocking provider-listing (can fall through to a
+                    # synchronous urllib HTTP fetch on a stale cache) off the
+                    # event loop so the gateway doesn't freeze. See #41289.
+                    providers = await asyncio.to_thread(
+                        list_picker_providers,
                         current_provider=current_provider,
                         current_base_url=current_base_url,
                         current_model=current_model,
@@ -1379,7 +1383,10 @@ class GatewaySlashCommandsMixin:
             lines = [t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label), ""]
 
             try:
-                providers = list_authenticated_providers(
+                # Offload blocking provider-listing off the event loop so the
+                # gateway doesn't freeze on a stale-cache HTTP fetch. See #41289.
+                providers = await asyncio.to_thread(
+                    list_authenticated_providers,
                     current_provider=current_provider,
                     current_base_url=current_base_url,
                     current_model=current_model,
@@ -1481,6 +1488,11 @@ class GatewaySlashCommandsMixin:
             if _sess_db is not None:
                 try:
                     _sess_entry = self.session_store.get_or_create_session(source)
+                    # If this session was auto-reset, consume the flag so the
+                    # next regular message's cleanup does not wipe the model
+                    # override just stored below (Closes #48031).
+                    if getattr(_sess_entry, "was_auto_reset", False):
+                        _sess_entry.was_auto_reset = False
                     _sess_db.update_session_model(
                         _sess_entry.session_id, result.new_model
                     )

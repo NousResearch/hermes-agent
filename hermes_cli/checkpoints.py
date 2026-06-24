@@ -22,6 +22,7 @@ None of these require the agent to be running.  Safe to call any time.
 from __future__ import annotations
 
 import argparse
+import math
 import time
 from datetime import datetime
 from pathlib import Path
@@ -40,18 +41,29 @@ def _fmt_bytes(n: int) -> str:
     return f"{size:.1f} TB"
 
 
-def _fmt_ts(ts: Any) -> str:
+def _coerce_timestamp(ts: Any) -> float | None:
     try:
-        return datetime.fromtimestamp(float(ts)).strftime("%Y-%m-%d %H:%M")
+        value = float(ts)
     except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _fmt_ts(ts: Any) -> str:
+    value = _coerce_timestamp(ts)
+    if value is None:
+        return "—"
+    try:
+        return datetime.fromtimestamp(value).strftime("%Y-%m-%d %H:%M")
+    except (OverflowError, OSError, ValueError):
         return "—"
 
 
 def _fmt_age(ts: Any) -> str:
-    try:
-        age = time.time() - float(ts)
-    except (TypeError, ValueError):
+    value = _coerce_timestamp(ts)
+    if value is None:
         return "—"
+    age = time.time() - value
     if age < 0:
         return "now"
     if age < 60:
@@ -76,7 +88,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     projects = sorted(
         info["projects"],
-        key=lambda p: (p.get("last_touch") or 0),
+        key=lambda p: (_coerce_timestamp(p.get("last_touch")) or 0),
         reverse=True,
     )
     if projects:

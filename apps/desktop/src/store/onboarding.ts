@@ -181,9 +181,13 @@ function clearPoll() {
   }
 }
 
-async function checkRuntime(ctx: OnboardingContext): Promise<RuntimeReadinessResult> {
+async function checkRuntime(
+  ctx: OnboardingContext,
+  requestedProvider?: string
+): Promise<RuntimeReadinessResult> {
   return evaluateRuntimeReadiness(ctx.requestGateway, {
     defaultReason: DEFAULT_ONBOARDING_REASON,
+    requestedProvider,
     unknownReady: false
   })
 }
@@ -307,15 +311,34 @@ async function completeWithModelConfirm(
   ignoreRuntimeGate = false
 ) {
   await ctx.requestGateway('reload.env').catch(() => undefined)
-  const runtime = await checkRuntime(ctx)
+
+  const defaults = await fetchProviderDefaultModel(preferredSlugs)
+
+  if (defaults) {
+    // Persist the chosen provider/model before the runtime gate so a stale
+    // config provider (e.g. anthropic from a prior failed setup) cannot make
+    // setup.runtime_check validate the wrong backend after a fresh OAuth login.
+    try {
+      const res = await setModelAssignment({
+        scope: 'main',
+        provider: defaults.providerSlug,
+        model: defaults.defaultModel
+      })
+
+      notifyGatewayTools(res.gateway_tools)
+    } catch {
+      // Persistence failed — still run the scoped runtime check below and
+      // show the confirm card so the user can pick something explicitly.
+    }
+  }
+
+  const runtime = await checkRuntime(ctx, preferredSlugs[0])
 
   if (!runtime.ready && !ignoreRuntimeGate) {
     onFail(runtime.reason)
 
     return
   }
-
-  const defaults = await fetchProviderDefaultModel(preferredSlugs)
 
   if (!defaults) {
     // Couldn't get a sensible default — proceed without confirm step.
@@ -324,27 +347,6 @@ async function completeWithModelConfirm(
     ctx.onCompleted?.()
 
     return
-  }
-
-  // Persist the default model BEFORE showing the confirm card so that:
-  // (1) "current default: X" shown in the UI is what's actually written
-  //     to config — no lying.
-  // (2) If the user clicks "Start chatting" without changing anything,
-  //     no extra write is needed.
-  // (3) If they bail out (e.g., refresh the page), they still end up
-  //     with a working config, not an empty-model fallback.
-  try {
-    const res = await setModelAssignment({
-      scope: 'main',
-      provider: defaults.providerSlug,
-      model: defaults.defaultModel
-    })
-
-    notifyGatewayTools(res.gateway_tools)
-  } catch {
-    // Persistence failed — still show the confirm card so the user can
-    // pick something explicitly. The backend will pick its own default
-    // at chat time if we end up never persisting.
   }
 
   setFlow({

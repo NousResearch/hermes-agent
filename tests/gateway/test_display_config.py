@@ -228,6 +228,48 @@ class TestPlatformDefaults:
         for plat in ("email", "sms", "webhook", "homeassistant"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
 
+    def test_minimal_tier_chatter_stays_off_even_with_global_true(self):
+        """Batch-delivery platforms should not inherit global chatty defaults.
+
+        Operators can still opt in with ``display.platforms.<plat>``; the
+        global toggle should not turn interim/status chatter into extra emails.
+        """
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "interim_assistant_messages": True,
+                "long_running_notifications": True,
+                "busy_ack_detail": True,
+            }
+        }
+
+        for plat in ("email", "sms", "webhook", "homeassistant"):
+            assert resolve_display_setting(config, plat, "interim_assistant_messages") is False, plat
+            assert resolve_display_setting(config, plat, "long_running_notifications") is False, plat
+            assert resolve_display_setting(config, plat, "busy_ack_detail") is False, plat
+
+    def test_minimal_tier_chatter_can_opt_in_per_platform(self):
+        """Per-platform override should still allow explicit email opt-in."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "interim_assistant_messages": True,
+                "platforms": {
+                    "email": {
+                        "interim_assistant_messages": True,
+                        "long_running_notifications": True,
+                        "busy_ack_detail": True,
+                    }
+                },
+            }
+        }
+
+        assert resolve_display_setting(config, "email", "interim_assistant_messages") is True
+        assert resolve_display_setting(config, "email", "long_running_notifications") is True
+        assert resolve_display_setting(config, "email", "busy_ack_detail") is True
+
     def test_low_tier_streaming_defaults_to_false(self):
         """Low-tier platforms default streaming to False."""
         from gateway.display_config import resolve_display_setting

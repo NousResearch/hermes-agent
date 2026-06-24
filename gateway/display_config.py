@@ -153,6 +153,19 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "api_server":      {**_TIER_HIGH, "tool_preview_length": 0},
 }
 
+_MINIMAL_DELIVERY_PLATFORMS = frozenset({
+    "email",
+    "sms",
+    "webhook",
+    "homeassistant",
+})
+
+_MINIMAL_DELIVERY_CHATTER_SETTINGS = frozenset({
+    "interim_assistant_messages",
+    "long_running_notifications",
+    "busy_ack_detail",
+})
+
 # Canonical set of per-platform overrideable keys (for validation).
 OVERRIDEABLE_KEYS = frozenset(_GLOBAL_DEFAULTS.keys())
 
@@ -198,6 +211,18 @@ def resolve_display_setting(
             val = legacy.get(platform_key)
             if val is not None:
                 return _normalise(setting, val)
+
+    # Minimal delivery platforms (email/SMS/webhook/Home Assistant) should
+    # stay final-answer-first by default. Their built-in "no chatter" policy
+    # must survive the global display defaults stored in config.yaml; opt-in
+    # requires an explicit per-platform override above.
+    if (
+        platform_key in _MINIMAL_DELIVERY_PLATFORMS
+        and setting in _MINIMAL_DELIVERY_CHATTER_SETTINGS
+    ):
+        plat_defaults = _PLATFORM_DEFAULTS.get(platform_key)
+        if plat_defaults and setting in plat_defaults:
+            return plat_defaults[setting]
 
     # 2. Global user setting (display.<key>).  Skip display.streaming because
     # that key controls only CLI terminal streaming; gateway token streaming is

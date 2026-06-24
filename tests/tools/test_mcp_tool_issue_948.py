@@ -3,6 +3,7 @@ import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 
 from tools.mcp_tool import MCPServerTask, _format_connect_error, _resolve_stdio_command, _MCP_AVAILABLE
 
@@ -126,3 +127,57 @@ def test_run_stdio_uses_resolved_command_and_prepended_path(tmp_path):
             await server.shutdown()
 
     asyncio.run(_test())
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for #37589: Desktop/launchd processes inherit a minimal
+# PATH on macOS that does not include ~/.local/bin, /opt/homebrew/bin, or
+# /usr/local/bin. The resolver must locate uv/uvx (the dominant MCP server
+# runtime for Python projects) under those locations.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_stdio_command_finds_uvx_in_user_local_bin(tmp_path):
+    """uv's official installer drops uv/uvx at ``~/.local/bin/uvx`` on
+    macOS and Linux. The resolver must pick it up when the GUI PATH
+    doesn't include that directory (#37589)."""
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    uvx_path = local_bin / "uvx"
+    uvx_path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    uvx_path.chmod(0o755)
+
+    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+         patch("os.path.expanduser", lambda p: p.replace("~", str(tmp_path)) if p == "~" else p):
+        command, env = _resolve_stdio_command("uvx", {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"})
+
+    assert command == str(uvx_path)
+    # The resolver prepended the chosen bin so uvx's shebang-resolved
+    # children (uv itself, python) can be found in the same directory.
+    assert env["PATH"].split(os.pathsep)[0] == str(local_bin)
+
+
+def test_resolve_stdio_command_uvx_unchanged_when_already_on_path():
+    """shutil.which hit must still take precedence — don't double-resolve
+    a working bare command on PATH into something else."""
+    resolved_path = "/some/path/uvx"
+    with patch("tools.mcp_tool.shutil.which", return_value=resolved_path):
+        command, _env = _resolve_stdio_command("uvx", {"PATH": "/usr/bin"})
+
+    assert command == resolved_path
+
+
+def test_resolve_stdio_command_skips_unknown_commands():
+    """Bare command names outside the npx/npm/node/uv/uvx allowlist must
+    NOT be matched against the candidate fallback paths — that would
+    produce false positives like rewriting ``command: my-tool`` into a
+    coincidentally-named file at ``/opt/homebrew/bin/my-tool`` (#37589)."""
+    with patch("tools.mcp_tool.shutil.which", return_value=None), \
+         patch("tools.mcp_tool.os.path.expanduser", lambda p: p), \
+         patch("tools.mcp_tool.os.path.isfile", return_value=True), \
+         patch("tools.mcp_tool.os.access", return_value=True):
+        # A command like 'foo' or 'python' must be left alone even if
+        # the test is faking every candidate as present.
+        command, _env = _resolve_stdio_command("foo", {"PATH": "/usr/bin:/bin"})
+
+    assert command == "foo"

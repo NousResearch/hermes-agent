@@ -126,23 +126,36 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
   // for verb-less styles like `unicode`) without leaving the previous
   // timer dangling.
   const { intervalMs, showVerb } = renderIndicator(style, 0)
+  // `verbEveryNGlyphs` — consolidate the glyph + verb timers into one. The
+  // verb should advance every FACE_TICK_MS; the glyph ticks every
+  // `intervalMs`.  When intervalMs < FACE_TICK_MS (ascii/unicode spinners)
+  // we get multiple glyph ticks per verb tick.  Math.max guards against
+  // a future super-fast glyph cadence that would divide by zero.
+  const verbEveryNGlyphs = Math.max(1, Math.round(FACE_TICK_MS / Math.max(intervalMs, 1)))
 
   useEffect(() => {
-    const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
+    const glyph = setInterval(() => {
+      setTick(n => {
+        const next = n + 1
+
+        // Bump the verb counter in lock-step with the glyph counter, gated
+        // on the verb visibility flag.  Doing it inside the setter callback
+        // keeps the two counters correlated without a second timer.
+        if (showVerb && next % verbEveryNGlyphs === 0) {
+          setVerbTick(v => v + 1)
+        }
+
+        return next
+      })
+    }, intervalMs)
+
     const clock = setInterval(() => setNow(Date.now()), 1000)
-    // Verb timer is gated on `showVerb` — `unicode` style hides the verb
-    // entirely, so cycling `verbTick` would be an avoidable re-render.
-    const verb = showVerb ? setInterval(() => setVerbTick(n => n + 1), FACE_TICK_MS) : null
 
     return () => {
       clearInterval(glyph)
       clearInterval(clock)
-
-      if (verb !== null) {
-        clearInterval(verb)
-      }
     }
-  }, [intervalMs, showVerb])
+  }, [intervalMs, showVerb, verbEveryNGlyphs])
 
   const { frame } = renderIndicator(style, tick)
   const verb = VERBS[verbTick % VERBS.length] ?? ''
@@ -206,11 +219,16 @@ function noticeColor(level: Notice['level'], t: Theme): string {
   return t.color.accent
 }
 
+// Use box-drawing horizontal lines (`━` / `─`) instead of block chars
+// (`█` / `░`) — block chars render inconsistently across terminals and
+// fonts (different widths, ligatures with surrounding glyphs, poor
+// sub-pixel anti-aliasing). `━` / `─` are width-1, monospace-safe, and
+// pair cleanly with the existing `─` border that anchors the rule.
 function ctxBar(pct: number | undefined, w = 10) {
   const p = Math.max(0, Math.min(100, pct ?? 0))
   const filled = Math.round((p / 100) * w)
 
-  return '█'.repeat(filled) + '░'.repeat(w - filled)
+  return '━'.repeat(filled) + '─'.repeat(w - filled)
 }
 
 // `minLeftContent` is the display width of the high-priority left segments
@@ -254,19 +272,36 @@ export interface StatusBarSegments {
   voice: boolean
 }
 
+// Cache the discrete segment shape per breakpoint so the function returns a
+// stable object reference for the same `cols` band. StatusRule re-renders
+// on every keystroke / stream chunk; a fresh object here would force
+// `useStore` consumers and `useMemo` deps downstream to recompute.
+const SEGMENT_BREAKPOINTS = [72, 76, 80, 84, 88, 92, 96] as const
+const SEGMENT_CACHE = new Map<number, StatusBarSegments>()
+
 export function statusBarSegments(cols: number): StatusBarSegments {
   const w = Math.max(1, Math.floor(cols || 1))
 
-  return {
-    compactCtx: w < 72,
-    bar: w >= 72,
-    duration: w >= 76,
-    compressions: w >= 80,
-    voice: w >= 84,
-    bg: w >= 88,
-    subagents: w >= 92,
-    cost: w >= 96
+  const cached = SEGMENT_CACHE.get(w)
+
+  if (cached) {
+    return cached
   }
+
+  const fresh: StatusBarSegments = {
+    compactCtx: w < SEGMENT_BREAKPOINTS[0],
+    bar: w >= SEGMENT_BREAKPOINTS[0],
+    duration: w >= SEGMENT_BREAKPOINTS[1],
+    compressions: w >= SEGMENT_BREAKPOINTS[2],
+    voice: w >= SEGMENT_BREAKPOINTS[3],
+    bg: w >= SEGMENT_BREAKPOINTS[4],
+    subagents: w >= SEGMENT_BREAKPOINTS[5],
+    cost: w >= SEGMENT_BREAKPOINTS[6]
+  }
+
+  SEGMENT_CACHE.set(w, fresh)
+
+  return fresh
 }
 
 function SpawnHud({ t }: { t: Theme }) {
@@ -469,19 +504,23 @@ export function StatusRule({
   const essentialWidth =
     stringWidth('─ ') +
     slotWidth +
-    stringWidth(' │ ') +
+    stringWidth(' · ') +
     stringWidth(modelText) +
-    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+    (ctxLabel ? stringWidth(' · ') + stringWidth(ctxLabel) : 0)
 
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel, essentialWidth)
 
   // Whole-segment progressive disclosure for the tail: a segment renders only
   // if it fits in the space left after the pinned essentials, evaluated in
   // descending priority order — bar, duration, compressions, voice, session
-  // count, bg, cost. Lower-priority segments drop first and nothing truncates
-  // mid-segment, so status/model/context are never crushed.
-  const SEP = stringWidth(' │ ')
+  // count, bg, subagents, cost. Lower-priority segments drop first and
+  // nothing truncates mid-segment, so status/model/context are never
+  // crushed.
+  // `·` (U+00B7) is the separator — half the visual weight of `│`, reads as
+  // breathing room, and stays unambiguous at any terminal width.
+  const SEP = stringWidth(' · ')
   let tailBudget = Math.max(0, leftWidth - essentialWidth)
+
   const fits = (w: number) => {
     if (tailBudget >= w) {
       tailBudget -= w
@@ -495,6 +534,7 @@ export function StatusRule({
   const sessionCountText = liveSessionCount > 0 ? statusSessionCountLabel(liveSessionCount) : ''
   const compressions = typeof usage.compressions === 'number' ? usage.compressions : 0
   const costText = typeof usage.cost_usd === 'number' ? `$${usage.cost_usd.toFixed(4)}` : ''
+
   // Dev-only readout (HERMES_DEV_CREDITS). The server omits the key entirely unless the
   // flag is on, so this segment self-hides for normal users. micros→cents is allowed money
   // math (display formatting) — never parseFloat a *_usd. Signed: a mid-session top-up that
@@ -528,10 +568,10 @@ export function StatusRule({
 
   const sessionCountNode = onSessionCountClick ? (
     <Box flexShrink={0} onClick={handleSessionCountClick}>
-      <Text color={t.color.accent}> │ {sessionCountText}</Text>
+      <Text color={t.color.accent}> · {sessionCountText}</Text>
     </Box>
   ) : (
-    <Text color={t.color.muted}> │ {sessionCountText}</Text>
+    <Text color={t.color.muted}> · {sessionCountText}</Text>
   )
 
   return (
@@ -568,38 +608,38 @@ export function StatusRule({
               {' (dev credits)'}
             </Text>
           ) : null}
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+          <Text color={t.color.text} wrap="truncate-end">
+            {' · '}
             {modelText}
           </Text>
           {ctxLabel ? (
             <Text color={t.color.muted} wrap="truncate-end">
-              {' │ '}
+              {' · '}
               {ctxLabel}
             </Text>
           ) : null}
         </Box>
         {showBar ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+          <Text color={barColor} wrap="truncate-end">
+            {' · '}
             <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
           </Text>
         ) : null}
         {showDuration ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {' · '}
             <SessionDuration startedAt={sessionStartedAt!} />
           </Text>
         ) : null}
         {showIdle ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {' · '}
             <IdleSince endedAt={lastTurnEndedAt!} />
           </Text>
         ) : null}
         {showCompressions ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {' · '}
             <Text color={compressions >= 10 ? t.color.error : compressions >= 5 ? t.color.warn : t.color.muted}>
               cmp {compressions}
             </Text>
@@ -612,32 +652,32 @@ export function StatusRule({
             }
             wrap="truncate-end"
           >
-            {' │ '}
+            {' · '}
             {voiceLabel}
           </Text>
         ) : null}
         {showSessionCount ? sessionCountNode : null}
         {showBg ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {' · '}
             {bgCount} bg
           </Text>
         ) : null}
         {showSubagents ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {' · '}
             ⛓ {subagentCount}
           </Text>
         ) : null}
         {showCostSeg ? (
           <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
+            {' · '}
             {costText}
           </Text>
         ) : null}
         {showDevCredits ? (
           <Text color={t.color.accent} wrap="truncate-end">
-            {' │ '}
+            {' · '}
             {devCreditsText}
           </Text>
         ) : null}

@@ -199,7 +199,11 @@ const ComposerPane = memo(function ComposerPane({
   const promptText = composerPromptText(ui.theme.brand.prompt, ui.info?.profile_name, sh, TERMUX_TUI_MODE, composer.cols)
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
-  const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
+  // `composer.cols - 2` reserves the input wrapper's two new border cells (one
+  // per side) on top of the parent padding that `stableComposerColumns`
+  // already subtracts. Without this, the TextInput would overflow the border
+  // by 2 cols and Yoga would shave a character off the last column.
+  const inputColumns = stableComposerColumns(composer.cols - 2, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
@@ -307,6 +311,8 @@ const ComposerPane = memo(function ComposerPane({
             ))}
 
             <Box
+              borderColor={ui.theme.color.border}
+              borderStyle="round"
               onMouseDown={captureInputDrag}
               onMouseDrag={dragFromPromptRow}
               onMouseUp={endInputDrag}

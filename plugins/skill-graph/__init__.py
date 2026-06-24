@@ -787,6 +787,61 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
     conn.commit()
 
     sorted_results = sorted(results.values(), key=lambda r: -r["score"])
+    if not sorted_results:
+        return _fallback_search(query, conn, limit)
+    return sorted_results[:limit]
+
+
+def _fallback_search(query: str, conn: sqlite3.Connection, limit: int = 10) -> list[dict[str, Any]]:
+    """Broad fallback when the primary search returns nothing.
+
+    Returns skills whose name, tags, or description contain any of the
+    query terms, ordered by term strength. This catches skills that FTS5
+    and exact-term matching miss (e.g. stemming mismatches, partial words).
+    """
+    terms = _extract_terms(query)
+    if not terms:
+        # No parseable terms — return top skills by name
+        cursor = conn.execute(
+            "SELECT name, category, description, tags, file_path FROM skill_nodes ORDER BY name LIMIT ?",
+            (limit,),
+        )
+        fallback = []
+        for row in cursor:
+            fallback.append({
+                "name": row["name"],
+                "category": row["category"] or "",
+                "description": row["description"] or "",
+                "tags": json.loads(row["tags"]) if row["tags"] else [],
+                "file_path": row["file_path"],
+                "relevance": "fallback",
+                "score": 0.1,
+            })
+        return fallback
+
+    results: dict[str, dict[str, Any]] = {}
+    for term in terms:
+        cursor = conn.execute(
+            """SELECT n.name, n.category, n.description, n.tags, n.file_path
+               FROM skill_nodes n
+               WHERE instr(n.name, ?) > 0
+                  OR instr(n.description, ?) > 0
+                  OR instr(n.tags, ?) > 0
+               LIMIT ?""",
+            (term, term, json.dumps(term), limit),
+        )
+        for row in cursor:
+            if row["name"] not in results:
+                results[row["name"]] = {
+                    "name": row["name"],
+                    "category": row["category"] or "",
+                    "description": row["description"] or "",
+                    "tags": json.loads(row["tags"]) if row["tags"] else [],
+                    "file_path": row["file_path"],
+                    "relevance": "fallback",
+                    "score": 0.2,
+                }
+    sorted_results = sorted(results.values(), key=lambda r: -r["score"])
     return sorted_results[:limit]
 
 
@@ -1245,17 +1300,47 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
         args = kw.get("args", kw)
     query = args.get("query", "") if isinstance(args, dict) else ""
     limit = int(args.get("limit", 10)) if isinstance(args, dict) else 10
+    list_all = args.get("list_all", False) if isinstance(args, dict) else False
 
-    if not query:
+    if not query and not list_all:
         return json.dumps({
             "success": False,
             "error": "query is required",
-            "hint": "Pass a query describing what you want to do",
+            "hint": "Pass a query describing what you want to do, "
+                    "or set list_all=True to browse all skills.",
         })
 
     try:
         conn = _ensure_graph()
         with _graph_lock:
+            if list_all:
+                cursor = conn.execute(
+                    "SELECT name, category, description, tags, file_path FROM skill_nodes ORDER BY name"
+                )
+                results = []
+                for row in cursor:
+                    results.append({
+                        "name": row["name"],
+                        "category": row["category"] or "",
+                        "description": row["description"] or "",
+                        "tags": json.loads(row["tags"]) if row["tags"] else [],
+                        "file_path": row["file_path"],
+                        "relevance": "listed",
+                        "score": 0.0,
+                    })
+                total = len(results)
+                hint = "All skills listed by name. Call skill_load(name) to load full content."
+                return json.dumps({
+                    "success": True,
+                    "query": "",
+                    "results": results,
+                    "edges_between_results": [],
+                    "total_skills_in_graph": total,
+                    "result_count": len(results),
+                    "hint": hint,
+                    "note": "list_all=True — results sorted by name, not by relevance score.",
+                }, ensure_ascii=False)
+
             results = _search_graph(query, conn, limit=limit)
             total = conn.execute("SELECT COUNT(*) FROM skill_nodes").fetchone()[0]
             result_names = [r["name"] for r in results]
@@ -1282,9 +1367,15 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
             "Call skill_load(name) to load full content of a discovered skill."
             if results
             else "No skills matched your query. "
-                 "Try skills_list() to browse all available skills, "
-                 "or skill_manage(action='create') to create a new one."
+                 "Try skill_graph_search() with different keywords, "
+                 "or use list_all=True to browse all skills."
         )
+        if results and results[0].get("score", 0) < 0.3:
+            _hint = (
+                "Top results have low confidence. "
+                "Retry skill_graph_search() with different keywords, "
+                "or use skill_graph_search(list_all=True) to browse all skills."
+            )
         return json.dumps({
             "success": True,
             "query": query,
@@ -1391,6 +1482,11 @@ def register(ctx):
                         "type": "integer",
                         "description": "Max results (default 10)",
                         "default": 10,
+                    },
+                    "list_all": {
+                        "type": "boolean",
+                        "description": "List all available skills by name (bypasses scoring). Use when search results have low confidence.",
+                        "default": False,
                     },
                 },
                 "required": ["query"],

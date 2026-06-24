@@ -18,12 +18,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { requestModelOptions } from '@/lib/model-options'
-import {
-  currentPickerSelection,
-  displayModelName,
-  modelDisplayParts,
-  reasoningEffortLabel
-} from '@/lib/model-status-label'
+import { currentPickerSelection, displayModelName, modelDisplayParts, modelStatusBadges } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
@@ -263,12 +258,11 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                   effFast
                 )
 
-                const meta = [
-                  fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                  (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort) || copy.medium : null
-                ]
-                  .filter(Boolean)
-                  .join(' ')
+                const badges = modelStatusBadges({
+                  fastMode: fastControl.kind !== 'none' && fastControl.on,
+                  reasoning: caps?.reasoning ?? true,
+                  reasoningEffort: effEffort
+                })
 
                 // Every row is a hover-Edit submenu trigger. Activating it
                 // (pointer or keyboard) switches to the family's base model and
@@ -298,9 +292,20 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                         }
                       }}
                     >
-                      <span className="min-w-0 flex-1 truncate">
-                        {name}
-                        {meta ? <span className="text-(--ui-text-tertiary)"> {meta}</span> : null}
+                      <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                        <span className="min-w-0 truncate">{name}</span>
+                        {badges.length > 0 ? (
+                          <span aria-label={badges.join(', ')} className="inline-flex shrink-0 items-center gap-1">
+                            {badges.map(badge => (
+                              <span
+                                className="rounded border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary) px-1 py-px text-[0.625rem] leading-none text-(--ui-text-tertiary)"
+                                key={badge}
+                              >
+                                {badge}
+                              </span>
+                            ))}
+                          </span>
+                        ) : null}
                       </span>
                       {isCurrent ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
                     </DropdownMenuSubTrigger>

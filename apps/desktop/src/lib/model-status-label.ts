@@ -97,6 +97,24 @@ export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
 }
 
+export function modelStatusBadges(options?: {
+  fastMode?: boolean
+  reasoning?: boolean
+  reasoningEffort?: string
+}): string[] {
+  const badges: string[] = []
+
+  if (options?.fastMode) {
+    badges.push('Fast')
+  }
+
+  if (options?.reasoning ?? true) {
+    badges.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  }
+
+  return badges
+}
+
 /** Status bar trigger label — model name plus the live session state (effort/fast). */
 export function formatModelStatusLabel(
   model: string,
@@ -108,17 +126,13 @@ export function formatModelStatusLabel(
     return name
   }
 
-  const parts: string[] = []
-
   // Fast is shown when the speed=fast param is on (options.fastMode) OR the
   // active model is a `…-fast` variant (fast via a separate model id).
-  if (options?.fastMode || /-fast$/i.test(modelBaseId(model))) {
-    parts.push('Fast')
-  }
+  const fastMode = options?.fastMode || /-fast$/i.test(modelBaseId(model))
 
   // Always surface the effort (empty = Hermes default of medium) so the
   // current reasoning level is visible at a glance, not just when non-default.
-  parts.push(reasoningEffortLabel(options?.reasoningEffort ?? '') || 'Med')
+  const badges = modelStatusBadges({ fastMode, reasoningEffort: options?.reasoningEffort })
 
-  return `${name} · ${parts.join(' ')}`
+  return `${name} · ${badges.join(' ')}`
 }

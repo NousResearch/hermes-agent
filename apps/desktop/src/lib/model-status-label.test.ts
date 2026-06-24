@@ -4,6 +4,7 @@ import {
   currentPickerSelection,
   displayModelName,
   formatModelStatusLabel,
+  modelStatusBadges,
   reasoningEffortLabel
 } from './model-status-label'
 
@@ -30,6 +31,12 @@ describe('model-status-label', () => {
     expect(formatModelStatusLabel('openai/gpt-5.5', { fastMode: true, reasoningEffort: 'high' })).toBe(
       'GPT-5.5 · Fast High'
     )
+  })
+
+  it('keeps model menu metadata as separate badge labels', () => {
+    expect(modelStatusBadges({ fastMode: true, reasoningEffort: 'high' })).toEqual(['Fast', 'High'])
+    expect(modelStatusBadges({ reasoningEffort: '' })).toEqual(['Med'])
+    expect(modelStatusBadges({ fastMode: true, reasoning: false, reasoningEffort: 'high' })).toEqual(['Fast'])
   })
 
   it('always surfaces the effort (default medium) so the level is visible', () => {

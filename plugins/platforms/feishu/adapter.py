@@ -65,7 +65,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Dict, List, Literal, Optional, Sequence, Set
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -393,8 +393,9 @@ class FeishuAdapterSettings:
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
-    allow_bots: str = "none"  # "none" | "mentions" | "all"
+    allow_bots: str = "all"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    bot_mention_map: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -1474,7 +1475,17 @@ class FeishuAdapter(BasePlatformAdapter):
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        # Maps bot open_id → last fetch timestamp (for TTL-based name refresh)
+        self._bot_name_fetch_time: Dict[str, float] = {}
+        # Cold-start bot discovery: app_id → inferred_name for bots discovered
+        # via the message history API before they send their first inbound message.
+        self._cold_start_bot_app_ids: Dict[str, str] = {}
+        self._cold_start_completed_chats: Set[str] = set()
+        # Negative cache: open_ids already checked and confirmed non-bot (human)
+        self._mentions_checked: Set[str] = set()
+        self._map_lock = asyncio.Lock()
         self._load_seen_message_ids()
+        self._load_bot_map_cache()
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
@@ -1506,13 +1517,13 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # Env-only so adapter and gateway auth bypass share one source; yaml
         # feishu.allow_bots is bridged to this env var at config load.
-        allow_bots = os.getenv("FEISHU_ALLOW_BOTS", "none").strip().lower()
+        allow_bots = os.getenv("FEISHU_ALLOW_BOTS", "all").strip().lower()
         if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
-                "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
+                "[Feishu] Unknown allow_bots=%r, falling back to 'all'. Valid: none, mentions, all.",
                 allow_bots,
             )
-            allow_bots = "none"
+            allow_bots = "all"
 
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
@@ -1576,6 +1587,7 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            bot_mention_map={},
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1608,6 +1620,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._bot_mention_map = settings.bot_mention_map
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1682,6 +1695,11 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             self._mark_connected()
+            # Ensure the JSON cache file exists if the map was seeded from
+            # env var (FEISHU_BOT_MENTION_MAP).  Otherwise the cold-start
+            # persistence only kicks in on the first inbound bot message.
+            if self._bot_mention_map and not self._cache_file_exists():
+                self._save_bot_map_cache()
             logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
             return True
         except Exception as exc:
@@ -1690,6 +1708,204 @@ class FeishuAdapter(BasePlatformAdapter):
             self._set_fatal_error("feishu_connect_error", message, retryable=True)
             logger.error("[Feishu] Failed to connect: %s", exc, exc_info=True)
             return False
+
+    # ── Persistence helpers ───────────────────────────────────────────
+
+    _BOT_MAP_CACHE_FILE = "feishu_bot_map_cache.json"
+
+    def _load_bot_map_cache(self) -> None:
+        """Restore ``_bot_mention_map`` from a JSON cache file so it survives
+        gateway restarts.  If the cache is missing or empty the runtime
+        auto-discovery path (position1) populates the map on the next
+        inbound bot message."""
+        cache_path = str(get_hermes_home() / self._BOT_MAP_CACHE_FILE)
+        try:
+            with open(cache_path) as fh:
+                data = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(data, dict):
+            return
+        now = time.time()
+        for name, oid in data.get("map", {}).items():
+            if name and oid:
+                self._bot_mention_map[name] = oid
+        for oid, ts in data.get("fetch_time", {}).items():
+            if ts < now - 86400 * 7:  # skip entries older than 7 days
+                continue
+            self._bot_name_fetch_time[oid] = ts
+        for chat_id in data.get("completed_chats", []):
+            if chat_id:
+                self._cold_start_completed_chats.add(chat_id)
+        for oid in data.get("mentions_checked", []):
+            if oid:
+                self._mentions_checked.add(oid)
+        if self._bot_mention_map:
+            logger.info(
+                "[Feishu] Loaded %d bots from cache file",
+                len(self._bot_mention_map),
+            )
+
+    def _save_bot_map_cache(self) -> None:
+        """Persist the current ``_bot_mention_map`` to a JSON file."""
+        cache_dir = get_hermes_home()
+        cache_path = str(cache_dir / self._BOT_MAP_CACHE_FILE)
+        try:
+            data = {
+                "map": dict(self._bot_mention_map),
+                "fetch_time": dict(self._bot_name_fetch_time),
+                "completed_chats": list(self._cold_start_completed_chats),
+                "mentions_checked": list(self._mentions_checked),
+            }
+            import tempfile
+            tmp_fd, tmp_path = tempfile.mkstemp(dir=str(cache_dir))
+            try:
+                with os.fdopen(tmp_fd, "w") as fh:
+                    json.dump(data, fh)
+                os.replace(tmp_path, cache_path)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            logger.debug("[Feishu] Failed to write bot map cache", exc_info=True)
+
+    def _cache_file_exists(self) -> bool:
+        return (get_hermes_home() / self._BOT_MAP_CACHE_FILE).is_file()
+
+    # ── Two-phase bot discovery (message history API) ─────────────────
+
+    def _discover_bots_from_mentions(self, raw_message: Any) -> int:
+        """Phase 2: extract new bot open_ids from inbound message mentions.
+
+        Inspects the Feishu message.mentions field for open_ids we havenot
+        yet resolved to a bot name. For each unknown open_id that hasnnot
+        been checked, schedules a _fetch_bot_names call via the event loop.
+
+        Returns the number of newly discovered bots.
+        """
+        mentions = None
+        if isinstance(raw_message, dict):
+            mentions = raw_message.get("mentions")
+        else:
+            mentions = getattr(raw_message, "mentions", None)
+        if not mentions:
+            return 0
+
+        unknown: List[str] = []
+        known_open_ids = {oid for oid in self._bot_mention_map.values()}
+        for ment in mentions:
+            ment_id = ment.get("id", {}) if isinstance(ment, dict) else getattr(ment, "id", None)
+            oid = ment_id.get("open_id", "") if isinstance(ment_id, dict) else getattr(ment_id, "open_id", None) or ""
+            oid = (oid or "").strip()
+            if not oid:
+                continue
+            if oid in known_open_ids or oid in self._mentions_checked:
+                continue
+            unknown.append(oid)
+
+        if not unknown:
+            return 0
+
+        # Defer the API call — we are on the hot path
+        self._submit_on_loop(
+            self._loop,
+            self._resolve_mention_bot_names(unknown),
+        )
+        return 0  # async result; actual count logged by the task
+
+    async def _resolve_mention_bot_names(self, oids: List[str]) -> None:
+        """Fetch bot names for newly seen open_ids from mentions."""
+        if not self._client:
+            return
+        names = await self._fetch_bot_names(oids)
+        if names is None:
+            return
+        if not names:
+            async with self._map_lock:
+                for oid in oids:
+                    self._mentions_checked.add(oid)
+            self._save_bot_map_cache()
+            return
+        discovered = 0
+        checked = 0
+        async with self._map_lock:
+            for oid, name in names.items():
+                if oid not in self._bot_mention_map.values():
+                    self._bot_mention_map[name] = oid
+                    self._bot_name_fetch_time[oid] = time.time()
+                    discovered += 1
+                    logger.info("[Feishu] Mention-discovered bot: %s → %s", name, oid)
+                else:
+                    self._mentions_checked.add(oid)
+                    checked += 1
+        if discovered or checked:
+            self._save_bot_map_cache()
+
+    async def _cold_start_scan_chat(self, chat_id: str) -> None:
+        """Phase 1: background scan of chat message history for bot
+        mentions, triggered once the first time a message arrives from a
+        group we havennot yet scanned.
+        """
+        if chat_id in self._cold_start_completed_chats:
+            return
+        self._cold_start_completed_chats.add(chat_id)
+
+        try:
+            discovered = await self._scan_message_history_for_bots(chat_id)
+            if discovered:
+                self._save_bot_map_cache()
+                logger.info(
+                    "[Feishu] Cold-start discovered %d bots in chat %s",
+                    discovered, chat_id,
+                )
+        except Exception:
+            logger.debug("[Feishu] Cold-start scan failed for %s", chat_id, exc_info=True)
+
+    async def _scan_message_history_for_bots(self, chat_id: str) -> int:
+        """Scan the last 200 messages in *chat_id* for mentions of bots
+        we donnot yet know and extract their open_ids."""
+        if not self._client or not chat_id:
+            return 0
+        try:
+            body = {
+                "container_id_type": "chat",
+                "container_id": chat_id,
+                "page_size": 50,
+                "sort_type": "ByCreateTimeDesc",
+            }
+            discovered = 0
+            pages = 0
+            page_token = None
+            while pages < 4:  # max 200 messages
+                if page_token:
+                    body["page_token"] = page_token
+                resp = (
+                    await self._client.im.v1.message.list_async(
+                        self._client.im.v1.message.ListMessageReq.builder()
+                        .container_id_type(body["container_id_type"])
+                        .container_id(body["container_id"])
+                        .page_size(body["page_size"])
+                        .sort_type(body["sort_type"])
+                        .page_token(page_token or "")
+                        .build()
+                    )
+                ).data
+                items = getattr(resp, "items", None) or []
+                page_token = getattr(resp, "page_token", None) or ""
+                for msg in items:
+                    discovered += self._discover_bots_from_mentions(msg)
+                pages += 1
+                if not page_token:
+                    break
+            return discovered
+        except Exception:
+            logger.debug("[Feishu] History scan error for %s", chat_id, exc_info=True)
+            return 0
+
+    # ──────────────────────────────────────────────────────────────────
 
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
@@ -2444,11 +2660,33 @@ class FeishuAdapter(BasePlatformAdapter):
         logger.debug("[Feishu] Ignoring message_read event: %s", message_id)
 
     def _on_bot_added_to_chat(self, data: Any) -> None:
-        """Handle bot being added to a group chat."""
+        """Handle bot being added to a group chat — with auto-discovery."""
         event = getattr(data, "event", None)
         chat_id = str(getattr(event, "chat_id", "") or "")
         logger.info("[Feishu] Bot added to chat: %s", chat_id)
         self._chat_info_cache.pop(chat_id, None)
+        # Auto-discover the newly added bot
+        new_bot = getattr(event, "bot", None)
+        new_open_id = getattr(new_bot, "open_id", None) if new_bot else None
+        if new_open_id and new_open_id != self._bot_open_id:
+            loop = self._loop
+            if loop is None or loop.is_closed():
+                return
+            async def _register():
+                names = await self._fetch_bot_names([new_open_id])
+                if names:
+                    name = (names.get(new_open_id) or "").strip()
+                    if name:
+                        now = time.time()
+                        old = next((n for n, oid in self._bot_mention_map.items()
+                                    if oid == new_open_id), None)
+                        if old and old != name:
+                            del self._bot_mention_map[old]
+                        self._bot_mention_map[name] = new_open_id
+                        self._bot_name_fetch_time[new_open_id] = now
+                        logger.info("[Feishu] Event-discovered bot: %s → %s", name, new_open_id)
+                        self._save_bot_map_cache()
+            asyncio.run_coroutine_threadsafe(_register(), loop)
 
     def _on_bot_removed_from_chat(self, data: Any) -> None:
         """Handle bot being removed from a group chat."""
@@ -3108,6 +3346,70 @@ class FeishuAdapter(BasePlatformAdapter):
     ) -> None:
         text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
 
+        # Phase 1: cold-start scan (background, non-blocking)
+        chat_id = getattr(message, "chat_id", None) or ""
+        is_group = chat_type != "p2p"
+        if is_group and chat_id and chat_id not in self._cold_start_completed_chats:
+            self._submit_on_loop(
+                self._loop,
+                self._cold_start_scan_chat(chat_id),
+            )
+
+        # Phase 2: real-time mention discovery (also background)
+        if mentions:
+            self._discover_bots_from_mentions(message)
+
+        # Auto-discover bots and refresh names: when a bot sends a message,
+        # register it in _bot_mention_map if new, or refresh its name if the
+        # cached name is older than _BOT_NAME_TTL (e.g. bot was renamed).
+        _BOT_NAME_TTL = 3600  # 1 hour between name refreshes
+        if is_bot:
+            sender_open_id = (getattr(sender_id, "open_id", None) or "").strip()
+            known_open_ids = {oid for oid in self._bot_mention_map.values()}
+            last_fetch = self._bot_name_fetch_time.get(sender_open_id, 0)
+            if sender_open_id and (
+                sender_open_id not in known_open_ids
+                or time.time() - last_fetch > _BOT_NAME_TTL
+            ):
+                names = await self._fetch_bot_names([sender_open_id])
+                if names:
+                    new_name = (names.get(sender_open_id) or "").strip()
+                    if new_name:
+                        self._bot_name_fetch_time[sender_open_id] = time.time()
+                        old_name = next(
+                            (n for n, oid in self._bot_mention_map.items()
+                             if oid == sender_open_id),
+                            None,
+                        )
+                        async with self._map_lock:
+                            if old_name and old_name != new_name:
+                                del self._bot_mention_map[old_name]
+                                logger.info(
+                                    "[Feishu] Bot renamed: %s → %s",
+                                    old_name, new_name,
+                                )
+                            self._bot_mention_map[new_name] = sender_open_id
+                        if not old_name:
+                            logger.info(
+                                "[Feishu] Auto-discovered bot: %s → %s",
+                                new_name, sender_open_id,
+                            )
+                        self._save_bot_map_cache()
+
+        # When a known bot @mentions us in a group, capture the bot's name
+        # so we can inject a system hint below (after inbound_type is resolved).
+        _mentioning_bot_name: Optional[str] = None
+        if is_bot and chat_type == "group" and any(m.is_self for m in mentions):
+            sender_open_id = (getattr(sender_id, "open_id", None) or "").strip()
+            if sender_open_id:
+                _mentioning_bot_name = next(
+                    (name for name, oid in self._bot_mention_map.items()
+                     if oid == sender_open_id),
+                    None,
+                )
+                if not _mentioning_bot_name:
+                    _mentioning_bot_name = sender_open_id  # fallback to open_id
+
         if inbound_type == MessageType.TEXT:
             text = _strip_edge_self_mentions(text, mentions)
             if text.startswith("/"):
@@ -3122,6 +3424,17 @@ class FeishuAdapter(BasePlatformAdapter):
             hint = _build_mention_hint(mentions)
             if hint:
                 text = f"{hint}\n\n{text}" if text else hint
+            if _mentioning_bot_name:
+                text = (
+                    f"{text}\n\n"
+                    f"[群聊上下文：{_mentioning_bot_name} 通过 @ 向你发起了对话。\n\n"
+                    f"决定是否 @ 回复的原则：\n"
+                    f"- 对方在等你的回答、需要你做某件事 → 在结论开头 @{_mentioning_bot_name}"
+                    f"（包括新问题、追问、需要你执行的任务）\n"
+                    f"- 对方只是确认、表示收到、或对话自然结束 → 可以不 @\n"
+                    f"- 不确定时：@。对方可能只看得到 @ 它的消息。\n\n"
+                    f"位置：只在最终结论的第一行 @，中间过程绝对不要 @。]"
+                )
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
         reply_to_message_id = (
@@ -4125,7 +4438,12 @@ class FeishuAdapter(BasePlatformAdapter):
         ):
             return "group_policy_rejected"
         if require_mention and not self._mentions_self(message):
-            return "group_policy_rejected"
+            if is_bot:
+                if self._allow_bots == "mentions":
+                    return "group_policy_rejected"
+                # "all" → pass through (enable auto-discovery)
+            else:
+                return "group_policy_rejected"
         return None
 
     def _require_mention_for(self, chat_id: str) -> bool:
@@ -4374,7 +4692,45 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
+    def _resolve_bot_mentions(self, content: str) -> tuple[str, list[str]]:
+        """Detect text ``@bot_name`` → return (cleaned_text, [open_ids]).
+
+        The returned open_ids will be rendered as proper Feishu post ``at``
+        elements — not the plain ``<at>`` text syntax, which the Feishu
+        backend does not treat as a mention event.
+        """
+        bot_mention_map = self._bot_mention_map
+        if not bot_mention_map:
+            return content, []
+        mentioned: list[str] = []
+        result = content
+        for bot_name, open_id in bot_mention_map.items():
+            _cjk = "\u4e00-\u9fff\u3000-\u303f\uff00-\uffef"
+            _prefix = r"(^|[\s,，。\.!！?？:：;；\)\）\(\（\-—…" + _cjk + r"])"
+            _suffix = r"(?=[\s,，。\.!！?？:：;；\)\）\-—…" + _cjk + r"]|$)"
+            pattern = _prefix + r"@" + re.escape(bot_name) + _suffix
+            new_result = re.sub(pattern, r"\1", result, flags=re.MULTILINE | re.IGNORECASE)
+            if new_result != result:
+                mentioned.append(open_id)
+                result = new_result
+        return result.strip(), mentioned
+
+    def _build_mention_post_payload(self, content: str, mentioned_open_ids: list[str]) -> str:
+        """Build a Feishu post payload with explicit ``at`` tags."""
+        rows: list[list[dict]] = []
+        at_row = [{"tag": "at", "user_id": oid} for oid in mentioned_open_ids]
+        for i in range(len(at_row) - 1, 0, -1):
+            at_row.insert(i, {"tag": "text", "text": " "})
+        rows.append(at_row)
+        if content:
+            rows.append([{"tag": "text", "text": content}])
+        return json.dumps({"zh_cn": {"content": rows}}, ensure_ascii=False)
+
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        # Convert text @bot_name → Feishu post at-mentions
+        content, mentioned = self._resolve_bot_mentions(content)
+        if mentioned:
+            return "post", self._build_mention_post_payload(content, mentioned)
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.
@@ -4463,7 +4819,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
-        if effective_reply_to:
+        # Group chats: skip message.reply to avoid topic threading.
+        if effective_reply_to and not chat_id.startswith(("oc_", "chat_id:")):
             body = self._build_reply_message_body(
                 content=payload,
                 msg_type=msg_type,
@@ -4473,18 +4830,18 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
+        # Group-chat replies should always land in the main chat, not in a
+        # topic thread. Otherwise multi-user / bot-to-bot replies disappear
+        # into the thread and only the thread starter sees them.
         _thread_id = (metadata or {}).get("thread_id")
         if _thread_id:
             body = self._build_create_message_body(
-                receive_id=_thread_id,
+                receive_id=chat_id,
                 msg_type=msg_type,
                 content=payload,
                 uuid_value=str(uuid.uuid4()),
             )
-            request = self._build_create_message_request("thread_id", body)
+            request = self._build_create_message_request("chat_id", body)
         else:
             receive_id = chat_id
             receive_id_type = "chat_id"

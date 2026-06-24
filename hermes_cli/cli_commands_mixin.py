@@ -2463,6 +2463,87 @@ class CLICommandsMixin:
         else:
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (session only){_RST}")
 
+    def _handle_whoami_command(self):
+        """Handle /whoami — show your slash command access in the CLI.
+
+        The classic CLI always runs as the local operator; the admin/user
+        tiering that ``/whoami`` reports on the messaging gateway does not
+        apply here, so every slash command is available. This mirrors the
+        gateway's "unrestricted" tier so the command is no longer advertised
+        in CLI help/autocomplete while raising "Unknown command" when typed.
+        """
+        from cli import _ACCENT, _DIM, _RST, _cprint
+
+        print()
+        _cprint(f"  {_ACCENT}You — CLI (local operator){_RST}")
+        _cprint(
+            f"  {_DIM}Tier: unrestricted — admin/user gating only applies on the "
+            f"messaging gateway.{_RST}"
+        )
+        _cprint(f"  {_DIM}Slash commands: all available (type /help to list them).{_RST}")
+        print()
+
+    def _handle_indicator_command(self, cmd: str):
+        """Handle /indicator — pick the TUI busy-indicator style.
+
+        Writes ``display.tui_status_indicator`` — the same config key the Ink
+        TUI reads for its working/"busy" spinner. The value is shared across
+        surfaces, so picking it here also drives the indicator when the Ink TUI
+        is launched.
+
+        Usage:
+            /indicator               Show the current style
+            /indicator <style>       Set the style (kaomoji, emoji, unicode, ascii)
+        """
+        from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value
+
+        # Keep aligned with INDICATOR_STYLES / DEFAULT_INDICATOR_STYLE in
+        # ui-tui/src/app/interfaces.ts and _INDICATOR_STYLES / _INDICATOR_DEFAULT
+        # in tui_gateway/server.py.
+        styles = ("ascii", "emoji", "kaomoji", "unicode")
+        default = "kaomoji"
+
+        def _current() -> str:
+            cfg = getattr(self, "config", None)
+            display = cfg.get("display") if isinstance(cfg, dict) else {}
+            raw = str((display or {}).get("tui_status_indicator", "")).strip().lower()
+            return raw if raw in styles else default
+
+        parts = cmd.strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+
+        if arg in {"", "status", "?"}:
+            _cprint(f"  {_ACCENT}TUI busy-indicator style: {_current()}{_RST}")
+            _cprint(f"  {_DIM}Usage: /indicator [{'|'.join(styles)}]{_RST}")
+            return
+
+        if arg not in styles:
+            _cprint(f"  {_DIM}(._.) Unknown indicator: {arg}{_RST}")
+            _cprint(f"  {_DIM}Pick one of: {', '.join(styles)}{_RST}")
+            return
+
+        # Mirror the live in-memory config so a follow-up /indicator reads back
+        # the new value without a config reload.
+        cfg = getattr(self, "config", None)
+        if isinstance(cfg, dict):
+            display = cfg.get("display")
+            if not isinstance(display, dict):
+                display = {}
+                cfg["display"] = display
+            display["tui_status_indicator"] = arg
+
+        if save_config_value("display.tui_status_indicator", arg):
+            _cprint(
+                f"  {_ACCENT}✓ TUI busy-indicator style set to '{arg}' "
+                f"(saved to config){_RST}"
+            )
+            _cprint(f"  {_DIM}Applies to the Ink TUI status spinner.{_RST}")
+        else:
+            _cprint(
+                f"  {_ACCENT}✓ TUI busy-indicator style set to '{arg}' "
+                f"(session only){_RST}"
+            )
+
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""
         from cli import _ACCENT, _DIM, _RST, _cprint, save_config_value

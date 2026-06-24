@@ -126,9 +126,10 @@ class KagiWebSearchProvider(WebSearchProvider):
             logger.warning("Kagi Extract API supports max 10 URLs, truncating")
 
         timeout = kwargs.pop("timeout", None)
+        fmt = kwargs.pop("format", "json") or "json"
         payload: Dict[str, Any] = {
             "pages": [{"url": u} for u in urls],
-            "format": "json",
+            "format": fmt,
         }
         if timeout:
             payload["timeout"] = timeout
@@ -144,7 +145,15 @@ class KagiWebSearchProvider(WebSearchProvider):
                 timeout=60,
             )
             resp.raise_for_status()
-            data = resp.json()
+            if fmt == "markdown":
+                # Single-URL markdown returns raw text, not JSON.
+                data = (
+                    {"data": [{"url": urls[0], "markdown": resp.text}]}
+                    if len(urls) == 1
+                    else resp.json()
+                )
+            else:
+                data = resp.json()
         except requests.Timeout:
             return {"success": False, "error": "Kagi extract timed out (60s)"}
         except requests.RequestException as exc:

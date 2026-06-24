@@ -715,8 +715,9 @@ def _build_selfcheck_decision(
     elif failure_scope == "same_tool":
         message = (
             f"{tool_name} has failed {count} times this turn with varying arguments. "
-            "Different argument combinations are all failing — the issue is likely "
-            "strategic, not a parameter tweak. Diagnose the root cause before retrying."
+            "Different argument combinations are failing. Before trying another variation, "
+            "compare the intended fix with the actual arguments and identify the concrete "
+            "change that has not yet been applied."
         )
     else:  # no_progress
         message = (

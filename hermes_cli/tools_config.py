@@ -1302,8 +1302,18 @@ def run_post_setup_command(args) -> int:
 # ─── Platform / Toolset Helpers ───────────────────────────────────────────────
 
 def _get_enabled_platforms() -> List[str]:
-    """Return platform keys that are configured (have tokens or are CLI)."""
-    enabled = ["cli"]
+    """Return platform keys that are configured (have tokens or are CLI).
+
+    `cron` is always included: it is a non-messaging, local-only platform
+    that needs no token, and the docs at
+    https://hermes-agent.nousresearch.com/docs/user-guide/features/cron
+    tell users to configure the per-cron-job toolset via
+    `hermes tools` (not via `hermes tools list --platform cron`, which
+    bypasses the curses UI). Before the #51771 fix, this function had no
+    branch for `cron` and the curses UI never listed it — users had no
+    way to configure cron toolsets from the documented wizard.
+    """
+    enabled = ["cli", "cron"]
     if get_env_value("TELEGRAM_BOT_TOKEN"):
         enabled.append("telegram")
     if get_env_value("DISCORD_BOT_TOKEN"):

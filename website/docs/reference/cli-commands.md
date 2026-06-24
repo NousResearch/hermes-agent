@@ -1372,7 +1372,7 @@ hermes claw migrate --source /home/user/old-openclaw
 hermes dashboard [options]
 ```
 
-Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Requires `pip install hermes-agent[web]` (FastAPI + Uvicorn). The embedded browser Chat tab is always available and additionally needs the `pty` extra (`pip install 'hermes-agent[web,pty]'`) plus a POSIX PTY environment such as Linux, macOS, or WSL2. See [Web Dashboard](/user-guide/features/web-dashboard) for full documentation.
+Launch the web dashboard — a browser-based UI for managing configuration, API keys, and monitoring sessions. Requires `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"` (FastAPI + Uvicorn). The embedded browser Chat tab is always available and additionally needs the `pty` extra (`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`) plus a POSIX PTY environment such as Linux, macOS, or WSL2. See [Web Dashboard](/user-guide/features/web-dashboard) for full documentation.
 
 | Option | Default | Description |
 |--------|---------|-------------|
@@ -1489,7 +1489,7 @@ Additional behavior:
 |---------|-------------|
 | `hermes version` | Print version information. |
 | `hermes update` | Pull latest changes and reinstall dependencies. |
-| `hermes postinstall` | Internal bootstrap. Runs once after `pip install hermes-agent` (or `hermes update` on pip installs) to install non-Python dependencies that pip cannot provide — Node.js runtime, headless browser, ripgrep, ffmpeg — and then trigger `hermes setup` if the profile has not been configured yet. Safe to re-run idempotently. |
+| `hermes postinstall` | Internal bootstrap. Runs once after the install script provisions Hermes (or after `hermes update`) to install non-Python dependencies that pip cannot provide — Node.js runtime, headless browser, ripgrep, ffmpeg — and then trigger `hermes setup` if the profile has not been configured yet. Safe to re-run idempotently. |
 | `hermes uninstall [--full] [--gui] [--yes]` | Remove Hermes, optionally deleting all config/data. `--gui` removes only the desktop Chat GUI, leaving the agent intact; `--full` also deletes config/data; `--yes` skips prompts. |
 
 ## See also

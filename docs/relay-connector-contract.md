@@ -186,6 +186,130 @@ tenant**. Tenant is resolved from the event's own discriminator (Discord
 token/socket/process delivered it. This keeps one shared bot able to front many
 tenants (Phase 6) without overloading an existing field.
 
+### 3.2 Going-idle / buffered-flip primitive (§5.3)
+
+A scale-to-zero PRIMITIVE (not the behaviour — nothing here decides to sleep or
+suspends a machine; a later workstream consumes these frames). It lets a gateway
+enter a drain/idle transition without losing inbound that arrives while it is
+gone, by making the connector buffer for that instance and replay on reconnect.
+
+Three frames (all keyed by the connection's **authenticated** per-instance id —
+read off the stored secret record at the WS upgrade, never asserted in a frame):
+
+- `{"type":"going_idle"}` (gateway → connector) — emitted as part of the
+  gateway's EXISTING drain transition (the adapter sends it before tearing down
+  the socket). Asks the connector to flip this instance to **buffered-only**.
+- `{"type":"going_idle_ack"}` (connector → gateway) — the connector has flipped:
+  live delivery has stopped and subsequent inbound for this instance buffers
+  durably. The gateway **stays serving until this ack** (so an event landing in
+  the flip window is delivered live, not lost — the same SUBSCRIBE-before-serve
+  ordering discipline as the bus). Only after the ack is it safe to close.
+- `{"type":"inbound_ack", "bufferId"}` (gateway → connector) — durable receipt of
+  a buffered `inbound` delivery (which carries its `bufferId`) replayed on
+  reconnect. The connector acks the buffer entry only after this, giving
+  drain-without-dup on the **delivery leg**: an instance that dies mid-drain
+  redelivers exactly the unacked tail; an acked entry never redelivers.
+
+**Buffer + drain.** While flipped, the connector appends inbound to a durable
+per-instance delivery-leg buffer (`delivery:<instanceId>`) instead of pushing it
+live. On the gateway's **reconnect** (a NET-NEW reconnect loop re-dials +
+re-handshakes after an unexpected close), the new handshake triggers the
+connector to drain that backlog over the new socket **in order, ack-gated**,
+then clear the flip so live delivery resumes. This reuses the same
+`drainWithoutDup` machinery as the Discord→connector ingest leg, applied to the
+connector→gateway delivery leg. Connector-authoritative throughout: a gateway can
+only flip/drain ITS OWN instance.
+
+> NOT in scope (deferred behaviour): the autonomous idle timer that DECIDES to
+> drain, the actual machine suspend, and the NAS suspended-health model. The
+> primitive is "when the gateway drains, relay flips to buffered + replays on
+> reconnect, with no loss/dup"; WHAT triggers the drain is out of scope.
+
+### 3.3 Wake poke (§5.2)
+
+The other half of the sleep/wake loop: how a SUSPENDED gateway finds out it has
+buffered work waiting. A PRIMITIVE — nothing here suspends a machine; it wires
+the wake SIGNAL so a future scale-to-zero behaviour layer can rely on "buffered
+⇒ wake poked."
+
+- **Registration.** The gateway registers a **wake URL** at enroll/provision —
+  any reachable URL the connector can GET to wake it (a Fly autostart hostname,
+  a dashboard host). Self-hosted: `hermes gateway enroll --wake-url <url>` (or
+  `GATEWAY_RELAY_WAKE_URL` / `gateway.relay_wake_url`). Managed/NAS: stamped into
+  the container env beside `GATEWAY_RELAY_URL`. Forwarded in the
+  `/relay/provision` body as `wakeUrl` and stored per-instance on the connector's
+  secret record (gateway-asserted but safely scoped — same posture as
+  `instanceId`; the org/tenant stays token-verified, so a gateway can only
+  register a wake target for ITS OWN instance). DISTINCT from the retired
+  `gatewayEndpoint`: a **poke target**, not a delivery target.
+- **The poke.** When a buffered-only (going-idle) destination receives its FIRST
+  buffered event, the connector issues a **payload-free, unsigned GET** to that
+  instance's registered `wakeUrl`, **directly** (NOT NAS-mediated — relay stays
+  NAS-independent). It carries no tenant data and no inbound: it only says "you
+  have buffered work, reconnect." Tenant authority is re-established the normal
+  way when the gateway re-dials (the authenticated WS upgrade), so a leaked/
+  guessed wake URL can at worst cause a spurious reconnect of ITS OWN instance.
+  Rate-limited per instance (one poke per cooldown window, not per event), and
+  best-effort — a failed poke is swallowed; the gateway still drains whenever it
+  next reconnects on its own. No new frame: the wake is an out-of-band HTTP GET,
+  not a relay-WS message (the socket is down — that's the whole point).
+
+> NOT in scope (deferred behaviour): the actual machine suspend (Fly
+> `autostop:"suspend"`) and the autonomous idle timer that decides to sleep. The
+> primitive is "buffered event for a sleeping instance ⇒ its wakeUrl gets poked";
+> WHAT makes the instance sleep (and wake-to-serve) is the behaviour layer.
+
+### 3.4 Obligations on a future scale-to-zero behaviour layer
+
+§3.2 and §3.3 ship the **primitives**; this section is the **contract a separate
+scale-to-zero behaviour workstream must honour to consume them safely.** It owns
+the *decision* to suspend, the actual machine suspend, and the platform/health
+model — none of which live here — but it MUST hold these guarantees, which the
+primitives assume:
+
+1. **Register a `wakeUrl` before the instance can ever be suspended.** A
+   suspended instance with no registered `wakeUrl` is a black hole — buffered
+   inbound never triggers a poke, so it sleeps through its own traffic until
+   something else reconnects it. The behaviour layer MUST ensure a reachable
+   wake target is registered (self-hosted: `--wake-url`; managed: stamped) as a
+   precondition of allowing suspend. A wake URL that is unreachable while the
+   machine is suspended (e.g. points at the suspended machine itself with no
+   platform autostart in front) is equivalent to none.
+2. **Drain through `going_idle` → await `going_idle_ack` BEFORE tearing down the
+   socket or suspending.** Never suspend with an un-acked flip in flight. The
+   ack is the connector's confirmation that delivery for this instance is now
+   buffered-only; a machine that suspends after sending `going_idle` but before
+   the ack can drop the inbound that races the flip. The gateway already gates
+   socket teardown on the ack (Q-5.3c); the suspend step MUST sit *after* a
+   clean drain completes, not race it.
+3. **Keep the NET-NEW reconnect loop live as a precondition of suspend.** The
+   wake→drain contract is "poke ⇒ the gateway re-dials ⇒ the connector drains on
+   the reconnect handshake." If the reconnect loop is disabled, a poke lands on a
+   machine that never re-dials and the buffer strands. The behaviour layer must
+   not suspend an instance whose relay transport won't reconnect on wake.
+4. **Treat suspended ≠ down in the health model (Q-5.3b).** A suspended instance
+   is healthy-asleep, not failed. The health/monitoring layer MUST distinguish
+   the two (e.g. via the platform machine-state) so a suspended instance is not
+   restarted, alerted on, or reaped as unhealthy — that would defeat the suspend
+   and can race the wake/drain.
+5. **The wake poke is best-effort and rate-limited — do not assume exactly-once
+   or immediate wake.** At most one poke per cooldown window per instance, and a
+   failed poke is swallowed. The behaviour layer must not rely on the poke as a
+   guaranteed/prompt signal; correctness still rests on "the gateway drains
+   whenever it next reconnects." A belt-and-suspenders wake (e.g. a scheduled
+   job that also reconnects) is the behaviour layer's call, not the primitive's.
+6. **Suspend only when genuinely idle — and idle is connector-observable, not
+   gateway-guessed.** WHAT counts as idle (no in-flight turn + no inbound for N
+   min) is the behaviour layer's policy, but it must compose with the existing
+   drain machinery (`gateway_state` running→draining) rather than introduce a
+   parallel relay-only idle path — the same integration constraint §3.2 places
+   on `going_idle`.
+
+These are guarantees the behaviour layer OWES the primitives; the primitives owe
+the behaviour layer only what §3.2/§3.3 already specify (a flip-on-going_idle,
+a durable per-instance buffer + ack-gated reconnect drain, and a poke on the
+first buffered event for a flipped instance).
+
 ---
 
 ## 4. Outbound: action set

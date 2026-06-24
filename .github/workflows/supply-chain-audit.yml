@@ -1,16 +1,5 @@
 name: Supply Chain Audit
 
-on:
-  # No paths filter — the jobs must always run so required checks
-  # report a status (path-gated workflows leave checks "pending" forever
-  # when no matching files change, which blocks merge).
-  pull_request:
-    types: [opened, synchronize, reopened]
-
-permissions:
-  pull-requests: write
-  contents: read
-
 # Narrow, high-signal scanner. Only fires on critical indicators of supply
 # chain attacks (e.g. the litellm-style payloads). Low-signal heuristics
 # (plain base64, plain exec/eval, dependency/Dockerfile/workflow edits,
@@ -19,56 +8,40 @@ permissions:
 # the scanner. Keep this file's checks ruthlessly narrow: if you find
 # yourself adding WARNING-tier patterns here again, make a separate
 # advisory-only workflow instead.
+#
+# Path-gating is handled centrally by the ``ci.yml`` orchestrator's
+# ``detect`` job. The orchestrator passes ``scan`` / ``deps`` /
+# ``mcp_catalog`` booleans as inputs; this workflow's jobs gate on those
+# inputs instead of re-computing the diff.
+
+on:
+  workflow_call:
+    inputs:
+      event_name:
+        description: The event name from the calling orchestrator.
+        type: string
+        required: true
+      scan:
+        description: Whether supply-chain-relevant files changed.
+        type: boolean
+        required: true
+      deps:
+        description: Whether pyproject.toml changed.
+        type: boolean
+        required: true
+      mcp_catalog:
+        description: Whether the MCP catalog / installer changed.
+        type: boolean
+        required: true
+
+permissions:
+  pull-requests: write
+  contents: read
 
 jobs:
-  # ── Path filter (shared by both scan and dep-bounds) ───────────────
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      # True when any file the scanner cares about changed in this PR
-      scan: ${{ steps.filter.outputs.scan }}
-      # True when pyproject.toml changed in this PR
-      deps: ${{ steps.filter.outputs.deps }}
-      # True when the curated MCP catalog / bundled MCP manifests changed.
-      mcp_catalog: ${{ steps.filter.outputs.mcp_catalog }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-      - name: Check for relevant file changes
-        id: filter
-        run: |
-          BASE="${{ github.event.pull_request.base.sha }}"
-          HEAD="${{ github.event.pull_request.head.sha }}"
-          SCAN_FILES=$(git diff --name-only "$BASE"..."$HEAD" -- \
-            '*.py' '**/*.py' '*.pth' '**/*.pth' \
-            'setup.py' 'setup.cfg' \
-            'sitecustomize.py' 'usercustomize.py' '__init__.pth' \
-            'pyproject.toml' || true)
-          if [ -n "$SCAN_FILES" ]; then
-            echo "scan=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "scan=false" >> "$GITHUB_OUTPUT"
-          fi
-          DEPS_FILES=$(git diff --name-only "$BASE"..."$HEAD" -- 'pyproject.toml' || true)
-          if [ -n "$DEPS_FILES" ]; then
-            echo "deps=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "deps=false" >> "$GITHUB_OUTPUT"
-          fi
-          MCP_CATALOG_FILES=$(git diff --name-only "$BASE"..."$HEAD" -- \
-            'optional-mcps/**' \
-            'hermes_cli/mcp_catalog.py' || true)
-          if [ -n "$MCP_CATALOG_FILES" ]; then
-            echo "mcp_catalog=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "mcp_catalog=false" >> "$GITHUB_OUTPUT"
-          fi
-
   scan:
     name: Scan PR for critical supply chain risks
-    needs: changes
-    if: needs.changes.outputs.scan == 'true'
+    if: inputs.scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -111,7 +84,7 @@ jobs:
           fi
 
           # --- base64 decode + exec/eval on the same line (the litellm attack pattern) ---
-          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
+          B64_EXEC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -iE 'base64\.(b64decode|decodebytes|urlsafe_b64decode)' | grep -iE 'exec\(|eval\(' | head -10 || true)
           if [ -n "$B64_EXEC_HITS" ]; then
             FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: base64 decode + exec/eval combo
@@ -125,7 +98,7 @@ jobs:
           fi
 
           # --- subprocess with encoded/obfuscated command argument ---
-          PROC_HITS=$(echo "$DIFF" | grep -n '^\+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
+          PROC_HITS=$(echo "$DIFF" | grep -n '^+' | grep -E 'subprocess\.(Popen|call|run)\s*\(' | grep -iE 'base64|\\x[0-9a-f]{2}|chr\(' | head -10 || true)
           if [ -n "$PROC_HITS" ]; then
             FINDINGS="${FINDINGS}
           ### 🚨 CRITICAL: subprocess with encoded/obfuscated command
@@ -201,23 +174,9 @@ jobs:
           echo "::error::CRITICAL supply chain risk patterns detected in this PR. See the PR comment for details."
           exit 1
 
-  # Gate: reports success when scan was skipped (no relevant files changed).
-  # This ensures the required check always gets a status.
-  scan-gate:
-    name: Scan PR for critical supply chain risks
-    needs: changes
-    # always() so the gate still reports SUCCESS even if `changes` fails/is
-    # skipped — without it, a failed dependency would leave the required
-    # check unreported (i.e. "pending"), the exact failure mode this fixes.
-    if: always() && needs.changes.outputs.scan != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "No supply-chain-relevant files changed, skipping scan."
-
   dep-bounds:
     name: Check PyPI dependency upper bounds
-    needs: changes
-    if: needs.changes.outputs.deps == 'true'
+    if: inputs.deps
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -267,7 +226,7 @@ jobs:
           $(cat /tmp/unbounded.txt)
           \`\`\`
 
-          **Fix:** Add an upper bound, e.g. \`\"package>=1.2.0,<2\"\`
+          **Fix:** Add an upper bound, e.g. \`"package>=1.2.0,<2"\`
 
           ---
           *See PR #2810 and CONTRIBUTING.md for the full policy rationale.*"
@@ -280,23 +239,9 @@ jobs:
           echo "::error::PyPI dependencies without upper bounds detected. Add <next_major ceiling per CONTRIBUTING.md policy."
           exit 1
 
-  # Gate: reports success when dep-bounds was skipped (no pyproject.toml changed).
-  # This ensures the required check always gets a status.
-  dep-bounds-gate:
-    name: Check PyPI dependency upper bounds
-    needs: changes
-    # always() so the gate still reports SUCCESS even if `changes` fails/is
-    # skipped — without it, a failed dependency would leave the required
-    # check unreported (i.e. "pending"), the exact failure mode this fixes.
-    if: always() && needs.changes.outputs.deps != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "No pyproject.toml changes, skipping dependency bounds check."
-
   mcp-catalog-review:
     name: MCP catalog security review
-    needs: changes
-    if: needs.changes.outputs.mcp_catalog == 'true'
+    if: inputs.mcp_catalog
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -331,11 +276,3 @@ jobs:
           gh pr comment "$PR" --body "$BODY" || echo "::warning::Could not post PR comment (expected for fork PRs)"
           echo "::error::MCP catalog changes require the mcp-catalog-reviewed label."
           exit 1
-
-  mcp-catalog-review-gate:
-    name: MCP catalog security review
-    needs: changes
-    if: always() && needs.changes.outputs.mcp_catalog != 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "No MCP catalog changes, skipping MCP catalog security review."

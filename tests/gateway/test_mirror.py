@@ -95,6 +95,26 @@ class TestFindSessionId:
 
         assert result == "sess_alice"
 
+    def test_user_id_alt_disambiguates_same_group_chat(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "alice": {
+                "session_id": "sess_alice",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id_alt": "alt-alice"},
+                "updated_at": "2026-01-01T00:00:00",
+            },
+            "bob": {
+                "session_id": "sess_bob",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id_alt": "alt-bob"},
+                "updated_at": "2026-02-01T00:00:00",
+            },
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            result = _find_session_id("telegram", "-1001", user_id_alt="alt-alice")
+
+        assert result == "sess_alice"
+
     def test_ambiguous_same_group_chat_without_user_id_returns_none(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {
             "alice": {
@@ -105,6 +125,26 @@ class TestFindSessionId:
             "bob": {
                 "session_id": "sess_bob",
                 "origin": {"platform": "telegram", "chat_id": "-1001", "user_id": "bob"},
+                "updated_at": "2026-02-01T00:00:00",
+            },
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file):
+            result = _find_session_id("telegram", "-1001")
+
+        assert result is None
+
+    def test_ambiguous_same_group_chat_without_user_id_returns_none_for_alt_ids(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "alice": {
+                "session_id": "sess_alice",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id_alt": "alt-alice"},
+                "updated_at": "2026-01-01T00:00:00",
+            },
+            "bob": {
+                "session_id": "sess_bob",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id_alt": "alt-bob"},
                 "updated_at": "2026-02-01T00:00:00",
             },
         })
@@ -229,6 +269,35 @@ class TestMirrorToSession:
         assert result is True
         mock_sqlite.assert_called_once()
         assert mock_sqlite.call_args[0][0] == "sess_alice"
+
+    def test_successful_mirror_uses_user_id_alt_for_group_session(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "alice": {
+                "session_id": "sess_alice",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id_alt": "alt-alice"},
+                "updated_at": "2026-01-01T00:00:00",
+            },
+            "bob": {
+                "session_id": "sess_bob",
+                "origin": {"platform": "telegram", "chat_id": "-1001", "user_id_alt": "alt-bob"},
+                "updated_at": "2026-02-01T00:00:00",
+            },
+        })
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch("gateway.mirror._append_to_sqlite"):
+            result = mirror_to_session(
+                "telegram",
+                "-1001",
+                "Hello group!",
+                source_label="cli",
+                user_id_alt="alt-alice",
+            )
+
+        assert result is True
+        assert (sessions_dir / "sess_alice.jsonl").exists()
+        assert not (sessions_dir / "sess_bob.jsonl").exists()
 
     def test_no_matching_session(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {})

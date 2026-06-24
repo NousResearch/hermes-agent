@@ -29,6 +29,7 @@ def mirror_to_session(
     source_label: str = "cli",
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    user_id_alt: Optional[str] = None,
 ) -> bool:
     """
     Append a delivery-mirror message to the target session's transcript.
@@ -45,14 +46,16 @@ def mirror_to_session(
             str(chat_id),
             thread_id=thread_id,
             user_id=user_id,
+            user_id_alt=user_id_alt,
         )
         if not session_id:
             logger.debug(
-                "Mirror: no session found for %s:%s:%s:%s",
+                "Mirror: no session found for %s:%s:%s:%s:%s",
                 platform,
                 chat_id,
                 thread_id,
                 user_id,
+                user_id_alt,
             )
             return False
 
@@ -75,7 +78,7 @@ def mirror_to_session(
             platform,
             chat_id,
             thread_id,
-            user_id,
+            user_id or user_id_alt,
             e,
         )
         return False
@@ -86,6 +89,7 @@ def _find_session_id(
     chat_id: str,
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
+    user_id_alt: Optional[str] = None,
 ) -> Optional[str]:
     """
     Find the active session_id for a platform + chat_id pair.
@@ -94,9 +98,10 @@ def _find_session_id(
     on the right platform.  DM session keys don't embed the chat_id
     (e.g. "agent:main:telegram:dm"), so we check the origin dict.
 
-    When *user_id* is provided, prefer exact sender matches. If multiple
-    same-chat candidates exist and none matches the user, return None instead
-    of guessing and contaminating another participant's session.
+    When *user_id* or *user_id_alt* is provided, prefer exact sender matches.
+    If multiple same-chat candidates exist and none matches the sender,
+    return None instead of guessing and contaminating another participant's
+    session.
     """
     if not _SESSIONS_INDEX.exists():
         return None
@@ -131,10 +136,24 @@ def _find_session_id(
     if not candidates:
         return None
 
-    if user_id:
+    requested_ids = {
+        str(value).strip()
+        for value in (user_id, user_id_alt)
+        if str(value or "").strip()
+    }
+
+    def _entry_identity_values(entry: dict) -> set[str]:
+        origin = entry.get("origin") or {}
+        return {
+            str(value).strip()
+            for value in (origin.get("user_id"), origin.get("user_id_alt"))
+            if str(value or "").strip()
+        }
+
+    if requested_ids:
         exact_user_matches = [
             entry for entry in candidates
-            if str((entry.get("origin") or {}).get("user_id") or "") == str(user_id)
+            if _entry_identity_values(entry) & requested_ids
         ]
         if exact_user_matches:
             candidates = exact_user_matches
@@ -142,9 +161,9 @@ def _find_session_id(
             return None
     elif len(candidates) > 1:
         distinct_user_ids = {
-            str((entry.get("origin") or {}).get("user_id") or "").strip()
+            identity
             for entry in candidates
-            if str((entry.get("origin") or {}).get("user_id") or "").strip()
+            for identity in _entry_identity_values(entry)
         }
         if len(distinct_user_ids) > 1:
             return None

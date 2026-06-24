@@ -131,7 +131,25 @@ export const en: Translations = {
       transcriptionUnavailable: 'Voice transcription is not available yet.',
       tryRecordingAgain: 'Try recording again.',
       unavailable: 'Voice unavailable'
+    },
+    native: {
+      approvalTitle: 'Approval needed',
+      approveAction: 'Approve',
+      rejectAction: 'Reject',
+      inputTitle: 'Input needed',
+      inputBody: 'Hermes is waiting for your response.',
+      turnDoneTitle: 'Hermes finished',
+      turnDoneBody: 'The response is ready.',
+      turnErrorTitle: 'Turn failed',
+      backgroundDoneTitle: 'Background task finished',
+      backgroundFailedTitle: 'Background task failed'
     }
+  },
+
+  remoteDisplayBanner: {
+    message: reason =>
+      `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`,
+    dismiss: 'Dismiss'
   },
 
   titlebar: {
@@ -177,6 +195,7 @@ export const en: Translations = {
       'nav.cron': 'Open scheduled jobs',
       'nav.agents': 'Open agents',
       'session.new': 'New session',
+      'session.newWindow': 'New session in window',
       'session.next': 'Next session',
       'session.prev': 'Previous session',
       'session.slot.1': 'Switch to recent session 1',
@@ -263,7 +282,46 @@ export const en: Translations = {
       keysSettings: 'Settings',
       mcp: 'MCP',
       archivedChats: 'Archived Chats',
-      about: 'About'
+      about: 'About',
+      notifications: 'Notifications'
+    },
+    notifications: {
+      title: 'Notifications',
+      intro:
+        'Native desktop notifications, separate from in-app toasts. These are device-local — each computer keeps its own settings.',
+      enableAll: 'Enable notifications',
+      enableAllDesc: 'Master switch. Turn this off to silence every notification below.',
+      focusedHint: 'Completion alerts only fire while Hermes is in the background.',
+      kinds: {
+        approval: {
+          label: 'Approval needed',
+          description: 'A command is waiting for you to approve or reject it.'
+        },
+        input: {
+          label: 'Input needed',
+          description: 'Hermes asked a question or needs a password or secret.'
+        },
+        turnDone: {
+          label: 'Response ready',
+          description: 'A turn finished while Hermes was in the background.'
+        },
+        turnError: {
+          label: 'Turn failed',
+          description: 'A turn ended with an error.'
+        },
+        backgroundDone: {
+          label: 'Background task finished',
+          description: 'A backgrounded terminal command completed.'
+        }
+      },
+      test: 'Send test notification',
+      testTitle: 'Hermes',
+      testBody: 'Notifications are working.',
+      testSent: 'Test sent. If nothing appears, check your OS notification permissions and Focus/Do Not Disturb.',
+      testUnsupported: 'This system does not support native notifications.',
+      completionSoundTitle: 'Completion Sound',
+      completionSoundDesc: 'Plays when an agent turn finishes. Pick a preset and preview it here.',
+      completionSoundPreview: 'Preview'
     },
     sections: {
       model: 'Model',
@@ -314,7 +372,32 @@ export const en: Translations = {
       installError: 'Could not install that theme.',
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
-      importedBadge: 'Imported'
+      importedBadge: 'Imported',
+      pet: {
+        title: 'Pet',
+        intro:
+          'Adopt an animated petdex mascot that floats over the app and reacts to what Hermes is doing — running while tools execute, celebrating on success, sulking on errors.',
+        restartHint:
+          'Pets need a quick restart — the running app started before this feature was added. Quit and reopen Hermes, then come back here.',
+        on: 'On',
+        off: 'Off',
+        scaleTitle: 'Size',
+        scaleDesc: 'Resize the floating mascot. Applies everywhere instantly.',
+        chooseTitle: 'Choose a pet',
+        chooseDesc: 'Picking one installs it (if needed) and makes it active.',
+        searchPlaceholder: 'Search pets…',
+        unreachable: "Couldn't reach the petdex gallery. Check your connection and reopen this page.",
+        noMatch: query => `No pets match "${query}".`,
+        installedTag: 'installed',
+        countCapped: (cap, total) => `Showing ${cap} of ${total} — type to narrow it down.`,
+        count: n => `${n} pet${n === 1 ? '' : 's'}.`,
+        uninstall: name => `Uninstall ${name}`,
+        adoptFailed: slug => `Could not adopt ${slug}`,
+        uninstallFailed: slug => `Could not uninstall ${slug}`,
+        noneAvailable: 'No pets available to turn on right now.',
+        turnOnFailed: 'Could not turn the pet on.',
+        turnOffFailed: 'Could not turn the pet off.'
+      }
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -326,6 +409,7 @@ export const en: Translations = {
       checkNow: 'Check now',
       checking: 'Checking…',
       seeWhatsNew: "See what's new",
+      updateNow: 'Update now',
       releaseNotes: 'Release notes',
       onLatest: "You're on the latest version.",
       installing: 'An update is currently installing.',
@@ -486,6 +570,10 @@ export const en: Translations = {
       provider: 'Provider',
       model: 'Model',
       applying: 'Applying...',
+      defaultsLabel: 'Defaults',
+      reasoning: 'Reasoning',
+      reasoningOff: 'Off',
+      defaultsFailed: 'Failed to save model defaults',
       auxiliaryTitle: 'Auxiliary models',
       resetAllToMain: 'Reset all to main',
       auxiliaryDesc: 'Helper tasks run on the main model by default. Assign a dedicated model to any task to override.',
@@ -513,7 +601,20 @@ export const en: Translations = {
       collapse: 'Collapse',
       connectAnother: 'Connect another provider',
       otherProviders: 'Other providers',
+      disconnect: 'Disconnect',
+      disconnectInTerminal: 'Disconnect (runs the removal command in the terminal)',
+      removeConfirm: provider => `Remove ${provider}?`,
+      removeExternalGeneric: provider => `${provider} is managed by its own CLI — remove it there.`,
+      removeKeyManaged: provider => `${provider} is configured from an API key. Remove it from API Keys.`,
+      removeTerminalConfirm: (provider, command) =>
+        `Disconnect ${provider}? This runs "${command}" in the terminal to clear the credential.`,
+      removeTerminalRunning: provider => `Running ${provider} disconnect in the terminal…`,
+      removedTitle: 'Account removed',
+      removedMessage: provider => `${provider} was removed.`,
+      failedRemove: provider => `Could not remove ${provider}`,
       noProviderKeys: 'No provider API keys available.',
+      searchKeys: 'Search providers…',
+      noKeysMatch: 'No providers match your search.',
       loading: 'Loading providers...'
     },
     sessions: {
@@ -643,11 +744,26 @@ export const en: Translations = {
     back: 'Back',
     searchPlaceholder: 'Search sessions, views, and actions',
     goTo: 'Go to',
+    goToSession: 'Go to session',
     commandCenter: 'Command Center',
     appearance: 'Appearance',
     settings: 'Settings',
-    changeTheme: 'Change theme...',
+    changeTheme: 'Change theme',
     changeColorMode: 'Change color mode...',
+    pets: {
+      title: 'Pets',
+      placeholder: 'Search pets…',
+      loading: 'Loading petdex gallery…',
+      error: 'Could not reach the petdex gallery.',
+      staleBackend: 'Restart Hermes to use pets — the backend predates this feature.',
+      empty: 'No matching pets.',
+      turnOff: 'Turn off',
+      turnOn: 'Turn on',
+      installed: 'Installed',
+      adoptFailed: 'Could not adopt that pet.',
+      toggleFailed: 'Could not toggle the pet.',
+      noneAvailable: 'No pets available — pick one below to install.'
+    },
     installTheme: {
       title: 'Install theme...',
       placeholder: 'Search the VS Code Marketplace...',
@@ -693,7 +809,8 @@ export const en: Translations = {
     gatewayRunning: 'Messaging gateway running',
     gatewayStopped: 'Messaging gateway stopped',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Active sessions ${count}`,
-    restartMessaging: 'Restart messaging',
+    restartGateway: 'Restart gateway',
+    gatewayRestartFailed: 'Gateway restart failed.',
     updateHermes: 'Update Hermes',
     actionRunning: 'running',
     actionDone: 'done',
@@ -762,9 +879,9 @@ export const en: Translations = {
     disableAria: name => `Disable ${name}`,
     platformEnabled: name => `${name} enabled`,
     platformDisabled: name => `${name} disabled`,
-    restartToApply: 'Restart the gateway for this change to take effect.',
+    restartToApply: 'This change takes effect after a gateway restart.',
     setupSaved: name => `${name} setup saved`,
-    restartToReconnect: 'Restart the gateway to reconnect with the new credentials.',
+    restartToReconnect: 'New credentials take effect after a gateway restart.',
     keyCleared: key => `${key} cleared`,
     setupUpdated: name => `${name} setup was updated.`,
     failedUpdate: name => `Failed to update ${name}`,
@@ -902,6 +1019,9 @@ export const en: Translations = {
     deleting: 'Deleting...',
     createDesc: 'Profiles are independent Hermes environments: separate config, skills, and SOUL.md.',
     nameLabel: 'Name',
+    cloneFrom: 'Clone from',
+    cloneFromNone: 'None (blank)',
+    cloneFromDesc: 'Copies config, skills, and SOUL.md from the selected source profile.',
     cloneFromDefault: 'Clone from default',
     cloneFromDefaultDesc: 'Copy config, skills, and SOUL.md from your default profile.',
     invalidName: hint => `Invalid name. ${hint}`,
@@ -1274,8 +1394,12 @@ export const en: Translations = {
       fetch: 'Downloading…',
       pull: 'Almost there…',
       pydeps: 'Finishing up…',
+      update: 'Updating Hermes…',
+      rebuild: 'Rebuilding the desktop app…',
       restart: 'Restarting Hermes…',
+      done: 'Update complete',
       manual: 'Update from your terminal',
+      guiSkew: 'Update the desktop app',
       error: 'Update paused'
     },
     checking: 'Looking for updates…',
@@ -1298,13 +1422,17 @@ export const en: Translations = {
     manualTitle: 'Update from your terminal',
     manualBody: 'You installed Hermes from the command line, so updates run there too. Paste this into your terminal:',
     manualPickedUp: 'Hermes will pick up the new version next time you launch it.',
+    guiSkewTitle: 'Update the desktop app',
+    guiSkewBody:
+      'The backend was updated, but this desktop app package wasn’t changed. Update or reinstall the Hermes desktop app (your AppImage / .deb / .rpm) to match.',
     copy: 'Copy',
     copied: 'Copied',
     done: 'Done',
-    applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
+    applyingBody:
+      'The Hermes updater takes over in its own window and reopens Hermes automatically when it’s done. Please don’t reopen Hermes yourself while it’s updating.',
     applyingBodyBackend:
       'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
-    applyingClose: 'Hermes will close to apply the update.',
+    applyingClose: 'This window will close while the update runs, then Hermes reopens on its own.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
     notNow: 'Not now',
@@ -1436,8 +1564,6 @@ export const en: Translations = {
     unknown: '(unknown)',
     search: 'Filter providers and models...',
     noModels: 'No models found.',
-    persistGlobalSession: 'Persist globally (otherwise this session only)',
-    persistGlobal: 'Persist globally',
     addProvider: 'Add provider',
     loadFailed: 'Could not load models',
     noAuthenticatedProviders: 'No authenticated providers.',
@@ -1463,6 +1589,7 @@ export const en: Translations = {
       search: 'Search models',
       noModels: 'No models found',
       editModels: 'Edit Models…',
+      refreshModels: 'Refresh Models',
       fast: 'Fast',
       medium: 'Med'
     },
@@ -1517,6 +1644,7 @@ export const en: Translations = {
       gatewayChecking: 'checking',
       gatewayConnecting: 'connecting',
       gatewayOffline: 'offline',
+      gatewayRestarting: 'restarting…',
       gatewayTitle: 'Hermes inference gateway status',
       agents: 'Agents',
       closeAgents: 'Close agents',
@@ -1582,6 +1710,7 @@ export const en: Translations = {
     opening: 'Opening...',
     hide: 'Hide',
     openPreview: 'Open preview',
+    openInBrowser: 'Open in browser',
     sourceLineTitle: 'Click to select · shift-click to extend · drag to composer',
     source: 'SOURCE',
     renderedPreview: 'PREVIEW',
@@ -1655,6 +1784,7 @@ export const en: Translations = {
   assistant: {
     thread: {
       loadingSession: 'Loading session',
+      showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
       thinking: 'Thinking',
       today: time => `Today, ${time}`,
@@ -1663,6 +1793,7 @@ export const en: Translations = {
       refresh: 'Refresh',
       moreActions: 'More actions',
       branchNewChat: 'Branch in new chat',
+      dismissError: 'Dismiss error',
       readAloudFailed: 'Read aloud failed',
       preparingAudio: 'Preparing audio...',
       stopReading: 'Stop reading',
@@ -1685,9 +1816,11 @@ export const en: Translations = {
       gatewayDisconnected: 'Hermes gateway is not connected',
       sendFailed: 'Could not send approval response',
       run: 'Run',
+      command: 'Command',
       moreOptions: 'More approval options',
       allowSession: 'Allow this session',
       alwaysAllowMenu: 'Always allow…',
+      jumpToApproval: 'Approval needed',
       reject: 'Reject',
       alwaysTitle: 'Always allow this command?',
       alwaysDescription: pattern =>
@@ -1770,6 +1903,9 @@ export const en: Translations = {
     regenerateFailed: 'Regenerate failed',
     editFailed: 'Edit failed',
     resumeFailed: 'Resume failed',
+    resumeStrandedTitle: "Couldn't load this session",
+    resumeStrandedBody: 'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
+    resumeRetry: 'Retry',
     nothingToBranch: 'Nothing to branch',
     branchNeedsChat: 'Start or resume a chat before branching.',
     sessionBusy: 'Session busy',

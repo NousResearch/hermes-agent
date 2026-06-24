@@ -127,7 +127,24 @@ export const zh: Translations = {
       transcriptionUnavailable: '语音转写暂不可用。',
       tryRecordingAgain: '请再录一次。',
       unavailable: '语音不可用'
+    },
+    native: {
+      approvalTitle: '需要批准',
+      approveAction: '批准',
+      rejectAction: '拒绝',
+      inputTitle: '需要输入',
+      inputBody: 'Hermes 正在等待你的回应。',
+      turnDoneTitle: 'Hermes 已完成',
+      turnDoneBody: '回复已就绪。',
+      turnErrorTitle: '本轮失败',
+      backgroundDoneTitle: '后台任务已完成',
+      backgroundFailedTitle: '后台任务失败'
     }
+  },
+
+  remoteDisplayBanner: {
+    message: reason => `软件渲染已启用 — 检测到远程显示（${reason}）。为防止画面闪烁，已禁用 GPU 加速。`,
+    dismiss: '关闭'
   },
 
   titlebar: {
@@ -173,6 +190,7 @@ export const zh: Translations = {
       'nav.cron': '打开定时任务',
       'nav.agents': '打开智能体',
       'session.new': '新建会话',
+      'session.newWindow': '在新窗口中新建会话',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
       'session.slot.1': '切换到最近会话 1',
@@ -259,7 +277,45 @@ export const zh: Translations = {
       keysSettings: '设置',
       mcp: 'MCP',
       archivedChats: '已归档对话',
-      about: '关于'
+      about: '关于',
+      notifications: '通知'
+    },
+    notifications: {
+      title: '通知',
+      intro: '原生桌面通知，区别于应用内提示。设置按设备保存，每台电脑各自独立。',
+      enableAll: '启用通知',
+      enableAllDesc: '总开关。关闭后将静音下方所有通知。',
+      focusedHint: '完成提醒仅在 Hermes 处于后台时触发。',
+      kinds: {
+        approval: {
+          label: '需要批准',
+          description: '有命令正在等待你批准或拒绝。'
+        },
+        input: {
+          label: '需要输入',
+          description: 'Hermes 提出了问题，或需要密码或密钥。'
+        },
+        turnDone: {
+          label: '回复就绪',
+          description: 'Hermes 在后台时完成了一轮对话。'
+        },
+        turnError: {
+          label: '本轮失败',
+          description: '本轮以错误结束。'
+        },
+        backgroundDone: {
+          label: '后台任务完成',
+          description: '后台终端命令已完成。'
+        }
+      },
+      test: '发送测试通知',
+      testTitle: 'Hermes',
+      testBody: '通知工作正常。',
+      testSent: '测试已发送。如果没有出现，请检查系统通知权限和专注模式／勿扰模式。',
+      testUnsupported: '此系统不支持原生通知。',
+      completionSoundTitle: '完成提示音',
+      completionSoundDesc: '智能体回合结束时播放。可在此选择预设并预览。',
+      completionSoundPreview: '预览'
     },
     sections: {
       model: '模型',
@@ -308,7 +364,30 @@ export const zh: Translations = {
       installError: '无法安装该主题。',
       installed: name => `已安装「${name}」。`,
       removeTheme: '移除主题',
-      importedBadge: '已导入'
+      importedBadge: '已导入',
+      pet: {
+        title: '宠物',
+        intro: '领养一只悬浮在应用上的 petdex 动画宠物，它会根据 Hermes 的状态做出反应——工具执行时奔跑、成功时欢呼、出错时沮丧。',
+        restartHint: '宠物功能需要重启——当前运行的应用在此功能加入前启动。请退出并重新打开 Hermes，然后回到此处。',
+        scaleTitle: '大小',
+        scaleDesc: '调整悬浮宠物的大小，所有界面即时生效。',
+        on: '开启',
+        off: '关闭',
+        chooseTitle: '选择宠物',
+        chooseDesc: '选择后会自动安装（如需）并设为当前宠物。',
+        searchPlaceholder: '搜索宠物…',
+        unreachable: '无法连接到 petdex 画廊。请检查网络连接并重新打开此页面。',
+        noMatch: query => `没有匹配「${query}」的宠物。`,
+        installedTag: '已安装',
+        countCapped: (cap, total) => `显示 ${total} 个中的 ${cap} 个——输入关键词以缩小范围。`,
+        count: n => `${n} 个宠物。`,
+        uninstall: name => `卸载 ${name}`,
+        adoptFailed: slug => `无法领养 ${slug}`,
+        uninstallFailed: slug => `无法卸载 ${slug}`,
+        noneAvailable: '当前没有可开启的宠物。',
+        turnOnFailed: '无法开启宠物。',
+        turnOffFailed: '无法关闭宠物。'
+      }
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -526,6 +605,7 @@ export const zh: Translations = {
       checkNow: '立即检查',
       checking: '检查中…',
       seeWhatsNew: '查看新增内容',
+      updateNow: '立即更新',
       releaseNotes: '发行说明',
       onLatest: '你已是最新版本。',
       installing: '正在安装更新。',
@@ -682,6 +762,10 @@ export const zh: Translations = {
       provider: '提供方',
       model: '模型',
       applying: '应用中...',
+      defaultsLabel: '默认值',
+      reasoning: '推理',
+      reasoningOff: '关闭',
+      defaultsFailed: '保存模型默认值失败',
       auxiliaryTitle: '辅助模型',
       resetAllToMain: '全部重置为主模型',
       auxiliaryDesc: '辅助任务默认使用主模型。你可以为任意任务指定专用模型。',
@@ -708,7 +792,19 @@ export const zh: Translations = {
       collapse: '收起',
       connectAnother: '连接其他提供方',
       otherProviders: '其他提供方',
+      disconnect: '断开连接',
+      disconnectInTerminal: '断开连接（在终端中运行移除命令）',
+      removeConfirm: provider => `移除 ${provider}？`,
+      removeExternalGeneric: provider => `${provider} 由其自身的 CLI 管理 — 请在那里移除。`,
+      removeKeyManaged: provider => `${provider} 由 API 密钥配置。请从 API Keys 中移除。`,
+      removeTerminalConfirm: (provider, command) => `断开 ${provider}？这将在终端中运行 "${command}" 以清除凭据。`,
+      removeTerminalRunning: provider => `正在终端中断开 ${provider}…`,
+      removedTitle: '账号已移除',
+      removedMessage: provider => `${provider} 已移除。`,
+      failedRemove: provider => `无法移除 ${provider}`,
       noProviderKeys: '没有可用的提供方 API 密钥。',
+      searchKeys: '搜索提供方…',
+      noKeysMatch: '没有匹配的提供方。',
       loading: '正在加载提供方...'
     },
     sessions: {
@@ -835,11 +931,26 @@ export const zh: Translations = {
     back: '返回',
     searchPlaceholder: '搜索会话、视图与操作',
     goTo: '前往',
+    goToSession: '前往会话',
     commandCenter: '命令中心',
     appearance: '外观',
     settings: '设置',
-    changeTheme: '更改主题...',
+    changeTheme: '更改主题',
     changeColorMode: '更改颜色模式...',
+    pets: {
+      title: '宠物',
+      placeholder: '搜索宠物…',
+      loading: '正在加载 petdex 画廊…',
+      error: '无法连接到 petdex 画廊。',
+      staleBackend: '请重启 Hermes 以使用宠物功能——当前后端版本过旧。',
+      empty: '没有匹配的宠物。',
+      turnOff: '关闭',
+      turnOn: '开启',
+      installed: '已安装',
+      adoptFailed: '无法领养该宠物。',
+      toggleFailed: '无法切换宠物显示。',
+      noneAvailable: '暂无可用宠物——请在下方选择一个安装。'
+    },
     installTheme: {
       title: '安装主题...',
       placeholder: '搜索 VS Code Marketplace...',
@@ -885,7 +996,8 @@ export const zh: Translations = {
     gatewayRunning: '消息网关运行中',
     gatewayStopped: '消息网关已停止',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 活跃会话 ${count}`,
-    restartMessaging: '重启消息服务',
+    restartGateway: '重启网关',
+    gatewayRestartFailed: '网关重启失败。',
     updateHermes: '更新 Hermes',
     actionRunning: '运行中',
     actionDone: '完成',
@@ -954,9 +1066,9 @@ export const zh: Translations = {
     disableAria: name => `禁用 ${name}`,
     platformEnabled: name => `${name} 已启用`,
     platformDisabled: name => `${name} 已禁用`,
-    restartToApply: '重启网关后此更改才会生效。',
+    restartToApply: '此更改将在网关重启后生效。',
     setupSaved: name => `${name} 设置已保存`,
-    restartToReconnect: '重启网关以使用新凭据重新连接。',
+    restartToReconnect: '新凭据将在网关重启后生效。',
     keyCleared: key => `${key} 已清除`,
     setupUpdated: name => `${name} 设置已更新。`,
     failedUpdate: name => `更新 ${name} 失败`,
@@ -1036,7 +1148,8 @@ export const zh: Translations = {
       feishu: '创建飞书 / Lark 应用，配置机器人能力，复制 App ID、App secret 和事件加密密钥。',
       wecom: '在企业微信中添加群机器人，复制其 webhook key 作为 WECOM_BOT_ID。仅可发送——双向请用企业微信 (应用) 选项。',
       wecom_callback: '设置一个企业微信自建应用，暴露其回调 URL，并提供 corp ID、secret、agent ID 和 AES key。',
-      weixin: '登录微信公众平台，复制 AppID 和 Token，并把消息回调 URL 指向 Hermes。',
+      weixin:
+        '运行 `hermes gateway setup`，选择 Weixin，然后使用个人微信账号扫描并确认二维码。Hermes 会通过腾讯 iLink Bot API 连接并保存凭据。',
       qqbot: '在 QQ 开放平台 (q.qq.com) 注册一个应用，复制 App ID 和 Client Secret。',
       api_server:
         '把 Hermes 暴露为兼容 OpenAI 的 API。设置一个鉴权密钥，然后把 Open WebUI / LobeChat 等指向 host:port。',
@@ -1091,6 +1204,9 @@ export const zh: Translations = {
     deleting: '删除中…',
     createDesc: '配置档案是相互独立的 Hermes 环境：各自拥有独立的配置、技能和 SOUL.md。',
     nameLabel: '名称',
+    cloneFrom: '克隆来源',
+    cloneFromNone: '无（空白）',
+    cloneFromDesc: '从选中的来源配置档案复制配置、技能和 SOUL.md。',
     cloneFromDefault: '从默认档案克隆',
     cloneFromDefaultDesc: '从你的默认配置档案复制配置、技能和 SOUL.md。',
     invalidName: hint => `名称无效。${hint}`,
@@ -1462,8 +1578,12 @@ export const zh: Translations = {
       fetch: '下载中…',
       pull: '马上完成…',
       pydeps: '收尾中…',
+      update: '正在更新 Hermes…',
+      rebuild: '正在重新构建桌面应用…',
       restart: '正在重启 Hermes…',
+      done: '更新完成',
       manual: '从终端更新',
+      guiSkew: '请更新桌面应用',
       error: '更新已暂停'
     },
     checking: '正在检查更新…',
@@ -1486,12 +1606,14 @@ export const zh: Translations = {
     manualTitle: '从终端更新',
     manualBody: '你是从命令行安装的 Hermes，因此更新也需要在那里运行。请将此命令粘贴到终端：',
     manualPickedUp: '下次启动 Hermes 时会使用新版本。',
+    guiSkewTitle: '请更新桌面应用',
+    guiSkewBody: '后端已更新，但此桌面应用包未更改。请更新或重新安装 Hermes 桌面应用（你的 AppImage / .deb / .rpm）以保持一致。',
     copy: '复制',
     copied: '已复制',
     done: '完成',
-    applyingBody: 'Hermes 更新器会在自己的窗口中接管，并在完成后重新打开 Hermes。',
+    applyingBody: 'Hermes 更新器会在自己的窗口中接管，并在完成后自动重新打开 Hermes。更新期间请不要自行重新打开 Hermes。',
     applyingBodyBackend: '远程后端正在应用更新并将重启。恢复后 Hermes 会自动重新连接。',
-    applyingClose: 'Hermes 将关闭以应用更新。',
+    applyingClose: '此窗口会在更新期间关闭，随后 Hermes 会自动重新打开。',
     errorTitle: '更新未完成',
     errorBody: '没有数据丢失。你可以现在重试。',
     notNow: '暂不',
@@ -1617,8 +1739,6 @@ export const zh: Translations = {
     unknown: '(未知)',
     search: '筛选提供方和模型...',
     noModels: '未找到模型。',
-    persistGlobalSession: '全局保存 (否则仅当前会话)',
-    persistGlobal: '全局保存',
     addProvider: '添加提供方',
     loadFailed: '无法加载模型',
     noAuthenticatedProviders: '没有已认证的提供方。',
@@ -1644,6 +1764,7 @@ export const zh: Translations = {
       search: '搜索模型',
       noModels: '未找到模型',
       editModels: '编辑模型…',
+      refreshModels: '刷新模型',
       fast: '快速',
       medium: '中'
     },
@@ -1698,6 +1819,7 @@ export const zh: Translations = {
       gatewayChecking: '检查中',
       gatewayConnecting: '连接中',
       gatewayOffline: '离线',
+      gatewayRestarting: '重启中…',
       gatewayTitle: 'Hermes 推理网关状态',
       agents: '代理',
       closeAgents: '关闭代理',
@@ -1763,6 +1885,7 @@ export const zh: Translations = {
     opening: '正在打开...',
     hide: '隐藏',
     openPreview: '打开预览',
+    openInBrowser: '在浏览器中打开',
     sourceLineTitle: '点击选择 · shift 点击扩展 · 拖到输入框',
     source: '源码',
     renderedPreview: '预览',
@@ -1835,6 +1958,7 @@ export const zh: Translations = {
   assistant: {
     thread: {
       loadingSession: '正在加载会话',
+      showEarlier: '显示更早的消息',
       loadingResponse: 'Hermes 正在加载回复',
       thinking: '思考中',
       today: time => `今天，${time}`,
@@ -1843,6 +1967,7 @@ export const zh: Translations = {
       refresh: '刷新',
       moreActions: '更多操作',
       branchNewChat: '在新对话中分支',
+      dismissError: '关闭错误',
       readAloudFailed: '朗读失败',
       preparingAudio: '正在准备音频...',
       stopReading: '停止朗读',
@@ -1865,9 +1990,11 @@ export const zh: Translations = {
       gatewayDisconnected: 'Hermes 网关未连接',
       sendFailed: '无法发送审批响应',
       run: '运行',
+      command: '命令',
       moreOptions: '更多审批选项',
       allowSession: '允许本会话',
       alwaysAllowMenu: '始终允许…',
+      jumpToApproval: '需要审批',
       reject: '拒绝',
       alwaysTitle: '始终允许此命令？',
       alwaysDescription: pattern =>
@@ -1949,6 +2076,9 @@ export const zh: Translations = {
     regenerateFailed: '重新生成失败',
     editFailed: '编辑失败',
     resumeFailed: '恢复失败',
+    resumeStrandedTitle: '无法加载此会话',
+    resumeStrandedBody: '与此会话的连接失败，自动重试已停止。请确认网关正在运行，然后重试。',
+    resumeRetry: '重试',
     nothingToBranch: '没有可分支的内容',
     branchNeedsChat: '分支前请先开始或恢复一个对话。',
     sessionBusy: '会话忙碌中',

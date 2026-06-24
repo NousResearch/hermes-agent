@@ -53,6 +53,95 @@ export interface CreditsViewResponse {
   topup_url: string | null
 }
 
+// ── Terminal billing (Phase 2b) ──────────────────────────────────────
+
+export interface BillingCardInfo {
+  brand: string
+  last4: string
+  masked: string
+}
+
+export interface BillingMonthlyCap {
+  is_default_ceiling: boolean
+  limit_display: string
+  limit_usd: string | null
+  spent_display: string
+  spent_this_month_usd: string | null
+}
+
+export interface BillingAutoReload {
+  enabled: boolean
+  reload_to_display: string
+  reload_to_usd: string | null
+  threshold_display: string
+  threshold_usd: string | null
+}
+
+export interface BillingStateResponse {
+  auto_reload: BillingAutoReload | null
+  balance_display: string
+  balance_usd: string | null
+  can_charge: boolean
+  card: BillingCardInfo | null
+  charge_presets: string[]
+  charge_presets_display: string[]
+  cli_billing_enabled: boolean
+  error?: string | null
+  is_admin: boolean
+  logged_in: boolean
+  max_usd: string | null
+  min_usd: string | null
+  monthly_cap: BillingMonthlyCap | null
+  ok: boolean
+  org_name: string | null
+  portal_url: string | null
+  role: string | null
+}
+
+/**
+ * Raw error payload echoed from the server (`_serialize_billing_error`). Carries
+ * the extra fields a few error codes attach — notably `remainingUsd` on
+ * `monthly_cap_exceeded` — so the client can render the same detail the CLI does.
+ */
+export interface BillingErrorPayload {
+  isDefaultCeiling?: boolean
+  remainingUsd?: string
+}
+
+export interface BillingChargeResponse {
+  charge_id?: string
+  error?: string
+  idempotency_key?: string
+  message?: string
+  ok: boolean
+  payload?: BillingErrorPayload
+  portal_url?: string | null
+  retry_after?: number | null
+}
+
+export interface BillingChargeStatusResponse {
+  amount_usd?: string | null
+  error?: string
+  message?: string
+  ok: boolean
+  payload?: BillingErrorPayload
+  portal_url?: string | null
+  reason?: string | null
+  retry_after?: number | null
+  settled_at?: string | null
+  status?: string
+}
+
+export interface BillingMutationResponse {
+  error?: string
+  granted?: boolean
+  message?: string
+  ok: boolean
+  payload?: BillingErrorPayload
+  portal_url?: string | null
+  retry_after?: number | null
+}
+
 export type CommandDispatchResponse =
   | { output?: string; type: 'exec' | 'plugin' }
   | { target: string; type: 'alias' }
@@ -221,6 +310,7 @@ export interface SessionUndoResponse {
 }
 
 export interface SessionUsageResponse {
+  active_subagents?: number
   cache_read?: number
   cache_write?: number
   calls?: number
@@ -538,8 +628,14 @@ export type GatewayEvent =
       type: 'notification.show'
     }
   | { payload?: { key?: string }; session_id?: string; type: 'notification.clear' }
+  | {
+      payload: { user_code?: string; verification_url: string }
+      session_id?: string
+      type: 'billing.step_up.verification'
+    }
   | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
   | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
+  | { payload?: { reason?: string }; session_id?: string; type: 'dashboard.new_session_requested' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
   | {
       payload?: { level?: 'info' | 'warn' | 'error'; message?: string }

@@ -131,3 +131,39 @@ class TestConnectBindGuard:
         assert adapter._api_key == "sk-test"
         assert is_network_accessible("0.0.0.0") is True
         # Combined: the guard condition is False (key is set), so it passes
+
+    @pytest.mark.asyncio
+    async def test_port_conflict_sets_non_retryable_fatal_error(self):
+        """When the api_server port is already in use, connect() must set a
+        non-retryable fatal error so the reconnect watcher drops it from the
+        retry queue instead of looping indefinitely.
+
+        Previously connect() returned ``False`` without setting a fatal error,
+        so the reconnect watcher treated the port conflict as a transient,
+        retryable failure and retried every 5 minutes forever — filling
+        errors.log with thousands of duplicate lines and leaking 2 fds/retry.
+        """
+        # Use a key so we pass the auth guard and reach the port-conflict check.
+        # Bind a real socket on an ephemeral port to simulate the conflict.
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        sock.listen(1)
+        conflict_port = sock.getsockname()[1]
+        try:
+            adapter = APIServerAdapter(
+                PlatformConfig(
+                    enabled=True,
+                    extra={"host": "127.0.0.1", "key": "sk-test", "port": conflict_port},
+                )
+            )
+            result = await adapter.connect()
+            assert result is False
+            # The critical assertion: the error must be non-retryable so the
+            # reconnect watcher stops retrying.
+            assert adapter.has_fatal_error is True
+            assert adapter.fatal_error_retryable is False
+            assert adapter.fatal_error_code == "api_server_port_in_use"
+            assert str(conflict_port) in (adapter.fatal_error_message or "")
+        finally:
+            sock.close()
+

@@ -4499,12 +4499,32 @@ class APIServerAdapter(BasePlatformAdapter):
                         self.name, self._host,
                     )
 
-            # Port conflict detection — fail fast if port is already in use
+            # Port conflict detection — fail fast if port is already in use.
+            # A port conflict is a configuration error, not a transient blip:
+            # the port will not free itself (another gateway or process holds
+            # it for the lifetime of that process).  Previously this returned
+            # ``False`` without setting a fatal error, so the reconnect watcher
+            # in ``gateway.run`` treated it as *retryable* and looped
+            # indefinitely — every 5 min at the backoff cap, forever, filling
+            # ``errors.log`` with thousands of duplicate lines and leaking 2
+            # file descriptors per retry (#37011).  Marking the error
+            # non-retryable drops the platform from the reconnect queue
+            # immediately, matching how other platforms handle config errors
+            # (e.g. ``weixin.py`` missing-token, ``whatsapp_cloud.py`` missing
+            # credentials).  The operator can recover with ``/platform resume``
+            # after changing ``API_SERVER_PORT``.
             try:
                 with _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM) as _s:
                     _s.settimeout(1)
                     _s.connect(('127.0.0.1', self._port))
-                logger.error('[%s] Port %d already in use. Set a different port in config.yaml: platforms.api_server.port', self.name, self._port)
+                self._set_fatal_error(
+                    "api_server_port_in_use",
+                    f"Port {self._port} already in use. Set API_SERVER_PORT "
+                    f"(or platforms.api_server.port in config.yaml) to a "
+                    f"different value. Use `/platform resume api_server` "
+                    f"after changing the port.",
+                    retryable=False,
+                )
                 return False
             except (ConnectionRefusedError, OSError):
                 pass  # port is free

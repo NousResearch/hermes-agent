@@ -262,6 +262,30 @@ def _probe_single_server(
     return tools_found
 
 
+def _describe_stdio_spawn(config: dict) -> Tuple[str, Optional[str], str]:
+    """Resolve a stdio server's command exactly as the gateway spawn does.
+
+    Returns ``(raw_command, resolved_abs_command_or_None, effective_path)``.
+
+    Mirrors ``EnabledMCPServer._connect``: build the same filtered environment
+    via ``_build_safe_env`` and resolve the command via ``_resolve_stdio_command``
+    so ``hermes mcp test`` can surface the absolute binary path and the ``PATH``
+    the real spawn would use. The probe and the gateway share this resolution
+    code, but each inherits its own process ``PATH`` — so a server can test
+    healthy yet fail to ``exec`` under the gateway's (typically more minimal)
+    ``PATH``. Surfacing both makes that discrepancy visible instead of silent
+    (#50395).
+    """
+    from tools.mcp_tool import _build_safe_env, _resolve_stdio_command
+
+    raw = str(config.get("command") or "")
+    safe_env = _build_safe_env(config.get("env"))
+    resolved, resolved_env = _resolve_stdio_command(raw, safe_env)
+    effective_path = resolved_env.get("PATH", "") or ""
+    is_resolved = bool(raw) and os.sep in resolved
+    return raw, (resolved if is_resolved else None), effective_path
+
+
 def _oauth_tokens_present(name: str) -> bool:
     """Return True if an OAuth token file exists on disk for ``name``.
 
@@ -623,6 +647,23 @@ def cmd_mcp_test(args):
     else:
         cmd = cfg.get("command", "?")
         _info(f"Transport: stdio → {cmd}")
+        # Surface the resolved binary and the PATH this spawn uses. The probe
+        # and the gateway share the resolution code but inherit different
+        # process PATHs, so a green test can still mask a gateway-only
+        # "exec: <cmd>: not found". Make the resolution visible (#50395).
+        raw_cmd, resolved_cmd, spawn_path = _describe_stdio_spawn(
+            _resolve_mcp_server_config(cfg)
+        )
+        if resolved_cmd:
+            _info(f"Resolved binary: {resolved_cmd}")
+        elif raw_cmd:
+            _warning(
+                f"'{raw_cmd}' is not on the spawn PATH — the gateway may fail "
+                f"with \"exec: {raw_cmd}: not found\" even if this test passes "
+                f"(the gateway can inherit a more minimal PATH than this command)."
+            )
+        if spawn_path:
+            _info(f"Spawn PATH: {spawn_path}")
 
     # Show auth info (masked)
     auth_type = cfg.get("auth", "")

@@ -1034,7 +1034,6 @@ class GatewaySlashCommandsMixin:
             "Gateway",
             "Utility",
             "Info",
-            "Skills",
         ]
 
         def _add_entry(category: str, rendered: str) -> None:
@@ -1066,8 +1065,12 @@ class GatewaySlashCommandsMixin:
             for rendered in buckets.pop(category, []):
                 entries.append((category, rendered))
         for category in sorted(buckets):
+            if category == "Skills":
+                continue
             for rendered in buckets[category]:
                 entries.append((category, rendered))
+        for rendered in buckets.pop("Skills", []):
+            entries.append(("Skills", rendered))
 
         if not entries:
             return t("gateway.commands.none")
@@ -3831,25 +3834,115 @@ class GatewaySlashCommandsMixin:
         lines.append("Invoke a bundle with `/<slug>` to load all its skills.")
         return "\n".join(lines)
 
-    async def _handle_download_command(self, event: MessageEvent) -> str:
-        """Handle /download <url> — safely fetch public direct media/files."""
-        url = event.get_command_args().strip()
-        try:
-            from hermes_cli.media_download import DownloadError, download_public_media
+    async def _download_media_from_url(self, url: str, mode: str) -> dict[str, Any]:
+        """Download URL media with yt-dlp into temporary upload workspaces."""
 
-            result = await asyncio.to_thread(download_public_media, url)
-            return result.render_text()
-        except DownloadError as exc:
-            message = str(exc)
-            if message == "Access restricted: direct download unavailable without authorized access.":
-                message += (
-                    "\nProvide one of: a direct public media URL, the actual video file, "
-                    "a transcript/caption, or an authorized session / platform-approved API route."
-                )
-            return message
-        except Exception as exc:
-            logger.warning("Download command failed: %s", exc)
-            return f"Download failed: {exc}"
+        def _download_variant(kind: str) -> dict[str, Any]:
+            import shutil
+            import subprocess
+            import tempfile
+            from urllib.parse import urlparse
+
+            from tools.url_safety import is_safe_url
+
+            normalized_kind = (kind or "").strip().lower()
+            if normalized_kind not in {"audio", "video"}:
+                return {"ok": False, "error": f"unknown download kind: {kind!r}"}
+            if not is_safe_url(url):
+                return {"ok": False, "error": "unsafe URL blocked"}
+            if not shutil.which("yt-dlp"):
+                return {"ok": False, "error": "yt-dlp is not installed on the gateway host"}
+            if not shutil.which("ffmpeg"):
+                return {"ok": False, "error": "ffmpeg is not installed on the gateway host"}
+
+            parsed = urlparse(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                return {"ok": False, "error": "valid http/https URL required"}
+
+            download_dir = Path(tempfile.mkdtemp(prefix=f"hermes_download_{normalized_kind}_"))
+            output_template = str(download_dir / f"{normalized_kind}.%(ext)s")
+            if normalized_kind == "audio":
+                cmd = [
+                    "yt-dlp",
+                    "--no-playlist",
+                    "--restrict-filenames",
+                    "-x",
+                    "--audio-format",
+                    "mp3",
+                    "-o",
+                    output_template,
+                    url,
+                ]
+            else:
+                cmd = [
+                    "yt-dlp",
+                    "--no-playlist",
+                    "--restrict-filenames",
+                    "-f",
+                    "bv*+ba/best",
+                    "--merge-output-format",
+                    "mp4",
+                    "-o",
+                    output_template,
+                    url,
+                ]
+
+            proc = subprocess.run(cmd, text=True, capture_output=True, timeout=900)
+            if proc.returncode != 0:
+                return {
+                    "ok": False,
+                    "error": f"yt-dlp {normalized_kind} download failed",
+                    "stderr": (proc.stderr or proc.stdout or "")[-1200:],
+                    "download_dir": str(download_dir),
+                }
+
+            files = [
+                p for p in sorted(download_dir.glob(f"{normalized_kind}.*"))
+                if p.is_file() and not str(p).endswith(".part")
+            ]
+            if not files:
+                return {
+                    "ok": False,
+                    "error": f"yt-dlp did not produce a {normalized_kind} file",
+                    "download_dir": str(download_dir),
+                }
+
+            primary = files[0]
+            return {
+                "ok": True,
+                "kind": normalized_kind,
+                "file_path": str(primary),
+                "download_dir": str(download_dir),
+                "files": [str(p) for p in files],
+            }
+
+        normalized_mode = (mode or "").strip().lower()
+        if normalized_mode not in {"audio", "video", "both"}:
+            return {"ok": False, "error": f"unsupported download mode: {mode!r}"}
+
+        if normalized_mode == "both":
+            audio = await asyncio.to_thread(_download_variant, "audio")
+            if not audio.get("ok"):
+                return audio
+            video = await asyncio.to_thread(_download_variant, "video")
+            if not video.get("ok"):
+                import shutil
+
+                for item in (audio, video):
+                    download_dir = item.get("download_dir")
+                    if download_dir:
+                        shutil.rmtree(str(download_dir), ignore_errors=True)
+                return video
+            return {"ok": True, "kind": "both", "downloads": [audio, video]}
+
+        return await asyncio.to_thread(_download_variant, normalized_mode)
+
+    async def _handle_download_command(self, event: MessageEvent) -> str | None:
+        """Handle /download fallback outside Telegram's interactive menu."""
+        prompt = event.get_command_args().strip()
+        if not prompt:
+            return "Usage: `/download <url>`"
+        return "Send `/download <url>` in Telegram, then choose audio, video, or both from the buttons."
 
     async def _handle_approve_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /approve command — unblock waiting agent thread(s).

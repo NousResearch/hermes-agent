@@ -376,6 +376,12 @@ class TestExtractCacheBustingConfig:
         assert parse_calls == [config_path]
 
         config_path.write_text("{\n  \"changed\": true\n}")
+        # Some filesystems can report the same timestamp for two rapid writes;
+        # force a distinct mtime so this test verifies memoization behavior,
+        # not filesystem clock granularity.
+        first_mtime_ns = config_path.stat().st_mtime_ns
+        import os
+        os.utime(config_path, ns=(first_mtime_ns + 1_000_000, first_mtime_ns + 1_000_000))
         third = GatewayRunner._extract_honcho_cache_busting_config()
 
         assert third == first

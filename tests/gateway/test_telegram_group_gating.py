@@ -191,6 +191,26 @@ def test_unmentioned_group_messages_can_be_observed_without_dispatching():
     asyncio.run(_run())
 
 
+def test_telegram_reply_context_prefers_full_replied_message_over_selected_quote():
+    adapter = _make_adapter()
+    full_text = "Line 1 gives setup. Line 2 has the actual request. Line 3 has constraints."
+    selected_quote = "Line 2 has the actual request."
+    msg = _group_message("what about this?", reply_to_bot=False)
+    msg.reply_to_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=111),
+        message_id=10,
+        text=full_text,
+        caption=None,
+    )
+    msg.quote = SimpleNamespace(text=selected_quote)
+
+    event = adapter._build_message_event(msg, MessageType.TEXT, update_id=1003)
+
+    assert event.reply_to_message_id == "10"
+    assert event.reply_to_text == full_text
+    assert selected_quote in event.reply_to_text
+
+
 def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions():
     async def _run():
         adapter = _make_adapter(

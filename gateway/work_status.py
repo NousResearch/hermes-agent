@@ -20,6 +20,34 @@ logger = logging.getLogger(__name__)
 
 _VALID_CLEANUP_POLICIES = {"delete", "unpin_keep", "keep", "edit_done_then_delete"}
 
+_CASUAL_STATUS_TURNS = {
+    "awesome",
+    "cool",
+    "got it",
+    "great",
+    "k",
+    "kk",
+    "lgtm",
+    "love it",
+    "nice",
+    "ok",
+    "okay",
+    "perfect",
+    "sounds good",
+    "thank you",
+    "thanks",
+    "thx",
+    "yes",
+    "yep",
+    "yup",
+}
+
+_CASUAL_EMOJI_RE = re.compile(r"^[\s\ufe0f\u200d❤♥💙💚💛🧡💜🤍🤎🖤💖💕💗💓💞💘💝👍👎👏🙌👌🤝🙏✅☑️✨🔥🎉🙂😊😍🥰😄😁😎🤩]+$")
+_REPLY_TASK_FOLLOWUP_RE = re.compile(
+    r"^\s*(?:please\s+|pls\s+)?(?:do|fix|check|test|verify|review|inspect|investigate|summari[sz]e|implement|update|change|patch|use|try|run|handle)\s+(?:this|that|it|these|those)\b",
+    re.I,
+)
+
 
 @dataclass(slots=True)
 class WorkStatusConfig:
@@ -229,6 +257,35 @@ def compact_source_text(event: Any) -> str:
     return current
 
 
+def _normalise_casual_turn(text: str) -> str:
+    text = " ".join(str(text or "").casefold().split())
+    text = re.sub(r"^[\s\W_]+|[\s\W_]+$", "", text)
+    text = re.sub(r"[.!?]+$", "", text).strip()
+    return text
+
+
+def should_suppress_status_for_event(event: Any) -> bool:
+    """Return True for casual/non-work turns that should not touch work-status."""
+    explicit = getattr(event, "work_status_text", None) or getattr(event, "pinned_summary_text", None)
+    if isinstance(explicit, str) and explicit.strip():
+        return False
+
+    current = " ".join((getattr(event, "text", None) or "").split())
+    if not current:
+        return False
+
+    reply_to_text = " ".join(str(getattr(event, "reply_to_text", "") or "").split())
+    if reply_to_text and _REPLY_TASK_FOLLOWUP_RE.search(current):
+        return False
+
+    normalized = _normalise_casual_turn(current)
+    if normalized in _CASUAL_STATUS_TURNS:
+        return True
+    if len(normalized) <= 32 and _CASUAL_EMOJI_RE.fullmatch(current):
+        return True
+    return False
+
+
 def infer_status_mode(source: str, event: Any | None = None) -> str:
     """Infer a compact human-facing work mode for the live status card."""
     message_type = getattr(getattr(event, "message_type", None), "value", "") if event is not None else ""
@@ -330,10 +387,9 @@ def format_status_text(mode: str, summary: str, *, from_reply: bool = False) -> 
     """Render the status text users see in pins/messages."""
     mode = re.sub(r"[^A-Za-z0-9 /_-]", "", str(mode or "Task")).strip() or "Task"
     summary = _clean_request_interpretation(summary) or "review incoming request"
-    prefix = f"📌 [{mode}]"
     if from_reply:
-        return f"{prefix} From reply: {summary}"
-    return f"{prefix} {summary}"
+        return f"{summary} — [{mode}] From reply"
+    return f"{summary} — [{mode}]"
 
 
 def fallback_status_text(event: Any) -> str:

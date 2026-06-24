@@ -10,6 +10,7 @@ Uses python-telegram-bot library for:
 import asyncio
 import dataclasses
 import inspect
+import itertools
 import json
 import logging
 import os
@@ -36,6 +37,10 @@ try:
         ContextTypes,
         filters,
     )
+    try:
+        from telegram.ext import MessageReactionHandler
+    except ImportError:
+        MessageReactionHandler = Any
     from telegram.constants import ParseMode, ChatType
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
@@ -51,6 +56,7 @@ except ImportError:
     CommandHandler = Any
     CallbackQueryHandler = Any
     TelegramMessageHandler = Any
+    MessageReactionHandler = Any
     HTTPXRequest = Any
     filters = None
     ParseMode = None
@@ -122,7 +128,7 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler, MessageReactionHandler
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -144,6 +150,10 @@ def check_telegram_requirements() -> bool:
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
+        try:
+            from telegram.ext import MessageReactionHandler as _MRH
+        except ImportError:
+            _MRH = Any
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
     except ImportError:
@@ -158,6 +168,7 @@ def check_telegram_requirements() -> bool:
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
     TelegramMessageHandler = _MH
+    MessageReactionHandler = _MRH
     ContextTypes = _CT
     filters = _filters
     ParseMode = _PM
@@ -584,8 +595,16 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
-        # Approval button state: message_id → session_key
+        self._download_menu_state: Dict[str, dict] = {}
+        self._download_menu_counter = itertools.count(1)
+        # Approval button state: approval_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Original approval prompt details so a late button/reaction click can
+        # start a follow-up turn with enough context after the blocking wait
+        # already timed out.
+        self._approval_context_state: Dict[int, Dict[str, Any]] = {}
+        # Approval reaction state: "<chat_id>:<message_id>" → approval_id
+        self._approval_message_state: Dict[str, int] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
@@ -2315,6 +2334,8 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            if MessageReactionHandler is not Any and callable(MessageReactionHandler):
+                self._app.add_handler(MessageReactionHandler(self._handle_message_reaction))
             
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -3629,12 +3650,23 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
-            text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
-                f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
-            )
+            # Telegram caps text messages at 4096 characters *after* HTML
+            # escaping.  Commands often contain shell quoting, JSON, or Python
+            # snippets where escaping can expand the payload substantially; a
+            # 3800-character raw preview has repeatedly produced "Message is
+            # too long", which means the inline keyboard never reaches the
+            # user and the agent sits silently waiting for approval.  Keep the
+            # prompt intentionally compact and reserve room for the header,
+            # reason, and Telegram/HTML expansion.
+            escaped_description = _html.escape(description)
+            max_text_chars = 3600
+            header = "⚠️ <b>Command Approval Required</b>\n\n"
+            footer = f"\n\nReason: {escaped_description}"
+            budget = max(200, max_text_chars - len(header) - len(footer) - len("<pre></pre>"))
+            escaped_command = _html.escape(command)
+            if len(escaped_command) > budget:
+                escaped_command = escaped_command[: max(0, budget - 24)] + "\n...<truncated>"
+            text = f"{header}<pre>{escaped_command}</pre>{footer}"
 
             # Resolve thread context for thread replies
             thread_id = self._metadata_thread_id(metadata)
@@ -3679,8 +3711,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
             msg = await self._send_message_with_thread_fallback(**kwargs)
 
-            # Store session_key keyed by approval_id for the callback handler
+            # Store session_key keyed by approval_id for the callback handler.
+            # Store the sent prompt message too so inbound reactions can resolve
+            # through the same approval path.
             self._approval_state[approval_id] = session_key
+            self._approval_context_state[approval_id] = {
+                "prompt": f"Approve execution of: {command}",
+                "default": command,
+            }
+            self._approval_message_state[f"{chat_id}:{msg.message_id}"] = approval_id
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
@@ -4504,6 +4543,234 @@ class TelegramAdapter(BasePlatformAdapter):
 
         await query.answer()
 
+    @staticmethod
+    def _reaction_emojis(reactions: Any) -> set[str]:
+        """Extract emoji strings from PTB reaction payloads."""
+        emojis: set[str] = set()
+        if reactions is None:
+            return emojis
+        if isinstance(reactions, (str, bytes)):
+            return {reactions.decode() if isinstance(reactions, bytes) else reactions}
+        try:
+            iterator = iter(reactions)
+        except TypeError:
+            iterator = iter((reactions,))
+        for reaction in iterator:
+            emoji = getattr(reaction, "emoji", None)
+            if emoji is None and isinstance(reaction, (str, bytes)):
+                emoji = reaction.decode() if isinstance(reaction, bytes) else reaction
+            if emoji:
+                emojis.add(str(emoji))
+        return emojis
+
+    def _cleanup_exec_approval_state(self, approval_id: int) -> None:
+        """Remove callback and reaction state for a resolved approval prompt."""
+        self._approval_state.pop(approval_id, None)
+        self._approval_context_state.pop(approval_id, None)
+        stale_message_keys = [
+            key for key, value in self._approval_message_state.items()
+            if value == approval_id
+        ]
+        for key in stale_message_keys:
+            self._approval_message_state.pop(key, None)
+
+    def _late_exec_approval_text(self, *, approval_id: int, choice: str, user_display: str) -> str:
+        """Build a synthetic follow-up for a post-timeout approval click."""
+        ctx = self._approval_context_state.get(approval_id, {})
+        prompt = str(ctx.get("prompt") or "").strip()
+        default = str(ctx.get("default") or "").strip()
+        label_map = {
+            "once": "approved once",
+            "session": "approved for this session",
+            "always": "approved permanently",
+            "deny": "denied",
+        }
+        label = label_map.get(choice, choice)
+        parts = [
+            "[Approval button pressed after the original approval wait timed out]",
+            f"{user_display} {label} the earlier execution prompt.",
+            "Use the existing conversation context to continue from the timed-out approval point if it is still safe and relevant.",
+        ]
+        if prompt:
+            parts.append(f"Original approval prompt: {prompt}")
+        if default:
+            parts.append(f"Default response/action: {default}")
+        return "\n".join(parts)
+
+    def _callback_source(
+        self,
+        *,
+        chat_id: Optional[Any],
+        chat: Optional[Any],
+        user: Optional[Any],
+        thread_id: Optional[Any],
+        message_id: Optional[Any] = None,
+    ) -> "SessionSource":
+        """Build a MessageEvent source from a callback/reaction update."""
+        from gateway.session import SessionSource
+
+        user_id = str(getattr(user, "id", "") or "") or None
+        user_name = getattr(user, "first_name", None) or getattr(user, "username", None)
+        chat_type = str(getattr(chat, "type", "") or "dm").lower()
+        if chat_type == "private":
+            chat_type = "dm"
+        elif chat_type == "supergroup":
+            chat_type = "forum" if thread_id is not None else "group"
+        return SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id=str(chat_id or user_id or ""),
+            chat_name=getattr(chat, "title", None) or getattr(chat, "full_name", None),
+            chat_type=chat_type,
+            user_id=user_id,
+            user_name=str(user_name).strip() if user_name else None,
+            thread_id=str(thread_id) if thread_id is not None else None,
+            message_id=str(message_id) if message_id is not None else None,
+        )
+
+    async def _resolve_exec_approval_prompt(
+        self,
+        *,
+        choice: str,
+        approval_id: int,
+        user_display: str,
+        chat_id: Optional[str] = None,
+        edit_callback: Optional[Any] = None,
+        source_label: str = "Telegram button",
+        late_event: Optional[MessageEvent] = None,
+    ) -> bool:
+        """Finalize a Telegram exec approval prompt from buttons or reactions."""
+        session_key = self._approval_state.get(approval_id)
+        if not session_key:
+            return False
+
+        label_map = {
+            "once": "✅ Approved once",
+            "session": "✅ Approved for session",
+            "always": "✅ Approved permanently",
+            "deny": "❌ Denied",
+        }
+        label = label_map.get(choice, "Resolved")
+
+        self._cleanup_exec_approval_state(approval_id)
+
+        if edit_callback is not None:
+            try:
+                await edit_callback(
+                    text=self.format_message(f"{label} by {user_display}"),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass  # non-fatal if edit fails
+
+        try:
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info(
+                "%s resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                source_label, count, session_key, choice, user_display,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve gateway approval from %s: %s", source_label, exc)
+            count = 0
+
+        if count and chat_id is not None:
+            self.resume_typing_for_chat(str(chat_id))
+        elif count == 0 and late_event is not None and choice != "deny":
+            logger.info(
+                "%s approval for session %s arrived after wait timeout; starting follow-up turn",
+                source_label, session_key,
+            )
+            try:
+                await self.handle_message(late_event)
+            except Exception:
+                logger.exception("Failed to start late approval follow-up turn")
+        return True
+
+    async def _handle_message_reaction(
+        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+    ) -> None:
+        """Handle inbound reactions on Telegram approval prompts."""
+        reaction_update = getattr(update, "message_reaction", None)
+        if not reaction_update:
+            return
+
+        chat = getattr(reaction_update, "chat", None)
+        chat_id = getattr(chat, "id", None)
+        message_id = getattr(reaction_update, "message_id", None)
+        if chat_id is None or message_id is None:
+            return
+
+        approval_id = self._approval_message_state.get(f"{chat_id}:{message_id}")
+        if approval_id is None:
+            return
+
+        emojis = self._reaction_emojis(getattr(reaction_update, "new_reaction", None))
+        if emojis & {"👍", "✅"}:
+            choice = "once"
+        elif emojis & {"👎", "❌"}:
+            choice = "deny"
+        else:
+            return
+
+        user = getattr(reaction_update, "user", None)
+        caller_id = str(getattr(user, "id", ""))
+        user_display = getattr(user, "first_name", None) or getattr(user, "username", None) or "User"
+        thread_id = getattr(reaction_update, "message_thread_id", None)
+        if thread_id is None:
+            thread_id = getattr(reaction_update, "message_thread_id", None)
+
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=str(chat_id),
+            chat_type=str(getattr(chat, "type", "")) if getattr(chat, "type", None) is not None else None,
+            thread_id=str(thread_id) if thread_id is not None else None,
+            user_name=getattr(user, "username", None) or getattr(user, "first_name", None),
+        ):
+            logger.debug(
+                "[Telegram] Ignoring unauthorized approval reaction from user %s on %s:%s",
+                caller_id, chat_id, message_id,
+            )
+            return
+
+        async def _edit_prompt(**kwargs: Any) -> None:
+            if not self._bot:
+                return
+            await self._bot.edit_message_text(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                **kwargs,
+            )
+
+        late_event = MessageEvent(
+            text=self._late_exec_approval_text(
+                approval_id=approval_id,
+                choice=choice,
+                user_display=str(user_display),
+            ),
+            message_type=MessageType.TEXT,
+            source=self._callback_source(
+                chat_id=chat_id,
+                chat=chat,
+                user=user,
+                thread_id=thread_id,
+                message_id=message_id,
+            ),
+            raw_message=reaction_update,
+            message_id=str(message_id),
+            reply_to_message_id=str(message_id),
+        )
+
+        await self._resolve_exec_approval_prompt(
+            choice=choice,
+            approval_id=approval_id,
+            user_display=str(user_display),
+            chat_id=str(chat_id),
+            edit_callback=_edit_prompt,
+            source_label="Telegram reaction",
+            late_event=late_event,
+        )
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -4522,6 +4789,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # --- Voice-clone manager callbacks ---
         if data.startswith("vc:"):
             await self._handle_voiceclone_callback(query, data)
+            return
+
+        # --- Download menu callbacks ---
+        if data.startswith("dl:"):
+            await self._handle_download_callback(query, data)
             return
 
         # --- Model picker callbacks ---
@@ -4566,52 +4838,48 @@ class TelegramAdapter(BasePlatformAdapter):
                     await query.answer(text="⛔ You are not authorized to approve commands.")
                     return
 
-                session_key = self._approval_state.pop(approval_id, None)
-                if not session_key:
+                if approval_id not in self._approval_state:
                     await query.answer(text="This approval has already been resolved.")
                     return
 
-                # Map choice to human-readable label
                 label_map = {
                     "once": "✅ Approved once",
                     "session": "✅ Approved for session",
                     "always": "✅ Approved permanently",
                     "deny": "❌ Denied",
                 }
-                user_display = getattr(query.from_user, "first_name", "User")
                 label = label_map.get(choice, "Resolved")
-
+                user_display = getattr(query.from_user, "first_name", "User")
                 await query.answer(text=label)
 
-                # Edit message to show decision, remove buttons
-                try:
-                    await query.edit_message_text(
-                        text=self.format_message(f"{label} by {user_display}"),
-                        parse_mode=ParseMode.MARKDOWN_V2,
-                        reply_markup=None,
-                    )
-                except Exception:
-                    pass  # non-fatal if edit fails
+                late_event = MessageEvent(
+                    text=self._late_exec_approval_text(
+                        approval_id=approval_id,
+                        choice=choice,
+                        user_display=str(user_display),
+                    ),
+                    message_type=MessageType.TEXT,
+                    source=self._callback_source(
+                        chat_id=query_chat_id,
+                        chat=query_chat,
+                        user=query.from_user,
+                        thread_id=query_thread_id,
+                        message_id=getattr(query_message, "message_id", None),
+                    ),
+                    raw_message=query,
+                    message_id=str(getattr(query_message, "message_id", "")) or None,
+                    reply_to_message_id=str(getattr(query_message, "message_id", "")) or None,
+                )
 
-                # Resolve the approval — unblocks the agent thread
-                try:
-                    from tools.approval import resolve_gateway_approval
-                    count = resolve_gateway_approval(session_key, choice)
-                    logger.info(
-                        "Telegram button resolved %d approval(s) for session %s (choice=%s, user=%s)",
-                        count, session_key, choice, user_display,
-                    )
-                except Exception as exc:
-                    logger.error("Failed to resolve gateway approval from Telegram button: %s", exc)
-                    count = 0
-
-                # Resume the typing indicator — paused when the approval was
-                # sent (gateway/run.py).  The text /approve and /deny paths
-                # call resume_typing_for_chat here too; without it, typing
-                # stays paused for the rest of the turn after an inline
-                # button click.
-                if count and query_chat_id is not None:
-                    self.resume_typing_for_chat(str(query_chat_id))
+                await self._resolve_exec_approval_prompt(
+                    choice=choice,
+                    approval_id=approval_id,
+                    user_display=str(user_display),
+                    chat_id=str(query_chat_id) if query_chat_id is not None else None,
+                    edit_callback=query.edit_message_text,
+                    source_label="Telegram button",
+                    late_event=late_event,
+                )
             return
 
         # --- Slash-confirm callbacks (sc:choice:confirm_id) ---
@@ -6593,6 +6861,210 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    _URL_RE = re.compile(r"https?://\S+", re.I)
+
+    async def _handle_download_command(self, update: Update) -> None:
+        msg = self._effective_update_message(update)
+        if not msg:
+            return
+
+        url = self._extract_first_url(getattr(msg, "text", None))
+        if not url and getattr(msg, "reply_to_message", None):
+            replied = msg.reply_to_message
+            url = self._extract_first_url(getattr(replied, "text", None) or getattr(replied, "caption", None))
+        if not url:
+            await msg.reply_text(
+                "Send `/download <url>` or reply `/download` to a message with a URL.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        state_id = str(next(self._download_menu_counter))
+        event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
+        self._download_menu_state[state_id] = {
+            "url": url,
+            "mode": "audio",
+            "event": event,
+        }
+
+        await msg.reply_text(
+            self._render_download_menu_text(self._download_menu_state[state_id]),
+            reply_markup=self._build_download_keyboard(state_id),
+            disable_web_page_preview=True,
+        )
+
+    def _build_download_keyboard(self, state_id: str) -> InlineKeyboardMarkup:
+        state = self._download_menu_state[state_id]
+        mode = state.get("mode", "audio")
+
+        def mark(value: str, selected: str) -> str:
+            return f"* {value.title()}" if value == selected else value.title()
+
+        rows = [
+            [
+                InlineKeyboardButton(mark("audio", mode), callback_data=f"dl:mode:{state_id}:audio"),
+                InlineKeyboardButton(mark("video", mode), callback_data=f"dl:mode:{state_id}:video"),
+                InlineKeyboardButton(mark("both", mode), callback_data=f"dl:mode:{state_id}:both"),
+            ],
+            [
+                InlineKeyboardButton("Run", callback_data=f"dl:run:{state_id}"),
+                InlineKeyboardButton("Cancel", callback_data=f"dl:cancel:{state_id}"),
+            ],
+        ]
+        return InlineKeyboardMarkup(rows)
+
+    def _render_download_menu_text(self, state: dict) -> str:
+        url = state.get("url", "")
+        if len(url) > 72:
+            url = url[:69] + "..."
+        return (
+            "Download options\n\n"
+            f"URL: {url}\n"
+            f"Mode: {state.get('mode', 'audio')}\n\n"
+            "Audio -> mp3, video -> mp4, both -> sends both files"
+        )
+
+    async def _handle_download_callback(self, query, data: str) -> None:
+        parts = data.split(":")
+        if len(parts) < 3:
+            await query.answer(text="Invalid download action.")
+            return
+
+        action = parts[1]
+        state_id = parts[2]
+        state = self._download_menu_state.get(state_id)
+        if not state:
+            await query.answer(text="Download menu expired.")
+            return
+
+        if action == "cancel":
+            self._download_menu_state.pop(state_id, None)
+            await query.edit_message_text("Download cancelled.", reply_markup=None)
+            await query.answer()
+            return
+
+        if action == "mode":
+            if len(parts) < 4:
+                await query.answer(text="Invalid selection.")
+                return
+            value = parts[3]
+            if value in {"audio", "video", "both"}:
+                state["mode"] = value
+            else:
+                await query.answer(text="Invalid selection.")
+                return
+            await query.edit_message_text(
+                self._render_download_menu_text(state),
+                reply_markup=self._build_download_keyboard(state_id),
+                disable_web_page_preview=True,
+            )
+            await query.answer()
+            return
+
+        if action != "run":
+            await query.answer(text="Unknown download action.")
+            return
+
+        await query.edit_message_text("Downloading...")
+        await query.answer()
+        result = None
+        try:
+            from gateway.run import _gateway_runner_ref
+
+            runner = _gateway_runner_ref()
+            if runner is None or not hasattr(runner, "_download_media_from_url"):
+                raise RuntimeError("Gateway runner is not available.")
+
+            result = await runner._download_media_from_url(state["url"], state.get("mode", "audio"))
+            if not result.get("ok"):
+                await self._cleanup_download_result(result)
+                raise RuntimeError(result.get("error", "Download failed"))
+
+            await self._deliver_download_result(query, state, result)
+            self._download_menu_state.pop(state_id, None)
+        except Exception as exc:
+            if result:
+                await self._cleanup_download_result(result)
+            logger.exception("[Telegram] Download menu failed")
+            await query.edit_message_text(f"Download failed: {exc}", reply_markup=None)
+
+    async def _deliver_download_result(self, query, state: dict, result: dict) -> None:
+        message = getattr(query, "message", None)
+        chat_id = str(getattr(message, "chat_id", ""))
+        if not chat_id:
+            return
+
+        event: MessageEvent = state["event"]
+        metadata = {"thread_id": getattr(event.source, "thread_id", None)}
+        reply_to = getattr(event, "message_id", None)
+
+        downloads = result.get("downloads") or [result]
+        cleanup_dirs: list[str] = []
+        import shutil
+        try:
+            for item in downloads:
+                if not item.get("ok"):
+                    raise RuntimeError(item.get("error", "Download failed"))
+
+                file_path = item.get("file_path")
+                kind = str(item.get("kind") or "media").lower()
+                if not file_path or not os.path.exists(file_path):
+                    raise RuntimeError(f"missing {kind} file")
+
+                if os.path.getsize(file_path) > self._max_doc_bytes:
+                    raise RuntimeError(self._telegram_download_limit_text(kind))
+
+                caption = f"Downloaded {kind}"
+                if kind == "audio":
+                    await self.send_voice(chat_id, file_path, caption=caption, reply_to=reply_to, metadata=metadata)
+                elif kind == "video":
+                    await self.send_video(chat_id, file_path, caption=caption, reply_to=reply_to, metadata=metadata)
+                else:
+                    await self.send_document(
+                        chat_id,
+                        file_path,
+                        caption=caption,
+                        file_name=os.path.basename(file_path),
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
+
+                download_dir = item.get("download_dir")
+                if download_dir:
+                    cleanup_dirs.append(str(download_dir))
+        finally:
+            for download_dir in dict.fromkeys(cleanup_dirs):
+                try:
+                    shutil.rmtree(download_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+    def _telegram_download_limit_text(self, kind: str) -> str:
+        mb = self._max_doc_bytes // (1024 * 1024)
+        return f"Downloaded {kind} exceeds Telegram upload limit ({mb} MB)."
+
+    async def _cleanup_download_result(self, result: dict) -> None:
+        import shutil
+
+        cleanup_dirs: list[str] = []
+        for item in result.get("downloads") or [result]:
+            download_dir = item.get("download_dir")
+            if download_dir:
+                cleanup_dirs.append(str(download_dir))
+        for download_dir in dict.fromkeys(cleanup_dirs):
+            try:
+                shutil.rmtree(download_dir, ignore_errors=True)
+            except Exception:
+                pass
+
+    def _extract_first_url(self, text: Optional[str]) -> Optional[str]:
+        if not text:
+            return None
+        match = self._URL_RE.search(text)
+        if not match:
+            return None
+        return match.group(0).rstrip(").,>]")
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -6628,6 +7100,9 @@ class TelegramAdapter(BasePlatformAdapter):
         command_token = command_text.split(maxsplit=1)[0] if command_text else ""
         command_name = command_token.lstrip("/").split("@", 1)[0].replace("_", "-").lower()
         command_args = command_text.split(maxsplit=1)[1].strip() if len(command_text.split(maxsplit=1)) > 1 else ""
+        if command_name == "download":
+            await self._handle_download_command(update)
+            return
         if command_name == "voiceclone" and command_args.lower() in {"", "menu", "keyboard", "manage"}:
             await self._send_voiceclone_keyboard(msg)
             return
@@ -7458,40 +7933,37 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         
         # Extract reply context if this message is a reply.
-        # Prefer Telegram's native partial quote (message.quote, TextQuote)
-        # so a user replying to a single selected substring of a prior
-        # multi-section message doesn't get the whole replied-to message
-        # injected into the agent's context — which can cause the agent
-        # to act on unrelated actionable-looking text the user didn't
-        # quote (#22619). Fall back to the full replied-to message text
-        # / caption when no native quote is present.
+        # Prefer the full replied-to message text/caption over Telegram's
+        # native partial quote. Users often use Telegram replies as the
+        # easiest way to refresh the agent's context; a selected quote or
+        # short snippet can omit the surrounding details needed to understand
+        # the follow-up. If Telegram does not include full text/caption, fall
+        # back to the native quote text.
         reply_to_id = None
         reply_to_text = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
-            quote = getattr(message, "quote", None)
-            quote_text = getattr(quote, "text", None) if quote is not None else None
-            if quote_text:
-                reply_to_text = quote_text
-            else:
-                reply_to_text = (
-                    message.reply_to_message.text
-                    or message.reply_to_message.caption
-                    or None
-                )
-                if not reply_to_text:
-                    # Prefer Telegram's native rich-message echo when present;
-                    # keep the local send-time index only as a fallback for
-                    # older/unrecoverable reply payloads.
-                    reply_to_text = self._extract_rich_reply_text(message.reply_to_message)
-                if not reply_to_text:
-                    try:
-                        from gateway import rich_sent_store
-                        reply_to_text = rich_sent_store.lookup(
-                            str(chat.id), reply_to_id
-                        )
-                    except Exception:
-                        reply_to_text = None
+            reply_to_text = (
+                message.reply_to_message.text
+                or message.reply_to_message.caption
+                or None
+            )
+            if not reply_to_text:
+                # Prefer Telegram's native rich-message echo when present;
+                # keep the local send-time index only as a fallback for
+                # older/unrecoverable reply payloads.
+                reply_to_text = self._extract_rich_reply_text(message.reply_to_message)
+            if not reply_to_text:
+                try:
+                    from gateway import rich_sent_store
+                    reply_to_text = rich_sent_store.lookup(
+                        str(chat.id), reply_to_id
+                    )
+                except Exception:
+                    reply_to_text = None
+            if not reply_to_text:
+                quote = getattr(message, "quote", None)
+                reply_to_text = getattr(quote, "text", None) if quote is not None else None
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt

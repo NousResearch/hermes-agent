@@ -13,6 +13,7 @@ from gateway.work_status import (
     interpret_status_request,
     maybe_ai_status_text,
     resolve_work_status_config,
+    should_suppress_status_for_event,
 )
 
 
@@ -99,17 +100,22 @@ def test_fallback_status_uses_reply_context_for_short_followups():
     ev = event("do this")
     ev.reply_to_text = "Investigate the busy Telegram keyboard and make it modular"
     text = fallback_status_text(ev)
-    assert text.startswith("📌 [Research] From reply:")
+    assert text.startswith("Research Replied-to message: the busy Telegram keyboard")
+    assert not text.startswith("📌 [Research]")
+    assert "[Research]" in text
+    assert text.endswith(" — [Research] From reply")
     assert "busy Telegram keyboard" in text
 
 
 def test_fallback_status_for_short_message_is_not_prefixed_with_work_on():
-    assert fallback_status_text(event("Test")) == "📌 [Verify] Run tests"
+    assert fallback_status_text(event("Test")) == "Run tests — [Verify]"
 
 
 def test_status_mode_replaces_working_prefix_with_request_interpretation():
     text = fallback_status_text(event("Our pinned message is dumb. Replace Working with the mode and summarize the request interpretation."))
-    assert text == "📌 [Debug] Investigate pinned message code"
+    assert text == "Investigate pinned message code — [Debug]"
+    assert text.startswith("Investigate pinned message code")
+    assert not text.startswith("📌 [Debug]")
     assert "Working:" not in text
     assert infer_status_mode("Can you explain what broke?") == "Ask"
     assert interpret_status_request("How did the implementation go", "Ask") == "Summarize implementation outcome"
@@ -118,10 +124,24 @@ def test_status_mode_replaces_working_prefix_with_request_interpretation():
     assert interpret_status_request("What is left?", "Ask") == "Summarize remaining work"
     assert infer_status_mode("Do we need to restart") == "Ask"
     assert interpret_status_request("Do we need to restart", "Ask") == "Assess restart requirement"
-    assert fallback_status_text(event("Itsnot")) == "📌 [Debug] Investigate reported issue"
+    assert fallback_status_text(event("Itsnot")) == "Investigate reported issue — [Debug]"
     assert infer_status_mode("Plan the migration") == "Plan"
     assert interpret_status_request("Our pinned message is dumb", "Debug") == "Investigate pinned message code"
-    assert fallback_status_text(event("It is not working")) == "📌 [Debug] Investigate reported issue"
+    assert fallback_status_text(event("It is not working")) == "Investigate reported issue — [Debug]"
+
+
+def test_casual_status_suppression_rules():
+    assert should_suppress_status_for_event(event("Love it")) is True
+    assert should_suppress_status_for_event(event("Perfect")) is True
+    assert should_suppress_status_for_event(event("👍❤️")) is True
+
+    reply_event = event("do this")
+    reply_event.reply_to_text = "Investigate the busy Telegram keyboard and make it modular"
+    assert should_suppress_status_for_event(reply_event) is False
+
+    explicit_event = event("Love it")
+    setattr(explicit_event, "work_status_text", "Review deployment output")
+    assert should_suppress_status_for_event(explicit_event) is False
 
 
 @pytest.mark.asyncio
@@ -136,7 +156,7 @@ async def test_ai_status_does_not_echo_ask_question_with_answer_prefix(monkeypat
     monkeypatch.setattr("agent.auxiliary_client.extract_content_or_reasoning", fake_extract)
 
     text = await maybe_ai_status_text(WorkStatusConfig(ai_summary=True), event("How did the implementation go"))
-    assert text == "📌 [Ask] Summarize implementation outcome"
+    assert text == "Summarize implementation outcome — [Ask]"
 
 
 @pytest.mark.asyncio
@@ -158,7 +178,8 @@ async def test_start_and_finish_work_status_pins_then_edits_unpins_and_deletes(m
     handle = await adapter._start_work_status(event(), None, "session-1", lambda: gen["value"])
     assert handle is not None
     assert handle.pinned is True
-    assert adapter.sent[0][1].startswith("📌 [Build]")
+    assert adapter.sent[0][1].startswith("Build the modular pinned summary")
+    assert "[Build]" in adapter.sent[0][1]
     assert adapter.pinned == [("42", handle.message_id, {"notify": False})]
 
     await adapter._finish_work_status(
@@ -208,6 +229,13 @@ async def test_persistent_pinned_status_stays_until_description_changes(monkeypa
     assert adapter.edited == []
 
     gen["value"] = 3
+    casual = await adapter._start_work_status(event("Love it"), None, "session-casual", lambda: gen["value"])
+    assert casual is None
+    assert len(adapter.sent) == 1
+    assert adapter.edited == []
+    assert adapter.unpinned == []
+    assert adapter.deleted == []
+
     changed = await adapter._start_work_status(event("review dirty repository cleanup"), None, "session-3", lambda: gen["value"])
     assert changed is first
     assert len(adapter.sent) == 1

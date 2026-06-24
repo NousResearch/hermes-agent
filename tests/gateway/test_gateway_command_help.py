@@ -69,8 +69,8 @@ async def test_commands_sanitizes_slash_command_mentions_for_telegram(monkeypatc
         _make_event("/commands 999", Platform.TELEGRAM)
     )
 
-    assert "`/linear`" in result
-    assert "`/Linear`" not in result
+    assert "/linear" in result
+    assert "/Linear" not in result
 
 
 @pytest.mark.asyncio

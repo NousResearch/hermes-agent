@@ -499,6 +499,7 @@ from gateway.work_status import (
     maybe_ai_status_text,
     maybe_await_callback,
     resolve_work_status_config,
+    should_suppress_status_for_event,
 )
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
@@ -3751,6 +3752,8 @@ class BasePlatformAdapter(ABC):
         if not cfg.enabled:
             return None
         if getattr(event, "internal", False) or event.is_command():
+            return None
+        if should_suppress_status_for_event(event):
             return None
         if cfg.delay_seconds > 0:
             await asyncio.sleep(cfg.delay_seconds)

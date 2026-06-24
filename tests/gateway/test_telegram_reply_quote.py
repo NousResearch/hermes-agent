@@ -1,11 +1,9 @@
-"""Tests for Telegram native partial-quote handling in _build_message_event.
+"""Tests for Telegram reply context handling in _build_message_event.
 
-When a Telegram user replies using Telegram's native quote feature to
-select only part of a prior message, the adapter must use ``message.quote.text``
-(the user-selected substring) rather than ``message.reply_to_message.text``
-(the entire replied-to message). Otherwise the agent receives the full prior
-message as ``reply_to_text``, which can cause it to act on unrelated
-actionable-looking text the user did not quote (#22619).
+Telegram replies should preserve the full replied-to message text/caption when
+available. Users commonly use Telegram replies to refresh context for the agent;
+the native selected quote can be too narrow for that follow-up. If full text is
+missing, fall back to ``message.quote.text``.
 """
 
 import sys
@@ -75,8 +73,8 @@ def _make_message(
     )
 
 
-def test_native_partial_quote_used_as_reply_to_text():
-    """When ``message.quote`` is present, prefer the selected substring."""
+def test_full_reply_text_preferred_over_native_partial_quote():
+    """When both are present, prefer full replied-to text over selected quote."""
     from gateway.platforms.base import MessageType
 
     adapter = _make_adapter()
@@ -90,7 +88,9 @@ def test_native_partial_quote_used_as_reply_to_text():
 
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
-    assert event.reply_to_text == "Item B: rotate keys"
+    assert event.reply_to_text == (
+        "Briefing:\n- Item A: deploy fix\n- Item B: rotate keys\n- Item C: update docs"
+    )
     assert event.reply_to_message_id == "42"
 
 

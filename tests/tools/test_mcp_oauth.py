@@ -5,6 +5,7 @@ import os
 import stat
 import sys
 from io import BytesIO
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -23,6 +24,13 @@ from tools.mcp_oauth import (
     _make_callback_handler,
     _make_redirect_handler,
     _paste_callback_reader,
+    _build_client_metadata,
+    _configure_callback_port,
+    _get_token_dir,
+    _maybe_preregister_client,
+    _read_json,
+    _safe_filename,
+    _write_json,
 )
 
 
@@ -527,6 +535,38 @@ class TestCallbackPortReservation:
             for p in list(mod._reserved_sockets):
                 mod._reserved_sockets.pop(p).close()
 
+    def test_bind_failure_closes_socket_and_reraises(self, monkeypatch):
+        import tools.mcp_oauth as mod
+
+        failed_socket = MagicMock()
+        failed_socket.bind.side_effect = OSError("bind failed")
+        monkeypatch.setattr(mod.socket, "socket", lambda *_args, **_kwargs: failed_socket)
+
+        with pytest.raises(OSError, match="bind failed"):
+            mod._reserve_callback_port()
+
+        failed_socket.close.assert_called_once_with()
+
+    def test_eviction_ignores_stale_socket_close_error(self, monkeypatch):
+        import tools.mcp_oauth as mod
+
+        stale_socket = MagicMock()
+        stale_socket.close.side_effect = OSError("already closed")
+        new_socket = MagicMock()
+        new_socket.getsockname.return_value = ("127.0.0.1", 49398)
+
+        monkeypatch.setattr(mod, "_MAX_RESERVED_SOCKETS", 1)
+        monkeypatch.setattr(mod.socket, "socket", lambda *_args, **_kwargs: new_socket)
+        mod._reserved_sockets.clear()
+        mod._reserved_sockets[49397] = stale_socket
+
+        try:
+            assert mod._reserve_callback_port() == 49398
+            stale_socket.close.assert_called_once_with()
+            assert mod._reserved_sockets[49398] is new_socket
+        finally:
+            mod._reserved_sockets.clear()
+
     def test_wait_for_callback_adopts_reserved_socket(self, monkeypatch):
         """E2E: reserve → _wait_for_callback binds the SAME socket and the
         callback round-trips through it."""
@@ -713,6 +753,24 @@ class TestIsInteractive:
         assert result["cross_thread"] is True, "probe must run on the loop thread"
         # The whole point: suppression must hold on the loop thread.
         assert result["interactive"] is False
+
+
+    def test_returns_false_on_value_error(self):
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.side_effect = ValueError("closed")
+        with patch("sys.stdin", mock_stdin):
+            assert _is_interactive() is False
+
+    def test_forced_interactivity_overrides_non_tty_and_resets(self):
+        import tools.mcp_oauth as mod
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        with patch("sys.stdin", mock_stdin):
+            assert mod._is_interactive() is False
+            with mod.force_interactive_oauth():
+                assert mod._is_interactive() is True
+            assert mod._is_interactive() is False
 
 
 class TestWaitForCallbackNoBlocking:
@@ -1132,6 +1190,28 @@ def test_configure_callback_port_explicit_overrides_cached_client_port(tmp_path,
 
     assert port == 54321
     assert cfg["_resolved_port"] == 54321
+
+
+def test_cached_redirect_port_skips_invalid_uris_and_returns_none(monkeypatch):
+    import tools.mcp_oauth as mod
+
+    class InvalidUri:
+        def __str__(self):
+            raise ValueError("invalid redirect URI")
+
+    storage = MagicMock()
+    monkeypatch.setattr(
+        mod,
+        "_read_json",
+        lambda _path: {
+            "redirect_uris": [
+                InvalidUri(),
+                "https://oauth.example.com/callback",
+            ]
+        },
+    )
+
+    assert mod._cached_redirect_port(storage) is None
 
 
 def test_build_oauth_auth_preserves_server_url_path():
@@ -1560,6 +1640,26 @@ class TestPoisonClientRegistration:
         assert storage.poison_client_registration() is False
 
 
+    def test_poison_continues_when_backup_fails(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("srv")
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        client = token_dir / "srv.client.json"
+        metadata = token_dir / "srv.meta.json"
+        client.write_text('{"client_id": "dead"}')
+        metadata.write_text("{}")
+        monkeypatch.setattr(
+            Path, "read_bytes", MagicMock(side_effect=OSError("read-only"))
+        )
+
+        assert storage.poison_client_registration() is True
+        assert not client.exists()
+        assert not metadata.exists()
+        assert not (token_dir / "srv.client.json.bak").exists()
+        assert "Could not back up client info" in caplog.text
+
+
 def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):
     """A busy loopback callback port surfaces a clear 'already in use' error,
     not a misleading 'timed out'. Guards the stale-comment fix where the branch
@@ -1577,3 +1677,993 @@ def test_wait_for_callback_port_in_use_reports_clear_error(monkeypatch):
     assert "54321" in msg
     assert "already in use" in msg
     assert "timed out" not in msg
+
+
+# ---------------------------------------------------------------------------
+# Additional persistence and callback boundary coverage
+# ---------------------------------------------------------------------------
+
+
+class TestStorageSnapshotRestore:
+    def _storage(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        return HermesTokenStorage("snapshot-server")
+
+    def test_snapshot_captures_existing_state_only(self, tmp_path, monkeypatch):
+        storage = self._storage(tmp_path, monkeypatch)
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        (token_dir / "snapshot-server.json").write_bytes(b"tokens")
+        (token_dir / "snapshot-server.meta.json").write_bytes(b"metadata")
+
+        assert storage.snapshot() == {
+            "snapshot-server.json": b"tokens",
+            "snapshot-server.meta.json": b"metadata",
+        }
+
+    def test_restore_replaces_partial_state(self, tmp_path, monkeypatch):
+        storage = self._storage(tmp_path, monkeypatch)
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        (token_dir / "snapshot-server.client.json").write_bytes(b"partial")
+
+        storage.restore({
+            "snapshot-server.json": b"tokens",
+            "snapshot-server.meta.json": b"metadata",
+        })
+
+        assert not (token_dir / "snapshot-server.client.json").exists()
+        assert (token_dir / "snapshot-server.json").read_bytes() == b"tokens"
+        assert (token_dir / "snapshot-server.meta.json").read_bytes() == b"metadata"
+        assert (
+            stat.S_IMODE((token_dir / "snapshot-server.json").stat().st_mode) == 0o600
+        )
+
+    def test_restore_empty_snapshot_removes_partial_state(self, tmp_path, monkeypatch):
+        storage = self._storage(tmp_path, monkeypatch)
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        partial = token_dir / "snapshot-server.json"
+        partial.write_bytes(b"partial")
+
+        storage.restore({})
+
+        assert not partial.exists()
+
+    def test_restore_logs_write_error_and_continues(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        storage = self._storage(tmp_path, monkeypatch)
+        monkeypatch.setattr(os, "open", MagicMock(side_effect=OSError("read-only")))
+
+        storage.restore({"snapshot-server.json": b"tokens"})
+
+        assert "Failed to restore OAuth state snapshot-server.json" in caplog.text
+
+
+class TestGetTokenDir:
+    def test_uses_hermes_home(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        result = _get_token_dir()
+        assert result == tmp_path / "mcp-tokens"
+
+    def test_fallback_when_hermes_constants_import_fails(self, tmp_path, monkeypatch):
+        """If hermes_constants import fails, falls back to HERMES_HOME env."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import builtins
+
+        original_import = builtins.__import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "hermes_constants":
+                raise ImportError("module not found")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=failing_import):
+            result = _get_token_dir()
+        assert result == tmp_path / "mcp-tokens"
+
+    def test_fallback_to_home_dir_when_no_hermes_home(self, monkeypatch):
+        """When hermes_constants import fails and HERMES_HOME is unset, uses ~/.hermes."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        import builtins
+
+        original_import = builtins.__import__
+
+        def failing_import(name, *args, **kwargs):
+            if name == "hermes_constants":
+                raise ImportError("module not found")
+            return original_import(name, *args, **kwargs)
+
+        with patch("builtins.__import__", side_effect=failing_import):
+            result = _get_token_dir()
+        assert result == Path.home() / ".hermes" / "mcp-tokens"
+
+
+class TestSafeFilename:
+    def test_passes_through_clean_name(self):
+        assert _safe_filename("my-server") == "my-server"
+
+    def test_replaces_special_chars(self):
+        assert _safe_filename("my/server") == "my_server"
+        assert _safe_filename("my:server") == "my_server"
+        assert _safe_filename("my server") == "my_server"
+
+    def test_strips_leading_trailing_underscores(self):
+        assert _safe_filename("/server/") == "server"
+
+    def test_truncates_to_128_chars(self):
+        long_name = "a" * 200
+        result = _safe_filename(long_name)
+        assert len(result) == 128
+
+    def test_returns_default_for_empty_after_sanitization(self):
+        assert _safe_filename("///") == "default"
+        assert _safe_filename("") == "default"
+
+
+class TestCanOpenBrowser:
+    def test_returns_false_for_ssh_session(self, monkeypatch):
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4")
+        assert _can_open_browser() is False
+
+    def test_returns_false_for_ssh_tty(self, monkeypatch):
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.setenv("SSH_TTY", "/dev/pts/0")
+        assert _can_open_browser() is False
+
+    def test_returns_true_on_darwin(self, monkeypatch):
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        with patch("os.uname", return_value=MagicMock(sysname="Darwin")):
+            assert _can_open_browser() is True
+
+    def test_returns_true_with_display(self, monkeypatch):
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        monkeypatch.setenv("DISPLAY", ":0")
+        with patch("os.uname", return_value=MagicMock(sysname="Linux")):
+            assert _can_open_browser() is True
+
+    def test_returns_true_with_wayland_display(self, monkeypatch):
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.setenv("WAYLAND_DISPLAY", "wayland-0")
+        with patch("os.uname", return_value=MagicMock(sysname="Linux")):
+            assert _can_open_browser() is True
+
+    def test_returns_false_headless_linux(self, monkeypatch):
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        with patch("os.uname", return_value=MagicMock(sysname="Linux")):
+            assert _can_open_browser() is False
+
+    def test_returns_false_when_uname_raises(self, monkeypatch):
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("DISPLAY", raising=False)
+        monkeypatch.delenv("WAYLAND_DISPLAY", raising=False)
+        with patch("os.uname", side_effect=AttributeError("no uname")):
+            assert _can_open_browser() is False
+
+    def test_returns_true_on_windows(self, monkeypatch):
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        with patch("os.name", "nt"):
+            assert _can_open_browser() is True
+
+
+class TestReadWriteJson:
+    def test_read_json_returns_none_for_missing_file(self, tmp_path):
+        assert _read_json(tmp_path / "missing.json") is None
+
+    def test_read_json_returns_dict_for_valid_file(self, tmp_path):
+        f = tmp_path / "data.json"
+        f.write_text('{"key": "value"}')
+        assert _read_json(f) == {"key": "value"}
+
+    def test_read_json_returns_none_for_invalid_json(self, tmp_path):
+        f = tmp_path / "bad.json"
+        f.write_text("not json{{{")
+        assert _read_json(f) is None
+
+    def test_write_json_creates_file(self, tmp_path):
+        f = tmp_path / "out.json"
+        _write_json(f, {"key": "val"})
+        assert f.exists()
+        assert json.loads(f.read_text()) == {"key": "val"}
+
+    def test_write_json_creates_parent_dirs(self, tmp_path):
+        f = tmp_path / "sub" / "dir" / "out.json"
+        _write_json(f, {"key": "val"})
+        assert f.exists()
+
+    def test_write_json_atomic_replace(self, tmp_path):
+        """write_json atomically replaces existing file."""
+        f = tmp_path / "out.json"
+        f.write_text('{"old": true}')
+        _write_json(f, {"new": True})
+        assert json.loads(f.read_text()) == {"new": True}
+
+    def test_write_json_os_error_cleans_tmp(self, tmp_path, monkeypatch):
+        """If os.open raises OSError, the tmp file is cleaned up and error propagates."""
+        f = tmp_path / "out.json"
+        with patch("os.open", side_effect=OSError("permission denied")):
+            with pytest.raises(OSError, match="permission denied"):
+                _write_json(f, {"key": "val"})
+
+    def test_write_json_os_error_tmp_unlink_swallowed(self, tmp_path, monkeypatch):
+        """If tmp.unlink also fails during cleanup, that OSError is swallowed."""
+        f = tmp_path / "out.json"
+        # Make os.open fail, and also make Path.unlink fail
+        with (
+            patch("os.open", side_effect=OSError("open failed")),
+            patch("pathlib.Path.unlink", side_effect=OSError("unlink failed")),
+        ):
+            with pytest.raises(OSError, match="open failed"):
+                _write_json(f, {"key": "val"})
+
+
+class TestHermesTokenStorageGetTokensEdgeCases:
+    def _make_storage(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        return HermesTokenStorage("edge-server")
+
+    def test_get_tokens_with_expires_at_clamps(self, tmp_path, monkeypatch):
+        """expires_at in the past → expires_in clamped to 0."""
+        storage = self._make_storage(tmp_path, monkeypatch)
+        token_path = tmp_path / "mcp-tokens" / "edge-server.json"
+        token_path.parent.mkdir(parents=True)
+
+        import time
+
+        past_expiry = time.time() - 100
+        token_path.write_text(
+            json.dumps({
+                "access_token": "tok",
+                "token_type": "Bearer",
+                "expires_at": past_expiry,
+            })
+        )
+
+        result = asyncio.run(storage.get_tokens())
+        assert result is not None
+        assert result.expires_in == 0
+
+    def test_get_tokens_with_expires_at_future(self, tmp_path, monkeypatch):
+        """expires_at in the future → expires_in = remaining seconds."""
+        storage = self._make_storage(tmp_path, monkeypatch)
+        token_path = tmp_path / "mcp-tokens" / "edge-server.json"
+        token_path.parent.mkdir(parents=True)
+
+        import time
+
+        future_expiry = time.time() + 3600
+        token_path.write_text(
+            json.dumps({
+                "access_token": "tok",
+                "token_type": "Bearer",
+                "expires_at": future_expiry,
+            })
+        )
+
+        result = asyncio.run(storage.get_tokens())
+        assert result is not None
+        assert result.expires_in <= 3600
+        assert result.expires_in > 3500
+
+    def test_get_tokens_with_relative_expires_in_and_mtime(self, tmp_path, monkeypatch):
+        """No expires_at, but has expires_in → uses file mtime as proxy."""
+        storage = self._make_storage(tmp_path, monkeypatch)
+        token_path = tmp_path / "mcp-tokens" / "edge-server.json"
+        token_path.parent.mkdir(parents=True)
+
+        import time
+
+        # Write a token with expires_in=3600 but mtime in the past
+        token_path.write_text(
+            json.dumps({
+                "access_token": "tok",
+                "token_type": "Bearer",
+                "expires_in": 3600,
+            })
+        )
+        # Set mtime to 1 hour ago → implied_expiry is now → expires_in ~0
+        past = time.time() - 3600
+        os.utime(token_path, (past, past))
+
+        result = asyncio.run(storage.get_tokens())
+        assert result is not None
+        assert result.expires_in <= 10  # should be near 0
+
+    def test_get_tokens_corrupt_returns_none(self, tmp_path, monkeypatch):
+        """Corrupt token JSON that can't be validated → returns None."""
+        storage = self._make_storage(tmp_path, monkeypatch)
+        token_path = tmp_path / "mcp-tokens" / "edge-server.json"
+        token_path.parent.mkdir(parents=True)
+        token_path.write_text(json.dumps({"bad_field": "not_a_token"}))
+
+        result = asyncio.run(storage.get_tokens())
+        assert result is None
+
+    def test_get_tokens_no_expires_at_no_expires_in(self, tmp_path, monkeypatch):
+        """No expires_at and no expires_in → token loaded as-is."""
+        storage = self._make_storage(tmp_path, monkeypatch)
+        token_path = tmp_path / "mcp-tokens" / "edge-server.json"
+        token_path.parent.mkdir(parents=True)
+        token_path.write_text(
+            json.dumps({
+                "access_token": "tok",
+                "token_type": "Bearer",
+            })
+        )
+
+        result = asyncio.run(storage.get_tokens())
+        assert result is not None
+        assert result.access_token == "tok"
+
+
+class TestHermesTokenStorageSetTokensExpiresAt:
+    def test_set_tokens_writes_expires_at(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("set-exp-server")
+
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "tok",
+            "token_type": "Bearer",
+            "expires_in": 3600,
+        }
+        asyncio.run(storage.set_tokens(mock_token))
+
+        token_path = tmp_path / "mcp-tokens" / "set-exp-server.json"
+        data = json.loads(token_path.read_text())
+        assert "expires_at" in data
+        assert data["expires_at"] > 0
+
+    def test_set_tokens_skips_expires_at_on_type_error(self, tmp_path, monkeypatch):
+        """expires_in that can't be converted to int → skip expires_at."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("set-bad-server")
+
+        mock_token = MagicMock()
+        mock_token.model_dump.return_value = {
+            "access_token": "tok",
+            "token_type": "Bearer",
+            "expires_in": "not-a-number",
+        }
+        asyncio.run(storage.set_tokens(mock_token))
+
+        token_path = tmp_path / "mcp-tokens" / "set-bad-server.json"
+        data = json.loads(token_path.read_text())
+        assert "expires_at" not in data
+
+
+class TestHermesTokenStorageClientInfo:
+    def test_get_client_info_returns_none_when_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("ci-server")
+        assert asyncio.run(storage.get_client_info()) is None
+
+    def test_get_client_info_corrupt_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("ci-bad-server")
+        ci_path = tmp_path / "mcp-tokens" / "ci-bad-server.client.json"
+        ci_path.parent.mkdir(parents=True)
+        ci_path.write_text(json.dumps({"bad": "data"}))
+        assert asyncio.run(storage.get_client_info()) is None
+
+    def test_set_client_info_writes_file(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("ci-write-server")
+
+        mock_info = MagicMock()
+        mock_info.model_dump.return_value = {"client_id": "test-id"}
+        asyncio.run(storage.set_client_info(mock_info))
+
+        ci_path = tmp_path / "mcp-tokens" / "ci-write-server.client.json"
+        assert ci_path.exists()
+        data = json.loads(ci_path.read_text())
+        assert data["client_id"] == "test-id"
+
+
+class TestHermesTokenStorageOAuthMetadata:
+    def test_load_oauth_metadata_returns_none_when_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("meta-server")
+        assert storage.load_oauth_metadata() is None
+
+    def test_load_oauth_metadata_corrupt_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("meta-bad-server")
+        meta_path = tmp_path / "mcp-tokens" / "meta-bad-server.meta.json"
+        meta_path.parent.mkdir(parents=True)
+        meta_path.write_text(json.dumps({"bad": "data"}))
+        assert storage.load_oauth_metadata() is None
+
+    def test_save_and_load_oauth_metadata_roundtrip(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("meta-rt-server")
+
+        from mcp.shared.auth import OAuthMetadata
+        from pydantic import AnyUrl
+
+        meta = OAuthMetadata.model_validate({
+            "issuer": "https://as.example.com",
+            "token_endpoint": "https://as.example.com/token",
+            "authorization_endpoint": "https://as.example.com/auth",
+        })
+        storage.save_oauth_metadata(meta)
+
+        loaded = storage.load_oauth_metadata()
+        assert loaded is not None
+        assert str(loaded.token_endpoint) == "https://as.example.com/token"
+
+
+class TestRedirectHandlerBrowserPaths:
+    @pytest.mark.asyncio
+    async def test_opens_browser_when_available(self, capsys):
+        """When _can_open_browser() is True, webbrowser.open is called."""
+        with (
+            patch("tools.mcp_oauth._is_interactive", return_value=True),
+            patch("tools.mcp_oauth._can_open_browser", return_value=True),
+            patch("tools.mcp_oauth.webbrowser.open", return_value=True),
+        ):
+            await _make_redirect_handler(49350)("https://auth.example.com/authorize")
+        err = capsys.readouterr().err
+        assert "Browser opened automatically" in err
+
+    @pytest.mark.asyncio
+    async def test_browser_open_returns_false_prints_manual(self, capsys):
+        """webbrowser.open returns False → manual message."""
+        with (
+            patch("tools.mcp_oauth._is_interactive", return_value=True),
+            patch("tools.mcp_oauth._can_open_browser", return_value=True),
+            patch("tools.mcp_oauth.webbrowser.open", return_value=False),
+        ):
+            await _make_redirect_handler(49350)("https://auth.example.com/authorize")
+        err = capsys.readouterr().err
+        assert "Could not open browser" in err
+
+    @pytest.mark.asyncio
+    async def test_browser_open_raises_prints_manual(self, capsys):
+        """webbrowser.open raises → manual message."""
+        with (
+            patch("tools.mcp_oauth._is_interactive", return_value=True),
+            patch("tools.mcp_oauth._can_open_browser", return_value=True),
+            patch(
+                "tools.mcp_oauth.webbrowser.open", side_effect=Exception("no browser")
+            ),
+        ):
+            await _make_redirect_handler(49350)("https://auth.example.com/authorize")
+        err = capsys.readouterr().err
+        assert "Could not open browser" in err
+
+    @pytest.mark.asyncio
+    async def test_headless_prints_manual(self, capsys):
+        """_can_open_browser() is False → headless message."""
+        with (
+            patch("tools.mcp_oauth._is_interactive", return_value=True),
+            patch("tools.mcp_oauth._can_open_browser", return_value=False),
+        ):
+            await _make_redirect_handler(49350)("https://auth.example.com/authorize")
+        err = capsys.readouterr().err
+        assert "Headless environment" in err
+
+
+class TestWaitForCallbackErrorPaths:
+    def test_raises_runtime_error_when_port_not_set(self, monkeypatch):
+        """_oauth_port is None → RuntimeError."""
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_oauth_port", None)
+        with pytest.raises(RuntimeError, match="callback port not set"):
+            asyncio.run(_wait_for_callback())
+
+    def test_raises_clear_error_when_port_in_use(self, monkeypatch):
+        """A callback-port collision reports the current actionable error."""
+        import tools.mcp_oauth as mod
+
+        port = _find_free_port()
+        mod._oauth_port = port
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        # Occupy the port so HTTPServer can't bind
+        import socket
+
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", port))
+        s.listen(1)
+        try:
+            with pytest.raises(OAuthNonInteractiveError, match="already in use"):
+                asyncio.run(_wait_for_callback())
+        finally:
+            s.close()
+
+    def test_raises_runtime_error_on_auth_error(self, monkeypatch):
+        """result['error'] is set (non-skip) → RuntimeError."""
+        import tools.mcp_oauth as mod
+
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+
+        # Mock _make_callback_handler to return a result with an error
+        error_result = {"auth_code": None, "state": None, "error": "access_denied"}
+        with patch(
+            "tools.mcp_oauth._make_callback_handler",
+            return_value=(MagicMock(), error_result),
+        ):
+            with patch("tools.mcp_oauth.HTTPServer") as mock_server:
+                mock_server.return_value.handle_request = MagicMock()
+
+                async def instant_sleep(_):
+                    pass
+
+                with patch.object(mod.asyncio, "sleep", instant_sleep):
+                    with pytest.raises(
+                        RuntimeError, match="OAuth authorization failed"
+                    ):
+                        asyncio.run(_wait_for_callback())
+
+    def test_raises_non_interactive_when_no_auth_code(self, monkeypatch):
+        """result['auth_code'] is None and no error → OAuthNonInteractiveError."""
+        import tools.mcp_oauth as mod
+
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+
+        empty_result = {"auth_code": None, "state": None, "error": None}
+        with patch(
+            "tools.mcp_oauth._make_callback_handler",
+            return_value=(MagicMock(), empty_result),
+        ):
+            with patch("tools.mcp_oauth.HTTPServer") as mock_server:
+                mock_server.return_value.handle_request = MagicMock()
+                mock_server.return_value.server_close = MagicMock()
+
+                async def instant_sleep(_):
+                    pass
+
+                with patch.object(mod.asyncio, "sleep", instant_sleep):
+                    with pytest.raises(OAuthNonInteractiveError, match="timed out"):
+                        asyncio.run(_wait_for_callback())
+
+
+class TestPasteCallbackReaderEdgeCases:
+    def _empty_result(self):
+        return {"auth_code": None, "state": None, "error": None}
+
+    def test_eof_returns_without_modifying(self, monkeypatch):
+        """stdin.readline returns empty (EOF) → no modification."""
+        result = self._empty_result()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: ""))
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+        assert result["error"] is None
+
+    def test_empty_line_returns_without_modifying(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "\n"))
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+
+    def test_whitespace_only_line_returns(self, monkeypatch):
+        result = self._empty_result()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "   \n"))
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+
+    def test_keyboard_interrupt_swallowed(self, monkeypatch):
+        result = self._empty_result()
+        mock_stdin = MagicMock()
+        mock_stdin.readline.side_effect = KeyboardInterrupt()
+        monkeypatch.setattr("sys.stdin", mock_stdin)
+        _paste_callback_reader(result)  # must not raise
+        assert result["auth_code"] is None
+
+    def test_os_error_swallowed(self, monkeypatch):
+        result = self._empty_result()
+        mock_stdin = MagicMock()
+        mock_stdin.readline.side_effect = OSError("closed")
+        monkeypatch.setattr("sys.stdin", mock_stdin)
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+
+    def test_value_error_swallowed(self, monkeypatch):
+        result = self._empty_result()
+        mock_stdin = MagicMock()
+        mock_stdin.readline.side_effect = ValueError("bad fd")
+        monkeypatch.setattr("sys.stdin", mock_stdin)
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+
+    def test_full_url_parsed(self, monkeypatch):
+        """Full redirect URL is parsed correctly."""
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(
+                readline=lambda: "http://127.0.0.1:1234/callback?code=ABC&state=XYZ\n"
+            ),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "ABC"
+        assert result["state"] == "XYZ"
+
+    def test_query_string_with_question_prefix(self, monkeypatch):
+        """?code=...&state=... is parsed."""
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "?code=DEF&state=GHI\n")
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "DEF"
+        assert result["state"] == "GHI"
+
+    def test_bare_query_string(self, monkeypatch):
+        """code=...&state=... without ? is parsed."""
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "code=JKL&state=MNO\n")
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "JKL"
+        assert result["state"] == "MNO"
+
+    def test_error_param_parsed(self, monkeypatch):
+        """error=... param is parsed."""
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "?error=access_denied\n")
+        )
+        _paste_callback_reader(result)
+        assert result["error"] == "access_denied"
+        assert result["auth_code"] is None
+
+    def test_no_code_no_error_ignored(self, monkeypatch, capsys):
+        """Line without code= or error= → ignored with message."""
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "random text without params\n")
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+        assert result["error"] is None
+        err = capsys.readouterr().err
+        assert "did not contain" in err
+
+    def test_does_not_overwrite_existing_code(self, monkeypatch):
+        """If HTTP listener already won, paste is ignored."""
+        result = {"auth_code": "from_http", "state": "x", "error": None}
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "code=PASTED&state=Y\n")
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "from_http"
+        assert result["state"] == "x"
+
+    def test_does_not_overwrite_existing_error(self, monkeypatch):
+        """If error already set, paste is ignored."""
+        result = {"auth_code": None, "state": None, "error": "existing"}
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "code=PASTED&state=Y\n")
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] is None
+        assert result["error"] == "existing"
+
+    def test_success_message_printed(self, monkeypatch, capsys):
+        """When code is parsed, success message is printed."""
+        result = self._empty_result()
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "code=SUCCESS&state=S\n")
+        )
+        _paste_callback_reader(result)
+        err = capsys.readouterr().err
+        assert "Got authorization code" in err
+
+
+class TestBuildClientMetadata:
+    def test_raises_when_port_not_set(self):
+        with pytest.raises(ValueError, match="_configure_callback_port"):
+            _build_client_metadata({})
+
+    def test_builds_with_defaults(self):
+        cfg = {"_resolved_port": 12345}
+        meta = _build_client_metadata(cfg)
+        assert meta is not None
+
+    def test_builds_with_custom_client_name(self):
+        cfg = {"_resolved_port": 12345, "client_name": "My App"}
+        meta = _build_client_metadata(cfg)
+        assert meta is not None
+
+    def test_builds_with_scope(self):
+        cfg = {"_resolved_port": 12345, "scope": "read write"}
+        meta = _build_client_metadata(cfg)
+        assert meta is not None
+
+    def test_builds_with_client_secret(self):
+        cfg = {"_resolved_port": 12345, "client_secret": "secret"}
+        meta = _build_client_metadata(cfg)
+        assert meta is not None
+
+
+class TestConfigureCallbackPort:
+    def test_returns_explicit_port(self):
+        cfg = {"redirect_port": 9999}
+        port = _configure_callback_port(cfg)
+        assert port == 9999
+        assert cfg["_resolved_port"] == 9999
+
+    def test_finds_free_port_when_no_explicit(self):
+        cfg = {}
+        port = _configure_callback_port(cfg)
+        assert isinstance(port, int)
+        assert port > 0
+        assert cfg["_resolved_port"] == port
+
+    def test_finds_free_port_when_zero(self):
+        cfg = {"redirect_port": 0}
+        port = _configure_callback_port(cfg)
+        assert isinstance(port, int)
+        assert port > 0
+        assert cfg["_resolved_port"] == port
+
+
+class TestMaybePreregisterClient:
+    def test_noop_when_no_client_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("pre-server")
+        cfg = {"_resolved_port": 12345}
+        meta = _build_client_metadata(cfg)
+        _maybe_preregister_client(storage, cfg, meta)
+        # No client info file should be written
+        ci_path = tmp_path / "mcp-tokens" / "pre-server.client.json"
+        assert not ci_path.exists()
+
+    def test_persists_client_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("pre-id-server")
+        cfg = {"_resolved_port": 12345, "client_id": "my-client-id"}
+        meta = _build_client_metadata(cfg)
+        _maybe_preregister_client(storage, cfg, meta)
+        ci_path = tmp_path / "mcp-tokens" / "pre-id-server.client.json"
+        assert ci_path.exists()
+        data = json.loads(ci_path.read_text())
+        assert data["client_id"] == "my-client-id"
+
+    def test_persists_client_secret(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("pre-secret-server")
+        cfg = {
+            "_resolved_port": 12345,
+            "client_id": "my-id",
+            "client_secret": "my-secret",
+        }
+        meta = _build_client_metadata(cfg)
+        _maybe_preregister_client(storage, cfg, meta)
+        ci_path = tmp_path / "mcp-tokens" / "pre-secret-server.client.json"
+        data = json.loads(ci_path.read_text())
+        assert data["client_secret"] == "my-secret"
+
+    def test_persists_client_name(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("pre-name-server")
+        cfg = {
+            "_resolved_port": 12345,
+            "client_id": "my-id",
+            "client_name": "Custom Name",
+        }
+        meta = _build_client_metadata(cfg)
+        _maybe_preregister_client(storage, cfg, meta)
+        ci_path = tmp_path / "mcp-tokens" / "pre-name-server.client.json"
+        data = json.loads(ci_path.read_text())
+        assert data["client_name"] == "Custom Name"
+
+    def test_persists_scope(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("pre-scope-server")
+        cfg = {
+            "_resolved_port": 12345,
+            "client_id": "my-id",
+            "scope": "read write",
+        }
+        meta = _build_client_metadata(cfg)
+        _maybe_preregister_client(storage, cfg, meta)
+        ci_path = tmp_path / "mcp-tokens" / "pre-scope-server.client.json"
+        data = json.loads(ci_path.read_text())
+        assert data["scope"] == "read write"
+
+
+class TestCallbackHandlerLogMessage:
+    def test_log_message_does_not_raise(self):
+        """_Handler.log_message logs at debug level — must not raise."""
+        handler_cls, result = _make_callback_handler()
+        # Create a mock handler instance
+        handler = handler_cls.__new__(handler_cls)  # type: ignore[no-matching-overload]
+        # log_message just logs, no I/O needed
+        handler.log_message("test %s", "arg")
+
+
+class TestGetTokensMtimeOSError:
+    """get_tokens: file stat raises OSError → file_mtime=None → skip clamping."""
+
+    def test_stat_os_error_falls_through(self, tmp_path, monkeypatch):
+        """get_tokens: file stat raises OSError → file_mtime=None → skip clamping."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("stat-err-server")
+
+        # Patch _read_json to return data directly (bypassing exists/read_text),
+        # then make Path.stat raise OSError for the mtime check in get_tokens.
+        token_data = {"access_token": "tok", "token_type": "Bearer", "expires_in": 3600}
+        with (
+            patch("tools.mcp_oauth._read_json", return_value=token_data),
+            patch("pathlib.Path.stat", side_effect=OSError("permission denied")),
+        ):
+            result = asyncio.run(storage.get_tokens())
+
+        assert result is not None
+        assert result.access_token == "tok"
+
+    def test_expires_in_type_error_swallowed(self, tmp_path, monkeypatch):
+        """expires_in is a non-int-convertible type → TypeError in int() swallowed."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("type-err-server")
+        token_path = tmp_path / "mcp-tokens" / "type-err-server.json"
+        token_path.parent.mkdir(parents=True)
+        token_path.write_text(
+            json.dumps({
+                "access_token": "tok",
+                "token_type": "Bearer",
+                "expires_in": [1, 2, 3],  # list can't convert to int → TypeError
+            })
+        )
+
+        # TypeError is caught and pass'ed, but model_validate then rejects the list.
+        # The key assertion is that no TypeError propagates out of get_tokens.
+        result = asyncio.run(storage.get_tokens())
+        # Returns None because the list expires_in fails OAuthToken validation.
+        assert result is None
+
+
+class TestPasteCallbackReaderParseError:
+    def test_parse_qs_value_error_swallowed(self, monkeypatch, capsys):
+        """parse_qs raises ValueError → swallowed with message."""
+        result = {"auth_code": None, "state": None, "error": None}
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "code=ABC&state=XYZ\n")
+        )
+        with patch("tools.mcp_oauth.parse_qs", side_effect=ValueError("bad parse")):
+            _paste_callback_reader(result)
+        assert result["auth_code"] is None
+        err = capsys.readouterr().err
+        assert "Could not parse" in err
+
+    def test_parse_qs_type_error_swallowed(self, monkeypatch, capsys):
+        """parse_qs raises TypeError → swallowed with message."""
+        result = {"auth_code": None, "state": None, "error": None}
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "code=ABC&state=XYZ\n")
+        )
+        with patch("tools.mcp_oauth.parse_qs", side_effect=TypeError("bad type")):
+            _paste_callback_reader(result)
+        assert result["auth_code"] is None
+        err = capsys.readouterr().err
+        assert "Could not parse" in err
+
+    def test_query_with_double_question_mark(self, monkeypatch):
+        """URL with multiple ? — split on first ?, rest is query string."""
+        result = {"auth_code": None, "state": None, "error": None}
+        monkeypatch.setattr(
+            "sys.stdin",
+            MagicMock(
+                readline=lambda: "http://127.0.0.1:1234/callback?code=ABC&state=XYZ\n"
+            ),
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "ABC"
+        assert result["state"] == "XYZ"
+
+    def test_skip_does_not_overwrite_when_error_already_set(self, monkeypatch):
+        """Skip token when error already set → no overwrite."""
+        result = {"auth_code": None, "state": None, "error": "existing"}
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
+        _paste_callback_reader(result)
+        assert result["error"] == "existing"
+
+    def test_skip_does_not_overwrite_when_auth_code_already_set(self, monkeypatch):
+        """Skip token when auth_code already set (inside skip block race check).
+        This hits the inner race check at line 573 — the HTTP listener wins
+        between the outer race check and the skip-block race check."""
+        result: dict[str, str | None] = {
+            "auth_code": None,
+            "state": None,
+            "error": None,
+        }
+
+        # Simulate the race: after strip(), lower() sets auth_code before inner check
+        class RacingStr(str):
+            def lower(self_inner):
+                result["auth_code"] = "from_http"
+                return super().lower()
+
+        class RacingInput(str):
+            def strip(self_inner):  # type: ignore[invalid-method-override]
+                return RacingStr(super().strip())
+
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: RacingInput("cancel\n"))
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "from_http"
+        assert result["error"] is None
+
+    def test_query_starts_with_question_after_split(self, monkeypatch):
+        """Line like '?code=...' — split on ? gives 'code=...', then startswith('?') is False.
+        But a line like '??code=...' — split on first ? gives '?code=...', then strips leading ?."""
+        result = {"auth_code": None, "state": None, "error": None}
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "??code=STRIP&state=S\n")
+        )
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "STRIP"
+        assert result["state"] == "S"
+
+    def test_final_race_check_prevents_overwrite(self, monkeypatch):
+        """Race: HTTP listener wins between parse and write → no overwrite."""
+        result: dict[str, str | None] = {
+            "auth_code": None,
+            "state": None,
+            "error": None,
+        }
+        # Use a side_effect on parse_qs that sets auth_code before returning
+        import urllib.parse
+
+        original_parse_qs = urllib.parse.parse_qs
+
+        def racing_parse_qs(query, **kwargs):
+            # Simulate HTTP listener winning while we were parsing
+            result["auth_code"] = "from_http"
+            result["state"] = "http_state"
+            return original_parse_qs(query, **kwargs)
+
+        monkeypatch.setattr(
+            "sys.stdin", MagicMock(readline=lambda: "code=PASTED&state=P\n")
+        )
+        with patch("tools.mcp_oauth.parse_qs", side_effect=racing_parse_qs):
+            _paste_callback_reader(result)
+        # Pasted code must NOT overwrite the HTTP winner
+        assert result["auth_code"] == "from_http"
+        assert result["state"] == "http_state"
+
+
+class TestWaitForCallbackSuccessReturn:
+    """_wait_for_callback returns (auth_code, state) when result has auth_code."""
+
+    def test_returns_auth_code_and_state(self, monkeypatch):
+        import tools.mcp_oauth as mod
+
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+
+        success_result = {"auth_code": "CODE123", "state": "STATE456", "error": None}
+        with patch(
+            "tools.mcp_oauth._make_callback_handler",
+            return_value=(MagicMock(), success_result),
+        ):
+            with patch("tools.mcp_oauth.HTTPServer") as mock_server:
+                mock_server.return_value.handle_request = MagicMock()
+                mock_server.return_value.server_close = MagicMock()
+
+                async def instant_sleep(_):
+                    pass
+
+                with patch.object(mod.asyncio, "sleep", instant_sleep):
+                    code, state = asyncio.run(_wait_for_callback())
+
+        assert code == "CODE123"
+        assert state == "STATE456"

@@ -1,16 +1,26 @@
 from __future__ import annotations
 
+import importlib.util
 import os
 import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from hermes_cli.config import DEFAULT_CONFIG
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = REPO_ROOT / "scripts" / "docker_config_migrate.py"
+
+
+def _load_script_module():
+    spec = importlib.util.spec_from_file_location("docker_config_migrate_test_module", SCRIPT)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def _run_migration(hermes_home: Path, **env_overrides: str) -> subprocess.CompletedProcess[str]:
@@ -132,3 +142,63 @@ def test_docker_config_migrate_skip_env_leaves_config_unchanged(tmp_path: Path) 
     assert "skipping config migration" in proc.stdout
     assert config_path.read_text(encoding="utf-8") == original
     assert not list(tmp_path.glob("*.bak-*"))
+
+
+def test_docker_config_migrate_restores_backups_after_failed_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script_module()
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    original_config = yaml.safe_dump({"_config_version": 11, "gateway": {"provider": "telegram"}})
+    original_env = "TELEGRAM_BOT_TOKEN=test-token\n"
+    config_path.write_text(original_config, encoding="utf-8")
+    env_path.write_text(original_env, encoding="utf-8")
+
+    monkeypatch.setattr(module, "check_config_version", lambda: (11, DEFAULT_CONFIG["_config_version"]))
+    monkeypatch.setattr(module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(module, "get_env_path", lambda: env_path)
+
+    def _failing_migrate(*, interactive: bool, quiet: bool):
+        config_path.write_text("gateway: {}\n", encoding="utf-8")
+        env_path.write_text("", encoding="utf-8")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(module, "migrate_config", _failing_migrate)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        module.main()
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+    assert env_path.read_text(encoding="utf-8") == original_env
+    assert list(tmp_path.glob("config.yaml.bak-*"))
+    assert list(tmp_path.glob(".env.bak-*"))
+
+
+def test_docker_config_migrate_restores_backups_when_version_does_not_advance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_script_module()
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    original_config = yaml.safe_dump({"_config_version": 11, "gateway": {"provider": "telegram"}})
+    original_env = "TELEGRAM_BOT_TOKEN=test-token\n"
+    config_path.write_text(original_config, encoding="utf-8")
+    env_path.write_text(original_env, encoding="utf-8")
+
+    calls = iter([(11, DEFAULT_CONFIG["_config_version"]), (11, DEFAULT_CONFIG["_config_version"])])
+    monkeypatch.setattr(module, "check_config_version", lambda: next(calls))
+    monkeypatch.setattr(module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(module, "get_env_path", lambda: env_path)
+
+    def _non_advancing_migrate(*, interactive: bool, quiet: bool):
+        config_path.write_text("gateway: {}\n", encoding="utf-8")
+        env_path.write_text("", encoding="utf-8")
+
+    monkeypatch.setattr(module, "migrate_config", _non_advancing_migrate)
+
+    with pytest.raises(RuntimeError, match="did not advance config version"):
+        module.main()
+
+    assert config_path.read_text(encoding="utf-8") == original_config
+    assert env_path.read_text(encoding="utf-8") == original_env

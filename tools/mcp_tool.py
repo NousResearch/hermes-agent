@@ -415,13 +415,6 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
     an empty result. Structurally inspect ``McpError.error.code`` first, then
     fall back to a substring match so detection survives SDK version drift and
     servers that surface the condition as a plain message.
-
-    The substring fallback matters when a server reports method-not-found
-    without a structural ``-32601`` code (e.g. surfaced as a plain exception
-    string). Besides the canonical "method not found", many JSON-RPC
-    implementations phrase it as "Unknown method: <name>" — agentmemory's MCP
-    server is one such case (#50028). Without matching that phrasing the
-    ping→list_tools fallback never latches and the keepalive reconnect-loops.
     """
     # Structural: mcp.shared.exceptions.McpError carries ErrorData.code.
     err = getattr(exc, "error", None)
@@ -434,7 +427,6 @@ def _is_method_not_found_error(exc: BaseException) -> bool:
     return (
         str(_JSONRPC_METHOD_NOT_FOUND) in msg
         or "method not found" in msg
-        or "unknown method" in msg
         or "not found: ping" in msg
     )
 
@@ -2466,6 +2458,65 @@ def _reset_server_error(server_name: str) -> None:
     _server_error_counts[server_name] = 0
     _server_breaker_opened_at.pop(server_name, None)
 
+
+# ---------------------------------------------------------------------------
+# Connection-level circuit breaker (restart-storm guard, issue #50394)
+# ---------------------------------------------------------------------------
+#
+# The tool-call breaker above protects an already-*connected* server whose
+# individual calls start failing. It does nothing for a server that never
+# connects in the first place: ``discover_mcp_tools()`` runs on every new
+# agent/worker/cron session and re-attempts any server not already in
+# ``_servers``. A stdio server that fails to spawn (e.g. ``exec: not found``)
+# is therefore re-spawned — up to ``_MAX_INITIAL_CONNECT_RETRIES`` times — on
+# *every* session, with no cross-session cooldown. That tight respawn loop
+# churns the shared MCP event loop and destabilizes co-located healthy servers
+# (#50394).
+#
+# This breaker supervises each server's *connection* independently: after
+# ``_CONNECT_BREAKER_THRESHOLD`` consecutive failed discovery attempts the
+# server is skipped until an exponentially-growing cooldown elapses. A single
+# transient failure still retries on the next session (so a startup DNS blip
+# recovers); only a persistently-broken server backs off. A manual ``/mcp``
+# reload (which calls ``shutdown_mcp_servers()``) clears the state so a
+# corrected server reconnects immediately.
+_server_connect_failures: Dict[str, int] = {}
+_server_connect_retry_after: Dict[str, float] = {}
+_CONNECT_BREAKER_THRESHOLD = 3
+_CONNECT_BREAKER_BASE_COOLDOWN_SEC = 30.0
+_CONNECT_BREAKER_MAX_COOLDOWN_SEC = 300.0
+
+
+def _record_connect_failure(server_name: str) -> None:
+    """Bump the consecutive connect-failure count for ``server_name``.
+
+    Once the count reaches :data:`_CONNECT_BREAKER_THRESHOLD`, arm an
+    exponentially-growing cooldown during which discovery skips the server.
+    Caller must hold :data:`_lock`.
+    """
+    n = _server_connect_failures.get(server_name, 0) + 1
+    _server_connect_failures[server_name] = n
+    if n >= _CONNECT_BREAKER_THRESHOLD:
+        exp = n - _CONNECT_BREAKER_THRESHOLD
+        cooldown = min(
+            _CONNECT_BREAKER_BASE_COOLDOWN_SEC * (2 ** exp),
+            _CONNECT_BREAKER_MAX_COOLDOWN_SEC,
+        )
+        _server_connect_retry_after[server_name] = time.monotonic() + cooldown
+
+
+def _reset_connect_failure(server_name: str) -> None:
+    """Clear connect-failure state for ``server_name`` (caller holds ``_lock``)."""
+    _server_connect_failures.pop(server_name, None)
+    _server_connect_retry_after.pop(server_name, None)
+
+
+def _connect_breaker_open(server_name: str) -> bool:
+    """True if ``server_name`` is in connect-cooldown (caller holds ``_lock``)."""
+    deadline = _server_connect_retry_after.get(server_name)
+    return deadline is not None and time.monotonic() < deadline
+
+
 # ---------------------------------------------------------------------------
 # Auth-failure detection helpers (Task 6 of MCP OAuth consolidation)
 # ---------------------------------------------------------------------------
@@ -4051,7 +4102,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         new_servers = {
             k: v
             for k, v in servers.items()
-            if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
+            if k not in _servers
+            and _parse_boolish(v.get("enabled", True), default=True)
+            and not _connect_breaker_open(k)
         }
         _server_connecting.update(new_servers)
         for srv_name in new_servers:
@@ -4087,6 +4140,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                 with _lock:
                     _server_connecting.discard(name)
                     _server_connect_errors[name] = message
+                    _record_connect_failure(name)
                 logger.warning(
                     "Failed to connect to MCP server '%s'%s: %s",
                     name,
@@ -4097,6 +4151,7 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
                 with _lock:
                     _server_connecting.discard(name)
                     _server_connect_errors.pop(name, None)
+                    _reset_connect_failure(name)
 
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.
@@ -4562,6 +4617,13 @@ def shutdown_mcp_servers():
     """
     with _lock:
         servers_snapshot = list(_servers.values())
+        # Clear the connection-level circuit breaker so a manual /mcp reload
+        # retries every server immediately (a corrected config should not stay
+        # in cooldown). Done unconditionally — a persistently-broken server
+        # never lands in ``_servers``, so the fast path below must reset it
+        # too. See issue #50394.
+        _server_connect_failures.clear()
+        _server_connect_retry_after.clear()
 
     # Fast path: nothing to shut down.
     if not servers_snapshot:

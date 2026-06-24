@@ -1198,6 +1198,157 @@ class TestToolsetInjection:
 
 
 # ---------------------------------------------------------------------------
+# Connection-level circuit breaker (restart-storm guard, #50394)
+# ---------------------------------------------------------------------------
+
+class TestConnectCircuitBreaker:
+    """Per-server connection breaker that stops the cross-session respawn storm.
+
+    A persistently-broken stdio server (e.g. ``exec: not found``) used to be
+    re-spawned on every new agent/worker/cron session because
+    ``discover_mcp_tools()`` retries any server not already connected. After a
+    few consecutive failures the breaker now skips the server until a cooldown
+    elapses, so one broken server can no longer churn the shared MCP loop and
+    destabilize healthy co-located servers.
+    """
+
+    def test_breaker_engages_after_threshold(self):
+        from tools.mcp_tool import _CONNECT_BREAKER_THRESHOLD
+
+        attempts = []
+
+        async def always_fail(name, config):
+            attempts.append(name)
+            raise ConnectionError("exec: not found")
+
+        fake_config = {"broken": {"command": "bad"}}
+        fake_toolsets = {"hermes-cli": {"tools": [], "description": "CLI", "includes": []}}
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", {}), \
+             patch("tools.mcp_tool._server_connect_failures", {}), \
+             patch("tools.mcp_tool._server_connect_retry_after", {}), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._connect_server", side_effect=always_fail), \
+             patch("toolsets.TOOLSETS", fake_toolsets):
+            from tools.mcp_tool import discover_mcp_tools
+
+            # While the breaker is closed (below threshold), every session
+            # still retries — a transient blip must be allowed to recover.
+            for _ in range(_CONNECT_BREAKER_THRESHOLD):
+                discover_mcp_tools()
+            assert len(attempts) == _CONNECT_BREAKER_THRESHOLD
+
+            # Breaker now open: subsequent sessions skip the broken server
+            # entirely instead of re-spawning it.
+            discover_mcp_tools()
+            discover_mcp_tools()
+            assert len(attempts) == _CONNECT_BREAKER_THRESHOLD
+
+    def test_breaker_recovers_after_cooldown(self):
+        from tools.mcp_tool import (
+            MCPServerTask,
+            _CONNECT_BREAKER_THRESHOLD,
+            _CONNECT_BREAKER_MAX_COOLDOWN_SEC,
+        )
+
+        attempts = []
+        fixed = {"v": False}
+        mock_session = MagicMock()
+        mock_tools = [_make_mcp_tool("ping", "Ping")]
+
+        async def flaky(name, config):
+            attempts.append(name)
+            if not fixed["v"]:
+                raise ConnectionError("exec: not found")
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        fake_config = {"broken": {"command": "bad"}}
+        fake_toolsets = {"hermes-cli": {"tools": [], "description": "CLI", "includes": []}}
+        clock = {"t": 1000.0}
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", {}), \
+             patch("tools.mcp_tool._server_connect_failures", {}), \
+             patch("tools.mcp_tool._server_connect_retry_after", {}), \
+             patch("tools.mcp_tool.time.monotonic", lambda: clock["t"]), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._connect_server", side_effect=flaky), \
+             patch("toolsets.TOOLSETS", fake_toolsets):
+            from tools.mcp_tool import discover_mcp_tools
+
+            for _ in range(_CONNECT_BREAKER_THRESHOLD):
+                discover_mcp_tools()
+            assert len(attempts) == _CONNECT_BREAKER_THRESHOLD
+
+            # Within cooldown → skipped (no new attempt).
+            discover_mcp_tools()
+            assert len(attempts) == _CONNECT_BREAKER_THRESHOLD
+
+            # Advance past the cooldown and fix the server → retried & connects.
+            clock["t"] += _CONNECT_BREAKER_MAX_COOLDOWN_SEC + 1
+            fixed["v"] = True
+            result = discover_mcp_tools()
+            assert len(attempts) == _CONNECT_BREAKER_THRESHOLD + 1
+            assert "mcp_broken_ping" in result
+
+    def test_breaker_resets_on_success(self):
+        from tools.mcp_tool import MCPServerTask
+
+        fixed = {"v": False}
+        mock_session = MagicMock()
+        mock_tools = [_make_mcp_tool("ping", "Ping")]
+        failures: dict = {}
+        retry_after: dict = {}
+
+        async def flaky(name, config):
+            if not fixed["v"]:
+                raise ConnectionError("transient blip")
+            server = MCPServerTask(name)
+            server.session = mock_session
+            server._tools = mock_tools
+            return server
+
+        fake_config = {"flaky": {"command": "bad"}}
+        fake_toolsets = {"hermes-cli": {"tools": [], "description": "CLI", "includes": []}}
+
+        with patch("tools.mcp_tool._MCP_AVAILABLE", True), \
+             patch("tools.mcp_tool._servers", {}), \
+             patch("tools.mcp_tool._server_connect_failures", failures), \
+             patch("tools.mcp_tool._server_connect_retry_after", retry_after), \
+             patch("tools.mcp_tool._load_mcp_config", return_value=fake_config), \
+             patch("tools.mcp_tool._connect_server", side_effect=flaky), \
+             patch("toolsets.TOOLSETS", fake_toolsets):
+            from tools.mcp_tool import discover_mcp_tools
+
+            discover_mcp_tools()  # fails once (below threshold)
+            assert failures.get("flaky") == 1
+
+            fixed["v"] = True
+            discover_mcp_tools()  # succeeds → breaker state cleared
+            assert "flaky" not in failures
+            assert "flaky" not in retry_after
+
+    def test_shutdown_clears_connect_breaker(self):
+        """A manual /mcp reload (→ shutdown_mcp_servers) lifts the cooldown."""
+        failures = {"broken": 5}
+        retry_after = {"broken": 1e18}
+
+        with patch("tools.mcp_tool._servers", {}), \
+             patch("tools.mcp_tool._server_connect_failures", failures), \
+             patch("tools.mcp_tool._server_connect_retry_after", retry_after), \
+             patch("tools.mcp_tool._stop_mcp_loop"):
+            from tools.mcp_tool import shutdown_mcp_servers
+
+            shutdown_mcp_servers()
+            assert failures == {}
+            assert retry_after == {}
+
+
+# ---------------------------------------------------------------------------
 # Graceful fallback
 # ---------------------------------------------------------------------------
 

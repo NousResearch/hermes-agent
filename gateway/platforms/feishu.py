@@ -242,6 +242,27 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
 _FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
 
+# hc-384: adapter-owned websocket reconnection. The lark SDK's built-in
+# auto-reconnect was observed in prod to try exactly once and give up (0
+# successful reconnects across ~188 daily drops), leaving bots dead for 5–15h
+# until the next gateway restart. With self-reconnect enabled we disable the
+# SDK's reconnect and run our own backoff ladder + liveness probe (mirrors the
+# Telegram resilience pattern). See docs/FEISHU-IM-RELIABILITY-AND-STRATEGY.md.
+_FEISHU_WS_HEALTH_CHECK_INTERVAL = 45        # seconds between liveness checks
+_FEISHU_WS_RECONNECT_MAX_ATTEMPTS = 6        # in-adapter ladder length before escalating to a gateway restart
+_FEISHU_WS_RECONNECT_BASE_DELAY = 5          # seconds (5 → 10 → 20 → 40 → 60 → 60)
+_FEISHU_WS_RECONNECT_MAX_DELAY = 60          # seconds cap, matches Telegram's ladder
+_FEISHU_WS_RECONNECT_VERIFY_DELAY = 5        # seconds to let a relaunched socket establish before probing
+_FEISHU_WS_RECONNECT_CONNECT_TIMEOUT = 30    # seconds bound on a single relaunch (guards against a hung hydrate)
+_FEISHU_WS_PROBE_TIMEOUT = 10                # seconds for the /bot/v3/info liveness probe
+
+# hc-385: long-task heartbeat. Feishu's progress feedback is deliberately
+# minimal (a single reaction badge), so the heartbeat is opt-in and only
+# surfaces after a task has clearly gone long — it edits one message in place
+# rather than streaming, preserving the quiet feel for short tasks.
+_FEISHU_HEARTBEAT_RUNNING_TEMPLATE = "🔄 仍在执行,已运行约 {minutes} 分钟…"
+_FEISHU_HEARTBEAT_FINAL_TEMPLATE = "☑️ 本轮处理结束(用时约 {minutes} 分钟)"
+
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
     "feishu": "https://accounts.feishu.cn",
@@ -390,6 +411,14 @@ class FeishuAdapterSettings:
     ws_reconnect_interval: int = 120
     ws_ping_interval: Optional[int] = None
     ws_ping_timeout: Optional[int] = None
+    # hc-384: when True (default) the adapter owns websocket reconnection and
+    # disables the lark SDK's broken auto-reconnect. Set False to revert to the
+    # SDK's behaviour.
+    ws_self_reconnect: bool = True
+    # hc-385: opt-in long-task heartbeat that edits a status message in place.
+    heartbeat_enabled: bool = False
+    heartbeat_interval_seconds: int = 60
+    heartbeat_initial_delay_seconds: int = 60
     admins: frozenset[str] = frozenset()
     default_group_policy: str = ""
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
@@ -1281,6 +1310,26 @@ def _strip_edge_self_mentions(
             return remaining
 
 
+def _apply_feishu_ws_runtime_overrides(ws_client: Any, adapter: Any) -> None:
+    """Push the adapter's websocket tuning onto the lark ws client.
+
+    Also disables the SDK's built-in auto-reconnect when the adapter owns
+    reconnection (hc-384): with auto-reconnect off, the SDK's receive loop calls
+    ``_disconnect()`` (clearing ``_conn``) and stops on a silent drop, leaving a
+    detectable dead socket for the supervisor instead of the SDK's broken
+    single-shot retry that left bots dead for hours in prod.
+    """
+    try:
+        setattr(ws_client, "_reconnect_nonce", adapter._ws_reconnect_nonce)
+        setattr(ws_client, "_reconnect_interval", adapter._ws_reconnect_interval)
+        if adapter._ws_ping_interval is not None:
+            setattr(ws_client, "_ping_interval", adapter._ws_ping_interval)
+        if getattr(adapter, "_ws_self_reconnect", True):
+            setattr(ws_client, "_auto_reconnect", False)
+    except Exception:
+        logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
@@ -1294,13 +1343,7 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     original_configure = getattr(ws_client, "_configure", None)
 
     def _apply_runtime_ws_overrides() -> None:
-        try:
-            setattr(ws_client, "_reconnect_nonce", adapter._ws_reconnect_nonce)
-            setattr(ws_client, "_reconnect_interval", adapter._ws_reconnect_interval)
-            if adapter._ws_ping_interval is not None:
-                setattr(ws_client, "_ping_interval", adapter._ws_ping_interval)
-        except Exception:
-            logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
+        _apply_feishu_ws_runtime_overrides(ws_client, adapter)
 
     def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
         if adapter._ws_ping_interval is not None and "ping_interval" not in kwargs:
@@ -1435,6 +1478,14 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_future: Optional[asyncio.Future] = None
         self._ws_thread_loop: Optional[asyncio.AbstractEventLoop] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
+        # hc-384: self-reconnect supervisor state.
+        self._ws_supervisor_task: Optional[asyncio.Task] = None
+        self._ws_reconnecting: bool = False
+        # Set True only for an intentional teardown (disconnect) so the
+        # supervisor / reconnect ladder don't fight a deliberate shutdown.
+        self._intentional_disconnect: bool = False
+        # hc-385: long-task heartbeat tasks, keyed by inbound message_id.
+        self._heartbeat_tasks: Dict[str, asyncio.Task] = {}
         self._webhook_runner: Optional[Any] = None
         self._webhook_site: Optional[Any] = None
         self._event_handler: Optional[Any] = None
@@ -1570,6 +1621,18 @@ class FeishuAdapter(BasePlatformAdapter):
             ws_reconnect_interval=_coerce_required_int(extra.get("ws_reconnect_interval"), default=120, min_value=1),
             ws_ping_interval=_coerce_int(extra.get("ws_ping_interval"), default=None, min_value=1),
             ws_ping_timeout=_coerce_int(extra.get("ws_ping_timeout"), default=None, min_value=1),
+            ws_self_reconnect=_to_boolean(
+                extra.get("ws_self_reconnect", os.getenv("FEISHU_WS_SELF_RECONNECT", "true"))
+            ),
+            heartbeat_enabled=_to_boolean(
+                extra.get("heartbeat_enabled", os.getenv("FEISHU_HEARTBEAT", "false"))
+            ),
+            heartbeat_interval_seconds=_coerce_required_int(
+                extra.get("heartbeat_interval_seconds"), default=60, min_value=10
+            ),
+            heartbeat_initial_delay_seconds=_coerce_required_int(
+                extra.get("heartbeat_initial_delay_seconds"), default=60, min_value=5
+            ),
             admins=admins,
             default_group_policy=default_group_policy,
             group_rules=group_rules,
@@ -1607,6 +1670,10 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_reconnect_interval = settings.ws_reconnect_interval
         self._ws_ping_interval = settings.ws_ping_interval
         self._ws_ping_timeout = settings.ws_ping_timeout
+        self._ws_self_reconnect = settings.ws_self_reconnect
+        self._heartbeat_enabled = settings.heartbeat_enabled
+        self._heartbeat_interval = settings.heartbeat_interval_seconds
+        self._heartbeat_initial_delay = settings.heartbeat_initial_delay_seconds
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
 
@@ -1693,8 +1760,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 return False
 
             self._loop = asyncio.get_running_loop()
+            self._intentional_disconnect = False
             await self._connect_with_retry()
             self._mark_connected()
+            self._start_ws_supervisor()
             logger.info(
                 "[Feishu] Connected in %s mode (%s) after %.2fs",
                 self._connection_mode,
@@ -1712,11 +1781,36 @@ class FeishuAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Disconnect from Feishu/Lark."""
         self._running = False
+        self._intentional_disconnect = True
+        await self._cancel_ws_supervisor()
+        await self._cancel_all_heartbeats()
         await self._cancel_pending_tasks(self._pending_text_batch_tasks)
         await self._cancel_pending_tasks(self._pending_media_batch_tasks)
         self._reset_batch_buffers()
-        self._disable_websocket_auto_reconnect()
         await self._stop_webhook_server()
+        await self._teardown_ws_thread()
+        self._loop = None
+        self._event_handler = None
+        self._persist_seen_message_ids()
+        await self._release_app_lock()
+
+        self._mark_disconnected()
+        logger.info("[Feishu] Disconnected")
+
+    async def _teardown_ws_thread(self) -> None:
+        """Stop the running websocket client thread and its event loop.
+
+        Shared by ``disconnect`` (intentional shutdown) and the self-reconnect
+        ladder, which rebuilds the socket without releasing the app lock or
+        marking the adapter disconnected. Safe to call when no thread runs.
+
+        This also unwedges the zombie thread the lark SDK leaves behind on a
+        silent drop: ``Client.start`` blocks forever on an internal keep-alive
+        loop even after the receive loop has exited, so stopping the thread's
+        event loop is what lets ``start`` return and the thread die before we
+        relaunch.
+        """
+        self._disable_websocket_auto_reconnect()
 
         ws_thread_loop = self._ws_thread_loop
         if ws_thread_loop is not None and not ws_thread_loop.is_closed():
@@ -1729,7 +1823,11 @@ class FeishuAdapter(BasePlatformAdapter):
                     task.cancel()
                 ws_thread_loop.call_later(0.1, ws_thread_loop.stop)
 
-            ws_thread_loop.call_soon_threadsafe(cancel_all_tasks)
+            try:
+                ws_thread_loop.call_soon_threadsafe(cancel_all_tasks)
+            except RuntimeError:
+                # Loop was already stopped/closed between the guard and here.
+                pass
 
         ws_future = self._ws_future
         if ws_future is not None:
@@ -1740,19 +1838,12 @@ class FeishuAdapter(BasePlatformAdapter):
             except asyncio.TimeoutError:
                 logger.warning("[Feishu] Websocket thread did not exit within 10s - may be stuck")
             except asyncio.CancelledError:
-                logger.debug("[Feishu] Websocket thread cancelled during disconnect")
+                logger.debug("[Feishu] Websocket thread cancelled during teardown")
             except Exception as exc:
                 logger.debug("[Feishu] Websocket thread exited with error: %s", exc, exc_info=True)
 
         self._ws_future = None
         self._ws_thread_loop = None
-        self._loop = None
-        self._event_handler = None
-        self._persist_seen_message_ids()
-        await self._release_app_lock()
-
-        self._mark_disconnected()
-        logger.info("[Feishu] Disconnected")
 
     async def _cancel_pending_tasks(self, tasks: Dict[str, asyncio.Task]) -> None:
         pending = [task for task in tasks.values() if task and not task.done()]
@@ -1785,6 +1876,165 @@ class FeishuAdapter(BasePlatformAdapter):
         finally:
             self._webhook_runner = None
             self._webhook_site = None
+
+    # =========================================================================
+    # hc-384 — self-reconnect supervisor
+    #
+    # The lark SDK's built-in auto-reconnect was observed in prod to try once
+    # and give up (0/188 reconnects), leaving the bot dead for hours. We disable
+    # it (see _apply_runtime_ws_overrides) and own reconnection here: a
+    # supervisor task watches the socket, a backoff ladder rebuilds it, a probe
+    # verifies liveness, and exhaustion escalates to a retryable fatal error so
+    # the gateway's reconnect watcher does a full restart. Mirrors the Telegram
+    # resilience pattern (telegram.py: _handle_polling_network_error /
+    # _verify_polling_after_reconnect).
+    # =========================================================================
+
+    def _start_ws_supervisor(self) -> None:
+        """Start the background task that watches the websocket and reconnects.
+
+        No-op in webhook mode or when self-reconnect is disabled (revert flag).
+        """
+        if self._connection_mode != "websocket" or not self._ws_self_reconnect:
+            return
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        # A real asyncio loop always has create_task; guarding lets duck-typed
+        # loop doubles in tests connect without a supervisor.
+        create_task = getattr(loop, "create_task", None)
+        if create_task is None:
+            return
+        existing = self._ws_supervisor_task
+        if existing is not None and not existing.done():
+            return
+        self._ws_supervisor_task = create_task(self._supervise_websocket())
+
+    async def _cancel_ws_supervisor(self) -> None:
+        task = self._ws_supervisor_task
+        self._ws_supervisor_task = None
+        if task is None or task.done():
+            return
+        if task is asyncio.current_task():
+            # Reached from inside the supervisor itself: the ladder escalated to
+            # a fatal error, which drives disconnect(). Don't await ourselves.
+            return
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def _supervise_websocket(self) -> None:
+        """Periodically verify the websocket is alive; reconnect when it dies.
+
+        On a silent drop the SDK's receive loop clears ``_conn`` and stops
+        (auto-reconnect disabled), so ``_conn is None`` is the death signal.
+        """
+        try:
+            while self._running and not self._intentional_disconnect:
+                await asyncio.sleep(_FEISHU_WS_HEALTH_CHECK_INTERVAL)
+                if not self._running or self._intentional_disconnect:
+                    return
+                if self._ws_reconnecting:
+                    continue
+                if self._websocket_appears_dead():
+                    logger.warning(
+                        "[Feishu] Websocket appears dead (no live connection); "
+                        "starting reconnect ladder"
+                    )
+                    await self._reconnect_websocket_with_backoff()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("[Feishu] Websocket supervisor error", exc_info=True)
+
+    def _websocket_appears_dead(self) -> bool:
+        client = self._ws_client
+        if client is None:
+            return True
+        future = self._ws_future
+        if future is not None and future.done():
+            return True
+        # lark's _disconnect() sets _conn to None when the receive loop exits.
+        return getattr(client, "_conn", None) is None
+
+    async def _reconnect_websocket_with_backoff(self) -> None:
+        """Exponential-backoff reconnect ladder (mirrors Telegram's pattern).
+
+        Tears the dead socket down (without releasing the app lock), relaunches
+        it, and verifies liveness via the ``/bot/v3/info`` probe. Once the ladder
+        is exhausted, escalate to a retryable fatal error so the gateway's
+        reconnect watcher recreates the adapter — a full reconnect that
+        re-acquires the app lock and resumes auto-recovery from there.
+        """
+        if self._ws_reconnecting:
+            return
+        self._ws_reconnecting = True
+        try:
+            for attempt in range(1, _FEISHU_WS_RECONNECT_MAX_ATTEMPTS + 1):
+                if not self._running or self._intentional_disconnect:
+                    return
+                delay = min(
+                    _FEISHU_WS_RECONNECT_BASE_DELAY * (2 ** (attempt - 1)),
+                    _FEISHU_WS_RECONNECT_MAX_DELAY,
+                )
+                logger.warning(
+                    "[Feishu] Websocket reconnect attempt %d/%d in %ds",
+                    attempt, _FEISHU_WS_RECONNECT_MAX_ATTEMPTS, delay,
+                )
+                await asyncio.sleep(delay)
+                if not self._running or self._intentional_disconnect:
+                    return
+                try:
+                    await self._teardown_ws_thread()
+                    await asyncio.wait_for(
+                        self._connect_websocket(), _FEISHU_WS_RECONNECT_CONNECT_TIMEOUT
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[Feishu] Websocket reconnect attempt %d relaunch failed: %s",
+                        attempt, exc,
+                    )
+                    continue
+                if await self._verify_ws_alive():
+                    logger.info(
+                        "[Feishu] Websocket reconnected and verified on attempt %d", attempt
+                    )
+                    return
+                logger.warning(
+                    "[Feishu] Websocket reconnect attempt %d connected but failed "
+                    "liveness probe", attempt,
+                )
+            message = (
+                "Feishu websocket could not reconnect after "
+                f"{_FEISHU_WS_RECONNECT_MAX_ATTEMPTS} attempts"
+            )
+            logger.error("[Feishu] %s; escalating for gateway restart", message)
+            self._set_fatal_error("feishu_ws_reconnect_exhausted", message, retryable=True)
+            await self._notify_fatal_error()
+        finally:
+            self._ws_reconnecting = False
+
+    async def _verify_ws_alive(self) -> bool:
+        """Confirm a freshly relaunched websocket actually works.
+
+        Guards against "logs say reconnected but it's dead": a new socket object
+        can exist while the bot endpoint is unreachable. Reuses
+        ``_hydrate_bot_identity`` (a real /bot/v3/info round-trip) as the probe.
+        """
+        await asyncio.sleep(_FEISHU_WS_RECONNECT_VERIFY_DELAY)
+        if not self._running or self._intentional_disconnect:
+            return False
+        client = self._ws_client
+        if client is None or getattr(client, "_conn", None) is None:
+            return False
+        try:
+            return bool(
+                await asyncio.wait_for(self._hydrate_bot_identity(), _FEISHU_WS_PROBE_TIMEOUT)
+            )
+        except Exception:
+            return False
 
     # =========================================================================
     # Outbound — send / edit / send_image / send_voice / …
@@ -3046,18 +3296,20 @@ class FeishuAdapter(BasePlatformAdapter):
         return self._pending_processing_reactions.pop(message_id, None)
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        if not self._reactions_enabled():
-            return
-        message_id = event.message_id
-        if not message_id or message_id in self._pending_processing_reactions:
-            return
-        reaction_id = await self._add_reaction(message_id, _FEISHU_REACTION_IN_PROGRESS)
-        if reaction_id:
-            self._remember_processing_reaction(message_id, reaction_id)
+        if self._reactions_enabled():
+            message_id = event.message_id
+            if message_id and message_id not in self._pending_processing_reactions:
+                reaction_id = await self._add_reaction(message_id, _FEISHU_REACTION_IN_PROGRESS)
+                if reaction_id:
+                    self._remember_processing_reaction(message_id, reaction_id)
+        # hc-385: long-task heartbeat (opt-in, independent of reactions).
+        self._maybe_start_heartbeat(event)
 
     async def on_processing_complete(
         self, event: MessageEvent, outcome: ProcessingOutcome
     ) -> None:
+        # hc-385: stop the heartbeat regardless of reaction settings.
+        self._stop_heartbeat(event.message_id)
         if not self._reactions_enabled():
             return
         message_id = event.message_id
@@ -3075,6 +3327,93 @@ class FeishuAdapter(BasePlatformAdapter):
 
         if outcome is ProcessingOutcome.FAILURE:
             await self._add_reaction(message_id, _FEISHU_REACTION_FAILURE)
+
+    # =========================================================================
+    # hc-385 — long-task heartbeat (opt-in)
+    # =========================================================================
+
+    def _maybe_start_heartbeat(self, event: MessageEvent) -> None:
+        if not self._heartbeat_enabled or self._intentional_disconnect:
+            return
+        message_id = event.message_id
+        chat_id = getattr(getattr(event, "source", None), "chat_id", None)
+        if not message_id or not chat_id:
+            return
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        create_task = getattr(loop, "create_task", None)
+        if create_task is None:
+            return
+        existing = self._heartbeat_tasks.get(message_id)
+        if existing is not None and not existing.done():
+            return
+        self._heartbeat_tasks[message_id] = create_task(
+            self._run_heartbeat(chat_id, message_id)
+        )
+
+    def _stop_heartbeat(self, message_id: Optional[str]) -> None:
+        if not message_id:
+            return
+        task = self._heartbeat_tasks.get(message_id)
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+
+    async def _cancel_all_heartbeats(self) -> None:
+        current = asyncio.current_task()
+        tasks = [t for t in self._heartbeat_tasks.values() if t and not t.done() and t is not current]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._heartbeat_tasks.clear()
+
+    def _heartbeat_text(self, started_at: float, *, final: bool) -> str:
+        minutes = max(1, int((time.monotonic() - started_at) // 60))
+        template = (
+            _FEISHU_HEARTBEAT_FINAL_TEMPLATE if final else _FEISHU_HEARTBEAT_RUNNING_TEMPLATE
+        )
+        return template.format(minutes=minutes)
+
+    async def _run_heartbeat(self, chat_id: str, source_message_id: str) -> None:
+        """Send and periodically edit one "still running" status message.
+
+        Stays silent until ``_heartbeat_initial_delay`` so short tasks never see
+        a heartbeat — this preserves Feishu's deliberately minimal feel. Runs as
+        its own task and only edits an already-sent message, so it neither blocks
+        the event loop nor resets the agent's inactivity clock (that clock is
+        driven by agent tool activity in the gateway, not by adapter-side sends).
+        """
+        started_at = time.monotonic()
+        heartbeat_message_id: Optional[str] = None
+        try:
+            await asyncio.sleep(self._heartbeat_initial_delay)
+            while self._running and not self._intentional_disconnect:
+                text = self._heartbeat_text(started_at, final=False)
+                if heartbeat_message_id is None:
+                    result = await self.send(chat_id, text, reply_to=source_message_id)
+                    if result and result.success and result.message_id:
+                        heartbeat_message_id = result.message_id
+                else:
+                    await self.edit_message(chat_id, heartbeat_message_id, text)
+                await asyncio.sleep(self._heartbeat_interval)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("[Feishu] Heartbeat task error", exc_info=True)
+        finally:
+            self._heartbeat_tasks.pop(source_message_id, None)
+            # Leave one accurate final line so the channel doesn't keep showing
+            # "still running" after the turn ends — only if we actually posted.
+            if heartbeat_message_id is not None:
+                try:
+                    await self.edit_message(
+                        chat_id,
+                        heartbeat_message_id,
+                        self._heartbeat_text(started_at, final=True),
+                    )
+                except Exception:
+                    logger.debug("[Feishu] Heartbeat finalize edit failed", exc_info=True)
 
     # =========================================================================
     # Webhook server and security
@@ -4248,7 +4587,7 @@ class FeishuAdapter(BasePlatformAdapter):
             name=self._bot_name,
         )
 
-    async def _hydrate_bot_identity(self) -> None:
+    async def _hydrate_bot_identity(self) -> bool:
         """Best-effort discovery of bot identity for precise group mention gating
         and self-sent bot event filtering.
 
@@ -4258,15 +4597,20 @@ class FeishuAdapter(BasePlatformAdapter):
         migrations do not break group @mention gating. Falls back to the
         application info endpoint for ``_bot_name`` only when the first probe
         doesn't return it. If the probe fails, env-provided values are preserved.
+
+        Returns True when the primary /bot/v3/info probe reached the endpoint and
+        parsed a response — the hc-384 self-reconnect ladder reuses this as a
+        liveness check (``_verify_ws_alive``). Most callers ignore the return.
         """
         if not self._client:
-            return
+            return False
 
         # Primary probe: /open-apis/bot/v3/info — returns bot_name + open_id, no
         # extra scopes required. This is the same endpoint the onboarding wizard
         # uses via probe_bot().
         started_at = time.monotonic()
         logger.info("[Feishu] Hydrating bot identity via /bot/v3/info")
+        probe_ok = False
         try:
             req = (
                 BaseRequest.builder()
@@ -4279,6 +4623,7 @@ class FeishuAdapter(BasePlatformAdapter):
             content = getattr(getattr(resp, "raw", None), "content", None)
             if content:
                 payload = json.loads(content)
+                probe_ok = True
                 parsed = _parse_bot_response(payload) or {}
                 open_id = (parsed.get("bot_open_id") or "").strip()
                 bot_name = (parsed.get("bot_name") or "").strip()
@@ -4310,7 +4655,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # admin:app.info:readonly or application:application:self_manage scope,
         # so it's best-effort.
         if self._bot_name:
-            return
+            return probe_ok
         try:
             fallback_started_at = time.monotonic()
             logger.info("[Feishu] Hydrating bot name via application info fallback")
@@ -4324,7 +4669,7 @@ class FeishuAdapter(BasePlatformAdapter):
                         "Grant admin:app.info:readonly or application:application:self_manage "
                         "so group @mention gating can resolve the bot name precisely."
                     )
-                return
+                return probe_ok
             app = getattr(getattr(response, "data", None), "app", None)
             app_name = (getattr(app, "app_name", None) or "").strip()
             if app_name and not self._bot_name:
@@ -4336,6 +4681,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception:
             logger.debug("[Feishu] Failed to hydrate bot name from application info", exc_info=True)
+        return probe_ok
 
     # =========================================================================
     # Deduplication — seen message ID cache (persistent)

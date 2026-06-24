@@ -212,7 +212,9 @@ export function normalizePersonalityValue(value: string): string {
 }
 
 export function parseSlashCommand(command: string) {
-  const match = command.replace(/^\/+/, '').match(/^(\S+)\s*(.*)$/)
+  // The `s` (dotAll) flag lets `.` match newlines so a multi-line argument
+  // (e.g. a pasted multi-line `/goal`) is captured instead of dropped (#41323).
+  const match = command.replace(/^\/+/, '').match(/^(\S+)\s*(.*)$/s)
 
   return match ? { name: match[1], arg: match[2].trim() } : { name: '', arg: '' }
 }

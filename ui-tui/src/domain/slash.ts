@@ -4,9 +4,12 @@ export const TUI_SESSION_MODEL_FLAG = '--tui-session'
 export const looksLikeSlashCommand = (text: string) => /^\/[^\s/]*(?:\s|$)/.test(text)
 
 export const parseSlashCommand = (cmd: string) => {
-  const [name = '', ...rest] = cmd.slice(1).split(/\s+/)
+  // Peel only the command name off the front and keep the remainder verbatim so
+  // a multi-line argument (e.g. a pasted multi-line `/goal`) keeps its newlines
+  // instead of being flattened into spaces by a `split`/`join` (#41323).
+  const match = cmd.slice(1).match(/^(\S+)\s*([\s\S]*)$/)
 
-  return { arg: rest.join(' '), cmd, name: name.toLowerCase() }
+  return { arg: (match?.[2] ?? '').trim(), cmd, name: (match?.[1] ?? '').toLowerCase() }
 }
 
 /**

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
 
-import { coerceThinkingText, optimisticAttachmentRef, parseCommandDispatch } from './chat-runtime'
+import { coerceThinkingText, optimisticAttachmentRef, parseCommandDispatch, parseSlashCommand } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
 
@@ -78,5 +78,45 @@ describe('parseCommandDispatch', () => {
 
   it('rejects a prefill directive missing its message', () => {
     expect(parseCommandDispatch({ type: 'prefill', notice: 'x' })).toBeNull()
+  })
+})
+
+describe('parseSlashCommand', () => {
+  it('parses a bare command with no argument', () => {
+    expect(parseSlashCommand('/help')).toEqual({ name: 'help', arg: '' })
+  })
+
+  it('parses a single-line argument', () => {
+    expect(parseSlashCommand('/goal Write a Python script')).toEqual({
+      name: 'goal',
+      arg: 'Write a Python script'
+    })
+  })
+
+  it('keeps newlines in a multi-line argument (regression for #41323)', () => {
+    // Before the dotAll fix the `.*` capture stopped at the first newline, so a
+    // pasted multi-line `/goal` was parsed as an empty/garbled command.
+    expect(parseSlashCommand('/goal Write a Python script\nthat prints Hello')).toEqual({
+      name: 'goal',
+      arg: 'Write a Python script\nthat prints Hello'
+    })
+  })
+
+  it('preserves multiple interior newlines', () => {
+    expect(parseSlashCommand('/goal Line 1\nLine 2\nLine 3')).toEqual({
+      name: 'goal',
+      arg: 'Line 1\nLine 2\nLine 3'
+    })
+  })
+
+  it('strips leading slashes and trims edge whitespace without touching interior newlines', () => {
+    expect(parseSlashCommand('//goal  first line\nsecond line  ')).toEqual({
+      name: 'goal',
+      arg: 'first line\nsecond line'
+    })
+  })
+
+  it('returns an empty command when there is no command token', () => {
+    expect(parseSlashCommand('   ')).toEqual({ name: '', arg: '' })
   })
 })

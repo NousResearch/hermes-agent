@@ -127,7 +127,9 @@ export async function executeSlash({
 }
 
 export function parseSlash(command: string): { name: string; arg: string } {
-  const m = command.replace(/^\/+/, "").match(/^(\S+)\s*(.*)$/);
+  // The `s` (dotAll) flag lets `.` match newlines so a multi-line argument
+  // (e.g. a pasted multi-line `/goal`) is captured instead of dropped (#41323).
+  const m = command.replace(/^\/+/, "").match(/^(\S+)\s*(.*)$/s);
   return m ? { name: m[1], arg: m[2].trim() } : { name: "", arg: "" };
 }
 

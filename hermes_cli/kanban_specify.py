@@ -68,14 +68,19 @@ heading, in this order:
   **Goal** — one sentence, user-facing outcome.
   **Approach** — 2-5 bullets on how a worker should tackle it.
   **Acceptance criteria** — checklist of concrete, verifiable conditions.
-  **Out of scope** — short list of things NOT to touch (omit if nothing
-      obvious; never invent scope creep).
+  **Evidence required** — checklist of proof the worker must leave in
+      summary/metadata, including real commands/tests when applicable.
+  **Out of scope** — short list of things NOT to touch. Use "- None known."
+      if nothing obvious; never invent scope creep.
 
 Rules:
   - Keep the tightened title close in meaning to the original idea — do
     NOT invent a different project.
   - If the original idea is already detailed, preserve its substance and
     just reformat into the sections above.
+  - Acceptance criteria must be verifiable statements, not vague quality bars.
+  - Evidence required must not treat reasoning-only hypothesis checks as a
+    replacement for real verification.
   - Never add invented requirements the user didn't hint at.
   - No preamble, no closing remarks, no code fences around the JSON.
   - Output only the JSON object and nothing else.

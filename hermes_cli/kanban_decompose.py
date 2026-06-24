@@ -88,7 +88,17 @@ Rules:
     DESCRIPTION (not just the name). When nothing matches well, use null
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
-    context — be specific about goal, approach, and acceptance criteria.
+    context. It MUST include these bold markdown sections, in order:
+      **Goal**
+      **Approach**
+      **Acceptance criteria**
+      **Evidence required**
+      **Out of scope**
+  - Acceptance criteria must be concrete and verifiable.
+  - Evidence required must name the proof the worker should leave in
+    summary/metadata, including real commands/tests when applicable.
+  - Hypothesis checks and critic notes can guide repair, but they do not
+    replace real verification evidence.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:
@@ -103,7 +113,7 @@ return:
 
 In that case the task stays as one work item, just with a tightened spec and
 a concrete assignee. If no profile fits, use null and the system will route to
-the default_assignee.
+the default_assignee. The returned body must use the same required sections.
 
 No preamble, no closing remarks, no code fences. Output only the JSON object.
 """

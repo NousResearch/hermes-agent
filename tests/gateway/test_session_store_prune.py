@@ -236,14 +236,15 @@ class TestPrunePersistsToDisk:
         store._loaded = True
         store._save()
 
-        # Verify pre-prune state on disk.
+        # Verify pre-prune state on disk. Filter out metadata sentinels
+        # (e.g. the "_README" note) so we assert on session keys only.
         saved_pre = json.loads((tmp_path / "sessions.json").read_text())
-        assert set(saved_pre.keys()) == {"stale", "fresh"}
+        assert {k for k in saved_pre if not k.startswith("_")} == {"stale", "fresh"}
 
         # Prune and check disk.
         store.prune_old_entries(max_age_days=90)
         saved_post = json.loads((tmp_path / "sessions.json").read_text())
-        assert set(saved_post.keys()) == {"fresh"}
+        assert {k for k in saved_post if not k.startswith("_")} == {"fresh"}
 
 
 class TestGatewayConfigSerialization:
@@ -296,3 +297,46 @@ class TestGatewayWatcherCallsPrune:
 
         should_prune = (now - last_ts) > prune_interval
         assert should_prune is False
+
+
+class TestReadmeSentinel:
+    """The gateway writes a self-documenting ``_README`` key into sessions.json
+    so users who inspect the file directly understand it's the gateway routing
+    index (not the session list). It must never round-trip into a SessionEntry,
+    and real entries must survive a save/load cycle alongside it (#49361)."""
+
+    def test_save_writes_readme_sentinel_first(self, tmp_path):
+        store = _make_store(tmp_path)
+        store._entries["agent:main:whatsapp:dm:99"] = _entry(
+            "agent:main:whatsapp:dm:99", age_days=1
+        )
+        store._save()
+
+        raw = json.loads((tmp_path / "sessions.json").read_text())
+        assert "_README" in raw
+        # Sentinel renders first so it's the first thing a user sees on `cat`.
+        assert next(iter(raw)) == "_README"
+        # The note points users at the real store and command.
+        assert "state.db" in raw["_README"]
+        assert "hermes sessions list" in raw["_README"]
+
+    def test_readme_sentinel_skipped_on_load(self, tmp_path):
+        # Write an index containing both the sentinel and a real entry.
+        store = _make_store(tmp_path)
+        store._entries["agent:main:whatsapp:dm:99"] = _entry(
+            "agent:main:whatsapp:dm:99", age_days=1, session_id="sid_wa"
+        )
+        store._save()
+
+        # Fresh store loads from disk for real (no _ensure_loaded patch).
+        config = GatewayConfig(
+            default_reset_policy=SessionResetPolicy(mode="none"),
+            session_store_max_age_days=90,
+        )
+        reloaded = SessionStore(sessions_dir=tmp_path, config=config)
+        reloaded._ensure_loaded()
+
+        # Sentinel never becomes a SessionEntry; the real entry survives intact.
+        assert not any(k.startswith("_") for k in reloaded._entries)
+        assert "agent:main:whatsapp:dm:99" in reloaded._entries
+        assert reloaded._entries["agent:main:whatsapp:dm:99"].session_id == "sid_wa"

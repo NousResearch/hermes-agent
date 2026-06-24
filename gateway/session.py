@@ -809,6 +809,11 @@ class SessionStore:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 for key, entry_data in data.items():
+                    # Keys starting with "_" are documentation/metadata sentinels
+                    # (e.g. the "_README" note written by _save), not session
+                    # entries. Skip them so they never reach SessionEntry.from_dict.
+                    if key.startswith("_"):
+                        continue
                     try:
                         self._entries[key] = SessionEntry.from_dict(entry_data)
                     except (ValueError, KeyError) as e:
@@ -825,6 +830,22 @@ class SessionStore:
         sessions_file = self.sessions_dir / "sessions.json"
 
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
+        # Self-documenting sentinel so anyone who inspects this file directly
+        # understands what it is and where CLI/TUI sessions actually live. Keys
+        # starting with "_" are skipped on load (see _ensure_loaded_locked), so
+        # this never round-trips into a SessionEntry. Ordered first via a fresh
+        # dict so it renders at the top of the pretty-printed JSON.
+        data = {
+            "_README": (
+                "Gateway routing index ONLY: maps messaging session keys "
+                "(agent:main:<platform>:...) to active session IDs. This is NOT "
+                "the session list. ALL sessions (CLI, TUI, and gateway) live in "
+                "~/.hermes/state.db and are shown by `hermes sessions list` and "
+                "`/sessions`. Seeing only gateway entries here is expected and "
+                "does not mean CLI sessions are missing."
+            ),
+            **data,
+        }
         fd, tmp_path = tempfile.mkstemp(
             dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_"
         )

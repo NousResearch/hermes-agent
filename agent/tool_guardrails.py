@@ -59,6 +59,26 @@ MUTATING_TOOL_NAMES = frozenset(
     }
 )
 
+EXPLORATORY_TOOL_NAMES = frozenset(
+    {
+        "read_file",
+        "search_files",
+        "session_search",
+        "web_search",
+        "web_extract",
+        "terminal",
+        "execute_code",
+        "mcp_filesystem_read_file",
+        "mcp_filesystem_read_text_file",
+        "mcp_filesystem_read_multiple_files",
+        "mcp_filesystem_list_directory",
+        "mcp_filesystem_list_directory_with_sizes",
+        "mcp_filesystem_directory_tree",
+        "mcp_filesystem_get_file_info",
+        "mcp_filesystem_search_files",
+    }
+)
+
 
 @dataclass(frozen=True)
 class ToolCallGuardrailConfig:
@@ -77,8 +97,11 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    exploratory_no_progress_warn_after: int = 4
+    exploratory_no_progress_halt_after: int = 7
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
+    exploratory_tools: frozenset[str] = field(default_factory=lambda: EXPLORATORY_TOOL_NAMES)
 
     @classmethod
     def from_mapping(cls, data: Mapping[str, Any] | None) -> "ToolCallGuardrailConfig":
@@ -120,6 +143,20 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            exploratory_no_progress_warn_after=_positive_int(
+                warn_after.get(
+                    "exploratory_no_progress",
+                    data.get("exploratory_no_progress_warn_after"),
+                ),
+                defaults.exploratory_no_progress_warn_after,
+            ),
+            exploratory_no_progress_halt_after=_positive_int(
+                hard_stop_after.get(
+                    "exploratory_no_progress",
+                    data.get("exploratory_no_progress_halt_after"),
+                ),
+                defaults.exploratory_no_progress_halt_after,
             ),
         )
 
@@ -232,6 +269,7 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._exploratory_success_streak = 0
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -296,6 +334,7 @@ class ToolCallGuardrailController:
             failed, _ = classify_tool_failure(tool_name, result)
 
         if failed:
+            self._exploratory_success_streak = 0
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count
             self._no_progress.pop(signature, None)
@@ -347,6 +386,10 @@ class ToolCallGuardrailController:
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
+        exploratory_decision = self._record_exploratory_success(tool_name, result, signature)
+        if exploratory_decision.action != "allow":
+            return exploratory_decision
+
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
@@ -378,6 +421,57 @@ class ToolCallGuardrailController:
         if tool_name in self.config.mutating_tools:
             return False
         return tool_name in self.config.idempotent_tools
+
+    def _is_exploratory(self, tool_name: str) -> bool:
+        return tool_name in self.config.exploratory_tools
+
+    def _record_exploratory_success(
+        self,
+        tool_name: str,
+        result: str | None,
+        signature: ToolCallSignature,
+    ) -> ToolGuardrailDecision:
+        if not self._is_exploratory(tool_name):
+            self._exploratory_success_streak = 0
+            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+        if file_mutation_result_landed(tool_name, result or ""):
+            self._exploratory_success_streak = 0
+            return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
+
+        self._exploratory_success_streak += 1
+        count = self._exploratory_success_streak
+        if self.config.hard_stop_enabled and count >= self.config.exploratory_no_progress_halt_after:
+            decision = ToolGuardrailDecision(
+                action="halt",
+                code="exploratory_no_progress_halt",
+                message=(
+                    f"Stopped diagnostic exploration after {count} consecutive "
+                    "read/search/probe tool calls without a landed repair or state change. "
+                    "Summarize current evidence and ask for a narrower next step instead "
+                    "of continuing to search."
+                ),
+                tool_name=tool_name,
+                count=count,
+                signature=signature,
+            )
+            self._halt_decision = decision
+            return decision
+
+        if self.config.warnings_enabled and count >= self.config.exploratory_no_progress_warn_after:
+            return ToolGuardrailDecision(
+                action="warn",
+                code="exploratory_no_progress_warning",
+                message=(
+                    f"{count} consecutive diagnostic tool calls have run without a landed "
+                    "repair or state change. If you have enough evidence, summarize now; "
+                    "otherwise make the next tool call narrowly target the single missing fact."
+                ),
+                tool_name=tool_name,
+                count=count,
+                signature=signature,
+            )
+
+        return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:

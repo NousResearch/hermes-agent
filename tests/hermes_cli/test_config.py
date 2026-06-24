@@ -222,6 +222,45 @@ class TestLoadConfigParseFailure:
 
             assert not list(tmp_path.glob("config.yaml.corrupt.*.bak"))
 
+    def test_duplicate_top_level_keys_warn(self, tmp_path, caplog, capsys):
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_DUPLICATE_KEYS_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "cron:\n"
+                "  script_timeout_seconds: 600\n"
+                "cron:\n"
+                "  wrap_response: false\n",
+                encoding="utf-8",
+            )
+
+            import logging
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.config"):
+                config = load_config()
+
+            assert config["cron"]["wrap_response"] is False
+            assert any("Duplicate keys detected" in rec.message and "cron" in rec.message for rec in caplog.records)
+            assert "Duplicate keys detected" in capsys.readouterr().err
+
+    def test_duplicate_nested_keys_warn_with_path(self, tmp_path, capsys):
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_DUPLICATE_KEYS_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "agent:\n"
+                "  max_turns: 10\n"
+                "  max_turns: 12\n",
+                encoding="utf-8",
+            )
+
+            config = load_config()
+
+            assert config["agent"]["max_turns"] == 12
+            err = capsys.readouterr().err
+            assert "agent.max_turns" in err
+
 
 class TestSaveAndLoadRoundtrip:
     def test_roundtrip(self, tmp_path):

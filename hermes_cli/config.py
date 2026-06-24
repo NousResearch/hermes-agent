@@ -6211,7 +6211,7 @@ def sanitize_env_file() -> int:
 
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
     try:
-        with os.fdopen(fd, "w", **write_kw) as f:
+        with os.fdopen(fd, "w", encoding="utf-8", **write_kw) as f:
             f.writelines(sanitized)
             f.flush()
             os.fsync(f.fileno())
@@ -6329,7 +6329,7 @@ def save_env_value(key: str, value: str):
         except OSError:
             pass
     try:
-        with os.fdopen(fd, 'w', **write_kw) as f:
+        with os.fdopen(fd, 'w', encoding='utf-8', **write_kw) as f:
             f.writelines(lines)
             f.flush()
             os.fsync(f.fileno())
@@ -6400,7 +6400,7 @@ def remove_env_value(key: str) -> bool:
         except OSError:
             pass
         try:
-            with os.fdopen(fd, 'w', **write_kw) as f:
+            with os.fdopen(fd, 'w', encoding='utf-8', **write_kw) as f:
                 f.writelines(new_lines)
                 f.flush()
                 os.fsync(f.fileno())

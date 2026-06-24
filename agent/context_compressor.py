@@ -258,9 +258,22 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     4-tool-call turn measures ~73 vs ~1,090 real tokens), so the protected
     tail overshot ``tail_token_budget`` and compression became ineffective.
     See issue #28053.
+
+    Also counts ``reasoning_content`` (and legacy ``reasoning``) metadata
+    that reasoning-capable providers persist on assistant messages.  Without
+    this, the budget walk underestimates the provider-facing request size
+    by the reasoning payload, causing near-no-op compaction on sessions
+    with large reasoning traces.  See issue #51800.
     """
     content_len = _content_length_for_budget(msg.get("content") or "")
     tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/key overhead
+    # Reasoning content: some providers (DeepSeek, Moonshot, Novita, …)
+    # persist reasoning_content on assistant messages.  The request
+    # estimator counts these via the full dict serialisation, so the
+    # budget walk must too.
+    reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+    if reasoning:
+        tokens += len(reasoning) // _CHARS_PER_TOKEN
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += len(str(tc)) // _CHARS_PER_TOKEN

@@ -2420,6 +2420,74 @@ class TestTokenBudgetTailProtection:
             "not a minimum floor"
         )
 
+    def test_reasoning_content_counted_in_budget_walk(self, budget_compressor):
+        """Messages with reasoning_content must inflate the budget estimate.
+
+        Regression for #51800: reasoning-capable providers (DeepSeek, Moonshot,
+        Novita, …) persist ``reasoning_content`` on assistant messages.  The
+        budget walk must count this field or it underestimates the tail by the
+        reasoning payload, causing near-no-op compaction.
+        """
+        from agent.context_compressor import _estimate_msg_budget_tokens
+
+        small_msg = {"role": "user", "content": "hello"}
+        reasoning_msg = {
+            "role": "assistant",
+            "content": "answer",
+            "reasoning_content": "x" * 2000,  # ~500 extra tokens
+        }
+        small_estimate = _estimate_msg_budget_tokens(small_msg)
+        reasoning_estimate = _estimate_msg_budget_tokens(reasoning_msg)
+        # The reasoning message should be significantly larger
+        assert reasoning_estimate > small_estimate + 400, (
+            f"reasoning_content not counted: small={small_estimate}, "
+            f"reasoning={reasoning_estimate}"
+        )
+
+    def test_legacy_reasoning_field_also_counted(self, budget_compressor):
+        """The legacy ``reasoning`` key (without ``_content`` suffix) is also counted."""
+        from agent.context_compressor import _estimate_msg_budget_tokens
+
+        msg_with_reasoning = {
+            "role": "assistant",
+            "content": "answer",
+            "reasoning": "y" * 2000,
+        }
+        msg_without = {"role": "assistant", "content": "answer"}
+        assert _estimate_msg_budget_tokens(msg_with_reasoning) > (
+            _estimate_msg_budget_tokens(msg_without) + 400
+        )
+
+    def test_reasoning_tail_budget_triggers_compaction(self, budget_compressor):
+        """A tail with large reasoning_content must exceed the budget and
+        trigger a smaller tail, not protect the entire transcript.
+
+        This is the exact scenario from #51800: 20 messages with reasoning
+        traces that fit in budget without counting, but overflow with it.
+        """
+        c = budget_compressor
+        c.tail_token_budget = 500  # small budget
+        messages = [
+            {"role": "user", "content": "head1"},
+            {"role": "user", "content": "head2"},
+        ]
+        # 10 assistant turns with large reasoning_content (~500 tokens each)
+        for i in range(10):
+            messages.append({
+                "role": "assistant",
+                "content": f"answer {i}",
+                "reasoning_content": "d" * 2000,  # ~500 tokens
+            })
+            messages.append({"role": "user", "content": f"follow-up {i}"})
+        head_end = 2
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        tail_size = len(messages) - cut
+        # With reasoning counted, the tail should be much smaller than the full transcript
+        assert tail_size < len(messages) - 2, (
+            f"Reasoning content not counted in budget: tail={tail_size} "
+            f"of {len(messages)} messages — compaction is near-no-op"
+        )
+
 
 class TestUpdateModelBudgets:
     """Regression: update_model() must recalculate token budgets."""

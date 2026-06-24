@@ -1554,6 +1554,7 @@ export const zh: Translations = {
     getKey: '获取密钥',
     replaceCurrent: '替换当前值',
     pasteApiKey: '粘贴 API 密钥',
+    localApiKeyPlaceholder: 'API 密钥（可选 — 仅当端点需要时填写）',
     couldNotSave: '无法保存凭据。',
     connecting: '连接中',
     update: '更新',
@@ -1712,6 +1713,9 @@ export const zh: Translations = {
     terminal: '终端',
     noFolderSelected: '未选择文件夹',
     changeCwdTitle: '更改工作目录',
+    remotePickerTitle: '选择远程文件夹',
+    remotePickerDescription: '浏览已连接后端上的文件夹。',
+    remotePickerSelect: '选择文件夹',
     folderTip: cwd => `${cwd} — 点击更改文件夹`,
     openFolder: '打开文件夹',
     refreshTree: '刷新文件树',
@@ -1956,7 +1960,14 @@ export const zh: Translations = {
     clipboard: '剪贴板',
     noClipboardImage: '剪贴板中没有图片',
     clipboardPasteFailed: '粘贴剪贴板失败',
-    dropFiles: '拖放文件'
+    dropFiles: '拖放文件',
+    handoff: {
+      pickPlatform: '选择目标平台',
+      success: platform => `已移交到 ${platform}。随时可在此处恢复。`,
+      systemNote: platform => `↻ 已移交到 ${platform} — 随时可在此处恢复。`,
+      failed: error => `移交失败：${error}`,
+      timedOut: '等待网关超时。`hermes gateway` 是否正在运行？'
+    }
   },
 
   errors: {

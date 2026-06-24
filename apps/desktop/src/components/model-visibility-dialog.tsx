@@ -14,6 +14,8 @@ import {
   $visibleModels,
   collapseModelFamilies,
   effectiveVisibleKeys,
+  emptyProviderSentinelKey,
+  isProviderSentinel,
   modelVisibilityKey,
   setVisibleModels
 } from '@/store/model-visibility'
@@ -61,10 +63,21 @@ export function ModelVisibilityDialog({
   const toggle = (provider: ModelOptionProvider, model: string) => {
     const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers))
     const key = modelVisibilityKey(provider.slug, model)
+    const sentinel = emptyProviderSentinelKey(provider.slug)
 
     if (next.has(key)) {
       next.delete(key)
+
+      // Check if this was the last real model for this provider.
+      const remainingForProvider = [...next].some(
+        k => k.startsWith(`${provider.slug}::`) && !isProviderSentinel(k)
+      )
+
+      if (!remainingForProvider) {
+        next.add(sentinel)
+      }
     } else {
+      next.delete(sentinel)
       next.add(key)
     }
 

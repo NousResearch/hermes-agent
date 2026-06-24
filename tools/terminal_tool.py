@@ -777,7 +777,8 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     the password in the command string themselves; see their execute()
     methods for how they handle the non-None sudo_stdin case.
 
-    If SUDO_PASSWORD is not set and in interactive mode (HERMES_INTERACTIVE=1):
+    If SUDO_PASSWORD is not set and an interactive UI is available
+    (HERMES_INTERACTIVE=1 or a registered sudo password callback):
       Prompts user for password with 45s timeout, caches for session.
 
     If SUDO_PASSWORD is not set and NOT interactive:
@@ -805,7 +806,11 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
         return command, None
 
-    if not has_configured_password and not sudo_password and env_var_enabled("HERMES_INTERACTIVE"):
+    has_sudo_prompt_callback = _get_sudo_password_callback() is not None
+    should_prompt_for_sudo = (
+        env_var_enabled("HERMES_INTERACTIVE") or has_sudo_prompt_callback
+    )
+    if not has_configured_password and not sudo_password and should_prompt_for_sudo:
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
             _set_cached_sudo_password(sudo_password)
@@ -829,7 +834,7 @@ import sys
 
 
 # Tool description for LLM
-TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem usually persists between calls.
+TERMINAL_TOOL_DESCRIPTION = """Execute shell commands on a Linux environment. Filesystem, current working directory, and exported environment variables persist between calls.
 
 Do NOT use cat/head/tail to read files — use read_file instead.
 Do NOT use grep/rg/find to search — use search_files instead.
@@ -837,6 +842,7 @@ Do NOT use ls to list directories — use search_files(target='files') instead.
 Do NOT use sed/awk to edit files — use patch instead.
 Do NOT use echo/cat heredoc to create files — use write_file instead.
 Reserve terminal for: builds, installs, git, processes, scripts, network, package managers, and anything that needs a shell.
+Because exported environment state persists, activate a virtualenv or export setup variables once per session; do not re-source the same environment before every command unless a command proves the shell state was reset.
 
 Foreground (default): Commands return INSTANTLY when done, even if the timeout is high. Set timeout=300 for long builds/scripts — you'll still get the result in seconds if it's fast. Prefer foreground for short commands.
 Background: Set background=true to get a session_id. Almost always pair with notify_on_complete=true — bg without notify runs SILENTLY and you have no way to learn it finished short of calling process(action='poll') yourself. Two legitimate uses:

@@ -1372,6 +1372,7 @@ export const en: Translations = {
     getKey: 'Get a key',
     replaceCurrent: 'Replace current value',
     pasteApiKey: 'Paste API key',
+    localApiKeyPlaceholder: 'API key (optional — only if your endpoint requires one)',
     couldNotSave: 'Could not save credential.',
     connecting: 'Connecting',
     update: 'Update',
@@ -1532,6 +1533,9 @@ export const en: Translations = {
     terminal: 'Terminal',
     noFolderSelected: 'No folder selected',
     changeCwdTitle: 'Change working directory',
+    remotePickerTitle: 'Choose remote folder',
+    remotePickerDescription: 'Browse folders on the connected backend.',
+    remotePickerSelect: 'Select folder',
     folderTip: cwd => `${cwd} — click to change folder`,
     openFolder: 'Open folder',
     refreshTree: 'Refresh tree',
@@ -1778,7 +1782,14 @@ export const en: Translations = {
     clipboard: 'Clipboard',
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
-    dropFiles: 'Drop files'
+    dropFiles: 'Drop files',
+    handoff: {
+      pickPlatform: 'Choose a destination',
+      success: platform => `Handed off to ${platform}. Resume here anytime.`,
+      systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
+      failed: error => `Handoff failed: ${error}`,
+      timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
+    }
   },
 
   errors: {

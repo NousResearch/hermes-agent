@@ -1,19 +1,24 @@
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $connection } from '@/store/session'
 import type { HermesReadDirResult } from '@/global'
 
+import { clearProjectDirCache, readProjectDir } from './ipc'
 import { resetProjectTreeState, useProjectTree } from './use-project-tree'
 
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
 
 beforeEach(() => {
+  $connection.set(null)
   resetProjectTreeState()
   readDir.mockReset()
   ;(window as unknown as { hermesDesktop: { readDir: typeof readDir } }).hermesDesktop = { readDir }
 })
 
 afterEach(() => {
+  cleanup()
+  $connection.set(null)
   resetProjectTreeState()
   delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 })
@@ -106,7 +111,37 @@ describe('useProjectTree', () => {
     expect(readDir).toHaveBeenCalledTimes(1)
   })
 
-  it('captures per-folder error code and leaves the folder expandable but empty', async () => {
+  it('reads gitignore from the real path while caching per connection', async () => {
+    const readFileDataUrl = vi.fn(async () => `data:text/plain;base64,${btoa('ignored.log\n')}`)
+    const gitRoot = vi.fn(async () => '/repo')
+    readDir.mockImplementation(async path => {
+      if (path === '/repo') return ok([{ name: '.gitignore', path: '/repo/.gitignore', isDirectory: false }])
+      if (path === '/repo/src') {
+        return ok([
+          { name: 'app.ts', path: '/repo/src/app.ts', isDirectory: false },
+          { name: 'ignored.log', path: '/repo/src/ignored.log', isDirectory: false }
+        ])
+      }
+      throw new Error(`unexpected path ${path}`)
+    })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { gitRoot, readDir, readFileDataUrl }
+
+    $connection.set({ baseUrl: 'local-a', mode: 'local' } as never)
+    await expect(readProjectDir('/repo/src', '/repo')).resolves.toMatchObject({
+      entries: [{ name: 'app.ts', path: '/repo/src/app.ts', isDirectory: false }]
+    })
+    expect(readDir).toHaveBeenCalledWith('/repo')
+    expect(readDir).not.toHaveBeenCalledWith(expect.stringContaining('local-a'))
+
+    $connection.set({ baseUrl: 'local-b', mode: 'local' } as never)
+    clearProjectDirCache()
+    await expect(readProjectDir('/repo/src', '/repo')).resolves.toMatchObject({
+      entries: [{ name: 'app.ts', path: '/repo/src/app.ts', isDirectory: false }]
+    })
+    expect(readDir.mock.calls.filter(([path]) => path === '/repo')).toHaveLength(2)
+  })
+
+  it('captures per-folder error code and shows an error placeholder child', async () => {
     readDir.mockResolvedValueOnce(ok([{ name: 'priv', path: '/p/priv', isDirectory: true }]))
     readDir.mockResolvedValueOnce({ entries: [], error: 'EACCES' })
 
@@ -119,7 +154,14 @@ describe('useProjectTree', () => {
     })
 
     expect(result.current.data[0].error).toBe('EACCES')
-    expect(result.current.data[0].children).toEqual([])
+    expect(result.current.data[0].children).toEqual([
+      {
+        id: '/p/priv::__error__',
+        isDirectory: false,
+        name: 'Unable to read (EACCES)',
+        placeholder: 'error'
+      }
+    ])
   })
 
   it('dedupes concurrent loadChildren calls for the same id', async () => {

@@ -336,20 +336,22 @@ class TestSlackNativeSlashes:
             )
 
     def test_includes_aliases_as_first_class_slashes(self):
-        """Aliases (/btw, /bg, /reset, …) must be registered as standalone
+        """Aliases (/btw, /bg, …) must be registered as standalone
         slashes — this is the whole point of native-slashes parity.
 
         Asserts the contract (aliases are surfaced as first-class slashes),
         not a specific alias's survival of Slack's 50-slash clamp — which alias
-        lands last shifts whenever a canonical command is added, so pinning one
-        name (previously ``q``) made this a change-detector.
+        lands last shifts whenever a canonical command is added. Only the
+        explicitly pinned ``_SLACK_PRIORITY_ALIASES`` are guaranteed slots;
+        every other alias (e.g. ``reset``) may be clamped once the registry
+        fills the cap — canonical commands win the contest, and clamped
+        aliases stay reachable via ``/hermes <alias>``.
         """
         slashes = slack_native_slashes()
         names = {n for n, _d, _h in slashes}
-        # Aliases that sort early in the registry always fit under the cap.
+        # The pinned priority aliases are guaranteed to survive the clamp.
         assert "btw" in names
         assert "bg" in names
-        assert "reset" in names
         # And at least one alias is surfaced as an alias entry (description
         # carries the "Alias for /…" marker), proving the alias pass ran.
         assert any(d.startswith("Alias for /") for _n, d, _h in slashes)
@@ -690,6 +692,169 @@ class TestSubcommandCompletion:
         """Commands without subcommands yield nothing after space."""
         completions = _completions(SlashCommandCompleter(), "/help ")
         assert completions == []
+
+    def test_tools_subcommand_completion(self):
+        """`/tools ` should suggest list, disable, enable."""
+        completions = _completions(SlashCommandCompleter(), "/tools ")
+        texts = {c.text for c in completions}
+        assert texts == {"list", "disable", "enable"}
+
+    def test_tools_subcommand_prefix_filters(self):
+        completions = _completions(SlashCommandCompleter(), "/tools en")
+        texts = {c.text for c in completions}
+        assert texts == {"enable"}
+
+    def test_tools_enable_completes_toolset_names(self, monkeypatch):
+        """`/tools enable ` should suggest currently-disabled toolsets."""
+        from hermes_cli import commands as commands_mod
+
+        # `web` is enabled, `spotify` is disabled — enabling should only offer
+        # the disabled ones.
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_a, **_k: {"web", "file"},
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/tools enable ")
+        texts = {c.text for c in completions}
+        # Should include disabled toolsets, exclude already-enabled ones.
+        assert "web" not in texts
+        assert "file" not in texts
+        assert "spotify" in texts
+
+    def test_tools_disable_completes_enabled_toolsets_only(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_a, **_k: {"web", "file"},
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/tools disable ")
+        texts = {c.text for c in completions}
+        # Should include enabled toolsets, exclude disabled ones.
+        assert texts == {"web", "file"}
+
+    def test_tools_enable_partial_filters(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_a, **_k: set(),
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/tools enable sp")
+        texts = {c.text for c in completions}
+        assert texts == {"spotify"}
+
+    def test_tools_enable_skips_already_listed(self, monkeypatch):
+        """If the user already typed a name, don't suggest it again."""
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_a, **_k: set(),
+        )
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/tools enable spotify ")
+        texts = {c.text for c in completions}
+        assert "spotify" not in texts
+
+    def test_tools_suggests_mcp_server_prefixes(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_platform_tools",
+            lambda *_a, **_k: set(),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"mcp_servers": {"github": {}, "linear": {}}},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config._get_plugin_toolset_keys",
+            lambda: set(),
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/tools enable git")
+        texts = {c.text for c in completions}
+        assert "github:" in texts
+
+    def _fake_gateway(self, monkeypatch, platforms):
+        """Patch load_gateway_config with a fake whose connected platforms are
+        the keys of `platforms` (name -> home as None or a (chat_id, name) tuple).
+        """
+        from types import SimpleNamespace
+
+        enums = {name: SimpleNamespace(value=name) for name in platforms}
+        homes = {
+            name: (None if home is None else SimpleNamespace(chat_id=home[0], name=home[1]))
+            for name, home in platforms.items()
+        }
+        fake = SimpleNamespace(
+            get_connected_platforms=lambda: list(enums.values()),
+            get_home_channel=lambda p: homes[p.value],
+        )
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: fake)
+
+    def test_handoff_completes_connected_platforms(self, monkeypatch):
+        """`/handoff ` offers connected platforms, with or without a home channel."""
+        self._fake_gateway(
+            monkeypatch,
+            {
+                "telegram": ("123", "Me"),
+                "discord": None,  # no home channel yet -> still listed
+            },
+        )
+
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff ")}
+        assert texts == {"telegram", "discord"}
+
+    def test_handoff_filters_by_prefix(self, monkeypatch):
+        self._fake_gateway(
+            monkeypatch,
+            {
+                "telegram": ("1", "H"),
+                "signal": ("2", "H"),
+            },
+        )
+
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/handoff te")}
+        assert texts == {"telegram"}
+
+    def test_handoff_no_completion_after_platform_chosen(self, monkeypatch):
+        self._fake_gateway(monkeypatch, {"telegram": ("1", "H")})
+        assert _completions(SlashCommandCompleter(), "/handoff telegram ") == []
+
+    def test_handoff_completion_swallows_config_errors(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("no gateway config")
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", _boom)
+        assert _completions(SlashCommandCompleter(), "/handoff ") == []
+
+    def test_personality_completes_configured_personalities(self):
+        """`/personality ` lists real personalities, not just `none`.
+
+        Regression: the completer read load_config().agent.personalities, a path
+        that never exists, so it always came back empty. It must resolve from the
+        CLI config the runtime actually applies (which ships built-ins).
+        """
+        texts = {c.text for c in _completions(SlashCommandCompleter(), "/personality ")}
+        assert "none" in texts
+        assert len(texts) > 1
 
 
 # ── Ghost text (SlashCommandAutoSuggest) ────────────────────────────────

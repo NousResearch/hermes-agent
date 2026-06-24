@@ -61,6 +61,8 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   // it goes through a confirm step rather than firing straight from the menu.
   const [confirmAlways, setConfirmAlways] = useState(false)
   const busy = submitting !== null
+  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  const allowPermanent = request.allowPermanent !== false
 
   const respond = useCallback(
     async (choice: ApprovalChoice) => {
@@ -144,16 +146,18 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="min-w-44">
             <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
-            <DropdownMenuItem
-              onSelect={() => {
-                // Defer one tick so the menu fully unmounts before the dialog
-                // mounts — otherwise Radix's focus-return races the dialog and
-                // dismisses it via onInteractOutside.
-                setTimeout(() => setConfirmAlways(true), 0)
-              }}
-            >
-              {copy.alwaysAllowMenu}
-            </DropdownMenuItem>
+            {allowPermanent && (
+              <DropdownMenuItem
+                onSelect={() => {
+                  // Defer one tick so the menu fully unmounts before the dialog
+                  // mounts — otherwise Radix's focus-return races the dialog and
+                  // dismisses it via onInteractOutside.
+                  setTimeout(() => setConfirmAlways(true), 0)
+                }}
+              >
+                {copy.alwaysAllowMenu}
+              </DropdownMenuItem>
+            )}
             <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
               {copy.reject}
             </DropdownMenuItem>

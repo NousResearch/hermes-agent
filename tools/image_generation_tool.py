@@ -26,7 +26,9 @@ import os
 import datetime
 import threading
 import uuid
+from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import unquote, urlparse
 
 # fal_client is imported lazily — see _load_fal_client(). Pulling it
 # eagerly added ~64 ms to every CLI cold start because
@@ -1207,7 +1209,8 @@ IMAGE_GENERATE_SCHEMA = {
             "image_url": {
                 "type": "string",
                 "description": (
-                    "Optional source image to edit/transform (image-to-image). "
+                    "Optional source/reference image to edit/transform "
+                    "(image-to-image). "
                     "When provided, the active backend routes to its image "
                     "editing endpoint; when omitted, it generates from text "
                     "alone. Pass a public URL or an absolute local file path "
@@ -1268,6 +1271,68 @@ def _read_configured_image_provider():
                 return value.strip()
     except Exception as exc:
         logger.debug("Could not read image_gen.provider: %s", exc)
+    return None
+
+
+def _validate_plugin_image_url_for_dispatch(image_url: str) -> Optional[Dict[str, Any]]:
+    """Return an error payload if a plugin image_url is invalid before dispatch.
+
+    Providers legitimately accept public HTTP(S) URLs and data URIs, so the
+    dispatcher must not reject those globally. Local paths are different: if a
+    user passes a missing/unreadable file path, no provider can recover from
+    that, and surfacing the failure before a provider/network call gives a
+    clearer error without leaking a bogus path downstream.
+    """
+    raw = (image_url or "").strip()
+    if not raw:
+        return None
+
+    parsed = urlparse(raw)
+    scheme = parsed.scheme.lower()
+    if scheme in {"http", "https", "data"}:
+        return None
+
+    if scheme == "file":
+        if parsed.netloc not in ("", "localhost"):
+            return {
+                "success": False,
+                "image": None,
+                "error": "Reference image file:// URL must point to localhost",
+                "error_type": "invalid_reference_image",
+            }
+        path = Path(unquote(parsed.path))
+    else:
+        # Treat ordinary paths (including Windows drive-letter paths) as local
+        # files. Other URL schemes are outside the unified image_generate
+        # contract and should fail early.
+        is_windows_drive = len(scheme) == 1 and len(raw) > 2 and raw[1] == ":"
+        if scheme and not is_windows_drive:
+            return {
+                "success": False,
+                "image": None,
+                "error": (
+                    "Reference image must be a public HTTP(S)/data URL or a "
+                    "local file path"
+                ),
+                "error_type": "invalid_reference_image",
+            }
+        path = Path(raw).expanduser()
+
+    resolved = path.resolve(strict=False)
+    if not resolved.is_file():
+        return {
+            "success": False,
+            "image": None,
+            "error": f"Reference image file not found: {resolved}",
+            "error_type": "invalid_reference_image",
+        }
+    if not os.access(resolved, os.R_OK):
+        return {
+            "success": False,
+            "image": None,
+            "error": f"Reference image file is not readable: {resolved}",
+            "error_type": "invalid_reference_image",
+        }
     return None
 
 
@@ -1338,7 +1403,11 @@ def _dispatch_to_plugin_provider(
         if configured_model:
             kwargs["model"] = configured_model
         if isinstance(image_url, str) and image_url.strip():
-            kwargs["image_url"] = image_url.strip()
+            clean_image_url = image_url.strip()
+            invalid_image = _validate_plugin_image_url_for_dispatch(clean_image_url)
+            if invalid_image is not None:
+                return json.dumps(invalid_image)
+            kwargs["image_url"] = clean_image_url
         norm_refs = None
         if reference_image_urls is not None:
             from agent.image_gen_provider import normalize_reference_images

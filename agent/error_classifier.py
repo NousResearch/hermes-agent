@@ -843,7 +843,36 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # Already checked long_context_tier above; this is a normal rate limit
+        # Already checked long_context_tier above.
+        # Some providers return monthly/cycle quota exhaustion as 429 (e.g.
+        # Kimi "monthly usage limit").  Disambiguate the same way as 402:
+        # if the message carries a billing or permanent-quota-exhaustion
+        # signal with no transient "try again / resets at / wait" qualifier,
+        # classify as billing (non-retryable) so we don't burn retries on a
+        # quota that won't recover until the next billing cycle.
+        if any(p in error_msg for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
+        # Only check usage-limit patterns when the message does NOT already
+        # carry an explicit rate-limit signal (e.g. "rate limit exceeded").
+        # _USAGE_LIMIT_PATTERNS includes broad tokens like "limit exceeded"
+        # that overlap with normal transient 429 messages; _RATE_LIMIT_PATTERNS
+        # takes priority so those stay retryable.
+        has_rate_limit_signal = any(p in error_msg for p in _RATE_LIMIT_PATTERNS)
+        has_usage_limit = not has_rate_limit_signal and any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
+        if has_usage_limit:
+            has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
+            if not has_transient_signal:
+                return result_fn(
+                    FailoverReason.billing,
+                    retryable=False,
+                    should_rotate_credential=True,
+                    should_fallback=True,
+                )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,

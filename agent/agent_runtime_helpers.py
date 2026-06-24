@@ -36,7 +36,7 @@ from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
-from agent.error_classifier import FailoverReason
+from agent.error_classifier import FailoverReason, _USAGE_LIMIT_PATTERNS
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -696,11 +696,11 @@ def recover_with_credential_pool(
         if error_context:
             context_reason = str(error_context.get("reason") or "").lower()
             context_message = str(error_context.get("message") or "").lower()
+            haystack = context_reason + " " + context_message
             usage_limit_reached = (
                 "usage_limit_reached" in context_reason
                 or "gousagelimit" in context_reason
-                or "usage limit reached" in context_message
-                or "usage limit has been reached" in context_message
+                or any(p in haystack for p in _USAGE_LIMIT_PATTERNS)
             )
         if not has_retried_429 and not usage_limit_reached:
             return False, True

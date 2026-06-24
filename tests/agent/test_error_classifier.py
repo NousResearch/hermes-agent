@@ -324,6 +324,56 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_rotate_credential is True
 
+    def test_429_kimi_monthly_usage_limit_is_billing(self):
+        """Kimi returns HTTP 429 for monthly quota exhaustion — must not retry.
+
+        Real error: "You've reached kimi monthly usage limit for this billing
+        cycle. Your quota will be refreshed in the next cycle."
+        'usage limit' matches _USAGE_LIMIT_PATTERNS; 'refreshed in the next
+        cycle' is NOT in _USAGE_LIMIT_TRANSIENT_SIGNALS → billing, non-retryable.
+        """
+        msg = (
+            "You've reached kimi monthly usage limit for this billing cycle. "
+            "Your quota will be refreshed in the next cycle. Upgrade to get more."
+        )
+        e = MockAPIError(msg, status_code=429)
+        result = classify_api_error(e, provider="kimi")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_429_with_transient_usage_limit_is_rate_limit(self):
+        """429 carrying 'usage limit' + 'try again' is a transient quota → rate_limit."""
+        e = MockAPIError(
+            "usage limit exceeded, try again in 60 seconds",
+            status_code=429,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_429_with_billing_pattern_is_billing(self):
+        """429 carrying an explicit billing phrase (e.g. 'insufficient credits') → billing."""
+        e = MockAPIError("insufficient credits", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_429_plain_no_message_is_rate_limit(self):
+        """Plain 429 with no billing/usage signal stays rate_limit (regression guard)."""
+        e = MockAPIError("Too Many Requests", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_429_quota_with_reset_window_is_rate_limit(self):
+        """429 + 'quota' + 'resets at' → transient, stays rate_limit."""
+        e = MockAPIError("quota exceeded, resets at midnight UTC", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
     # ── Server errors ──
 
     def test_500_server_error(self):

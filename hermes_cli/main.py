@@ -1101,8 +1101,13 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
         pass
 
     # Fallback: numbered list (Windows without curses, etc.)
-    print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
-    for i, s in enumerate(sessions):
+    # Cap display at 50 rows so large session lists don't flood the terminal.
+    display_sessions = sessions[:50]
+    if len(sessions) > 50:
+        print(f"\n  Browse sessions  (showing 50 of {len(sessions)}, enter number to resume, q to cancel)\n")
+    else:
+        print("\n  Browse sessions  (enter number to resume, q to cancel)\n")
+    for i, s in enumerate(display_sessions):
         title = (s.get("title") or "").strip()
         preview = (s.get("preview") or "").strip()
         label = title or preview or s["id"]
@@ -1114,13 +1119,13 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
     while True:
         try:
-            val = input(f"\n  Select [1-{len(sessions)}]: ").strip()
+            val = input(f"\n  Select [1-{len(display_sessions)}]: ").strip()
             if not val or val.lower() in {"q", "quit", "exit"}:
                 return None
             idx = int(val) - 1
-            if 0 <= idx < len(sessions):
-                return sessions[idx]["id"]
-            print(f"  Invalid selection. Enter 1-{len(sessions)} or q to cancel.")
+            if 0 <= idx < len(display_sessions):
+                return display_sessions[idx]["id"]
+            print(f"  Invalid selection. Enter 1-{len(display_sessions)} or q to cancel.")
         except ValueError:
             print("  Invalid input. Enter a number or q to cancel.")
         except (KeyboardInterrupt, EOFError):

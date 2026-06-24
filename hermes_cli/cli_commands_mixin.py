@@ -648,14 +648,38 @@ class CLICommandsMixin:
             target = target[1:-1].strip()
 
         if not target:
+            # Interactive TTY: launch the curses session browser for arrow-key
+            # navigation matching the TUI/desktop. Non-interactive contexts
+            # (piped input, gateway, CI) fall back to the static numbered table.
+            import sys as _sys
+
+            if _sys.stdin.isatty() and _sys.stdout.isatty():
+                sessions = self._list_recent_sessions(limit=200)
+                if sessions:
+                    from hermes_cli.main import _session_browse_picker
+
+                    picked = _session_browse_picker(sessions)
+                    if picked:
+                        # Disarm any previously-armed pending selection before
+                        # recursing so the next bare number isn't hijacked.
+                        self._pending_resume_sessions = None
+                        # Recurse with the picked ID so the full resolution
+                        # path (compression chain, session switch, recap)
+                        # runs exactly as if the user had typed
+                        # ``/resume <id>``.  Mirrors _consume_pending_resume_selection.
+                        self._handle_resume_command(f"/resume {picked}")
+                        return
+                    else:
+                        _cprint("  Cancelled.")
+                        return
+                else:
+                    _cprint("  No previous sessions to resume.")
+                    return
+
+            # Non-interactive: fall back to the static numbered table + one-shot
+            # bare-number selection. See #34584.
             _cprint("  Usage: /resume <number|session_id_or_title>")
             if self._show_recent_sessions(reason="resume"):
-                # Arm a one-shot pending-resume selection so the user can type
-                # just the number (`3`) on the next line instead of having to
-                # retype `/resume 3`. The list here must match the one shown by
-                # _show_recent_sessions and used for index resolution below —
-                # all three go through _list_recent_sessions(limit=10). See
-                # #34584.
                 self._pending_resume_sessions = self._list_recent_sessions(limit=10)
                 return
             _cprint("  Tip:   Use /history or `hermes sessions list` to find sessions.")

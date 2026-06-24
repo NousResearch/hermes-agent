@@ -2151,6 +2151,25 @@ class TestExecuteToolCalls:
 
         mock_print.assert_not_called()
 
+    def test_run_conversation_clears_current_user_message_after_turn(self, agent):
+        agent._interruptible_api_call = lambda _kwargs: _mock_response(content="Done")
+        agent._persist_session = lambda *args, **kwargs: None
+        agent._save_trajectory = lambda *args, **kwargs: None
+
+        result = agent.run_conversation("https://example.com 열어줘")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Done"
+        assert getattr(agent, "_current_user_message", None) is None
+
+    def test_run_conversation_clears_current_user_message_on_exception(self, agent):
+        agent._current_user_message = "https://example.com 열어줘"
+        with patch("agent.conversation_loop.run_conversation", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                agent.run_conversation("next turn")
+
+        assert getattr(agent, "_current_user_message", None) is None
+
     def test_run_conversation_suppresses_retry_noise_in_parseable_quiet_mode(self, agent):
         class _RateLimitError(Exception):
             status_code = 429

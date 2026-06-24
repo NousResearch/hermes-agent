@@ -799,6 +799,15 @@ def _coerce_boolean(value: str):
     return value
 
 
+from tools.url_intent_guard import ambiguous_user_pasted_url_block as _shared_url_intent_block
+
+
+def _ambiguous_user_pasted_url_block(function_name: str, function_args: Dict[str, Any], user_task: Optional[str]) -> Optional[str]:
+    """Compatibility wrapper for URL-intent guard tests and callers."""
+
+    return _shared_url_intent_block(function_name, function_args, user_task)
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -837,6 +846,13 @@ def handle_function_call(
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
+
+    # Hard gate: a URL pasted in the current user turn is not automatically a
+    # navigation/fetch target. This prevents evidence/browser loops where the
+    # model treats "복사해놓음" or URL-only messages as permission to browse.
+    _ambiguous_url_block = _ambiguous_user_pasted_url_block(function_name, function_args, user_task)
+    if _ambiguous_url_block is not None:
+        return json.dumps({"error": _ambiguous_url_block}, ensure_ascii=False)
 
     # ── Tool Search bridge dispatch ──────────────────────────────────
     # tool_search and tool_describe are pure catalog reads — handle them
@@ -981,6 +997,7 @@ def handle_function_call(
                 function_name, function_args,
                 task_id=task_id,
                 enabled_tools=sandbox_enabled,
+                user_task=user_task,
             )
         else:
             result = registry.dispatch(

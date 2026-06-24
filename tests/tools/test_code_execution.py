@@ -230,6 +230,41 @@ print(f"file lines: {r2['total_lines']}")
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["tool_calls_made"], 2)
 
+    def test_sandbox_web_extract_rpc_preserves_user_task(self):
+        """Nested URL-action RPC calls keep current-turn intent context."""
+        captured = []
+
+        def capture_dispatch(function_name, function_args, task_id=None, user_task=None):
+            captured.append({
+                "function_name": function_name,
+                "function_args": function_args,
+                "task_id": task_id,
+                "user_task": user_task,
+            })
+            return json.dumps({"ok": True})
+
+        code = """
+from hermes_tools import web_extract
+result = web_extract(["https://example.com/path"])
+print(result)
+"""
+        with patch("model_tools.handle_function_call", side_effect=capture_dispatch):
+            raw = execute_code(
+                code=code,
+                task_id="test-user-task-rpc",
+                enabled_tools=["web_extract"],
+                user_task="https://example.com/path 요약해줘",
+            )
+
+        result = json.loads(raw)
+        self.assertEqual(result["status"], "success", msg=result)
+        self.assertEqual(result["tool_calls_made"], 1)
+        self.assertEqual(len(captured), 1)
+        self.assertEqual(captured[0]["function_name"], "web_extract")
+        self.assertEqual(captured[0]["function_args"], {"urls": ["https://example.com/path"]})
+        self.assertEqual(captured[0]["task_id"], "test-user-task-rpc")
+        self.assertEqual(captured[0]["user_task"], "https://example.com/path 요약해줘")
+
     def test_syntax_error(self):
         """Script with a syntax error returns error status."""
         result = self._run("def broken(")

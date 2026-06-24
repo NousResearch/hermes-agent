@@ -111,6 +111,82 @@ class TestHandleFunctionCall:
         # pre_tool_call does NOT get duration_ms (nothing has run yet).
         assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
+    def test_passive_pasted_url_is_blocked_before_browser_navigation(self):
+        result = json.loads(handle_function_call(
+            "browser_navigate",
+            {"url": "https://flannels-throat-footpad.ngrok-free.dev"},
+            user_task="flannels-throat-footpad.ngrok-free.dev\n복사해놓음",
+        ))
+        assert "error" in result
+        assert "Ambiguous pasted URL" in result["error"]
+
+    def test_url_only_message_is_blocked_before_web_extract(self):
+        result = json.loads(handle_function_call(
+            "web_extract",
+            {"url": "https://example.com/path"},
+            user_task="example.com/path",
+        ))
+        assert "error" in result
+        assert "Ambiguous pasted URL" in result["error"]
+
+    def test_passive_pasted_host_blocks_path_suffix_navigation(self):
+        result = json.loads(handle_function_call(
+            "browser_navigate",
+            {"url": "https://flannels-throat-footpad.ngrok-free.dev/admin?x=1"},
+            user_task="flannels-throat-footpad.ngrok-free.dev\n복사해놓음",
+        ))
+        assert "error" in result
+        assert "Ambiguous pasted URL" in result["error"]
+
+    def test_url_action_without_user_task_fails_closed(self):
+        result = json.loads(handle_function_call(
+            "browser_navigate",
+            {"url": "https://example.com"},
+            user_task=None,
+        ))
+        assert "error" in result
+        assert "Missing user intent context" in result["error"]
+
+    def test_explicit_url_instruction_allows_browser_navigation(self):
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as dispatch:
+            result = json.loads(handle_function_call(
+                "browser_navigate",
+                {"url": "https://example.com"},
+                user_task="https://example.com 열어봐",
+            ))
+        assert result == {"ok": True}
+        dispatch.assert_called_once()
+
+    def test_tool_call_bridge_to_browser_navigation_preserves_url_intent_guard(self):
+        current_defs = [{"function": {"name": "browser_navigate", "parameters": {}}}]
+        with (
+            patch("model_tools.get_tool_definitions", return_value=current_defs),
+            patch("tools.tool_search.is_deferrable_tool_name", return_value=True),
+            patch("model_tools.registry.dispatch", return_value='{"unexpected":true}') as dispatch,
+        ):
+            result = json.loads(handle_function_call(
+                "tool_call",
+                {
+                    "name": "browser_navigate",
+                    "arguments": {"url": "https://flannels-throat-footpad.ngrok-free.dev"},
+                },
+                user_task="flannels-throat-footpad.ngrok-free.dev\n복사해놓음",
+            ))
+
+        assert "error" in result
+        assert "Ambiguous pasted URL" in result["error"]
+        dispatch.assert_not_called()
+
+    def test_explicit_summarize_url_instruction_allows_web_extract(self):
+        with patch("model_tools.registry.dispatch", return_value='{"ok":true}') as dispatch:
+            result = json.loads(handle_function_call(
+                "web_extract",
+                {"urls": ["https://example.com/post"]},
+                user_task="https://example.com/post 요약해줘",
+            ))
+        assert result == {"ok": True}
+        dispatch.assert_called_once()
+
 
 # =========================================================================
 # Agent loop tools

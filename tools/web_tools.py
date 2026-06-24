@@ -874,7 +874,8 @@ async def web_extract_tool(
     format: str = None,
     use_llm_processing: bool = True,
     model: Optional[str] = None,
-    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
+    min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION,
+    user_task: Optional[str] = None,
 ) -> str:
     """
     Extract content from specific web pages using available extraction API backend.
@@ -898,6 +899,16 @@ async def web_extract_tool(
     Raises:
         Exception: If extraction fails or API key is not set
     """
+    # Block passive pasted/copied URLs before any fetch backend runs. This is
+    # defense in depth for direct web_extract calls that bypass model_tools.
+    from tools.url_intent_guard import ambiguous_user_pasted_url_block
+
+    _intent_block = ambiguous_user_pasted_url_block(
+        "web_extract", {"urls": urls}, user_task
+    )
+    if _intent_block is not None:
+        return json.dumps({"success": False, "error": _intent_block}, ensure_ascii=False)
+
     # Block URLs containing embedded secrets (exfiltration prevention).
     # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
     from agent.redact import _PREFIX_RE
@@ -1338,7 +1349,10 @@ registry.register(
     toolset="web",
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+        "markdown",
+        user_task=kw.get("user_task"),
+    ),
     check_fn=check_web_api_key,
     requires_env=_web_requires_env(),
     is_async=True,

@@ -1,4 +1,5 @@
 import json
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -318,10 +319,168 @@ def test_browser_navigate_returns_policy_block(monkeypatch):
         lambda *args, **kwargs: pytest.fail("browser command should not run for blocked URL"),
     )
 
-    result = json.loads(browser_tool.browser_navigate("https://blocked.test"))
+    result = json.loads(browser_tool.browser_navigate(
+        "https://blocked.test",
+        user_task="https://blocked.test 열어봐",
+    ))
 
     assert result["success"] is False
     assert result["blocked_by_policy"]["rule"] == "blocked.test"
+
+
+def test_browser_navigate_blocks_passive_pasted_url_before_browser_command(monkeypatch):
+    from tools import browser_tool
+
+    monkeypatch.setattr(
+        browser_tool,
+        "_run_browser_command",
+        lambda *args, **kwargs: pytest.fail("browser command should not run for passive pasted URL"),
+    )
+
+    result = json.loads(browser_tool.browser_navigate(
+        "https://flannels-throat-footpad.ngrok-free.dev/",
+        user_task="flannels-throat-footpad.ngrok-free.dev\n복사해놓음",
+    ))
+
+    assert result["success"] is False
+    assert "Ambiguous pasted URL" in result["error"]
+
+
+def test_browser_navigate_fails_closed_without_user_task_before_browser_command(monkeypatch):
+    from tools import browser_tool
+
+    monkeypatch.setattr(
+        browser_tool,
+        "_run_browser_command",
+        lambda *args, **kwargs: pytest.fail("browser command should not run without user intent context"),
+    )
+
+    result = json.loads(browser_tool.browser_navigate("https://example.com"))
+
+    assert result["success"] is False
+    assert "Missing user intent context" in result["error"]
+
+
+def test_browser_registry_passes_user_task_to_navigate(monkeypatch):
+    from tools import browser_tool
+
+    captured = {}
+
+    def fake_browser_navigate(*, url, task_id=None, user_task=None):
+        captured.update({"url": url, "task_id": task_id, "user_task": user_task})
+        return json.dumps({"success": True})
+
+    monkeypatch.setattr(browser_tool, "browser_navigate", fake_browser_navigate)
+
+    result = browser_tool.registry.dispatch(
+        "browser_navigate",
+        {"url": "https://example.com"},
+        task_id="t1",
+        user_task="https://example.com\n복사해놓음",
+    )
+
+    assert json.loads(result) == {"success": True}
+    assert captured == {
+        "url": "https://example.com",
+        "task_id": "t1",
+        "user_task": "https://example.com\n복사해놓음",
+    }
+
+
+def test_handle_function_call_passes_user_task_through_registry_to_browser_navigate(monkeypatch):
+    from model_tools import handle_function_call
+    from tools import browser_tool
+
+    calls = []
+
+    monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "check_website_access", lambda url: None)
+    monkeypatch.setattr(browser_tool, "_get_session_info", lambda key: {"_first_nav": False})
+    monkeypatch.setattr(browser_tool, "_get_command_timeout", lambda: 1)
+
+    def fake_run_browser_command(session_key, command, args, timeout=None):
+        calls.append({
+            "session_key": session_key,
+            "command": command,
+            "args": args,
+            "timeout": timeout,
+        })
+        return {"success": True, "data": {"title": "OK", "url": args[0] if args else ""}}
+
+    monkeypatch.setattr(browser_tool, "_run_browser_command", fake_run_browser_command)
+
+    result = json.loads(handle_function_call(
+        "browser_navigate",
+        {"url": "https://example.com"},
+        task_id="t-e2e",
+        user_task="https://example.com 열어봐",
+    ))
+
+    assert result["success"] is True
+    assert result["url"] == "https://example.com"
+    assert any(call["command"] == "open" and call["args"] == ["https://example.com"] for call in calls)
+
+
+def test_web_extract_tool_blocks_passive_pasted_url_before_provider(monkeypatch):
+    import agent.web_search_registry as web_search_registry
+    from tools import web_tools
+
+    monkeypatch.setattr(
+        web_search_registry,
+        "get_active_extract_provider",
+        lambda: pytest.fail("extract provider should not run for passive pasted URL"),
+    )
+
+    result = json.loads(asyncio.run(web_tools.web_extract_tool(
+        ["https://example.com/path"],
+        user_task="example.com/path",
+    )))
+
+    assert result["success"] is False
+    assert "Ambiguous pasted URL" in result["error"]
+
+
+def test_web_extract_tool_fails_closed_without_user_task_before_provider(monkeypatch):
+    import agent.web_search_registry as web_search_registry
+    from tools import web_tools
+
+    monkeypatch.setattr(
+        web_search_registry,
+        "get_active_extract_provider",
+        lambda: pytest.fail("extract provider should not run without user intent context"),
+    )
+
+    result = json.loads(asyncio.run(web_tools.web_extract_tool(["https://example.com/path"])))
+
+    assert result["success"] is False
+    assert "Missing user intent context" in result["error"]
+
+
+def test_web_extract_registry_passes_user_task(monkeypatch):
+    from tools import web_tools
+
+    captured = {}
+
+    async def fake_web_extract_tool(urls, format=None, use_llm_processing=True, model=None, min_length=0, user_task=None):
+        captured.update({"urls": urls, "format": format, "user_task": user_task})
+        return json.dumps({"success": True})
+
+    monkeypatch.setattr(web_tools, "web_extract_tool", fake_web_extract_tool)
+
+    result = web_tools.registry.dispatch(
+        "web_extract",
+        {"urls": ["https://example.com"]},
+        task_id="t1",
+        user_task="https://example.com\n복사해놓음",
+    )
+
+    assert json.loads(result) == {"success": True}
+    assert captured == {
+        "urls": ["https://example.com"],
+        "format": "markdown",
+        "user_task": "https://example.com\n복사해놓음",
+    }
 
 
 def test_browser_navigate_allows_when_shared_file_missing(monkeypatch, tmp_path):
@@ -395,7 +554,11 @@ class TestWebToolPolicy:
         # Force the firecrawl plugin to be the active extract provider.
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
-        result = json.loads(await web_tools.web_extract_tool(["https://blocked.test"], use_llm_processing=False))
+        result = json.loads(await web_tools.web_extract_tool(
+            ["https://blocked.test"],
+            use_llm_processing=False,
+            user_task="https://blocked.test 읽어줘",
+        ))
 
         assert result["results"][0]["url"] == "https://blocked.test"
         assert "Blocked by website policy" in result["results"][0]["error"]
@@ -437,7 +600,11 @@ class TestWebToolPolicy:
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
 
-        result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"], use_llm_processing=False))
+        result = json.loads(await web_tools.web_extract_tool(
+            ["https://allowed.test"],
+            use_llm_processing=False,
+            user_task="https://allowed.test 읽어줘",
+        ))
 
         assert result["results"][0]["url"] == "https://blocked.test/final"
         assert result["results"][0]["content"] == ""

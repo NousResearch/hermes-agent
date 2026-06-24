@@ -428,6 +428,10 @@ def run_conversation(
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None
     agent._persist_user_message_override = persist_user_message
+    # Expose the current user turn to tool-dispatch hard gates. Some safety
+    # decisions need to distinguish an explicit instruction from a passive
+    # pasted URL/note before navigation or fetch tools execute.
+    agent._current_user_message = user_message
     # Generate unique task_id if not provided to isolate VMs between concurrent tasks
     effective_task_id = task_id or str(uuid.uuid4())
     # Expose the active task_id so tools running mid-turn (e.g. delegate_task
@@ -4399,6 +4403,11 @@ def run_conversation(
                     _kanban_task,
                     exc_info=True,
                 )
+
+    # Tool dispatch is over for this turn. Clear the current-turn intent context
+    # before post-turn hooks/cleanup so an explicit URL instruction cannot stick
+    # on the agent object and authorize later out-of-turn URL actions.
+    agent._current_user_message = None
 
     # Determine if conversation completed successfully
     completed = (

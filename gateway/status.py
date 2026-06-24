@@ -304,6 +304,20 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     return looks_like_gateway_runtime_command_line(cmdline)
 
 
+def _record_matches_live_gateway_pid(record: dict[str, Any], pid: int) -> bool:
+    """Return True when a live PID still identifies as this gateway record.
+
+    Prefer the live command line whenever it is readable. Runtime status files
+    can outlive the gateway process they describe; if PID reuse leaves the same
+    PID occupied by an s6 supervisor/log process, the stale record's argv should
+    not make that unrelated process count as a running gateway.
+    """
+    live_cmdline = _read_process_cmdline(pid)
+    if live_cmdline:
+        return looks_like_gateway_runtime_command_line(live_cmdline)
+    return _record_looks_like_gateway(record)
+
+
 def _build_pid_record() -> dict:
     return {
         "pid": os.getpid(),
@@ -759,7 +773,7 @@ def get_runtime_status_running_pid(
     ):
         return None
 
-    if _looks_like_gateway_process(pid) or _record_looks_like_gateway(payload):
+    if _record_matches_live_gateway_pid(payload, pid):
         return pid
     return None
 
@@ -1261,7 +1275,7 @@ def get_running_pid(
         if recorded_start is not None and current_start is not None and current_start != recorded_start:
             continue
 
-        if _looks_like_gateway_process(pid) or _record_looks_like_gateway(record):
+        if _record_matches_live_gateway_pid(record, pid):
             return pid
 
     _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)

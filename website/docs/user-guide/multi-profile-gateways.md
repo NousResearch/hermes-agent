@@ -280,6 +280,46 @@ never clash:
 The default profile keeps the historical names: `ai.hermes.gateway.plist` /
 `hermes-gateway.service`.
 
+## Recover from duplicate profile gateways
+
+Current Hermes releases refuse `hermes gateway run` and
+`hermes gateway run --replace` while the profile's LaunchAgent/systemd service
+is running. Starting a duplicate requires an explicit `--force`. The recovery
+steps below apply only if a legacy installation predating that guard, or an
+explicit `--force` launch (possibly combined with `--replace`), left an
+unmanaged foreground gateway alongside the managed service.
+
+Do not run the recovery through a gateway chat: stopping the gateway would
+kill the child command before it can complete. Open a separate terminal, SSH,
+or administrator session instead.
+
+### Linux (systemd)
+
+Diagnose the owner processes:
+
+```bash
+systemctl --user list-units 'hermes-gateway*' --all
+ps -eo pid,ppid,cmd | grep 'hermes.*gateway' | grep -v grep
+```
+
+Then stop or disable only the conflicting profile unit, terminate the unmanaged
+foreground gateway for that same profile, reset failed state, and start the
+intended dedicated profile service. Leave unrelated healthy profile services
+running.
+
+```bash
+# Example: default is not used and hari should run as its own service.
+systemctl --user disable --now hermes-gateway.service
+systemctl --user stop hermes-gateway-hari.service
+
+# Review these PIDs before killing them.
+ps -eo pid,ppid,cmd | grep -E 'hermes .*gateway run' | grep -E -- '--force|--replace' | grep -v grep
+kill <hari-or-default-foreground-gateway-pid> [...]
+
+systemctl --user reset-failed hermes-gateway.service hermes-gateway-hari.service
+systemctl --user start hermes-gateway-hari.service
+```
+
 ## Viewing logs
 
 Each profile writes to its own log files:

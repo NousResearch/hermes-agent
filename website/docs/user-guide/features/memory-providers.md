@@ -298,8 +298,8 @@ pip install recall-sqlite
 # 2. Install the Hermes plugin (clones repo to ~/.hermes/plugins/)
 hermes plugins install Jnocode/recall-memory-hermes --enable
 
-# 3. Activate as the memory provider
-hermes config set memory.provider recall-memory-hermes
+# 3. 啟用為記憶提供者
+hermes memory setup recall-memory-hermes
 
 # 4. Restart the gateway
 hermes gateway restart

@@ -360,6 +360,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._allow_from = self._coerce_allow_list(config.extra.get("allow_from") or config.extra.get("allowFrom"))
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
+        self._profile_routes = self._coerce_profile_routes(
+            config.extra.get("profile_routes")
+            or config.extra.get("profileRoutes")
+            or config.extra.get("group_profile_routes")
+            or config.extra.get("groupProfileRoutes")
+        )
         self._mention_patterns = self._compile_mention_patterns()
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
@@ -1090,6 +1096,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=getattr(event.source, "profile", None),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -1170,6 +1177,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 user_id=data.get("senderId"),
                 user_name=data.get("senderName"),
             )
+            routed_profile = self._profile_for_whatsapp_chat(data)
+            if routed_profile:
+                source.profile = routed_profile
             
             # Download media URLs to the local cache so agent tools
             # can access them reliably regardless of URL expiration.

@@ -309,6 +309,56 @@ class TestWebhookEndpoints:
         assert load_config()["platforms"]["webhook"]["enabled"] is True
 
 
+class TestWhatsAppProfileRoutesEndpoints:
+    @pytest.fixture(autouse=True)
+    def _setup(self, _isolate_hermes_home):
+        self.client, _ = _client()
+
+    def test_routes_roundtrip_writes_config(self):
+        from hermes_cli.config import load_config
+
+        assert self.client.get("/api/messaging/whatsapp/profile-routes").json() == {
+            "routes": {}
+        }
+
+        r = self.client.put(
+            "/api/messaging/whatsapp/profile-routes",
+            json={
+                "routes": {
+                    "120363001234567890@g.us": "whatsapp-client-a",
+                    "15551234567:4@s.whatsapp.net": "whatsapp-client-dm",
+                    "": "ignored",
+                }
+            },
+        )
+
+        assert r.status_code == 200
+        assert r.json()["routes"] == {
+            "120363001234567890@g.us": "whatsapp-client-a",
+            "15551234567@s.whatsapp.net": "whatsapp-client-dm",
+        }
+        cfg = load_config()
+        assert cfg["platforms"]["whatsapp"]["extra"]["profile_routes"] == r.json()["routes"]
+        assert self.client.get("/api/messaging/whatsapp/profile-routes").json()["routes"] == r.json()["routes"]
+
+    def test_routes_parser_accepts_legacy_list_config(self):
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg.setdefault("platforms", {}).setdefault("whatsapp", {})["extra"] = {
+            "group_profile_routes": [
+                {"group_id": "120363001234567890@g.us", "profile_name": "client-a"},
+                "15551234567@s.whatsapp.net=client-dm",
+            ]
+        }
+        save_config(cfg)
+
+        assert self.client.get("/api/messaging/whatsapp/profile-routes").json()["routes"] == {
+            "120363001234567890@g.us": "client-a",
+            "15551234567@s.whatsapp.net": "client-dm",
+        }
+
+
 class TestOpsEndpoints:
     @pytest.fixture(autouse=True)
     def _setup(self, _isolate_hermes_home):

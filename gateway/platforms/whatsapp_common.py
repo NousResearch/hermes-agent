@@ -107,6 +107,79 @@ class WhatsAppBehaviorMixin:
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    @classmethod
+    def _coerce_profile_routes(cls, raw) -> dict[str, str]:
+        """Parse WhatsApp chat/group → Hermes profile routing config.
+
+        Supported shapes under ``platforms.whatsapp.extra.profile_routes``:
+        mapping (``chat_id: profile``), list of dicts
+        (``{chat_id, profile}``), list of ``chat_id=profile`` strings, or a
+        comma/newline-separated string. Invalid rows are ignored. Empty config
+        is a no-op, preserving the legacy single-profile WhatsApp behavior.
+        """
+        if raw is None:
+            return {}
+        if isinstance(raw, str):
+            stripped = raw.strip()
+            if not stripped:
+                return {}
+            try:
+                raw = json.loads(stripped)
+            except Exception:
+                raw = [part.strip() for part in re.split(r"[\n,]", stripped) if part.strip()]
+
+        routes: dict[str, str] = {}
+
+        def _add(chat_id: Any, profile: Any) -> None:
+            cid = cls._normalize_whatsapp_id(str(chat_id or "").strip())
+            prof = str(profile or "").strip()
+            if cid and prof:
+                routes[cid] = prof
+
+        if isinstance(raw, dict):
+            for chat_id, profile in raw.items():
+                _add(chat_id, profile)
+            return routes
+
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict):
+                    _add(
+                        item.get("chat_id")
+                        or item.get("chatId")
+                        or item.get("group_id")
+                        or item.get("groupId")
+                        or item.get("id"),
+                        item.get("profile")
+                        or item.get("profile_name")
+                        or item.get("profileName"),
+                    )
+                elif isinstance(item, str) and "=" in item:
+                    chat_id, profile = item.split("=", 1)
+                    _add(chat_id, profile)
+            return routes
+
+        return routes
+
+    def _profile_for_whatsapp_chat(self, data: Dict[str, Any]) -> Optional[str]:
+        """Return the configured Hermes profile for this WhatsApp chat, if any."""
+        routes = getattr(self, "_profile_routes", None) or {}
+        if not routes:
+            return None
+        candidates = []
+        for key in ("chatId", "from", "senderId"):
+            normalized = self._normalize_whatsapp_id(str(data.get(key) or "").strip())
+            if normalized:
+                candidates.append(normalized)
+                bare = normalized.split("@", 1)[0]
+                if bare and bare != normalized:
+                    candidates.append(bare)
+        for candidate in candidates:
+            profile = routes.get(candidate)
+            if profile:
+                return profile
+        return None
+
     @staticmethod
     def _coerce_allow_list(raw) -> set[str]:
         """Parse allow_from / group_allow_from from config or env var."""
@@ -123,7 +196,8 @@ class WhatsAppBehaviorMixin:
             return ""
         normalized = str(value).strip()
         if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
+            local, domain = normalized.split("@", 1)
+            normalized = f"{local.split(':', 1)[0]}@{domain}"
         return normalized
 
     @staticmethod

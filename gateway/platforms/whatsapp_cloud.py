@@ -248,6 +248,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 or os.getenv("WHATSAPP_CLOUD_GROUP_ALLOW_FROM")
             )
         )
+        self._profile_routes: dict[str, str] = self._coerce_profile_routes(
+            extra.get("profile_routes")
+            or extra.get("profileRoutes")
+            or extra.get("group_profile_routes")
+            or extra.get("groupProfileRoutes")
+        )
         self._mention_patterns = self._compile_mention_patterns()
 
         # Webhook dedup state — wamid → True. OrderedDict gives O(1) FIFO
@@ -1934,6 +1940,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             user_id=sender_id,
             user_name=sender_name or None,
         )
+        routed_profile = self._profile_for_whatsapp_chat(
+            {"chatId": chat_id, "from": sender_id, "senderId": sender_id}
+        )
+        if routed_profile:
+            source.profile = routed_profile
 
         # Cloud API timestamps are unix seconds (string). MessageEvent
         # doesn't enforce a type but downstream code formats with it.

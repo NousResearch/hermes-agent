@@ -1,3 +1,4 @@
+import asyncio
 import json
 from unittest.mock import AsyncMock
 
@@ -5,7 +6,8 @@ from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
-                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
+                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None,
+                  profile_routes=None):
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     extra = {}
@@ -23,6 +25,8 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
         extra["group_policy"] = group_policy
     if group_allow_from is not None:
         extra["group_allow_from"] = group_allow_from
+    if profile_routes is not None:
+        extra["profile_routes"] = profile_routes
 
     adapter = object.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -32,6 +36,7 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
     adapter._allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("allow_from"))
     adapter._group_policy = str(extra.get("group_policy", "open")).strip().lower()
     adapter._group_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("group_allow_from"))
+    adapter._profile_routes = WhatsAppAdapter._coerce_profile_routes(extra.get("profile_routes"))
     adapter._mention_patterns = adapter._compile_mention_patterns()
     adapter._free_response_chats = adapter._whatsapp_free_response_chats()
     return adapter
@@ -370,3 +375,67 @@ def test_is_broadcast_chat_helper_recognizes_common_jids():
     assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
     assert WhatsAppAdapter._is_broadcast_chat("") is False
     assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]
+
+
+def test_profile_routes_parse_mapping_list_and_string_shapes():
+    from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
+
+    assert WhatsAppAdapter._coerce_profile_routes({
+        "120363001234567890@g.us": "client-a",
+    }) == {"120363001234567890@g.us": "client-a"}
+    assert WhatsAppAdapter._coerce_profile_routes([
+        {"group_id": "120363001234567890@g.us", "profile_name": "client-a"},
+        "6281234567890@s.whatsapp.net=client-dm",
+    ]) == {
+        "120363001234567890@g.us": "client-a",
+        "6281234567890@s.whatsapp.net": "client-dm",
+    }
+    assert WhatsAppAdapter._coerce_profile_routes(
+        "120363001234567890@g.us=client-a,6281234567890=client-dm"
+    ) == {
+        "120363001234567890@g.us": "client-a",
+        "6281234567890": "client-dm",
+    }
+
+
+def test_build_message_event_stamps_profile_for_routed_group():
+    adapter = _make_adapter(
+        require_mention=False,
+        profile_routes={"120363001234567890@g.us": "client-a"},
+    )
+    data = _group_message("hello", _hermes_should_process=True)
+
+    event = asyncio.run(adapter._build_message_event(data))
+
+    assert event is not None
+    assert event.source.profile == "client-a"
+    assert event.source.chat_id == "120363001234567890@g.us"
+
+
+def test_build_message_event_leaves_unrouted_group_on_default_profile():
+    adapter = _make_adapter(
+        require_mention=False,
+        profile_routes={"999999@g.us": "client-a"},
+    )
+    data = _group_message("hello", _hermes_should_process=True)
+
+    event = asyncio.run(adapter._build_message_event(data))
+
+    assert event is not None
+    assert event.source.profile is None
+
+
+def test_text_batch_key_includes_routed_profile_namespace():
+    from gateway.session import build_session_key
+
+    adapter = _make_adapter(require_mention=False)
+    data = _group_message("hello", _hermes_should_process=True)
+    event = asyncio.run(adapter._build_message_event(data))
+    assert event is not None
+    event.source.profile = "client-a"
+
+    assert adapter._text_batch_key(event) == build_session_key(
+        event.source,
+        profile="client-a",
+    )
+    assert adapter._text_batch_key(event).startswith("agent:client-a:whatsapp:")

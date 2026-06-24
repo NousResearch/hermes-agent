@@ -72,6 +72,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/env",
   "/api/mcp",
   "/api/messaging/platforms",
+  "/api/messaging/whatsapp",
   "/api/messaging/telegram/onboarding",
   "/api/model/info",
   "/api/model/set",
@@ -809,6 +810,19 @@ export const api = {
       `/api/messaging/platforms/${encodeURIComponent(id)}/test`,
       { method: "POST" },
     ),
+  getWhatsAppProfileRoutes: () =>
+    fetchJSON<WhatsAppProfileRoutesResponse>(
+      "/api/messaging/whatsapp/profile-routes",
+    ),
+  updateWhatsAppProfileRoutes: (routes: Record<string, string>) =>
+    fetchJSON<WhatsAppProfileRoutesUpdateResponse>(
+      "/api/messaging/whatsapp/profile-routes",
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ routes }),
+      },
+    ),
   startTelegramOnboarding: (body: { bot_name?: string }) =>
     fetchJSON<TelegramOnboardingStartResponse>(
       "/api/messaging/telegram/onboarding/start",
@@ -1400,6 +1414,15 @@ export interface MessagingPlatformTestResult {
   ok: boolean;
   state: string;
   message: string;
+}
+
+export interface WhatsAppProfileRoutesResponse {
+  routes: Record<string, string>;
+}
+
+export interface WhatsAppProfileRoutesUpdateResponse {
+  ok: boolean;
+  routes: Record<string, string>;
 }
 
 export interface PairingUser {

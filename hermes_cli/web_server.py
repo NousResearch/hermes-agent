@@ -751,6 +751,11 @@ class MessagingPlatformUpdate(BaseModel):
     profile: Optional[str] = None
 
 
+class WhatsAppProfileRouteUpdate(BaseModel):
+    routes: Dict[str, str] = {}
+    profile: Optional[str] = None
+
+
 class TelegramOnboardingStart(BaseModel):
     bot_name: Optional[str] = None
 
@@ -5041,6 +5046,102 @@ def _write_platform_enabled(platform_id: str, enabled: bool) -> None:
     write_platform_config_field(platform_id, "enabled", enabled)
 
 
+def _platform_extra_config(config: dict, platform_id: str, *, create: bool = False) -> dict:
+    """Return ``platforms.<id>.extra`` from config.yaml, optionally creating it."""
+    platforms = config.get("platforms")
+    if not isinstance(platforms, dict):
+        if not create:
+            return {}
+        platforms = {}
+        config["platforms"] = platforms
+    platform_cfg = platforms.get(platform_id)
+    if not isinstance(platform_cfg, dict):
+        if not create:
+            return {}
+        platform_cfg = {}
+        platforms[platform_id] = platform_cfg
+    extra = platform_cfg.get("extra")
+    if not isinstance(extra, dict):
+        if not create:
+            return {}
+        extra = {}
+        platform_cfg["extra"] = extra
+    return extra
+
+
+def _normalize_whatsapp_profile_routes(raw: Any) -> Dict[str, str]:
+    """Normalize dashboard WhatsApp profile-route payloads without importing adapters."""
+    if raw is None:
+        return {}
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if not stripped:
+            return {}
+        try:
+            raw = json.loads(stripped)
+        except Exception:
+            raw = [part.strip() for part in re.split(r"[\n,]", stripped) if part.strip()]
+
+    routes: Dict[str, str] = {}
+
+    def _add(chat_id: Any, profile_name: Any) -> None:
+        cid = str(chat_id or "").strip()
+        prof = str(profile_name or "").strip()
+        if ":" in cid and "@" in cid:
+            local, domain = cid.split("@", 1)
+            cid = f"{local.split(':', 1)[0]}@{domain}"
+        if cid and prof:
+            routes[cid] = prof
+
+    if isinstance(raw, dict):
+        for chat_id, profile_name in raw.items():
+            _add(chat_id, profile_name)
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict):
+                _add(
+                    item.get("chat_id")
+                    or item.get("chatId")
+                    or item.get("group_id")
+                    or item.get("groupId")
+                    or item.get("id"),
+                    item.get("profile")
+                    or item.get("profile_name")
+                    or item.get("profileName"),
+                )
+            elif isinstance(item, str) and "=" in item:
+                chat_id, profile_name = item.split("=", 1)
+                _add(chat_id, profile_name)
+    return routes
+
+
+def _read_whatsapp_profile_routes() -> Dict[str, str]:
+    cfg = load_config()
+    extra = _platform_extra_config(cfg, "whatsapp", create=False)
+    raw = (
+        extra.get("profile_routes")
+        or extra.get("profileRoutes")
+        or extra.get("group_profile_routes")
+        or extra.get("groupProfileRoutes")
+        or {}
+    )
+    if isinstance(raw, dict):
+        return _normalize_whatsapp_profile_routes(raw)
+    return _normalize_whatsapp_profile_routes(raw)
+
+
+def _write_whatsapp_profile_routes(routes: Dict[str, str]) -> Dict[str, str]:
+    normalized = _normalize_whatsapp_profile_routes(routes)
+    cfg = load_config()
+    extra = _platform_extra_config(cfg, "whatsapp", create=True)
+    extra["profile_routes"] = normalized
+    # Collapse legacy aliases so the UI has one source of truth after saving.
+    for alias in ("profileRoutes", "group_profile_routes", "groupProfileRoutes"):
+        extra.pop(alias, None)
+    save_config(cfg)
+    return normalized
+
+
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
 _TELEGRAM_ONBOARDING_USER_AGENT = f"HermesDashboard/{__version__}"
 _TELEGRAM_USER_ID_RE = re.compile(r"^\d+$")
@@ -5429,6 +5530,31 @@ async def get_messaging_platforms(profile: Optional[str] = None):
                 for entry in _messaging_platform_catalog()
             ]
         }
+
+
+@app.get("/api/messaging/whatsapp/profile-routes")
+async def get_whatsapp_profile_routes(profile: Optional[str] = None):
+    """Return WhatsApp chat/group → Hermes profile routing for the scoped profile."""
+    with _profile_scope(profile):
+        return {"routes": _read_whatsapp_profile_routes()}
+
+
+@app.put("/api/messaging/whatsapp/profile-routes")
+async def update_whatsapp_profile_routes(
+    body: WhatsAppProfileRouteUpdate, profile: Optional[str] = None
+):
+    """Persist WhatsApp chat/group → Hermes profile routing.
+
+    Existing WhatsApp groups keep the default profile unless a route is
+    explicitly added here, so enabling the UI is backward-compatible.
+    """
+    try:
+        with _profile_scope(body.profile or profile):
+            routes = _write_whatsapp_profile_routes(body.routes)
+        return {"ok": True, "routes": routes}
+    except Exception:
+        _log.exception("PUT /api/messaging/whatsapp/profile-routes failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.put("/api/messaging/platforms/{platform_id}")

@@ -102,6 +102,29 @@ function isTerminalTelegramOnboardingError(error: unknown): boolean {
   return /\b410\b/.test(message) && /\b(expired|claimed|gone)\b/i.test(message);
 }
 
+function stringifyWhatsAppRoutes(routes: Record<string, string>): string {
+  return Object.entries(routes)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([chatId, profile]) => `${chatId}=${profile}`)
+    .join("\n");
+}
+
+function parseWhatsAppRoutes(text: string): Record<string, string> {
+  const routes: Record<string, string> = {};
+  text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .forEach((line) => {
+      const idx = line.indexOf("=");
+      if (idx === -1) return;
+      const chatId = line.slice(0, idx).trim();
+      const profile = line.slice(idx + 1).trim();
+      if (chatId && profile) routes[chatId] = profile;
+    });
+  return routes;
+}
+
 export default function ChannelsPage() {
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
   const [envPath, setEnvPath] = useState("~/.hermes/.env");
@@ -128,16 +151,21 @@ export default function ChannelsPage() {
   const [testingId, setTestingId] = useState<string | null>(null);
   const [restartNeeded, setRestartNeeded] = useState(false);
   const [restarting, setRestarting] = useState(false);
+  const [whatsAppRouteDraft, setWhatsAppRouteDraft] = useState("");
+  const [savingWhatsAppRoutes, setSavingWhatsAppRoutes] = useState(false);
 
   const gatewayRunning = platforms.length > 0 && platforms[0].gateway_running;
 
   const load = useCallback(() => {
-    return api
-      .getMessagingPlatforms()
-      .then((res) => {
+    return Promise.all([
+      api.getMessagingPlatforms(),
+      api.getWhatsAppProfileRoutes().catch(() => ({ routes: {} })),
+    ])
+      .then(([res, routeRes]) => {
         setPlatforms(res.platforms);
         setEnvPath(res.env_path || "~/.hermes/.env");
         setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
+        setWhatsAppRouteDraft(stringifyWhatsAppRoutes(routeRes.routes || {}));
       })
       .catch((e) => showToast(`Error: ${e}`, "error"));
   }, [showToast]);
@@ -244,6 +272,21 @@ export default function ChannelsPage() {
       showToast(`Failed to restart: ${e}`, "error");
     } finally {
       setRestarting(false);
+    }
+  };
+
+  const handleSaveWhatsAppRoutes = async () => {
+    setSavingWhatsAppRoutes(true);
+    try {
+      const routes = parseWhatsAppRoutes(whatsAppRouteDraft);
+      const res = await api.updateWhatsAppProfileRoutes(routes);
+      setWhatsAppRouteDraft(stringifyWhatsAppRoutes(res.routes || {}));
+      setRestartNeeded(true);
+      showToast("WhatsApp profile routes saved. Restart gateway to apply.", "success");
+    } catch (e) {
+      showToast(`Failed to save WhatsApp routes: ${e}`, "error");
+    } finally {
+      setSavingWhatsAppRoutes(false);
     }
   };
 
@@ -532,6 +575,35 @@ export default function ChannelsPage() {
                     setRestartNeeded={setRestartNeeded}
                     showToast={showToast}
                   />
+                )}
+                {platform.id === "whatsapp" && (
+                  <div className="rounded border border-border/70 bg-muted/20 p-3">
+                    <div className="mb-2 flex flex-col gap-1 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <div className="text-xs font-medium uppercase tracking-wider">
+                          Group → profile routing
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          One route per line: <code>120363...@g.us=client-profile</code>. Unlisted groups keep the current/default bot.
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        className="uppercase shrink-0"
+                        onClick={handleSaveWhatsAppRoutes}
+                        disabled={savingWhatsAppRoutes}
+                        prefix={savingWhatsAppRoutes ? <Spinner /> : <Save className="h-4 w-4" />}
+                      >
+                        {savingWhatsAppRoutes ? "Saving…" : "Save routes"}
+                      </Button>
+                    </div>
+                    <textarea
+                      className="min-h-[96px] w-full border border-border bg-background px-3 py-2 font-courier text-xs outline-none focus:border-primary"
+                      placeholder={"120363001234567890@g.us=whatsapp-client-a\n6281234567890@s.whatsapp.net=whatsapp-client-dm"}
+                      value={whatsAppRouteDraft}
+                      onChange={(event) => setWhatsAppRouteDraft(event.target.value)}
+                    />
+                  </div>
                 )}
               </CardContent>
             </Card>

@@ -577,7 +577,7 @@ class SessionEntry:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionEntry":
         origin = None
-        if "origin" in data and data["origin"]:
+        if "origin" in data and isinstance(data["origin"], dict):
             origin = SessionSource.from_dict(data["origin"])
         
         platform = None
@@ -814,9 +814,21 @@ class SessionStore:
                     # entries. Skip them so they never reach SessionEntry.from_dict.
                     if key.startswith("_"):
                         continue
+                    # Skip non-dict entries (corrupted sessions.json, e.g. a
+                    # bare bool or string where a dict is expected). Without
+                    # this, from_dict raises TypeError on `"origin" in data`
+                    # which escapes the inner except (ValueError, KeyError) and
+                    # aborts loading ALL remaining sessions (#46994).
+                    if not isinstance(entry_data, dict):
+                        logger.warning(
+                            "Skipping invalid session entry %r: "
+                            "expected dict, got %s",
+                            key, type(entry_data).__name__,
+                        )
+                        continue
                     try:
                         self._entries[key] = SessionEntry.from_dict(entry_data)
-                    except (ValueError, KeyError) as e:
+                    except (ValueError, KeyError, TypeError) as e:
                         logger.warning("Skipping invalid session entry %r: %s", key, e)
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")

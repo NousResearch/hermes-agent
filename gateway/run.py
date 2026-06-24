@@ -288,8 +288,19 @@ def _gateway_loop_exception_handler(
 
 
 def _redact_gateway_user_facing_secrets(text: str) -> str:
-    """Best-effort secret redaction before text can leave the gateway."""
+    """Redact secrets before gateway text can leave the process."""
     redacted = str(text or "")
+    try:
+        from agent.redact import redact_sensitive_text
+
+        # Gateway chat/status output is an external side-effect boundary, so
+        # force redaction even if verbose local logs have been opted out.
+        redacted = redact_sensitive_text(redacted, force=True)
+    except Exception as exc:
+        logger.warning("Gateway secret redaction failed: %s", exc)
+        from agent.redact_fallback import redact_sensitive_text_fallback
+
+        redacted = redact_sensitive_text_fallback(redacted)
     for pattern in _GATEWAY_SECRET_PATTERNS:
         redacted = pattern.sub(lambda m: (m.group(1) if m.lastindex else "") + "[REDACTED]", redacted)
     return redacted

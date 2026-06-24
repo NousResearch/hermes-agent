@@ -1,5 +1,7 @@
 """Telegram-specific gateway filtering for noisy status/error output."""
 
+import logging
+
 from gateway.config import Platform
 from gateway.run import (
     _prepare_gateway_status_message,
@@ -74,6 +76,45 @@ def test_telegram_final_response_redacts_auth_secrets():
     assert "authentication failed" in sanitized.lower()
     assert "check the configured credentials" in sanitized.lower()
     assert "sk-live" not in sanitized
+
+
+def test_telegram_final_response_redacts_opaque_sensitive_fields():
+    """Gateway chat redaction should use the shared redactor, not prefix-only patterns."""
+    raw = 'Diagnostic payload: {"api_key": "opaque-secret-value-1234567890"}'
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "opaque-secret-value-1234567890" not in sanitized
+    assert '"api_key"' in sanitized
+    assert "..." in sanitized or "***" in sanitized
+
+
+def test_telegram_final_response_redacts_even_when_global_redaction_disabled(monkeypatch):
+    import agent.redact as redact_module
+
+    monkeypatch.setattr(redact_module, "_REDACT_ENABLED", False)
+    raw = 'Diagnostic payload: {"api_key": "opaque-secret-value-1234567890"}'
+
+    sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "opaque-secret-value-1234567890" not in sanitized
+
+
+def test_telegram_final_response_fallback_redacts_if_shared_redactor_raises(monkeypatch, caplog):
+    import agent.redact as redact_module
+
+    def fail_redaction(*_args, **_kwargs):
+        raise RuntimeError("redactor unavailable")
+
+    monkeypatch.setattr(redact_module, "redact_sensitive_text", fail_redaction)
+    raw = 'Diagnostic payload: {"api_key": "opaque-secret-value-1234567890"}'
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
+
+    assert "opaque-secret-value-1234567890" not in sanitized
+    assert '"api_key"' in sanitized
+    assert "Gateway secret redaction failed" in caplog.text
 
 
 def test_telegram_final_response_keeps_normal_answers():

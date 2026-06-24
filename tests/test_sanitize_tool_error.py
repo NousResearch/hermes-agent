@@ -99,6 +99,41 @@ class TestEnvelope:
         assert msg in out
 
 
+class TestSecretRedaction:
+    def test_redacts_secret_like_values_before_model_context(self):
+        msg = 'Error executing tool: upstream returned {"api_key": "opaque-secret-value-1234567890"}'
+
+        out = _sanitize_tool_error(msg)
+
+        assert "opaque-secret-value-1234567890" not in out
+        assert '"api_key"' in out
+        assert "..." in out or "***" in out
+
+    def test_redacts_even_when_global_redaction_disabled(self, monkeypatch):
+        import agent.redact as redact_module
+
+        monkeypatch.setattr(redact_module, "_REDACT_ENABLED", False)
+        msg = 'Error executing tool: upstream returned {"api_key": "opaque-secret-value-1234567890"}'
+
+        out = _sanitize_tool_error(msg)
+
+        assert "opaque-secret-value-1234567890" not in out
+
+    def test_fallback_redacts_if_shared_redactor_raises(self, monkeypatch):
+        import agent.redact as redact_module
+
+        def fail_redaction(*_args, **_kwargs):
+            raise RuntimeError("redactor unavailable")
+
+        monkeypatch.setattr(redact_module, "redact_sensitive_text", fail_redaction)
+        msg = 'Error executing tool: upstream returned {"api_key": "opaque-secret-value-1234567890"}'
+
+        out = _sanitize_tool_error(msg)
+
+        assert "opaque-secret-value-1234567890" not in out
+        assert '"api_key"' in out
+
+
 class TestHandleFunctionCallIntegration:
     """Verify handle_function_call routes exception-path errors through the sanitizer.
 
@@ -135,3 +170,25 @@ class TestHandleFunctionCallIntegration:
         assert "<tool_call>" not in payload["error"]
         assert "</tool_call>" not in payload["error"]
         assert "boom" in payload["error"]
+
+    def test_exception_path_redacts_secret_material(self):
+        import json
+        from model_tools import handle_function_call
+        from tools.registry import registry as _registry
+
+        def boom(_args, **_kwargs):
+            raise RuntimeError('{"api_key": "opaque-secret-value-1234567890"}')
+
+        all_tools = _registry.get_all_tool_names()
+        assert all_tools, "no tools registered — test environment broken"
+        target = all_tools[0]
+        original = _registry._tools[target].handler
+        _registry._tools[target].handler = boom
+        try:
+            result_str = handle_function_call(target, {})
+        finally:
+            _registry._tools[target].handler = original
+
+        payload = json.loads(result_str)
+        assert "opaque-secret-value-1234567890" not in payload["error"]
+        assert '"api_key"' in payload["error"]

@@ -148,6 +148,10 @@ class TestStripBlockedTools(unittest.TestCase):
         result = _strip_blocked_tools(["terminal", "file", "delegation", "clarify", "memory", "code_execution"])
         self.assertEqual(sorted(result), ["file", "terminal"])
 
+    def test_removes_messaging_toolset(self):
+        result = _strip_blocked_tools(["terminal", "messaging", "web"])
+        self.assertEqual(sorted(result), ["terminal", "web"])
+
     def test_preserves_allowed_toolsets(self):
         result = _strip_blocked_tools(["terminal", "file", "web", "browser"])
         self.assertEqual(sorted(result), ["browser", "file", "terminal", "web"])

@@ -622,9 +622,12 @@ _TOOL_ERROR_MAX_LEN = 2000
 
 
 def _sanitize_tool_error(error_msg: str) -> str:
-    """Strip structural framing tokens from a tool error before showing it to the model.
+    """Strip unsafe text from a tool error before showing it to the model.
 
-    See _TOOL_ERROR_ROLE_TAG_RE docstring above for rationale.
+    See _TOOL_ERROR_ROLE_TAG_RE docstring above for rationale.  This is also
+    a hard safety boundary: raw tool exceptions may contain credentials from
+    HTTP libraries, SDKs, subprocess stderr, or plugin code, so force the
+    shared secret redactor even when ordinary log redaction is disabled.
     """
     if not error_msg:
         return "[TOOL_ERROR] "
@@ -632,6 +635,15 @@ def _sanitize_tool_error(error_msg: str) -> str:
     sanitized = _TOOL_ERROR_FENCE_OPEN_RE.sub("", sanitized)
     sanitized = _TOOL_ERROR_FENCE_CLOSE_RE.sub("", sanitized)
     sanitized = _TOOL_ERROR_CDATA_RE.sub("", sanitized)
+    try:
+        from agent.redact import redact_sensitive_text
+
+        sanitized = redact_sensitive_text(sanitized, force=True)
+    except Exception as exc:
+        logger.warning("Tool-error secret redaction failed: %s", exc)
+        from agent.redact_fallback import redact_sensitive_text_fallback
+
+        sanitized = redact_sensitive_text_fallback(sanitized)
     if len(sanitized) > _TOOL_ERROR_MAX_LEN:
         sanitized = sanitized[:_TOOL_ERROR_MAX_LEN - 3] + "..."
     return f"[TOOL_ERROR] {sanitized}"

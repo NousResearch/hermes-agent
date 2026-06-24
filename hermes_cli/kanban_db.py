@@ -1648,15 +1648,25 @@ def connect(
                 # sidecar files for a fresh database. Keep it in the same process-local
                 # critical section as schema initialization so concurrent gateway
                 # startup threads do not race before _INITIALIZED_PATHS is populated.
-                # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-                # falls back to DELETE with one WARNING so kanban stays usable there.
-                # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                #
+                # Some deployments pin Kanban to rollback-journal mode with
+                # HERMES_KANBAN_JOURNAL=delete because WAL has caused corruption /
+                # lock churn under this dashboard/dispatcher workload. Respect that
+                # policy here; otherwise every dashboard/gateway connection silently
+                # flips the DB back to WAL.
+                journal_policy = os.environ.get("HERMES_KANBAN_JOURNAL", "wal").strip().lower()
+                if journal_policy in {"delete", "persist", "truncate"}:
+                    conn.execute(f"PRAGMA journal_mode={journal_policy.upper()}")
+                else:
+                    # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared
+                    # helper falls back to DELETE with one WARNING so kanban stays
+                    # usable there. See hermes_state._WAL_INCOMPAT_MARKERS.
+                    from hermes_state import apply_wal_with_fallback
+                    apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                    conn.execute("PRAGMA wal_autocheckpoint=100")
                 # FULL (was NORMAL): fsync before each checkpoint to narrow the
                 # crash window that can leave a b-tree page header torn.
                 conn.execute("PRAGMA synchronous=FULL")
-                conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
                 # Zero freed pages so a later torn write cannot expose stale
                 # cell content; persisted in the DB header for new DBs.

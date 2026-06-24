@@ -332,6 +332,33 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             "minutes": minutes,
             "display": f"every {minutes}m"
         }
+
+    weekday_match = re.match(
+        r"^weekdays?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$",
+        schedule_lower,
+    )
+    if weekday_match:
+        hour = int(weekday_match.group(1))
+        minute = int(weekday_match.group(2) or "0")
+        meridiem = weekday_match.group(3)
+        if meridiem == "pm" and hour != 12:
+            hour += 12
+        elif meridiem == "am" and hour == 12:
+            hour = 0
+        if not (0 <= hour <= 23 and 0 <= minute <= 59):
+            raise ValueError(f"Invalid time in schedule '{original}'")
+        expr = f"{minute} {hour} * * 1-5"
+        if not HAS_CRONITER:
+            raise ValueError("Cron expressions require 'croniter' package. Install with: pip install croniter")
+        try:
+            croniter(expr)
+        except Exception as e:
+            raise ValueError(f"Invalid cron expression '{expr}': {e}")
+        return {
+            "kind": "cron",
+            "expr": expr,
+            "display": original,
+        }
     
     # Check for cron expression (5 or 6 space-separated fields)
     # Cron fields: minute hour day month weekday [year]

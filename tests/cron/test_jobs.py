@@ -96,6 +96,20 @@ class TestParseSchedule:
         assert result["kind"] == "cron"
         assert result["expr"] == "0 9 * * *"
 
+    @pytest.mark.parametrize(
+        ("schedule", "expected_expr"),
+        [
+            ("weekdays at 9am", "0 9 * * 1-5"),
+            ("weekdays at 09:30", "30 9 * * 1-5"),
+        ],
+    )
+    def test_weekdays_at_time_alias(self, schedule, expected_expr):
+        pytest.importorskip("croniter")
+        result = parse_schedule(schedule)
+        assert result["kind"] == "cron"
+        assert result["expr"] == expected_expr
+        assert result["display"] == schedule
+
     def test_iso_timestamp(self):
         result = parse_schedule("2030-01-15T14:00:00")
         assert result["kind"] == "once"

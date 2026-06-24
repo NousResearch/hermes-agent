@@ -1405,6 +1405,7 @@ class TestTranscribeElevenLabs:
                 "language_code": "eng",
                 "tag_audio_events": True,
                 "diarize": True,
+                "no_verbatim": True,
             }
         }
         with patch("tools.transcription_tools._load_stt_config", return_value=config), \
@@ -1421,6 +1422,25 @@ class TestTranscribeElevenLabs:
         assert call_kwargs["data"]["language_code"] == "eng"
         assert call_kwargs["data"]["tag_audio_events"] == "true"
         assert call_kwargs["data"]["diarize"] == "true"
+        assert call_kwargs["data"]["no_verbatim"] == "true"
+
+    def test_language_alias_and_no_verbatim_defaults(self, monkeypatch, sample_ogg):
+        monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "hello from elevenlabs"}
+
+        config = {"elevenlabs": {"language": "rus"}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_elevenlabs
+            result = _transcribe_elevenlabs(sample_ogg, "scribe_v2")
+
+        assert result["success"] is True
+        data = mock_post.call_args.kwargs["data"]
+        assert data["language_code"] == "rus"
+        assert data["no_verbatim"] == "false"
 
     def test_api_error_returns_failure(self, monkeypatch, sample_ogg):
         monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
@@ -1517,8 +1537,9 @@ class TestTranscribeAudioElevenLabsDispatch:
         assert result["provider"] == "elevenlabs"
         mock_elevenlabs.assert_called_once()
 
-    def test_config_elevenlabs_model_used(self, sample_ogg):
-        config = {"provider": "elevenlabs", "elevenlabs": {"model_id": "scribe_v1"}}
+    @pytest.mark.parametrize("model_key", ["model_id", "model"])
+    def test_config_elevenlabs_model_used(self, sample_ogg, model_key):
+        config = {"provider": "elevenlabs", "elevenlabs": {model_key: "scribe_v1"}}
         with patch("tools.transcription_tools._load_stt_config", return_value=config), \
              patch("tools.transcription_tools._get_provider", return_value="elevenlabs"), \
              patch("tools.transcription_tools._transcribe_elevenlabs",

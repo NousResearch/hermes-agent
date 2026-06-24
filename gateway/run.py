@@ -941,6 +941,48 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
     return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
 
 
+def _csv_or_list_to_set(raw: Any) -> set[str]:
+    """Normalize a config list or comma-separated scalar into a string set."""
+    if raw is None:
+        return set()
+    if isinstance(raw, list):
+        return {str(part).strip() for part in raw if str(part).strip()}
+    s = str(raw).strip()
+    if not s:
+        return set()
+    return {part.strip() for part in s.split(",") if part.strip()}
+
+
+def _slack_ignored_channels_from_gateway_config(config: Any) -> set[str]:
+    """Return Slack channels that the generic gateway must never dispatch.
+
+    The Slack adapter has the first-line drop, but this runner-level guard is
+    intentionally duplicated as a fail-safe. If a future Slack code path, test
+    hook, malformed event, or stale adapter instance bypasses the Slack plugin
+    adapter, ignored channels still cannot reach auth, pairing, sessions, or
+    the agent/home-channel prompt pipeline.
+    """
+    platform_cfg = getattr(config, "platforms", {}).get(Platform.SLACK)
+    raw = None
+    if platform_cfg is not None:
+        raw = getattr(platform_cfg, "extra", {}).get("ignored_channels")
+    return _csv_or_list_to_set(raw)
+
+
+def _slack_parent_channel_id(chat_id: Any) -> str:
+    """Return the parent Slack channel from a possibly thread-scoped chat ID."""
+    if not chat_id:
+        return ""
+    return str(chat_id).split(":", 1)[0]
+
+
+def _is_slack_ignored_channel(config: Any, chat_id: Any) -> bool:
+    """Check the generic Slack gateway blacklist for channel or thread IDs."""
+    channel_id = _slack_parent_channel_id(chat_id)
+    ignored = _slack_ignored_channels_from_gateway_config(config)
+    return bool(channel_id and ("*" in ignored or channel_id in ignored))
+
+
 def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
     """True when gateway.message_timestamps.enabled is opted in.
 
@@ -10191,6 +10233,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         config = getattr(self, "config", None)
+        if (
+            config
+            and getattr(source, "platform", None) == Platform.SLACK
+            and _is_slack_ignored_channel(config, getattr(source, "chat_id", None))
+        ):
+            logger.info(
+                "Skipping Slack platform notice for configured ignored channel %s",
+                getattr(source, "chat_id", None),
+            )
+            return
+
         notice_delivery = "public"
         if config and hasattr(config, "get_notice_delivery"):
             notice_delivery = config.get_notice_delivery(source.platform)
@@ -10397,17 +10450,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
 
+        # Internal events (e.g. background-process completion notifications)
+        # are system-generated and must skip user authorization.
+        is_internal = bool(getattr(event, "internal", False))
+
+        # Ignored-channel guard runs FIRST — before startup-restore queueing,
+        # plugin hooks, auth, and session setup — so a configured ignored
+        # channel can never reach pairing/auth/session state (#51899).
+        if (
+            not is_internal
+            and getattr(source, "platform", None) == Platform.SLACK
+            and _is_slack_ignored_channel(self.config, getattr(source, "chat_id", None))
+        ):
+            logger.info(
+                "Dropping Slack message from configured ignored channel %s",
+                getattr(source, "chat_id", None),
+            )
+            return None
+
         if (
             getattr(self, "_startup_restore_in_progress", False)
-            and not getattr(event, "internal", False)
+            and not is_internal
             and not getattr(event, "_hermes_startup_restore_replay", False)
         ):
             self._queue_startup_restore_event(event)
             return None
-
-        # Internal events (e.g. background-process completion notifications)
-        # are system-generated and must skip user authorization.
-        is_internal = bool(getattr(event, "internal", False))
 
         # scale-to-zero (Phase 0, 0.B/F13): stamp the gateway-scoped last-inbound
         # clock for real (user-originated) inbound only. Internal/system events

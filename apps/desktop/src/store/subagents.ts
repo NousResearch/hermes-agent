@@ -1,5 +1,12 @@
 import { atom } from 'nanostores'
 
+import {
+  isSessionBusy,
+  noteSessionActivity,
+  registerSubagentActivityPredicate,
+  setSessionWorking
+} from './session'
+
 export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
 export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
 
@@ -47,6 +54,16 @@ const PREVIEW_MAX = 220
 const TOOL_PREVIEW_MAX = 96
 
 export const $subagentsBySession = atom<Record<string, SubagentProgress[]>>({})
+
+// Register the subagent-awareness predicate with the session watchdog so a
+// parent session keeps its "working" flag while its subagents run, even though
+// no parent-stream tokens are flowing (see registerSubagentActivityPredicate
+// in session.ts). Registered once at module load.
+registerSubagentActivityPredicate((sessionId: string) => {
+  const list = $subagentsBySession.get()[sessionId]
+
+  return Boolean(list?.some(item => item.status === 'running' || item.status === 'queued'))
+})
 
 const isStr = (v: unknown): v is string => typeof v === 'string'
 const str = (v: unknown) => (isStr(v) ? v : '')
@@ -229,6 +246,28 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   const nextList = idx >= 0 ? list.map(item => (item.id === id ? next : item)) : [...list, next]
 
   $subagentsBySession.set({ ...map, [sid]: nextList })
+
+  // A running/queued subagent's progress update is proof the parent's turn is
+  // still active — even though no parent-stream tokens have arrived. Pulse the
+  // session watchdog so the parent keeps its "working" flag for the duration
+  // of the delegation instead of going dim after the 8-min silence timeout.
+  if (next.status === 'running' || next.status === 'queued') {
+    noteSessionActivity(sid)
+  }
+
+  // Terminal reaper: when the LAST active subagent for a session reaches a
+  // terminal status AND the parent's own turn has already ended (busy=false),
+  // the working flag is no longer held up by subagents (the guard in
+  // setSessionWorking would otherwise keep it true forever). Clear it now so
+  // the row settles promptly instead of waiting for the 8-min watchdog. This
+  // closes the gap created by guarding the premature running:false clear: the
+  // flag stays true while subagents run (correct), then reaps the instant the
+  // final child finishes and the parent is idle. A parent still streaming its
+  // own reply (busy=true) after subagents finish is left alone — its own
+  // running:false will clear the flag when its turn truly ends.
+  if (TERMINAL.has(next.status) && activeSubagentCount(nextList) === 0 && !isSessionBusy(sid)) {
+    setSessionWorking(sid, false)
+  }
 }
 
 export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentNode[] {

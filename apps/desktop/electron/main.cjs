@@ -57,7 +57,7 @@ const {
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
-const { resolveBehindCount } = require('./update-count.cjs')
+const { resolveBehindCount, shouldCountCommits } = require('./update-count.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
 const {
   buildPosixCleanupScript,
@@ -1707,10 +1707,9 @@ async function checkUpdates() {
   }
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-  const [currentSha, targetSha, countStr, dirtyStr, currentBranch, shallowStr, mergeBaseStr] = await Promise.all([
+  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr, mergeBaseStr] = await Promise.all([
     git(['rev-parse', 'HEAD']),
     git(['rev-parse', `origin/${branch}`]),
-    git(['rev-list', `HEAD..origin/${branch}`, '--count']),
     git(['status', '--porcelain']),
     git(['rev-parse', '--abbrev-ref', 'HEAD']),
     git(['rev-parse', '--is-shallow-repository']),
@@ -1719,12 +1718,22 @@ async function checkUpdates() {
     git(['merge-base', 'HEAD', `origin/${branch}`])
   ])
 
+  const isShallow = shallowStr === 'true'
+  const hasMergeBase = Boolean(mergeBaseStr)
+  // Only enumerate the commit count when it is meaningful. On a shallow checkout
+  // with no merge-base, `rev-list --count` walks the entire remote ancestry
+  // (thousands of commits, see #51922) and resolveBehindCount discards the
+  // result anyway in favour of a SHA compare — so skip the expensive query.
+  const countStr = shouldCountCommits({ isShallow, hasMergeBase })
+    ? await git(['rev-list', `HEAD..origin/${branch}`, '--count'])
+    : ''
+
   const behind = resolveBehindCount({
     countStr,
     currentSha,
     targetSha,
-    isShallow: shallowStr === 'true',
-    hasMergeBase: Boolean(mergeBaseStr)
+    isShallow,
+    hasMergeBase
   })
   const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
 

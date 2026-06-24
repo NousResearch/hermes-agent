@@ -1,7 +1,7 @@
 'use strict'
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { resolveBehindCount } = require('./update-count.cjs')
+const { resolveBehindCount, shouldCountCommits } = require('./update-count.cjs')
 
 // FAIL-BEFORE: pre-fix the function did `Number.parseInt(countStr) || 0`
 // unconditionally, so a shallow checkout with no merge-base surfaced the bogus
@@ -45,5 +45,35 @@ test('non-numeric count falls back to 0 (defensive, unchanged behaviour)', () =>
   assert.equal(resolveBehindCount({
     countStr: '', currentSha: 'aaa', targetSha: 'bbb',
     isShallow: false, hasMergeBase: true,
+  }), 0)
+})
+
+// shouldCountCommits gates the expensive `rev-list --count` in checkUpdates().
+// FAIL-BEFORE: in the shallow + no-merge-base case the caller ran rev-list
+// unconditionally and discarded the bogus result; this predicate lets the
+// caller SKIP the whole-ancestry enumeration in exactly that case (#51922).
+test('shallow checkout with no merge-base SKIPS the rev-list count', () => {
+  assert.equal(shouldCountCommits({ isShallow: true, hasMergeBase: false }), false)
+})
+
+test('shallow checkout WITH a merge-base still runs the count', () => {
+  assert.equal(shouldCountCommits({ isShallow: true, hasMergeBase: true }), true)
+})
+
+test('full (non-shallow) clone always runs the count', () => {
+  assert.equal(shouldCountCommits({ isShallow: false, hasMergeBase: true }), true)
+  assert.equal(shouldCountCommits({ isShallow: false, hasMergeBase: false }), true)
+})
+
+// The skip path produces an empty countStr; resolveBehindCount must NOT trust
+// it and must fall through to the SHA compare (mirrors the live call site).
+test('skipped-count path resolves via SHA compare, never via empty countStr', () => {
+  assert.equal(resolveBehindCount({
+    countStr: '', currentSha: 'aaa', targetSha: 'bbb',
+    isShallow: true, hasMergeBase: false,
+  }), 1)
+  assert.equal(resolveBehindCount({
+    countStr: '', currentSha: 'same', targetSha: 'same',
+    isShallow: true, hasMergeBase: false,
   }), 0)
 })

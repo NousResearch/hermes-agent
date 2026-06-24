@@ -2523,6 +2523,18 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
+        # and, when an instance is opted in via the NAS "Labs" toggle (carried as
+        # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent
+        # AND a wakeUrl is registered, drives the relay transport dormant so the
+        # platform (e.g. Fly autostop:"suspend") can suspend the now-idle machine;
+        # it wakes on the connector's wakeUrl poke. This is the idle TIMEOUT only
+        # — whether the feature is enabled at all is the Labs toggle, never a
+        # config key (decisions.md D2/D11). 0/negative falls back to the default.
+        "scale_to_zero": {
+            "idle_timeout_minutes": 5,
+        },
+
         # Inject a human-readable timestamp prefix (e.g.
         # "[Tue 2026-04-28 13:40:53 CEST]") onto user messages IN THE MODEL'S
         # CONTEXT so the agent has temporal awareness of when each message was

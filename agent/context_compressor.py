@@ -264,6 +264,16 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += len(str(tc)) // _CHARS_PER_TOKEN
+    # Provider-visible reasoning persists on the message and is re-sent on every
+    # request, so the tail-protection walk must count it too. Omitting it let
+    # reasoning-heavy turns (e.g. DeepSeek reasoning models) undercount by the
+    # entire reasoning payload, so an oversized recent tail appeared to fit
+    # inside the budget and compaction became a near no-op. Same failure class
+    # as the tool-call envelope undercount above. See issue #51800 (#28053).
+    for key in ("reasoning_content", "reasoning_details", "reasoning"):
+        val = msg.get(key)
+        if val:
+            tokens += len(val if isinstance(val, str) else str(val)) // _CHARS_PER_TOKEN
     return tokens
 
 

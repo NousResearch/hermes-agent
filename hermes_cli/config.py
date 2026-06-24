@@ -6529,6 +6529,38 @@ _SECRET_CONFIG_KEYS = frozenset({
     "jwt",
 })
 
+_AUTH_STYLE_SECRET_KEYS = frozenset({
+    "authorization",
+    "proxy_authorization",
+    "bearer",
+})
+_AUTH_SCHEME_VALUE_RE = re.compile(r"^([A-Za-z][\w.+-]*)(\s+)(\S+)$")
+
+
+def _normalize_secret_config_key_name(key: str) -> str:
+    """Normalize config leaf names before secret-key matching."""
+    return key.strip().lower().replace("-", "_")
+
+
+def _mask_config_value_for_display(key: str, value: Any) -> Tuple[Any, bool]:
+    """Return a terminal-safe display value plus whether masking occurred."""
+    if not isinstance(key, str):
+        return value, False
+
+    leaf_key = _normalize_secret_config_key_name(key.rsplit(".", 1)[-1])
+    if leaf_key not in _SECRET_CONFIG_KEYS or not isinstance(value, str) or not value:
+        return value, False
+
+    from agent.redact import mask_secret
+
+    if leaf_key in _AUTH_STYLE_SECRET_KEYS:
+        match = _AUTH_SCHEME_VALUE_RE.match(value)
+        if match:
+            scheme, _, credential = match.groups()
+            return f"{scheme} {mask_secret(credential)}", True
+
+    return mask_secret(value), True
+
 
 def redact_config_value(value: Any, _depth: int = 0) -> Any:
     """Return a copy of ``value`` with credential-shaped keys masked for display.
@@ -6549,7 +6581,12 @@ def redact_config_value(value: Any, _depth: int = 0) -> Any:
     if isinstance(value, dict):
         out = {}
         for k, v in value.items():
-            if isinstance(k, str) and k.lower() in _SECRET_CONFIG_KEYS and isinstance(v, str) and v:
+            if (
+                isinstance(k, str)
+                and _normalize_secret_config_key_name(k) in _SECRET_CONFIG_KEYS
+                and isinstance(v, str)
+                and v
+            ):
                 out[k] = mask_secret(v)
             else:
                 out[k] = redact_config_value(v, _depth + 1)
@@ -6897,13 +6934,9 @@ def set_config_value(key: str, value: str):
     # — e.g. `hermes config set model.api_key cfut_...` routes to config.yaml
     # (lowercase, so it misses the .env api_keys list above) and would otherwise
     # print the raw secret to the terminal.
-    _leaf_key = key.rsplit(".", 1)[-1].lower()
-    if _leaf_key in _SECRET_CONFIG_KEYS and isinstance(value, str) and value:
-        from agent.redact import mask_secret
-        _display_value = mask_secret(value)
-    else:
-        _display_value = value
-    print(f"✓ Set {key} = {_display_value} in {config_path}")
+    _display_value, _masked = _mask_config_value_for_display(key, value)
+    _storage_note = " (full value stored)" if _masked else ""
+    print(f"✓ Set {key} = {_display_value} in {config_path}{_storage_note}")
 
 
 # =============================================================================

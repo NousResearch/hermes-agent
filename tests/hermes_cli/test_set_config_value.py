@@ -295,9 +295,25 @@ class TestSecretRedactionInDisplay:
         captured = capsys.readouterr()
         assert secret not in captured.out
         assert "Set model.api_key" in captured.out
+        assert "full value stored" in captured.out
 
     def test_set_echo_keeps_nonsecret_value(self, _isolated_hermes_home, capsys):
         set_config_value("model.reasoning_effort", "high")
 
         captured = capsys.readouterr()
         assert "Set model.reasoning_effort = high" in captured.out
+
+    def test_set_echo_preserves_authorization_scheme_while_masking_token(
+        self, _isolated_hermes_home, capsys
+    ):
+        secret = "Bearer cfat_wy2IFSVb2uCECxiSjtNDxVSk9DetJZqTinZbilCH4c34af0e"
+
+        set_config_value("mcp_servers.cloudflare-api.headers.Authorization", secret)
+
+        captured = capsys.readouterr()
+        config = _read_config(_isolated_hermes_home)
+
+        assert secret not in captured.out
+        assert "Bearer cfat...af0e" in captured.out
+        assert "full value stored" in captured.out
+        assert secret in config

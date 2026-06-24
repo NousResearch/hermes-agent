@@ -1031,22 +1031,8 @@ def _dispatch_boards(args: argparse.Namespace) -> int:
 
 
 def _board_task_counts(slug: str) -> dict[str, int]:
-    """Return ``{status: count}`` for a board. Safe to call on an empty DB.
-
-    Archived boards (per ``board.json``) report empty counts — they are
-    intentionally inert and must not surface stale data from a legacy
-    ``kanban.db`` left behind by an earlier single-board era. The board
-    metadata's ``archived`` flag is the source of truth; the DB content
-    is ignored even if the file still exists on disk.
-    """
+    """Return ``{status: count}`` for a board. Safe to call on an empty DB."""
     try:
-        # Check the board.json archived flag FIRST. If the board is
-        # archived, return {} without touching kanban.db — otherwise we
-        # would read phantom counts from a legacy DB that the new
-        # multi-board layout no longer writes to.
-        meta = kb.read_board_metadata(slug)
-        if meta.get("archived"):
-            return {}
         path = kb.kanban_db_path(board=slug)
         if not path.exists():
             return {}

@@ -1090,7 +1090,11 @@ class CuaDriverBackend(ComputerUseBackend):
             )
         elif app:
             app_lower = app.lower()
-            filtered = [w for w in windows if app_lower in w["app_name"].lower()]
+            filtered = [
+                w for w in windows
+                if app_lower in w["app_name"].lower()
+                or app_lower in w.get("title", "").lower()
+            ]
             if not filtered:
                 return CaptureResult(
                     mode=mode, width=0, height=0, png_b64=None,

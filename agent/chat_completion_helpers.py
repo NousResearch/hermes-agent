@@ -138,6 +138,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     """
     result = {"response": None, "error": None}
     request_client_holder = {"client": None, "owner_tid": None}
+    request_client_kind = {"value": "openai"}
     request_client_lock = threading.Lock()
     # Request-local cancellation flag. Distinct from agent._interrupt_requested
     # because that flag is cleared at run_conversation() turn boundaries, but
@@ -149,9 +150,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
     # hang.)
     _request_cancelled = {"value": False}
 
-    def _set_request_client(client):
+    def _set_request_client(client, *, kind: str = "openai"):
         with request_client_lock:
             request_client_holder["client"] = client
+            request_client_kind["value"] = kind
             # #29507: stamp the owning thread so a stranger-thread interrupt
             # only shuts the connection down rather than racing the worker
             # for FD ownership during ``client.close()``.
@@ -185,7 +187,13 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 request_client_holder["owner_tid"] = None
         if request_client is None:
             return
-        if stranger_thread:
+        kind = request_client_kind.get("value", "openai")
+        if kind == "anthropic_messages":
+            if stranger_thread:
+                agent._abort_request_anthropic_client(request_client, reason=reason)
+            else:
+                agent._close_request_anthropic_client(request_client, reason=reason)
+        elif stranger_thread:
             agent._abort_request_openai_client(request_client, reason=reason)
         else:
             agent._close_request_openai_client(request_client, reason=reason)
@@ -205,7 +213,16 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     on_first_delta=getattr(agent, "_codex_on_first_delta", None),
                 )
             elif agent.api_mode == "anthropic_messages":
-                result["response"] = agent._anthropic_messages_create(api_kwargs)
+                request_client = _set_request_client(
+                    agent._create_request_anthropic_client(
+                        reason="anthropic_messages_request"
+                    ),
+                    kind="anthropic_messages",
+                )
+                result["response"] = agent._anthropic_messages_create(
+                    api_kwargs,
+                    client=request_client,
+                )
             elif agent.api_mode == "bedrock_converse":
                 # Bedrock uses boto3 directly — no OpenAI client needed.
                 # normalize_converse_response produces an OpenAI-compatible
@@ -499,14 +516,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                     f"Aborting call."
                 )
             try:
-                if agent.api_mode == "anthropic_messages":
-                    logger.warning(
-                        "Anthropic Messages non-streaming call stale; not closing "
-                        "shared _anthropic_client from the poll thread to avoid "
-                        "#29507 TLS FD recycle corruption. Waiting for SDK timeout."
-                    )
-                else:
-                    _close_request_client_once("stale_call_kill")
+                _close_request_client_once("stale_call_kill")
             except Exception:
                 pass
             agent._touch_activity(
@@ -543,14 +553,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             # shared; closing it here would release TLS FDs from the poll
             # thread and can resurrect #29507 (TLS bytes written into SQLite).
             try:
-                if agent.api_mode == "anthropic_messages":
-                    logger.warning(
-                        "Anthropic Messages call interrupted; not closing shared "
-                        "_anthropic_client from the poll thread to avoid #29507 "
-                        "TLS FD recycle corruption. Waiting for SDK timeout."
-                    )
-                else:
-                    _close_request_client_once("interrupt_abort")
+                _close_request_client_once("interrupt_abort")
             except Exception:
                 pass
             raise InterruptedError("Agent interrupted during API call")
@@ -1730,6 +1733,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
     result = {"response": None, "error": None, "partial_tool_names": []}
     request_client_holder = {"client": None, "diag": None, "owner_tid": None}
+    request_client_kind = {"value": "openai"}
     request_client_lock = threading.Lock()
     # Request-local cancellation flag — see interruptible_api_call for the full
     # rationale. The streaming retry loop is where the 7-minute cascading-
@@ -1740,9 +1744,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # exit immediately instead of retrying. (PR #6600.)
     _request_cancelled = {"value": False}
 
-    def _set_request_client(client):
+    def _set_request_client(client, *, kind: str = "openai"):
         with request_client_lock:
             request_client_holder["client"] = client
+            request_client_kind["value"] = kind
             # See #29507 explanation in the non-streaming variant above.
             request_client_holder["owner_tid"] = threading.get_ident()
         return client
@@ -1765,7 +1770,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 request_client_holder["owner_tid"] = None
         if request_client is None:
             return
-        if stranger_thread:
+        kind = request_client_kind.get("value", "openai")
+        if kind == "anthropic_messages":
+            if stranger_thread:
+                agent._abort_request_anthropic_client(request_client, reason=reason)
+            else:
+                agent._close_request_anthropic_client(request_client, reason=reason)
+        elif stranger_thread:
             agent._abort_request_openai_client(request_client, reason=reason)
         else:
             agent._close_request_openai_client(request_client, reason=reason)
@@ -2167,7 +2178,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             usage=usage_obj,
         )
 
-    def _call_anthropic():
+    def _call_anthropic(request_client):
         """Stream an Anthropic Messages API response.
 
         Fires delta callbacks for real-time token delivery, but returns
@@ -2191,7 +2202,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
         )
         # Use the Anthropic SDK's streaming context manager
-        with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
+        with request_client.messages.stream(**api_kwargs) as stream:
             # The Anthropic SDK exposes the raw httpx response on
             # ``stream.response``.  Snapshot diagnostic headers
             # immediately so they survive a stream that dies before the
@@ -2225,7 +2236,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     pass
 
                 if agent._interrupt_requested:
-                    break
+                    raise InterruptedError("Agent interrupted during Anthropic stream")
 
                 event_type = getattr(event, "type", None)
 
@@ -2274,8 +2285,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     raise InterruptedError("Agent interrupted before stream retry")
                 try:
                     if agent.api_mode == "anthropic_messages":
-                        agent._try_refresh_anthropic_client_credentials()
-                        result["response"] = _call_anthropic()
+                        request_client = _set_request_client(
+                            agent._create_request_anthropic_client(
+                                reason="anthropic_stream_request"
+                            ),
+                            kind="anthropic_messages",
+                        )
+                        result["response"] = _call_anthropic(request_client)
                     else:
                         result["response"] = _call_chat_completions()
                     return  # success
@@ -2639,14 +2655,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 "(not a network error)."
             )
             try:
-                if agent.api_mode == "anthropic_messages":
-                    logger.warning(
-                        "Anthropic Messages stream interrupted; not closing shared "
-                        "_anthropic_client from the poll thread to avoid #29507 "
-                        "TLS FD recycle corruption. Waiting for stream context cleanup."
-                    )
-                else:
-                    _close_request_client_once("stream_interrupt_abort")
+                _close_request_client_once("stream_interrupt_abort")
             except Exception:
                 pass
             raise InterruptedError("Agent interrupted during streaming API call")

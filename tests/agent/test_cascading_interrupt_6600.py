@@ -141,7 +141,19 @@ def _make_anthropic_agent():
     agent._anthropic_client = MagicMock()
     agent._rebuild_anthropic_client = MagicMock()
     agent._anthropic_messages_create = MagicMock()
+    agent._create_request_anthropic_client = MagicMock()
+    agent._close_request_anthropic_client = MagicMock()
+    agent._abort_request_anthropic_client = MagicMock()
     return agent
+
+
+def _wait_for_mock_call(mock, timeout=2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if mock.called:
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"{mock!r} was not called within {timeout}s")
 
 
 def test_anthropic_non_streaming_interrupt_does_not_close_shared_client():
@@ -152,10 +164,13 @@ def test_anthropic_non_streaming_interrupt_does_not_close_shared_client():
     BIO write a TLS record into state.db's header.
     """
     agent = _make_anthropic_agent()
+    request_client = MagicMock()
+    agent._create_request_anthropic_client.return_value = request_client
 
-    def _create(_api_kwargs):
+    def _create(_api_kwargs, *, client):
+        assert client is request_client
         agent._interrupt_requested = True
-        time.sleep(0.3)
+        time.sleep(1.0)
         raise httpx.RemoteProtocolError("forced close would have happened")
 
     agent._anthropic_messages_create.side_effect = _create
@@ -168,15 +183,27 @@ def test_anthropic_non_streaming_interrupt_does_not_close_shared_client():
     assert elapsed < 3.0, f"interrupt took {elapsed:.1f}s — should be near-instant"
     agent._anthropic_client.close.assert_not_called()
     agent._rebuild_anthropic_client.assert_not_called()
+    agent._abort_request_anthropic_client.assert_called_once_with(
+        request_client,
+        reason="interrupt_abort",
+    )
+    _wait_for_mock_call(agent._close_request_anthropic_client)
+    agent._close_request_anthropic_client.assert_called_with(
+        request_client,
+        reason="request_complete",
+    )
 
 
 def test_anthropic_non_streaming_stale_does_not_close_shared_client(monkeypatch):
     """#29507: stale-call polling must not close/rebuild shared Anthropic client."""
     agent = _make_anthropic_agent()
+    request_client = MagicMock()
+    agent._create_request_anthropic_client.return_value = request_client
     agent._compute_non_stream_stale_timeout.return_value = 0.05
     agent._codex_silent_hang_hint = MagicMock(return_value=None)
 
-    def _create(_api_kwargs):
+    def _create(_api_kwargs, *, client):
+        assert client is request_client
         time.sleep(2.5)
         return object()
 
@@ -187,35 +214,67 @@ def test_anthropic_non_streaming_stale_does_not_close_shared_client(monkeypatch)
 
     agent._anthropic_client.close.assert_not_called()
     agent._rebuild_anthropic_client.assert_not_called()
+    agent._abort_request_anthropic_client.assert_called_once_with(
+        request_client,
+        reason="stale_call_kill",
+    )
+    _wait_for_mock_call(agent._close_request_anthropic_client)
+    agent._close_request_anthropic_client.assert_called_with(
+        request_client,
+        reason="request_complete",
+    )
 
 
 def test_anthropic_streaming_interrupt_does_not_close_shared_client(monkeypatch):
     """#29507: streaming interrupt must not close/rebuild shared Anthropic client."""
     agent = _make_anthropic_agent()
+    request_client = MagicMock()
+    agent._create_request_anthropic_client.return_value = request_client
     agent._compute_stream_stale_timeout.return_value = 5.0
     agent._invoke_bedrock_stream = MagicMock()
     agent.provider = "anthropic"
 
     class _Chunk:
         type = "content_block_delta"
-        delta = types.SimpleNamespace(text="hello")
+        delta = types.SimpleNamespace(type="text_delta", text="hello")
 
     class _Stream:
+        def __init__(self):
+            self.exited = threading.Event()
+            self.get_final_message = MagicMock(
+                side_effect=AssertionError(
+                    "get_final_message() must not run after interrupt"
+                )
+            )
+
         def __enter__(self):
             return self
 
         def __exit__(self, exc_type, exc, tb):
+            self.exited.set()
             return False
 
         def __iter__(self):
             agent._interrupt_requested = True
-            time.sleep(0.3)
+            time.sleep(1.0)
             yield _Chunk()
 
-    agent._anthropic_client.messages.stream.return_value = _Stream()
+    stream = _Stream()
+    request_client.messages.stream.return_value = stream
 
     with pytest.raises(InterruptedError):
         cch.interruptible_streaming_api_call(agent, {"model": "x", "messages": []})
 
     agent._anthropic_client.close.assert_not_called()
     agent._rebuild_anthropic_client.assert_not_called()
+    agent._abort_request_anthropic_client.assert_called_once_with(
+        request_client,
+        reason="stream_interrupt_abort",
+    )
+    _wait_for_mock_call(agent._close_request_anthropic_client)
+    agent._close_request_anthropic_client.assert_called_with(
+        request_client,
+        reason="stream_request_complete",
+    )
+    assert stream.exited.wait(1.0)
+    stream.get_final_message.assert_not_called()

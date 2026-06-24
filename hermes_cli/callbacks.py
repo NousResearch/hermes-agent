@@ -58,8 +58,9 @@ def clarify_callback(cli, question, choices):
         cli._app.invalidate()
     cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
     return (
-        "The user did not provide a response within the time limit. "
-        "Use your best judgement to make the choice and proceed."
+        "Explicit human approval is required. "
+        "Call `kanban_block(reason=\"approval-required: explicit human decision needed\")` and stop. "
+        "Do not proceed."
     )
 
 

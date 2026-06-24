@@ -582,9 +582,9 @@ def compress_context(
                 # from ``hermes_logging._session_context`` (set once per turn in
                 # conversation_loop.py). Without this, post-rotation log lines in
                 # the same turn keep the STALE old id while the message/DB/gateway
-                # state carry the new one — breaking log correlation exactly at the
-                # compaction boundary (see #34089). Guarded separately so a logging
-                # failure can never regress the routing update above.
+                # state carry the new one — breaking log correlation exactly at
+                # the compaction boundary (see #34089). Guarded separately so a
+                # logging failure can never regress the routing update above.
                 try:
                     from hermes_logging import set_session_context
 
@@ -675,6 +675,23 @@ def compress_context(
                 )
             else:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
+    elif not in_place:
+        # Rotation requested but no session DB available: still establish a
+        # compaction boundary by minting a fresh session id. This keeps
+        # RAG Revival snapshots and downstream boundary notifications working
+        # in transient / test agents that have no state.db.
+        old_session_id = agent.session_id or ""
+        agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        try:
+            from gateway.session_context import set_current_session_id
+            set_current_session_id(agent.session_id)
+        except Exception:
+            os.environ["HERMES_SESSION_ID"] = agent.session_id
+        try:
+            from hermes_logging import set_session_context
+            set_session_context(agent.session_id)
+        except Exception:
+            pass
 
     # Compaction-boundary bookkeeping, computed once. `old_session_id` is only
     # bound in the rotation branch; in-place leaves it unset. `_boundary_parent`
@@ -683,6 +700,27 @@ def compress_context(
     _old_sid = locals().get("old_session_id")
     _is_boundary = bool(_old_sid) or in_place
     _boundary_parent = _old_sid or agent.session_id or ""
+
+    # RAG Revival snapshot: durable handoff note in Obsidian vault
+    # Fires whenever a real compaction boundary exists (rotation or in-place).
+    if _is_boundary:
+        try:
+            from agent.rag_revival import write_rag_revival_snapshot
+
+            _summary_text = getattr(agent.context_compressor, "_last_generated_summary", None) or ""
+            if _summary_text:
+                write_rag_revival_snapshot(
+                    agent,
+                    messages=compressed,
+                    summary_text=_summary_text,
+                    old_session_id=_boundary_parent,
+                    new_session_id=("" if in_place else (agent.session_id or "")),
+                    approx_tokens=approx_tokens,
+                    in_place=in_place,
+                    focus_topic=focus_topic,
+                )
+        except Exception:
+            logger.debug("RAG Revival snapshot skipped/failed", exc_info=True)
 
     # Notify the context engine that a compaction boundary occurred. Plugin
     # engines (e.g. hermes-lcm) use boundary_reason="compression" to preserve

@@ -1752,7 +1752,7 @@ class TestBuildApiKwargs:
             reasoning_config={"enabled": True, "effort": "xhigh"},
             provider_profile=profile,
         )
-        assert kwargs["extra_body"]["reasoning"] == {"effort": "high"}
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "high", "summary": "auto"}
 
     def test_reasoning_omitted_for_non_reasoning_copilot_model(self, agent):
         agent.base_url = "https://api.githubcopilot.com"

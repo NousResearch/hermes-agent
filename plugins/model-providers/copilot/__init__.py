@@ -39,9 +39,9 @@ class CopilotProfile(ProviderProfile):
                     if effort == "xhigh":
                         effort = "high"
                     if effort in supported_efforts:
-                        extra_body["reasoning"] = {"effort": effort}
+                        extra_body["reasoning"] = {"effort": effort, "summary": "auto"}
                 elif supported_efforts:
-                    extra_body["reasoning"] = {"effort": "medium"}
+                    extra_body["reasoning"] = {"effort": "medium", "summary": "auto"}
             except Exception:
                 pass
         return extra_body, {}

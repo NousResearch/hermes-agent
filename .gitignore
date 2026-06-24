@@ -137,3 +137,8 @@ RELEASE_v*.md
 # Desktop demo-run scratch output (hermes writes demo/*.txt during recorded
 # walkthroughs). Throwaway artifacts, never part of the app.
 apps/desktop/demo/
+agora-realtime-status-*/
+agora-regressao-*/
+agora-pid-terminal-*/
+agora-paginacao-*/
+agora-mention-*/

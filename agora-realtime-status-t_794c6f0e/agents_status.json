@@ -1,0 +1,59 @@
+{
+  "agents": [
+    {
+      "profile": "agora-qa",
+      "state": "reviewing",
+      "current_task_id": null,
+      "current_step": "t_d3f2222f completado",
+      "status_text": "Parser de mentions em quotes validado; sem acao de QA dashboard real necessaria",
+      "last_heartbeat_at": 1782175023,
+      "pid": 102194,
+      "run_id": null,
+      "metadata": null
+    },
+    {
+      "profile": "tech-lead-gpt",
+      "state": "reviewing",
+      "current_task_id": null,
+      "current_step": "Browser hygiene refor\u00e7ada",
+      "status_text": "Recebido #1242: reusar abas abertas; coment\u00e1rios adicionados aos cards QA rodando.",
+      "last_heartbeat_at": 1782174372,
+      "pid": null,
+      "run_id": null,
+      "metadata": null
+    },
+    {
+      "profile": "agora-frontend",
+      "state": "idle",
+      "current_task_id": null,
+      "current_step": null,
+      "status_text": "tmux visible; aguardando card frontend acion\u00e1vel",
+      "last_heartbeat_at": 1782162347,
+      "pid": 15930,
+      "run_id": null,
+      "metadata": null
+    },
+    {
+      "profile": "agora-backend",
+      "state": "idle",
+      "current_task_id": null,
+      "current_step": null,
+      "status_text": "tmux visible; aguardando card backend acion\u00e1vel",
+      "last_heartbeat_at": 1782162347,
+      "pid": 15969,
+      "run_id": null,
+      "metadata": null
+    },
+    {
+      "profile": "test-helper",
+      "state": "working",
+      "current_task_id": null,
+      "current_step": "test helper",
+      "status_text": "funciona",
+      "last_heartbeat_at": 1782094516,
+      "pid": 161428,
+      "run_id": null,
+      "metadata": null
+    }
+  ]
+}

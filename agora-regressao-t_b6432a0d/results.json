@@ -1,0 +1,116 @@
+{
+  "task_id": "t_b6432a0d",
+  "timestamp": "2026-06-23T05:09:12.558022+00:00",
+  "tab_url": "http://127.0.0.1:9119/agora?cb=1782191352",
+  "tests": [
+    {
+      "test": "mention_autocomplete_opens",
+      "status": "PASS",
+      "options": [
+        "@all\nTodos",
+        "@todos\nTodos",
+        "@agora-backend\nIdle",
+        "@agora-frontend\nWorking",
+        "@agora-qa\nWorking",
+        "@tech-lead-gpt\nReviewing",
+        "@test-helper\nWorking"
+      ],
+      "screenshot": "/home/felipi/.hermes/hermes-agent/agora-regressao-t_b6432a0d/01_mention_dropdown_at.png"
+    },
+    {
+      "test": "mention_filter",
+      "status": "PASS",
+      "options": [
+        "@agora-frontend\nWorking"
+      ],
+      "screenshot": "/home/felipi/.hermes/hermes-agent/agora-regressao-t_b6432a0d/02_mention_dropdown_fr.png"
+    },
+    {
+      "test": "mention_escape_closes",
+      "status": "PASS"
+    },
+    {
+      "test": "mention_keyboard_insert",
+      "status": "PASS",
+      "value": "@todos ",
+      "screenshot": "/home/felipi/.hermes/hermes-agent/agora-regressao-t_b6432a0d/03_mention_inserted_todos.png"
+    },
+    {
+      "test": "mention_a11y",
+      "status": "PASS",
+      "detail": {
+        "composerRole": "combobox"
+      }
+    },
+    {
+      "test": "admin_panel_opens",
+      "status": "PASS",
+      "screenshot": "/home/felipi/.hermes/hermes-agent/agora-regressao-t_b6432a0d/04_admin_form.png"
+    },
+    {
+      "test": "admin_form_labels",
+      "status": "PASS",
+      "labels": [
+        "Nome",
+        "Slug",
+        "Descrição"
+      ]
+    },
+    {
+      "test": "admin_create_valid",
+      "status": "PASS",
+      "slug": "qa-regressao-admin-1782191352",
+      "channel": {
+        "found": true,
+        "active": true,
+        "text": "QA Regressão Admin 1782191352\nCanal criado pela regressão QA",
+        "aria": "Canal QA Regressão Admin 1782191352: Canal criado pela regressão QA"
+      },
+      "screenshot": "/home/felipi/.hermes/hermes-agent/agora-regressao-t_b6432a0d/05_admin_created_channel.png"
+    },
+    {
+      "test": "db_sanity",
+      "status": "PASS",
+      "canonical": "/home/felipi/.hermes/agora.db",
+      "canonical_id": 15
+    },
+    {
+      "test": "admin_duplicate_slug",
+      "status": "PASS",
+      "error": "Já existe um canal com esse slug.",
+      "screenshot": "/home/felipi/.hermes/hermes-agent/agora-regressao-t_b6432a0d/06_admin_duplicate_error.png"
+    },
+    {
+      "test": "admin_invalid_slug",
+      "status": "FAIL",
+      "message": "error_text=None",
+      "screenshot": "/home/felipi/.hermes/hermes-agent/agora-regressao-t_b6432a0d/07_admin_invalid_slug.png"
+    },
+    {
+      "test": "channel_aria_labels",
+      "status": "PASS",
+      "labels": [
+        {
+          "label": "Canal Praça: Conversa geral entre agentes e humanos.",
+          "role": "tab"
+        },
+        {
+          "label": "Canal Planejamento: Discussões sobre próximos passos e estratégia.",
+          "role": "tab"
+        },
+        {
+          "label": "Canal Decisões: Propostas e decisões formais.",
+          "role": "tab"
+        },
+        {
+          "label": "Canal Incidentes: Bloqueios, erros e ações de recuperação.",
+          "role": "tab"
+        },
+        {
+          "label": "Canal Profarma: Tópicos relacionados ao workspace profarma.dev/Aura.",
+          "role": "tab"
+        }
+      ]
+    }
+  ]
+}

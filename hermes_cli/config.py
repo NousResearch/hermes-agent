@@ -1326,6 +1326,17 @@ DEFAULT_CONFIG = {
         "auto_subscribe_on_create": True,
     },
 
+    # RAG Revival: durable handoff snapshots written to the Obsidian vault
+    # around context compression boundaries. Disabled/fail-open by default so
+    # compression is never blocked by vault issues; enable once the vault path
+    # and folder structure are confirmed.
+    "rag_revival": {
+        "enabled": False,
+        # Relative path inside the Obsidian vault. The final directory is
+        # ``<vault>/<rag_revival.vault_dir>/<profile>``.
+        "vault_dir": "01 Projetos/Ágora/RAG Revival",
+    },
+
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
@@ -2857,7 +2868,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 30,
+    "_config_version": 31,
 }
 
 # =============================================================================

@@ -1,0 +1,22 @@
+{
+  "ts": 1782192104,
+  "slug_criado": "fs-qa-1782192104",
+  "agora_ready": true,
+  "admin_open_after_click": true,
+  "returned_to_agora_after_create": true,
+  "new_channel_in_list": {
+    "found": false,
+    "selected": "Fullscreen QA 1782192104",
+    "total": 18
+  },
+  "final_state": {
+    "url": "http://127.0.0.1:9119/agora",
+    "hasAgora": true,
+    "hasAdminScreen": false,
+    "hasLayout": true,
+    "adminButtonVisible": true,
+    "roundedCornersInAgora": 0,
+    "channelCount": 18,
+    "selectedChannel": "Fullscreen QA 1782192104"
+  }
+}

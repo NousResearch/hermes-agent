@@ -4833,15 +4833,19 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _build_file_upload_body(*, file_type: str, file_name: str, file: Any) -> Any:
+        mime, _ = mimetypes.guess_type(file_name)
+        if mime is None:
+            mime = "application/octet-stream"
+        file_tuple = (file_name, file, mime)
         if "CreateFileRequestBody" in globals():
             return (
                 CreateFileRequestBody.builder()
                 .file_type(file_type)
                 .file_name(file_name)
-                .file(file)
+                .file(file_tuple)
                 .build()
             )
-        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file)
+        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file_tuple)
 
     @staticmethod
     def _build_file_upload_request(request_body: Any) -> Any:

@@ -18,6 +18,11 @@ Usage:
     hermes cron list           # List cron jobs
     hermes cron status         # Check if cron scheduler is running
     hermes doctor              # Check configuration and dependencies
+    hermes heal                # Self-healing engine status / history / trigger
+    hermes heal status         # Show healer status (cooldowns, circuits)
+    hermes heal history        # Audit log from incidents.jsonl
+    hermes heal trigger        # Run one healer pass now
+    hermes heal summary        # Weekly incident rollup
     hermes honcho setup                    # Configure Honcho AI memory integration
     hermes honcho status                   # Show Honcho config and connection status
     hermes honcho sessions                 # List directory → session name mappings
@@ -2260,6 +2265,14 @@ def cmd_chat(args):
                 sys.stderr.write(f"  \033[33m⚠\033[0m {format_issue(_ref)}\n")
             sys.stderr.write(f"  \033[2mMigration guide: {MIGRATION_GUIDE_URL}\033[0m\n")
             sys.stderr.write("  \033[2mRun 'hermes doctor' for details.\033[0m\n\n")
+    except Exception:
+        pass
+
+    # Self-healer status — warn when background services are degraded.
+    try:
+        from hermes_cli.healer_status import print_healer_startup_warnings
+
+        print_healer_startup_warnings()
     except Exception:
         pass
 
@@ -12100,6 +12113,13 @@ def main():
         help="Remove all fallback entries",
     )
     fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
+    # heal command — self-healing engine status / history / trigger / summary
+    # =========================================================================
+    from hermes_cli.heal_cmd import build_heal_parser, cmd_heal
+
+    build_heal_parser(subparsers, cmd_heal=cmd_heal)
 
     # =========================================================================
     # secrets command — external secret managers (currently: Bitwarden)

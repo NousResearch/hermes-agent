@@ -135,6 +135,13 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 300
 ALLOWLIST_FILENAME = "shell-hooks-allowlist.json"
+
+# Hard blocklist for hooks known to be broken or unsafe on this install.
+# Checked before allowlist consent — blocked commands never register.
+_HOOK_COMMAND_BLOCKLIST = (
+    "llm-cost-hook",
+    "kbp-mission-control/integrations/hermes/hooks",
+)
 _DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 
 # (event, matcher, command) triples that have been wired to the plugin
@@ -240,6 +247,13 @@ def register_from_config(
     # input().  Mutation re-takes the lock with a defensive idempotence
     # re-check in case two callers ever race through the prompt.
     for spec in specs:
+        if _is_blocked_hook_command(spec.command):
+            logger.warning(
+                "shell hook blocked by denylist: %s -> %s",
+                spec.event,
+                spec.command,
+            )
+            continue
         key = (spec.event, spec.matcher, spec.command)
         with _registered_lock:
             if key in _registered:
@@ -646,7 +660,14 @@ def save_allowlist(data: Dict[str, Any]) -> None:
         )
 
 
+def _is_blocked_hook_command(command: str) -> bool:
+    cmd = (command or "").lower()
+    return any(fragment in cmd for fragment in _HOOK_COMMAND_BLOCKLIST)
+
+
 def _is_allowlisted(event: str, command: str) -> bool:
+    if _is_blocked_hook_command(command):
+        return False
     data = load_allowlist()
     return any(
         isinstance(e, dict)

@@ -1922,10 +1922,16 @@ def detect_provider_for_model(
     if not name:
         return None
 
+    current_keys = _provider_keys(current_provider)
+    if "custom" in current_keys or "local" in current_keys or any(
+        key.startswith("custom:") for key in current_keys
+    ):
+        return None
+
     static_match = detect_static_provider_for_model(name, current_provider)
     if static_match:
         return static_match
-    if _model_in_provider_catalog(name.lower(), _provider_keys(current_provider)):
+    if _model_in_provider_catalog(name.lower(), current_keys):
         return None
 
     # --- Step 2: check OpenRouter catalog ---

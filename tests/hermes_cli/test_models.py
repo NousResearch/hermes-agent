@@ -301,6 +301,40 @@ class TestDetectProviderForModel:
         assert result is not None
         assert result[0] not in {"nous",}  # nous has claude models but shouldn't be suggested
 
+    def test_custom_provider_not_overridden_by_static_catalog(self):
+        """Explicit custom providers must keep their configured base_url."""
+        result = detect_provider_for_model("MiniMax-M2.5", "custom")
+        assert result is None
+
+    def test_custom_provider_not_overridden_by_openrouter_catalog(self):
+        """OpenRouter catalog matches must not bypass custom provider config."""
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            result = detect_provider_for_model("anthropic/claude-opus-4.6", "custom")
+        assert result is None
+
+    def test_custom_prefix_provider_not_overridden_by_openrouter_catalog(self):
+        """Named custom providers use the same explicit-provider priority."""
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            result = detect_provider_for_model("anthropic/claude-opus-4.6", "custom:myproxy")
+        assert result is None
+
+    def test_local_provider_not_overridden_by_openrouter_catalog(self):
+        """Local providers must not be rerouted through OpenRouter catalog matches."""
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            result = detect_provider_for_model("anthropic/claude-opus-4.6", "local")
+        assert result is None
+
+    def test_auto_and_openrouter_still_use_catalog_detection(self):
+        """The custom/local guard must not disable normal catalog detection."""
+        auto_result = detect_provider_for_model("MiniMax-M2.5", "auto")
+        assert auto_result is not None
+        assert auto_result[0] == "minimax"
+
+        with patch("hermes_cli.models.fetch_openrouter_models", return_value=LIVE_OPENROUTER_MODELS):
+            openrouter_result = detect_provider_for_model("claude-opus-4.6", "openrouter")
+        assert openrouter_result is not None
+        assert openrouter_result == ("openrouter", "anthropic/claude-opus-4.6")
+
 
 class TestIsNousFreeTier:
     """Tests for is_nous_free_tier — account tier detection."""

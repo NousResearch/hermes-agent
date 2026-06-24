@@ -34,7 +34,10 @@ import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.j
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { registerRecycleHandler, RECYCLE_EXIT_CODE } from '../lib/recycleBridge.js'
+import { persistScrollState } from '../lib/scrollPersistence.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
+import { getViewportSnapshot } from '../lib/viewportStore.js'
 import {
   buildToolTrailLine,
   formatAbandonedClarify,
@@ -541,6 +544,37 @@ export function useMainApp(gw: GatewayClient) {
     },
     [exit, gw]
   )
+
+  // Stage 1 SEAMLESS RECYCLE: persist the current scroll position keyed by the
+  // live sid, then exit with RECYCLE_EXIT_CODE (NOT 0). In attach mode
+  // `gw.kill()` only closes THIS renderer's ws (this.proc is null — no spawned
+  // gateway child), so the durable gateway + in-flight turn survive. The
+  // distinct exit code is what tells the orchestrator this was a DELIBERATE
+  // recycle and not a user /quit: on code 0 the supervisor tears the tree down,
+  // on RECYCLE_EXIT_CODE it keeps the gateway alive and respawns a fresh
+  // renderer with HERMES_TUI_RESUME=<sid>; it resumes the live session (adopting
+  // the running turn via the gateway's _live_session_payload) and restores the
+  // scroll position — so the recycle is invisible to the user. Guarded by
+  // canRecycle(): never fires in spawned-gateway mode where exiting would kill
+  // the session.
+  const recycle = useCallback(() => {
+    try {
+      const sid = getUiState().sid
+      const handle = scrollRef.current
+      if (sid && handle) {
+        const snap = getViewportSnapshot(handle)
+        persistScrollState(sid, { top: snap.top, atBottom: snap.atBottom })
+      }
+    } catch {
+      // best-effort: a failed persist just means the fresh renderer falls back
+      // to scrollToBottom — never blocks the recycle.
+    }
+    gw.kill('app.recycle')
+    exit()
+    process.exit(RECYCLE_EXIT_CODE)
+  }, [exit, gw])
+
+  useEffect(() => registerRecycleHandler(recycle), [recycle])
 
   const session = useSessionLifecycle({
     colsRef,

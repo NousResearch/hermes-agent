@@ -6955,9 +6955,8 @@ if (!_gotSingleInstanceLock) {
   app.on('second-instance', (_event, argv) => {
     const url = _extractDeepLink(argv)
     if (url) handleDeepLink(url)
-    else if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore()
-      mainWindow.focus()
+    else if (mainWindow && !mainWindow.isDestroyed()) {
+      focusWindow(mainWindow)
     }
   })
 }

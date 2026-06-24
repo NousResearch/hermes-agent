@@ -428,6 +428,30 @@ class TestDeleteSkill:
         assert result["success"] is True
         assert "absorbed into" not in result["message"]
 
+    def test_delete_readonly_skill_returns_clear_error(self, tmp_path):
+        """Deleting a read-only (bundled) skill returns a clear, non-retryable
+        error instead of crashing with PermissionError (#50938)."""
+        with _skill_dir(tmp_path):
+            _create_skill("bundled-skill", VALID_SKILL_CONTENT)
+            skill_path = tmp_path / "bundled-skill"
+            # Make the skill directory read-only (simulates a bundled install
+            # with dr-xr-xr-x permissions).
+            import stat
+            for item in skill_path.rglob("*"):
+                if item.is_file():
+                    item.chmod(item.stat().st_mode & ~stat.S_IWRITE)
+            skill_path.chmod(skill_path.stat().st_mode & ~stat.S_IWRITE)
+            result = _delete_skill("bundled-skill")
+        assert result["success"] is False
+        assert "not writable" in result["error"] or "Permission denied" in result["error"]
+        # Skill should still exist
+        assert skill_path.exists()
+        # Restore permissions so tmp_path cleanup works
+        skill_path.chmod(skill_path.stat().st_mode | stat.S_IWRITE)
+        for item in skill_path.rglob("*"):
+            if item.is_file():
+                item.chmod(item.stat().st_mode | stat.S_IWRITE)
+
     def test_delete_without_absorbed_into_backward_compat(self, tmp_path):
         # Legacy callers that don't pass the arg still work — the curator
         # reconciler falls back to its heuristic+YAML logic for such deletes.

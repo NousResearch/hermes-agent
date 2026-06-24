@@ -570,6 +570,12 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     extra_body = entry.get("extra_body")
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
+                    # Provider declares it wants reasoning_effort as a top-level
+                    # string (not nested in ``reasoning`` object). CLIProxy,
+                    # LiteLLM bridges, and similar proxies that reject the
+                    # OpenAI reasoning object but accept the flat field.
+                    if entry.get("reasoning_effort_top_level"):
+                        result["reasoning_effort_top_level"] = True
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
                     # use the legacy ``api_mode`` spelling.  Accept both —

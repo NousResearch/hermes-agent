@@ -23,11 +23,18 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
 
 
-def test_non_telegram_status_is_unchanged():
-    """The Telegram quieting policy must not hide CLI/Discord diagnostics."""
+def test_messaging_platform_status_suppresses_noise():
+    """Both Telegram and Discord suppress retry/backoff noise from public chat."""
     message = "⏳ Retrying in 4.2s (attempt 1/3)..."
 
-    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) == message
+    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", message) is None
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) is None
+
+
+def test_non_messaging_status_is_unchanged():
+    """CLI/local diagnostics must still show raw status messages."""
+    message = "⏳ Retrying in 4.2s (attempt 1/3)..."
+
     assert _prepare_gateway_status_message("local", "lifecycle", message) == message
 
 

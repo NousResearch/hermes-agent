@@ -1427,3 +1427,53 @@ class TestIsAppTldFinding:
 
     def test_case_insensitive_match(self):
         assert self.fn({"rule_id": "lookalike_tld", "value": ".APP"})
+
+
+# ---------------------------------------------------------------------------
+# mkdtemp OSError → no_space (disk-full leak prevention)
+# ---------------------------------------------------------------------------
+
+class TestMkdtempOSErrorNoSpace:
+    """When tempfile.mkdtemp raises OSError (e.g. disk full), _install_tirith
+    must return (None, "no_space") instead of propagating the exception.
+    This prevents the unbounded retry + temp-dir leak described in #51826.
+    """
+
+    def test_mkdtemp_oserror_returns_no_space(self):
+        from tools.tirith_security import _install_tirith
+
+        with patch("tools.tirith_security.tempfile.mkdtemp",
+                   side_effect=OSError(28, "No space left on device")):
+            result, reason = _install_tirith(log_failures=False)
+            assert result is None
+            assert reason == "no_space"
+
+    def test_mkdtemp_oserror_does_not_leak_tempdir(self):
+        """No temp directory should remain after a mkdtemp failure."""
+        import glob
+        from tools.tirith_security import _install_tirith
+
+        before = set(glob.glob("/tmp/tirith-install-*"))
+        with patch("tools.tirith_security.tempfile.mkdtemp",
+                   side_effect=OSError(28, "No space left on device")):
+            _install_tirith(log_failures=False)
+        after = set(glob.glob("/tmp/tirith-install-*"))
+        assert after - before == set()
+
+    def test_mkdtemp_oserror_propagates_to_ensure_installed(self):
+        """ensure_installed should cache the failure via _mark_install_failed."""
+        from tools.tirith_security import _resolve_tirith_path, _INSTALL_FAILED
+
+        _tirith_mod._resolved_path = None
+        with patch("tools.tirith_security.tempfile.mkdtemp",
+                   side_effect=OSError(28, "No space left on device")), \
+             patch("tools.tirith_security.shutil.which",
+                   return_value=None), \
+             patch("tools.tirith_security._hermes_bin_dir",
+                   return_value="/nonexistent"), \
+             patch("tools.tirith_security._is_install_failed_on_disk",
+                   return_value=False), \
+             patch("tools.tirith_security._mark_install_failed") as mock_mark:
+            result = _resolve_tirith_path("tirith")
+            assert _tirith_mod._resolved_path is _INSTALL_FAILED
+            mock_mark.assert_called_once_with("no_space")

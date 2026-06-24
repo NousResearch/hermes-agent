@@ -372,7 +372,11 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
     archive_name = f"tirith-{target}.tar.gz"
     base_url = f"https://github.com/{_REPO}/releases/latest/download"
 
-    tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
+    try:
+        tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
+    except OSError as exc:
+        log("tirith install failed: cannot create temp dir: %s", exc)
+        return None, "no_space"
     try:
         archive_path = os.path.join(tmpdir, archive_name)
         checksums_path = os.path.join(tmpdir, "checksums.txt")

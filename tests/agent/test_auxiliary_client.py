@@ -92,6 +92,27 @@ def codex_auth_dir(tmp_path, monkeypatch):
     return codex_dir
 
 
+class TestAuxiliaryTaskTimeout:
+    @pytest.mark.parametrize("raw", ["inf", "nan", float("inf"), float("nan")])
+    def test_nonfinite_timeout_uses_default(self, monkeypatch, raw):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(
+            aux, "_get_auxiliary_task_config", lambda _task: {"timeout": raw}
+        )
+
+        assert aux._get_task_timeout("vision", default=12.5) == 12.5
+
+    def test_finite_timeout_still_applies(self, monkeypatch):
+        import agent.auxiliary_client as aux
+
+        monkeypatch.setattr(
+            aux, "_get_auxiliary_task_config", lambda _task: {"timeout": "45.5"}
+        )
+
+        assert aux._get_task_timeout("vision", default=12.5) == 45.5
+
+
 class TestAuxiliaryMaxTokensParam:
     def test_uses_max_completion_tokens_for_github_copilot_custom_base(self):
         with patch("agent.auxiliary_client._resolve_custom_runtime", return_value=("https://api.githubcopilot.com", "key", None)), \

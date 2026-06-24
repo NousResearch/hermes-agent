@@ -332,6 +332,13 @@ class EmailAdapter(BasePlatformAdapter):
         #       skip_attachments: true
         self._skip_attachments = extra.get("skip_attachments", False)
 
+        # Suppress auto-replies — configured via config.yaml:
+        #   platforms:
+        #     email:
+        #       extra:
+        #         auto_reply: false
+        self._auto_reply = extra.get("auto_reply", True)
+
         # Track message IDs we've already processed to avoid duplicates
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
@@ -674,6 +681,9 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to_msg_id: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
+        if not self._auto_reply:
+            logger.info("[Email] Auto-reply disabled, skipping send to %s", to_addr)
+            return f"<skipped-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -789,6 +799,9 @@ class EmailAdapter(BasePlatformAdapter):
         file_paths: List[str],
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
+        if not self._auto_reply:
+            logger.info("[Email] Auto-reply disabled, skipping multi-attachment send to %s", to_addr)
+            return f"<skipped-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -869,6 +882,9 @@ class EmailAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
+        if not self._auto_reply:
+            logger.info("[Email] Auto-reply disabled, skipping attachment send to %s", to_addr)
+            return f"<skipped-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr

@@ -20,6 +20,7 @@ import json
 import os
 import queue
 import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass, field
@@ -121,6 +122,7 @@ class CodexAppServerClient:
             stderr=subprocess.PIPE,
             bufsize=0,
             env=spawn_env,
+            shell=(sys.platform == "win32"),
         )
         self._next_id = 1
         self._pending: dict[int, _Pending] = {}
@@ -373,12 +375,16 @@ def check_codex_binary(
 
     Returns (ok, message). Used by setup wizard and runtime startup."""
     try:
+        # On Windows, npm-installed CLIs are .cmd files; subprocess with a
+        # list arg doesn't find them unless shell=True is used.
+        use_shell = sys.platform == "win32"
         proc = subprocess.run(
             [codex_bin, "--version"],
             capture_output=True,
             text=True,
             timeout=10,
             stdin=subprocess.DEVNULL,
+            shell=use_shell,
         )
     except FileNotFoundError:
         return False, (

@@ -451,13 +451,19 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
 
     raw = script.strip()
 
+    # Resolve the scripts directory the same way the runtime does
+    # (HERMES_HOME/scripts) so the error message matches where scripts are
+    # actually loaded — the hardcoded "~/.hermes/scripts/" was wrong whenever
+    # HERMES_HOME points elsewhere (#51765).
+    scripts_display = f"{display_hermes_home()}/scripts/"
+
     # Reject absolute paths and ~ expansion at the API boundary.
-    # Only relative paths within ~/.hermes/scripts/ are allowed.
+    # Only relative paths within HERMES_HOME/scripts/ are allowed.
     if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
         return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
+            f"Script path must be relative to {scripts_display}. "
             f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename."
+            f"Place scripts in {scripts_display} and use just the filename."
         )
 
     # Validate containment after resolution

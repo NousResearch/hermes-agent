@@ -581,3 +581,39 @@ class TestLocalDeliveryNotice:
         )
         assert created["deliver"] == "origin"
         assert "local-only cron job" not in created["message"]
+
+
+# =========================================================================
+# Script-path validation error message reflects HERMES_HOME (#51765)
+# =========================================================================
+
+class TestCronScriptPathErrorMessage:
+    """The rejection message must point at the real HERMES_HOME/scripts/ dir
+    (where the runtime actually loads scripts), not a hardcoded ~/.hermes."""
+
+    def test_error_uses_configured_hermes_home(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_constants import display_hermes_home
+        from tools.cronjob_tools import _validate_cron_script_path
+
+        err = _validate_cron_script_path("/etc/passwd")
+        assert err is not None
+        assert f"{display_hermes_home()}/scripts/" in err
+
+    def test_error_not_hardcoded_when_custom_home(self, monkeypatch, tmp_path):
+        custom = tmp_path / "custom_home"
+        monkeypatch.setenv("HERMES_HOME", str(custom))
+        from hermes_constants import display_hermes_home
+        from tools.cronjob_tools import _validate_cron_script_path
+
+        err = _validate_cron_script_path("~/secret")
+        assert err is not None
+        # No hardcoded default path; the message points at the configured home.
+        assert "~/.hermes/scripts/" not in err
+        assert f"{display_hermes_home()}/scripts/" in err
+
+    def test_valid_relative_path_passes(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.cronjob_tools import _validate_cron_script_path
+
+        assert _validate_cron_script_path("report.sh") is None

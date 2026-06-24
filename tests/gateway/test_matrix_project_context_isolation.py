@@ -168,6 +168,9 @@ async def test_matrix_project_context_survives_sequential_messages():
 @pytest.mark.asyncio
 async def test_matrix_session_scope_auto_and_thread_preserve_synthetic_threads():
     adapter = _make_adapter()
+    # Override member_count to 3 so the named project room is NOT classified as
+    # a DM (the DM fix uses member_count <= 2 as the primary DM signal).
+    adapter._get_room_member_count = AsyncMock(return_value=3)
     adapter._auto_thread = True
     adapter._matrix_session_scope = "auto"
     auto_source = await _source_for(adapter, PROJECT_B_ROOM_ID, "$auto")

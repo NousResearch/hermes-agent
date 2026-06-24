@@ -502,8 +502,9 @@ class TestMatrixDmDetection:
         assert await self.adapter._is_dm_room("!dm_room:ex.org") is True
 
     @pytest.mark.asyncio
-    async def test_named_two_member_room_is_not_dm(self):
-        """A named two-member room must remain a room, not a DM."""
+    async def test_named_two_member_room_is_dm_by_member_count(self):
+        """A named two-member room NOT in m.direct is treated as a DM because
+        <=2 members means it's necessarily a 1:1 conversation."""
         self.adapter._joined_rooms = {"!project:ex.org"}
         self.adapter._dm_rooms = {}
         self.adapter._client = MagicMock()
@@ -519,14 +520,41 @@ class TestMatrixDmDetection:
 
         identity = await self.adapter._resolve_room_identity("!project:ex.org")
 
-        assert identity.chat_type == "room"
+        assert identity.chat_type == "dm"
         assert identity.display_name == "Project Room"
         assert identity.joined_member_count == 2
-        assert await self.adapter._is_dm_room("!project:ex.org") is False
+        assert await self.adapter._is_dm_room("!project:ex.org") is True
+
+    @pytest.mark.asyncio
+    async def test_named_two_member_dm_is_dm(self):
+        """A named two-member room in m.direct is a DM (not a room).
+
+        Most Matrix clients auto-name DM rooms (e.g. "Alice & Bot"), so the
+        old `not has_explicit_name` override misclassified them as rooms.
+        """
+        self.adapter._joined_rooms = {"!named_dm:ex.org"}
+        self.adapter._dm_rooms = {"!named_dm:ex.org": True}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_state_event = AsyncMock(
+            side_effect=lambda room_id, event_type: {"name": "Alice & Bot"}
+            if event_type == "m.room.name"
+            else (_ for _ in ()).throw(Exception("no alias"))
+        )
+        self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.get_members = AsyncMock(
+            return_value=["@bot:ex.org", "@alice:ex.org"]
+        )
+
+        identity = await self.adapter._resolve_room_identity("!named_dm:ex.org")
+
+        assert identity.chat_type == "dm"
+        assert identity.conflict is False
+        assert identity.joined_member_count == 2
+        assert await self.adapter._is_dm_room("!named_dm:ex.org") is True
 
     @pytest.mark.asyncio
     async def test_named_room_overrides_stale_dm_cache(self):
-        """Explicit room names should defeat stale/conflicting m.direct data."""
+        """Explicit room names defeat stale/conflicting m.direct data when 3+ members."""
         self.adapter._joined_rooms = {"!stale:ex.org"}
         self.adapter._dm_rooms = {"!stale:ex.org": True}
         self.adapter._client = MagicMock()
@@ -536,12 +564,15 @@ class TestMatrixDmDetection:
             else (_ for _ in ()).throw(Exception("no alias"))
         )
         self.adapter._client.state_store = MagicMock()
-        self.adapter._client.state_store.get_members = AsyncMock(return_value=["@bot:ex.org", "@alice:ex.org"])
+        self.adapter._client.state_store.get_members = AsyncMock(
+            return_value=["@bot:ex.org", "@alice:ex.org", "@bob:ex.org"]
+        )
 
         identity = await self.adapter._resolve_room_identity("!stale:ex.org")
 
         assert identity.chat_type == "room"
         assert identity.conflict is True
+        assert identity.joined_member_count == 3
         assert await self.adapter._is_dm_room("!stale:ex.org") is False
 
     @pytest.mark.asyncio
@@ -2057,7 +2088,7 @@ class TestMatrixSyncLoop:
         fake_client.join_room.assert_awaited_once()
         assert "!room:example.org" in adapter._joined_rooms
         assert len(captured) == 1
-        assert captured[0].source.chat_type == "group"
+        assert captured[0].source.chat_type == "dm"
 
     @pytest.mark.asyncio
     async def test_seconds_timestamp_is_not_treated_as_milliseconds(self):

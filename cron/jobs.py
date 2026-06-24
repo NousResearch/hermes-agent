@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_default_hermes_root, get_hermes_home
+from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -49,7 +49,7 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_default_hermes_root().resolve()
+HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The
@@ -359,8 +359,19 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
             # Make naive timestamps timezone-aware at parse time so the stored
             # value doesn't depend on the system timezone matching at check time.
+            #
+            # Anchor to the CONFIGURED Hermes timezone, not the server's local
+            # timezone. The due-check (`get_due_jobs`) compares `next_run_at`
+            # against `hermes_time.now()`, which uses the configured zone. If a
+            # naive "20:07" were interpreted as server-local (e.g. UTC) while
+            # now() runs in Asia/Kolkata, the stored instant would land hours
+            # off from the user's wall-clock intent — far enough that one-shots
+            # never become due and recurring jobs fire at the wrong time. Using
+            # the configured zone makes "20:07" mean 20:07 on the same clock the
+            # scheduler checks against (#51021).
             if dt.tzinfo is None:
-                dt = dt.astimezone()  # Interpret as local timezone
+                hermes_tz = _hermes_now().tzinfo
+                dt = dt.replace(tzinfo=hermes_tz)
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
@@ -615,44 +626,10 @@ def get_ticker_success_age() -> Optional[float]:
 # Job CRUD Operations
 # =============================================================================
 
-_WARNED_ORPHAN_STORE = False
-
-
-def _warn_if_orphaned_profile_store() -> None:
-    """Loudly warn (once) if the root store is empty but a profile-local
-    jobs.json exists from before #32091's root-anchoring fix.
-
-    Such a file is now unreachable (the store anchors at the default root, not
-    the active profile). The jobs in it were already orphaned pre-fix (the
-    profile-less gateway never read them), so this is not a regression — but a
-    user who could SEE them in `cron list` under their profile would otherwise
-    find them silently gone. Point them at the path instead of failing silent.
-    """
-    global _WARNED_ORPHAN_STORE
-    if _WARNED_ORPHAN_STORE:
-        return
-    try:
-        active = get_hermes_home().resolve()
-        if active == HERMES_DIR:
-            return  # not in a profile; nothing could be orphaned
-        legacy = active / "cron" / "jobs.json"
-        if legacy.exists():
-            _WARNED_ORPHAN_STORE = True
-            logger.warning(
-                "Cron jobs now live at %s (shared across profiles). A legacy "
-                "profile-local store exists at %s and is no longer read; "
-                "re-create those jobs or move them into the root store. (#32091)",
-                JOBS_FILE, legacy,
-            )
-    except Exception:
-        pass  # best-effort advisory; never block load_jobs
-
-
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
     if not JOBS_FILE.exists():
-        _warn_if_orphaned_profile_store()
         return []
 
     _strict_retry = False  # track whether we used the strict=False fallback

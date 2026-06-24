@@ -340,6 +340,51 @@ def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
     return merged
 
 
+def agent_browser_runnable(path: str | None) -> bool:
+    """Return True only when *path* is an agent-browser CLI that actually runs.
+
+    A bare presence check (``shutil.which`` / ``Path.exists``) is not enough:
+    agent-browser's npm ``postinstall`` re-points a *global* install symlink
+    (e.g. ``/opt/homebrew/bin/agent-browser``) at our local
+    ``node_modules/agent-browser/bin/...`` binary, which then disappears on the
+    next ``hermes update`` — leaving a **dangling symlink** that ``which`` still
+    reports but exec fails on with exit 127 (issue #48521). Callers that trust
+    such a path silently break every browser tool.
+
+    This validates the candidate by resolving it to a real, executable file and
+    running ``--version`` with a short timeout. Returns True only on a clean
+    (exit 0) run, so a dead/wrong-arch/hung binary is rejected and the caller
+    can fall through to the next resolution candidate.
+
+    Special cases:
+      * ``None`` / empty → False.
+      * The ``"npx agent-browser"`` fallback form (contains a space, not a real
+        file) → True; npx resolves and validates the package at run time, so
+        there is nothing to stat here.
+    """
+    if not path:
+        return False
+    # The npx fallback is a two-token command string, not a filesystem path.
+    if " " in path and path.split()[0].endswith("npx"):
+        return True
+    # exists() follows symlinks — a dangling link returns False here, so we
+    # never even spawn a subprocess for the broken-link case.
+    if not os.path.exists(path) or not os.access(path, os.X_OK):
+        return False
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            timeout=10,
+            env=with_hermes_node_path(),
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return result.returncode == 0
+
+
 def display_hermes_home() -> str:
     """Return a user-friendly display string for the current HERMES_HOME.
 

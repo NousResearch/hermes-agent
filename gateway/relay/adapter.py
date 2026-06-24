@@ -18,6 +18,7 @@ deprecation cycle until >=2 Class-1 platforms validate them.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Callable, Dict, Optional
 
@@ -254,6 +255,24 @@ class RelayAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         if self._transport is not None:
+            # Phase 5 §5.3: emit going_idle as part of the gateway's EXISTING
+            # drain/shutdown transition (the runner calls adapter.disconnect()
+            # when the gateway enters `draining`). Asking the connector to flip
+            # this instance to buffered-only BEFORE we tear down the socket means
+            # inbound that arrives while we're asleep buffers durably and replays
+            # on reconnect, instead of being pushed at a closing socket. The
+            # connector is authoritative (it acks the flip); we stay serving until
+            # the ack (Q-5.3c). Best-effort + guarded: a transport without go_idle
+            # (the stub) or a failed/timed-out ack must not block shutdown — we
+            # proceed to disconnect exactly as before, no regression.
+            go_idle = getattr(self._transport, "go_idle", None)
+            if callable(go_idle):
+                try:
+                    result: Any = go_idle()
+                    if asyncio.iscoroutine(result):
+                        await result
+                except Exception:  # noqa: BLE001 - going-idle is an optimization, never blocks drain
+                    logger.debug("relay going_idle failed during drain", exc_info=True)
             await self._transport.disconnect()
 
     async def send(

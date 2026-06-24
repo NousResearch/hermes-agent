@@ -460,7 +460,23 @@ TOOLSETS = {
     
     "hermes-slack": {
         "description": "Slack bot toolset - full access for workspace use (terminal has safety checks)",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + [
+            "slack_delete_message",
+            "slack_list_usergroups",
+            "slack_list_usergroup_users",
+            "slack_update_usergroup_users",
+        ],
+        "includes": []
+    },
+
+    "slack": {
+        "description": "Slack workspace maintenance tools gated on SLACK_BOT_TOKEN",
+        "tools": [
+            "slack_delete_message",
+            "slack_list_usergroups",
+            "slack_list_usergroup_users",
+            "slack_update_usergroup_users",
+        ],
         "includes": []
     },
     

@@ -414,6 +414,10 @@ class SlackAdapter(BasePlatformAdapter):
     """
 
     MAX_MESSAGE_LENGTH = 39000  # Slack API allows 40,000 chars; leave margin
+    # Slack markdown blocks support richer standard Markdown rendering (notably
+    # tables), but have a separate 12,000-character cumulative text limit per
+    # payload. Keep each one below the documented ceiling with some margin.
+    MARKDOWN_BLOCK_TEXT_LENGTH = 11500
     supports_code_blocks = True  # Slack mrkdwn renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Slack blocks typed native slash commands inside threads ("/approve is
@@ -1250,8 +1254,28 @@ class SlackAdapter(BasePlatformAdapter):
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
 
-            # Split long messages, preserving code block boundaries
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            if self._markdown_blocks_enabled():
+                raw_chunks = self.truncate_message(
+                    content or "",
+                    self.MARKDOWN_BLOCK_TEXT_LENGTH,
+                )
+                send_items = [
+                    {
+                        "text": (
+                            self.truncate_message(
+                                self.format_message(raw_chunk),
+                                self.MAX_MESSAGE_LENGTH,
+                            )
+                            or [""]
+                        )[0],
+                        "blocks": [{"type": "markdown", "text": raw_chunk}],
+                    }
+                    for raw_chunk in raw_chunks
+                ] or [{"text": formatted or "", "blocks": None}]
+            else:
+                # Split long messages, preserving code block boundaries
+                chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+                send_items = [{"text": chunk, "blocks": None} for chunk in chunks]
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
@@ -1260,12 +1284,14 @@ class SlackAdapter(BasePlatformAdapter):
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
 
-            for i, chunk in enumerate(chunks):
+            for i, item in enumerate(send_items):
                 kwargs = {
                     "channel": chat_id,
-                    "text": chunk,
+                    "text": item["text"],
                     "mrkdwn": True,
                 }
+                if item["blocks"]:
+                    kwargs["blocks"] = item["blocks"]
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
                     # Only broadcast the first chunk of the first reply
@@ -1779,6 +1805,18 @@ class SlackAdapter(BasePlatformAdapter):
             text = text.replace(key, placeholders[key])
 
         return text
+
+    def _markdown_blocks_enabled(self) -> bool:
+        """Return True when Slack sends final replies with markdown blocks.
+
+        Slack's normal ``text`` + ``mrkdwn`` path does not render GitHub-style
+        Markdown tables. The newer Block Kit ``markdown`` block does, so this
+        flag lets operators opt in while keeping the legacy path as the default.
+        """
+        value = self.config.extra.get("markdown_blocks")
+        if isinstance(value, bool):
+            return value
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
     # ----- Reactions -----
 

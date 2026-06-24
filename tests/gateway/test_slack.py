@@ -3267,6 +3267,48 @@ class TestMessageSplitting:
         assert kwargs.get("mrkdwn") is True
 
     @pytest.mark.asyncio
+    async def test_send_uses_markdown_block_when_enabled(self, adapter):
+        adapter.config.extra["markdown_blocks"] = True
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg_ts"})
+        content = (
+            "| 항목 | 상태 | 비고 |\n"
+            "| --- | --- | --- |\n"
+            "| API | 정상 | 200 OK |\n"
+            "| DB | 정상 | 지연 없음 |"
+        )
+
+        result = await adapter.send(chat_id="C123", content=content, metadata={"thread_id": "parent_ts"})
+
+        assert result.success is True
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["thread_ts"] == "parent_ts"
+        assert call_kwargs["mrkdwn"] is True
+        assert call_kwargs["text"] == content
+        assert call_kwargs["blocks"] == [{"type": "markdown", "text": content}]
+
+    @pytest.mark.asyncio
+    async def test_send_keeps_legacy_text_path_by_default(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg_ts"})
+
+        result = await adapter.send(chat_id="C123", content="**bold**")
+
+        assert result.success is True
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["text"] == "*bold*"
+        assert "blocks" not in call_kwargs
+
+    @pytest.mark.asyncio
+    async def test_markdown_blocks_preserve_standard_markdown_in_block_text(self, adapter):
+        adapter.config.extra["markdown_blocks"] = True
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg_ts"})
+
+        await adapter.send(chat_id="C123", content="**Bold** and [link](https://example.com)")
+
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs["text"] == "*Bold* and <https://example.com|link>"
+        assert call_kwargs["blocks"][0]["text"] == "**Bold** and [link](https://example.com)"
+
+    @pytest.mark.asyncio
     async def test_send_does_not_double_escape_entities(self, adapter):
         """Pre-escaped &amp; in sent messages must not become &amp;amp;."""
         adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})

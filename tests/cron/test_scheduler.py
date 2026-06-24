@@ -2286,6 +2286,68 @@ class TestSilentDelivery:
             tick(verbose=False)
         deliver_mock.assert_not_called()
 
+    def test_silent_missing_closing_bracket_suppresses_delivery(self):
+        """Regression for issue #51438: agent emitted ``[SILENT`` (no ``]``)
+        and the substring-match from #5023 let it slip through to Telegram."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_not_called()
+
+    def test_silent_with_surrounding_whitespace_suppresses_delivery(self):
+        """Regression for issue #51438: whitespace around the marker
+        should still trigger suppression."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "  [SILENT]  \n", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_not_called()
+
+    def test_silent_with_trailing_punctuation_suppresses_delivery(self):
+        """Regression for issue #51438: trailing sentence punctuation
+        (``[SILENT].``) should still trigger suppression."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT].", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_not_called()
+
+    def test_silent_malformed_trailing_in_report_suppresses_delivery(self):
+        """Regression for issue #51438: malformed ``[SILENT`` (no ``]``)
+        appended to a real report must still trigger suppression."""
+        response = "All clear, nothing changed.\n[SILENT"
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_not_called()
+
+    def test_silent_partial_word_does_not_suppress(self):
+        """Words that merely contain ``SILENT`` as a prefix (``[SILENTIA]``,
+        ``silenced``) must NOT trigger suppression — only the exact marker
+        should."""
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "noise [SILENTIA] more", None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+
     def test_silent_is_case_insensitive(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
              patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \

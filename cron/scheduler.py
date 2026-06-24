@@ -242,6 +242,57 @@ from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+_SILENT_BRACKETS_AND_WS = re.compile(r"[\s\[\]]+")
+
+
+def _is_silent_marker(text: str) -> bool:
+    """True iff ``text`` should be treated as the ``[SILENT]`` marker.
+
+    Suppresses delivery in three cases (any of which is sufficient):
+
+    1. **Strict equal** — the response, after stripping whitespace, brackets,
+       and one trailing sentence terminator (``[SILENT]``, ``[SILENT``,
+       ``[SILENT].``, `` [SILENT] ``, etc.).  Catches malformed markers that
+       the LLM emits with a missing closing bracket or stray punctuation.
+    2. **Trailing marker** — the response contains ``[SILENT]`` anywhere
+       (case-insensitive).  Added by #5023 for the preamble-pollution case
+       where the model wraps the marker with explanation text.
+    3. **Trailing malformed marker** — same as (2) but for the substring
+       ``[SILENT`` (no closing bracket) anywhere in the response.
+
+    See issues #5023 (preamble case) and #51438 (malformed-marker case).
+
+    Returns False for empty / whitespace-only / non-marker text so legitimate
+    reports still go through.
+    """
+    if not text:
+        return False
+    stripped = text.strip()
+    if not stripped:
+        return False
+    upper = stripped.upper()
+
+    # Case 1: whole-response match with malformed tolerance.
+    normalized = _SILENT_BRACKETS_AND_WS.sub("", upper)
+    if normalized.endswith((".", "!", "?", ",", ";", ":")):
+        normalized = normalized[:-1]
+    if normalized == "SILENT":
+        return True
+
+    # Case 2: well-formed [SILENT] marker anywhere in the response (#5023).
+    if "[SILENT]" in upper:
+        return True
+
+    # Case 3: malformed [SILENT (no closing bracket) anywhere (#51438).
+    # Require the malformed marker to be a whole token — followed by
+    # whitespace, sentence punctuation, or end of string.  Otherwise
+    # words like ``[SILENTIA]`` would match by prefix.
+    if re.search(r"\[\s*SILENT\s*[\.\!\?\,\;\:]?\s*$", upper, re.M):
+        return True
+    if re.search(r"\[\s*SILENT\s*[\.\!\?\,\;\:]", upper):
+        return True
+
+    return False
 
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.
@@ -2335,7 +2386,10 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # responses: do not deliver a blank message, and let the
         # empty-response guard below mark the run as a soft failure.
         should_deliver = bool(deliver_content.strip())
-        if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+        # Normalize before matching so malformed markers (truncated
+        # closing bracket, surrounding whitespace, trailing punctuation)
+        # don't bypass suppression.  See issue #51438.
+        if should_deliver and success and _is_silent_marker(deliver_content):
             logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
             should_deliver = False
 

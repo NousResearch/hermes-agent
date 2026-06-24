@@ -284,7 +284,7 @@ Zero-LLM, tiered memory with automatic forgetting. Hybrid retrieval (ANN + keywo
 | | |
 |---|---|
 | **Best for** | Local/edge deployments, offline-first, agents that shouldn't drown in stale context |
-| **Requires** | `pip install recall-sqlite recall-memory-hermes` + LM Studio (for embeddings; keyword+FTS5 fallback works without) |
+| **Requires** | `pip install recall-sqlite` + LM Studio (for embeddings; keyword+FTS5 fallback works without) |
 | **Data storage** | Local SQLite |
 | **Cost** | Free |
 
@@ -292,8 +292,17 @@ Zero-LLM, tiered memory with automatic forgetting. Hybrid retrieval (ANN + keywo
 
 **Setup:**
 ```bash
-pip install recall-sqlite recall-memory-hermes
-hermes config set memory.provider recall
+# 1. Install Python dependencies
+pip install recall-sqlite
+
+# 2. Install the Hermes plugin (clones repo to ~/.hermes/plugins/)
+hermes plugins install Jnocode/recall-memory-hermes --enable
+
+# 3. Activate as the memory provider
+hermes config set memory.provider recall-memory-hermes
+
+# 4. Restart the gateway
+hermes gateway restart
 ```
 
 **Architecture:**
@@ -316,7 +325,7 @@ Three-tier automatic storage:
 
 **Config:**
 
-Set `memory.provider: recall` in `~/.hermes/config.yaml`. No additional config files needed.
+Set `memory.provider: recall-memory-hermes` in `~/.hermes/config.yaml`. No additional config files needed.
 
 | Key | Default | Description |
 |-----|---------|-------------|

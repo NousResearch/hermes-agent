@@ -72,6 +72,17 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
             cwd=str(cwd) if cwd else None,
             capture_output=True,
             text=True,
+            # Force UTF-8 decoding of shell output. With ``text=True`` and no
+            # explicit encoding, Python decodes via ``locale.getpreferredencoding``
+            # — cp936/gbk on a Windows non-UTF-8 (e.g. Chinese) locale — so any
+            # UTF-8 bytes in the snippet output raised UnicodeDecodeError, which
+            # escaped this handler and broke skill_view for every skill that
+            # renders inline shell (read_file was unaffected — it skips preprocess).
+            # ``errors="replace"`` additionally hardens against genuinely
+            # non-UTF-8 output so one bad byte can never crash skill rendering.
+            # See issue #51691.
+            encoding="utf-8",
+            errors="replace",
             timeout=max(1, int(timeout)),
             check=False,
             stdin=subprocess.DEVNULL,

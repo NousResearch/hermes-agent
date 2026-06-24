@@ -104,7 +104,39 @@ def _is_stale_session_ret(
     a genuine rate limit."""
     if ret != RATE_LIMIT_ERRCODE and errcode != RATE_LIMIT_ERRCODE:
         return False
-    return (errmsg or "").lower() == "unknown error"
+    msg = (errmsg or "").strip().lower()
+    return not msg or msg in {"unknown error", "rate limited"}
+
+
+def _parse_retry_after_seconds(response: Optional[Dict[str, Any]]) -> Optional[float]:
+    """Extract an iLink retry-after hint from a rate-limit response.
+
+    iLink responses are not fully stable across deployments.  Accept the
+    common second-based spellings plus millisecond variants when present.
+    """
+    if not isinstance(response, dict):
+        return None
+    for key in ("retry_after", "retry_after_seconds", "backoff", "backoff_seconds"):
+        value = response.get(key)
+        if value is None:
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    for key in ("retry_after_ms", "backoff_ms"):
+        value = response.get(key)
+        if value is None:
+            continue
+        try:
+            parsed = float(value) / 1000.0
+        except (TypeError, ValueError):
+            continue
+        if parsed > 0:
+            return parsed
+    return None
 
 
 MEDIA_IMAGE = 1
@@ -1175,12 +1207,26 @@ class WeixinAdapter(BasePlatformAdapter):
             extra.get("send_chunk_retry_delay_seconds")
             or os.getenv("WEIXIN_SEND_CHUNK_RETRY_DELAY_SECONDS", "1.0")
         )
+        try:
+            self._long_reply_chunk_threshold = max(
+                0,
+                int(extra.get("long_reply_chunk_threshold", 10)),
+            )
+        except (TypeError, ValueError):
+            self._long_reply_chunk_threshold = 10
+        try:
+            self._long_reply_chunk_delay_seconds = max(
+                0.0,
+                float(extra.get("long_reply_chunk_delay_seconds", 6.0)),
+            )
+        except (TypeError, ValueError):
+            self._long_reply_chunk_delay_seconds = 6.0
         self._send_text_gate = asyncio.Lock()
         self._rate_limit_circuit_threshold = max(
             1,
             int(
                 extra.get("rate_limit_circuit_threshold")
-                or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_THRESHOLD", "1")
+                or os.getenv("WEIXIN_RATE_LIMIT_CIRCUIT_THRESHOLD", str(self._send_chunk_retries + 1))
             ),
         )
         self._rate_limit_circuit_window_seconds = float(
@@ -1697,6 +1743,23 @@ class WeixinAdapter(BasePlatformAdapter):
         self._rate_limit_events.clear()
         self._rate_limit_circuit_until = 0.0
 
+    def _rate_limit_retry_delay(self, attempt: int, response: Optional[Dict[str, Any]] = None) -> float:
+        """Return the sleep before the next retry after an iLink rate limit."""
+        base = max(0.0, self._send_chunk_retry_delay_seconds * 3)
+        exponential = base * (2 ** max(0, attempt))
+        hinted = _parse_retry_after_seconds(response)
+        wait = max(exponential, hinted) if hinted is not None else exponential
+        return min(wait, 60.0)
+
+    def _inter_chunk_delay(self, total_chunks: int) -> float:
+        delay = self._send_chunk_delay_seconds
+        if (
+            self._long_reply_chunk_threshold > 0
+            and total_chunks >= self._long_reply_chunk_threshold
+        ):
+            delay = max(delay, self._long_reply_chunk_delay_seconds)
+        return delay
+
     async def _send_text_chunk(
         self,
         *,
@@ -1755,7 +1818,7 @@ class WeixinAdapter(BasePlatformAdapter):
                             or _is_stale_session_ret(ret, errcode, resp.get("errmsg"))
                         )
                         # Session expired — strip token and retry once
-                        if is_session_expired and not retried_without_token and context_token:
+                        if is_session_expired and not retried_without_token:
                             retried_without_token = True
                             context_token = None
                             self._token_store._cache.pop(
@@ -1784,7 +1847,7 @@ class WeixinAdapter(BasePlatformAdapter):
                                 break
                             if attempt >= self._send_chunk_retries:
                                 break
-                            wait = self._send_chunk_retry_delay_seconds * 3  # 3x backoff for rate limit
+                            wait = self._rate_limit_retry_delay(attempt, resp)
                             logger.warning(
                                 "[%s] rate limited for %s; backing off %.1fs before retry",
                                 self.name, _safe_id(chat_id), wait,
@@ -1867,6 +1930,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
             # Deliver text content.
             chunks = [c for c in self._split_text(self.format_message(final_content)) if c and c.strip()]
+            inter_chunk_delay = self._inter_chunk_delay(len(chunks))
             for idx, chunk in enumerate(chunks):
                 client_id = f"hermes-weixin-{uuid.uuid4().hex}"
                 await self._send_text_chunk(
@@ -1876,8 +1940,8 @@ class WeixinAdapter(BasePlatformAdapter):
                     client_id=client_id,
                 )
                 last_message_id = client_id
-                if idx < len(chunks) - 1 and self._send_chunk_delay_seconds > 0:
-                    await asyncio.sleep(self._send_chunk_delay_seconds)
+                if idx < len(chunks) - 1 and inter_chunk_delay > 0:
+                    await asyncio.sleep(inter_chunk_delay)
             return SendResult(success=True, message_id=last_message_id)
         except Exception as exc:
             logger.error("[%s] send failed to=%s: %s", self.name, _safe_id(chat_id), exc)

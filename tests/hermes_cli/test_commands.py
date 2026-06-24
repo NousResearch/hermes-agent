@@ -1245,7 +1245,7 @@ class TestTelegramMenuCommands:
     def test_telegram_menu_max_commands_uses_config_with_safe_bounds(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        assert telegram_menu_max_commands() == 30
+        assert telegram_menu_max_commands() == 60
 
         (tmp_path / "config.yaml").write_text(
             "platforms:\n"
@@ -1281,7 +1281,7 @@ class TestTelegramMenuCommands:
             "      command_menu:\n"
             "        max_commands: nope\n"
         )
-        assert telegram_menu_max_commands() == 30
+        assert telegram_menu_max_commands() == 60
 
     def test_telegram_menu_ignores_undocumented_command_menu_paths(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -1296,7 +1296,7 @@ class TestTelegramMenuCommands:
             "        max_commands: 9\n"
         )
 
-        assert telegram_menu_max_commands() == 30
+        assert telegram_menu_max_commands() == 60
 
     def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
         """Telegram menu generation should discover plugin slash commands on first access."""

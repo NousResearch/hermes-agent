@@ -534,7 +534,11 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     return result
 
 
-_DEFAULT_TELEGRAM_MENU_MAX_COMMANDS = 30
+# Telegram allows up to 100 BotCommands. Hermes ships ~50 built-in commands;
+# a 60-slot default keeps every built-in plus common skill commands visible in
+# the `/` menu while staying comfortably under Telegram's ~4KB payload limit.
+# Users can tune this via platforms.telegram.extra.command_menu.max_commands.
+_DEFAULT_TELEGRAM_MENU_MAX_COMMANDS = 60
 _TELEGRAM_BOT_API_MAX_COMMANDS = 100
 _TELEGRAM_PRIORITY_MODES = {"prepend", "append", "replace"}
 

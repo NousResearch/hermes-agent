@@ -3316,8 +3316,129 @@ class TestHandleMaxIterations:
         messages = [{"role": "user", "content": "do stuff"}]
         result = agent._handle_max_iterations(messages, 60)
         assert isinstance(result, str)
-        assert "error" in result.lower()
+        assert "当前轮次已经结束" in result
+        assert "普通聊天不会自动继续" in result
+        assert "/goal <目标>" in result
+        assert "深诊断：<问题>" in result
         assert "API down" in result
+
+    def test_empty_summary_returns_actionable_closure(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(content="")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert "当前轮次已经结束" in result
+        assert "任务未完成或仅部分完成" in result
+        assert "普通聊天不会自动继续" in result
+        assert "/goal <目标>" in result
+        assert "深诊断：<问题>" in result
+        assert "I reached the iteration limit" not in result
+
+    def test_empty_summary_includes_recent_tool_evidence(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(content="")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "debug cron"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": "{\"cmd\":\"hermes cron list\"}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "OpenClaw 热修复守护 last_status=error route insertion anchor not found",
+            },
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert "本轮最后可保留的诊断证据" in result
+        assert "terminal" in result
+        assert "route insertion anchor not found" in result
+
+    def test_summary_prompt_requests_conclusion_and_includes_evidence(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+        messages = [
+            {"role": "user", "content": "debug cron"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {
+                            "name": "terminal",
+                            "arguments": "{\"cmd\":\"hermes cron list\"}",
+                        },
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "OpenClaw 热修复守护 last_status=error",
+            },
+        ]
+
+        result = agent._handle_max_iterations(messages, 60)
+
+        assert result == "Summary"
+        sent_msgs = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        summary_request = sent_msgs[-1]["content"]
+        assert "confirmed facts" in summary_request
+        assert "exact next command/action" in summary_request
+        assert "OpenClaw 热修复守护 last_status=error" in summary_request
+
+    def test_internal_prompt_fragment_summary_returns_actionable_closure(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="If you still need input from the user, ask for it in your final response."
+        )
+        agent._cached_system_prompt = "You are helpful."
+        messages = [{"role": "user", "content": "do stuff"}]
+
+        result = agent._handle_max_iterations(messages, 6)
+
+        assert "当前轮次已经结束" in result
+        assert "普通聊天不会自动继续" in result
+        assert "If you still need input" not in result
+
+    def test_out_of_band_marker_summary_returns_actionable_closure(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content=(
+                "[OUT-OF-BAND USER MESSAGE — a direct message from the user, "
+                "delivered mid-turn; not tool output]\n进展如何?\n"
+                "[/OUT-OF-BAND USER MESSAGE]\n" * 20
+            )
+        )
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 6)
+
+        assert "当前轮次已经结束" in result
+        assert "普通聊天不会自动继续" in result
+        assert "OUT-OF-BAND USER MESSAGE" not in result
+
+    def test_oversized_summary_returns_actionable_closure(self, agent):
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="已经收到，在下载了。\n" * 2000
+        )
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 6)
+
+        assert "当前轮次已经结束" in result
+        assert "普通聊天不会自动继续" in result
+        assert len(result) < 1000
 
     def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
         agent.base_url = "https://openrouter.ai/api/v1"

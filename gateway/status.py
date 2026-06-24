@@ -13,6 +13,7 @@ concurrently under distinct configurations).
 
 import hashlib
 import json
+import logging
 import os
 import shlex
 import signal
@@ -23,6 +24,8 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, NamedTuple, Optional
 from utils import atomic_json_write
+
+logger = logging.getLogger(__name__)
 
 if sys.platform == "win32":
     import msvcrt
@@ -121,7 +124,8 @@ def record_start_and_check_storm(
             backoff_s = min(backoff_cap_s, 5.0 * (2 ** exponent))
             return StormInfo(count=len(recent), window_s=window_s, backoff_s=backoff_s)
         return None
-    except Exception:
+    except Exception as _e:
+        logger.debug("respawn-storm breaker bookkeeping failed (non-fatal): %s", _e)
         return None
 
 

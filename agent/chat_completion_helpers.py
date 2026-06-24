@@ -1655,6 +1655,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # the cached runtime client on stall; the worker pops it below.
         _bedrock_region = api_kwargs.get("__bedrock_region__", "us-east-1")
 
+        # Liveness hook passed into the adapter; fires once per Bedrock stream
+        # event (including the tool-input streaming phase that fires no content
+        # callback). This is the canonical place the watchdog timer/counter
+        # advance — so a healthy pure-tool-call turn is never falsely killed.
+        def _bedrock_on_event():
+            if _bedrock_gave_up["v"]:
+                return
+            _bedrock_last_chunk["t"] = time.time()
+            _bedrock_chunks["n"] += 1
+
         def _bedrock_call():
             try:
                 from agent.bedrock_adapter import (
@@ -1700,11 +1710,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         invalidate_runtime_client(region)
                     raise
 
+                # NOTE: the watchdog timer/counter (_bedrock_last_chunk /
+                # _bedrock_chunks) are advanced by _bedrock_on_event, which the
+                # adapter fires for EVERY stream event. These content callbacks
+                # only perform their consumer-facing side effects.
                 def _on_text(text):
                     if _bedrock_gave_up["v"]:
                         return
-                    _bedrock_last_chunk["t"] = time.time()
-                    _bedrock_chunks["n"] += 1
                     _fire_first()
                     agent._fire_stream_delta(text)
                     deltas_were_sent["yes"] = True
@@ -1712,16 +1724,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 def _on_tool(name):
                     if _bedrock_gave_up["v"]:
                         return
-                    _bedrock_last_chunk["t"] = time.time()
-                    _bedrock_chunks["n"] += 1
                     _fire_first()
                     agent._fire_tool_gen_started(name)
 
                 def _on_reasoning(text):
                     if _bedrock_gave_up["v"]:
                         return
-                    _bedrock_last_chunk["t"] = time.time()
-                    _bedrock_chunks["n"] += 1
                     _fire_first()
                     agent._fire_reasoning_delta(text)
 
@@ -1731,6 +1739,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     on_tool_start=_on_tool,
                     on_reasoning_delta=_on_reasoning if agent.reasoning_callback or agent.stream_delta_callback else None,
                     on_interrupt_check=lambda: agent._interrupt_requested or _bedrock_gave_up["v"],
+                    on_event=_bedrock_on_event,
                 )
             except Exception as e:
                 result["error"] = e

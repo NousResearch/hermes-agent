@@ -45,7 +45,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Dict, List, Tuple
 
 
@@ -388,6 +388,22 @@ def _format_file(file: Path, repo_root: Path) -> str:
         return str(file)
 
 
+def _duration_cache_key(file: Path, repo_root: Path) -> str | None:
+    """Return a portable duration-cache key for repo-local files only."""
+    try:
+        return str(file.resolve().relative_to(repo_root.resolve()))
+    except ValueError:
+        return None
+
+
+def _is_portable_duration_key(key: str) -> bool:
+    """Duration caches are portable only when keys are repo-relative."""
+    return not (
+        PurePosixPath(key).is_absolute()
+        or PureWindowsPath(key).is_absolute()
+    )
+
+
 def _print_progress(
     tests_done: int,
     total_tests: int,
@@ -519,9 +535,15 @@ def _save_durations(
     repo-relative paths so the cache is portable across checkouts
     and CI runners.
     """
-    data: dict[str, float] = _load_durations(repo_root)
+    data: dict[str, float] = {
+        key: value
+        for key, value in _load_durations(repo_root).items()
+        if _is_portable_duration_key(key)
+    }
     for f, t in file_times:
-        key = _format_file(f, repo_root)
+        key = _duration_cache_key(f, repo_root)
+        if key is None:
+            continue
         data[key] = round(t, 3)
     path = repo_root / _DURATIONS_FILE
     path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")

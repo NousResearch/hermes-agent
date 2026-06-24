@@ -63,6 +63,46 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def test_duration_cache_skips_paths_outside_repo(tmp_path: Path) -> None:
+    from scripts.run_tests_parallel import _DURATIONS_FILE, _save_durations
+
+    repo_root = tmp_path / "repo"
+    repo_file = repo_root / "tests" / "test_repo.py"
+    outside_file = tmp_path / "outside" / "test_external.py"
+    repo_file.parent.mkdir(parents=True)
+    outside_file.parent.mkdir(parents=True)
+    repo_file.write_text("def test_repo():\n    assert True\n", encoding="utf-8")
+    outside_file.write_text("def test_external():\n    assert True\n", encoding="utf-8")
+
+    _save_durations([(repo_file, 1.234), (outside_file, 9.876)], repo_root)
+
+    data = json.loads((repo_root / _DURATIONS_FILE).read_text(encoding="utf-8"))
+    assert data == {str(Path("tests") / "test_repo.py"): 1.234}
+
+
+def test_duration_cache_drops_stale_absolute_keys(tmp_path: Path) -> None:
+    from scripts.run_tests_parallel import _DURATIONS_FILE, _save_durations
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    cache = repo_root / _DURATIONS_FILE
+    cache.write_text(
+        json.dumps(
+            {
+                "/tmp/hermes/test_external.py": 1.0,
+                r"C:\Users\runner\AppData\Local\Temp\test_external.py": 2.0,
+                "tests/test_existing.py": 3.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    _save_durations([], repo_root)
+
+    data = json.loads(cache.read_text(encoding="utf-8"))
+    assert data == {"tests/test_existing.py": 3.0}
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only probe")
 @pytest.mark.live_system_guard_bypass
 def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:

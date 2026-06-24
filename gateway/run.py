@@ -1786,7 +1786,7 @@ class _DiscordNaturalKanbanDecision:
 
     should_register: bool
     risk_level: str = "R0"
-    initial_status: str = "triage"
+    initial_status: str = "ready"
     reason: str = ""
 
 
@@ -1888,7 +1888,7 @@ def _classify_discord_natural_kanban_request(text: str) -> _DiscordNaturalKanban
     return _DiscordNaturalKanbanDecision(
         True,
         risk_level="R1",
-        initial_status="triage",
+        initial_status="ready",
         reason="work_request",
     )
 
@@ -10771,7 +10771,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         if decision.initial_status == "blocked":
             return f"カンバンに登録しました: `{task_id}`（代表確認待ち）。"
-        return f"カンバンに登録しました: `{task_id}`（triage）。"
+        return f"カンバンに登録しました: `{task_id}`（実行待ち）。"
 
 
     async def _handle_kanban_command(self, event: MessageEvent) -> str:

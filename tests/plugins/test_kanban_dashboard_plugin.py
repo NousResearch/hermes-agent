@@ -71,12 +71,33 @@ def test_board_empty(client):
     # All canonical columns present (triage + the rest), each empty.
     names = [c["name"] for c in data["columns"]]
     assert set(names) == kb.VALID_STATUSES - {"archived"}
-    for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
+    for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done"):
         assert expected in names, f"missing column {expected}: {names}"
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
     assert data["assignees"] == []
     assert data["latest_event_id"] == 0
+
+
+def test_dashboard_dist_column_order_matches_backend():
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_file = repo_root / "plugins" / "kanban" / "dashboard" / "plugin_api.py"
+    dist_index = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    mod_spec = importlib.util.spec_from_file_location(
+        "hermes_dashboard_plugin_kanban_columns_test", plugin_file,
+    )
+    assert mod_spec is not None and mod_spec.loader is not None
+    mod = importlib.util.module_from_spec(mod_spec)
+    sys.modules[mod_spec.name] = mod
+    mod_spec.loader.exec_module(mod)
+
+    js = dist_index.read_text(encoding="utf-8")
+    expected_literal = (
+        'const COLUMN_ORDER = ['
+        + ", ".join(f'"{name}"' for name in mod.BOARD_COLUMNS)
+        + "];"
+    )
+    assert expected_literal in js
 
 
 # ---------------------------------------------------------------------------

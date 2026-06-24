@@ -79,7 +79,7 @@ def test_discord_natural_intake_detects_work_request():
     )
 
     assert decision.should_register is True
-    assert decision.initial_status == "triage"
+    assert decision.initial_status == "ready"
     assert decision.risk_level == "R1"
 
 
@@ -104,7 +104,7 @@ def test_discord_natural_intake_redacts_secret_like_text():
 
 
 @pytest.mark.asyncio
-async def test_maybe_register_discord_natural_task_creates_triage_card(tmp_path, monkeypatch):
+async def test_maybe_register_discord_natural_task_creates_ready_card(tmp_path, monkeypatch):
     runner = _runner(tmp_path, monkeypatch)
     event = MessageEvent(
         text="ログを確認して原因を調査してカンバンに入れて",
@@ -116,13 +116,14 @@ async def test_maybe_register_discord_natural_task_creates_triage_card(tmp_path,
 
     assert ack is not None
     assert "カンバンに登録しました" in ack
+    assert "実行待ち" in ack
     task_id = ack.split("`", 2)[1]
     conn = kb.connect(board="intake-test")
     try:
         task = kb.get_task(conn, task_id)
         assert task is not None
         assert task.assignee == "operations-orchestrator"
-        assert task.status == "triage"
+        assert task.status == "ready"
         assert task.priority == 25
         assert task.created_by == "discord-natural-intake"
         assert "Discord由来" in (task.body or "")

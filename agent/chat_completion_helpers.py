@@ -500,8 +500,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 )
             try:
                 if agent.api_mode == "anthropic_messages":
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
+                    logger.warning(
+                        "Anthropic Messages non-streaming call stale; not closing "
+                        "shared _anthropic_client from the poll thread to avoid "
+                        "#29507 TLS FD recycle corruption. Waiting for SDK timeout."
+                    )
                 else:
                     _close_request_client_once("stale_call_kill")
             except Exception:
@@ -536,11 +539,16 @@ def interruptible_api_call(agent, api_kwargs: dict):
             )
             # Force-close the in-flight worker-local HTTP connection to stop
             # token generation without poisoning the shared client used to
-            # seed future retries.
+            # seed future retries. For Anthropic Messages the SDK client is
+            # shared; closing it here would release TLS FDs from the poll
+            # thread and can resurrect #29507 (TLS bytes written into SQLite).
             try:
                 if agent.api_mode == "anthropic_messages":
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
+                    logger.warning(
+                        "Anthropic Messages call interrupted; not closing shared "
+                        "_anthropic_client from the poll thread to avoid #29507 "
+                        "TLS FD recycle corruption. Waiting for SDK timeout."
+                    )
                 else:
                     _close_request_client_once("interrupt_abort")
             except Exception:
@@ -2632,8 +2640,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             )
             try:
                 if agent.api_mode == "anthropic_messages":
-                    agent._anthropic_client.close()
-                    agent._rebuild_anthropic_client()
+                    logger.warning(
+                        "Anthropic Messages stream interrupted; not closing shared "
+                        "_anthropic_client from the poll thread to avoid #29507 "
+                        "TLS FD recycle corruption. Waiting for stream context cleanup."
+                    )
                 else:
                     _close_request_client_once("stream_interrupt_abort")
             except Exception:

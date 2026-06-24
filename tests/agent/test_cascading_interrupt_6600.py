@@ -132,3 +132,90 @@ def test_request_cancelled_token_is_request_local():
 
     with pytest.raises(httpx.RemoteProtocolError):
         cch.interruptible_api_call(agent, {"model": "x", "messages": []})
+
+
+
+def _make_anthropic_agent():
+    agent = _make_agent()
+    agent.api_mode = "anthropic_messages"
+    agent._anthropic_client = MagicMock()
+    agent._rebuild_anthropic_client = MagicMock()
+    agent._anthropic_messages_create = MagicMock()
+    return agent
+
+
+def test_anthropic_non_streaming_interrupt_does_not_close_shared_client():
+    """#29507: interrupt polling must not close the shared Anthropic SDK client.
+
+    The shared client may be in use on the worker thread. Closing it from the
+    poll thread can release a TLS FD that SQLite later reuses, letting the SSL
+    BIO write a TLS record into state.db's header.
+    """
+    agent = _make_anthropic_agent()
+
+    def _create(_api_kwargs):
+        agent._interrupt_requested = True
+        time.sleep(0.3)
+        raise httpx.RemoteProtocolError("forced close would have happened")
+
+    agent._anthropic_messages_create.side_effect = _create
+
+    t0 = time.time()
+    with pytest.raises(InterruptedError):
+        cch.interruptible_api_call(agent, {"model": "x", "messages": []})
+    elapsed = time.time() - t0
+
+    assert elapsed < 3.0, f"interrupt took {elapsed:.1f}s — should be near-instant"
+    agent._anthropic_client.close.assert_not_called()
+    agent._rebuild_anthropic_client.assert_not_called()
+
+
+def test_anthropic_non_streaming_stale_does_not_close_shared_client(monkeypatch):
+    """#29507: stale-call polling must not close/rebuild shared Anthropic client."""
+    agent = _make_anthropic_agent()
+    agent._compute_non_stream_stale_timeout.return_value = 0.05
+    agent._codex_silent_hang_hint = MagicMock(return_value=None)
+
+    def _create(_api_kwargs):
+        time.sleep(2.5)
+        return object()
+
+    agent._anthropic_messages_create.side_effect = _create
+
+    with pytest.raises(TimeoutError):
+        cch.interruptible_api_call(agent, {"model": "x", "messages": []})
+
+    agent._anthropic_client.close.assert_not_called()
+    agent._rebuild_anthropic_client.assert_not_called()
+
+
+def test_anthropic_streaming_interrupt_does_not_close_shared_client(monkeypatch):
+    """#29507: streaming interrupt must not close/rebuild shared Anthropic client."""
+    agent = _make_anthropic_agent()
+    agent._compute_stream_stale_timeout.return_value = 5.0
+    agent._invoke_bedrock_stream = MagicMock()
+    agent.provider = "anthropic"
+
+    class _Chunk:
+        type = "content_block_delta"
+        delta = types.SimpleNamespace(text="hello")
+
+    class _Stream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def __iter__(self):
+            agent._interrupt_requested = True
+            time.sleep(0.3)
+            yield _Chunk()
+
+    agent._anthropic_client.messages.stream.return_value = _Stream()
+
+    with pytest.raises(InterruptedError):
+        cch.interruptible_streaming_api_call(agent, {"model": "x", "messages": []})
+
+    agent._anthropic_client.close.assert_not_called()
+    agent._rebuild_anthropic_client.assert_not_called()

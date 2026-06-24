@@ -28,6 +28,7 @@ Override via ``HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY`` /
 
 from __future__ import annotations
 
+import math
 import os
 
 try:
@@ -58,7 +59,7 @@ def platform_httpx_limits() -> "httpx.Limits | None":
             val = float(raw)
         except (TypeError, ValueError):
             return default
-        return val if val > 0 else default
+        return val if math.isfinite(val) and val > 0 else default
 
     def _env_int(name: str, default: int) -> int:
         raw = os.environ.get(name, "").strip()

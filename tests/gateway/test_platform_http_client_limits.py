@@ -71,6 +71,18 @@ def test_env_override_rejects_garbage(monkeypatch):
     assert limits.max_keepalive_connections > 0
 
 
+@pytest.mark.parametrize("raw_value", ["inf", "nan"])
+def test_env_override_rejects_non_finite_keepalive_expiry(monkeypatch, raw_value):
+    monkeypatch.setenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", raw_value)
+    from gateway.platforms._http_client_limits import (
+        _DEFAULT_KEEPALIVE_EXPIRY_S,
+        platform_httpx_limits,
+    )
+
+    limits = platform_httpx_limits()
+    assert limits.keepalive_expiry == _DEFAULT_KEEPALIVE_EXPIRY_S
+
+
 def test_helper_is_importable_from_every_platform_that_uses_it():
     """Every persistent-httpx-client platform adapter imports this helper.
     If any of those modules fails to import, this test surfaces it before

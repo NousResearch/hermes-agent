@@ -370,13 +370,17 @@ const shortModelLabel = (model: string) =>
   model
     .split('/')
     .pop()!
+    // Drop a synthetic "-fast" suffix: fast mode is shown by the dedicated badge in
+    // modelLabel(), so keeping it in the model name double-prints it
+    // ("opus 4.8 fast … fast"). The base model is the display name.
+    .replace(/[-_]fast$/i, '')
     .replace(/^claude[-_]/, '')
     .replace(/^anthropic[-_]/, '')
     .replace(/[-_]/g, ' ')
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
 
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
+export const modelLabel = (model: string, effort?: string, fast?: boolean) =>
   [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {

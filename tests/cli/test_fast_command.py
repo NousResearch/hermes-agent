@@ -128,27 +128,28 @@ class TestPriorityProcessingModels(unittest.TestCase):
             assert model_supports_fast_mode(model), f"{model} should support fast mode"
 
     def test_all_anthropic_models_supported(self):
-        """The speed=fast parameter is gated to Opus 4.6.
+        """Fast mode spans the opus/sonnet/haiku 4.x families (endpoint-aware).
 
-        Sending speed=fast to Opus 4.7, Sonnet, or Haiku returns HTTP 400.
-        (Opus 4.8's fast offering is a separate ``…-fast`` model id selected
-        via the model field, not this parameter — see the adapter test.)
+        The model-level ``model_supports_fast_mode`` is permissive across these
+        families; the *adapter* makes the final per-endpoint call (Copilot accepts
+        speed=fast on 4.x; native Anthropic still 400s on 4.7/4.8 and is refused there).
         """
         from hermes_cli.models import model_supports_fast_mode
 
-        # Supported: Opus 4.6 in any form
         supported = [
             "claude-opus-4-6", "claude-opus-4.6",
             "anthropic/claude-opus-4-6", "anthropic/claude-opus-4.6",
+            "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8",
+            "claude-opus-4.8-fast",
+            "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-4",
+            "claude-haiku-4-5",
         ]
         for model in supported:
             assert model_supports_fast_mode(model), f"{model} should support fast mode"
 
-        # Unsupported per Anthropic API: Opus 4.7/4.8, Sonnet, Haiku
+        # Not a 4.x Claude fast family → excluded
         unsupported = [
-            "claude-opus-4-7", "claude-opus-4-8", "claude-opus-4.8",
-            "claude-sonnet-4-6", "claude-sonnet-4.6", "claude-sonnet-4",
-            "claude-haiku-4-5", "claude-3-5-haiku",
+            "claude-3-5-haiku", "claude-3-5-sonnet", "claude-2",
         ]
         for model in unsupported:
             assert not model_supports_fast_mode(model), (
@@ -274,21 +275,21 @@ class TestAnthropicFastMode(unittest.TestCase):
         assert model_supports_fast_mode("anthropic/claude-opus-4.6") is True
 
     def test_anthropic_non_opus46_models_excluded(self):
-        """The speed=fast parameter is gated to Opus 4.6 — others excluded.
+        """Only the opus/sonnet/haiku 4.x families are fast-capable.
 
-        Per https://platform.claude.com/docs/en/build-with-claude/fast-mode,
-        sending speed=fast to Opus 4.7, Sonnet, or Haiku returns HTTP 400.
-        Opus 4.8 uses a separate ``…-fast`` model id, not this parameter.
+        Older Claude families (3.x, 2) have no fast offering on any endpoint.
+        The 4.x families are now permitted at the model level; the adapter's
+        endpoint-aware gate decides whether the param actually ships.
         """
         from hermes_cli.models import model_supports_fast_mode
 
-        assert model_supports_fast_mode("claude-sonnet-4-6") is False
-        assert model_supports_fast_mode("claude-sonnet-4.6") is False
-        assert model_supports_fast_mode("claude-haiku-4-5") is False
-        assert model_supports_fast_mode("claude-opus-4-7") is False
-        assert model_supports_fast_mode("claude-opus-4-8") is False
-        assert model_supports_fast_mode("anthropic/claude-sonnet-4.6") is False
-        assert model_supports_fast_mode("anthropic/claude-opus-4-7") is False
+        assert model_supports_fast_mode("claude-3-5-sonnet") is False
+        assert model_supports_fast_mode("claude-3-5-haiku") is False
+        assert model_supports_fast_mode("claude-2") is False
+        # 4.x families now permitted at the model level (adapter gates per-endpoint)
+        assert model_supports_fast_mode("claude-sonnet-4-6") is True
+        assert model_supports_fast_mode("claude-opus-4-8") is True
+        assert model_supports_fast_mode("claude-haiku-4-5") is True
 
     def test_non_claude_models_not_anthropic_fast(self):
         """Non-Claude models should not be treated as Anthropic fast-mode."""
@@ -314,18 +315,27 @@ class TestAnthropicFastMode(unittest.TestCase):
         result = resolve_fast_mode_overrides("anthropic/claude-opus-4.6")
         assert result == {"speed": "fast"}
 
-    def test_resolve_overrides_returns_none_for_unsupported_claude(self):
-        """Opus 4.7/4.8 and other Claude models don't take the speed param.
+    def test_resolve_overrides_speed_for_fast_capable_claude(self):
+        """Fast mode now spans the opus/sonnet/haiku 4.x families (endpoint-aware).
 
-        The speed=fast parameter is Opus 4.6 only (Opus 4.8 uses a separate
-        ``…-fast`` model id instead).
+        The model-level helper is permissive — it returns {"speed":"fast"} for any
+        fast-capable Claude family because the *adapter* makes the final per-endpoint
+        call (Copilot accepts it on 4.x; native Anthropic still 400s on 4.7/4.8 and is
+        refused there by ``anthropic_adapter._supports_fast_mode``).
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
-        assert resolve_fast_mode_overrides("claude-opus-4-7") is None
-        assert resolve_fast_mode_overrides("claude-opus-4-8") is None
-        assert resolve_fast_mode_overrides("claude-sonnet-4-6") is None
-        assert resolve_fast_mode_overrides("claude-haiku-4-5") is None
+        assert resolve_fast_mode_overrides("claude-opus-4-8") == {"speed": "fast"}
+        assert resolve_fast_mode_overrides("claude-opus-4.8-fast") == {"speed": "fast"}
+        assert resolve_fast_mode_overrides("claude-sonnet-4-6") == {"speed": "fast"}
+        assert resolve_fast_mode_overrides("claude-haiku-4-5") == {"speed": "fast"}
+
+    def test_resolve_overrides_returns_none_for_non_fast_claude(self):
+        """Claude families with no 4.x fast offering get no speed override."""
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        assert resolve_fast_mode_overrides("claude-3-5-sonnet") is None
+        assert resolve_fast_mode_overrides("claude-2") is None
 
     def test_resolve_overrides_returns_service_tier_for_openai(self):
         """OpenAI models should still get service_tier, not speed."""
@@ -335,22 +345,22 @@ class TestAnthropicFastMode(unittest.TestCase):
         assert result == {"service_tier": "priority"}
 
     def test_is_anthropic_fast_model(self):
-        """The speed=fast parameter is Opus 4.6 only — other Claude excluded."""
+        """Fast mode spans opus/sonnet/haiku 4.x (endpoint-aware; adapter gates final)."""
         from hermes_cli.models import _is_anthropic_fast_model
 
-        # Supported: Opus 4.6 in any form
+        # Supported: opus / sonnet / haiku 4.x in any form, incl the synthetic -fast id
         assert _is_anthropic_fast_model("claude-opus-4-6") is True
         assert _is_anthropic_fast_model("claude-opus-4.6") is True
         assert _is_anthropic_fast_model("anthropic/claude-opus-4-6") is True
         assert _is_anthropic_fast_model("claude-opus-4.6:fast") is True
+        assert _is_anthropic_fast_model("claude-opus-4-7") is True
+        assert _is_anthropic_fast_model("claude-opus-4-8") is True
+        assert _is_anthropic_fast_model("claude-opus-4.8-fast") is True
+        assert _is_anthropic_fast_model("claude-sonnet-4-6") is True
+        assert _is_anthropic_fast_model("claude-haiku-4-5") is True
 
-        # Unsupported — would 400 (4.7) or uses a separate model id (4.8)
-        assert _is_anthropic_fast_model("claude-opus-4-7") is False
-        assert _is_anthropic_fast_model("claude-opus-4-8") is False
-        assert _is_anthropic_fast_model("claude-sonnet-4-6") is False
-        assert _is_anthropic_fast_model("claude-haiku-4-5") is False
-
-        # Non-Claude
+        # Unsupported — non-4.x Claude and non-Claude
+        assert _is_anthropic_fast_model("claude-3-5-sonnet") is False
         assert _is_anthropic_fast_model("gpt-5.4") is False
         assert _is_anthropic_fast_model("") is False
 
@@ -362,23 +372,32 @@ class TestAnthropicFastMode(unittest.TestCase):
         )
         assert cli_mod.HermesCLI._fast_command_available(stub) is True
 
-    def test_fast_command_hidden_for_anthropic_sonnet(self):
-        """Sonnet doesn't support fast mode (Opus 4.6 only) — /fast must be hidden."""
+    def test_fast_command_shown_for_anthropic_sonnet(self):
+        """Sonnet 4.x is fast-capable (Copilot endpoint) — /fast must be available."""
         cli_mod = _import_cli()
         stub = SimpleNamespace(
             provider="anthropic", requested_provider="anthropic",
             model="claude-sonnet-4-6", agent=None,
         )
+        assert cli_mod.HermesCLI._fast_command_available(stub) is True
+
+    def test_fast_command_hidden_for_legacy_claude(self):
+        """Pre-4.x Claude (3.x/2) has no fast offering — /fast must hide."""
+        cli_mod = _import_cli()
+        stub = SimpleNamespace(
+            provider="anthropic", requested_provider="anthropic",
+            model="claude-3-5-sonnet", agent=None,
+        )
         assert cli_mod.HermesCLI._fast_command_available(stub) is False
 
-    def test_fast_command_hidden_for_anthropic_opus_47(self):
-        """Opus 4.7 doesn't take the speed=fast parameter — /fast must hide."""
+    def test_fast_command_shown_for_anthropic_opus_47(self):
+        """Opus 4.7/4.8 are fast-capable on the Copilot endpoint — /fast available."""
         cli_mod = _import_cli()
         stub = SimpleNamespace(
             provider="anthropic", requested_provider="anthropic",
             model="claude-opus-4-7", agent=None,
         )
-        assert cli_mod.HermesCLI._fast_command_available(stub) is False
+        assert cli_mod.HermesCLI._fast_command_available(stub) is True
 
     def test_fast_command_hidden_for_non_claude_non_openai(self):
         """Non-Claude, non-OpenAI models should not expose /fast."""
@@ -428,6 +447,34 @@ class TestAnthropicFastModeAdapter(unittest.TestCase):
         assert "speed" not in kwargs
         assert "extra_headers" in kwargs
         assert _FAST_MODE_BETA in kwargs["extra_headers"].get("anthropic-beta", "")
+
+    def test_fast_suffix_stripped_from_wire_model(self):
+        # Regression: a `-fast` model id is the Fast Mode KNOB, not a real model.
+        # The wire `model` MUST be the base id (sending `...-fast` 400s "model not
+        # supported"); the speed param is attached separately. Covers the bug
+        # where selecting claude-opus-4.8-fast in the TUI sent the literal
+        # `-fast` id and Copilot's /v1/messages rejected it.
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        for mid in (
+            "claude-opus-4.8-fast",
+            "claude-sonnet-4.6-fast",
+            "claude-haiku-4.5-fast",
+        ):
+            kwargs = build_anthropic_kwargs(
+                model=mid,
+                messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+                tools=None,
+                max_tokens=None,
+                reasoning_config=None,
+                base_url="https://api.githubcopilot.com",
+                fast_mode=True,
+            )
+            self.assertNotIn("-fast", kwargs["model"], f"{mid}: wire model kept -fast")
+            self.assertEqual(
+                kwargs.get("extra_body", {}).get("speed"), "fast",
+                f"{mid}: speed knob not attached",
+            )
 
     def test_fast_mode_off_no_speed(self):
         from agent.anthropic_adapter import build_anthropic_kwargs
@@ -483,3 +530,80 @@ class TestConfigDefault(unittest.TestCase):
         agent = DEFAULT_CONFIG.get("agent", {})
         self.assertIn("service_tier", agent)
         self.assertEqual(agent["service_tier"], "")
+
+
+class TestSyntheticFastVariant(unittest.TestCase):
+    """The synthetic ``…-fast`` copilot model id: a UI/selection convenience that
+    auto-attaches the speed=fast knob and normalizes to the base model on the wire."""
+
+    def test_normalize_strips_fast_suffix(self):
+        from hermes_cli.models import normalize_copilot_model_id
+
+        catalog = [{"id": "claude-opus-4.8"}, {"id": "claude-sonnet-4.6"}]
+        self.assertEqual(
+            normalize_copilot_model_id("claude-opus-4.8-fast", catalog=catalog),
+            "claude-opus-4.8",
+        )
+        self.assertEqual(
+            normalize_copilot_model_id("copilot/claude-sonnet-4.6-fast", catalog=catalog),
+            "claude-sonnet-4.6",
+        )
+
+    def test_fast_variant_resolves_speed_override(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        self.assertEqual(
+            resolve_fast_mode_overrides("claude-opus-4.8-fast"), {"speed": "fast"}
+        )
+
+    def test_catalog_injects_fast_variants(self):
+        # Exercise the synthetic "-fast" injection inside fetch_github_model_catalog
+        # by stubbing the HTTP fetch so the catalog returns our base items, then
+        # asserting the fast companion is appended for the claude model only.
+        import io
+        import json as _json
+        from contextlib import contextmanager
+        import hermes_cli.models as M
+
+        base_items = [
+            {"id": "claude-opus-4.8", "name": "Claude Opus 4.8",
+             "model_picker_enabled": True, "capabilities": {"type": "chat"}},
+            {"id": "gpt-5", "name": "GPT-5",
+             "model_picker_enabled": True, "capabilities": {"type": "chat"}},
+        ]
+
+        payload = _json.dumps({"data": base_items}).encode()
+
+        @contextmanager
+        def _fake_urlopen(req, timeout=None):
+            yield io.BytesIO(payload)
+
+        with patch.object(M.urllib.request, "urlopen", _fake_urlopen):
+            cat = M.fetch_github_model_catalog(api_key="x")
+        ids = [c["id"] for c in (cat or [])]
+        # the fast variant for the claude model is injected; gpt-5 gets none
+        self.assertIn("claude-opus-4.8-fast", ids)
+        self.assertNotIn("gpt-5-fast", ids)
+
+    def test_adapter_attaches_speed_for_copilot_opus48(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4.8",
+            messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            tools=None, max_tokens=None, reasoning_config=None,
+            base_url="https://api.githubcopilot.com", fast_mode=True,
+        )
+        self.assertEqual(kwargs.get("extra_body", {}).get("speed"), "fast")
+
+    def test_adapter_refuses_speed_for_native_opus48(self):
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4.8",
+            messages=[{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+            tools=None, max_tokens=None, reasoning_config=None,
+            base_url="https://api.anthropic.com", fast_mode=True,
+        )
+        # native Anthropic still 400s on 4.8 fast → adapter must NOT attach it
+        self.assertIsNone(kwargs.get("extra_body", {}).get("speed"))

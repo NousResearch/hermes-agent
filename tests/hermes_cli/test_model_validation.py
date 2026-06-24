@@ -320,7 +320,9 @@ class TestFetchApiModels:
             probe = probe_api_models("gh-token", "https://api.githubcopilot.com")
 
         assert mock_urlopen.call_args[0][0].full_url == "https://api.githubcopilot.com/models"
-        assert probe["models"] == ["gpt-5.4", "claude-sonnet-4.6"]
+        # claude-sonnet-4.6 also surfaces its synthetic "-fast" variant (Anthropic Fast
+        # Mode is selectable directly from the catalog); gpt-5.4 gets no fast variant.
+        assert probe["models"] == ["gpt-5.4", "claude-sonnet-4.6", "claude-sonnet-4.6-fast"]
         assert probe["resolved_base_url"] == "https://api.githubcopilot.com"
         assert probe["used_fallback"] is False
 

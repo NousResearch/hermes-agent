@@ -2055,20 +2055,25 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
     """Return True if the model accepts the Anthropic Fast Mode ``speed`` param.
 
-    This gates the *speed=fast request parameter*, which Anthropic supports on
-    Opus 4.6 only (Opus 4.7 explicitly 400s). It is deliberately NOT a general
-    "is this a fast model" check: for Opus 4.8 the fast offering is a SEPARATE
-    model id (``…-opus-4.8-fast``) selected via the model field, not the speed
-    parameter — see ``agent.anthropic_adapter._supports_fast_mode`` and its
-    test. Keep this in lock-step with that adapter gate so the UI never shows a
-    Fast toggle that the runtime would silently drop.
+    Two routes return True:
+      1. A ``-fast`` id (e.g. ``claude-opus-4.8-fast``) — the synthetic fast variant
+         Hermes exposes; selecting it MEANS "send speed=fast on the base model".
+      2. A base claude model on an endpoint that accepts the speed param. Native
+         Anthropic currently honors speed=fast on Opus 4.6 only (4.7/4.8 400 there);
+         but **Copilot's /v1/messages proxy accepts speed=fast on opus/sonnet/haiku 4.x**
+         (empirically verified — it passes the param through to the upstream). The
+         per-endpoint gate in ``anthropic_adapter.build_anthropic_kwargs`` makes the
+         final call, so this stays permissive for claude-* and lets the adapter refuse
+         where the endpoint truly rejects it.
     """
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
+    if base.endswith("-fast"):
+        base = base[:-5]
     if not base.startswith("claude-"):
         return False
-    # Only Opus 4.6 supports the speed=fast parameter at present.
-    return "opus-4-6" in base or "opus-4.6" in base
+    # opus / sonnet / haiku 4.x families support fast mode on at least one endpoint.
+    return any(fam in base for fam in ("opus-4", "sonnet-4", "haiku-4"))
 
 
 def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
@@ -2807,6 +2812,39 @@ def fetch_github_model_catalog(
                         continue
                     seen_ids.add(model_id)
                     models.append(item)
+
+                # Inject synthetic "-fast" companion entries for fast-capable
+                # Claude models so the Anthropic Fast Mode variant is selectable
+                # directly from /models (the way OpenRouter exposes e.g.
+                # "claude-opus-4.8-fast"). These are NOT real catalog ids:
+                # selecting one normalizes back to the base model on the wire
+                # (normalize_copilot_model_id strips "-fast") and auto-attaches
+                # extra_body.speed="fast" (the ~2.5x throughput knob). Copilot's
+                # /v1/messages proxy accepts speed=fast on opus/sonnet/haiku 4.x.
+                # Gated off by HERMES_COPILOT_HIDE_FAST_VARIANTS.
+                if os.environ.get("HERMES_COPILOT_HIDE_FAST_VARIANTS") not in (
+                    "1",
+                    "true",
+                    "yes",
+                ):
+                    for item in list(models):
+                        base_id = str(item.get("id") or "").strip()
+                        low = base_id.lower()
+                        if (
+                            low.startswith("claude-")
+                            and any(fam in low for fam in ("opus-4", "sonnet-4", "haiku-4"))
+                            and not low.endswith("-fast")
+                        ):
+                            fast_id = f"{base_id}-fast"
+                            if fast_id not in seen_ids:
+                                fast_item = dict(item)
+                                fast_item["id"] = fast_id
+                                name = str(item.get("name") or base_id)
+                                fast_item["name"] = f"{name} (Fast)"
+                                fast_item["model_picker_enabled"] = True
+                                models.append(fast_item)
+                                seen_ids.add(fast_id)
+
                 if models:
                     return models
         except Exception:
@@ -3176,6 +3214,15 @@ def normalize_copilot_model_id(
         candidates.append(raw[:-5])
     if raw.endswith("-chat"):
         candidates.append(raw[:-5])
+    # "-fast" is the Anthropic Fast Mode KNOB (extra_body speed=fast), NOT a real
+    # catalog id — copilot's /models has no "...-fast" entry. Strip it so the wire
+    # model resolves to the real base id; the speed=fast param is attached separately
+    # by the anthropic adapter (gated on the request_overrides the -fast id sets).
+    if raw.endswith("-fast"):
+        base_fast = raw[:-5]
+        candidates.append(base_fast)
+        if "/" in base_fast:
+            candidates.append(base_fast.split("/", 1)[1].strip())
 
     seen: set[str] = set()
     for candidate in candidates:

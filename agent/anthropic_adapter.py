@@ -289,15 +289,60 @@ def _forbids_sampling_params(model: str) -> bool:
     return not any(v in m for v in _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
 
 
-def _supports_fast_mode(model: str) -> bool:
+def _is_copilot_base_url(base_url: Optional[str]) -> bool:
+    """True when ``base_url`` points at GitHub Copilot's Anthropic proxy.
+
+    Copilot's ``api.githubcopilot.com`` /v1/messages endpoint accepts a few
+    Anthropic params (notably ``speed=fast``) on model families that native
+    Anthropic still 400s, so several gates branch on this.
+    """
+    if not base_url:
+        return False
+    try:
+        from urllib.parse import urlparse
+
+        host = (urlparse(base_url).hostname or "").lower()
+    except Exception:
+        return False
+    return host == "api.githubcopilot.com"
+
+
+def _strip_fast_suffix(model: str) -> str:
+    """Strip a trailing ``-fast`` (the synthetic fast-variant id) so the BASE
+    model id goes on the wire.
+
+    ``-fast`` is the Anthropic Fast Mode KNOB (extra_body.speed="fast"), NOT a
+    real model id — neither native Anthropic nor Copilot's /v1/messages has a
+    ``...-fast`` model, so sending it verbatim 400s "model not supported". The
+    speed param is attached separately (see the fast-mode block below), so here
+    we only need the base id. A vendor prefix (``copilot/``) is preserved.
+    """
+    raw = model or ""
+    if raw.endswith("-fast"):
+        return raw[:-5]
+    return raw
+
+
+def _supports_fast_mode(model: str, base_url: Optional[str] = None) -> bool:
     """Return True for models that support Anthropic Fast Mode (speed=fast).
 
-    Per Anthropic docs, fast mode is currently supported on Opus 4.6 only.
-    Sending ``speed: "fast"`` to any other Claude model (including Opus 4.7)
-    returns HTTP 400. This guard prevents silently 400'ing when stale config
-    or older callers leave fast mode enabled across a model upgrade.
+    Endpoint-aware:
+      * **Native Anthropic** (``api.anthropic.com``): per Anthropic docs, fast mode is
+        currently Opus 4.6 only. Sending ``speed:"fast"`` to other Claude models 400s.
+      * **GitHub Copilot** (``api.githubcopilot.com/v1/messages``): the proxy accepts
+        ``speed:"fast"`` on the opus/sonnet/haiku 4.x families and passes it upstream
+        (empirically verified on opus-4.8 — returns clean, no 400). So fast mode is
+        unlocked for those on the Copilot endpoint.
+      * **Other third-party proxies**: conservatively keep the native rule (4.6-only),
+        since an unknown proxy may reject the unknown param/beta header.
+
+    The ``-fast`` suffix (the synthetic fast variant id) is normalized away before the
+    base check by the time we reach here.
     """
-    return any(v in model for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
+    m = _strip_fast_suffix((model or "").lower())
+    if _is_copilot_base_url(base_url):
+        return any(fam in m for fam in ("opus-4", "sonnet-4", "haiku-4"))
+    return any(v in m for v in _FAST_MODE_SUPPORTED_SUBSTRINGS)
 
 
 # Beta headers for enhanced features that are safe on ordinary/native Anthropic
@@ -2463,7 +2508,7 @@ def build_anthropic_kwargs(
                             pass  # tool_result uses ID, not name
 
     kwargs: Dict[str, Any] = {
-        "model": model,
+        "model": _strip_fast_suffix(model),
         "messages": anthropic_messages,
         "max_tokens": effective_max_tokens,
     }
@@ -2545,12 +2590,19 @@ def build_anthropic_kwargs(
     # Adds extra_body.speed="fast" + the fast-mode beta header for ~2.5x
     # output speed. Per Anthropic docs, fast mode is only supported on
     # Opus 4.6 — Opus 4.7 and other models 400 on the speed parameter.
-    # Only for native Anthropic endpoints — third-party providers would
-    # reject the unknown beta header and speed parameter.
+    # Native Anthropic: only for native endpoints (Opus 4.6). Copilot's /v1/messages
+    # proxy ALSO accepts speed=fast on opus/sonnet/haiku 4.x and passes it upstream
+    # (empirically verified), so allow it there too. _supports_fast_mode is now
+    # endpoint-aware and makes the per-endpoint call; other unknown third-party proxies
+    # still get refused (they may reject the unknown beta header + param).
+    _fast_endpoint_ok = (
+        not _is_third_party_anthropic_endpoint(base_url)
+        or _is_copilot_base_url(base_url)
+    )
     if (
         fast_mode
-        and not _is_third_party_anthropic_endpoint(base_url)
-        and _supports_fast_mode(model)
+        and _fast_endpoint_ok
+        and _supports_fast_mode(model, base_url)
     ):
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
         # Build extra_headers with ALL applicable betas (the per-request

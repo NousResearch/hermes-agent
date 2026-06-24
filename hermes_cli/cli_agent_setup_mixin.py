@@ -204,7 +204,12 @@ class CLIAgentSetupMixin:
         }
 
         service_tier = getattr(self, "service_tier", None)
-        if not service_tier:
+        # A synthetic "-fast" model id is itself an opt-in to fast mode: selecting
+        # e.g. ``copilot/claude-opus-4.8-fast`` MEANS speed=fast on the base model,
+        # even if the /fast toggle was never flipped. So treat a -fast id as an
+        # implicit fast toggle.
+        model_is_fast_variant = str(route.get("model") or "").strip().lower().endswith("-fast")
+        if not service_tier and not model_is_fast_variant:
             route["request_overrides"] = None
             return route
 

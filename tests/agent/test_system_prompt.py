@@ -57,14 +57,35 @@ class TestContextFileCwd:
         assert _captured_context_cwd(_make_agent()) == tmp_path
 
 
-def _stable_prompt(agent):
+def _stable_prompt(agent, *, preferences=""):
     with (
         patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.load_preferences_md", return_value=preferences),
         patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value=""),
     ):
         return build_system_prompt_parts(agent)["stable"]
+
+
+class TestPreferencesInjection:
+    def test_injected_into_stable_tier(self):
+        agent = _make_agent(load_soul_identity=True, skip_context_files=True)
+        stable = _stable_prompt(agent, preferences="PREFER_MARKER terse replies")
+        assert "PREFER_MARKER terse replies" in stable
+        assert "Earned preferences" in stable
+
+    def test_absent_when_empty_is_clean_noop(self):
+        agent = _make_agent(load_soul_identity=True, skip_context_files=True)
+        stable = _stable_prompt(agent, preferences="")
+        assert "Earned preferences" not in stable
+
+    def test_skipped_when_context_files_skipped(self):
+        # Delegation/subagent shape: no soul identity and context files skipped
+        # (load_soul_identity=False and skip_context_files=True gates it out).
+        agent = _make_agent(load_soul_identity=False, skip_context_files=True)
+        stable = _stable_prompt(agent, preferences="SHOULD_NOT_APPEAR")
+        assert "SHOULD_NOT_APPEAR" not in stable
 
 
 class TestCodingContextBlock:

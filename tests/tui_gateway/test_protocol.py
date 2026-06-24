@@ -734,6 +734,100 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
     assert all(sid == winner for sid in server._sessions)
 
 
+def test_session_resume_reuses_live_agent_after_compression_rotation(server, monkeypatch):
+    """Resume must match the live agent's current session_id, not stale session_key."""
+
+    target = "20260409_020202_child"
+    stale_parent = "20260409_010101_parent"
+    sid = "live-rotated"
+    server._sessions[sid] = {
+        "agent": types.SimpleNamespace(model="test/model", session_id=target),
+        "created_at": 123.0,
+        "display_history_prefix": [],
+        "history": [{"role": "assistant", "content": "live child"}],
+        "history_lock": threading.RLock(),
+        "last_active": 123.0,
+        "running": False,
+        "session_key": stale_parent,
+        "transport": server._stdio_transport,
+    }
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, _target):
+            return target
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    result = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100},
+        }
+    )
+
+    assert "error" not in result
+    assert result["result"]["session_id"] == sid
+    assert result["result"]["session_key"] == target
+    assert len(server._sessions) == 1
+
+
+def test_sync_session_key_after_compress_reanchors_active_session_lease(
+    server, monkeypatch, tmp_path
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from hermes_cli.active_sessions import (
+        active_session_registry_snapshot,
+        try_acquire_active_session,
+    )
+
+    lease, message = try_acquire_active_session(
+        session_id="session-old",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+        metadata={"live_session_id": "ui-1"},
+    )
+    assert message is None
+    assert lease is not None
+
+    session = {
+        "active_session_lease": lease,
+        "agent": types.SimpleNamespace(session_id="session-new"),
+        "session_key": "session-old",
+    }
+    fake_approval = types.SimpleNamespace(
+        disable_session_yolo=lambda *_args, **_kwargs: None,
+        enable_session_yolo=lambda *_args, **_kwargs: None,
+        is_session_yolo_enabled=lambda *_args, **_kwargs: False,
+        register_gateway_notify=lambda *_args, **_kwargs: None,
+        unregister_gateway_notify=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args, **_kwargs: None)
+
+    with patch.dict(sys.modules, {"tools.approval": fake_approval}):
+        server._sync_session_key_after_compress("ui-1", session)
+
+    snapshot = active_session_registry_snapshot()
+    assert session["session_key"] == "session-new"
+    assert lease.session_id == "session-new"
+    assert [entry["session_id"] for entry in snapshot] == ["session-new"]
+    lease.release()
+
+
 def test_session_resume_live_payload_uses_current_history_with_ancestors(server, monkeypatch):
     """Live resume should not reuse a stale ancestor-inclusive snapshot."""
 

@@ -1354,6 +1354,32 @@ class CLICommandsMixin:
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
 
+    def _handle_learn_command(self, cmd: str):
+        """Handle /learn — distill a reusable skill from anything the user describes.
+
+        Open-ended: the argument is free text describing the source(s) — a
+        directory, a URL, "what we just did", pasted notes. We build a
+        standards-guided prompt and inject it onto the agent's input queue; the
+        live agent gathers the material with the tools it already has and
+        authors the skill via ``skill_manage``. No engine, no model-tool
+        footprint, works on any terminal backend.
+        """
+        from agent.learn_prompt import build_learn_prompt
+
+        # Everything after the command word is the open-ended request.
+        parts = cmd.strip().split(None, 1)
+        user_request = parts[1].strip() if len(parts) > 1 else ""
+
+        msg = build_learn_prompt(user_request)
+        if user_request:
+            print("\n⚡ Learning a skill from what you described...")
+        else:
+            print("\n⚡ Learning a skill from this conversation...")
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+        else:  # pragma: no cover - defensive (no live input loop)
+            print("  /learn needs an active chat session to run.")
+
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand

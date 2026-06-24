@@ -2204,6 +2204,43 @@ class TelegramAdapter(BasePlatformAdapter):
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
 
+            # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's
+            # HTTPXRequest builds the underlying httpx.AsyncClient with
+            # `limits = httpx.Limits(max_connections=connection_pool_size)`
+            # and *no* keepalive tuning, so httpx's default
+            # keepalive_expiry=5.0 applies. Behind an HTTP proxy (Cloudflare
+            # Warp etc.) a peer-initiated FIN can sit in CLOSE_WAIT longer
+            # than that, leaking fds in the general request pool (_request[1])
+            # which _drain_polling_connections never resets. Wire the shared
+            # platform_httpx_limits() helper into the httpx client so idle
+            # keepalive sockets drain aggressively, while preserving PTB's
+            # max_connections (= connection_pool_size). httpx_kwargs is spread
+            # last into PTB's client kwargs, so `limits` here wins.
+            from gateway.platforms._http_client_limits import platform_httpx_limits
+
+            _base_limits = platform_httpx_limits()
+            if _base_limits is not None:
+                import httpx as _httpx
+
+                _pool_limits = _httpx.Limits(
+                    max_connections=request_kwargs["connection_pool_size"],
+                    max_keepalive_connections=_base_limits.max_keepalive_connections,
+                    keepalive_expiry=_base_limits.keepalive_expiry,
+                )
+            else:  # pragma: no cover — httpx always present alongside PTB
+                _pool_limits = None
+
+            def _with_limits(httpx_kwargs: Optional[dict] = None) -> dict:
+                """Merge tuned keepalive limits into httpx client kwargs.
+
+                A caller-supplied ``limits`` (none today) is left untouched;
+                otherwise the CLOSE_WAIT-safe limits are injected.
+                """
+                kwargs = dict(httpx_kwargs or {})
+                if _pool_limits is not None and "limits" not in kwargs:
+                    kwargs["limits"] = _pool_limits
+                return kwargs
+
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
             if not fallback_ips:
@@ -2226,21 +2263,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 # polling reconnect + bot API bootstrap/delete_webhook calls.
                 request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs=_with_limits(
+                        {"transport": TelegramFallbackTransport(fallback_ips)}
+                    ),
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs=_with_limits(
+                        {"transport": TelegramFallbackTransport(fallback_ips)}
+                    ),
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                request = HTTPXRequest(
+                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
+                )
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
+                )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-                request = HTTPXRequest(**request_kwargs)
-                get_updates_request = HTTPXRequest(**request_kwargs)
+                request = HTTPXRequest(**request_kwargs, httpx_kwargs=_with_limits())
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs, httpx_kwargs=_with_limits()
+                )
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()

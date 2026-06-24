@@ -34,6 +34,29 @@ from agent.model_metadata import estimate_request_tokens_rough
 logger = logging.getLogger(__name__)
 
 
+def _should_run_preflight_estimate(
+    messages: List[Dict[str, Any]],
+    protect_first_n: int,
+    protect_last_n: int,
+    threshold_tokens: int,
+) -> bool:
+    """Cheap gate for the (expensive) full preflight token estimate.
+
+    Returns True when either:
+      (a) message count exceeds the protected ranges (the historical gate), or
+      (b) a char-based estimate already crosses the configured threshold —
+          the few-but-huge case from issue #27405 that the count-only gate
+          would silently skip.
+
+    The downstream estimator remains authoritative; this is just a hint.
+    """
+    if len(messages) > protect_first_n + protect_last_n + 1:
+        return True
+    approx_chars = sum(len(str(m.get("content", "") or "")) for m in messages)
+    approx_tokens = approx_chars // 4
+    return approx_tokens >= threshold_tokens
+
+
 def _compression_made_progress(
     orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
 ) -> bool:
@@ -289,10 +312,14 @@ def build_turn_context(
         )
 
     # ── Preflight context compression ──
-    if (
-        agent.compression_enabled
-        and len(messages) > agent.context_compressor.protect_first_n
-                            + agent.context_compressor.protect_last_n + 1
+    # Gate the (expensive) full token estimate behind a cheap pre-check.
+    # See _should_run_preflight_estimate for the OR semantics that fix
+    # #27405 (few-but-huge messages slipping past the count-only gate).
+    if agent.compression_enabled and _should_run_preflight_estimate(
+        messages,
+        agent.context_compressor.protect_first_n,
+        agent.context_compressor.protect_last_n,
+        agent.context_compressor.threshold_tokens,
     ):
         _preflight_tokens = estimate_request_tokens_rough(
             messages,

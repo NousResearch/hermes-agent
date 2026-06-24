@@ -42,12 +42,12 @@ logger = logging.getLogger(__name__)
 
 # Stable marker the gateway matches on to re-tag the auto-compaction lifecycle
 # status as ``kind="compacting"`` (tui_gateway/server.py::_status_update), so
-# drivers like the desktop app can show an explicit "Summarizing…" indicator
+# drivers like the desktop app can show an explicit summarizing indicator
 # instead of the transcript appearing to silently reset. Keep the marker phrase
 # intact if you reword COMPACTION_STATUS.
-COMPACTION_STATUS_MARKER = "Compacting context"
+COMPACTION_STATUS_MARKER = "会話履歴を整理中"
 COMPACTION_STATUS = (
-    f"🗜️ {COMPACTION_STATUS_MARKER} — summarizing earlier conversation so I can continue..."
+    f"🗜️ {COMPACTION_STATUS_MARKER}です。続けられるように、ここまでの内容を要約しています。"
 )
 
 
@@ -474,9 +474,9 @@ def compress_context(
         if getattr(agent, "_last_compression_summary_warning", None) != _err:
             agent._last_compression_summary_warning = _err
             agent._emit_warning(
-                f"⚠ Compression aborted: {_err}. "
-                "No messages were dropped — conversation continues unchanged. "
-                "Run /compress to retry, or /new to start a fresh session."
+                f"⚠ 会話履歴の整理を中断しました: {_err}。"
+                "メッセージは削除されておらず、会話は変更されていません。"
+                "再試行する場合は /compress、新しい会話にする場合は /new を使ってください。"
             )
         _existing_sp = getattr(agent, "_cached_system_prompt", None)
         if not _existing_sp:
@@ -489,8 +489,8 @@ def compress_context(
         if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
             agent._last_compression_summary_warning = summary_error
             agent._emit_warning(
-                f"⚠ Compression summary failed: {summary_error}. "
-                "Inserted a fallback context marker."
+                f"⚠ 会話履歴の要約に失敗しました: {summary_error}。"
+                "代替の文脈マーカーを挿入しました。"
             )
     else:
         # No hard failure — but did the configured aux model error out
@@ -505,9 +505,9 @@ def compress_context(
             if getattr(agent, "_last_aux_fallback_warning_key", None) != _aux_key:
                 agent._last_aux_fallback_warning_key = _aux_key
                 agent._emit_warning(
-                    f"ℹ Configured compression model '{_aux_fail_model}' failed "
-                    f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
-                    "check auxiliary.compression.model in config.yaml."
+                    f"ℹ 設定されている圧縮用モデル '{_aux_fail_model}' が失敗しました "
+                    f"({_aux_fail_err or 'unknown error'})。メインモデルで復旧済みです。"
+                    "必要に応じて config.yaml の auxiliary.compression.model を確認してください。"
                 )
 
     todo_snapshot = agent._todo_store.format_for_injection()

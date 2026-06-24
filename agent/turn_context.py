@@ -330,9 +330,9 @@ def build_turn_context(
                 f"{_compressor.context_length:,}",
             )
             agent._emit_status(
-                f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                f">= {_compressor.threshold_tokens:,} threshold. "
-                "This may take a moment."
+                f"📦 会話履歴を整理中です: 約{_preflight_tokens:,}トークンが "
+                f"しきい値{_compressor.threshold_tokens:,}トークンを超えました。"
+                "少し時間がかかる場合があります。"
             )
             for _pass in range(3):
                 _orig_len = len(messages)

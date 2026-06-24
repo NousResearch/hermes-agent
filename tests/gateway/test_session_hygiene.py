@@ -597,7 +597,7 @@ async def test_session_hygiene_warns_user_when_compression_aborts(monkeypatch, t
     assert result == "ok"
     # The compressor reported abort → exactly one warning message must
     # have been delivered to the user.
-    warning_messages = [s for s in adapter.sent if "Context compression aborted" in s["content"]]
+    warning_messages = [s for s in adapter.sent if "会話履歴の整理を中断しました" in s["content"]]
     assert len(warning_messages) == 1, (
         f"Expected 1 compression-aborted warning, got {len(warning_messages)}: {adapter.sent}"
     )
@@ -605,7 +605,7 @@ async def test_session_hygiene_warns_user_when_compression_aborts(monkeypatch, t
     # Warning must include the underlying error and tell the user nothing
     # was dropped.
     assert "404" in warn["content"]
-    assert "No messages were dropped" in warn["content"]
+    assert "メッセージは削除されておらず" in warn["content"]
     # Warning must land in the originating topic/thread, not the main channel.
     assert warn["chat_id"] == "-1001"
     assert warn["metadata"] == {"thread_id": "17585"}
@@ -716,12 +716,12 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
 
     assert result == "ok"
     # No ⚠️ hard-failure warning (that's for dropped turns)
-    hard_warnings = [s for s in adapter.sent if "Context compression summary failed" in s["content"]]
+    hard_warnings = [s for s in adapter.sent if "圧縮用モデル" in s["content"] and "中断" in s["content"]]
     assert len(hard_warnings) == 0, adapter.sent
     # But an ℹ note about the configured aux model must be delivered.
     aux_notes = [
         s for s in adapter.sent
-        if "Configured compression model" in s["content"]
+        if "設定されている圧縮用モデル" in s["content"]
     ]
     assert len(aux_notes) == 1, (
         f"Expected 1 aux-model fallback notice, got {len(aux_notes)}: {adapter.sent}"

@@ -72,11 +72,16 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
     r"|compression\s+summary\s+failed"
+    r"|会話履歴の要約に失敗しました"
+    r"|context\s+compression\s+aborted"
     r"|fallback\s+context\s+marker"
+    r"|会話履歴の整理を中断しました"
     r"|configured\s+compression\s+model\s+.+\s+failed"
+    r"|設定されている圧縮用モデル.*失敗しました"
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
     r"|compacting\s+context\s+[—-]\s+summarizing\s+earlier\s+conversation"
+    r"|会話履歴を整理中"
     r"|preflight\s+compression"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
@@ -9595,12 +9600,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     if _comp is not None and getattr(_comp, "_last_compress_aborted", False):
                                         _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
                                         _warn_msg = (
-                                            "⚠️ Context compression aborted "
-                                            f"({_err}). No messages were dropped — "
-                                            "conversation is unchanged. Run /compress "
-                                            "to retry, /reset for a clean session, or "
-                                            "check your auxiliary.compression model "
-                                            "configuration."
+                                            "⚠️ 会話履歴の整理を中断しました "
+                                            f"({_err})。メッセージは削除されておらず、"
+                                            "会話は変更されていません。再試行する場合は /compress、"
+                                            "新しい会話にする場合は /reset を使ってください。"
+                                            "必要に応じて config.yaml の auxiliary.compression.model も確認してください。"
                                         )
                                         try:
                                             _adapter = self.adapters.get(source.platform)
@@ -9621,10 +9625,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
                                         _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
                                         _aux_msg = (
-                                            f"ℹ️ Configured compression model `{_aux_model}` "
-                                            f"failed ({_aux_err}). Recovered using your main "
-                                            "model — context is intact — but you may want to "
-                                            "check `auxiliary.compression.model` in config.yaml."
+                                            f"ℹ️ 設定されている圧縮用モデル `{_aux_model}` が失敗しました "
+                                            f"({_aux_err})。メインモデルで復旧済みなので、"
+                                            "会話内容は保持されています。必要に応じて config.yaml の "
+                                            "`auxiliary.compression.model` を確認してください。"
                                         )
                                         try:
                                             _adapter = self.adapters.get(source.platform)

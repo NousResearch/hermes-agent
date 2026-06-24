@@ -567,9 +567,11 @@ class TestPreflightCompression:
         assert result["completed"] is True
         assert result["final_response"] == "After preflight"
         assert any(
-            ev == "lifecycle" and "Preflight compression" in msg
+            ev == "lifecycle" and "会話履歴を整理中" in msg
             for ev, msg in status_messages
         )
+        assert not any("Preflight compression" in msg for _, msg in status_messages)
+        assert not any("This may take a moment" in msg for _, msg in status_messages)
 
     def test_preflight_defers_when_recent_real_usage_fit(self, agent):
         """A noisy rough estimate should not re-compact a recently fitting request."""
@@ -608,7 +610,7 @@ class TestPreflightCompression:
         assert result["completed"] is True
         assert result["final_response"] == "Used real fit"
         assert not any(
-            ev == "lifecycle" and "Preflight compression" in msg
+            ev == "lifecycle" and "会話履歴を整理中" in msg
             for ev, msg in status_messages
         )
 

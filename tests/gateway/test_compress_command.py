@@ -82,9 +82,9 @@ async def test_compress_command_reports_noop_without_success_banner():
     ):
         result = await runner._handle_compress_command(_make_event())
 
-    assert "No changes from compression" in result
-    assert "Compressed:" not in result
-    assert "Approx request size: ~100 tokens (unchanged)" in result
+    assert "圧縮による変更はありません" in result
+    assert "圧縮しました:" not in result
+    assert "概算リクエストサイズ: 約100トークン（変更なし）" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 
@@ -122,9 +122,9 @@ async def test_compress_command_explains_when_token_estimate_rises():
     ):
         result = await runner._handle_compress_command(_make_event())
 
-    assert "Compressed: 4 → 3 messages" in result
-    assert "Approx request size: ~100 → ~120 tokens" in result
-    assert "denser summaries" in result
+    assert "圧縮しました: 4 → 3件のメッセージ" in result
+    assert "概算リクエストサイズ: 約100 → 約120トークン" in result
+    assert "要約が高密度" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 
@@ -174,12 +174,12 @@ async def test_compress_command_appends_warning_when_compression_aborts():
 
     # A clearly-marked warning must be appended.
     assert "⚠️" in result
-    assert "Compression aborted" in result
+    assert "会話履歴の整理を中断しました" in result
     # Underlying error must surface so users can fix their config.
     assert "404 model not found" in result
     # User must be told nothing was dropped — the whole point of the
     # new behavior is no silent data loss.
-    assert "No messages were dropped" in result
+    assert "メッセージは削除されておらず" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 
@@ -235,7 +235,7 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
         result = await runner._handle_compress_command(_make_event())
 
     # Compression succeeded
-    assert "Compressed:" in result
+    assert "圧縮しました:" in result
     # No ⚠️ warning (that's reserved for dropped-turns case)
     assert "⚠️" not in result
     # But there IS an info note about the broken aux model
@@ -243,7 +243,7 @@ async def test_compress_command_surfaces_aux_model_failure_even_when_recovered()
     assert "gemini-3-flash-preview" in result
     assert "404" in result
     assert "auxiliary.compression.model" in result
-    # The user's context is explicitly called out as intact
-    assert "intact" in result
+    # The user's context is explicitly called out as preserved
+    assert "復旧済み" in result or "保持" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()

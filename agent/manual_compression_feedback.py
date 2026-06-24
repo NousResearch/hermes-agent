@@ -17,28 +17,27 @@ def summarize_manual_compression(
     noop = list(after_messages) == list(before_messages)
 
     if noop:
-        headline = f"No changes from compression: {before_count} messages"
+        headline = f"圧縮による変更はありません: {before_count}件のメッセージ"
         if after_tokens == before_tokens:
             token_line = (
-                f"Approx request size: ~{before_tokens:,} tokens (unchanged)"
+                f"概算リクエストサイズ: 約{before_tokens:,}トークン（変更なし）"
             )
         else:
             token_line = (
-                f"Approx request size: ~{before_tokens:,} → "
-                f"~{after_tokens:,} tokens"
+                f"概算リクエストサイズ: 約{before_tokens:,} → "
+                f"約{after_tokens:,}トークン"
             )
     else:
-        headline = f"Compressed: {before_count} → {after_count} messages"
+        headline = f"圧縮しました: {before_count} → {after_count}件のメッセージ"
         token_line = (
-            f"Approx request size: ~{before_tokens:,} → "
-            f"~{after_tokens:,} tokens"
+            f"概算リクエストサイズ: 約{before_tokens:,} → "
+            f"約{after_tokens:,}トークン"
         )
 
     note = None
     if not noop and after_count < before_count and after_tokens > before_tokens:
         note = (
-            "Note: fewer messages can still raise this estimate when "
-            "compression rewrites the transcript into denser summaries."
+            "補足: メッセージ数が減っても、要約が高密度になると概算サイズが増える場合があります。"
         )
 
     return {

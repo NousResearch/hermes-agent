@@ -53,6 +53,7 @@ import atexit
 import functools
 import json
 import logging
+import math
 import os
 import re
 import subprocess
@@ -112,6 +113,15 @@ except ImportError:
     _is_camofox_mode = lambda: False  # noqa: E731
 
 logger = logging.getLogger(__name__)
+
+
+def _finite_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return parsed if math.isfinite(parsed) else default
+
 
 # Standard PATH entries for environments with minimal PATH (e.g. systemd services).
 # Includes Android/Termux and macOS Homebrew locations needed for agent-browser,
@@ -3401,10 +3411,10 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
             _vt = _vision_cfg.get("timeout")
             if _vt is not None:
-                vision_timeout = float(_vt)
+                vision_timeout = _finite_float(_vt, 120.0)
             _vtemp = _vision_cfg.get("temperature")
             if _vtemp is not None:
-                vision_temperature = float(_vtemp)
+                vision_temperature = _finite_float(_vtemp, 0.1)
         except Exception:
             pass
 

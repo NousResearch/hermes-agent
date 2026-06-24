@@ -63,7 +63,7 @@ def test_hooks_are_registered_as_valid():
 def test_claim_fires_hook(kanban_home, captured_hooks):
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="t", assignee="worker")
+        tid = kb.create_task(conn, title="work on smoke", assignee="worker")
         claimed = kb.claim_task(conn, tid)
         assert claimed is not None
     finally:
@@ -74,6 +74,7 @@ def test_claim_fires_hook(kanban_home, captured_hooks):
     assert kw["task_id"] == tid
     assert kw["board"] == "default"
     assert kw["assignee"] == "worker"
+    assert kw["title"] == "work on smoke"
     assert "profile_name" in kw
     assert kw["run_id"] is not None
     assert kw["_observed_status"] == "running"
@@ -82,7 +83,7 @@ def test_claim_fires_hook(kanban_home, captured_hooks):
 def test_complete_fires_hook_with_summary(kanban_home, captured_hooks):
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="t", assignee="worker")
+        tid = kb.create_task(conn, title="ship summary", assignee="worker")
         kb.claim_task(conn, tid)
         assert kb.complete_task(conn, tid, summary="all done")
     finally:
@@ -92,6 +93,7 @@ def test_complete_fires_hook_with_summary(kanban_home, captured_hooks):
     kw = fired[0][1]
     assert kw["task_id"] == tid
     assert kw["board"] == "default"
+    assert kw["title"] == "ship summary"
     assert kw["summary"] == "all done"
     assert kw["assignee"] == "worker"
     assert kw["run_id"] is not None
@@ -101,7 +103,7 @@ def test_complete_fires_hook_with_summary(kanban_home, captured_hooks):
 def test_block_fires_hook_with_reason(kanban_home, captured_hooks):
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="t", assignee="worker")
+        tid = kb.create_task(conn, title="ask human", assignee="worker")
         kb.claim_task(conn, tid)
         assert kb.block_task(conn, tid, reason="needs human")
     finally:
@@ -111,10 +113,55 @@ def test_block_fires_hook_with_reason(kanban_home, captured_hooks):
     kw = fired[0][1]
     assert kw["task_id"] == tid
     assert kw["board"] == "default"
+    assert kw["title"] == "ask human"
     assert kw["reason"] == "needs human"
     assert kw["assignee"] == "worker"
     assert kw["run_id"] is not None
     assert kw["_observed_status"] == "blocked"
+
+
+def test_lifecycle_title_is_redacted_and_truncated(kanban_home, captured_hooks):
+    conn = kb.connect()
+    secret = "sk-" + "a" * 48
+    bearer = "eyJ" + "b" * 48
+    basic = "dXNlcjpwYXNz"
+    try:
+        tid = kb.create_task(
+            conn,
+            title=(
+                f"deploy Authorization: Basic {basic} Bearer {bearer} "
+                f"Basic {basic} token={secret} "
+            ) + "x" * 260,
+            assignee="worker",
+        )
+        assert kb.claim_task(conn, tid) is not None
+    finally:
+        conn.close()
+    kw = [e for e in captured_hooks if e[0] == "kanban_task_claimed"][0][1]
+    title = kw["title"]
+    assert "[REDACTED]" in title
+    assert secret not in title
+    assert bearer not in title
+    assert basic not in title
+    assert len(title) <= 200
+
+
+def test_review_claim_fires_hook_with_title(kanban_home, captured_hooks):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="review this", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (tid,))
+        claimed = kb.claim_review_task(conn, tid)
+        assert claimed is not None
+    finally:
+        conn.close()
+    fired = [e for e in captured_hooks if e[0] == "kanban_task_claimed"]
+    assert len(fired) == 1
+    kw = fired[0][1]
+    assert kw["task_id"] == tid
+    assert kw["title"] == "review this"
+    assert kw["_observed_status"] == "running"
 
 
 def test_no_hook_on_failed_transition(kanban_home, captured_hooks):

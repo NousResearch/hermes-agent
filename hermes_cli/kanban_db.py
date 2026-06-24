@@ -168,6 +168,43 @@ def _trace_context_from_parents(
     return _valid_traceparent(row["traceparent"]), _safe_tracestate(row["tracestate"])
 
 
+_KANBAN_ATTR_MAX_CHARS = 200
+_KANBAN_AUTH_SCHEME_RE = re.compile(
+    r"(?i)\b(authorization)\b\s*[:=]?\s*(?:\S+\s+)?[^\s,;]+|"
+    r"\b(bearer|basic)\b\s+[^\s,;]+"
+)
+_KANBAN_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(api[_-]?key|client[_-]?secret|connect[_-]?token|password|passwd|"
+    r"secret|token)\b\s*[:=]\s*[^\s,;]+"
+)
+_KANBAN_SECRET_VALUE_RE = re.compile(
+    r"(?i)\b(sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{8,}|[A-Za-z0-9+/]{32,}={0,2})\b"
+)
+
+
+def _safe_kanban_span_text(value: Any, *, max_chars: int = _KANBAN_ATTR_MAX_CHARS) -> Optional[str]:
+    """Return a bounded, redacted string for Kanban span attributes."""
+    if value is None:
+        return None
+    try:
+        text = str(value)
+    except Exception:
+        return None
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return None
+    text = _KANBAN_AUTH_SCHEME_RE.sub(
+        lambda m: f"{(m.group(1) or m.group(2))}=[REDACTED]",
+        text,
+    )
+    text = _KANBAN_SECRET_ASSIGNMENT_RE.sub(lambda m: f"{m.group(1)}=[REDACTED]", text)
+    text = _KANBAN_SECRET_VALUE_RE.sub("[REDACTED]", text)
+    if len(text) > max_chars:
+        text = text[: max_chars - 3] + "..." if max_chars > 3 else "." * max_chars
+    return text
+
+
 def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
     """Fire a kanban lifecycle plugin hook, fully best-effort.
 
@@ -3389,6 +3426,7 @@ def claim_task(
         task_id,
         board=get_current_board(),
         assignee=claimed.assignee if claimed else None,
+        title=_safe_kanban_span_text(claimed.title) if claimed else None,
         run_id=run_id,
         traceparent=claimed.traceparent if claimed else None,
         tracestate=claimed.tracestate if claimed else None,
@@ -3470,7 +3508,18 @@ def claim_review_task(
              "source_status": "review"},
             run_id=run_id,
         )
-        return get_task(conn, task_id)
+        claimed = get_task(conn, task_id)
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_claimed",
+        task_id,
+        board=get_current_board(),
+        assignee=claimed.assignee if claimed else None,
+        title=_safe_kanban_span_text(claimed.title) if claimed else None,
+        run_id=run_id,
+        traceparent=claimed.traceparent if claimed else None,
+        tracestate=claimed.tracestate if claimed else None,
+    )
+    return claimed
 
 
 def heartbeat_claim(
@@ -4067,6 +4116,7 @@ def complete_task(
         task_id,
         board=get_current_board(),
         assignee=_done_task.assignee if _done_task else None,
+        title=_safe_kanban_span_text(_done_task.title) if _done_task else None,
         run_id=run_id,
         traceparent=_done_task.traceparent if _done_task else None,
         tracestate=_done_task.tracestate if _done_task else None,
@@ -4501,6 +4551,7 @@ def block_task(
         task_id,
         board=get_current_board(),
         assignee=_blocked_task.assignee if _blocked_task else None,
+        title=_safe_kanban_span_text(_blocked_task.title) if _blocked_task else None,
         run_id=run_id,
         traceparent=_blocked_task.traceparent if _blocked_task else None,
         tracestate=_blocked_task.tracestate if _blocked_task else None,

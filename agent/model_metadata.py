@@ -184,6 +184,25 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 # Sessions, model switches, and cron jobs should reject models below this.
 MINIMUM_CONTEXT_LENGTH = 64_000
 
+# Lower bound for user-configured compression floor overrides.
+# Users with large-context models that degrade before 64K tokens
+# (e.g. Gemini Flash via proxies) can use ``compression.minimum_context_floor``
+# in config.yaml to lower this, but never below this hard safety limit.
+_MINIMUM_CONTEXT_FLOOR_HARD_LIMIT = 16_000
+
+
+def get_configurable_minimum_context(config_floor: int | None = None) -> int:
+    """Return the effective minimum context floor for compression.
+
+    When *config_floor* is provided (from ``compression.minimum_context_floor``),
+    it is clamped to the hard limit and returned, allowing users to lower the
+    default 64K compression floor for models that degrade earlier.  When
+    *config_floor* is ``None`` the default ``MINIMUM_CONTEXT_LENGTH`` is used.
+    """
+    if config_floor is None:
+        return MINIMUM_CONTEXT_LENGTH
+    return max(config_floor, _MINIMUM_CONTEXT_FLOOR_HARD_LIMIT)
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.

@@ -226,6 +226,7 @@ class TestExtractCacheBustingConfig:
                 "compression": {
                     "enabled": False,
                     "threshold": 0.6,
+                    "minimum_context_floor": 32_000,
                     "target_ratio": 0.3,
                     "protect_last_n": 25,
                     "some_other_key": "ignored",
@@ -234,6 +235,7 @@ class TestExtractCacheBustingConfig:
         )
         assert out["compression.enabled"] is False
         assert out["compression.threshold"] == 0.6
+        assert out["compression.minimum_context_floor"] == 32_000
         assert out["compression.target_ratio"] == 0.3
         assert out["compression.protect_last_n"] == 25
 
@@ -386,7 +388,7 @@ class TestExtractCacheBustingConfig:
         extracted cache_keys change produces a new signature."""
         from gateway.run import GatewayRunner
 
-        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        runtime = {"api_key": "***", "base_url": "u", "provider": "p"}
         cfg_before = {
             "model": {"context_length": 200_000},
             "compression": {"threshold": 0.50, "enabled": True},
@@ -408,6 +410,25 @@ class TestExtractCacheBustingConfig:
             "Editing compression.threshold in config.yaml must bust the "
             "gateway's cached agent so the new threshold takes effect."
         )
+
+    def test_minimum_context_floor_edit_busts_cache(self):
+        """Gateway sessions must rebuild the agent when the new floor changes."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "***", "base_url": "u", "provider": "p"}
+        cfg_before = {"compression": {"minimum_context_floor": 64_000}}
+        cfg_after = {"compression": {"minimum_context_floor": 32_000}}
+
+        sig_before = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_before),
+        )
+        sig_after = GatewayRunner._agent_config_signature(
+            "m", runtime, [], "",
+            cache_keys=GatewayRunner._extract_cache_busting_config(cfg_after),
+        )
+
+        assert sig_before != sig_after
 
 
 class TestAgentCacheLifecycle:

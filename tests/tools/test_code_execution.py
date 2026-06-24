@@ -38,6 +38,7 @@ from unittest.mock import patch, MagicMock
 
 from tools.code_execution_tool import (
     SANDBOX_ALLOWED_TOOLS,
+    SANDBOX_AVAILABLE,
     execute_code,
     generate_hermes_tools_module,
     check_sandbox_requirements,
@@ -713,6 +714,48 @@ class TestBuildExecuteCodeSchema(unittest.TestCase):
         schema_none = build_execute_code_schema(None)
         schema_all = build_execute_code_schema(SANDBOX_ALLOWED_TOOLS)
         self.assertEqual(schema_none["description"], schema_all["description"])
+
+
+@unittest.skipUnless(SANDBOX_AVAILABLE, "execute_code sandbox unavailable")
+class TestNestedToolSessionContext(unittest.TestCase):
+    def test_registry_execute_code_forwards_session_id_to_nested_tools(self):
+        captured = []
+
+        def fake_handle_function_call(function_name, function_args, **kwargs):
+            captured.append({
+                "name": function_name,
+                "args": function_args,
+                "kwargs": kwargs,
+            })
+            return json.dumps({"content": "ok"})
+
+        code = (
+            "from hermes_tools import read_file\n"
+            "print(read_file('README.md'))\n"
+        )
+
+        from tools.registry import registry
+
+        with patch("model_tools.handle_function_call",
+                   side_effect=fake_handle_function_call), \
+             patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": 10, "max_tool_calls": 50}):
+            raw = registry.dispatch(
+                "execute_code",
+                {"code": code},
+                task_id="task-nested-session",
+                session_id="sess-nested-session",
+                enabled_tools=["read_file"],
+            )
+
+        result = json.loads(raw)
+        self.assertEqual(result["status"], "success", result)
+        self.assertEqual(result["tool_calls_made"], 1)
+        self.assertEqual(captured[0]["name"], "read_file")
+        self.assertEqual(
+            captured[0]["kwargs"].get("session_id"),
+            "sess-nested-session",
+        )
 
 
 # ---------------------------------------------------------------------------

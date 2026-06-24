@@ -15229,14 +15229,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
+        def _agent_cfg_int(key: str, default: int) -> int:
+            """Read an integer agent config value while preserving explicit 0.
+
+            The Telegram usage budget treats 0 as "disabled". Using ``value or
+            default`` here silently re-enabled hard stops after James set them to
+            0, which made Telegram unusable.
+            """
+            value = agent_cfg_local.get(key, default)
+            if value is None or value == "":
+                value = default
+            return int(value)
+
+        def _agent_cfg_float(key: str, default: float) -> float:
+            value = agent_cfg_local.get(key, default)
+            if value is None or value == "":
+                value = default
+            return float(value)
+
         _usage_receipts_enabled = bool(agent_cfg_local.get("gateway_usage_receipts", True))
-        _usage_receipt_min_api_calls = int(agent_cfg_local.get("gateway_usage_receipt_min_api_calls", 2) or 2)
-        _usage_receipt_min_tokens = int(agent_cfg_local.get("gateway_usage_receipt_min_tokens", 25_000) or 25_000)
-        _usage_receipt_min_seconds = float(agent_cfg_local.get("gateway_usage_receipt_min_seconds", 30) or 30)
-        _usage_warn_api_calls = int(agent_cfg_local.get("gateway_usage_warn_api_calls", 8) or 8)
-        _usage_warn_tokens = int(agent_cfg_local.get("gateway_usage_warn_tokens", 100_000) or 100_000)
-        _usage_hard_api_calls = int(agent_cfg_local.get("gateway_usage_hard_api_calls", 30) or 30)
-        _usage_hard_tokens = int(agent_cfg_local.get("gateway_usage_hard_tokens", 350_000) or 350_000)
+        _usage_receipt_min_api_calls = _agent_cfg_int("gateway_usage_receipt_min_api_calls", 2)
+        _usage_receipt_min_tokens = _agent_cfg_int("gateway_usage_receipt_min_tokens", 25_000)
+        _usage_receipt_min_seconds = _agent_cfg_float("gateway_usage_receipt_min_seconds", 30)
+        _usage_warn_api_calls = _agent_cfg_int("gateway_usage_warn_api_calls", 8)
+        _usage_warn_tokens = _agent_cfg_int("gateway_usage_warn_tokens", 100_000)
+        _usage_hard_api_calls = _agent_cfg_int("gateway_usage_hard_api_calls", 30)
+        _usage_hard_tokens = _agent_cfg_int("gateway_usage_hard_tokens", 350_000)
 
         display_config = user_config.get("display", {})
         if not isinstance(display_config, dict):

@@ -94,7 +94,13 @@ def check_compression_model_feasibility(agent: Any) -> None:
         )
         from agent.model_metadata import (
             MINIMUM_CONTEXT_LENGTH,
+            get_configurable_minimum_context,
             get_model_context_length,
+        )
+
+        # Configurable compression floor from the compressor instance
+        _compression_floor = getattr(
+            agent.context_compressor, "_minimum_context_floor", MINIMUM_CONTEXT_LENGTH
         )
 
         client, aux_model = get_text_auxiliary_client(
@@ -156,18 +162,18 @@ def check_compression_model_feasibility(agent: Any) -> None:
         )
 
         # Hard floor: the auxiliary compression model must have at least
-        # MINIMUM_CONTEXT_LENGTH (64K) tokens of context.  The main model
-        # is already required to meet this floor (checked earlier in
+        # the configured compression floor's worth of context.  The main model
+        # is already required to meet its floor (checked earlier in
         # __init__), so the compression model must too — otherwise it
         # cannot summarise a full threshold-sized window of main-model
         # content.  Mirrors the main-model rejection pattern.
-        if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:
+        if aux_context and aux_context < _compression_floor:
             raise ValueError(
                 f"Auxiliary compression model {aux_model} has a context "
                 f"window of {aux_context:,} tokens, which is below the "
-                f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Hermes "
+                f"minimum {_compression_floor:,} required by Hermes "
                 f"Agent.  Choose a compression model with at least "
-                f"{MINIMUM_CONTEXT_LENGTH // 1000}K context (set "
+                f"{_compression_floor // 1000}K context (set "
                 f"auxiliary.compression.model in config.yaml), or set "
                 f"auxiliary.compression.context_length to override the "
                 f"detected value if it is wrong."

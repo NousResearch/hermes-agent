@@ -4862,12 +4862,11 @@ def _(rid, params: dict) -> dict:
     )
     try:
         db.reopen_session(target)
-        history = db.get_messages_as_conversation(target)
-        display_history = db.get_messages_as_conversation(
-            target, include_ancestors=True
-        )
+        direct_history = db.get_messages_as_conversation(target)
+        history = db.get_messages_as_conversation(target, include_ancestors=True)
+        display_history = history
         display_history_prefix = display_history[
-            : max(0, len(display_history) - len(history))
+            : max(0, len(display_history) - len(direct_history))
         ]
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
@@ -5108,9 +5107,12 @@ def _live_session_payload(
             session["transport"] = transport
         if touch:
             session["last_active"] = time.time()
-        history = list(session.get("display_history_prefix") or []) + list(
-            session.get("history") or []
-        )
+        prefix = list(session.get("display_history_prefix") or [])
+        current_history = list(session.get("history") or [])
+        if prefix and current_history[: len(prefix)] == prefix:
+            history = current_history
+        else:
+            history = prefix + current_history
         inflight = _inflight_snapshot(session)
         running = bool(session.get("running"))
     payload = {

@@ -155,8 +155,11 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Feishu post-type 'md' elements do not render tables directly.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+_MARKDOWN_TABLE_SEPARATOR_LINE_RE = re.compile(
+    r"^\s*\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$"
+)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -558,6 +561,73 @@ def _build_markdown_post_payload(content: str) -> str:
         },
         ensure_ascii=False,
     )
+
+
+def _is_markdown_table_row(line: str) -> bool:
+    stripped = line.strip()
+    return (
+        stripped.startswith("|")
+        and stripped.endswith("|")
+        and stripped.count("|") >= 2
+    )
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    return bool(_MARKDOWN_TABLE_SEPARATOR_LINE_RE.match(line))
+
+
+def _protect_markdown_tables_for_post(content: str) -> tuple[str, str, bool]:
+    """Wrap markdown table blocks in code fences before sending a post payload.
+
+    Feishu's post ``md`` renderer cannot render tables, but a table inside a
+    fenced code block remains visible. The returned non-table content lets the
+    caller decide whether there is any other markdown worth preserving.
+    """
+    lines = content.splitlines()
+    protected: List[str] = []
+    non_table: List[str] = []
+    found_table = False
+    in_code_block = False
+    i = 0
+
+    while i < len(lines):
+        raw_line = lines[i]
+        stripped_line = raw_line.strip()
+        is_fence = bool(
+            _MARKDOWN_FENCE_CLOSE_RE.match(stripped_line)
+            if in_code_block
+            else _MARKDOWN_FENCE_OPEN_RE.match(stripped_line)
+        )
+        if is_fence:
+            protected.append(raw_line)
+            non_table.append(raw_line)
+            in_code_block = not in_code_block
+            i += 1
+            continue
+
+        if (
+            not in_code_block
+            and i + 1 < len(lines)
+            and _is_markdown_table_row(raw_line)
+            and _is_markdown_table_separator(lines[i + 1])
+        ):
+            table_lines: List[str] = []
+            while i < len(lines) and _is_markdown_table_row(lines[i]):
+                table_lines.append(lines[i])
+                i += 1
+            protected.append("```")
+            protected.extend(table_lines)
+            protected.append("```")
+            found_table = True
+            continue
+
+        protected.append(raw_line)
+        non_table.append(raw_line)
+        i += 1
+
+    if not found_table:
+        return content, content, False
+    return "\n".join(protected), "\n".join(non_table), True
 
 
 def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
@@ -4377,8 +4447,14 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Keep pure table payloads as plain text, but preserve surrounding
+        # markdown by fencing only the table block when a response mixes both.
         if _MARKDOWN_TABLE_RE.search(content):
+            protected_content, non_table_content, found_table = (
+                _protect_markdown_tables_for_post(content)
+            )
+            if found_table and _MARKDOWN_HINT_RE.search(non_table_content):
+                return "post", _build_markdown_post_payload(protected_content)
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):

@@ -115,6 +115,45 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _is_nous_inference_base_url(base_url: str) -> bool:
+    hostname = base_url_hostname(base_url)
+    if not hostname:
+        return False
+
+    allowed_hosts = {
+        str(host).strip().lower().rstrip(".")
+        for host in getattr(auth_mod, "_ALLOWED_NOUS_INFERENCE_HOSTS", frozenset())
+        if isinstance(host, str) and host.strip()
+    }
+    default_host = base_url_hostname(getattr(auth_mod, "DEFAULT_NOUS_INFERENCE_URL", ""))
+    if default_host:
+        allowed_hosts.add(default_host)
+    return hostname in allowed_hosts
+
+
+def _is_nous_invoke_jwt(value: Any) -> bool:
+    status_fn = getattr(auth_mod, "_nous_invoke_jwt_status", None)
+    if not callable(status_fn) or not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        status = status_fn(value, min_ttl_seconds=0)
+    except Exception:
+        return False
+    return status in {None, "invoke_jwt_expiring", "invoke_jwt_expiry_unknown_or_expiring"}
+
+
+def _custom_explicit_api_key_candidate(explicit_api_key: Optional[str], base_url: str) -> str:
+    candidate = str(explicit_api_key or "").strip()
+    if candidate and _is_nous_invoke_jwt(candidate) and not _is_nous_inference_base_url(base_url):
+        logger.debug(
+            "Ignoring Nous invoke JWT for custom provider endpoint %s; "
+            "using custom provider credentials instead",
+            base_url,
+        )
+        return ""
+    return candidate
+
+
 def _host_derived_api_key(base_url: str) -> str:
     """Look up `<VENDOR>_API_KEY` in the env, derived from the base URL host.
 
@@ -832,7 +871,7 @@ def _resolve_named_custom_runtime(
         _da_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
         _da_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
         api_key_candidates = [
-            (explicit_api_key or "").strip(),
+            _custom_explicit_api_key_candidate(explicit_api_key, base_url),
             # Gate env key fallbacks on authoritative hosts (#28660)
             (_getenv("OPENAI_API_KEY", "").strip()     if _da_is_openai_url else ""),
             (_getenv("OPENROUTER_API_KEY", "").strip() if _da_is_openrouter  else ""),
@@ -886,7 +925,7 @@ def _resolve_named_custom_runtime(
     _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
     _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
     api_key_candidates = [
-        (explicit_api_key or "").strip(),
+        _custom_explicit_api_key_candidate(explicit_api_key, base_url),
         str(custom_provider.get("api_key", "") or "").strip(),
         _getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
         # Gate provider env keys on their authoritative hosts — sending
@@ -1011,7 +1050,7 @@ def _resolve_openrouter_runtime(
         # Mistral, …) leaks credentials and causes 401s (issue #28660).
         # Mirrors the OLLAMA_API_KEY host-gate added in GHSA-76xc-57q6-vm5m.
         api_key_candidates = [
-            explicit_api_key,
+            _custom_explicit_api_key_candidate(explicit_api_key, base_url),
             (cfg_api_key if use_config_base_url else ""),
             (_getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
             (_getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),

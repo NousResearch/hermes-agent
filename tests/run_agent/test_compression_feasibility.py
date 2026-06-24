@@ -31,7 +31,6 @@ def _make_agent(
     compression_enabled: bool = True,
     threshold_percent: float = 0.50,
     main_context: int = 200_000,
-    minimum_context_floor: int = 64_000,
 ) -> AIAgent:
     """Build a minimal AIAgent with a compressor, skipping __init__."""
     agent = AIAgent.__new__(AIAgent)
@@ -58,7 +57,6 @@ def _make_agent(
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
     compressor.threshold_tokens = int(main_context * threshold_percent)
-    compressor._minimum_context_floor = minimum_context_floor
     agent.context_compressor = compressor
 
     return agent
@@ -121,30 +119,6 @@ def test_rejects_aux_below_minimum_context(mock_get_client, mock_ctx_len):
     assert "32,768" in err
     assert "64,000" in err
     assert "below the minimum" in err
-
-
-@patch("agent.model_metadata.get_model_context_length", return_value=32_768)
-@patch("agent.auxiliary_client.get_text_auxiliary_client")
-def test_configured_floor_allows_smaller_aux_model(mock_get_client, mock_ctx_len):
-    """A lowered compression floor also lowers the aux-model hard floor."""
-    agent = _make_agent(
-        main_context=96_000,
-        threshold_percent=0.50,
-        minimum_context_floor=32_000,
-    )
-    mock_client = MagicMock()
-    mock_client.base_url = "https://openrouter.ai/api/v1"
-    mock_client.api_key = "sk-aux"
-    mock_get_client.return_value = (mock_client, "small-aux-model")
-
-    messages = []
-    agent._emit_status = lambda msg: messages.append(msg)
-
-    agent._check_compression_model_feasibility()
-
-    assert messages
-    assert "Auto-lowered" in messages[0]
-    assert agent.context_compressor.threshold_tokens == 32_768
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=200_000)

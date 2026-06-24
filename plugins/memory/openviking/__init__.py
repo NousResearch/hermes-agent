@@ -7,6 +7,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+from . import provider as _provider
 from .client import (
     _OpenVikingHTTPError,
     _VikingClient,
@@ -98,7 +99,6 @@ from .provider import (
     OpenVikingMemoryProvider,
     _atexit_commit_sessions,
     _derive_openviking_user_text,
-    _last_active_provider,
     _preview,
     _sync_trace_enabled,
 )
@@ -148,3 +148,9 @@ from .transcript import OpenVikingTranscriptMixin
 def register(ctx) -> None:
     """Register OpenViking as a memory provider plugin."""
     ctx.register_memory_provider(OpenVikingMemoryProvider())
+
+
+def __getattr__(name: str):
+    if name == "_last_active_provider":
+        return _provider._last_active_provider
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

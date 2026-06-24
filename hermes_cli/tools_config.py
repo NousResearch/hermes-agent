@@ -1302,8 +1302,8 @@ def run_post_setup_command(args) -> int:
 # ─── Platform / Toolset Helpers ───────────────────────────────────────────────
 
 def _get_enabled_platforms() -> List[str]:
-    """Return platform keys that are configured (have tokens or are CLI)."""
-    enabled = ["cli"]
+    """Return platform keys configured (always-local plus token-backed platforms)."""
+    enabled = ["cli", "cron"]
     if get_env_value("TELEGRAM_BOT_TOKEN"):
         enabled.append("telegram")
     if get_env_value("DISCORD_BOT_TOKEN"):

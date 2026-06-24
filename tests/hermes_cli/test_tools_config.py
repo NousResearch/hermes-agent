@@ -12,6 +12,7 @@ from hermes_cli.tools_config import (
     _checklist_toolset_keys,
     _configure_provider,
     _reconfigure_provider,
+    _get_enabled_platforms,
     _get_platform_tools,
     _platform_toolset_summary,
     _reconfigure_tool,
@@ -21,6 +22,7 @@ from hermes_cli.tools_config import (
     _toolset_needs_configuration_prompt,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
+    PLATFORMS,
     gui_toolset_label,
     _visible_providers,
     tools_command,
@@ -345,6 +347,13 @@ def test_platform_toolset_summary_uses_explicit_platform_list():
 
     assert set(summary.keys()) == {"cli"}
     assert summary["cli"] == _get_platform_tools(config, "cli")
+
+
+def test_cron_is_available_in_tools_platform_menu():
+    """`hermes tools` builds its platform menu from PLATFORMS."""
+    assert PLATFORMS["cron"]["default_toolset"] == "hermes-cron"
+    assert "cron" in _get_enabled_platforms()
+    assert "cronjob" in _get_platform_tools({}, "cron")
 
 
 def test_get_platform_tools_includes_enabled_mcp_servers_by_default():
@@ -1540,5 +1549,4 @@ def test_real_configurable_changes_still_reported_in_diff():
     # User adds 'vision' (configurable) — must still report as added.
     new_enabled2 = (current - {"kanban"}) | {"vision"}
     assert ((new_enabled2 - current) & universe) == {"vision"}
-
 

@@ -1,3 +1,4 @@
+import inspect
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -57,3 +58,14 @@ async def test_voice_transcript_echo_accepts_string_false_from_yaml_or_env_bridg
         await runner._echo_voice_transcripts(source, ["hidden from chat"])
 
     adapter.send.assert_not_awaited()
+
+
+def test_all_voice_transcript_echo_paths_use_configured_helper():
+    source = inspect.getsource(GatewayRunner)
+
+    assert "Voice-interrupt echo failed" not in source
+    assert "Voice-drain echo failed" not in source
+    assert "_echo_voice_transcripts(\n                                                source," in source
+    assert "_echo_voice_transcripts(\n                                    source," in source
+    assert source.count("f'🎙️ \"{transcript}\"'") == 1
+    assert "f'🎙️ \"{_tx}\"'" not in source

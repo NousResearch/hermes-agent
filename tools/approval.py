@@ -330,6 +330,71 @@ def _check_sudo_stdin_guard(command: str) -> tuple:
     return (False, None)
 
 
+_SHELL_CONSTRUCTED_COMMAND_NAMES = (
+    "chmod",
+    "chown",
+    "dd",
+    "docker",
+    "gateway",
+    "halt",
+    "hermes",
+    "init",
+    "kill",
+    "killall",
+    "mkfs",
+    "pkill",
+    "poweroff",
+    "reboot",
+    "rm",
+    "shutdown",
+    "systemctl",
+    "telinit",
+)
+_SHELL_CONSTRUCTED_COMMAND_ALTERNATION = "|".join(
+    re.escape(name) for name in _SHELL_CONSTRUCTED_COMMAND_NAMES
+)
+_SHELL_ECHO_COMMAND_RE = re.compile(
+    rf"\$\(\s*echo\s+(?P<paren>{_SHELL_CONSTRUCTED_COMMAND_ALTERNATION})\s*\)"
+    rf"|`\s*echo\s+(?P<backtick>{_SHELL_CONSTRUCTED_COMMAND_ALTERNATION})\s*`",
+    _RE_FLAGS,
+)
+_PARAMETER_EXPANSION_COMMANDS = {
+    **{name: name for name in _SHELL_CONSTRUCTED_COMMAND_NAMES},
+    "hmod": "chmod",
+    "m": "rm",
+    "own": "chown",
+}
+_PARAMETER_COMMAND_RE = re.compile(
+    r"\$\{[^}\n]*\}(?P<suffix>"
+    + "|".join(re.escape(suffix) for suffix in _PARAMETER_EXPANSION_COMMANDS)
+    + r")(?=\s|$)",
+    _RE_FLAGS,
+)
+
+
+def _shell_constructed_command_candidates(command: str) -> list[str]:
+    """Return limited shell-expanded command-name candidates for detection.
+
+    This intentionally handles only the issue #36846 bypass forms that build a
+    command name from literal shell syntax. It does not try to evaluate general
+    shell code; decoded candidates are fed back through the existing blocklists.
+    """
+
+    def _replace_echo_command(match: re.Match) -> str:
+        return (match.group("paren") or match.group("backtick")).lower()
+
+    def _replace_parameter_command(match: re.Match) -> str:
+        suffix = match.group("suffix").lower()
+        return _PARAMETER_EXPANSION_COMMANDS[suffix]
+
+    candidates = []
+    decoded = _SHELL_ECHO_COMMAND_RE.sub(_replace_echo_command, command)
+    decoded = _PARAMETER_COMMAND_RE.sub(_replace_parameter_command, decoded)
+    if decoded != command:
+        candidates.append(decoded)
+    return candidates
+
+
 def detect_hardline_command(command: str) -> tuple:
     """Check if a command matches the unconditional hardline blocklist.
 
@@ -347,29 +412,10 @@ def detect_hardline_command(command: str) -> tuple:
         if pattern_re.search(normalized):
             return (True, description)
 
-    # Second-pass: detect shell-encoded attempts to construct hardline commands
-    # (e.g. ${0/x/r}m -rf /, r\\m -rf /, r''m -rf /, $(echo rm) -rf /)
-    hardline_bypass_patterns = [
-        # Backslash escape before rm/dd/mkfs followed by dangerous args
-        (r"[a-z]\\[a-z]{1,4}\s+(?:(-[^\s]*\s+)*/|if=|of=)",
-         "shell-encoded hardline command (backslash escape)"),
-        # Empty quote insertions: r''m etc. followed by dangerous args
-        (r"[a-z]''[a-z]{1,4}\s+(?:(-[^\s]*\s+)*/|if=|of=)",
-         "shell-encoded hardline command (quote insertion)"),
-        # Command substitution: $(echo rm) -rf /
-        (r"\$\(\s*echo\s+(rm|dd|mkfs|shutdown|reboot|halt|poweroff)\b[^)]*\)\s+(?:(-[^\s]*\s+)*/|if=|of=)",
-         "shell-encoded hardline command (command substitution)"),
-        # Backtick variant
-        (r"`\s*echo\s+(rm|dd|mkfs|shutdown|reboot|halt|poweroff)\b[^`]*`\s+(?:(-[^\s]*\s+)*/|if=|of=)",
-         "shell-encoded hardline command (backtick substitution)"),
-        # Parameter expansion: ${0/x/r}m -rf /
-        (r"\$\{[^}]*\}(?:rm|dd)(?:\s+(?:(-[^\s]*\s+)*)/)\\b",
-         "shell-encoded hardline command (parameter expansion)"),
-    ]
-
-    for pattern, description in hardline_bypass_patterns:
-        if re.search(pattern, normalized):
-            return (True, description)
+    for candidate in _shell_constructed_command_candidates(normalized):
+        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+            if pattern_re.search(candidate):
+                return (True, description)
 
     return (False, None)
 
@@ -692,50 +738,18 @@ def detect_dangerous_command(command: str) -> tuple:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
     command_lower = _normalize_command_for_detection(command).lower()
-    
-    # First-pass: regex-based detection (existing approach)
+
     for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
         if pattern_re.search(command_lower):
             pattern_key = description
             return (True, pattern_key, description)
-    
-    # Second-pass: detect shell-encoded bypass attempts (issue #36846)
-    # These patterns catch attempts to obfuscate dangerous keywords via:
-    # - Backslash escapes: r\m, c\hmod
-    # - Empty quotes: r''m, ''rm, c''hmod
-    # - Command substitution: $(echo rm), `echo chmod`
-    # - Parameter substitution: ${0/x/r}m, ${VAR//pattern/replacement}
-    #
-    # NOTE: This is a defensive layer, not a complete solution. A proper fix
-    # would tokenize with shlex.split() and validate each resolved argv[0].
-    # See #36846 for detailed analysis.
-    bypass_patterns = [
-        # Backslash escape: \r, \c, \k, etc. before common dangerous commands
-        # Matches patterns like: r\m, c\hmod, d\d, k\ill, etc.
-        (r'[a-z]\\[a-z]{1,4}\s', "shell-encoded dangerous command (backslash escape)"),
-        # Empty quote insertions: r''m, c''hmod, ch''own, etc.
-        # Match letter-quote-quote-letters pattern followed by space
-        (r"[a-z]''[a-z]{1,4}\s", "shell-encoded dangerous command (quote insertion)"),
-        # Command substitution of dangerous words
-        (r'\$\(\s*echo\s+(rm|chmod|chown|mkfs|dd|kill|pkill|killall|docker|systemctl|hermes|gateway)\b', 
-         "shell-encoded dangerous command (command substitution)"),
-        # Backtick variant
-        (r'`\s*echo\s+(rm|chmod|chown|mkfs|dd|kill|pkill|killall|docker|systemctl|hermes|gateway)\b',
-         "shell-encoded dangerous command (backtick substitution)"),
-        # Parameter expansion specifically to construct dangerous commands
-        # Catches attempts to obfuscate command names via ${...} + dangerous suffix
-        # Matches: ${0/x/r}m, ${VAR//a/r}m, ${1}hmod, ${1}own (= chown), etc.
-        # Does NOT match: ${CONFIG}backup (legitimate multi-letter suffix)
-        # Only match if the text after } spells a complete dangerous command
-        # or a known partial that MUST be from an obfuscation attempt
-        (r"\$\{[^}]*\}(?:rm|chmod|chown|mkfs|dd|kill|pkill|killall|docker|systemctl|hermes|gateway|m|own|hmod)(?:\s|$)",
-         "shell-encoded dangerous command (parameter expansion)"),
-    ]
-    
-    for pattern, description in bypass_patterns:
-        if re.search(pattern, command_lower):
-            return (True, description, description)
-    
+
+    for candidate in _shell_constructed_command_candidates(command_lower):
+        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+            if pattern_re.search(candidate):
+                pattern_key = description
+                return (True, pattern_key, description)
+
     return (False, None, None)
 
 

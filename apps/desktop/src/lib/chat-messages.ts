@@ -901,15 +901,38 @@ export function preserveLocalAssistantErrors(
     }
   }
 
+  // Guard the case that made an early-sent queued message "disappear": a
+  // trailing *pending* optimistic user message (just submitted, its server reply
+  // not yet in the stored transcript) that a racing hydrate would otherwise
+  // overwrite away. Preserve it only when the incoming transcript doesn't
+  // already contain an equivalent user tail (id match via existingIds, text
+  // match via the tail check). Independent of the assistant-error preservation
+  // below, so it holds whether or not there's also an error pair to keep.
+  const trailingLocal = [...currentMessages].reverse().find(message => !message.hidden)
+
+  const pendingUserTail =
+    trailingLocal &&
+    trailingLocal.role === 'user' &&
+    trailingLocal.pending &&
+    !existingIds.has(trailingLocal.id) &&
+    !matchesTailUserInNext(trailingLocal)
+      ? trailingLocal
+      : null
+
   if (preserveIds.size === 0) {
-    return mergedNextMessages
+    return pendingUserTail ? [...mergedNextMessages, { ...pendingUserTail }] : mergedNextMessages
   }
 
   const preserved = currentMessages
     .filter(message => preserveIds.has(message.id))
     .map(message => ({ ...message, pending: false }))
 
-  return [...mergedNextMessages, ...preserved]
+  // Also keep the pending optimistic user tail if it wasn't already captured as
+  // a preserved (pre-error) user turn — so an in-flight send survives hydrate
+  // even when there's a separate assistant-error pair being preserved.
+  const extraPendingTail = pendingUserTail && !preserveIds.has(pendingUserTail.id) ? [{ ...pendingUserTail }] : []
+
+  return [...mergedNextMessages, ...preserved, ...extraPendingTail]
 }
 
 export function branchGroupForUser(userMessage: ChatMessage): string {

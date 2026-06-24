@@ -594,7 +594,13 @@ export function usePromptActions({
         id: optimisticId,
         role: 'user',
         parts: [textPart(visibleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
-        attachmentRefs
+        attachmentRefs,
+        // Marks this as an in-flight optimistic send: its server counterpart
+        // isn't in the stored transcript yet, so a hydrate that races the send
+        // (e.g. an early-sent queued message that interrupts the prior turn)
+        // must preserve it rather than overwrite it away. Cleared when the real
+        // transcript lands.
+        pending: true
       })
 
       const releaseBusy = () => {

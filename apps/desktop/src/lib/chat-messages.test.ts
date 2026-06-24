@@ -387,6 +387,78 @@ describe('preserveLocalAssistantErrors', () => {
     expect(assistant?.error).toBe('OpenRouter 403')
     expect(assistant?.pending).toBe(false)
   })
+
+  it('preserves a pending optimistic user tail that hydrate has not caught up to', () => {
+    // Repro for the "early-sent queued message disappears" bug: the user sent a
+    // queued message early (interrupting the prior turn), which fired a hydrate
+    // whose stored transcript doesn't yet include the just-sent message.
+    const nextMessages: ChatMessage[] = [
+      { id: 'stored-user', parts: [{ text: 'earlier', type: 'text' }], role: 'user' },
+      { id: 'stored-assistant', parts: [{ text: 'reply', type: 'text' }], role: 'assistant' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      ...nextMessages,
+      { id: 'user-9999', parts: [{ text: 'sent early', type: 'text' }], role: 'user', pending: true }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.map(m => m.id)).toEqual(['stored-user', 'stored-assistant', 'user-9999'])
+    expect(merged.at(-1)?.pending).toBe(true)
+  })
+
+  it('does not preserve a non-pending orphan user tail (stale leftover)', () => {
+    // A trailing user turn with no pending flag is a stale leftover, not an
+    // in-flight send — it must still be dropped (guards the existing behavior).
+    const nextMessages: ChatMessage[] = [
+      { id: 'stored-user', parts: [{ text: 'earlier', type: 'text' }], role: 'user' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      ...nextMessages,
+      { id: 'user-stale', parts: [{ text: 'no longer here', type: 'text' }], role: 'user' }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.map(m => m.id)).toEqual(['stored-user'])
+  })
+
+  it('does not duplicate a pending user tail the transcript already contains by text', () => {
+    // If hydrate's transcript already has the equivalent user message (server
+    // caught up), don't append a duplicate just because the local copy is still
+    // flagged pending.
+    const nextMessages: ChatMessage[] = [
+      { id: 'stored-user', parts: [{ text: 'sent early', type: 'text' }], role: 'user' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      { id: 'user-9999', parts: [{ text: 'sent early', type: 'text' }], role: 'user', pending: true }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.map(m => m.id)).toEqual(['stored-user'])
+  })
+
+  it('preserves both an assistant-error pair and a separate pending user tail', () => {
+    const nextMessages: ChatMessage[] = [
+      { id: 'stored-user', parts: [{ text: 'earlier', type: 'text' }], role: 'user' }
+    ]
+
+    const currentMessages: ChatMessage[] = [
+      { id: 'err-user', parts: [{ text: 'failed turn', type: 'text' }], role: 'user' },
+      { error: 'OpenRouter 403', id: 'assistant-error-1', parts: [], role: 'assistant' },
+      { id: 'user-pending', parts: [{ text: 'sent early', type: 'text' }], role: 'user', pending: true }
+    ]
+
+    const merged = preserveLocalAssistantErrors(nextMessages, currentMessages)
+
+    expect(merged.map(m => m.id)).toContain('user-pending')
+    expect(merged.map(m => m.id)).toContain('assistant-error-1')
+    expect(merged.at(-1)?.id).toBe('user-pending')
+  })
 })
 
 describe('upsertToolPart', () => {

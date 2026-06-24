@@ -7630,6 +7630,14 @@ def _cron_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
 
 def _annotate_cron_job(job: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
     annotated = dict(job)
+    # Preserve the scheduler_profile field from jobs.json before overwriting
+    # ``profile`` with the name of the profile that owns this jobs.json file.
+    # The scheduler stamps job["profile"] with the profile the job runs under
+    # (where its run sessions are written); _annotate_cron_job then overwrites
+    # ``profile`` with the jobs.json owner.  Keeping the original in
+    # ``scheduler_profile`` lets endpoints that need to open the correct
+    # state.db (e.g. list_cron_job_runs) do so without re-reading raw JSON.
+    annotated["scheduler_profile"] = annotated.get("profile") or profile
     annotated["profile"] = profile
     annotated["profile_name"] = profile
     annotated["hermes_home"] = str(home)
@@ -7728,17 +7736,30 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
     selected = profile or _find_cron_job_profile(job_id)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
     canonical = job_id
+    # db_profile is the profile whose state.db holds the run sessions.
+    # It may differ from `selected` when the job's jobs.json lives in one profile
+    # (e.g. "default") but the job was created with profile="gerente_agente_de_compras"
+    # — the scheduler writes runs into the job's own profile state.db, not the
+    # profile that owns the jobs.json file.  Honour job["scheduler_profile"] when
+    # present (set by _annotate_cron_job from the original job["profile"] field
+    # before annotation overwrites it) so the run-history endpoint opens the
+    # correct database.  Fall back to `selected` when the field is absent.
+    db_profile = selected
     if selected:
         job = _call_cron_for_profile(selected, "get_job", job_id)
-        if job and job.get("id"):
-            canonical = str(job["id"])
+        if isinstance(job, dict):
+            if job.get("id"):
+                canonical = str(job["id"])
+            sched_prof = job.get("scheduler_profile", "")
+            if sched_prof and sched_prof != selected:
+                db_profile = sched_prof
 
     try:
         limit_n = max(1, min(int(limit), 100))
     except (TypeError, ValueError):
         limit_n = 20
 
-    db = _open_session_db_for_profile(selected)
+    db = _open_session_db_for_profile(db_profile)
     try:
         runs = db.list_cron_job_runs(canonical, limit=limit_n, offset=0)
         now = time.time()
@@ -7748,8 +7769,8 @@ async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: 
                 and (now - s.get("last_active", s.get("started_at", 0))) < 300
             )
             s["archived"] = bool(s.get("archived"))
-            if selected:
-                s["profile"] = selected
+            if db_profile:
+                s["profile"] = db_profile
         return {"runs": runs, "limit": limit_n}
     finally:
         db.close()

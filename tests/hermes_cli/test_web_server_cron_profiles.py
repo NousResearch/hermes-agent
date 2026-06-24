@@ -197,3 +197,68 @@ async def test_cron_profile_validation_errors(isolated_profiles):
     with pytest.raises(HTTPException) as missing:
         await web_server.list_cron_jobs(profile="missing_profile")
     assert missing.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_list_cron_job_runs_reads_job_profile_state_db(isolated_profiles, tmp_path):
+    """Regression: /api/cron/jobs/{id}/runs must open the state.db that belongs to
+    the profile stored in job["profile"], NOT the profile that owns jobs.json.
+
+    Scenario that triggered the bug:
+    - jobs.json lives in "default" profile (the scheduler's home).
+    - The job carries profile="worker_alpha" (set at create time).
+    - Cron run sessions are written into worker_alpha/state.db.
+    - The endpoint was opening default/state.db → zero runs returned.
+    """
+    import json
+    import time
+
+    from hermes_state import SessionDB
+    from hermes_cli import web_server
+
+    # Create the job in the DEFAULT profile's jobs.json but tag it as worker_alpha.
+    job = web_server._call_cron_for_profile(
+        "default",
+        "create_job",
+        prompt="cross-profile run history test",
+        schedule="every 1h",
+        name="cross-profile-job",
+    )
+    job_id = job["id"]
+
+    # Manually stamp profile="worker_alpha" onto the job in jobs.json, simulating
+    # what the scheduler does for a job that was created under worker_alpha but
+    # whose jobs.json ended up in the default cron dir.
+    jobs_file = isolated_profiles["default"] / "cron" / "jobs.json"
+    data = json.loads(jobs_file.read_text())
+    for j in (data if isinstance(data, list) else data.get("jobs", [])):
+        if j.get("id") == job_id:
+            j["profile"] = "worker_alpha"
+            break
+    jobs_file.write_text(json.dumps(data if isinstance(data, list) else data))
+
+    # Write a real cron run session into worker_alpha's state.db.
+    worker_db_path = isolated_profiles["worker_alpha"] / "state.db"
+    session_id = f"cron_{job_id}_20991231_235959"
+    db = SessionDB(db_path=worker_db_path)
+    try:
+        db.create_session(
+            session_id=session_id,
+            model="test-model",
+            system_prompt="",
+            source="cron",
+        )
+        db.set_session_title(session_id, f"cross-profile-job · Dec 31 23:59")
+        db.end_session(session_id, "cron_complete")
+    finally:
+        db.close()
+
+    # The endpoint must now return the run from worker_alpha's state.db, not zero.
+    result = await web_server.list_cron_job_runs(job_id)
+    runs = result["runs"]
+    assert len(runs) == 1, (
+        f"Expected 1 run from worker_alpha state.db; got {len(runs)}. "
+        "Likely reading the wrong profile's state.db."
+    )
+    assert runs[0]["id"] == session_id
+    assert runs[0].get("profile") == "worker_alpha"

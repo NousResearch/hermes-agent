@@ -13,6 +13,7 @@ import inspect
 import json
 import logging
 import os
+import random
 import tempfile
 import html as _html
 import re
@@ -22,7 +23,17 @@ from typing import Dict, List, Optional, Set, Any
 logger = logging.getLogger(__name__)
 
 try:
+    from plugins.platforms.telegram.thinking_verbs import THINKING_VERBS as _THINKING_VERBS
+except Exception:
+    _THINKING_VERBS = ["Thinking"]
+
+try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import (
+        InlineQueryResultCachedAudio,
+        InlineQueryResultArticle,
+        InputTextMessageContent,
+    )
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
@@ -31,6 +42,7 @@ try:
         Application,
         CommandHandler,
         CallbackQueryHandler,
+        InlineQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
@@ -45,10 +57,14 @@ except ImportError:
     Message = Any
     InlineKeyboardButton = Any
     InlineKeyboardMarkup = Any
+    InlineQueryResultCachedAudio = Any
+    InlineQueryResultArticle = Any
+    InputTextMessageContent = Any
     LinkPreviewOptions = None
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    InlineQueryHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -81,7 +97,6 @@ from gateway.platforms.base import (
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
     SUPPORTED_IMAGE_DOCUMENT_TYPES,
-    _TEXT_INJECT_EXTENSIONS,
     utf16_len,
 )
 from plugins.platforms.telegram.telegram_network import (
@@ -108,6 +123,51 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 }
 
 
+MAX_COMMANDS_PER_SCOPE = 30
+
+# Hard deadline for answerInlineQuery — Telegram drops responses after ~10 s empirically.
+INLINE_RESPONSE_DEADLINE = 6.5
+
+
+def _discover_inline_executors(router) -> None:
+    """Scan inline_executors directories and call register(router) on each module.
+
+    Scans two directories (earlier entries are overridden by later ones with same name):
+      1. ~/.hermes/inline_executors/  (managed by root, user files go here)
+      2. ~/.hermes/local-patches/inline_executors/  (user-writable, takes precedence)
+    """
+    import importlib.util
+    import os
+    _hermes_home = os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes"))
+    _scan_dirs = [
+        os.path.join(_hermes_home, "inline_executors"),
+        os.path.join(_hermes_home, "local-patches", "inline_executors"),
+    ]
+    _seen: dict = {}  # fname -> path, later dirs win
+    for _dir in _scan_dirs:
+        if not os.path.isdir(_dir):
+            continue
+        for fname in sorted(os.listdir(_dir)):
+            if not fname.endswith(".py") or fname.startswith("_"):
+                continue
+            _seen[fname] = os.path.join(_dir, fname)
+
+    for fname, path in sorted(_seen.items()):
+        try:
+            spec = importlib.util.spec_from_file_location(fname[:-3], path)
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            if callable(getattr(mod, "register", None)):
+                mod.register(router)
+        except Exception as _disc_err:
+            import logging as _log
+            _log.getLogger(__name__).warning(
+                "[inline_router] failed to load executor %s: %s", fname, _disc_err
+            )
+
+
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
 
@@ -118,7 +178,8 @@ def check_telegram_requirements() -> bool:
     """
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
-    global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
+    global CommandHandler, CallbackQueryHandler, InlineQueryHandler, TelegramMessageHandler
+    global InlineQueryResultCachedAudio, InlineQueryResultArticle, InputTextMessageContent
     global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
     if TELEGRAM_AVAILABLE:
         return True
@@ -130,6 +191,11 @@ def check_telegram_requirements() -> bool:
     try:
         from telegram import Update as _Update, Bot as _Bot, Message as _Message
         from telegram import InlineKeyboardButton as _IKB, InlineKeyboardMarkup as _IKM
+        from telegram import (
+            InlineQueryResultCachedAudio as _IQRCA,
+            InlineQueryResultArticle as _IQRArt,
+            InputTextMessageContent as _ITMC,
+        )
         try:
             from telegram import LinkPreviewOptions as _LPO
         except ImportError:
@@ -137,6 +203,7 @@ def check_telegram_requirements() -> bool:
         from telegram.ext import (
             Application as _App, CommandHandler as _CH,
             CallbackQueryHandler as _CQH,
+            InlineQueryHandler as _IQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
         )
@@ -149,10 +216,14 @@ def check_telegram_requirements() -> bool:
     Message = _Message
     InlineKeyboardButton = _IKB
     InlineKeyboardMarkup = _IKM
+    InlineQueryResultCachedAudio = _IQRCA
+    InlineQueryResultArticle = _IQRArt
+    InputTextMessageContent = _ITMC
     LinkPreviewOptions = _LPO
     Application = _App
     CommandHandler = _CH
     CallbackQueryHandler = _CQH
+    InlineQueryHandler = _IQH
     TelegramMessageHandler = _MH
     ContextTypes = _CT
     filters = _filters
@@ -414,7 +485,6 @@ class TelegramAdapter(BasePlatformAdapter):
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # Telegram MarkdownV2 renders fenced code blocks
-    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Bot API 10.1 Rich Messages cap the raw markdown/html text at 32,768
     # UTF-8 characters. Content above this is sent via the legacy chunking path.
     RICH_MESSAGE_MAX_CHARS = 32768
@@ -433,6 +503,13 @@ class TelegramAdapter(BasePlatformAdapter):
     # edit and the final edit, skipping the plain-text → MarkdownV2 conversion.
     # Fixes #25710.
     REQUIRES_EDIT_FINALIZE: bool = True
+
+    # In guest mode (answerGuestQuery), the reply must be a single coherent
+    # answer, not a concatenation of all inter-tool commentary segments.
+    # Setting this True tells stream_consumer._send_fallback_final to deliver
+    # only the last segment's text and tag it with "guest_segment_start" so
+    # the send() buffer replaces instead of appending stale preamble.
+    GUEST_MODE_DROPS_PRIOR_SEGMENTS: bool = True
 
     # Adaptive text-batch ingress: short messages need a tighter delay so the
     # first token reaches the agent fast.  Numbers tuned for "feels instant":
@@ -605,8 +682,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_guest_queries: Dict[str, str] = {}
         # chat IDs that are guest-mode only (bot not a member)
         self._guest_only_chats: set = set()
-        # accumulated send() content for guest chats; flushed via answerGuestQuery in on_processing_complete
+        # accumulated send() content for guest chats; flushed via editMessageText in on_processing_complete
         self._guest_reply_buffer: Dict[str, str] = {}
+        # inline_message_id returned by the stub answerGuestQuery; used for the follow-up editMessageText
+        self._guest_inline_message_ids: Dict[str, Optional[str]] = {}
+        # inline query router (initialised in connect() once self._bot is available)
+        self._inline_router: Optional[Any] = None
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -812,47 +893,6 @@ class TelegramAdapter(BasePlatformAdapter):
     @staticmethod
     def _is_thread_not_found_error(error: Exception) -> bool:
         return "thread not found" in str(error).lower()
-
-    def _prune_stale_dm_topic_binding(
-        self, chat_id: Any, thread_id: Any,
-    ) -> None:
-        """Drop the stale ``telegram_dm_topic_bindings`` row for a
-        topic Telegram has confirmed deleted.
-
-        Without this prune the recovery logic in
-        ``gateway.run._recover_telegram_topic_thread_id`` keeps
-        steering future inbound messages to the dead thread (the
-        bug behind #31501 — tool progress, approvals, replies all
-        end up in the wrong place even though the user has moved
-        on to a fresh topic).  Best-effort: we never raise from a
-        send-fallback path — a failed cleanup must not turn into a
-        failed user-facing send.
-        """
-        if chat_id is None or thread_id is None:
-            return
-        store = getattr(self, "_session_store", None)
-        if store is None:
-            return
-        db = getattr(store, "_db", None)
-        if db is None or not hasattr(db, "delete_telegram_topic_binding"):
-            return
-        try:
-            removed = db.delete_telegram_topic_binding(
-                chat_id=str(chat_id), thread_id=str(thread_id),
-            )
-        except Exception:
-            logger.debug(
-                "[%s] delete_telegram_topic_binding failed for "
-                "chat=%s thread=%s — skipping prune",
-                self.name, chat_id, thread_id, exc_info=True,
-            )
-            return
-        if removed:
-            logger.info(
-                "[%s] Pruned stale Telegram DM topic binding "
-                "chat=%s thread=%s (Bot API: thread not found)",
-                self.name, chat_id, thread_id,
-            )
 
     @staticmethod
     def _is_bad_request_error(error: Exception) -> bool:
@@ -2033,13 +2073,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        _yaml.dump(
-                            config,
-                            f,
-                            default_flow_style=False,
-                            sort_keys=False,
-                            allow_unicode=True,
-                        )
+                        _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
                         f.flush()
                         os.fsync(f.fileno())
                     atomic_replace(tmp_path, config_path)
@@ -2213,43 +2247,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
 
-            # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's
-            # HTTPXRequest builds the underlying httpx.AsyncClient with
-            # `limits = httpx.Limits(max_connections=connection_pool_size)`
-            # and *no* keepalive tuning, so httpx's default
-            # keepalive_expiry=5.0 applies. Behind an HTTP proxy (Cloudflare
-            # Warp etc.) a peer-initiated FIN can sit in CLOSE_WAIT longer
-            # than that, leaking fds in the general request pool (_request[1])
-            # which _drain_polling_connections never resets. Wire the shared
-            # platform_httpx_limits() helper into the httpx client so idle
-            # keepalive sockets drain aggressively, while preserving PTB's
-            # max_connections (= connection_pool_size). httpx_kwargs is spread
-            # last into PTB's client kwargs, so `limits` here wins.
-            from gateway.platforms._http_client_limits import platform_httpx_limits
-
-            _base_limits = platform_httpx_limits()
-            if _base_limits is not None:
-                import httpx as _httpx
-
-                _pool_limits = _httpx.Limits(
-                    max_connections=request_kwargs["connection_pool_size"],
-                    max_keepalive_connections=_base_limits.max_keepalive_connections,
-                    keepalive_expiry=_base_limits.keepalive_expiry,
-                )
-            else:  # pragma: no cover — httpx always present alongside PTB
-                _pool_limits = None
-
-            def _with_limits(httpx_kwargs: Optional[dict] = None) -> dict:
-                """Merge tuned keepalive limits into httpx client kwargs.
-
-                A caller-supplied ``limits`` (none today) is left untouched;
-                otherwise the CLOSE_WAIT-safe limits are injected.
-                """
-                kwargs = dict(httpx_kwargs or {})
-                if _pool_limits is not None and "limits" not in kwargs:
-                    kwargs["limits"] = _pool_limits
-                return kwargs
-
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
             if not fallback_ips:
@@ -2272,64 +2269,67 @@ class TelegramAdapter(BasePlatformAdapter):
                 # polling reconnect + bot API bootstrap/delete_webhook calls.
                 request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs=_with_limits(
-                        {"transport": TelegramFallbackTransport(fallback_ips)}
-                    ),
+                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs=_with_limits(
-                        {"transport": TelegramFallbackTransport(fallback_ips)}
-                    ),
+                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(
-                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
-                )
-                get_updates_request = HTTPXRequest(
-                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
-                )
+                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-                request = HTTPXRequest(**request_kwargs, httpx_kwargs=_with_limits())
-                get_updates_request = HTTPXRequest(
-                    **request_kwargs, httpx_kwargs=_with_limits()
-                )
+                request = HTTPXRequest(**request_kwargs)
+                get_updates_request = HTTPXRequest(**request_kwargs)
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
             self._bot = self._app.bot
-            
-            # Register handlers
-            self._app.add_handler(TelegramMessageHandler(
-                filters.TEXT & ~filters.COMMAND,
-                self._handle_text_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.COMMAND,
-                self._handle_command
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
-                self._handle_location_message
-            ))
-            self._app.add_handler(TelegramMessageHandler(
-                filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
-                self._handle_media_message
-            ))
-            # Handle inline keyboard button callbacks (update prompts)
-            self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            # Handle guest_message updates (Bot API 10.0 — not yet in PTB typed layer;
-            # the raw payload arrives in update.api_kwargs["guest_message"]).
+
+            # Inline router — reads ~/.hermes/inline_tools.yaml for dispatch config
             try:
-                from telegram.ext import TypeHandler as _TypeHandler
-                self._app.add_handler(
-                    _TypeHandler(Update, self._handle_guest_message_update), group=1
-                )
-            except Exception as _th_err:
-                logger.warning("[%s] Could not register guest_message TypeHandler: %s", self.name, _th_err)
+                from gateway.platforms.telegram_inline_router import TelegramInlineRouter
+                self._inline_router = TelegramInlineRouter(self._bot)
+                _discover_inline_executors(self._inline_router)
+            except Exception as _irt_err:
+                logger.warning("[%s] inline router init failed: %s", self.name, _irt_err)
+
+            # Register handlers
+            _inline_only = self.config.extra.get("inline_only_mode", False) if getattr(self.config, "extra", None) else False
+            if not _inline_only:
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.TEXT & ~filters.COMMAND,
+                    self._handle_text_message
+                ))
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.COMMAND,
+                    self._handle_command
+                ))
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.LOCATION | getattr(filters, "VENUE", filters.LOCATION),
+                    self._handle_location_message
+                ))
+                self._app.add_handler(TelegramMessageHandler(
+                    filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
+                    self._handle_media_message
+                ))
+                # Handle inline keyboard button callbacks (update prompts)
+                self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
+            # Handle inline queries (e.g. @botname <song name or spotify link>)
+            self._app.add_handler(InlineQueryHandler(self._handle_inline_query))
+            if not _inline_only:
+                # Handle guest_message updates (Bot API 10.0 — not yet in PTB typed layer;
+                # the raw payload arrives in update.api_kwargs["guest_message"]).
+                try:
+                    from telegram.ext import TypeHandler as _TypeHandler
+                    self._app.add_handler(
+                        _TypeHandler(Update, self._handle_guest_message_update), group=1
+                    )
+                except Exception as _th_err:
+                    logger.warning("[%s] Could not register guest_message TypeHandler: %s", self.name, _th_err)
 
             # Start polling — retry initialize() for transient TLS resets
             try:
@@ -2351,6 +2351,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         await asyncio.sleep(wait)
                     else:
                         raise
+            if self._inline_router is not None:
+                self._inline_router.bot_username = getattr(self._bot, "username", None)
             await self._app.start()
 
             # Decide between webhook and polling mode
@@ -2440,14 +2442,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommandScopeAllGroupChats,
                     BotCommandScopeDefault,
                 )
-                from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
+                from hermes_cli.commands import telegram_menu_commands
                 # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit (~4KB total).  Hermes defaults to 60 to
-                # keep built-ins plus common skill commands visible while
-                # staying under the threshold; users can tune the cap via
-                # platforms.telegram.extra.command_menu.
-                max_commands = telegram_menu_max_commands()
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
+                # payload size limit (~4KB total).  Limit to 30 core commands
+                # to stay well under the threshold while covering all categories.
+                menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
@@ -2466,7 +2465,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if hidden_count:
                     logger.info(
                         "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count, max_commands,
+                        self.name, len(menu_commands), hidden_count, 30,
                     )
             except Exception as e:
                 logger.warning(
@@ -2636,8 +2635,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not _is_stream_send:
                     return SendResult(success=True, message_id=None)
 
-                # Strip the streaming cursor " ▉" before buffering so it is
-                # never embedded mid-word in the final reply.
+                # Streaming path: when Phase 1 placed a stub and returned an
+                # inline_message_id, hand ownership of delivery to the stream
+                # consumer by returning that id.  The consumer will then drive
+                # progressive edits via edit_message(), which we intercept below
+                # to route to editMessageText(inline_message_id=...).
+                _imi = self._guest_inline_message_ids.get(chat_id)
+                if _imi is not None:
+                    return SendResult(success=True, message_id=_imi)
+
+                # No imi (stub failed) — fall back to buffer mode so the final
+                # on_processing_complete flush can still deliver via answerGuestQuery.
                 _cursor = " ▉"
                 _clean = content
                 if _clean.endswith(_cursor):
@@ -2646,7 +2654,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     _clean = _clean[:-1]
 
                 _existing = self._guest_reply_buffer.get(chat_id, "")
-                if _existing and _clean.startswith(_existing):
+                if metadata and metadata.get("guest_segment_start"):
+                    # Stream consumer had a tool-call segment break on a __no_edit__
+                    # platform: inter-tool commentary was cleared in the consumer and
+                    # this is the start of the final-answer delivery.  Replace the
+                    # buffer so preamble text ("searching...", failed-tool narration)
+                    # from earlier segments does not appear in the answerGuestQuery.
+                    self._guest_reply_buffer[chat_id] = _clean
+                elif _existing and _clean.startswith(_existing):
                     # Cumulative streaming update: new content contains all
                     # prior content as a prefix → replace so the last call wins.
                     self._guest_reply_buffer[chat_id] = _clean
@@ -2816,16 +2831,10 @@ class TelegramAdapter(BasePlatformAdapter):
                                     continue
                                 # Second failure: the thread is genuinely gone.
                                 # Retry without ``message_thread_id`` so the
-                                # message still reaches the chat, and prune
-                                # the stale binding so future inbound
-                                # messages aren't redirected back to it
-                                # (#31501).
+                                # message still reaches the chat.
                                 logger.warning(
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
-                                )
-                                self._prune_stale_dm_topic_binding(
-                                    chat_id, effective_thread_id,
                                 )
                                 used_thread_fallback = True
                                 effective_thread_id = None
@@ -2920,14 +2929,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
-                continuation_message_ids=tuple(message_ids[1:]) if len(message_ids) > 1 else (),
                 raw_response={
                     "message_ids": message_ids,
                     "requested_thread_id": requested_thread_id,
                     "thread_fallback": used_thread_fallback,
                 },
             )
-
+            
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
             err_str = str(e).lower()
@@ -3016,6 +3024,43 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
+        # Guest mode: stream consumer drives progressive edits via inline_message_id.
+        # Intercept before any path that calls int(chat_id)/int(message_id) — the
+        # inline_message_id is a string like "AAMCAgAD..." that cannot be cast to int.
+        _imi = self._guest_inline_message_ids.get(str(chat_id))
+        if _imi and message_id == _imi:
+            _text = content
+            for _cur in (" ▉", "▉"):
+                if _text.endswith(_cur):
+                    _text = _text[: -len(_cur)]
+                    break
+            # Strip MEDIA: directives that the stream consumer passes through raw.
+            if "MEDIA:" in _text:
+                _text = re.sub(r"MEDIA:\S+", "", _text).strip()
+                _text = re.sub(r"\n{3,}", "\n\n", _text)
+            _text = (_strip_mdv2(self.format_message(_text)) if finalize else _text)[:4096]
+            if not _text.strip():
+                return SendResult(success=True, message_id=message_id)
+            try:
+                await self._bot.do_api_request(
+                    "editMessageText",
+                    api_kwargs={"inline_message_id": _imi, "text": _text},
+                )
+                return SendResult(success=True, message_id=message_id)
+            except Exception as _ie:
+                _ie_s = str(_ie).lower()
+                if "not modified" in _ie_s:
+                    return SendResult(success=True, message_id=message_id)
+                logger.warning(
+                    "[%s] guest inline editMessageText failed (imi=%s): %s",
+                    self.name, _imi, _ie,
+                )
+                return SendResult(
+                    success=False,
+                    error=str(_ie),
+                    retryable="retry after" in _ie_s or "flood" in _ie_s,
+                )
+
         # Rich finalize (Bot API 10.1): when the completed content has
         # constructs the legacy MarkdownV2 edit degrades (tables → bullet
         # lists, task lists, <details>, block math) and rich is available,
@@ -3032,18 +3077,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 return rich_result
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
-        # without round-tripping a doomed edit.  During streaming
-        # (finalize=False) we truncate instead of splitting — splitting creates
-        # continuation messages whose IDs become the new edit target, and on
-        # the next token chunk the full accumulated text is re-edited into the
-        # continuation, triggering another split → infinite duplication loop
-        # (#48648).  The full content is delivered when finalize=True.
+        # without round-tripping a doomed edit.
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
-            if finalize:
-                return await self._edit_overflow_split(
-                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
-                )
-            content = self._truncate_stream_overflow_preview(content)
+            return await self._edit_overflow_split(
+                chat_id, message_id, content, finalize=finalize, metadata=metadata,
+            )
 
         try:
             if not finalize:
@@ -3092,18 +3130,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] edit_message overflow (%d UTF-16 > %d), splitting",
                     self.name, utf16_len(content), self.MAX_MESSAGE_LENGTH,
                 )
-                if finalize:
-                    return await self._edit_overflow_split(
-                        chat_id, message_id, content, finalize=finalize, metadata=metadata,
-                    )
-                # Mid-stream: truncate and retry instead of splitting (#48648).
-                truncated = self._truncate_stream_overflow_preview(content)
-                await self._bot.edit_message_text(
-                    chat_id=int(chat_id),
-                    message_id=int(message_id),
-                    text=truncated,
+                return await self._edit_overflow_split(
+                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
                 )
-                return SendResult(success=True, message_id=message_id)
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.
@@ -3165,21 +3194,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
-
-    def _truncate_stream_overflow_preview(self, content: str) -> str:
-        """Return a one-message preview for oversized streaming edits.
-
-        Streaming edits must keep targeting the original message. Splitting a
-        mid-stream preview creates continuation messages and moves the active
-        message id, so the next accumulated-token edit repeats the overflow
-        cycle (#48648). Final edits still use ``_edit_overflow_split`` to
-        deliver the complete response.
-        """
-        return self.truncate_message(
-            content,
-            self.MAX_MESSAGE_LENGTH,
-            len_fn=utf16_len,
-        )[0]
 
     async def _edit_overflow_split(
         self,
@@ -3547,13 +3561,6 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Thread %s not found for control message, retrying without message_thread_id",
                     self.name,
                     message_thread_id,
-                )
-                # Same prune as the streaming send path — the
-                # control-message retry tells us the topic is gone,
-                # so the binding row in state.db must go too
-                # (#31501).
-                self._prune_stale_dm_topic_binding(
-                    kwargs.get("chat_id"), message_thread_id,
                 )
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("message_thread_id", None)
@@ -6077,11 +6084,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         if cached is None:
-            # Only reachable for images that fail validation now — any other
-            # file type is always cached (authorization is the gate, not the
-            # extension).
             event.text = self._append_observed_note(
-                event.text, "[Observed Telegram attachment could not be read, not cached.]"
+                event.text, "[Observed Telegram attachment: unsupported type, not cached.]"
             )
             return
 
@@ -6292,8 +6296,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 if chat_id in self._forum_command_registered:
                     return
                 from telegram import BotCommand, BotCommandScopeChat
-                from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())
+                from hermes_cli.commands import telegram_menu_commands
+                menu_commands, _ = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)
@@ -6310,6 +6314,36 @@ class TelegramAdapter(BasePlatformAdapter):
         consuming channel posts without ever building a gateway event.
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
+
+    async def _handle_inline_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Deadline-enforced dispatch wrapper for inline queries."""
+        import asyncio as _asyncio
+        iq = getattr(update, "inline_query", None)
+        if not iq:
+            return
+
+        _inline_cfg = self.config.extra.get("inline", {}) if getattr(self.config, "extra", None) else {}
+        if isinstance(_inline_cfg, dict) and not _inline_cfg.get("enabled", True):
+            logger.debug("[%s] inline queries disabled in config — dropping", self.name)
+            return
+
+        query = (iq.query or "").strip()
+        if not query or not self._inline_router:
+            await iq.answer([], cache_time=0)
+            return
+
+        try:
+            results = await _asyncio.wait_for(
+                self._inline_router.dispatch(iq.from_user.id, query),
+                timeout=INLINE_RESPONSE_DEADLINE,
+            )
+            await iq.answer(results or [], cache_time=0)
+        except _asyncio.TimeoutError:
+            logger.debug("[%s] inline dispatch timed out for %r", self.name, query[:60])
+            await iq.answer([], cache_time=0)
+        except Exception as exc:
+            logger.warning("[%s] inline dispatch error: %s", self.name, exc)
+            await iq.answer([], cache_time=0)
 
     async def _handle_guest_message_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle guest_message updates (Bot API 10.0 guest bot feature).
@@ -6348,7 +6382,7 @@ class TelegramAdapter(BasePlatformAdapter):
         if not chat_id_str:
             return
 
-        # Store guest_query_id so send() uses answerGuestQuery for the reply.
+        # Register chat before _should_process_message so send() guards work.
         self._pending_guest_queries[chat_id_str] = guest_query_id
         self._guest_only_chats.add(chat_id_str)
 
@@ -6356,6 +6390,32 @@ class TelegramAdapter(BasePlatformAdapter):
             self._pending_guest_queries.pop(chat_id_str, None)
             self._guest_only_chats.discard(chat_id_str)
             return
+
+        # Phase 1: fire a stub immediately so the user sees a progress verb
+        # while the LLM processes.  answerGuestQuery consumes the query_id; on
+        # success we save inline_message_id for progressive edits in phase 2.
+        _imi: Optional[str] = None
+        if self._bot:
+            _verb = random.choice(_THINKING_VERBS)
+            _stub = {
+                "type": "article",
+                "id": "thinking",
+                "title": f"{_verb}...",
+                "input_message_content": {"message_text": f"⏳ {_verb}..."},
+            }
+            try:
+                _stub_resp = await self._bot.do_api_request(
+                    "answerGuestQuery",
+                    api_kwargs={"guest_query_id": guest_query_id, "result": _stub},
+                )
+                _imi = _stub_resp.get("inline_message_id") if isinstance(_stub_resp, dict) else None
+                logger.info("[%s] guest stub sent (chat=%s inline_message_id=%s)", self.name, chat_id_str, _imi)
+            except Exception as _stub_err:
+                logger.warning(
+                    "[%s] guest stub failed (chat=%s): %s — will fall back to answerGuestQuery",
+                    self.name, chat_id_str, _stub_err,
+                )
+        self._guest_inline_message_ids[chat_id_str] = _imi
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
@@ -6797,30 +6857,33 @@ class TelegramAdapter(BasePlatformAdapter):
                 # ext-in-SUPPORTED_IMAGE_DOCUMENT_TYPES branch would be dead
                 # code — the extension sets are identical.
 
-                # Download and cache. Any file type is accepted — authorization
-                # to message the agent is the gate, not the file extension.
-                # Known types keep their precise MIME; unknown types are tagged
-                # application/octet-stream so the agent reaches for terminal tools.
+                # Check if supported
+                if ext not in SUPPORTED_DOCUMENT_TYPES:
+                    supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
+                    event.text = (
+                        f"Unsupported document type '{ext or 'unknown'}'. "
+                        f"Supported types: {supported_list}"
+                    )
+                    logger.info("[Telegram] Unsupported document type: %s", ext or "unknown")
+                    await self.handle_message(event)
+                    return
+
+                # Download and cache
                 file_obj = await doc.get_file()
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
-                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext or '.bin'}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES.get(ext) or doc.mime_type or "application/octet-stream"
+                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext}")
+                mime_type = SUPPORTED_DOCUMENT_TYPES[ext]
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
-                logger.info("[Telegram] Cached user document at %s (%s)", cached_path, mime_type)
+                logger.info("[Telegram] Cached user document at %s", cached_path)
 
-                # For text-readable files, inject content into event.text (capped
-                # at 100 KB). Gate on a text-like extension/MIME — NOT a blind
-                # UTF-8 decode, since binary formats (PDF/zip/docx) can have
-                # decodable ASCII headers. Binary files are surfaced as a cached
-                # path only (run.py emits a path-pointing context note).
+                # For text files, inject content into event.text (capped at 100 KB)
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
-                _is_text = ext in _TEXT_INJECT_EXTENSIONS or (doc_mime or "").startswith("text/")
-                if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                if ext in {".md", ".txt"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                     try:
                         text_content = raw_bytes.decode("utf-8")
-                        display_name = original_filename or f"document{ext or '.txt'}"
+                        display_name = original_filename or f"document{ext}"
                         display_name = re.sub(r'[^\w.\- ]', '_', display_name)
                         injection = f"[Content of {display_name}]:\n{text_content}"
                         if event.text:
@@ -6828,9 +6891,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         else:
                             event.text = injection
                     except UnicodeDecodeError:
-                        # Binary file — agent has the cached path and can use
-                        # terminal/read_file against it. No inline injection.
-                        pass
+                        logger.warning(
+                            "[Telegram] Could not decode text file as UTF-8, skipping content injection",
+                            exc_info=True,
+                        )
 
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
@@ -7360,28 +7424,48 @@ class TelegramAdapter(BasePlatformAdapter):
         _gc_id = str(getattr(event.source, "chat_id", None) or "")
         if _gc_id:
             _guest_qid = self._pending_guest_queries.pop(_gc_id, None)
+            _guest_imi = self._guest_inline_message_ids.pop(_gc_id, None)
             _buffered = self._guest_reply_buffer.pop(_gc_id, "")
             self._guest_only_chats.discard(_gc_id)
-            if _guest_qid and self._bot:
-                _plain = _strip_mdv2(self.format_message(_buffered)).strip() if _buffered else ""
-                _plain = _plain[:4096] or "​"  # zero-width space if somehow empty
-                _gq_result = {
-                    "type": "article",
-                    "id": "reply",
-                    "title": "Reply",
-                    "input_message_content": {"message_text": _plain},
-                }
-                try:
-                    await self._bot.do_api_request(
-                        "answerGuestQuery",
-                        api_kwargs={"guest_query_id": _guest_qid, "result": _gq_result},
+            if (_guest_qid or _guest_imi) and self._bot:
+                if _guest_imi and not _buffered:
+                    # Stream consumer drove delivery via progressive editMessageText
+                    # calls; nothing left to do here.
+                    logger.debug(
+                        "[%s] guest reply delivered by stream consumer (chat=%s)",
+                        self.name, _gc_id,
                     )
-                    logger.info("[%s] answerGuestQuery flushed (chat=%s)", self.name, _gc_id)
-                except Exception as _flush_err:
-                    logger.warning(
-                        "[%s] answerGuestQuery flush failed (chat=%s): %s",
-                        self.name, _gc_id, _flush_err,
-                    )
+                else:
+                    _plain = _strip_mdv2(self.format_message(_buffered)).strip() if _buffered else ""
+                    _reply_text = _plain[:4096] or "⚠️ Sorry, something went wrong. Please try again."
+                    try:
+                        if _guest_imi:
+                            # Streaming started but buffer has content — stub was
+                            # placed but the stream consumer fell back to buffer mode
+                            # (e.g. edit_message flood-fallback).  Do a final edit.
+                            await self._bot.do_api_request(
+                                "editMessageText",
+                                api_kwargs={"inline_message_id": _guest_imi, "text": _reply_text},
+                            )
+                            logger.info("[%s] guest reply edited (buffered fallback, chat=%s)", self.name, _gc_id)
+                        else:
+                            # No imi: stub failed — answerGuestQuery still usable.
+                            _gq_result = {
+                                "type": "article",
+                                "id": "reply",
+                                "title": "Reply",
+                                "input_message_content": {"message_text": _reply_text},
+                            }
+                            await self._bot.do_api_request(
+                                "answerGuestQuery",
+                                api_kwargs={"guest_query_id": _guest_qid, "result": _gq_result},
+                            )
+                            logger.info("[%s] answerGuestQuery fallback flushed (chat=%s)", self.name, _gc_id)
+                    except Exception as _flush_err:
+                        logger.warning(
+                            "[%s] guest reply flush failed (chat=%s): %s",
+                            self.name, _gc_id, _flush_err,
+                        )
 
         if not self._reactions_enabled():
             return
@@ -7443,6 +7527,21 @@ def _resolve_notifications_mode() -> str:
 def _build_adapter(config):
     """Factory wrapper that constructs TelegramAdapter and applies the
     notification mode (preserving the gateway/run.py post-construction step)."""
+    adapter = TelegramAdapter(config)
+    try:
+        adapter._notifications_mode = _resolve_notifications_mode()
+    except Exception:
+        adapter._notifications_mode = "important"
+    return adapter
+
+
+def _build_inline_adapter(config):
+    """Factory for the inline-only Telegram adapter (TELEGRAM_BOT_TOKEN_INLINE).
+
+    Creates a TelegramAdapter with inline_only_mode=True so connect() only
+    registers InlineQueryHandler — no chat, command, or callback handlers.
+    """
+    config.extra["inline_only_mode"] = True
     adapter = TelegramAdapter(config)
     try:
         adapter._notifications_mode = _resolve_notifications_mode()
@@ -7625,4 +7724,15 @@ def register(ctx) -> None:
         max_message_length=4096,
         emoji="✈️",
         allow_update_command=True,
+    )
+    ctx.register_platform(
+        name="telegram_inline",
+        label="Telegram Inline Bot",
+        adapter_factory=_build_inline_adapter,
+        check_fn=check_telegram_requirements,
+        is_connected=_is_connected,
+        required_env=["TELEGRAM_BOT_TOKEN_INLINE"],
+        install_hint="Set TELEGRAM_BOT_TOKEN_INLINE in ~/.hermes/.env",
+        max_message_length=4096,
+        emoji="🎵",
     )

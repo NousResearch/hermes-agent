@@ -15,16 +15,25 @@ function asRecord(payload: unknown): Record<string, unknown> {
  * Whether an unscoped event (no `session_id`) must be dropped rather than
  * attributed to the focused chat.
  *
- * Only `subagent.*` qualifies: it describes background/async work that must
- * never attach to whichever chat happens to be focused. Every other scoped
- * event — message/reasoning/thinking/tool/status/prompt — is, when unscoped,
- * the active turn's own output. The gateway always stamps a *background*
- * session's events with that session's id, so a missing id can only mean "the
- * focused turn". #42178 dropped those too, which silently swallowed the live
- * answer; it then reappeared only after a transcript refetch (manual refresh).
+ * Global broadcasts that carry no session scope are exempt. Everything else
+ * - message, reasoning, thinking, tool, status, prompt, session.info,
+ * clarify, approval, error - is session-scoped and must carry an explicit
+ * session_id.  When the gateway fails to stamp one (race, background-process
+ * delivery, subagent mirror, stale transport), dropping the event is safer
+ * than silently attributing it to whichever session happens to be focused.
+ *
+ * Fixes #49106 (Web/WeChat session history leak / stream bleed across
+ * sessions) and the #47709 family of desktop stream-bleed bugs.
  */
 export function gatewayEventRequiresSessionId(eventType: string | undefined): boolean {
-  return eventType?.startsWith('subagent.') ?? false
+  if (!eventType) {
+    return true
+  }
+  // Truly global broadcasts that are not owned by any single session.
+  if (eventType === 'gateway.ready' || eventType === 'skin.changed') {
+    return false
+  }
+  return true
 }
 
 export function gatewayEventCompletedFileDiff(event: RpcEventLike): boolean {

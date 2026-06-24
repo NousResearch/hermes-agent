@@ -604,16 +604,30 @@ class TestExternalDriftGuard:
         assert Path(bak).exists()
         assert "Vendor Master" in Path(bak).read_text()
 
-    def test_add_refuses_on_drift(self, store):
-        store.add("memory", "Existing.")
-        path = self._plant_drift(store)
-        original = path.read_text()
+    def test_add_succeeds_despite_drift(self, store):
+        """Add (append) should succeed even when on-disk content shows drift.
+
+        The drift guard protects replace/remove from clobbering un-roundtrippable
+        content, but add only appends — it never overwrites existing entries.
+        Issue #42874: prior-session add() writes shift the byte count, causing
+        the round-trip check to fire on subsequent adds in the same session.
+        """
+        store.add("memory", "Existing entry.")
+        # Plant a mild drift: append content that won't round-trip but stays
+        # under the char limit (500 chars in test fixture).
+        path = store._path_for("memory")
+        path.write_text(
+            path.read_text(encoding="utf-8") + "\nextra content no delimiter",
+            encoding="utf-8",
+        )
 
         result = store.add("memory", "New entry under drift.")
 
-        assert result["success"] is False
-        assert "drift_backup" in result
-        assert path.read_text() == original  # untouched
+        assert result["success"] is True
+        # The new entry is appended — existing drift content is preserved.
+        updated = path.read_text(encoding="utf-8")
+        assert "New entry under drift." in updated
+        assert "extra content no delimiter" in updated
 
     def test_remove_refuses_on_drift(self, store):
         store.add("memory", "Target entry to remove.")
@@ -668,12 +682,16 @@ class TestExternalDriftGuard:
         overwrite the first .bak. The current implementation accepts that
         — both files describe the same on-disk state — but pin the path
         format here so any future change has to think about it.
+
+        Note: add() no longer triggers drift detection (issue #42874) —
+        only replace/remove do.  Both r1 and r2 use replace/remove.
         """
         store.add("memory", "Initial.")
+        store.add("memory", "Second entry.")
         self._plant_drift(store)
 
         r1 = store.replace("memory", "Initial", "Replacement.")
-        r2 = store.add("memory", "Another.")
+        r2 = store.remove("memory", "Second entry")
         assert r1.get("drift_backup")
         assert r2.get("drift_backup")
         # Same epoch second is the expected collision case — both point

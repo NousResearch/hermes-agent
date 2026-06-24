@@ -13,13 +13,16 @@ from tools.discord_tool import (
     _ADMIN_ACTIONS,
     _CORE_ACTIONS,
     _available_actions,
+    _build_schema,
     _channel_type_name,
     _detect_capabilities,
     _discord_request,
     _enrich_403,
+    _fetch_messages,
     _get_bot_token,
     _load_allowed_actions_config,
     _reset_capability_cache,
+    _search_members,
     check_discord_tool_requirements,
     discord_admin_handler,
     discord_core,
@@ -1294,3 +1297,84 @@ class TestModelToolsIntegration:
         assert "discord" not in names
         assert "discord_admin" not in names
         assert "discord_server" not in names
+
+
+# ---------------------------------------------------------------------------
+# Focused edge cases
+# ---------------------------------------------------------------------------
+
+class TestDiscordRequestErrorBodyReadFailure:
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_raises_with_empty_body_when_error_read_fails(self, mock_urlopen_fn):
+        http_error = urllib.error.HTTPError(
+            url="https://discord.com/api/v10/test",
+            code=500,
+            msg="Internal Server Error",
+            hdrs={},
+            fp=None,
+        )
+        http_error.read = MagicMock(side_effect=OSError("read failed"))
+        mock_urlopen_fn.side_effect = http_error
+
+        with pytest.raises(DiscordAPIError) as exc_info:
+            _discord_request("GET", "/test", "tok")
+
+        assert exc_info.value.status == 500
+        assert exc_info.value.body == ""
+        assert exc_info.value.__cause__ is http_error
+
+
+class TestInvalidLimitFallbacks:
+    @pytest.mark.parametrize("limit", ["not-a-number", None])
+    @patch("tools.discord_tool._discord_request")
+    def test_search_members_defaults_to_20(self, mock_request, limit):
+        mock_request.return_value = []
+
+        result = json.loads(_search_members("tok", "111", "query", limit=limit))
+
+        assert result == {"members": [], "count": 0}
+        mock_request.assert_called_once_with(
+            "GET",
+            "/guilds/111/members/search",
+            "tok",
+            params={"query": "query", "limit": "20"},
+        )
+
+    @pytest.mark.parametrize("limit", ["not-a-number", None])
+    @patch("tools.discord_tool._discord_request")
+    def test_fetch_messages_defaults_to_50(self, mock_request, limit):
+        mock_request.return_value = []
+
+        result = json.loads(_fetch_messages("tok", "11", limit=limit))
+
+        assert result == {"messages": [], "count": 0}
+        mock_request.assert_called_once_with(
+            "GET",
+            "/channels/11/messages",
+            "tok",
+            params={"limit": "50"},
+        )
+
+
+class TestFetchMessagesPagination:
+    @pytest.mark.parametrize(
+        ("name", "value"),
+        [("before", "123456"), ("after", "7890")],
+    )
+    @patch("tools.discord_tool._discord_request")
+    def test_forwards_cursor(self, mock_request, name, value):
+        mock_request.return_value = []
+
+        result = json.loads(_fetch_messages("tok", "11", **{name: value}))
+
+        assert result == {"messages": [], "count": 0}
+        mock_request.assert_called_once_with(
+            "GET",
+            "/channels/11/messages",
+            "tok",
+            params={"limit": "50", name: value},
+        )
+
+
+def test_build_schema_returns_none_for_empty_actions():
+    assert _build_schema([]) is None

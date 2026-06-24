@@ -1969,8 +1969,7 @@ Jobs run in a fresh session with no current-chat context, so prompts must be sel
                 "description": "For create: the full self-contained prompt (paired with any skills as the task instruction). For run: optional transient context for that single fire (never persisted)."
             },
             "schedule": {
-                "type": "string",
-                "description": "REQUIRED for create. '30m' (every 30 minutes), 'every 2h', cron syntax '0 9 * * *' (daily 9am), or an ISO timestamp for one-shot ('2026-06-01T09:00:00')."
+                "t                "description": "REQUIRED for create. '30m' (every 30 minutes), 'every 2h', 'every monday 9am' / 'every day at 9am' (recurring weekly/daily), cron syntax '0 9 * * *' (daily 9am), or an ISO timestamp for one-shot ('2026-06-01T09:00:00')."
             },
             "name": {
                 "type": "string",

@@ -144,14 +144,22 @@ def tool_errors_since(tool_call_log: list, start: int = 0) -> list:
 
 def _rpc_server_loop(server_sock: socket.socket, task_id: str, tool_call_log: list,
                      tool_call_counter: list, max_tool_calls: int, allowed_tools: frozenset,
-                     stop_event: threading.Event, rpc_token: str, dispatch=None):
+                     stop_event: threading.Event, rpc_token: str, dispatch=None,
+                     session_id: str = ""):
     """Accept one client and serve newline-delimited JSON requests until it disconnects, idles
     300s, or the call limit is reached. ``tool_call_counter`` is a mutable ``[int]``. ``dispatch``
     overrides how an allowed, budgeted call runs: per-call sandboxes use the default (the thread
     carries the cell's context); session kernels rebind each call to the CURRENT cell's authority.
+
+    ``session_id`` is forwarded to ``handle_function_call`` so nested tool calls (e.g.
+    ``read_file`` invoked by ``execute_code``) receive the same session context as the parent —
+    without it, plugin hooks ``on_pre_tool_call`` / ``on_post_tool_call`` see an empty session_id
+    and cannot correlate the nested call with the originating turn (#51931). Session kernels
+    capture this per cell on ``CellAuthority`` rather than freezing it on the long-lived serving
+    thread.
     """
     if dispatch is None:
-        dispatch = _default_dispatch(task_id)
+        dispatch = _default_dispatch(task_id, session_id=session_id)
     conn = None
     try:
         server_sock.settimeout(0.05)

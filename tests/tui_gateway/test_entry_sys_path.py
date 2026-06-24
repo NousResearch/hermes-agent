@@ -1,100 +1,81 @@
-"""Tests for tui_gateway/entry.py sys.path hardening (issue #15989).
+"""Tests for tui_gateway/entry.py sys.path hardening (issues #15989, #51286).
 
-When the TUI backend is spawned by Node.js, the Python interpreter may have
-'' or '.' at the front of sys.path, allowing a local utils/ directory in CWD
-to shadow the installed utils module.  entry.py must sanitize sys.path before
-any non-stdlib import is resolved.
+When the TUI backend is spawned by Node.js, the launch directory may shadow
+Hermes's own top-level modules (``utils``, ``proxy``, ``ui``).  entry.py must
+neutralize this before any non-stdlib import is resolved, by delegating to the
+shared ``hermes_bootstrap.harden_import_path`` guard.
+
+These tests assert the entry point wires up the real guard (rather than
+re-implementing it inline) and that the guard's behavior covers both the
+relative-cwd form and the absolute-cwd-path form that was the actual #51286
+failure.
 """
 
-import os
-import sys
-from unittest.mock import patch
+import ast
+import pathlib
+
+import hermes_bootstrap
 
 
-def _reload_entry_with_env(env_overrides: dict) -> None:
-    """Re-execute entry.py's module-level path setup under a controlled env."""
-    # We only want to exercise the sys.path fixup block, not the signal/import
-    # machinery that follows.  We do this by running the fixup code verbatim in
-    # a fresh copy of sys.path rather than importing the real module (which
-    # would trigger tui_gateway.server imports requiring heavy mocks).
-    original_path = sys.path[:]
-    original_env = {k: os.environ.get(k) for k in env_overrides}
-    try:
-        with patch.dict(os.environ, env_overrides, clear=False):
-            _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-            if _src_root and _src_root not in sys.path:
-                sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in {"", "."}]
-        return sys.path[:]
-    finally:
-        sys.path = original_path
-        for k, v in original_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
+def _entry_source() -> str:
+    here = pathlib.Path(__file__).resolve()
+    repo_root = here.parent.parent.parent  # tests/tui_gateway/ -> repo root
+    return (repo_root / "tui_gateway" / "entry.py").read_text(encoding="utf-8")
 
 
-def test_empty_string_and_dot_removed_from_sys_path():
+def test_entry_calls_shared_harden_guard_before_heavy_imports():
+    """entry.py must call hermes_bootstrap.harden_import_path() before it
+    imports tui_gateway.server (which pulls ``from utils import ...``)."""
+    source = _entry_source()
+    tree = ast.parse(source)
+
+    harden_call_line = None
+    server_import_line = None
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "harden_import_path"
+        ):
+            harden_call_line = node.lineno
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+            "tui_gateway"
+        ):
+            if server_import_line is None:
+                server_import_line = node.lineno
+
+    assert harden_call_line is not None, (
+        "entry.py must call hermes_bootstrap.harden_import_path()"
+    )
+    assert server_import_line is not None, "entry.py must import from tui_gateway"
+    assert harden_call_line < server_import_line, (
+        "harden_import_path() must run before tui_gateway.server is imported"
+    )
+
+
+def test_entry_does_not_reimplement_guard_inline():
+    """The old inline ``{'', '.'}`` strip lived in entry.py; the dedicated
+    helper now owns it.  Guard against the inline logic creeping back."""
+    source = _entry_source()
+    assert '{"", "."}' not in source and "{'', '.'}" not in source, (
+        "entry.py should delegate to hermes_bootstrap.harden_import_path, "
+        "not re-implement the sys.path strip inline"
+    )
+
+
+def test_guard_handles_absolute_cwd_path():
+    """The #51286 case: the launch dir is on sys.path as its own absolute
+    path, ahead of the Hermes root.  harden_import_path must relocate the
+    Hermes root to the front so ``from utils import ...`` resolves to Hermes."""
+    import sys
+
     original = sys.path[:]
     try:
-        sys.path.insert(0, "")
-        sys.path.insert(0, ".")
-        assert "" in sys.path
-        assert "." in sys.path
-
-        # Run the entry.py fixup logic directly
-        sys.path = [p for p in sys.path if p not in {"", "."}]
-
-        assert "" not in sys.path
-        assert "." not in sys.path
+        sys.path[:] = ["/home/user/tg-ws-proxy", "/opt/hermes", "/usr/lib"]
+        hermes_bootstrap.harden_import_path(src_root="/opt/hermes")
+        assert sys.path[0] == "/opt/hermes"
+        assert sys.path.index("/opt/hermes") < sys.path.index(
+            "/home/user/tg-ws-proxy"
+        )
     finally:
-        sys.path = original
-
-
-def test_hermes_src_root_inserted_at_front():
-    original = sys.path[:]
-    try:
-        fake_root = "/fake/hermes/src"
-        with patch.dict(os.environ, {"HERMES_PYTHON_SRC_ROOT": fake_root}):
-            _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-            if _src_root and _src_root not in sys.path:
-                sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in {"", "."}]
-
-        assert sys.path[0] == fake_root
-    finally:
-        sys.path = original
-
-
-def test_src_root_not_duplicated_if_already_present():
-    original = sys.path[:]
-    try:
-        fake_root = "/already/present"
-        sys.path.insert(0, fake_root)
-        count_before = sys.path.count(fake_root)
-
-        with patch.dict(os.environ, {"HERMES_PYTHON_SRC_ROOT": fake_root}):
-            _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-            if _src_root and _src_root not in sys.path:
-                sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in {"", "."}]
-
-        assert sys.path.count(fake_root) == count_before
-    finally:
-        sys.path = original
-
-
-def test_no_src_root_env_does_not_crash():
-    original = sys.path[:]
-    try:
-        env = {k: v for k, v in os.environ.items() if k != "HERMES_PYTHON_SRC_ROOT"}
-        with patch.dict(os.environ, {}, clear=True):
-            os.environ.update(env)
-            _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-            if _src_root and _src_root not in sys.path:
-                sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in {"", "."}]
-        # No exception raised
-    finally:
-        sys.path = original
+        sys.path[:] = original

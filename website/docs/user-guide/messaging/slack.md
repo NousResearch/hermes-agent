@@ -394,6 +394,35 @@ Set this to `true` in busy workspaces where Slack's default "the bot remembers t
 Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In DMs the bot always responds without needing a mention.
 :::
 
+### Peer-Agent Smoke Check
+
+For multi-bot Slack deployments that rely on strict per-turn mentions, keep the following profile:
+
+```yaml
+slack:
+  require_mention: true
+  strict_mention: true
+  allow_bots: mentions
+  allowed_channels: ""
+```
+
+After gateway config changes, deploys, or restarts, run this synthetic smoke target:
+
+```bash
+uv run --frozen pytest -q tests/gateway/test_slack_peer_agent_smoke.py -o addopts=''
+```
+
+This target uses in-process synthetic Slack events only. It does not send live Slack messages and does not require real bot tokens by default.
+
+Failure buckets:
+
+- `config:` `test_peer_agent_smoke_preflight_contract` caught a profile mismatch (`require_mention`, `strict_mention`, `allow_bots`, or `allowed_channels`).
+- `platform_connectivity:` the adapter/client was not initialized, so routing smoke is not a trustworthy signal yet.
+- `bot_identity:` the adapter never resolved its bot user ID, so current-message mention checks cannot work.
+- `routing_logic:` the Slack adapter regressed on one of the peer-agent invariants (human mention routing, peer-bot ignore, explicit peer mention admit, or passive ack/status/error suppression).
+
+If this target passes but a live workspace still misroutes messages, investigate Slack token/workspace connectivity and runtime deployment state outside the routing logic itself.
+
 ### Channel allowlist (`allowed_channels`)
 
 Restrict the bot to a fixed set of Slack channels — useful when the bot is invited to many channels but should only respond in a few. When set, messages from channels NOT in this list are **silently ignored**, even if the bot is `@mentioned`.

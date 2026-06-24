@@ -5618,6 +5618,20 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
     return node
 
 
+def _normalize_terminal_working_dir_alias(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Map legacy ``terminal.working_dir`` onto canonical ``terminal.cwd``."""
+    if not isinstance(cfg, dict):
+        return cfg
+    terminal_cfg = cfg.get("terminal")
+    if not isinstance(terminal_cfg, dict):
+        return cfg
+    if "cwd" not in terminal_cfg and "working_dir" in terminal_cfg:
+        terminal_cfg = dict(terminal_cfg)
+        terminal_cfg["cwd"] = terminal_cfg["working_dir"]
+        cfg = dict(cfg)
+        cfg["terminal"] = terminal_cfg
+    return cfg
+
 
 def read_raw_config() -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
@@ -5653,6 +5667,7 @@ def read_raw_config() -> Dict[str, Any]:
 
         if not isinstance(data, dict):
             data = {}
+        data = _normalize_terminal_working_dir_alias(data)
         _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
         return data
 
@@ -5862,6 +5877,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             try:
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
+                user_config = _normalize_terminal_working_dir_alias(user_config)
 
                 if "max_turns" in user_config:
                     agent_user_config = dict(user_config.get("agent") or {})
@@ -6856,6 +6872,9 @@ def set_config_value(key: str, value: str):
                 user_config = yaml.safe_load(f) or {}
         except Exception:
             user_config = {}
+
+    if key == "terminal.working_dir":
+        key = "terminal.cwd"
     
     # Handle nested keys (e.g., "tts.provider") including numeric list
     # indices (e.g., "custom_providers.0.api_key").  Delegates to

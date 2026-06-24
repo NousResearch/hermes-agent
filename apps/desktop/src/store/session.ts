@@ -342,6 +342,22 @@ export const setSessionPickerOpen = (next: Updater<boolean>) => updateAtom($sess
 const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
 const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
+// A session delegating to subagents emits no parent-stream tokens while the
+// children work — every subagent token flows to a child session, not the
+// parent. Without this hook the parent's 8-min silence watchdog trips and
+// silently clears its "working" flag mid-delegation (the row goes dim while
+// subagents are still running). The subagents store registers a predicate
+// here (instead of session.ts importing the subagents store, which would
+// create a circular import) so the watchdog can tell "no parent tokens, but
+// children are still actively working" from a genuinely stuck/hung session.
+let sessionHasActiveSubagents: ((sessionId: string) => boolean) | null = null
+
+export function registerSubagentActivityPredicate(
+  predicate: ((sessionId: string) => boolean) | null
+): void {
+  sessionHasActiveSubagents = predicate
+}
+
 function armSessionWatchdog(sessionId: string) {
   const existing = sessionWatchdogTimers.get(sessionId)
 
@@ -354,9 +370,21 @@ function armSessionWatchdog(sessionId: string) {
 
     // Re-check the latest state at fire-time. If the user already navigated
     // away or the session genuinely finished, the timer is a no-op.
-    if ($workingSessionIds.get().includes(sessionId)) {
-      setWorkingSessionIds(current => current.filter(id => id !== sessionId))
+    if (!$workingSessionIds.get().includes(sessionId)) {
+      return
     }
+
+    // A session whose subagents are still running is NOT silent — its work is
+    // just happening in child sessions. Refresh the watchdog instead of
+    // clearing the working flag, so a long delegation doesn't make the row go
+    // dim mid-task.
+    if (sessionHasActiveSubagents?.(sessionId)) {
+      noteSessionActivity(sessionId)
+
+      return
+    }
+
+    setWorkingSessionIds(current => current.filter(id => id !== sessionId))
   }, SESSION_WATCHDOG_TIMEOUT_MS)
 
   sessionWatchdogTimers.set(sessionId, timer)
@@ -446,6 +474,59 @@ export function setSessionAttention(sessionId: string | null | undefined, needsI
   if (sessionId) {
     toggleMembership(setAttentionSessionIds, sessionId, needsInput)
   }
+}
+
+// Stored session ids that produced a terminal event — turn done, errored, or
+// now need input — that the user has NOT focused since. Distinct from both
+// $workingSessionIds (a running turn) and $attentionSessionIds (currently
+// blocked): unread is the "you have new output you haven't looked at" state
+// that sits between working and idle. It is set at the same transitions that
+// fire a native notification, but only for sessions the user is not currently
+// viewing, and it clears the moment that session becomes active.
+//
+// Keyed on the live session id. Auto-compression rotates the tip id (root →
+// continuation), which would drop an unread marker mid-turn; resolveUnreadId()
+// collapses a live id to its lineage root so set/clear stay stable across a
+// rotation (same pattern as sessionPinId).
+export const $unreadSessionIds = atom<string[]>([])
+export const setUnreadSessionIds = (next: Updater<string[]>) => updateAtom($unreadSessionIds, next)
+
+// Resolve a live session id to its stable lineage root for unread keying.
+// Falls back to the id itself when the session isn't in the loaded page (a
+// brand-new or off-page session) — unread still works, it just won't survive
+// a compression rotation on that edge case.
+function resolveUnreadId(sessionId: string): string {
+  const sessions = $sessions.get()
+  const match = sessions.find(s => s.id === sessionId)
+
+  return match?._lineage_root_id ?? sessionId
+}
+
+export function setSessionUnread(sessionId: string | null | undefined, unread: boolean) {
+  if (!sessionId) {
+    return
+  }
+
+  toggleMembership(setUnreadSessionIds, resolveUnreadId(sessionId), unread)
+}
+
+/** Clear unread for a session that just became active (the user opened it). */
+export function clearSessionUnread(sessionId: string | null | undefined) {
+  setSessionUnread(sessionId, false)
+}
+
+/** True when the session (by live id) has an unread marker, checking both the
+ *  live id and its lineage root so a compression rotation doesn't hide it. */
+export function isSessionUnread(sessionId: string): boolean {
+  const unread = $unreadSessionIds.get()
+
+  if (unread.includes(sessionId)) {
+    return true
+  }
+
+  const root = resolveUnreadId(sessionId)
+
+  return root !== sessionId && unread.includes(root)
 }
 
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {

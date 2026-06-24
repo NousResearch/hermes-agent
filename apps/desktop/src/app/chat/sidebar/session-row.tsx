@@ -12,7 +12,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, $unreadSessionIds, isSessionUnread } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -80,6 +80,12 @@ export function SidebarSessionRow({
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  // "Unread" = the session produced output (turn done / errored / needs input)
+  // that the user hasn't focused since. Subscribing to $unreadSessionIds
+  // re-renders on any change; isSessionUnread then resolves the lineage root
+  // so a compression rotation can't hide the marker.
+  useStore($unreadSessionIds)
+  const unread = isSessionUnread(session.id)
 
   return (
     <SessionContextMenu
@@ -95,7 +101,7 @@ export function SidebarSessionRow({
         className={cn(
           'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
           isSelected && 'bg-(--ui-row-active-background)',
-          isWorking && 'text-foreground',
+          (isWorking || unread) && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under
           // it (translucency let the rows below bleed through).
           dragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
@@ -174,6 +180,7 @@ export function SidebarSessionRow({
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
                 isWorking={isWorking}
                 needsInput={needsInput}
+                unread={unread}
               />
               <Codicon
                 className={cn(
@@ -191,7 +198,7 @@ export function SidebarSessionRow({
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} unread={unread} />
             </span>
           )}
           {handoffSource && handoffLabel ? (
@@ -203,7 +210,15 @@ export function SidebarSessionRow({
               />
             </Tip>
           ) : null}
-          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+          <span
+            className={cn(
+              'min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90',
+              // Unread rows brighten to full foreground + semibold — the
+              // "unread email" weight cue, distinct from the accent pulse of
+              // a working turn (same color, motion is the differentiator).
+              unread && 'font-medium text-foreground'
+            )}
+          >
             {title}
           </span>
         </button>
@@ -241,19 +256,24 @@ export function SidebarSessionRow({
 function SidebarRowDot({
   isWorking,
   needsInput = false,
+  unread = false,
   className
 }: {
   isWorking: boolean
   needsInput?: boolean
+  unread?: boolean
   className?: string
 }) {
   const { t } = useI18n()
   const r = t.sidebar.row
 
-  // "Needs input" wins over "working": a clarify-blocked session is technically
-  // still running, but the actionable state is that it's waiting on the user.
-  // Amber + steady (no ping) reads as "your turn", distinct from the accent
-  // pulse of an active turn.
+  // Priority ladder: needsInput > unread > working > idle.
+  //  - needsInput: amber + steady quest-glow ("your turn") — highest urgency.
+  //  - unread: solid accent, steady (no pulse) — "new output waiting".
+  //    Same color as working; the distinction is motion (steady vs. pulse),
+  //    not hue, so it doesn't add a new color to the restrained palette.
+  //  - working: accent + ping pulse ("thinking").
+  //  - idle: dim gray.
   if (needsInput) {
     return (
       <span
@@ -261,6 +281,17 @@ function SidebarRowDot({
         className={cn('quest-glow relative size-1.5 rounded-full bg-amber-500', className)}
         role="status"
         title={r.waitingForAnswer}
+      />
+    )
+  }
+
+  if (unread) {
+    return (
+      <span
+        aria-label={r.unread}
+        className={cn('relative size-1.5 rounded-full bg-(--ui-accent)', className)}
+        role="status"
+        title={r.unread}
       />
     )
   }

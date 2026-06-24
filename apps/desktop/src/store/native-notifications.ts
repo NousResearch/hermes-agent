@@ -24,13 +24,18 @@ const ATTENTION_KINDS = new Set<NativeNotificationKind>(['approval', 'input'])
 export interface NativeNotificationPrefs {
   enabled: boolean
   kinds: Record<NativeNotificationKind, boolean>
+  /** OS dock/taskbar badge + window-title prefix for unread + needs-input
+   *  sessions. On by default; the in-app dot indicator is always on (it's UI
+   *  state, not a notification) — this gates only the OS-level cue. */
+  unreadBadge: boolean
 }
 
 const STORAGE_KEY = 'hermes:native-notifications'
 
 const DEFAULT_PREFS: NativeNotificationPrefs = {
   enabled: true,
-  kinds: { approval: true, backgroundDone: true, input: true, turnDone: true, turnError: true }
+  kinds: { approval: true, backgroundDone: true, input: true, turnDone: true, turnError: true },
+  unreadBadge: true
 }
 
 function readPrefs(): NativeNotificationPrefs {
@@ -54,7 +59,8 @@ function readPrefs(): NativeNotificationPrefs {
 
     return {
       enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : DEFAULT_PREFS.enabled,
-      kinds
+      kinds,
+      unreadBadge: typeof parsed.unreadBadge === 'boolean' ? parsed.unreadBadge : DEFAULT_PREFS.unreadBadge
     }
   } catch {
     return DEFAULT_PREFS
@@ -75,6 +81,10 @@ export function setNativeNotifyEnabled(enabled: boolean) {
 export function setNativeNotifyKind(kind: NativeNotificationKind, on: boolean) {
   const prev = $nativeNotifyPrefs.get()
   writePrefs({ ...prev, kinds: { ...prev.kinds, [kind]: on } })
+}
+
+export function setNativeNotifyUnreadBadge(on: boolean) {
+  writePrefs({ ...$nativeNotifyPrefs.get(), unreadBadge: on })
 }
 
 // De-dupe replayed events for the same kind+session. Self-evicting: entries

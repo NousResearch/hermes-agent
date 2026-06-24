@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { noteSessionActivity, registerSubagentActivityPredicate } from './session'
+
 export type SubagentStatus = 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
 export type SubagentStreamKind = 'progress' | 'summary' | 'thinking' | 'tool'
 
@@ -47,6 +49,16 @@ const PREVIEW_MAX = 220
 const TOOL_PREVIEW_MAX = 96
 
 export const $subagentsBySession = atom<Record<string, SubagentProgress[]>>({})
+
+// Register the subagent-awareness predicate with the session watchdog so a
+// parent session keeps its "working" flag while its subagents run, even though
+// no parent-stream tokens are flowing (see registerSubagentActivityPredicate
+// in session.ts). Registered once at module load.
+registerSubagentActivityPredicate((sessionId: string) => {
+  const list = $subagentsBySession.get()[sessionId]
+
+  return Boolean(list?.some(item => item.status === 'running' || item.status === 'queued'))
+})
 
 const isStr = (v: unknown): v is string => typeof v === 'string'
 const str = (v: unknown) => (isStr(v) ? v : '')
@@ -229,6 +241,14 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
   const nextList = idx >= 0 ? list.map(item => (item.id === id ? next : item)) : [...list, next]
 
   $subagentsBySession.set({ ...map, [sid]: nextList })
+
+  // A running/queued subagent's progress update is proof the parent's turn is
+  // still active — even though no parent-stream tokens have arrived. Pulse the
+  // session watchdog so the parent keeps its "working" flag for the duration
+  // of the delegation instead of going dim after the 8-min silence timeout.
+  if (next.status === 'running' || next.status === 'queued') {
+    noteSessionActivity(sid)
+  }
 }
 
 export function buildSubagentTree(items: readonly SubagentProgress[]): SubagentNode[] {

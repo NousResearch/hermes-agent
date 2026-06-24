@@ -4377,10 +4377,10 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Force v2 interactive card for anything that looks like a markdown table.
         if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+            card = _markdown_to_v2_card(content)
+            return "interactive", json.dumps(card, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
@@ -4881,6 +4881,72 @@ class FeishuAdapter(BasePlatformAdapter):
         return _FEISHU_FILE_UPLOAD_TYPE, "file"
 
 
+def _markdown_to_v2_card(content: str) -> dict:
+    """Convert markdown (with tables) to Feishu v2 interactive card.
+
+    Feishu's post-type 'md' elements cannot render markdown tables, so when
+    Sihao sends markdown containing a pipe table we promote the whole reply
+    to a v2 interactive card with native table components (data_type:
+    lark_md, flat {col_N: ...} rows) — exactly the structure that
+    feishu-card-table skill v3.1.0 v2 white-list prescribes.
+    """
+    table_pattern = re.compile(
+        r'(?:^\|.+\|\r?\n)+^\|[-: |]+\|.*\r?\n(?:^\|.+\|\r?\n?)+',
+        re.MULTILINE,
+    )
+    elements: List[Dict[str, Any]] = []
+    last_end = 0
+    for m in table_pattern.finditer(content):
+        before = content[last_end:m.start()].rstrip()
+        if before:
+            elements.append({"tag": "div", "text": {"tag": "lark_md", "content": before}})
+        table_text = m.group(0).strip()
+        rows_raw = [r for r in table_text.split("\n") if r.strip().startswith("|")]
+        if len(rows_raw) < 3:
+            last_end = m.end()
+            continue
+        header = [c.strip() for c in rows_raw[0].strip("|").split("|")]
+        data_rows = []
+        for r in rows_raw[2:]:
+            cells = [c.strip() for c in r.strip("|").split("|")]
+            data_rows.append(cells)
+        n_cols = len(header)
+        columns = [
+            {
+                "name": f"col_{i}",
+                "display_name": header[i] if i < len(header) else f"C{i}",
+                "data_type": "lark_md",
+            }
+            for i in range(n_cols)
+        ]
+        card_rows: List[Dict[str, str]] = []
+        for row in data_rows:
+            card_row = {f"col_{i}": row[i] if i < len(row) else "" for i in range(n_cols)}
+            for k, v in card_row.items():
+                if not v:
+                    card_row[k] = "—"
+            card_rows.append(card_row)
+        elements.append({"tag": "table", "columns": columns, "rows": card_rows})
+        last_end = m.end()
+    after = content[last_end:].strip()
+    if after:
+        elements.append({"tag": "div", "text": {"tag": "lark_md", "content": after}})
+    if not elements:
+        elements = [{"tag": "div", "text": {"tag": "lark_md", "content": content}}]
+    # cap at 5 tables per card (Feishu v2 limit, code 230099 otherwise)
+    table_count = sum(1 for e in elements if e.get("tag") == "table")
+    if table_count > 5:
+        # truncate to 5 tables; trailing content still gets a div
+        kept: List[Dict[str, Any]] = []
+        seen = 0
+        for e in elements:
+            if e.get("tag") == "table":
+                seen += 1
+                if seen > 5:
+                    continue
+            kept.append(e)
+        elements = kept
+    return {"schema": "2.0", "config": {"wide_screen_mode": True}, "body": {"elements": elements}}
 # =============================================================================
 # QR scan-to-create onboarding
 #

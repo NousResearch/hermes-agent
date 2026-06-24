@@ -81,7 +81,7 @@ class TestBuiltinAlwaysWins:
 
     @pytest.mark.parametrize(
         "builtin",
-        ["local", "local_command", "groq", "openai", "mistral", "xai"],
+        ["local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs"],
     )
     def test_dispatcher_short_circuits_builtin(self, builtin):
         result = transcription_tools._dispatch_to_plugin_provider(

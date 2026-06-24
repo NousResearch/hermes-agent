@@ -185,7 +185,7 @@ elif not success and "is not available" in error_text:
     dispatch_kind = "plugin_unavailable"
 elif not success and "No STT provider" in error_text:
     dispatch_kind = "no_provider_error"
-elif provider_name in ("local", "local_command", "groq", "openai", "mistral", "xai"):
+elif provider_name in ("local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs"):
     dispatch_kind = "builtin_" + provider_name
 elif success and isinstance(result, dict) and result.get("transcript", "").startswith("CMD:"):
     # Command-provider scenarios below emit transcripts prefixed with "CMD:"
@@ -194,7 +194,7 @@ elif success and isinstance(result, dict) and result.get("transcript", "").start
     dispatch_kind = "command_provider"
 elif success and isinstance(result, dict) and result.get("transcript", "").startswith("PLUGIN:"):
     dispatch_kind = "plugin"
-elif success and provider_name and provider_name not in ("local", "local_command", "groq", "openai", "mistral", "xai"):
+elif success and provider_name and provider_name not in ("local", "local_command", "groq", "openai", "mistral", "xai", "elevenlabs"):
     dispatch_kind = "plugin"
 else:
     dispatch_kind = "other"

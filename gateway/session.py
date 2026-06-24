@@ -400,6 +400,16 @@ def build_session_context_prompt(
                 "Do not promise to perform these actions. If the user asks, explain "
                 "that you can only read messages sent directly to you and respond."
             )
+        lines.append("")
+        lines.append(
+            "**Operational evidence note:** For source/code/runtime support work, "
+            "judge source-of-truth by evidence sufficiency, not keyword rules. "
+            "If a final answer depends on current/live source but the available "
+            "snapshot is stale, incomplete, or missing the requested files/symbols, "
+            "use an available bounded read-only worker/tool before finalizing. "
+            "If that evidence path is unavailable, say PARTIAL/BLOCKED, name the "
+            "missing evidence, and preserve the exact continuation context."
+        )
     elif context.source.platform == Platform.BLUEBUBBLES:
         lines.append("")
         lines.append(

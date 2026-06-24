@@ -29,9 +29,9 @@ def _ensure_discord_mock():
 
 
 import gateway.run as gateway_run
-from gateway.config import Platform
+from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
-from gateway.session import SessionSource
+from gateway.session import build_session_context, build_session_context_prompt, SessionSource
 
 
 class _CapturingAgent:
@@ -99,6 +99,17 @@ def _make_source() -> SessionSource:
         chat_type="thread",
         user_id="user-1",
     )
+
+
+def test_discord_context_includes_operational_evidence_sufficiency_note():
+    prompt = build_session_context_prompt(
+        build_session_context(_make_source(), GatewayConfig())
+    )
+
+    assert "Operational evidence note" in prompt
+    assert "evidence sufficiency, not keyword rules" in prompt
+    assert "missing the requested files/symbols" in prompt
+    assert "PARTIAL/BLOCKED" in prompt
 
 
 class TestResolveChannelPrompts:

@@ -423,6 +423,67 @@ class TestSuspendRecentlyActiveSkipsResumePending:
         assert store._entries[entry_b.session_key].suspended is False
 
 
+class TestRuntimeStatusActiveSessionRecovery:
+    def test_runtime_status_active_session_is_marked_even_when_entry_is_stale(
+        self, tmp_path, monkeypatch
+    ):
+        """Long-running turns can be older than the broad crash timestamp window.
+
+        The exact active-session-key metadata must recover those turns instead
+        of depending on ``SessionEntry.updated_at`` freshness.
+        """
+        from gateway import status
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        runner, _adapter = make_restart_runner()
+        store = _make_store(tmp_path / "sessions")
+        source = _make_source(chat_id="long-running")
+        entry = store.get_or_create_session(source)
+        entry.updated_at = datetime.now() - timedelta(minutes=20)
+        store._save()
+        runner.session_store = store
+
+        status.write_runtime_status(
+            gateway_state="running",
+            active_agents=1,
+            active_session_keys=[entry.session_key],
+        )
+
+        marked = runner._mark_runtime_status_active_sessions_resume_pending()
+
+        assert marked == 1
+        recovered = store._entries[entry.session_key]
+        assert recovered.resume_pending is True
+        assert recovered.resume_reason == "restart_interrupted"
+        assert recovered.suspended is False
+
+    def test_persist_active_agents_writes_exact_session_keys(self, monkeypatch):
+        runner, _adapter = make_restart_runner()
+        runner._running_agents = {
+            "agent:main:discord:thread:1518942653633532104:1518942653633532104": object(),
+            "agent:main:telegram:dm:pending": _AGENT_PENDING_SENTINEL,
+        }
+
+        calls = []
+
+        def _fake_write_runtime_status(**kwargs):
+            calls.append(kwargs)
+
+        monkeypatch.setattr("gateway.status.write_runtime_status", _fake_write_runtime_status)
+
+        runner._persist_active_agents()
+
+        assert calls == [
+            {
+                "active_agents": 2,
+                "active_session_keys": [
+                    "agent:main:discord:thread:1518942653633532104:1518942653633532104",
+                    "agent:main:telegram:dm:pending",
+                ],
+            }
+        ]
+
+
 # ---------------------------------------------------------------------------
 # Restart-resume system-note injection
 # ---------------------------------------------------------------------------

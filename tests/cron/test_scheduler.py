@@ -3023,13 +3023,12 @@ class TestDeliverResultTimeoutCancelsFuture:
         standalone_send.assert_awaited_once()
         assert result is None, f"standalone should have delivered, got: {result!r}"
 
-    def test_live_adapter_private_dm_topic_routes_via_direct_messages_topic_id(self):
-        """#22773: a cron target to a PRIVATE Telegram chat with a numeric topic
-        id must be routed via ``direct_messages_topic_id`` (Bot API DM topics),
-        NOT a bare ``message_thread_id`` (which Bot API 10.0 rejects / mis-routes
-        to General).  The cron live-adapter path routes through the gateway
-        DeliveryRouter, which applies the same three-mode routing as live
-        messages.
+    def test_live_adapter_forum_topic_in_private_chat_routes_via_message_thread_id(self):
+        """#52060: a cron target to a PRIVATE Telegram chat with a numeric topic
+        id is a normal forum topic — it must be routed via ``message_thread_id``,
+        NOT ``direct_messages_topic_id``.  The previous heuristic (#22773)
+        inferred a Bot API DM topic from positive chat_id + numeric thread and
+        nullled ``message_thread_id``, causing deliveries to land in General.
         """
         from gateway.config import Platform
         from gateway.platforms.base import SendResult
@@ -3050,8 +3049,8 @@ class TestDeliverResultTimeoutCancelsFuture:
         loop.is_running.return_value = True
 
         job = {
-            "id": "dm-topic-job",
-            "deliver": "telegram:226252250:7072",  # private chat + numeric topic
+            "id": "forum-topic-job",
+            "deliver": "telegram:226252250:7072",  # private chat + numeric forum topic
         }
 
         def fake_run_coro(coro, _loop):
@@ -3079,16 +3078,14 @@ class TestDeliverResultTimeoutCancelsFuture:
         sent_metadata = adapter.send.call_args[1]["metadata"]
         assert sent_chat_id == "226252250"
         assert sent_text == "Hello world"
-        # The topic must be addressed via direct_messages_topic_id, and a bare
-        # message_thread_id must NOT be set (that is the Bot API 10.0 bug).
-        assert str(sent_metadata.get("direct_messages_topic_id")) == "7072"
-        assert not sent_metadata.get("message_thread_id")
+        # Forum topics route via message_thread_id, NOT direct_messages_topic_id.
+        assert not sent_metadata.get("direct_messages_topic_id")
+        assert str(sent_metadata.get("thread_id")) == "7072"
 
-    def test_live_adapter_private_dm_topic_media_routes_via_direct_messages_topic_id(self, tmp_path, monkeypatch):
-        """#22773 (media): MEDIA attachments to a private DM topic must also be
-        routed via ``direct_messages_topic_id``, not a bare ``message_thread_id``
-        — the media path previously used the bare thread_id and landed
-        attachments in the General lane."""
+    def test_live_adapter_forum_topic_media_routes_via_message_thread_id(self, tmp_path, monkeypatch):
+        """#52060 (media): MEDIA attachments to a forum topic in a private chat
+        must also be routed via ``thread_id`` (message_thread_id), not
+        ``direct_messages_topic_id``."""
         from gateway.config import Platform
         from gateway.platforms.base import SendResult
         from concurrent.futures import Future
@@ -3117,8 +3114,8 @@ class TestDeliverResultTimeoutCancelsFuture:
         loop.is_running.return_value = True
 
         job = {
-            "id": "dm-topic-media-job",
-            "deliver": "telegram:226252250:7072",  # private chat + numeric topic
+            "id": "forum-topic-media-job",
+            "deliver": "telegram:226252250:7072",  # private chat + numeric forum topic
         }
 
         def fake_run_coro(coro, _loop):
@@ -3142,9 +3139,67 @@ class TestDeliverResultTimeoutCancelsFuture:
 
         adapter.send_image_file.assert_called_once()
         media_metadata = adapter.send_image_file.call_args[1]["metadata"]
-        assert str(media_metadata.get("direct_messages_topic_id")) == "7072"
-        assert not media_metadata.get("message_thread_id")
-        assert not media_metadata.get("thread_id")
+        assert str(media_metadata.get("thread_id")) == "7072"
+        assert not media_metadata.get("direct_messages_topic_id")
+
+    def test_live_adapter_explicit_dm_topic_routes_via_direct_messages_topic_id(self):
+        """#22773 / #52060: a genuine Bot API Direct-Messages topic must still be
+        routed via ``direct_messages_topic_id`` — but only when the job's origin
+        carries an explicit ``direct_messages_topic_id`` signal, not inferred
+        from chat-id sign + numeric thread."""
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        send_result = SendResult(success=True, message_id="42")
+        adapter = MagicMock()
+        adapter.send = AsyncMock(return_value=send_result)
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        job = {
+            "id": "explicit-dm-topic-job",
+            "deliver": "telegram:226252250:7072",
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "226252250",
+                "thread_id": "7072",
+                "direct_messages_topic_id": "7072",
+            },
+        }
+
+        def fake_run_coro(coro, _loop):
+            import asyncio as _asyncio
+            future = Future()
+            try:
+                future.set_result(_asyncio.run(coro))
+            except BaseException as _e:  # noqa: BLE001
+                future.set_exception(_e)
+            return future
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Hello world",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        assert result is None, f"expected clean delivery, got: {result!r}"
+        adapter.send.assert_called_once()
+        sent_metadata = adapter.send.call_args[1]["metadata"]
+        # Explicit DM-topic signal routes via direct_messages_topic_id.
+        assert str(sent_metadata.get("direct_messages_topic_id")) == "7072"
+        assert not sent_metadata.get("thread_id")
 
     def test_live_adapter_forum_thread_fallback_records_delivery_error(self):
         """A forum/supergroup cron target whose configured topic is gone must

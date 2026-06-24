@@ -880,40 +880,44 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         delivered = False
         target_errors = []
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            # Telegram three-mode topic routing (#22773): a private chat
-            # (positive chat_id) with a NUMERIC topic id is a Bot API Direct
-            # Messages topic and must be addressed via ``direct_messages_topic_id``
-            # — a bare ``message_thread_id`` is rejected/mis-routed by Bot API
-            # 10.0 and lands in General.  Forum/supergroup targets (negative
-            # chat_id) and named DM-topic lanes keep the default thread_id
-            # handling.  Compute the routed metadata ONCE so both the text send
-            # (via DeliveryRouter) and the media send use the same routing.
-            from gateway.delivery import (
-                DeliveryRouter,
-                DeliveryTarget,
-                _looks_like_int,
-                _looks_like_telegram_private_chat_id,
-            )
+            # Telegram topic routing (#22773, regression fixed #52060):
+            # ``direct_messages_topic_id`` is valid only for genuine Bot API
+            # Direct-Messages topics.  The previous heuristic — positive chat_id
+            # plus a numeric thread_id — is ambiguous: a normal forum topic
+            # inside a private chat matches the same shape and was mis-routed to
+            # General (the adapter nulls ``message_thread_id`` whenever
+            # ``direct_messages_topic_id`` is present).  Gate the DM-topic route
+            # on an explicit ``direct_messages_topic_id`` carried by the job
+            # origin or target; everything else routes via
+            # ``message_thread_id`` — parity with 0.16.0 and with live replies.
+            #
+            # Putting ``thread_id`` in *route_metadata* (not just the
+            # DeliveryTarget) is deliberate: the DeliveryRouter's private-chat
+            # topic detection (gateway/delivery.py) demands a reply anchor when
+            # thread_id is absent from metadata.  Cron deliveries have no
+            # inbound reply anchor, so the metadata key bypasses that check and
+            # lets the adapter route via a plain ``message_thread_id``.
+            from gateway.delivery import DeliveryRouter, DeliveryTarget
 
-            is_private_dm_topic = (
-                platform == Platform.TELEGRAM
-                and thread_id is not None
-                and _looks_like_telegram_private_chat_id(str(chat_id))
-                and _looks_like_int(str(thread_id))
+            explicit_dm_topic_id = target.get("direct_messages_topic_id") or origin.get(
+                "direct_messages_topic_id"
             )
-            if is_private_dm_topic:
-                # Routed via direct_messages_topic_id (mode 2), no bare thread_id.
+            if platform == Platform.TELEGRAM and explicit_dm_topic_id:
+                # Genuine Bot API DM topic — routed via direct_messages_topic_id.
+                topic_id = str(explicit_dm_topic_id)
                 route_thread_id = None
                 route_metadata = {
-                    "direct_messages_topic_id": str(thread_id),
+                    "direct_messages_topic_id": topic_id,
                     "job_id": job["id"],
                 }
                 # Media metadata mirrors the text routing so attachments land in
                 # the same DM topic instead of the General lane (#22773).
-                media_metadata = {"direct_messages_topic_id": str(thread_id)}
+                media_metadata = {"direct_messages_topic_id": topic_id}
             else:
                 route_thread_id = str(thread_id) if thread_id is not None else None
                 route_metadata = {"job_id": job["id"]}
+                if route_thread_id:
+                    route_metadata["thread_id"] = route_thread_id
                 media_metadata = {"thread_id": thread_id} if thread_id else None
 
             try:

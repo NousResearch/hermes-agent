@@ -53,6 +53,10 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
+    # Local semantic index dry-run/stage/query
+    "semantic_index",
+    # Repo-aware codebase index/search over LanceDB + keyword fallback
+    "codebase_index", "codebase_search",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -222,6 +226,18 @@ TOOLSETS = {
         "tools": ["session_search"],
         "includes": []
     },
+
+    "semantic_index": {
+        "description": "Dry-run, stage, query, and inspect the local LanceDB semantic index",
+        "tools": ["semantic_index"],
+        "includes": []
+    },
+
+    "codebase_search": {
+        "description": "Index and search local codebases with keyword, semantic, or hybrid retrieval",
+        "tools": ["codebase_index", "codebase_search"],
+        "includes": []
+    },
     
     "clarify": {
         "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
@@ -349,7 +365,7 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "todo", "memory",
-            "session_search", "clarify",
+            "session_search", "semantic_index", "codebase_index", "codebase_search", "clarify",
             "execute_code", "delegate_task",
         ],
         "includes": [],
@@ -381,7 +397,7 @@ TOOLSETS = {
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "todo", "memory",
-            "session_search",
+            "session_search", "semantic_index", "codebase_index", "codebase_search",
             "execute_code", "delegate_task",
         ],
         "includes": []
@@ -409,6 +425,8 @@ TOOLSETS = {
             "todo", "memory",
             # Session history search
             "session_search",
+            # Local semantic/codebase search
+            "semantic_index", "codebase_index", "codebase_search",
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management

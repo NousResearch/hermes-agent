@@ -173,6 +173,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Tools ─────────────────────────────────────────────────────────────
     # ACP adapter (VS Code / Zed / JetBrains integration)
     "tool.acp": ("agent-client-protocol==0.9.0",),
+    # Local semantic index storage for code/doc payloads.
+    "tool.semantic_index": ("lancedb==0.33.0",),
     # Dashboard (`hermes dashboard`)
     "tool.dashboard": (
         "fastapi==0.133.1",

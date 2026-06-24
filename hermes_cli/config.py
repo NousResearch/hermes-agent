@@ -1116,6 +1116,22 @@ DEFAULT_CONFIG = {
         "extract_backend": "",   # per-capability override for web_extract (e.g. "native")
     },
 
+    "semantic_index": {
+        "path": "",              # local LanceDB path; empty => HERMES_HOME/semantic/lancedb
+        "table": "semantic_chunks",
+        "model": "text-embedding-3-small",
+        "dimensions": 0,          # optional OpenAI embeddings dimensions override; 0 => provider default
+    },
+
+    "codebase_index": {
+        "path": "",              # local LanceDB path; empty => semantic_index.path or HERMES_HOME/semantic/lancedb
+        "table": "codebase_chunks",
+        "model": "text-embedding-3-small",
+        "dimensions": 0,          # optional OpenAI embeddings dimensions override; 0 => provider default
+        "max_file_bytes": 200000,
+        "max_chunk_chars": 6000,
+    },
+
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)

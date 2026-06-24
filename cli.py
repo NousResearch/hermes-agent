@@ -7472,13 +7472,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
         mi = result.model_info
         try:
+            from hermes_cli.config import get_compatible_custom_providers, load_config
             from hermes_cli.model_switch import resolve_display_context_length
+            _cp = get_compatible_custom_providers(load_config())
             ctx = resolve_display_context_length(
                 result.new_model,
                 result.target_provider,
                 base_url=result.base_url or self.base_url or "",
                 api_key=result.api_key or self.api_key or "",
                 model_info=mi,
+                custom_providers=_cp,
                 config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None,
             )
             if ctx:
@@ -7782,13 +7785,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Copilot, and Nous-enforced caps win over the raw models.dev entry
         # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
         mi = result.model_info
+        from hermes_cli.config import get_compatible_custom_providers, load_config
         from hermes_cli.model_switch import resolve_display_context_length
+        _cp = get_compatible_custom_providers(load_config())
         ctx = resolve_display_context_length(
             result.new_model,
             result.target_provider,
             base_url=result.base_url or self.base_url or "",
             api_key=result.api_key or self.api_key or "",
             model_info=mi,
+            custom_providers=_cp,
             config_context_length=getattr(self.agent, "_config_context_length", None) if self.agent else None,
         )
         if ctx:

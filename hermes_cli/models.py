@@ -3655,21 +3655,19 @@ def validate_requested_model(
             api_key=api_key,
         ) or requested
 
-    if not requested:
+    # Allow spaces in model names — some providers (litellm, custom endpoints)
+    # use descriptive labels like "gemini-2.5-flash (balanced)" to help users
+    # pick the right model. Strip outer whitespace but keep internal spaces.
+    stripped = requested.strip()
+    if not stripped:
         return {
             "accepted": False,
             "persist": False,
             "recognized": False,
             "message": "Model name cannot be empty.",
         }
-
-    if any(ch.isspace() for ch in requested):
-        return {
-            "accepted": False,
-            "persist": False,
-            "recognized": False,
-            "message": "Model names cannot contain spaces.",
-        }
+    if stripped != requested:
+        requested = stripped
 
     if normalized == "lmstudio":
         from hermes_cli.auth import AuthError

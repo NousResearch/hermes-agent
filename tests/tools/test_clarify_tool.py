@@ -111,16 +111,46 @@ class TestClarifyToolChoicesValidation:
         assert "error" in result
         assert "list" in result["error"].lower()
 
-    def test_choices_converted_to_strings(self):
-        """Non-string choices should be converted to strings."""
-        choices_received = []
+    def test_choices_must_be_strings(self):
+        """Non-string choices should be rejected with a clear error.
 
-        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
-            choices_received.extend(choices or [])
-            return "answer"
+        Previously the tool coerced non-string choices with str(), which on
+        dict choices (e.g. {"description": ..., "key": ..., "label": ...})
+        rendered the dict's repr in the user-facing Telegram message and
+        echoed the dict back as the response. The schema (items.type=string)
+        already declares strings only, so reject anything else.
+        """
+        def callback(question: str, choices: Optional[List[str]]) -> str:
+            return "should not reach"
 
-        clarify_tool("Pick", choices=[1, 2, 3], callback=mock_callback)  # type: ignore
-        assert choices_received == ["1", "2", "3"]
+        # Dict choices — the original bug
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=[{"description": "Pick A", "key": "a", "label": "Pick A"}],  # type: ignore
+            callback=callback,
+        ))
+        assert "error" in result
+        assert "list of strings" in result["error"]
+        assert "got dict" in result["error"]
+        assert "label" in result["error"]  # points the caller at the fix
+
+        # Mixed list — should error on first non-string
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=["ok", {"key": "nope"}],  # type: ignore
+            callback=callback,
+        ))
+        assert "error" in result
+        assert "got dict" in result["error"]
+
+        # Int choices — also rejected (schema says strings only)
+        result = json.loads(clarify_tool(
+            "Pick",
+            choices=[1, 2, 3],  # type: ignore
+            callback=callback,
+        ))
+        assert "error" in result
+        assert "got int" in result["error"]
 
 
 class TestClarifyToolCallbackHandling:

@@ -48,11 +48,20 @@ def clarify_tool(
     if choices is not None:
         if not isinstance(choices, list):
             return tool_error("choices must be a list of strings.")
-        choices = [str(c).strip() for c in choices if str(c).strip()]
-        if len(choices) > MAX_CHOICES:
-            choices = choices[:MAX_CHOICES]
-        if not choices:
-            choices = None  # empty list → open-ended
+        cleaned = []
+        for c in choices:
+            if not isinstance(c, str):
+                return tool_error(
+                    "choices must be a list of strings — "
+                    f"got {type(c).__name__} ({c!r}). "
+                    "Use the 'label' field as the choice string instead of passing a dict."
+                )
+            s = c.strip()
+            if s:
+                cleaned.append(s)
+        if len(cleaned) > MAX_CHOICES:
+            cleaned = cleaned[:MAX_CHOICES]
+        choices = cleaned if cleaned else None  # empty list → open-ended
 
     if callback is None:
         return json.dumps(

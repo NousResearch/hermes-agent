@@ -50,8 +50,11 @@ class TestGuidanceConstants:
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE
 
-    def test_session_search_guidance_is_simple_cross_session_recall(self):
+    def test_session_search_guidance_preserves_reference_anchor_semantics(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
+        assert "reference/evidence anchors by default" in SESSION_SEARCH_GUIDANCE
+        assert "resume or switch sessions" in SESSION_SEARCH_GUIDANCE
+        assert "Preserve the current active task/topic" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
 
 
@@ -1545,5 +1548,4 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
 

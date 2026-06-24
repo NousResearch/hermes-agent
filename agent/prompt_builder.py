@@ -167,7 +167,10 @@ MEMORY_GUIDANCE = (
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "
-    "asking them to repeat themselves."
+    "asking them to repeat themselves. Treat pasted session IDs and session links "
+    "as reference/evidence anchors by default, not as instructions to resume or "
+    "switch sessions. Preserve the current active task/topic unless the user "
+    "explicitly asks to resume, switch to, or continue from the referenced session."
 )
 
 SKILLS_GUIDANCE = (

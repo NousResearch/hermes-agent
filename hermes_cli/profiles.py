@@ -822,6 +822,128 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
     return serve
 
 
+def _read_profile_ports(profile_dir: Path) -> Tuple[int, int]:
+    """Resolve the API Server port and Webhook port for a given profile directory."""
+    api_port = 8642
+    web_port = 8644
+
+    config_path = profile_dir / "config.yaml"
+    if config_path.exists():
+        try:
+            import yaml
+            with open(config_path, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            
+            platforms = cfg.get("platforms", {})
+            api_srv = platforms.get("api_server", {})
+            if isinstance(api_srv, dict):
+                p_port = api_srv.get("extra", {}).get("port")
+                if p_port is not None:
+                    api_port = int(p_port)
+
+            web_hk = platforms.get("webhook", {})
+            if isinstance(web_hk, dict):
+                w_port = web_hk.get("extra", {}).get("port")
+                if w_port is not None:
+                    web_port = int(w_port)
+
+            if "API_SERVER_PORT" in cfg:
+                api_port = int(cfg["API_SERVER_PORT"])
+            if "WEBHOOK_PORT" in cfg:
+                web_port = int(cfg["WEBHOOK_PORT"])
+        except Exception:
+            pass
+
+    env_path = profile_dir / ".env"
+    if env_path.exists():
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        k = k.strip()
+                        v = v.strip()
+                        if k == "API_SERVER_PORT":
+                            api_port = int(v)
+                        elif k == "WEBHOOK_PORT":
+                            web_port = int(v)
+        except Exception:
+            pass
+
+    return api_port, web_port
+
+
+def _is_port_free(port: int, allocated_ports: set[int]) -> bool:
+    """Check if a port is free of configuration allocation and active system listening."""
+    if port in allocated_ports:
+        return False
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        try:
+            s.bind(("127.0.0.1", port))
+            return True
+        except OSError:
+            return False
+
+
+def _get_allocated_ports() -> set[int]:
+    """Collect all API server and Webhook ports allocated to existing profiles."""
+    ports = set()
+    default_home = _get_default_hermes_home()
+    if default_home.is_dir():
+        api, web = _read_profile_ports(default_home)
+        ports.add(api)
+        ports.add(web)
+        
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in profiles_root.iterdir():
+            if entry.is_dir() and _PROFILE_ID_RE.match(entry.name) and entry.name != "default":
+                api, web = _read_profile_ports(entry)
+                ports.add(api)
+                ports.add(web)
+                
+    return ports
+
+
+def _update_env_ports(env_path: Path, api_port: int, web_port: int) -> None:
+    """Safely update or append API_SERVER_PORT and WEBHOOK_PORT in the given .env file."""
+    lines = []
+    if env_path.exists():
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except OSError:
+            pass
+
+    api_found = False
+    web_found = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("API_SERVER_PORT="):
+            lines[i] = f"API_SERVER_PORT={api_port}\n"
+            api_found = True
+        elif stripped.startswith("WEBHOOK_PORT="):
+            lines[i] = f"WEBHOOK_PORT={web_port}\n"
+            web_found = True
+
+    if not api_found:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(f"API_SERVER_PORT={api_port}\n")
+    if not web_found:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(f"WEBHOOK_PORT={web_port}\n")
+
+    try:
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+    except OSError:
+        pass
+
+
 def create_profile(
     name: str,
     clone_from: Optional[str] = None,
@@ -870,6 +992,8 @@ def create_profile(
         raise ValueError(
             "Cannot create a profile named 'default' — it is the built-in profile (~/.hermes)."
         )
+
+    allocated_ports = _get_allocated_ports()
 
     profile_dir = get_profile_dir(canon)
     if profile_dir.exists():
@@ -1002,6 +1126,23 @@ def create_profile(
             )
         except Exception:
             pass  # non-fatal — user can describe later with `hermes profile describe`
+
+    # Resolve any potential port conflicts
+    api_port, web_port = _read_profile_ports(profile_dir)
+    if not _is_port_free(api_port, allocated_ports) or not _is_port_free(web_port, allocated_ports) or api_port == web_port:
+        new_api_port = api_port
+        while not _is_port_free(new_api_port, allocated_ports):
+            new_api_port += 1
+            
+        new_web_port = web_port
+        if new_web_port == new_api_port:
+            new_web_port += 1
+        while not _is_port_free(new_web_port, allocated_ports) or new_web_port == new_api_port:
+            new_web_port += 1
+            
+        _update_env_ports(profile_dir / ".env", new_api_port, new_web_port)
+        print(f"ℹ Port conflict detected or defaults in use. Allocated unique ports: "
+              f"API_SERVER_PORT={new_api_port}, WEBHOOK_PORT={new_web_port}")
 
     # Phase 4: when running inside a container under s6, register the
     # new profile's gateway as a runtime s6 service so

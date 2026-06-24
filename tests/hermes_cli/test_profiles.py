@@ -173,7 +173,7 @@ class TestCreateProfile:
         content = env_path.read_text(encoding="utf-8")
         # Placeholder only — no credentials leak in from anywhere.
         assert all(
-            line.startswith("#") or not line.strip()
+            line.startswith("#") or not line.strip() or "PORT=" in line
             for line in content.splitlines()
         )
         mode = stat.S_IMODE(env_path.stat().st_mode)
@@ -184,7 +184,7 @@ class TestCreateProfile:
         default_home = tmp_path / ".hermes"
         (default_home / ".env").write_text("KEY=val")
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
-        assert (profile_dir / ".env").read_text() == "KEY=val"
+        assert "KEY=val" in (profile_dir / ".env").read_text().splitlines()
 
     def test_duplicate_raises_file_exists(self, profile_env):
         create_profile("coder", no_alias=True)
@@ -212,7 +212,7 @@ class TestCreateProfile:
         cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
         assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert cloned_config["model"] == "test"
-        assert (profile_dir / ".env").read_text().strip() == "KEY=val"
+        assert "KEY=val" in (profile_dir / ".env").read_text().splitlines()
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
 
     def test_clone_config_migrates_legacy_config_version(self, profile_env):
@@ -336,7 +336,7 @@ class TestCreateProfile:
         # All profile data must be present
         assert (profile_dir / "skills" / "my-skill" / "SKILL.md").read_text() == "skill"
         assert (profile_dir / "config.yaml").read_text() == "model: gpt-4"
-        assert (profile_dir / ".env").read_text() == "KEY=val"
+        assert "KEY=val" in (profile_dir / ".env").read_text().splitlines()
         assert (profile_dir / "logs" / "gateway.log").read_text() == "log"
 
     def test_clone_all_excludes_history_artifacts(self, profile_env):
@@ -1475,7 +1475,7 @@ class TestEdgeCases:
         cloned_config = yaml.safe_load((target_dir / "config.yaml").read_text())
         assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert cloned_config["model"] == "cloned"
-        assert (target_dir / ".env").read_text().strip() == "SECRET=yes"
+        assert "SECRET=yes" in (target_dir / ".env").read_text().splitlines()
 
     def test_delete_clears_active_profile(self, profile_env):
         """Deleting the active profile resets active to default."""
@@ -1488,6 +1488,27 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+    def test_create_profile_prevents_port_conflict(self, profile_env):
+        """Creating or cloning a profile automatically resolves port conflicts."""
+        tmp_path = profile_env
+        # 1. Create a source profile with explicit ports in its .env
+        source_dir = create_profile("source", no_alias=True)
+        (source_dir / ".env").write_text("API_SERVER_PORT=8642\nWEBHOOK_PORT=8644\n")
+
+        # 2. Create another profile cloning from source or as a clean profile
+        # Since 8642 and 8644 are already allocated to 'source', they must be conflict-resolved.
+        target_dir = create_profile(
+            "target", clone_from="source", clone_config=True, no_alias=True,
+        )
+        
+        # Read the targets' ports
+        from hermes_cli.profiles import _read_profile_ports
+        target_api, target_web = _read_profile_ports(target_dir)
+        
+        assert target_api != 8642
+        assert target_web != 8644
+        assert target_api != target_web
 
 
 class TestProfilesToServe:

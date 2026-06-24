@@ -6043,6 +6043,17 @@ def save_config(config: Dict[str, Any]):
         _secure_file(config_path)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
+        # Sync terminal.* config to .env so tools that read env vars directly
+        # (terminal_tool, prompt_builder) stay consistent with config.yaml.
+        # Without this, the Dashboard API (update_config → save_config) would
+        # leave stale TERMINAL_ENV etc. in .env after the user changes the
+        # terminal backend via the Desktop GUI.
+        _terminal = normalized.get("terminal")
+        if isinstance(_terminal, dict):
+            for cfg_key, env_var in TERMINAL_CONFIG_ENV_MAP.items():
+                if cfg_key in _terminal:
+                    save_env_value(env_var, _terminal_env_value(_terminal[cfg_key]))
+
 
 def load_env() -> Dict[str, str]:
     """Load environment variables from ~/.hermes/.env.

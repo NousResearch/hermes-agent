@@ -8,12 +8,14 @@ import { DesktopInstallOverlay } from '@/components/desktop-install-overlay'
 import { DesktopOnboardingOverlay } from '@/components/desktop-onboarding-overlay'
 import { GatewayConnectingOverlay } from '@/components/gateway-connecting-overlay'
 import { Pane, PaneMain } from '@/components/pane-shell'
+import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
+import { storedSessionIdForNotification } from '../lib/session-ids'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
@@ -31,6 +33,7 @@ import {
   FILE_BROWSER_MAX_WIDTH,
   FILE_BROWSER_MIN_WIDTH,
   pinSession,
+  PREVIEW_PANE_ID,
   setSidebarOverlayMounted,
   SIDEBAR_DEFAULT_WIDTH,
   SIDEBAR_MAX_WIDTH,
@@ -38,6 +41,8 @@ import {
   unpinSession
 } from '../store/layout'
 import { respondToApprovalAction } from '../store/native-notifications'
+import { setPetActivity } from '../store/pet'
+import { setPetOverlayOpenAppHandler, setPetOverlaySubmitHandler } from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
@@ -49,6 +54,7 @@ import {
 } from '../store/profile'
 import {
   $activeSessionId,
+  $attentionSessionIds,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
@@ -276,16 +282,20 @@ export function DesktopController() {
     }
   }, [])
 
-  // Notification click: the main process already focused the window; jump to its session.
+  // Notification click: the main process already focused the window; jump to its
+  // session. Notifications are tagged with the gateway *runtime* session id, but
+  // the chat route is keyed by the *stored* id — navigating with the runtime id
+  // resumes a non-existent stored session ("session not found") and strands the
+  // user. Translate runtime -> stored before navigating.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onFocusSession?.(sessionId => {
       if (sessionId) {
-        navigate(sessionRoute(sessionId))
+        navigate(sessionRoute(storedSessionIdForNotification(sessionId, runtimeIdByStoredSessionIdRef.current)))
       }
     })
 
     return () => unsubscribe?.()
-  }, [navigate])
+  }, [navigate, runtimeIdByStoredSessionIdRef])
 
   // Notification action button (Approve/Reject) — resolve in place, no navigation.
   useEffect(() => {
@@ -834,6 +844,53 @@ export function DesktopController() {
     updateSessionState
   })
 
+  // The popped-out pet drives two actions back into the app: send a prompt, and
+  // open the most recent thread. Both are registered ONCE through refs that track
+  // the latest callbacks — re-registering on every `submitText`/`resumeSession`
+  // identity change left a brief window where the handler was nulled (cleanup
+  // before re-register), which could drop a submit fired from the overlay (e.g.
+  // creating a session from the new-session screen). The ref form keeps a stable,
+  // always-current handler. Primary window only — it owns the overlay.
+  const submitTextRef = useRef(submitText)
+  submitTextRef.current = submitText
+  const resumeSessionRef = useRef(resumeSession)
+  resumeSessionRef.current = resumeSession
+
+  useEffect(() => {
+    if (isSecondaryWindow()) {
+      return
+    }
+
+    setPetOverlaySubmitHandler(text => void submitTextRef.current(text))
+    // Mail icon: $sessions is ordered most-recent-first; the pet is global (not
+    // per session) so "most recent" is the right target. main.cjs already raised
+    // the window before forwarding this.
+    setPetOverlayOpenAppHandler(() => {
+      const recent = $sessions.get()[0]
+
+      if (recent?.id) {
+        void resumeSessionRef.current(recent.id)
+      }
+    })
+
+    return () => {
+      setPetOverlaySubmitHandler(null)
+      setPetOverlayOpenAppHandler(null)
+    }
+  }, [])
+
+  // Mirror "a session is blocked on the user" (clarify/approval) into the pet's
+  // awaitingInput flag so it shows the `waiting` pose. Lives on $petActivity so
+  // it rides the same atom the pop-out overlay mirrors — no session list needed
+  // there. Every window keeps its own in-window pet in sync.
+  useEffect(() => {
+    const sync = () => setPetActivity({ awaitingInput: $attentionSessionIds.get().length > 0 })
+
+    sync()
+
+    return $attentionSessionIds.listen(sync)
+  }, [])
+
   useGatewayBoot({
     handleGatewayEvent: handleDesktopGatewayEvent,
     onConnectionReady: c => {
@@ -951,6 +1008,7 @@ export function DesktopController() {
 
   const overlays = (
     <>
+      <RemoteDisplayBanner />
       {!isSecondaryWindow() && <DesktopInstallOverlay />}
       {!isSecondaryWindow() && (
         <DesktopOnboardingOverlay
@@ -1070,7 +1128,7 @@ export function DesktopController() {
   const previewPane = (
     <Pane
       disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
-      id="preview"
+      id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
       minWidth={PREVIEW_RAIL_MIN_WIDTH}

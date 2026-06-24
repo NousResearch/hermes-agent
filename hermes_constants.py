@@ -5,6 +5,7 @@ without risk of circular imports.
 """
 
 import os
+import shutil
 import sys
 import sysconfig
 from contextvars import ContextVar, Token
@@ -240,6 +241,148 @@ def get_hermes_dir(new_subpath: str, old_name: str) -> Path:
     if old_path.exists():
         return old_path
     return home / new_subpath
+
+
+def iter_hermes_node_dirs(home: Path | None = None) -> list[Path]:
+    """Return Hermes-managed Node.js directories in preferred lookup order.
+
+    Windows installs from ``scripts/install.ps1`` unpack portable Node directly
+    into ``%LOCALAPPDATA%\\hermes\\node``. POSIX installs use
+    ``$HERMES_HOME/node/bin``. Include both shapes on every platform so mixed
+    or migrated installs still work.
+    """
+    root = home or get_hermes_home()
+    dirs = [root / "node"]
+    bin_dir = root / "node" / "bin"
+    # NOTE: keep this ordering in sync with hermesManagedNodePathEntries() in
+    # apps/desktop/electron/main.cjs — the Electron main process is Node and
+    # cannot import this module, so the platform-ordering rule is mirrored there.
+    if sys.platform == "win32":
+        return dirs + [bin_dir]
+    return [bin_dir] + dirs
+
+
+def _candidate_node_command_names(command: str) -> list[str]:
+    base = Path(command).name
+    if sys.platform != "win32" or "." in base:
+        return [base]
+    if base.lower() == "npm":
+        # Prefer npm.cmd. PowerShell may block npm.ps1 by execution policy, and
+        # CreateProcess cannot launch a bare .ps1 the way it can launch .cmd.
+        return ["npm.cmd", "npm.exe", "npm"]
+    if base.lower() == "npx":
+        return ["npx.cmd", "npx.exe", "npx"]
+    if base.lower() == "node":
+        return ["node.exe", "node"]
+    return [f"{base}.cmd", f"{base}.exe", base]
+
+
+def find_hermes_node_executable(command: str) -> str | None:
+    """Return a Hermes-managed Node/npm executable path, if installed."""
+    names = _candidate_node_command_names(command)
+    for directory in iter_hermes_node_dirs():
+        for name in names:
+            candidate = directory / name
+            if candidate.is_file() and (
+                sys.platform == "win32" or os.access(candidate, os.X_OK)
+            ):
+                return str(candidate)
+    return None
+
+
+def find_node_executable_on_path(command: str) -> str | None:
+    """Return a Node/npm executable from PATH with Windows shim ordering.
+
+    ``shutil.which("npm")`` can resolve an extensionless npm shim before the
+    ``.cmd`` shim on Windows. Python's CreateProcess cannot execute that shim
+    directly, so prefer the launchable variants explicitly for Hermes-owned
+    subprocesses.
+    """
+    if sys.platform != "win32":
+        return shutil.which(command)
+
+    command_str = str(command)
+    has_path_separator = any(
+        sep and sep in command_str for sep in (os.sep, os.altsep, "/", "\\")
+    )
+    if has_path_separator:
+        return command_str if Path(command_str).is_file() else None
+
+    for name in _candidate_node_command_names(command_str):
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            if not directory:
+                continue
+            candidate = Path(directory) / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
+def find_node_executable(command: str) -> str | None:
+    """Resolve a Node.js command, preferring Hermes-managed installs.
+
+    This is for Hermes-owned subprocesses that should not be broken by a bad,
+    missing, or elevation-triggering system Node/npm on PATH.
+    """
+    return find_hermes_node_executable(command) or find_node_executable_on_path(command)
+
+
+def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
+    """Return *env* with Hermes-managed Node directories prepended to PATH."""
+    merged = dict(os.environ if env is None else env)
+    existing = merged.get("PATH", "")
+    parts = [p for p in existing.split(os.pathsep) if p]
+    managed = [str(path) for path in iter_hermes_node_dirs() if path.is_dir()]
+    for entry in reversed(managed):
+        if entry not in parts:
+            parts.insert(0, entry)
+    merged["PATH"] = os.pathsep.join(parts)
+    return merged
+
+
+def agent_browser_runnable(path: str | None) -> bool:
+    """Return True only when *path* is an agent-browser CLI that actually runs.
+
+    A bare presence check (``shutil.which`` / ``Path.exists``) is not enough:
+    agent-browser's npm ``postinstall`` re-points a *global* install symlink
+    (e.g. ``/opt/homebrew/bin/agent-browser``) at our local
+    ``node_modules/agent-browser/bin/...`` binary, which then disappears on the
+    next ``hermes update`` — leaving a **dangling symlink** that ``which`` still
+    reports but exec fails on with exit 127 (issue #48521). Callers that trust
+    such a path silently break every browser tool.
+
+    This validates the candidate by resolving it to a real, executable file and
+    running ``--version`` with a short timeout. Returns True only on a clean
+    (exit 0) run, so a dead/wrong-arch/hung binary is rejected and the caller
+    can fall through to the next resolution candidate.
+
+    Special cases:
+      * ``None`` / empty → False.
+      * The ``"npx agent-browser"`` fallback form (contains a space, not a real
+        file) → True; npx resolves and validates the package at run time, so
+        there is nothing to stat here.
+    """
+    if not path:
+        return False
+    # The npx fallback is a two-token command string, not a filesystem path.
+    if " " in path and path.split()[0].endswith("npx"):
+        return True
+    # exists() follows symlinks — a dangling link returns False here, so we
+    # never even spawn a subprocess for the broken-link case.
+    if not os.path.exists(path) or not os.access(path, os.X_OK):
+        return False
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            timeout=10,
+            env=with_hermes_node_path(),
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return result.returncode == 0
 
 
 def display_hermes_home() -> str:

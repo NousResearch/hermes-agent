@@ -147,6 +147,12 @@ export const ja = defineLocale({
     }
   },
 
+  remoteDisplayBanner: {
+    message: reason =>
+      `ソフトウェアレンダリングが有効です — リモートディスプレイを検出しました（${reason}）。ちらつきを防ぐため GPU アクセラレーションは無効化されています。`,
+    dismiss: '閉じる'
+  },
+
   titlebar: {
     hideSidebar: 'サイドバーを非表示',
     showSidebar: 'サイドバーを表示',
@@ -281,7 +287,32 @@ export const ja = defineLocale({
       installError: 'そのテーマをインストールできませんでした。',
       installed: name => `「${name}」をインストールしました。`,
       removeTheme: 'テーマを削除',
-      importedBadge: 'インポート済み'
+      importedBadge: 'インポート済み',
+      pet: {
+        title: 'ペット',
+        intro:
+          'アプリ上に浮かぶ petdex のアニメーションマスコットを採用しましょう。ツール実行中は走り、成功すると喜び、エラーでしょんぼりと、Hermes の状態に反応します。',
+        restartHint:
+          'ペット機能には再起動が必要です。この機能が追加される前に起動したアプリが動作中です。Hermes を終了して再度開き、このページに戻ってください。',
+        scaleTitle: 'サイズ',
+        scaleDesc: '浮遊マスコットの大きさを変更します。すべての画面に即時反映されます。',
+        on: 'オン',
+        off: 'オフ',
+        chooseTitle: 'ペットを選ぶ',
+        chooseDesc: '選ぶと（必要に応じて）インストールされ、アクティブになります。',
+        searchPlaceholder: 'ペットを検索…',
+        unreachable: 'petdex ギャラリーに接続できませんでした。接続を確認してこのページを開き直してください。',
+        noMatch: query => `「${query}」に一致するペットがありません。`,
+        installedTag: 'インストール済み',
+        countCapped: (cap, total) => `${total} 件中 ${cap} 件を表示中——入力して絞り込めます。`,
+        count: n => `${n} 件のペット。`,
+        uninstall: name => `${name} をアンインストール`,
+        adoptFailed: slug => `${slug} を採用できませんでした`,
+        uninstallFailed: slug => `${slug} をアンインストールできませんでした`,
+        noneAvailable: 'オンにできるペットがありません。',
+        turnOnFailed: 'ペットをオンにできませんでした。',
+        turnOffFailed: 'ペットをオフにできませんでした。'
+      }
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
@@ -500,6 +531,7 @@ export const ja = defineLocale({
       checkNow: '今すぐ確認',
       checking: '確認中…',
       seeWhatsNew: '新機能を見る',
+      updateNow: '今すぐ更新',
       releaseNotes: 'リリースノート',
       onLatest: '最新バージョンです。',
       installing: '更新をインストール中です。',
@@ -700,6 +732,8 @@ export const ja = defineLocale({
       removedMessage: provider => `${provider} を削除しました。`,
       failedRemove: provider => `${provider} を削除できませんでした`,
       noProviderKeys: '利用可能なプロバイダー API キーがありません。',
+      searchKeys: 'プロバイダーを検索…',
+      noKeysMatch: '一致するプロバイダーがありません。',
       loading: 'プロバイダーを読み込み中...'
     },
     sessions: {
@@ -834,8 +868,22 @@ export const ja = defineLocale({
     commandCenter: 'コマンドセンター',
     appearance: '外観',
     settings: '設定',
-    changeTheme: 'テーマを変更...',
+    changeTheme: 'テーマを変更',
     changeColorMode: 'カラーモードを変更...',
+    pets: {
+      title: 'ペット',
+      placeholder: 'ペットを検索…',
+      loading: 'petdex ギャラリーを読み込み中…',
+      error: 'petdex ギャラリーに接続できません。',
+      staleBackend: 'ペット機能を使うには Hermes を再起動してください。',
+      empty: '一致するペットがありません。',
+      turnOff: 'オフ',
+      turnOn: 'オン',
+      installed: 'インストール済み',
+      adoptFailed: 'ペットを採用できませんでした。',
+      toggleFailed: 'ペットを切り替えできませんでした。',
+      noneAvailable: '利用可能なペットがありません。'
+    },
     installTheme: {
       title: 'テーマをインストール...',
       placeholder: 'VS Code Marketplace を検索...',
@@ -881,7 +929,8 @@ export const ja = defineLocale({
     gatewayRunning: 'メッセージングゲートウェイが実行中',
     gatewayStopped: 'メッセージングゲートウェイが停止中',
     hermesActiveSessions: (version, count) => `Hermes ${version} · アクティブセッション ${count}`,
-    restartMessaging: 'メッセージングを再起動',
+    restartGateway: 'ゲートウェイを再起動',
+    gatewayRestartFailed: 'ゲートウェイの再起動に失敗しました。',
     updateHermes: 'Hermes を更新',
     actionRunning: '実行中',
     actionDone: '完了',
@@ -951,9 +1000,9 @@ export const ja = defineLocale({
     disableAria: name => `${name} を無効にする`,
     platformEnabled: name => `${name} を有効にしました`,
     platformDisabled: name => `${name} を無効にしました`,
-    restartToApply: 'この変更を有効にするにはゲートウェイを再起動してください。',
+    restartToApply: 'この変更はゲートウェイの再起動後に有効になります。',
     setupSaved: name => `${name} の設定を保存しました`,
-    restartToReconnect: '新しい認証情報で再接続するにはゲートウェイを再起動してください。',
+    restartToReconnect: '新しい認証情報はゲートウェイの再起動後に有効になります。',
     keyCleared: key => `${key} をクリアしました`,
     setupUpdated: name => `${name} の設定が更新されました。`,
     failedUpdate: name => `${name} の更新に失敗しました`,
@@ -1473,8 +1522,12 @@ export const ja = defineLocale({
       fetch: 'ダウンロード中…',
       pull: 'もうすぐ完了…',
       pydeps: '仕上げ中…',
+      update: 'Hermes を更新中…',
+      rebuild: 'デスクトップアプリを再ビルド中…',
       restart: 'Hermes を再起動中…',
+      done: '更新が完了しました',
       manual: 'ターミナルから更新',
+      guiSkew: 'デスクトップアプリを更新してください',
       error: '更新が一時停止中'
     },
     checking: '更新を確認中…',
@@ -1499,12 +1552,15 @@ export const ja = defineLocale({
     manualBody:
       'Hermes をコマンドラインからインストールしたため、更新もそこで実行されます。これをターミナルに貼り付けてください:',
     manualPickedUp: 'Hermes は次回起動時に新しいバージョンを読み込みます。',
+    guiSkewTitle: 'デスクトップアプリを更新してください',
+    guiSkewBody:
+      'バックエンドは更新されましたが、このデスクトップアプリのパッケージは変更されていません。一致させるために Hermes デスクトップアプリ（AppImage / .deb / .rpm）を更新または再インストールしてください。',
     copy: 'コピー',
     copied: 'コピーしました',
     done: '完了',
-    applyingBody: 'Hermes アップデーターが独自のウィンドウで引き継ぎ、完了後に Hermes を再度開きます。',
+    applyingBody: 'Hermes アップデーターが独自のウィンドウで引き継ぎ、完了後に自動的に Hermes を再度開きます。更新中はご自分で Hermes を開き直さないでください。',
     applyingBodyBackend: 'リモートバックエンドが更新を適用して再起動します。復帰すると Hermes が自動的に再接続します。',
-    applyingClose: 'Hermes は更新を適用するために閉じます。',
+    applyingClose: 'このウィンドウは更新中に閉じ、その後 Hermes が自動的に再度開きます。',
     errorTitle: '更新が完了しませんでした',
     errorBody: 'ご安心ください。何も失われていません。今すぐ再試行できます。',
     notNow: '今は後で',
@@ -1662,6 +1718,7 @@ export const ja = defineLocale({
       search: 'モデルを検索',
       noModels: 'モデルが見つかりません',
       editModels: 'モデルを編集…',
+      refreshModels: 'モデルを更新',
       fast: '高速',
       medium: '中'
     },
@@ -1716,6 +1773,7 @@ export const ja = defineLocale({
       gatewayChecking: '確認中',
       gatewayConnecting: '接続中',
       gatewayOffline: 'オフライン',
+      gatewayRestarting: '再起動中…',
       gatewayTitle: 'Hermes 推論ゲートウェイのステータス',
       agents: 'エージェント',
       closeAgents: 'エージェントを閉じる',
@@ -1781,6 +1839,7 @@ export const ja = defineLocale({
     opening: '開いています...',
     hide: '非表示',
     openPreview: 'プレビューを開く',
+    openInBrowser: 'ブラウザで開く',
     sourceLineTitle: 'クリックして選択 · Shift クリックで拡張 · コンポーザーにドラッグ',
     source: 'ソース',
     renderedPreview: 'プレビュー',

@@ -75,3 +75,126 @@ async def test_send_without_transport_returns_failure():
     result = await a.send("chat1", "hello")
     assert result.success is False
     assert result.error == "no transport"
+
+
+class _CaptureTransport:
+    """Minimal RelayTransport stand-in that records the outbound action."""
+
+    def __init__(self):
+        self.sent = None
+
+    def set_inbound_handler(self, h):  # noqa: D401
+        self._h = h
+
+    async def send_outbound(self, action):
+        self.sent = action
+        return {"success": True, "message_id": "m1"}
+
+
+def _make_event(chat_id="chan-1", guild_id="guild-9"):
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    src = SessionSource(
+        platform=Platform.RELAY,
+        chat_id=chat_id,
+        chat_type="channel",
+        guild_id=guild_id,
+    )
+    return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
+
+
+@pytest.mark.asyncio
+async def test_send_reattaches_guild_id_from_inbound_scope():
+    """The connector's egress guard resolves the owning tenant from
+    metadata.guild_id; the gateway's generic delivery path drops it, so the
+    relay adapter must re-attach the guild scope learned from the inbound event.
+    Regression for live 'discord egress declined: target not routed to an
+    onboarded tenant'."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    # Simulate the connector delivering an inbound message in guild-9 / chan-1,
+    # but don't run the full handle_message pipeline — just the scope capture.
+    a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
+
+    await a.send("chan-1", "the reply")
+
+    assert t.sent["metadata"].get("guild_id") == "guild-9"
+
+
+@pytest.mark.asyncio
+async def test_send_without_known_scope_omits_guild_id():
+    """A chat we never saw inbound (e.g. a DM) gets no guild_id — no-op, never
+    invents a scope."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    await a.send("unknown-chat", "hi")
+    assert "guild_id" not in t.sent["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_send_preserves_explicit_guild_id():
+    """An explicitly-provided metadata.guild_id is never overwritten."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
+    await a.send("chan-1", "hi", metadata={"guild_id": "explicit-1"})
+    assert t.sent["metadata"]["guild_id"] == "explicit-1"
+
+
+# ── Phase 7 Unit 7d-B: terminal auth revocation → clean "relay disabled" ─────
+
+
+class _RevokedTransport:
+    """Transport stand-in that reports a terminal auth revocation (the
+    production WebSocketRelayTransport latches this after a 4401 close that
+    follows a successful handshake)."""
+
+    def __init__(self):
+        self.auth_revoked = True
+
+    def set_inbound_handler(self, h):  # noqa: D401
+        self._h = h
+
+
+@pytest.mark.asyncio
+async def test_revocation_marks_relay_disabled_non_retryable():
+    """When the transport reports auth_revoked, the adapter surfaces a clean,
+    NON-retryable `relay_disabled` fatal and fires the fatal-error handler."""
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=_RevokedTransport())
+    notified = []
+    a.set_fatal_error_handler(lambda adapter: notified.append(adapter))
+
+    # Drive the monitor body directly (poll loop breaks immediately on the
+    # already-revoked transport).
+    await a._watch_for_revocation(poll_interval_s=0.01)
+
+    assert a.has_fatal_error is True
+    assert a.fatal_error_code == "relay_disabled"
+    assert a.fatal_error_retryable is False
+    assert "disabled" in (a.fatal_error_message or "").lower()
+    assert notified == [a]
+
+
+@pytest.mark.asyncio
+async def test_no_revocation_no_fatal():
+    """A transport that has NOT been revoked never trips the disabled fatal."""
+
+    class _LiveTransport:
+        auth_revoked = False
+
+        def set_inbound_handler(self, h):  # noqa: D401
+            self._h = h
+
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=_LiveTransport())
+    # Run the monitor with a tiny window then cancel — it should never fire.
+    import asyncio
+
+    task = asyncio.create_task(a._watch_for_revocation(poll_interval_s=0.01))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert a.has_fatal_error is False

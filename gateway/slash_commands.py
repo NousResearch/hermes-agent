@@ -34,7 +34,7 @@ from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import SessionSource, build_session_key
-from hermes_cli.config import cfg_get
+from hermes_cli.config import cfg_get, clear_model_endpoint_credentials
 from utils import (
     atomic_json_write,
     atomic_yaml_write,
@@ -43,6 +43,35 @@ from utils import (
 )
 
 logger = logging.getLogger("gateway.run")
+
+
+def _model_switch_skew_guard() -> Optional[str]:
+    """Refuse a model switch when the gateway is running stale code.
+
+    A long-lived gateway holds its modules in memory from boot. If the checkout
+    changed underneath it (e.g. a manual ``git pull``), switching models can hit
+    a first-time lazy import on a new code path and crash on a stale cached
+    dependency — the cryptic ``cannot import name 'env_float' from 'utils'``.
+    Detect the drift and tell the user to restart instead.
+
+    Intentionally scoped to model switching — the known, highest-risk trigger.
+    Any first-time lazy import on a stale process is technically exposed; we
+    don't guard every import site, only this one.
+    """
+    from gateway.code_skew import detect_code_skew
+
+    skew = detect_code_skew()
+    if not skew:
+        return None
+    boot_rev, disk_rev = skew
+    return t(
+        "gateway.model.error_prefix",
+        error=(
+            f"This gateway is running code from {boot_rev} but the checkout on "
+            f"disk is now {disk_rev}. Switching models would risk a stale-module "
+            f"crash — restart the gateway to load the new code: hermes gateway restart"
+        ),
+    )
 
 
 class GatewaySlashCommandsMixin:
@@ -931,7 +960,15 @@ class GatewaySlashCommandsMixin:
         # us.  The detached subprocess approach (setsid + bash) doesn't work
         # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
         # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # systemd sets INVOCATION_ID; launchd sets XPC_SERVICE_NAME to the
+        # job label.  Without the launchd check, macOS /restart takes the
+        # detached path and exits 0, which KeepAlive.SuccessfulExit=false
+        # treats as a deliberate stop — the gateway stays dead until next
+        # login.  Interactive macOS shells inherit XPC_SERVICE_NAME=0, so
+        # "0" must count as not-under-launchd.
+        _under_service = bool(os.environ.get("INVOCATION_ID")) or os.environ.get(
+            "XPC_SERVICE_NAME", "0"
+        ) not in ("", "0")
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)
@@ -1030,12 +1067,13 @@ class GatewaySlashCommandsMixin:
         )
 
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /model command — switch model for this session.
+        """Handle /model command — switch model.
 
         Supports:
           /model                              — interactive picker (Telegram/Discord) or text list
-          /model <name>                       — switch for this session only
-          /model <name> --global              — switch and persist to config.yaml
+          /model <name>                       — switch model (persists by default)
+          /model <name> --session             — switch for this session only
+          /model <name> --global              — switch and persist (explicit)
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
@@ -1043,6 +1081,7 @@ class GatewaySlashCommandsMixin:
         import yaml
         from hermes_cli.model_switch import (
             switch_model as _switch_model, parse_model_flags,
+            resolve_persist_behavior,
             list_authenticated_providers,
             list_picker_providers,
         )
@@ -1050,8 +1089,15 @@ class GatewaySlashCommandsMixin:
 
         raw_args = event.get_command_args().strip()
 
-        # Parse --provider, --global, and --refresh flags
-        model_input, explicit_provider, persist_global, force_refresh = parse_model_flags(raw_args)
+        # Parse --provider, --global, --session, and --refresh flags
+        (
+            model_input,
+            explicit_provider,
+            is_global_flag,
+            force_refresh,
+            is_session,
+        ) = parse_model_flags(raw_args)
+        persist_global = resolve_persist_behavior(is_global_flag, is_session)
 
         # --refresh: bust the disk cache so the picker shows live data.
         if force_refresh:
@@ -1112,7 +1158,11 @@ class GatewaySlashCommandsMixin:
 
             if has_picker:
                 try:
-                    providers = list_picker_providers(
+                    # Offload blocking provider-listing (can fall through to a
+                    # synchronous urllib HTTP fetch on a stale cache) off the
+                    # event loop so the gateway doesn't freeze. See #41289.
+                    providers = await asyncio.to_thread(
+                        list_picker_providers,
                         current_provider=current_provider,
                         current_base_url=current_base_url,
                         current_model=current_model,
@@ -1137,19 +1187,38 @@ class GatewaySlashCommandsMixin:
                         _chat_id: str, model_id: str, provider_slug: str
                     ) -> str:
                         """Perform the model switch and return confirmation text."""
+                        skew_error = _model_switch_skew_guard()
+                        if skew_error:
+                            return skew_error
                         result = _switch_model(
                             raw_input=model_id,
                             current_provider=_cur_provider,
                             current_model=_cur_model,
                             current_base_url=_cur_base_url,
                             current_api_key=_cur_api_key,
-                            is_global=False,
+                            is_global=persist_global,
                             explicit_provider=provider_slug,
                             user_providers=user_provs,
                             custom_providers=custom_provs,
                         )
                         if not result.success:
                             return t("gateway.model.error_prefix", error=result.error_message)
+
+                        try:
+                            from hermes_cli.context_switch_guard import (
+                                enrich_model_switch_warnings_for_gateway,
+                            )
+
+                            enrich_model_switch_warnings_for_gateway(
+                                result,
+                                _self,
+                                session_key=_session_key,
+                                source=event.source,
+                                custom_providers=custom_provs,
+                                load_gateway_config=_load_gateway_config,
+                            )
+                        except Exception as exc:
+                            logger.debug("preflight-compression switch warning failed: %s", exc)
 
                         # Update cached agent in-place
                         cached_entry = None
@@ -1168,7 +1237,25 @@ class GatewaySlashCommandsMixin:
                                     api_mode=result.api_mode,
                                 )
                             except Exception as exc:
-                                logger.warning("Picker model switch failed for cached agent: %s", exc)
+                                # The in-place swap rolled the agent back to the
+                                # OLD working model/client and re-raised.  Abort
+                                # the rest of the commit: do NOT persist the
+                                # failed model to the DB, do NOT set a session
+                                # override pointing at the broken model, and do
+                                # NOT evict the working cached agent.  Otherwise
+                                # the next message rebuilds a dead agent from the
+                                # broken override and the conversation is lost
+                                # (#50163).  A failed switch must be a no-op.
+                                logger.warning(
+                                    "Picker model switch failed for cached agent: %s", exc
+                                )
+                                return t(
+                                    "gateway.model.error_prefix",
+                                    error=(
+                                        f"Model switch to {result.new_model} failed ({exc}); "
+                                        f"staying on {_cur_model}."
+                                    ),
+                                )
 
                         # Persist the new model to the session DB so the
                         # dashboard shows the updated model (#34850).
@@ -1207,6 +1294,36 @@ class GatewaySlashCommandsMixin:
                         # stale cache signature to trigger a rebuild.
                         _self._evict_cached_agent(_session_key)
 
+                        # Persist to config (default) unless --session opted out,
+                        # mirroring the text /model command path above so a picked
+                        # model survives across sessions like a typed one (#49066).
+                        if persist_global:
+                            try:
+                                if config_path.exists():
+                                    with open(config_path, encoding="utf-8") as f:
+                                        _persist_cfg = yaml.safe_load(f) or {}
+                                else:
+                                    _persist_cfg = {}
+                                _raw_model = _persist_cfg.get("model")
+                                if isinstance(_raw_model, dict):
+                                    _persist_model_cfg = _raw_model
+                                elif isinstance(_raw_model, str) and _raw_model.strip():
+                                    _persist_model_cfg = {"default": _raw_model.strip()}
+                                    _persist_cfg["model"] = _persist_model_cfg
+                                else:
+                                    _persist_model_cfg = {}
+                                    _persist_cfg["model"] = _persist_model_cfg
+                                _persist_model_cfg["default"] = result.new_model
+                                _persist_model_cfg["provider"] = result.target_provider
+                                if result.base_url:
+                                    _persist_model_cfg["base_url"] = result.base_url
+                                if str(result.target_provider or "").strip().lower() != "custom":
+                                    clear_model_endpoint_credentials(_persist_model_cfg)
+                                from hermes_cli.config import save_config
+                                save_config(_persist_cfg)
+                            except Exception as e:
+                                logger.warning("Failed to persist model switch: %s", e)
+
                         # Build confirmation text
                         plabel = result.provider_label or result.target_provider
                         lines = [t("gateway.model.switched", model=result.new_model)]
@@ -1240,7 +1357,12 @@ class GatewaySlashCommandsMixin:
                             if mi.has_cost_data():
                                 lines.append(t("gateway.model.cost_label", cost=mi.format_cost()))
                             lines.append(t("gateway.model.capabilities_label", capabilities=mi.format_capabilities()))
-                        lines.append(t("gateway.model.session_only_hint"))
+                        if result.warning_message:
+                            lines.append(t("gateway.model.warning_prefix", warning=result.warning_message))
+                        if persist_global:
+                            lines.append(t("gateway.model.saved_global"))
+                        else:
+                            lines.append(t("gateway.model.session_only_hint"))
                         return "\n".join(lines)
 
                     metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -1261,7 +1383,10 @@ class GatewaySlashCommandsMixin:
             lines = [t("gateway.model.current_label", model=current_model or "unknown", provider=provider_label), ""]
 
             try:
-                providers = list_authenticated_providers(
+                # Offload blocking provider-listing off the event loop so the
+                # gateway doesn't freeze on a stale-cache HTTP fetch. See #41289.
+                providers = await asyncio.to_thread(
+                    list_authenticated_providers,
                     current_provider=current_provider,
                     current_base_url=current_base_url,
                     current_model=current_model,
@@ -1288,6 +1413,9 @@ class GatewaySlashCommandsMixin:
             return "\n".join(lines)
 
         # Perform the switch
+        skew_error = _model_switch_skew_guard()
+        if skew_error:
+            return skew_error
         result = _switch_model(
             raw_input=model_input,
             current_provider=current_provider,
@@ -1302,6 +1430,22 @@ class GatewaySlashCommandsMixin:
 
         if not result.success:
             return t("gateway.model.error_prefix", error=result.error_message)
+
+        try:
+            from hermes_cli.context_switch_guard import (
+                enrich_model_switch_warnings_for_gateway,
+            )
+
+            enrich_model_switch_warnings_for_gateway(
+                result,
+                self,
+                session_key=session_key,
+                source=source,
+                custom_providers=custom_provs,
+                load_gateway_config=_load_gateway_config,
+            )
+        except Exception as exc:
+            logger.debug("preflight-compression switch warning failed: %s", exc)
 
         async def _finish_switch() -> str:
             """Apply the resolved switch (agent, session, config) and build the reply."""
@@ -1323,7 +1467,20 @@ class GatewaySlashCommandsMixin:
                         api_mode=result.api_mode,
                     )
                 except Exception as exc:
+                    # In-place swap rolled the agent back to the OLD working
+                    # model/client and re-raised.  Abort the commit: skip DB
+                    # persist, session override, cache eviction, and config
+                    # write so a failed switch is a no-op rather than a dead
+                    # conversation (#50163).  Without this early return the
+                    # next message rebuilds a broken agent from the override.
                     logger.warning("In-place model switch failed for cached agent: %s", exc)
+                    return t(
+                        "gateway.model.error_prefix",
+                        error=(
+                            f"Model switch to {result.new_model} failed ({exc}); "
+                            f"staying on {current_model}."
+                        ),
+                    )
 
             # Persist the new model to the session DB so the dashboard
             # shows the updated model (#34850).
@@ -1331,6 +1488,11 @@ class GatewaySlashCommandsMixin:
             if _sess_db is not None:
                 try:
                     _sess_entry = self.session_store.get_or_create_session(source)
+                    # If this session was auto-reset, consume the flag so the
+                    # next regular message's cleanup does not wipe the model
+                    # override just stored below (Closes #48031).
+                    if getattr(_sess_entry, "was_auto_reset", False):
+                        _sess_entry.was_auto_reset = False
                     _sess_db.update_session_model(
                         _sess_entry.session_id, result.new_model
                     )
@@ -1362,7 +1524,7 @@ class GatewaySlashCommandsMixin:
             # override rather than relying on cache signature mismatch detection.
             self._evict_cached_agent(session_key)
 
-            # Persist to config if --global
+            # Persist to config (default) unless --session opted out
             if persist_global:
                 try:
                     if config_path.exists():
@@ -1389,6 +1551,8 @@ class GatewaySlashCommandsMixin:
                     model_cfg["provider"] = result.target_provider
                     if result.base_url:
                         model_cfg["base_url"] = result.base_url
+                    if str(result.target_provider or "").strip().lower() != "custom":
+                        clear_model_endpoint_credentials(model_cfg)
                     from hermes_cli.config import save_config
                     save_config(cfg)
                 except Exception as e:
@@ -1668,6 +1832,10 @@ class GatewaySlashCommandsMixin:
         if not args or lower == "status":
             return mgr.status_line()
 
+        # /goal show → print the active goal's completion contract
+        if lower == "show":
+            return f"{mgr.status_line()}\n{mgr.render_contract()}"
+
         if lower == "pause":
             state = mgr.pause(reason="user-paused")
             if state is None:
@@ -1699,9 +1867,62 @@ class GatewaySlashCommandsMixin:
                 logger.debug("goal clear: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal_cleared") if had else t("gateway.no_active_goal")
 
+        # /goal wait <pid> [reason] — park the loop on a background process.
+        if lower == "wait" or lower.startswith("wait "):
+            wait_arg = args[len("wait"):].strip()
+            if not wait_arg:
+                return "Usage: /goal wait <pid> [reason]"
+            wtokens = wait_arg.split(None, 1)
+            try:
+                pid = int(wtokens[0])
+            except ValueError:
+                return "/goal wait: <pid> must be an integer process id."
+            reason = wtokens[1].strip() if len(wtokens) > 1 else ""
+            try:
+                mgr.wait_on(pid, reason=reason)
+            except (RuntimeError, ValueError) as exc:
+                return f"/goal wait: {exc}"
+            rtxt = f" ({reason})" if reason else ""
+            return f"⏳ Goal parked on pid {pid}{rtxt}. Loop pauses until it exits."
+
+        # /goal unwait — clear the wait barrier.
+        if lower == "unwait":
+            if mgr.stop_waiting():
+                return "▶ Wait barrier cleared — goal loop resumes."
+            return "No wait barrier set."
+
+        # /goal draft <objective> → draft a structured completion contract,
+        # then set it. The aux LLM call is sync; run it off the event loop.
+        draft_contract_obj = None
+        if lower.startswith("draft"):
+            objective = args[len("draft"):].strip()
+            if not objective:
+                return "Usage: /goal draft <objective in plain language>"
+            try:
+                import asyncio
+                from hermes_cli.goals import draft_contract
+
+                draft_contract_obj = await asyncio.get_running_loop().run_in_executor(
+                    None, draft_contract, objective
+                )
+            except Exception as exc:
+                logger.debug("goal draft failed: %s", exc)
+                draft_contract_obj = None
+            args = objective  # the goal text is the objective
+            contract = draft_contract_obj
+        else:
+            # Inline `field: value` lines parse into a completion contract;
+            # the remaining prose is the goal headline. Plain free-form goals
+            # (no such lines) behave exactly as before.
+            from hermes_cli.goals import parse_contract
+
+            headline, parsed = parse_contract(args)
+            args = headline or args
+            contract = parsed if not parsed.is_empty() else None
+
         # Otherwise — treat the remaining text as the new goal.
         try:
-            state = mgr.set(args)
+            state = mgr.set(args, contract=contract)
         except ValueError as exc:
             return t("gateway.goal.invalid", error=str(exc))
 
@@ -1722,7 +1943,13 @@ class GatewaySlashCommandsMixin:
             except Exception as exc:
                 logger.debug("goal kickoff enqueue failed: %s", exc)
 
-        return t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
+        base = t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
+        if state.has_contract():
+            return f"{base}\nCompletion contract:\n{state.contract.render_block()}"
+        if lower.startswith("draft"):
+            # Drafting was requested but the aux model couldn't produce one.
+            return f"{base}\n(Couldn't draft a contract — running as a free-form goal.)"
+        return base
 
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).
@@ -2171,7 +2398,7 @@ class GatewaySlashCommandsMixin:
         from gateway.run import _hermes_home
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
-        from tools.memory_tool import MemoryStore
+        from tools.memory_tool import load_on_disk_store
 
         raw_args = event.get_command_args().strip()
         args = raw_args.split() if raw_args else []
@@ -2191,8 +2418,8 @@ class GatewaySlashCommandsMixin:
 
         # Apply approved writes against a fresh on-disk store (the gateway has
         # no long-lived agent; the store persists to the same MEMORY/USER.md).
-        store = MemoryStore()
-        store.load_from_disk()
+        # load_on_disk_store() honors the user's configured char limits.
+        store = load_on_disk_store()
 
         out = handle_pending_subcommand(
             wa.MEMORY, args, memory_store=store, set_mode_fn=_set_approval,
@@ -2583,12 +2810,14 @@ class GatewaySlashCommandsMixin:
                 if partial and tail:
                     compressed = rejoin_compressed_head_and_tail(compressed, tail)
 
-                # _compress_context already calls end_session() on the old session
-                # (preserving its full transcript in SQLite) and creates a new
-                # session_id for the continuation.  Write the compressed messages
-                # into the NEW session so the original history stays searchable.
+                # _compress_context either rotated (legacy: ended the old
+                # session, created a continuation id — write compressed messages
+                # into the NEW session so the original stays searchable) or
+                # compacted in place (compression.in_place / #38763: same id,
+                # transcript replaced with the compacted set).
                 new_session_id = tmp_agent.session_id
                 rotated = new_session_id != session_entry.session_id
+                _in_place = bool(getattr(tmp_agent, "compression_in_place", False))
                 if rotated:
                     session_entry.session_id = new_session_id
                     self.session_store._save()
@@ -2596,20 +2825,27 @@ class GatewaySlashCommandsMixin:
                         source, session_entry, reason="compress-command",
                     )
 
-                # Only rewrite the transcript when rotation actually produced a
-                # NEW session id. If _compress_context could not rotate (e.g.
-                # _session_db unavailable, or the DB split raised), session_id
-                # is unchanged and rewrite_transcript() would DELETE the
-                # original messages and replace them with only the compressed
-                # summary — permanent data loss (#44794, #39704). In that case
-                # leave the original transcript intact.
-                if rotated:
-                    self.session_store.rewrite_transcript(new_session_id, compressed)
+                # Rewrite the transcript when EITHER rotation produced a new id
+                # OR in-place compaction succeeded. The danger this guards
+                # against is the THIRD case: _compress_context could NOT rotate
+                # AND was not in-place (e.g. legacy mode but _session_db
+                # unavailable / the DB split raised) — there session_id is
+                # unchanged for a FAILURE reason, and rewrite_transcript() would
+                # DELETE the original messages and replace them with only the
+                # compressed summary (permanent data loss #44794, #39704). In
+                # in-place mode the unchanged id is SUCCESS, so the rewrite is
+                # exactly right (and is the durable write when the throwaway
+                # /compress agent has no _session_db of its own).
+                if rotated or _in_place:
+                    self.session_store.rewrite_transcript(
+                        new_session_id, compressed
+                    )
                 else:
                     logger.warning(
                         "Manual /compress: session rotation did not occur "
-                        "(session_id unchanged) — preserving original transcript "
-                        "instead of overwriting it (#44794)."
+                        "(session_id unchanged) and in-place mode is off — "
+                        "preserving original transcript instead of overwriting "
+                        "it (#44794)."
                     )
                 # Reset stored token count — transcript changed, old value is stale
                 self.session_store.update_session(
@@ -2794,6 +3030,22 @@ class GatewaySlashCommandsMixin:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    # Propagate the user-chosen title to the visible Telegram
+                    # forum topic name too. Auto-generated titles already rename
+                    # the topic; without this, /title only updated the DB title
+                    # and the topic kept its auto-assigned name. No-ops off
+                    # Telegram topic lanes and when auto-rename is disabled.
+                    schedule_rename = getattr(
+                        self, "_schedule_telegram_topic_title_rename", None
+                    )
+                    if callable(schedule_rename):
+                        try:
+                            schedule_rename(source, session_id, sanitized)
+                        except Exception:
+                            logger.debug(
+                                "Failed to rename Telegram topic from /title",
+                                exc_info=True,
+                            )
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")

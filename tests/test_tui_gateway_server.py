@@ -2016,6 +2016,25 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     ]
 
 
+def test_ensure_session_db_row_persists_session_source(monkeypatch):
+    created = []
+
+    class _FakeDB:
+        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+            created.append(
+                {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
+            )
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_resolve_model", lambda: "test-model")
+
+    server._ensure_session_db_row({"session_key": "k1", "source": "tool"})
+
+    assert created == [
+        {"key": "k1", "source": "tool", "model": "test-model", "model_config": None, "cwd": None}
+    ]
+
+
 def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
     """Without an explicit workspace, cwd is left null so the session groups
     under "No workspace" rather than the gateway's launch directory."""
@@ -2108,8 +2127,10 @@ def test_session_title_clears_pending_after_persist(monkeypatch):
             return True
 
     db = _FakeDB()
+    emitted = []
     server._sessions["sid"] = _session(pending_title="stale")
     monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
     try:
         resp = server.handle_request(
             {
@@ -2122,6 +2143,8 @@ def test_session_title_clears_pending_after_persist(monkeypatch):
         assert resp["result"]["pending"] is False
         assert resp["result"]["title"] == "fresh"
         assert server._sessions["sid"]["pending_title"] is None
+        assert emitted[-1][0:2] == ("session.info", "sid")
+        assert emitted[-1][2]["title"] == "fresh"
     finally:
         server._sessions.pop("sid", None)
 
@@ -3045,6 +3068,33 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     assert server._sessions["sid"]["show_reasoning"] is False
     assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
 
+    # /reasoning full | clamp — parity with the classic CLI reasoning_full
+    # toggle. In the TUI these map to the thinking section's expand/collapse
+    # rendering (no fixed 10-line recap exists here).
+    resp_full = server.handle_request(
+        {
+            "id": "4",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "full"},
+        }
+    )
+    assert resp_full["result"]["value"] == "full"
+    cfg_full = server._load_cfg()
+    assert cfg_full["display"]["reasoning_full"] is True
+    assert cfg_full["display"]["sections"]["thinking"] == "expanded"
+
+    resp_clamp = server.handle_request(
+        {
+            "id": "5",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "clamp"},
+        }
+    )
+    assert resp_clamp["result"]["value"] == "clamp"
+    cfg_clamp = server._load_cfg()
+    assert cfg_clamp["display"]["reasoning_full"] is False
+    assert cfg_clamp["display"]["sections"]["thinking"] == "collapsed"
+
 
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
@@ -3216,7 +3266,7 @@ def test_config_set_model_global_persists(monkeypatch):
         warning_message="",
     )
     seen = {}
-    saved = {}
+    saved_values = {}
 
     def _switch_model(**kwargs):
         seen.update(kwargs)
@@ -3226,7 +3276,9 @@ def test_config_set_model_global_persists(monkeypatch):
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", _switch_model)
     monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
-    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved.update(cfg))
+    # _persist_model_switch uses targeted save_config_value writes (#48305) so it
+    # preserves sibling model.* keys instead of rewriting the whole block.
+    monkeypatch.setattr("cli.save_config_value", lambda key, value: saved_values.__setitem__(key, value) or True)
 
     resp = server.handle_request(
         {
@@ -3242,9 +3294,9 @@ def test_config_set_model_global_persists(monkeypatch):
 
     assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
     assert seen["is_global"] is True
-    assert saved["model"]["default"] == "anthropic/claude-sonnet-4.6"
-    assert saved["model"]["provider"] == "anthropic"
-    assert saved["model"]["base_url"] == "https://api.anthropic.com"
+    assert saved_values["model.default"] == "anthropic/claude-sonnet-4.6"
+    assert saved_values["model.provider"] == "anthropic"
+    assert saved_values["model.base_url"] == "https://api.anthropic.com"
 
 
 def test_config_set_model_explicit_provider_skips_broken_default_init(monkeypatch):
@@ -4415,6 +4467,22 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     assert info["mcp_servers"] == fake_status
 
 
+def test_session_info_includes_session_title(monkeypatch):
+    class _FakeDB:
+        def get_session_title(self, key):
+            assert key == "session-key"
+            return "Dashboard title"
+
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+
+    info = server._session_info(
+        types.SimpleNamespace(tools=[], model="test/model", provider="openai-codex"),
+        {"session_key": "session-key", "history": []},
+    )
+
+    assert info["title"] == "Dashboard title"
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either
@@ -4949,7 +5017,8 @@ def test_mirror_slash_side_effects_allowed_when_idle(monkeypatch):
 def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     """Regression guard: /compress side effect must not hold history_lock
     when calling _compress_session_history (the helper snapshots under
-    the same non-reentrant lock internally)."""
+    the same non-reentrant lock internally). It also returns a before/after
+    summary string (#46686)."""
     import types
 
     seen = {"compress": False, "sync": False}
@@ -4958,7 +5027,9 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     def _fake_compress(session, focus_topic=None, **_kw):
         seen["compress"] = True
         assert not session["history_lock"].locked()
-        return (0, {"total": 0})
+        # Simulate a real compaction shrinking the transcript.
+        session["history"] = [{"role": "user", "content": "summary"}]
+        return (1, {"total": 0})
 
     def _fake_sync(_sid, _session):
         seen["sync"] = True
@@ -4969,14 +5040,20 @@ def test_mirror_slash_compress_does_not_prelock_history(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
 
     session = _session(running=False)
-    session["agent"] = types.SimpleNamespace(model="x")
+    session["history"] = [
+        {"role": "user", "content": f"m{i}"} for i in range(6)
+    ]
+    session["agent"] = types.SimpleNamespace(model="x", _cached_system_prompt="", tools=None)
 
     warning = server._mirror_slash_side_effects("sid", session, "/compress")
 
-    assert warning == ""
+    # Now returns a before/after summary (was "" before #46686).
     assert seen["compress"]
     assert seen["sync"]
     assert ("session.info", "sid", {"model": "x"}) in emitted
+    assert "Compressed:" in warning
+    assert "6 → 1 messages" in warning
+    assert "tokens" in warning
 
 
 # ---------------------------------------------------------------------------
@@ -7686,6 +7763,18 @@ def test_session_create_records_close_on_disconnect_flag(monkeypatch):
         server._sessions.clear()
 
 
+def test_session_create_records_source(monkeypatch):
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    server._sessions.clear()
+    try:
+        sid = server.handle_request(
+            {"id": "1", "method": "session.create", "params": {"source": "tool"}}
+        )["result"]["session_id"]
+        assert server._sessions[sid]["source"] == "tool"
+    finally:
+        server._sessions.clear()
+
+
 def test_shutdown_sessions_closes_every_session_via_helper(monkeypatch):
     seen = []
     monkeypatch.setattr(
@@ -7859,3 +7948,115 @@ def test_start_agent_build_passes_session_model_override(monkeypatch):
         assert session["agent"].model == "claude-sonnet-4.6"
     finally:
         server._sessions.clear()
+
+
+# ── _get_usage active_subagents (TUI status-bar ⛓ indicator) ──────────────
+# Mirrors the classic CLI status bar: _get_usage embeds a live count of
+# background/async subagents from tools.async_delegation.active_count() so the
+# Ink status bar can render ⛓ N. Source of truth is the same registry the CLI
+# reads; the field rides the existing per-update `usage` payload.
+
+
+class _BareAgent:
+    """Agent stub with no compressor — exercises the active_subagents path
+    independent of the `if comp:` context-percent block."""
+
+    model = "x"
+
+
+def test_get_usage_includes_active_subagents(monkeypatch):
+    import tools.async_delegation as ad_mod
+    monkeypatch.setattr(ad_mod, "active_count", lambda: 4)
+    usage = server._get_usage(_BareAgent())
+    assert usage["active_subagents"] == 4
+
+
+def test_get_usage_active_subagents_zero(monkeypatch):
+    import tools.async_delegation as ad_mod
+    monkeypatch.setattr(ad_mod, "active_count", lambda: 0)
+    usage = server._get_usage(_BareAgent())
+    assert usage["active_subagents"] == 0
+
+
+def test_get_usage_safe_when_active_count_raises(monkeypatch):
+    """A raising active_count() must not break the usage payload."""
+    import tools.async_delegation as ad_mod
+
+    def _boom():
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(ad_mod, "active_count", _boom)
+    usage = server._get_usage(_BareAgent())
+    # Field omitted, but the rest of the payload is intact.
+    assert "active_subagents" not in usage
+    assert usage["model"] == "x"
+
+
+def test_persist_model_switch_preserves_sibling_model_keys(tmp_path, monkeypatch):
+    """#48305: switching models from the TUI must NOT destroy sibling keys under
+    `model:` (model_slots, model_fallback, etc.). _persist_model_switch now uses
+    targeted save_config_value writes instead of rewriting the whole block."""
+    import types
+    import yaml
+    import cli
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "model:\n"
+        "  default: old-model\n"
+        "  provider: openai\n"
+        "  model_slots:\n"
+        "    fast: gpt-5-mini\n"
+        "  model_fallback:\n"
+        "    - claude-haiku\n"
+        "agent:\n"
+        "  system_prompt: keepme\n"
+    )
+    # save_config_value() resolves the config path from cli._hermes_home, which
+    # is captured at import time — patch it directly (set_hermes_home_override
+    # does NOT affect this snapshot).
+    monkeypatch.setattr(cli, "_hermes_home", tmp_path)
+
+    result = types.SimpleNamespace(
+        new_model="new-model", target_provider="anthropic", base_url=None
+    )
+    server._persist_model_switch(result)
+    saved = yaml.safe_load(cfg_path.read_text())
+
+    # The switched fields updated...
+    assert saved["model"]["default"] == "new-model"
+    assert saved["model"]["provider"] == "anthropic"
+    # ...and the sibling keys SURVIVED (the bug was that they got wiped).
+    assert saved["model"]["model_slots"] == {"fast": "gpt-5-mini"}
+    assert saved["model"]["model_fallback"] == ["claude-haiku"]
+    assert saved["agent"]["system_prompt"] == "keepme"
+
+
+def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
+    """#48305: switching from a custom endpoint (which set model.base_url) to a
+    provider with no base_url must CLEAR the stale base_url, not leave it
+    pointing at the old host."""
+    import types
+    import yaml
+    import cli
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "model:\n"
+        "  default: local-model\n"
+        "  provider: custom:mylocal\n"
+        "  base_url: http://localhost:1234/v1\n"
+    )
+    monkeypatch.setattr(cli, "_hermes_home", tmp_path)
+
+    # Switch to a native provider with no base_url.
+    result = types.SimpleNamespace(
+        new_model="claude-haiku", target_provider="anthropic", base_url=None
+    )
+    server._persist_model_switch(result)
+    saved = yaml.safe_load(cfg_path.read_text())
+
+    assert saved["model"]["default"] == "claude-haiku"
+    assert saved["model"]["provider"] == "anthropic"
+    # Stale custom base_url must be cleared (null coalesces to absent on read).
+    assert not saved["model"].get("base_url"), saved["model"].get("base_url")

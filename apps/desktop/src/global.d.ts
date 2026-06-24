@@ -1,3 +1,10 @@
+import type {
+  PetOverlayBounds,
+  PetOverlayControl,
+  PetOverlayOpenRequest,
+  PetOverlayStatePayload
+} from './store/pet-overlay'
+
 export {}
 
 declare global {
@@ -26,6 +33,20 @@ declare global {
       openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
       // Open (or focus) a compact secondary window on the new-session draft.
       openNewSessionWindow: () => Promise<{ ok: boolean; error?: string }>
+      // The pop-out pet overlay: a transparent always-on-top window hosting only
+      // the mascot. The main renderer drives it (open/close/drag + state push);
+      // the overlay sends control messages back (pop-in, composer submit).
+      petOverlay: {
+        open: (request: PetOverlayOpenRequest) => Promise<{ ok: boolean; bounds?: PetOverlayBounds }>
+        close: () => Promise<{ ok: boolean }>
+        setBounds: (bounds: PetOverlayBounds) => void
+        setIgnoreMouse: (ignore: boolean) => void
+        setFocusable: (focusable: boolean) => void
+        pushState: (payload: PetOverlayStatePayload) => void
+        control: (payload: PetOverlayControl) => void
+        onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
+        onControl: (callback: (payload: PetOverlayControl) => void) => () => void
+      }
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -60,6 +81,7 @@ declare global {
       setTranslucency?: (payload: { intensity: number }) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
+      openPreviewInBrowser?: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
       sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
@@ -102,6 +124,7 @@ declare global {
       cancelBootstrap: () => Promise<{ ok: boolean; cancelled: boolean }>
       onBootstrapEvent: (callback: (payload: DesktopBootstrapEvent) => void) => () => void
       getVersion: () => Promise<DesktopVersionInfo>
+      getRemoteDisplayReason?: () => Promise<string | null>
       updates: {
         check: () => Promise<DesktopUpdateStatus>
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
@@ -228,9 +251,45 @@ export interface DesktopUpdateApplyResult {
   manual?: boolean
   command?: string
   hermesRoot?: string
+  /** True when the backend was updated but the GUI couldn't be relaunched in
+   *  place (AppImage / dev run): the new version loads on next launch. */
+  backendUpdated?: boolean
+  /** False when the running GUI package was NOT replaced by this update
+   *  (Linux GUI/backend skew, or a sandbox-blocked relaunch). Distinguishes
+   *  "backend only" outcomes from a real in-place GUI relaunch. (#45205) */
+  guiUpdated?: boolean
+  /** True for the Linux GUI/backend-skew terminal state: backend updated but
+   *  the running AppImage/.deb/.rpm shell is unchanged and must be
+   *  reinstalled. Renders a closeable "update the desktop app" message. */
+  guiSkew?: boolean
+  /** True when the update finished but the app must be quit + reopened by hand
+   *  (e.g. the rebuilt sandbox helper isn't launchable): keep a working
+   *  window, don't auto-quit into a dead app. (#45205) */
+  manualRestart?: boolean
+  /** True when the auto-relaunch was skipped specifically because the rebuilt
+   *  chrome-sandbox helper is not launchable (not root:root + setuid). */
+  sandboxBlocked?: boolean
+  /** True when a detached relauncher took over (macOS bundle swap / Linux
+   *  re-exec): the app is about to quit and reopen itself. */
+  handedOff?: boolean
 }
 
-export type DesktopUpdateStage = 'idle' | 'prepare' | 'fetch' | 'pull' | 'pydeps' | 'restart' | 'manual' | 'error'
+export type DesktopUpdateStage =
+  | 'idle'
+  | 'prepare'
+  | 'fetch'
+  | 'pull'
+  | 'pydeps'
+  | 'update'
+  | 'rebuild'
+  | 'restart'
+  | 'done'
+  | 'manual'
+  /** Backend updated but the running GUI package (AppImage/.deb/.rpm) was NOT
+   *  changed — the user must update/reinstall the desktop app. Terminal,
+   *  closeable; never claims the GUI was updated. (#45205) */
+  | 'guiSkew'
+  | 'error'
 
 export interface DesktopUpdateProgress {
   stage: DesktopUpdateStage

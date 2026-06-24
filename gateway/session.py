@@ -66,6 +66,28 @@ from .whatsapp_identity import (
 )
 from utils import atomic_replace
 
+# Session keys/ids flow into filesystem paths downstream (e.g.
+# ``sessions_dir / f"{session_id}.json"`` in hermes_state, request-dump
+# filenames in agent_runtime_helpers). Any value that could escape the
+# sessions directory as a path must be rejected at the entry boundary.
+# Rejects: parent traversal (``..``), a path separator anywhere (``/`` or
+# ``\``, so a non-leading Windows separator can't slip through), and a
+# leading Windows drive letter (``C:``). Legitimate session keys are
+# colon-delimited multi-segment ids (``agent:main:<platform>:...``) and
+# never contain these, so there are no false positives in practice.
+def _is_path_unsafe(value: object) -> bool:
+    """Return True if ``value`` could traverse outside the sessions dir."""
+    if not value:
+        return False
+    s = str(value)
+    if ".." in s or "/" in s or "\\" in s:
+        return True
+    # Leading Windows drive path, e.g. "C:\..." or "d:/...". A bare "x:"
+    # with no following separator isn't a usable absolute path, and the
+    # separator forms are already caught above — but keep an explicit guard
+    # for the drive-letter prefix in case a separator was normalized away.
+    return len(s) >= 2 and s[0].isalpha() and s[1] == ":"
+
 
 @dataclass
 class SessionSource:
@@ -92,6 +114,11 @@ class SessionSource:
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
+    # Profile this inbound message is routed to in a multiplexing gateway
+    # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
+    # None => the gateway's active/default profile. Drives both session-key
+    # namespacing and the per-turn config/credential scope.
+    profile: Optional[str] = None
     
     @property
     def description(self) -> str:
@@ -135,6 +162,8 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
+        if self.profile:
+            d["profile"] = self.profile
         return d
 
     @classmethod
@@ -153,6 +182,7 @@ class SessionSource:
             guild_id=data.get("guild_id"),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            profile=data.get("profile"),
         )
     
 
@@ -565,9 +595,19 @@ class SessionEntry:
             except (TypeError, ValueError):
                 last_resume_marked_at = None
 
+        session_key = data["session_key"]
+        session_id = data["session_id"]
+
+        # Validate path-sensitive fields to prevent directory traversal (CWE-22)
+        for _field, _val in (("session_key", session_key), ("session_id", session_id)):
+            if _is_path_unsafe(_val):
+                raise ValueError(
+                    f"Invalid {_field}: potential directory traversal detected"
+                )
+
         return cls(
-            session_key=data["session_key"],
-            session_id=data["session_id"],
+            session_key=session_key,
+            session_id=session_id,
             created_at=datetime.fromisoformat(data["created_at"]),
             updated_at=datetime.fromisoformat(data["updated_at"]),
             origin=origin,
@@ -615,14 +655,40 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+def _session_key_namespace(profile: Optional[str]) -> str:
+    """Return the ``agent:<ns>`` namespace prefix for a session key.
+
+    The historical key format is ``agent:main:<platform>:<chat_type>:...`` where
+    ``main`` is a static namespace literal (NOT a branch name — branching keys
+    off ``session_id``, not this slot). Multi-profile multiplexing reuses this
+    slot to carry the profile:
+
+    - default profile (or ``None``/``""``/``"default"``) → ``agent:main`` —
+      BYTE-IDENTICAL to every key ever generated, so existing sessions and all
+      positional parsers (``parts[2]`` == platform, etc.) are unaffected.
+    - named profile ``coder`` → ``agent:coder`` — keeps the same positional
+      layout, just a different namespace, so two profiles serving the same
+      platform/chat never collide.
+    """
+    if not profile or profile == "default":
+        return "agent:main"
+    return f"agent:{profile}"
+
+
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
+    profile: Optional[str] = None,
 ) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
+
+    ``profile`` selects the key namespace (see :func:`_session_key_namespace`).
+    It defaults to ``None`` ⇒ the legacy ``agent:main`` namespace, so callers
+    that don't multiplex produce byte-identical keys to before. Only the
+    multiplexing gateway passes a non-default profile.
 
     DM rules:
       - DMs include chat_id when present, so each private conversation is isolated.
@@ -643,6 +709,7 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    ns = _session_key_namespace(profile)
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -651,12 +718,12 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                return f"{ns}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{dm_chat_id}"
         # No chat_id — fall back to the sender's own identifier before the
         # bare per-platform sink.  Without this, every DM from every user that
         # arrives without a chat_id (non-standard adapters / synthetic sources)
-        # collapses into one shared "agent:main:<platform>:dm" session, and a
+        # collapses into one shared "<ns>:<platform>:dm" session, and a
         # single cached agent ends up serving multiple people's conversations —
         # cross-user history bleed.  participant_id keeps DMs isolated per user.
         dm_participant_id = source.user_id_alt or source.user_id
@@ -667,11 +734,11 @@ def build_session_key(
             )
         if dm_participant_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_participant_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_participant_id}"
+                return f"{ns}:{platform}:dm:{dm_participant_id}:{source.thread_id}"
+            return f"{ns}:{platform}:dm:{dm_participant_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{ns}:{platform}:dm:{source.thread_id}"
+        return f"{ns}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -679,7 +746,7 @@ def build_session_key(
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [ns, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)
@@ -741,12 +808,16 @@ class SessionStore:
             try:
                 with open(sessions_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    for key, entry_data in data.items():
-                        try:
-                            self._entries[key] = SessionEntry.from_dict(entry_data)
-                        except (ValueError, KeyError):
-                            # Skip entries with unknown/removed platform values
-                            continue
+                for key, entry_data in data.items():
+                    # Keys starting with "_" are documentation/metadata sentinels
+                    # (e.g. the "_README" note written by _save), not session
+                    # entries. Skip them so they never reach SessionEntry.from_dict.
+                    if key.startswith("_"):
+                        continue
+                    try:
+                        self._entries[key] = SessionEntry.from_dict(entry_data)
+                    except (ValueError, KeyError) as e:
+                        logger.warning("Skipping invalid session entry %r: %s", key, e)
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")
 
@@ -759,6 +830,22 @@ class SessionStore:
         sessions_file = self.sessions_dir / "sessions.json"
 
         data = {key: entry.to_dict() for key, entry in self._entries.items()}
+        # Self-documenting sentinel so anyone who inspects this file directly
+        # understands what it is and where CLI/TUI sessions actually live. Keys
+        # starting with "_" are skipped on load (see _ensure_loaded_locked), so
+        # this never round-trips into a SessionEntry. Ordered first via a fresh
+        # dict so it renders at the top of the pretty-printed JSON.
+        data = {
+            "_README": (
+                "Gateway routing index ONLY: maps messaging session keys "
+                "(agent:main:<platform>:...) to active session IDs. This is NOT "
+                "the session list. ALL sessions (CLI, TUI, and gateway) live in "
+                "~/.hermes/state.db and are shown by `hermes sessions list` and "
+                "`/sessions`. Seeing only gateway entries here is expected and "
+                "does not mean CLI sessions are missing."
+            ),
+            **data,
+        }
         fd, tmp_path = tempfile.mkstemp(
             dir=str(self.sessions_dir), suffix=".tmp", prefix=".sessions_"
         )
@@ -775,12 +862,32 @@ class SessionStore:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
     
+    def _resolve_profile_for_key(self, source: Optional[SessionSource] = None) -> Optional[str]:
+        """Return the profile namespace for session keys, or None when off.
+
+        When ``multiplex_profiles`` is disabled (default), returns ``None`` so
+        keys stay in the legacy ``agent:main`` namespace — byte-identical to
+        before. When enabled, prefers the profile the inbound source was routed
+        to (``source.profile`` — set by the /p/<profile>/ URL prefix or
+        per-credential adapter), falling back to the active profile name.
+        """
+        if not getattr(self.config, "multiplex_profiles", False):
+            return None
+        if source is not None and source.profile:
+            return source.profile
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+            return get_active_profile_name() or "default"
+        except Exception:
+            return None
+
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            profile=self._resolve_profile_for_key(source),
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:

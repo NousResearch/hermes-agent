@@ -146,6 +146,12 @@ export const en: Translations = {
     }
   },
 
+  remoteDisplayBanner: {
+    message: reason =>
+      `Software rendering active — remote display detected (${reason}). GPU acceleration is disabled to prevent flickering.`,
+    dismiss: 'Dismiss'
+  },
+
   titlebar: {
     hideSidebar: 'Hide sidebar',
     showSidebar: 'Show sidebar',
@@ -366,7 +372,32 @@ export const en: Translations = {
       installError: 'Could not install that theme.',
       installed: name => `Installed “${name}”.`,
       removeTheme: 'Remove theme',
-      importedBadge: 'Imported'
+      importedBadge: 'Imported',
+      pet: {
+        title: 'Pet',
+        intro:
+          'Adopt an animated petdex mascot that floats over the app and reacts to what Hermes is doing — running while tools execute, celebrating on success, sulking on errors.',
+        restartHint:
+          'Pets need a quick restart — the running app started before this feature was added. Quit and reopen Hermes, then come back here.',
+        on: 'On',
+        off: 'Off',
+        scaleTitle: 'Size',
+        scaleDesc: 'Resize the floating mascot. Applies everywhere instantly.',
+        chooseTitle: 'Choose a pet',
+        chooseDesc: 'Picking one installs it (if needed) and makes it active.',
+        searchPlaceholder: 'Search pets…',
+        unreachable: "Couldn't reach the petdex gallery. Check your connection and reopen this page.",
+        noMatch: query => `No pets match "${query}".`,
+        installedTag: 'installed',
+        countCapped: (cap, total) => `Showing ${cap} of ${total} — type to narrow it down.`,
+        count: n => `${n} pet${n === 1 ? '' : 's'}.`,
+        uninstall: name => `Uninstall ${name}`,
+        adoptFailed: slug => `Could not adopt ${slug}`,
+        uninstallFailed: slug => `Could not uninstall ${slug}`,
+        noneAvailable: 'No pets available to turn on right now.',
+        turnOnFailed: 'Could not turn the pet on.',
+        turnOffFailed: 'Could not turn the pet off.'
+      }
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -378,6 +409,7 @@ export const en: Translations = {
       checkNow: 'Check now',
       checking: 'Checking…',
       seeWhatsNew: "See what's new",
+      updateNow: 'Update now',
       releaseNotes: 'Release notes',
       onLatest: "You're on the latest version.",
       installing: 'An update is currently installing.',
@@ -581,6 +613,8 @@ export const en: Translations = {
       removedMessage: provider => `${provider} was removed.`,
       failedRemove: provider => `Could not remove ${provider}`,
       noProviderKeys: 'No provider API keys available.',
+      searchKeys: 'Search providers…',
+      noKeysMatch: 'No providers match your search.',
       loading: 'Loading providers...'
     },
     sessions: {
@@ -714,8 +748,22 @@ export const en: Translations = {
     commandCenter: 'Command Center',
     appearance: 'Appearance',
     settings: 'Settings',
-    changeTheme: 'Change theme...',
+    changeTheme: 'Change theme',
     changeColorMode: 'Change color mode...',
+    pets: {
+      title: 'Pets',
+      placeholder: 'Search pets…',
+      loading: 'Loading petdex gallery…',
+      error: 'Could not reach the petdex gallery.',
+      staleBackend: 'Restart Hermes to use pets — the backend predates this feature.',
+      empty: 'No matching pets.',
+      turnOff: 'Turn off',
+      turnOn: 'Turn on',
+      installed: 'Installed',
+      adoptFailed: 'Could not adopt that pet.',
+      toggleFailed: 'Could not toggle the pet.',
+      noneAvailable: 'No pets available — pick one below to install.'
+    },
     installTheme: {
       title: 'Install theme...',
       placeholder: 'Search the VS Code Marketplace...',
@@ -761,7 +809,8 @@ export const en: Translations = {
     gatewayRunning: 'Messaging gateway running',
     gatewayStopped: 'Messaging gateway stopped',
     hermesActiveSessions: (version, count) => `Hermes ${version} · Active sessions ${count}`,
-    restartMessaging: 'Restart messaging',
+    restartGateway: 'Restart gateway',
+    gatewayRestartFailed: 'Gateway restart failed.',
     updateHermes: 'Update Hermes',
     actionRunning: 'running',
     actionDone: 'done',
@@ -830,9 +879,9 @@ export const en: Translations = {
     disableAria: name => `Disable ${name}`,
     platformEnabled: name => `${name} enabled`,
     platformDisabled: name => `${name} disabled`,
-    restartToApply: 'Restart the gateway for this change to take effect.',
+    restartToApply: 'This change takes effect after a gateway restart.',
     setupSaved: name => `${name} setup saved`,
-    restartToReconnect: 'Restart the gateway to reconnect with the new credentials.',
+    restartToReconnect: 'New credentials take effect after a gateway restart.',
     keyCleared: key => `${key} cleared`,
     setupUpdated: name => `${name} setup was updated.`,
     failedUpdate: name => `Failed to update ${name}`,
@@ -1345,8 +1394,12 @@ export const en: Translations = {
       fetch: 'Downloading…',
       pull: 'Almost there…',
       pydeps: 'Finishing up…',
+      update: 'Updating Hermes…',
+      rebuild: 'Rebuilding the desktop app…',
       restart: 'Restarting Hermes…',
+      done: 'Update complete',
       manual: 'Update from your terminal',
+      guiSkew: 'Update the desktop app',
       error: 'Update paused'
     },
     checking: 'Looking for updates…',
@@ -1369,13 +1422,17 @@ export const en: Translations = {
     manualTitle: 'Update from your terminal',
     manualBody: 'You installed Hermes from the command line, so updates run there too. Paste this into your terminal:',
     manualPickedUp: 'Hermes will pick up the new version next time you launch it.',
+    guiSkewTitle: 'Update the desktop app',
+    guiSkewBody:
+      'The backend was updated, but this desktop app package wasn’t changed. Update or reinstall the Hermes desktop app (your AppImage / .deb / .rpm) to match.',
     copy: 'Copy',
     copied: 'Copied',
     done: 'Done',
-    applyingBody: 'The Hermes updater will take over in its own window and reopen Hermes when it’s done.',
+    applyingBody:
+      'The Hermes updater takes over in its own window and reopens Hermes automatically when it’s done. Please don’t reopen Hermes yourself while it’s updating.',
     applyingBodyBackend:
       'The remote backend is applying the update and will restart. Hermes reconnects automatically when it’s back.',
-    applyingClose: 'Hermes will close to apply the update.',
+    applyingClose: 'This window will close while the update runs, then Hermes reopens on its own.',
     errorTitle: 'Update didn’t finish',
     errorBody: 'No worries — nothing was lost. You can try again now.',
     notNow: 'Not now',
@@ -1532,6 +1589,7 @@ export const en: Translations = {
       search: 'Search models',
       noModels: 'No models found',
       editModels: 'Edit Models…',
+      refreshModels: 'Refresh Models',
       fast: 'Fast',
       medium: 'Med'
     },
@@ -1586,6 +1644,7 @@ export const en: Translations = {
       gatewayChecking: 'checking',
       gatewayConnecting: 'connecting',
       gatewayOffline: 'offline',
+      gatewayRestarting: 'restarting…',
       gatewayTitle: 'Hermes inference gateway status',
       agents: 'Agents',
       closeAgents: 'Close agents',
@@ -1651,6 +1710,7 @@ export const en: Translations = {
     opening: 'Opening...',
     hide: 'Hide',
     openPreview: 'Open preview',
+    openInBrowser: 'Open in browser',
     sourceLineTitle: 'Click to select · shift-click to extend · drag to composer',
     source: 'SOURCE',
     renderedPreview: 'PREVIEW',

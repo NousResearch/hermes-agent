@@ -136,6 +136,7 @@ export interface OverlayState {
   confirm: ConfirmReq | null
   modelPicker: boolean
   pager: null | PagerState
+  petPicker: boolean
   pluginsHub: boolean
   secret: null | SecretReq
   sessions: boolean
@@ -333,6 +334,7 @@ export interface SlashHandlerContext {
   composer: {
     enqueue: (text: string) => void
     hasSelection: boolean
+    openEditor: () => Promise<void>
     paste: (quiet?: boolean) => void
     queueRef: MutableRefObject<string[]>
     selection: SelectionApi

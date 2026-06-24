@@ -10293,17 +10293,85 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _should_send_stt_transcription_echo(self) -> bool:
         """Whether to send a separate user-visible STT transcript echo.
 
-        Defaults to False so voice transcripts appear only through the normal
-        assistant reply. Many deployments instruct the LLM to quote voice input
-        at the top of the reply; an unconditional gateway echo plus that reply
-        produces duplicate transcript text.
+        Defaults to True: the deterministic transcript belongs in its own
+        platform message (``> 🎙 ...``), not duplicated inside the LLM reply.
+        Users can disable this with ``stt.send_transcription: false``.
         """
-        return bool(getattr(self.config, "stt_send_transcription", False))
+        return bool(getattr(self.config, "stt_send_transcription", True))
 
     def _format_stt_transcription_echo(self, transcripts: List[str]) -> str:
         quote_text = "\n".join(f"> 🎙 {transcript}" for transcript in transcripts)
         header = str(getattr(self.config, "stt_send_transcription_header", "") or "")
         return f"{header}{quote_text}" if header else quote_text
+
+    @staticmethod
+    def _extract_voice_transcripts(text: str) -> list[str]:
+        """Extract raw transcripts from STT context wrappers or quote lines."""
+        if not isinstance(text, str):
+            return []
+        transcripts = [
+            match.group("transcript")
+            for match in re.finditer(
+                r"\[The user sent a voice message~ Here's what they said: \"(?P<transcript>.*?)\"\]",
+                text,
+                flags=re.DOTALL,
+            )
+        ]
+        if transcripts:
+            return transcripts
+        return [
+            match.group("transcript")
+            for match in re.finditer(
+                r'(?m)^\s*"(?P<transcript>[^"\n]+)"\s*$',
+                text,
+            )
+        ]
+
+    @staticmethod
+    def _append_voice_transcript_no_echo_instruction(text: str) -> str:
+        """Tell the model the transcript was already shown separately."""
+        if not GatewayRunner._extract_voice_transcripts(text):
+            return text
+        note = (
+            "[System note: The voice transcript above has already been sent to "
+            "the user as a separate `> 🎙 ...` message. Use it to answer the "
+            "request, but do not quote, repeat, or summarize the transcript in "
+            "your reply.]"
+        )
+        return f"{text}\n\n{note}"
+
+    @staticmethod
+    def _strip_leading_voice_transcript_from_response(
+        response: str,
+        inbound_text: str,
+    ) -> str:
+        """Remove an accidental leading STT transcript quote from final reply.
+
+        This is a safety net for older personas/memories that still instruct the
+        model to start voice replies with ``> 🎙 transcript``. The gateway has
+        already delivered that deterministic transcript as a separate message,
+        so the final assistant response must not repeat it.
+        """
+        if not response or not isinstance(response, str):
+            return response
+        transcripts = GatewayRunner._extract_voice_transcripts(inbound_text)
+        if not transcripts:
+            return response
+
+        leading_ws_len = len(response) - len(response.lstrip())
+        stripped = response[leading_ws_len:]
+        first_block, sep, rest = stripped.partition("\n\n")
+        if not first_block:
+            return response
+        if "🎙" not in first_block:
+            return response
+
+        for transcript in transcripts:
+            if transcript and transcript in first_block:
+                if sep:
+                    return rest.lstrip()
+                return ""
+        return response
 
     async def _prepare_inbound_message_text(
         self,
@@ -10415,9 +10483,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     audio_paths,
                     return_transcripts=True,
                 )
-                # Optionally echo successful transcripts back before the agent loop so
-                # users can verify STT quality. This is opt-in because many
-                # profiles already quote voice transcripts in the final reply.
+                # Echo successful transcripts back before the agent loop so users
+                # can verify STT quality. The LLM still receives the transcript
+                # as context, but a follow-up note tells it not to repeat text
+                # that was already delivered as a separate `> 🎙 ...` message.
+                _stt_transcripts_echoed = False
                 if _successful_transcripts and self._should_send_stt_transcription_echo():
                     _echo_adapter = self.adapters.get(source.platform)
                     _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
@@ -10429,8 +10499,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 _quote_text,
                                 metadata=_echo_meta,
                             )
+                            _stt_transcripts_echoed = True
                         except Exception:
                             logger.debug("Failed to echo voice transcript to chat", exc_info=True)
+                if _stt_transcripts_echoed:
+                    message_text = self._append_voice_transcript_no_echo_instruction(message_text)
                 # NOTE: Previously, when transcription failed (e.g. no STT
                 # provider configured), the gateway also emitted a hardcoded
                 # English notice via `_stt_adapter.send()`. That bypassed the
@@ -11518,6 +11591,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     agent_result, response, history_len=len(history),
                 )
                 response = _sanitize_gateway_final_response(source.platform, response)
+                response = self._strip_leading_voice_transcript_from_response(
+                    response,
+                    message_text,
+                )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -14979,10 +15056,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         time never runs.
 
         This helper fills that gap: when the dequeued event has audio media,
-        we transcribe inline, echo the raw transcript back to the user (same
-        "🎙️" format as the fresh-message path), and return enriched text.
-        Non-audio events fall back to _build_media_placeholder, matching the
-        original _dequeue_pending_text behavior.
+        we transcribe inline, send the raw transcript back as a separate
+        ``> 🎙 ...`` message when enabled, and return enriched text. Non-audio
+        events fall back to _build_media_placeholder, matching the original
+        _dequeue_pending_text behavior.
         """
         event = adapter.get_pending_message(session_key)
         if not event:
@@ -15006,9 +15083,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
                 text, audio_paths,
             )
-            # Echo raw transcripts back to the user only when explicitly enabled.
-            # Otherwise deployments that quote voice input in the final answer
-            # show the same transcript twice.
+            # Echo raw transcripts back to the user as a separate message so the
+            # final agent reply can answer without repeating the transcript.
+            stt_transcripts_echoed = False
             if successful_transcripts and self._should_send_stt_transcription_echo():
                 echo_adapter = self.adapters.get(source.platform)
                 echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
@@ -15020,10 +15097,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             quote_text,
                             metadata=echo_meta,
                         )
+                        stt_transcripts_echoed = True
                     except Exception as echo_exc:
                         logger.debug(
                             "Transcript echo failed (non-fatal): %s", echo_exc,
                         )
+            if stt_transcripts_echoed:
+                enriched_text = self._append_voice_transcript_no_echo_instruction(enriched_text)
             return enriched_text or None
 
         # Non-audio fallback: preserve original _dequeue_pending_text semantics.

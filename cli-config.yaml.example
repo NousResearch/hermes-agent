@@ -983,8 +983,8 @@ platform_toolsets:
 # Set the corresponding API key in .env: GROQ_API_KEY, OPENAI_API_KEY, or MISTRAL_API_KEY.
 stt:
   enabled: true
-  # send_transcription: false  # Optional separate transcript echo before the agent reply.
-                               # Keep false if your assistant already quotes voice input.
+  # send_transcription: true   # Send the transcript as a separate `> 🎙 ...` message before the agent reply.
+                               # The agent reply is guarded against repeating the same transcript.
   # send_transcription_header: ""  # Optional prefix for the separate echo, e.g. "🎤 Voice:\n\n"
   # provider: "local"          # auto-detected if omitted
   local:

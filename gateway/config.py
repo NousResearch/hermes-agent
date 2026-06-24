@@ -603,10 +603,10 @@ class GatewayConfig:
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
-    # Optional user-visible transcript echo before the agent reply. Defaults off
-    # because many profiles already quote voice transcripts in the final answer;
-    # enabling both paths shows duplicate transcript text to the user.
-    stt_send_transcription: bool = False
+    # User-visible transcript echo before the agent reply. Defaults on so the
+    # deterministic STT text is delivered as its own chat message; the agent
+    # reply path strips/guards against repeating that transcript.
+    stt_send_transcription: bool = True
     stt_send_transcription_header: str = ""
 
     # Session isolation in shared chats
@@ -830,7 +830,7 @@ class GatewayConfig:
                 data.get("filter_silence_narration"), True
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
-            stt_send_transcription=_coerce_bool(stt_send_transcription, False),
+            stt_send_transcription=_coerce_bool(stt_send_transcription, True),
             stt_send_transcription_header=str(stt_send_transcription_header or ""),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),

@@ -17,9 +17,9 @@ def test_gateway_config_stt_disabled_from_dict_nested():
     assert config.stt_enabled is False
 
 
-def test_gateway_config_stt_transcript_echo_defaults_off():
+def test_gateway_config_stt_transcript_echo_defaults_on():
     config = GatewayConfig.from_dict({"stt": {"enabled": True}})
-    assert config.stt_send_transcription is False
+    assert config.stt_send_transcription is True
     assert config.stt_send_transcription_header == ""
 
 
@@ -213,13 +213,12 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
 
 
 @pytest.mark.asyncio
-async def test_prepare_inbound_message_text_does_not_echo_voice_transcript_by_default():
-    """STT transcript echo must be explicit opt-in.
+async def test_prepare_inbound_message_text_echoes_voice_transcript_by_default():
+    """Voice transcripts are a separate deterministic chat message by default.
 
-    The agent still receives the transcript wrapper in context, but the gateway
-    must not also send a deterministic copy before the model replies. Otherwise
-    profiles that already quote voice transcripts at the top of the final answer
-    show the user the same transcript twice.
+    The agent still receives the transcript wrapper in context so it can answer,
+    plus an explicit note not to repeat the already-visible transcript in its
+    final reply.
     """
     from gateway.run import GatewayRunner
 
@@ -258,11 +257,16 @@ async def test_prepare_inbound_message_text_does_not_echo_voice_transcript_by_de
 
     assert result is not None
     assert "single visible transcript" in result
-    echo_adapter.send.assert_not_called()
+    assert "already been sent" in result
+    echo_adapter.send.assert_awaited_once_with(
+        "123",
+        "> 🎙 single visible transcript",
+        metadata={},
+    )
 
 
 @pytest.mark.asyncio
-async def test_dequeue_pending_voice_does_not_echo_transcript_by_default():
+async def test_dequeue_pending_voice_echoes_transcript_by_default():
     from gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
@@ -302,7 +306,12 @@ async def test_dequeue_pending_voice_does_not_echo_transcript_by_default():
 
     assert result is not None
     assert "queued transcript once" in result
-    echo_adapter.send.assert_not_called()
+    assert "already been sent" in result
+    echo_adapter.send.assert_awaited_once_with(
+        "123",
+        "> 🎙 queued transcript once",
+        metadata={"thread_id": "7"},
+    )
 
 
 @pytest.mark.asyncio
@@ -357,3 +366,70 @@ async def test_prepare_inbound_message_text_echoes_voice_transcript_when_enabled
         "STT:\n> 🎙 visible because opt in",
         metadata={"thread_id": "7"},
     )
+
+
+@pytest.mark.asyncio
+async def test_prepare_inbound_message_text_can_disable_voice_transcript_echo():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True, stt_send_transcription=False)
+    runner._has_setup_skill = lambda: False
+    runner._session_key_for_source = lambda source: "telegram:dm:123"
+    runner._consume_pending_native_image_paths = lambda session_key: []
+    runner._thread_metadata_for_source = lambda *_args, **_kwargs: {}
+    runner._reply_anchor_for_event = lambda event: None
+    echo_adapter = SimpleNamespace(send=AsyncMock())
+    runner.adapters = {Platform.TELEGRAM: echo_adapter}  # type: ignore[dict-item]
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="123", chat_type="dm")
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "hidden audit transcript",
+            "provider": "local_command",
+        },
+    ):
+        result = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    assert result is not None
+    assert "hidden audit transcript" in result
+    assert "already been sent" not in result
+    echo_adapter.send.assert_not_called()
+
+
+def test_strip_leading_voice_transcript_from_response_removes_duplicate_quote():
+    from gateway.run import GatewayRunner
+
+    inbound = '[The user sent a voice message~ Here\'s what they said: "сделай тест"]'
+    response = "> 🎙 сделай тест\n\nСделал: тест зелёный."
+
+    assert GatewayRunner._strip_leading_voice_transcript_from_response(
+        response,
+        inbound,
+    ) == "Сделал: тест зелёный."
+
+
+def test_strip_leading_voice_transcript_from_response_leaves_normal_answer():
+    from gateway.run import GatewayRunner
+
+    inbound = '[The user sent a voice message~ Here\'s what they said: "сделай тест"]'
+    response = "Сделал: тест зелёный."
+
+    assert GatewayRunner._strip_leading_voice_transcript_from_response(
+        response,
+        inbound,
+    ) == response

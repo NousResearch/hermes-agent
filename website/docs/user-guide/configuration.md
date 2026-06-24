@@ -1545,7 +1545,7 @@ Hashes are deterministic — the same user always maps to the same hash, so the 
 stt:
   enabled: true
   provider: "local"            # "local" | "groq" | "openai" | "mistral"
-  send_transcription: false     # Optional separate transcript echo before the agent reply
+  send_transcription: true      # Send transcript as a separate `> 🎙 ...` message before the agent reply
   send_transcription_header: "" # Optional prefix for that separate echo
   local:
     model: "base"              # tiny, base, small, medium, large-v3
@@ -1560,7 +1560,7 @@ Provider behavior:
 - `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
 
-`send_transcription` is off by default. Leave it off when your assistant persona already quotes voice input in the final answer; enable it only if you want a separate immediate transcript-audit message before the agent replies.
+`send_transcription` is on by default: Hermes sends the deterministic STT text as its own immediate `> 🎙 ...` message before the agent replies. The agent still receives the transcript as context, but the gateway guards the final reply so it does not quote or repeat the same transcript.
 
 If the requested provider is unavailable, Hermes falls back automatically in this order: `local` → `groq` → `openai`.
 

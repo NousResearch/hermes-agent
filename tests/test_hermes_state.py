@@ -104,6 +104,41 @@ class TestSessionLifecycle:
         assert isinstance(session["ended_at"], float)
         assert session["end_reason"] == "user_exit"
 
+    def test_end_session_auto_archives_subagent(self, db):
+        """Subagent sessions (source='subagent', spawned by delegate_task) carry
+        no independent value once their task returns, so end_session() soft-archives
+        them to keep them out of the default list / session_search (#51855)."""
+        db.create_session(session_id="sub", source="subagent")
+        assert db.get_session("sub")["archived"] == 0
+
+        db.end_session("sub", end_reason="task_complete")
+
+        session = db.get_session("sub")
+        assert session["archived"] == 1
+        # Transcript is preserved — soft hide, not a delete.
+        assert session["end_reason"] == "task_complete"
+
+    def test_end_session_does_not_archive_non_subagent(self, db):
+        """Only subagent sessions are auto-archived on end — a normal CLI session
+        stays visible after it ends."""
+        db.create_session(session_id="s1", source="cli")
+        db.end_session("s1", end_reason="user_exit")
+        assert db.get_session("s1")["archived"] == 0
+
+    def test_archive_session_single_row_only(self, db):
+        """archive_session() archives exactly one row and never walks the
+        compression lineage — the live continuation child must stay active."""
+        db.create_session(session_id="parent", source="cli")
+        db.end_session("parent", end_reason="compression")
+        db.create_session(
+            session_id="child", source="cli", parent_session_id="parent"
+        )
+
+        db.archive_session("parent")
+
+        assert db.get_session("parent")["archived"] == 1
+        assert db.get_session("child")["archived"] == 0
+
     def test_end_session_preserves_original_end_reason(self, db):
         """The first end_reason wins — compression splits must not be
         overwritten when a later stale ``end_session()`` call lands on the

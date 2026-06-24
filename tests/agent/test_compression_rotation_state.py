@@ -111,6 +111,43 @@ class TestOrphanRollbackOnCreateFailure:
         _ = real_create  # silence unused
 
 
+class TestParentArchivedOnRotation:
+    def test_superseded_parent_is_archived_child_stays_active(self, tmp_path: Path):
+        """After a successful rotation the ended parent is retired from the
+        active list (archived=1) while the live continuation child stays
+        visible (archived=0) — #51855."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_ARCHIVE_ROT"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent)
+
+        agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+        child = agent.session_id
+        assert child != parent  # rotation happened
+
+        assert db.get_session(parent)["archived"] == 1
+        assert db.get_session(parent)["end_reason"] == "compression"
+        assert db.get_session(child)["archived"] == 0
+
+    def test_parent_not_archived_when_child_create_fails(self, tmp_path: Path):
+        """Archiving happens only after the child row is committed, so an
+        orphan-rollback leaves the (reopened) parent active — it is once again
+        the live session, not a superseded one."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        parent = "PARENT_NOARCHIVE_ROT"
+        db.create_session(parent, source="cli")
+        agent = _build_agent_with_db(db, parent)
+
+        def _boom(*a, **k):
+            raise RuntimeError("FOREIGN KEY constraint failed")
+
+        with patch.object(db, "create_session", side_effect=_boom):
+            agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+
+        assert agent.session_id == parent
+        assert db.get_session(parent)["archived"] == 0
+
+
 class TestPlatformForwardedAtBoundary:
     def test_on_session_start_receives_platform(self, tmp_path: Path):
         db = SessionDB(db_path=tmp_path / "state.db")

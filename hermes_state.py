@@ -1389,10 +1389,17 @@ class SessionDB:
         desynced CLI session_id after ``/resume`` or ``/branch``) targets them
         with a different reason. Use ``reopen_session()`` first if you
         intentionally need to re-end a closed session with a new reason.
+
+        Subagent sessions (``source = 'subagent'``, spawned by ``delegate_task``)
+        are auto-archived as they end: they carry no independent value once their
+        delegated task returns, so they would otherwise accumulate as sidebar /
+        ``session_search`` noise. The soft archive keeps their transcripts on disk
+        for debugging while hiding them from the default list (#51855).
         """
         def _do(conn):
             conn.execute(
-                "UPDATE sessions SET ended_at = ?, end_reason = ? "
+                "UPDATE sessions SET ended_at = ?, end_reason = ?, "
+                "archived = CASE WHEN source = 'subagent' THEN 1 ELSE archived END "
                 "WHERE id = ? AND ended_at IS NULL",
                 (time.time(), end_reason, session_id),
             )
@@ -1992,6 +1999,23 @@ class SessionDB:
             return rowcount
         rowcount = self._execute_write(_do)
         return rowcount > 0
+
+    def archive_session(self, session_id: str) -> None:
+        """Archive exactly one session row — no compression-lineage walk.
+
+        Unlike :meth:`set_session_archived`, this touches only ``session_id``
+        and never its parents/children. Compression rotation uses it to retire
+        a *superseded* parent without archiving the live continuation child:
+        at the moment we archive the parent, that child already exists with
+        ``parent_session_id = <parent>`` and ``started_at >= parent.ended_at``,
+        so the lineage walk in ``set_session_archived`` would sweep it up and
+        hide the conversation the user is actively continuing (#51855).
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET archived = 1 WHERE id = ?", (session_id,)
+            )
+        self._execute_write(_do)
 
     def get_session_by_title(self, title: str) -> Optional[Dict[str, Any]]:
         """Look up a session by exact title. Returns session dict or None."""

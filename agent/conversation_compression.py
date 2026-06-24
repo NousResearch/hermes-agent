@@ -639,6 +639,16 @@ def compress_context(
                     agent._session_db_created = True
                     raise
                 agent._session_db_created = True
+                # Retire the superseded parent from the active list. Rotation
+                # leaves the parent ended (end_reason='compression') but still
+                # archived=0, so it lingers as a finished conversation cluttering
+                # the sidebar / session_search (#51855). Archive only the parent
+                # row — the live child is the continuation. Best-effort: a failure
+                # here must never regress the (already committed) rotation.
+                try:
+                    agent._session_db.archive_session(old_session_id)
+                except Exception as _ar_err:
+                    logger.debug("Could not archive compression parent: %s", _ar_err)
                 # Carry a persistent /goal onto the continuation session.
                 # Compression mints a fresh child id; load_goal does a flat
                 # per-session lookup with no parent walk, so without this an

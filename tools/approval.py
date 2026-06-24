@@ -433,6 +433,19 @@ DANGEROUS_PATTERNS = [
     # already does for the gateway process.
     (r'\bdocker\s+compose\s+(restart|stop|kill|down)\b', "docker compose restart/stop/kill/down (container lifecycle)"),
     (r'\bdocker\s+(restart|stop|kill)\b', "docker restart/stop/kill (container lifecycle)"),
+    # Cloud resource deletion via gcloud — these are destructive, often
+    # irreversible (Cloud Run services have no rollback, only revision history),
+    # and easy to type wrong (`gcloud run services delete foo` vs
+    # `gcloud run services describe foo`).  Always require explicit user
+    # consent.  Three classes:
+    #   1. Cloud Run service delete — destroys the service + all revisions.
+    #   2. Firestore / Datastore delete — covers indexes, databases, docs.
+    #   3. Generic gcloud resource delete — compute instances, SQL, GKE, etc.
+    #      Anchored on the structural "gcloud <group> ... delete" form so it
+    #      fires for any future resource group without a per-service rule.
+    (r'\bgcloud\s+run\s+(services\s+)?delete\b', "delete Cloud Run service (irreversible)"),
+    (r'\bgcloud\s+(firestore|datastore)\b.*\bdelete\b', "delete Firestore/Datastore resource"),
+    (r'\bgcloud\s+[a-z][a-z0-9-]*\b[^;&|]*\s+delete\b', "gcloud delete (cloud resource destruction)"),
     # Gateway protection: never start gateway outside systemd management
     (r'gateway\s+run\b.*(&\s*$|&\s*;|\bdisown\b|\bsetsid\b)', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),
     (r'\bnohup\b.*gateway\s+run\b', "start gateway outside systemd (use 'systemctl --user restart hermes-gateway')"),

@@ -140,7 +140,8 @@ def test_all_cleanup_steps_raise_response_still_returned():
         raise_in=("save_trajectory", "cleanup_task_resources", "persist_session")
     )
     result = _run(agent)
-    assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
+    assert "[Interrupted:" in result["final_response"]
+    assert "PARTIAL SUMMARY FROM MODEL" in result["final_response"]
     labels = [e.split(":")[0] for e in result["cleanup_errors"]]
     assert labels == ["save_trajectory", "cleanup_task_resources", "persist_session"]
 
@@ -151,8 +152,9 @@ def test_all_cleanup_steps_raise_response_still_returned():
 def test_single_cleanup_step_raises_does_not_skip_others(step):
     agent = _StubAgent(raise_in=(step,))
     result = _run(agent)
-    # Response survives.
-    assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
+    # Response survives with interruption marker prepended.
+    assert "[Interrupted:" in result["final_response"]
+    assert "PARTIAL SUMMARY FROM MODEL" in result["final_response"]
     # Exactly the failing step is recorded; the others ran without error.
     assert result["cleanup_errors"] == [
         next(
@@ -167,7 +169,8 @@ def test_single_cleanup_step_raises_does_not_skip_others(step):
 def test_clean_turn_has_no_cleanup_errors_key():
     agent = _StubAgent(raise_in=())
     result = _run(agent)
-    assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
+    assert "[Interrupted:" in result["final_response"]
+    assert "PARTIAL SUMMARY FROM MODEL" in result["final_response"]
     assert result["completed"] is False
     assert "cleanup_errors" not in result
 

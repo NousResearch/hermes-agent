@@ -40,6 +40,45 @@ import {
 } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
+// A freshly spawned backend can block its event loop for 15-30s while it
+// connects MCP servers and discovers plugins, so a single connect attempt
+// (15s client timeout) races backend cold-start and loses intermittently.
+// Retry the initial connect — re-invoking `connect` each attempt so callers
+// re-mint the WS URL (OAuth tickets are single-use) — instead of failing the
+// whole boot on the first 1006. Reauth errors propagate immediately: more
+// attempts with a dead ticket can never succeed. Exported for tests.
+export async function connectInitialGateway({
+  attempts = 8,
+  connect,
+  delayMs = 3_000,
+  isCancelled
+}: {
+  attempts?: number
+  connect: () => Promise<void>
+  delayMs?: number
+  isCancelled: () => boolean
+}): Promise<void> {
+  let lastConnectError: unknown = null
+
+  for (let attempt = 0; attempt < attempts && !isCancelled(); attempt += 1) {
+    try {
+      await connect()
+      lastConnectError = null
+      break
+    } catch (err) {
+      if (isGatewayReauthRequired(err)) {
+        throw err
+      }
+      lastConnectError = err
+      await new Promise(resolve => setTimeout(resolve, delayMs))
+    }
+  }
+
+  if (lastConnectError) {
+    throw lastConnectError
+  }
+}
+
 interface GatewayBootOptions {
   handleGatewayEvent: (event: RpcEvent) => void
   onConnectionReady: (
@@ -332,8 +371,13 @@ export function useGatewayBoot({
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it and, on
         // failure, throws a reauth error rather than connecting with a dead
         // ticket (which would surface as an opaque "connection closed").
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
-        await gateway.connect(wsUrl)
+        await connectInitialGateway({
+          connect: async () => {
+            const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+            await gateway.connect(wsUrl)
+          },
+          isCancelled: () => cancelled
+        })
 
         if (cancelled) {
           return

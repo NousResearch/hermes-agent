@@ -9324,6 +9324,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    session_db=self._session_db,
                                 )
                                 try:
                                     # The hygiene agent rotates the session

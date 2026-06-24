@@ -397,11 +397,15 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
 
 @pytest.mark.asyncio
 async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch, tmp_path):
-    """Regression for #21301: the hygiene agent is built without a session_db,
-    so _compress_context cannot rotate. When it neither rotates NOR compacts
-    in place, the transcript MUST be preserved — an unconditional
+    """Regression for #21301: when hygiene compression neither rotates NOR
+    compacts in place, the transcript MUST be preserved — an unconditional
     rewrite_transcript() would replace the original messages with only the
-    summary (permanent data loss). Mirrors the /compress guard (#44794)."""
+    summary (permanent data loss). Mirrors the /compress guard (#44794).
+
+    Also verify the hygiene agent receives the gateway SessionDB so normal
+    compression can rotate large Telegram sessions instead of preserving the
+    oversized transcript every turn.
+    """
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
     monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
@@ -412,6 +416,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
         def __init__(self, **kwargs):
             self.model = kwargs.get("model")
             self.session_id = kwargs.get("session_id", "fake-session")
+            self.session_db = kwargs.get("session_db")
             self.compression_in_place = False  # not in-place either
             self._print_fn = None
             self.shutdown_memory_provider = MagicMock()
@@ -419,8 +424,8 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
             type(self).last_instance = self
 
         def _compress_context(self, messages, *_args, **_kwargs):
-            # No session_db → cannot rotate: session_id is UNCHANGED, and this
-            # is a failure-to-rotate, not an in-place success.
+            # Simulate a failed/no-op compression: session_id is UNCHANGED,
+            # and this is a failure-to-rotate, not an in-place success.
             return ([{"role": "assistant", "content": "summary only"}], None)
 
     fake_run_agent = types.ModuleType("run_agent")
@@ -454,7 +459,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     runner._running_agents = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
-    runner._session_db = None
+    runner._session_db = MagicMock(name="session_db")
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._run_agent = AsyncMock(
@@ -490,6 +495,7 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     result = await runner._handle_message(event)
 
     assert result == "ok"
+    assert NonRotatingCompressAgent.last_instance.session_db is runner._session_db
     # The transcript must NOT be rewritten — the original is preserved.
     runner.session_store.rewrite_transcript.assert_not_called()
 

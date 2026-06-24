@@ -46,7 +46,7 @@ def stream_diag_init() -> Dict[str, Any]:
     survives across the closure boundary.
     """
     return {
-        "started_at": time.time(),
+        "started_at": time.monotonic(),
         "first_chunk_at": None,
         "chunks": 0,
         "bytes": 0,
@@ -156,7 +156,7 @@ def log_stream_retry(
             _chain = type(error).__name__
 
         # Per-attempt counters and upstream headers.
-        _now = time.time()
+        _now = time.monotonic()
         _bytes = 0
         _chunks = 0
         _elapsed = 0.0
@@ -254,7 +254,7 @@ def emit_stream_drop(
         try:
             started = diag.get("started_at")
             if started is not None:
-                _suffix = f" after {max(0.0, time.time() - float(started)):.1f}s"
+                _suffix = f" after {max(0.0, time.monotonic() - float(started)):.1f}s"
         except Exception:
             pass
     try:

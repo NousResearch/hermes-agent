@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import {
   Code,
+  Command,
   Download,
   FormInput,
   RotateCcw,
@@ -122,8 +123,25 @@ export default function ConfigPage() {
   const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
+
+  // Keyboard shortcut: Cmd+K / Ctrl+K to focus the search input
+  const handleKeyDown = useCallback(
+    (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [handleKeyDown]);
 
   useLayoutEffect(() => {
     if (!config || !schema) {
@@ -538,7 +556,39 @@ export default function ConfigPage() {
           </CardContent>
         </Card>
       ) : (
-        <div className="flex flex-col sm:flex-row gap-4">
+        <>
+          {/* ── Inline search bar (form mode) ── */}
+          <div className="flex items-center gap-3 px-4 py-3 border border-border bg-muted/10">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              className="flex-1 min-w-0 bg-transparent text-sm placeholder:text-muted-foreground focus:outline-none"
+              placeholder={t.config.searchPlaceholder ?? t.common.search}
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+            />
+            {searchQuery ? (
+              <Button
+                ghost
+                size="xs"
+                className="text-muted-foreground hover:text-foreground"
+                onClick={() => {
+                  setSearchQuery("");
+                  searchInputRef.current?.focus();
+                }}
+                aria-label={t.common.clear}
+              >
+                <X />
+              </Button>
+            ) : (
+              <kbd className="hidden sm:inline-flex items-center gap-0.5 px-2 py-1 text-[10px] font-mono text-muted-foreground bg-muted border border-border rounded">
+                <Command className="h-3 w-3" />K
+              </kbd>
+            )}
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-4">
           <aside aria-label={t.config.filters} className="sm:w-56 sm:shrink-0">
             <div className="sm:sticky sm:top-4">
               <div className="flex flex-col border border-border bg-muted/20">
@@ -647,6 +697,7 @@ export default function ConfigPage() {
             )}
           </div>
         </div>
+        </>
       )}
       <PluginSlot name="config:bottom" />
       <ConfirmDialog

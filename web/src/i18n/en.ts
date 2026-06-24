@@ -432,6 +432,7 @@ export const en: Translations = {
     resetScopeToast: "{scope} reset to defaults — review and Save to persist",
     rawYaml: "Raw YAML Configuration",
     searchResults: "Search Results",
+    searchPlaceholder: "Search config fields...",
     fields: "field{s}",
     noFieldsMatch: 'No fields match "{query}"',
     configSaved: "Configuration saved",

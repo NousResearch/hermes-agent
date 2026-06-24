@@ -38,6 +38,7 @@ import {
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
+import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { setPetScale } from '@/store/pet-gallery'
@@ -1675,6 +1676,7 @@ export function usePromptActions({
       // rows (and kill the live processes) before the fresh run repopulates.
       clearSessionTodos(sessionId)
       resetSessionBackground(sessionId)
+      clearPreviewArtifacts(sessionId)
 
       clearNotifications()
       setMutableRef(busyRef, true)
@@ -1737,6 +1739,7 @@ export function usePromptActions({
       // processes) before the re-run repopulates them.
       clearSessionTodos(sessionId)
       resetSessionBackground(sessionId)
+      clearPreviewArtifacts(sessionId)
 
       clearNotifications()
       setMutableRef(busyRef, true)

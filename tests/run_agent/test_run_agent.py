@@ -23,6 +23,7 @@ from agent.codex_responses_adapter import _normalize_codex_response
 import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
+from agent.memory_manager import MemoryManager
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 
 
@@ -2082,6 +2083,41 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
+        old_text = "stale preference entry"
+        tc = _mock_tool_call(
+            name="memory",
+            arguments=json.dumps({
+                "action": "remove",
+                "target": "memory",
+                "old_text": old_text,
+            }),
+            call_id="mem-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        calls = []
+
+        class FakeMemoryManager(MemoryManager):
+            def has_tool(self, tool_name):
+                return False
+
+            def on_memory_write(self, action, target, content, metadata=None):
+                calls.append((action, target, content, metadata or {}))
+
+        agent._memory_manager = FakeMemoryManager()
+        agent._memory_store = object()
+
+        with patch("tools.memory_tool.memory_tool", return_value=json.dumps({"success": True})):
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert len(calls) == 1
+        action, target, content, metadata = calls[0]
+        assert (action, target, content) == ("remove", "memory", "")
+        assert metadata["old_text"] == old_text
+        assert metadata["tool_call_id"] == "mem-1"
+        assert messages[-1]["tool_call_id"] == "mem-1"
+
     def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
@@ -2457,6 +2493,35 @@ class TestConcurrentToolExecution:
         assert messages[1]["tool_call_id"] == "c2"
         assert "success" in messages[1]["content"]
 
+    def test_concurrent_submit_shutdown_error_returns_tool_errors(self, agent):
+        """Submit-time interpreter shutdown should not escape the outer loop."""
+
+        class ShutdownExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, *args, **kwargs):
+                raise RuntimeError("cannot schedule new futures after interpreter shutdown")
+
+        tc1 = _mock_tool_call(name="web_search", arguments='{"q": "alpha"}', call_id="c1")
+        tc2 = _mock_tool_call(name="web_search", arguments='{"q": "beta"}', call_id="c2")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
+        messages = []
+
+        with patch("agent.tool_executor.concurrent.futures.ThreadPoolExecutor", ShutdownExecutor):
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        assert len(messages) == 2
+        assert messages[0]["tool_call_id"] == "c1"
+        assert messages[1]["tool_call_id"] == "c2"
+        assert all("Python interpreter is shutting down" in m["content"] for m in messages)
+
     def test_concurrent_interrupt_before_start(self, agent):
         """If interrupt is requested before concurrent execution, all tools are skipped."""
         tc1 = _mock_tool_call(name="web_search", arguments='{}', call_id="c1")
@@ -2796,6 +2861,68 @@ class TestConcurrentToolExecution:
 
         assert json.loads(result) == {"error": "Blocked"}
         assert agent._turns_since_memory == 5
+
+    def test_invoke_tool_memory_remove_notifies_provider_with_old_text(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        calls = []
+
+        class FakeMemoryManager(MemoryManager):
+            def has_tool(self, tool_name):
+                return False
+
+            def on_memory_write(self, action, target, content, metadata=None):
+                calls.append((action, target, content, metadata or {}))
+
+        old_text = "stale preference entry"
+        agent._memory_manager = FakeMemoryManager()
+        agent._memory_store = object()
+
+        with patch("tools.memory_tool.memory_tool", return_value=json.dumps({"success": True})):
+            agent._invoke_tool(
+                "memory",
+                {"action": "remove", "target": "memory", "old_text": old_text},
+                "task-1",
+                tool_call_id="mem-1",
+            )
+
+        assert len(calls) == 1
+        action, target, content, metadata = calls[0]
+        assert (action, target, content) == ("remove", "memory", "")
+        assert metadata["old_text"] == old_text
+        assert metadata["tool_call_id"] == "mem-1"
+
+    def test_invoke_tool_memory_failed_remove_skips_provider_notification(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_pre_tool_call_block_message",
+            lambda *args, **kwargs: None,
+        )
+        notify = MagicMock(side_effect=AssertionError("should not notify"))
+
+        class FakeMemoryManager(MemoryManager):
+            def has_tool(self, tool_name):
+                return False
+
+            on_memory_write = notify
+
+        manager = FakeMemoryManager()
+        agent._memory_manager = manager
+        agent._memory_store = object()
+
+        with patch(
+            "tools.memory_tool.memory_tool",
+            return_value=json.dumps({"success": False, "error": "No entry matched"}),
+        ):
+            agent._invoke_tool(
+                "memory",
+                {"action": "remove", "target": "memory", "old_text": "missing"},
+                "task-1",
+                tool_call_id="mem-1",
+            )
+
+        notify.assert_not_called()
 
     def test_concurrent_blocked_write_skips_checkpoint(self, agent, monkeypatch):
         """Concurrent path: blocked write_file should not trigger checkpoint."""

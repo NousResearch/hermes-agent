@@ -417,6 +417,7 @@ class TelegramAdapter(BasePlatformAdapter):
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
     supports_code_blocks = True  # Telegram MarkdownV2 renders fenced code blocks
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Bot API 10.1 Rich Messages cap the raw markdown/html text at 32,768
     # UTF-8 characters. Content above this is sent via the legacy chunking path.
     RICH_MESSAGE_MAX_CHARS = 32768
@@ -808,6 +809,47 @@ class TelegramAdapter(BasePlatformAdapter):
     @staticmethod
     def _is_thread_not_found_error(error: Exception) -> bool:
         return "thread not found" in str(error).lower()
+
+    def _prune_stale_dm_topic_binding(
+        self, chat_id: Any, thread_id: Any,
+    ) -> None:
+        """Drop the stale ``telegram_dm_topic_bindings`` row for a
+        topic Telegram has confirmed deleted.
+
+        Without this prune the recovery logic in
+        ``gateway.run._recover_telegram_topic_thread_id`` keeps
+        steering future inbound messages to the dead thread (the
+        bug behind #31501 — tool progress, approvals, replies all
+        end up in the wrong place even though the user has moved
+        on to a fresh topic).  Best-effort: we never raise from a
+        send-fallback path — a failed cleanup must not turn into a
+        failed user-facing send.
+        """
+        if chat_id is None or thread_id is None:
+            return
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            return
+        db = getattr(store, "_db", None)
+        if db is None or not hasattr(db, "delete_telegram_topic_binding"):
+            return
+        try:
+            removed = db.delete_telegram_topic_binding(
+                chat_id=str(chat_id), thread_id=str(thread_id),
+            )
+        except Exception:
+            logger.debug(
+                "[%s] delete_telegram_topic_binding failed for "
+                "chat=%s thread=%s — skipping prune",
+                self.name, chat_id, thread_id, exc_info=True,
+            )
+            return
+        if removed:
+            logger.info(
+                "[%s] Pruned stale Telegram DM topic binding "
+                "chat=%s thread=%s (Bot API: thread not found)",
+                self.name, chat_id, thread_id,
+            )
 
     @staticmethod
     def _is_bad_request_error(error: Exception) -> bool:
@@ -2162,6 +2204,43 @@ class TelegramAdapter(BasePlatformAdapter):
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
 
+            # CLOSE_WAIT fd leak (#31599, same class as #18451): PTB's
+            # HTTPXRequest builds the underlying httpx.AsyncClient with
+            # `limits = httpx.Limits(max_connections=connection_pool_size)`
+            # and *no* keepalive tuning, so httpx's default
+            # keepalive_expiry=5.0 applies. Behind an HTTP proxy (Cloudflare
+            # Warp etc.) a peer-initiated FIN can sit in CLOSE_WAIT longer
+            # than that, leaking fds in the general request pool (_request[1])
+            # which _drain_polling_connections never resets. Wire the shared
+            # platform_httpx_limits() helper into the httpx client so idle
+            # keepalive sockets drain aggressively, while preserving PTB's
+            # max_connections (= connection_pool_size). httpx_kwargs is spread
+            # last into PTB's client kwargs, so `limits` here wins.
+            from gateway.platforms._http_client_limits import platform_httpx_limits
+
+            _base_limits = platform_httpx_limits()
+            if _base_limits is not None:
+                import httpx as _httpx
+
+                _pool_limits = _httpx.Limits(
+                    max_connections=request_kwargs["connection_pool_size"],
+                    max_keepalive_connections=_base_limits.max_keepalive_connections,
+                    keepalive_expiry=_base_limits.keepalive_expiry,
+                )
+            else:  # pragma: no cover — httpx always present alongside PTB
+                _pool_limits = None
+
+            def _with_limits(httpx_kwargs: Optional[dict] = None) -> dict:
+                """Merge tuned keepalive limits into httpx client kwargs.
+
+                A caller-supplied ``limits`` (none today) is left untouched;
+                otherwise the CLOSE_WAIT-safe limits are injected.
+                """
+                kwargs = dict(httpx_kwargs or {})
+                if _pool_limits is not None and "limits" not in kwargs:
+                    kwargs["limits"] = _pool_limits
+                return kwargs
+
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
             fallback_ips = self._fallback_ips()
             if not fallback_ips:
@@ -2184,21 +2263,31 @@ class TelegramAdapter(BasePlatformAdapter):
                 # polling reconnect + bot API bootstrap/delete_webhook calls.
                 request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs=_with_limits(
+                        {"transport": TelegramFallbackTransport(fallback_ips)}
+                    ),
                 )
                 get_updates_request = HTTPXRequest(
                     **request_kwargs,
-                    httpx_kwargs={"transport": TelegramFallbackTransport(fallback_ips)},
+                    httpx_kwargs=_with_limits(
+                        {"transport": TelegramFallbackTransport(fallback_ips)}
+                    ),
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                request = HTTPXRequest(
+                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
+                )
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs, proxy=proxy_url, httpx_kwargs=_with_limits()
+                )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)
-                request = HTTPXRequest(**request_kwargs)
-                get_updates_request = HTTPXRequest(**request_kwargs)
+                request = HTTPXRequest(**request_kwargs, httpx_kwargs=_with_limits())
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs, httpx_kwargs=_with_limits()
+                )
 
             builder = builder.request(request).get_updates_request(get_updates_request)
             self._app = builder.build()
@@ -2669,10 +2758,16 @@ class TelegramAdapter(BasePlatformAdapter):
                                     continue
                                 # Second failure: the thread is genuinely gone.
                                 # Retry without ``message_thread_id`` so the
-                                # message still reaches the chat.
+                                # message still reaches the chat, and prune
+                                # the stale binding so future inbound
+                                # messages aren't redirected back to it
+                                # (#31501).
                                 logger.warning(
                                     "[%s] Thread %s not found, retrying without message_thread_id",
                                     self.name, effective_thread_id,
+                                )
+                                self._prune_stale_dm_topic_binding(
+                                    chat_id, effective_thread_id,
                                 )
                                 used_thread_fallback = True
                                 effective_thread_id = None
@@ -3353,6 +3448,13 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Thread %s not found for control message, retrying without message_thread_id",
                     self.name,
                     message_thread_id,
+                )
+                # Same prune as the streaming send path — the
+                # control-message retry tells us the topic is gone,
+                # so the binding row in state.db must go too
+                # (#31501).
+                self._prune_stale_dm_topic_binding(
+                    kwargs.get("chat_id"), message_thread_id,
                 )
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("message_thread_id", None)

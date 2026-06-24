@@ -1839,6 +1839,7 @@ export const ja = defineLocale({
     opening: '開いています...',
     hide: '非表示',
     openPreview: 'プレビューを開く',
+    openInBrowser: 'ブラウザで開く',
     sourceLineTitle: 'クリックして選択 · Shift クリックで拡張 · コンポーザーにドラッグ',
     source: 'ソース',
     renderedPreview: 'プレビュー',

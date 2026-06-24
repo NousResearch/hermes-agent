@@ -263,6 +263,29 @@ class TestWebServerEndpoints:
         import hermes_cli.web_server as web_server
 
         monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+        # A docker install inside a container should be managed externally.
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
+
+        assert web_server._dashboard_local_update_managed_externally() is True
+
+    def test_dashboard_update_capability_allows_git_in_container(self, monkeypatch):
+        """A git checkout inside a container (e.g. bind-mounted in hermes-webui)
+        should still offer dashboard updates — the checkout is self-managed."""
+        import hermes_constants
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "git")
+
+        assert web_server._dashboard_local_update_managed_externally() is False
+
+    def test_dashboard_update_capability_blocks_pip_in_container(self, monkeypatch):
+        """A pip install inside a container is still managed externally."""
+        import hermes_constants
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "pip")
 
         assert web_server._dashboard_local_update_managed_externally() is True
 
@@ -1011,6 +1034,8 @@ class TestWebServerEndpoints:
             spawned = True
             raise AssertionError("docker update guard should not spawn hermes update")
 
+        # Bypass the managed-externally gate so we reach the docker install check.
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
         web_server._ACTION_PROCS.pop("hermes-update", None)
@@ -5070,14 +5095,8 @@ class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
-        """Create a TestClient without the session token header.
-
-        Pulls in ``_install_example_plugin`` so ``test_plugin_route_allows_auth``
-        has the ``/api/plugins/example/hello`` endpoint available — the
-        example plugin is no longer a bundled plugin, so the fixture
-        installs it into the per-test ``HERMES_HOME``.
-        """
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        """Create TestClients with and without the session token header."""
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -5102,19 +5121,15 @@ class TestPluginAPIAuth:
     def test_plugin_route_allows_auth(self):
         """Plugin API routes should work with a valid session token.
 
-        Uses ``/api/plugins/example/hello`` from the example-dashboard
-        test fixture (installed into HERMES_HOME by the class-level
-        ``_install_example_plugin`` fixture) — a stable, side-effect-free
-        GET that's only loaded for tests. With a valid token the handler
-        should run (200); without one the middleware should 401 before
-        the handler is reached.
+        Uses a bundled plugin route so the test covers authenticated plugin
+        API access without relying on user-installed plugin backend imports.
         """
         # Without auth: middleware blocks before reaching the handler.
-        resp = self.client.get("/api/plugins/example/hello")
+        resp = self.client.get("/api/plugins/kanban/board")
         assert resp.status_code == 401
 
         # With auth: handler runs.
-        resp = self.auth_client.get("/api/plugins/example/hello")
+        resp = self.auth_client.get("/api/plugins/kanban/board")
         assert resp.status_code == 200
 
     def test_plugin_post_requires_auth(self):

@@ -206,6 +206,35 @@ class TestProjectFacts:
         assert "Project: package.json" in block
         assert "Verify:" not in block
 
+    def test_detect_project_facts_structured(self, tmp_path):
+        (tmp_path / "package.json").write_text(
+            json.dumps({"scripts": {"test": "vitest", "dev": "vite"}})
+        )
+        (tmp_path / "pnpm-lock.yaml").write_text("")
+        facts = cc.detect_project_facts(tmp_path)
+        assert facts.manifests == ["package.json"]
+        assert facts.package_managers == ["pnpm"]
+        assert facts.verify_commands == ["pnpm run test"]  # dev excluded
+        assert facts.context_files == []
+
+    def test_project_facts_for_matches_prompt_block(self, tmp_path):
+        # Invariant: the structured facts the UI consumes must not drift from the
+        # commands the prompt snapshot renders — one detector feeds both.
+        _git_init(tmp_path)
+        (tmp_path / "package.json").write_text(
+            json.dumps({"scripts": {"test": "vitest", "lint": "eslint ."}})
+        )
+        (tmp_path / "pnpm-lock.yaml").write_text("")
+        facts = cc.project_facts_for(tmp_path)
+        assert facts is not None
+        verify_line = cc.build_coding_workspace_block(tmp_path).split("Verify:")[1].splitlines()[0]
+        assert facts["verifyCommands"]
+        for cmd in facts["verifyCommands"]:
+            assert cmd in verify_line
+
+    def test_project_facts_for_none_outside_workspace(self, tmp_path):
+        assert cc.project_facts_for(tmp_path) is None
+
 
 # ── $HOME dotfiles guard ────────────────────────────────────────────────────
 

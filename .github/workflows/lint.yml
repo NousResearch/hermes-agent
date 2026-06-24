@@ -9,18 +9,12 @@ name: Lint (ruff + ty)
 #      enforcement fails.
 
 on:
-  push:
-    branches: [main]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - "website/**"
-
-  # No paths filter — the job must always run so the required check
-  # reports a status (path-gated workflows leave checks "pending" forever
-  # when no matching files change, which blocks merge).
-  pull_request:
-    branches: [main]
+  workflow_call:
+    inputs:
+      event_name:
+        description: The event name from the calling orchestrator (pull_request or push).
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -33,6 +27,7 @@ concurrency:
 jobs:
   lint-diff:
     name: ruff + ty diff
+    if: inputs.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -45,16 +40,16 @@ jobs:
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Install ruff + ty
-        run: |
-          uv tool install ruff
-          uv tool install ty
+        uses: ./.github/actions/retry
+        with:
+          command: uv tool install ruff && uv tool install ty
 
       - name: Determine base ref
         id: base
         run: |
           # For PRs, diff against the merge base with the target branch.
           # For pushes to main, diff against the previous commit on main.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "${{ inputs.event_name }}" = "pull_request" ]; then
             BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
             BASE_REF="origin/${{ github.base_ref }}"
           else
@@ -110,7 +105,7 @@ jobs:
             --base-ty   .lint-reports/base/ty.json \
             --head-ty   .lint-reports/head/ty.json \
             --base-ref  "${{ steps.base.outputs.ref }}" \
-            --head-ref  "${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}" \
+            --head-ref  "${{ inputs.event_name == 'pull_request' && github.head_ref || github.ref_name }}" \
             --output    .lint-reports/summary.md
           cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
 
@@ -122,7 +117,7 @@ jobs:
           retention-days: 14
 
       - name: Post / update PR comment
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+        if: inputs.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
         continue-on-error: true
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
         with:
@@ -172,7 +167,9 @@ jobs:
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Install ruff
-        run: uv tool install ruff
+        uses: ./.github/actions/retry
+        with:
+          command: uv tool install ruff
 
       - name: ruff check .
         # No --exit-zero, no || true. Exit code propagates to the job,

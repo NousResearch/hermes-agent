@@ -635,25 +635,32 @@ def _read_small(path: Path) -> str:
         return ""
 
 
-def _project_facts(root: Path) -> list[str]:
-    """Detected project facts for the workspace snapshot.
+@dataclass(frozen=True)
+class ProjectFacts:
+    """Structured project facts — the model's verify loop, detected once.
 
-    The point is to hand the model its *verify loop* up front — which manifest,
-    which package manager, and the exact test/lint/build commands — instead of
-    making it rediscover them every session. Cheap: stat calls plus reads of a
-    couple of small files; built once at prompt-build time (cache-safe).
+    The same data that feeds the workspace snapshot, exposed structurally so
+    non-prompt consumers (e.g. the desktop verify UI) read it instead of
+    re-detecting and drifting from the prompt.
     """
-    facts: list[str] = []
 
+    manifests: list[str]
+    package_managers: list[str]
+    verify_commands: list[str]
+    context_files: list[str]
+
+
+def detect_project_facts(root: Path) -> ProjectFacts:
+    """Detect manifests, package manager(s), verify commands, and context files.
+
+    Cheap: stat calls plus reads of a couple of small files. The single source
+    of truth for both the prompt snapshot (:func:`_project_facts`) and the
+    gateway's ``project.facts`` — so the UI never re-sniffs verify commands.
+    """
     manifests = [m for m in _PROJECT_MARKERS if m not in _CONTEXT_FILES and (root / m).is_file()]
-    package_managers = [
-        pm for lock, pm in (*_PY_LOCKFILES, *_JS_LOCKFILES) if (root / lock).is_file()
-    ]
-    if manifests:
-        line = f"- Project: {', '.join(manifests[:6])}"
-        if package_managers:
-            line += f" ({'/'.join(dict.fromkeys(package_managers))})"
-        facts.append(line)
+    package_managers = list(
+        dict.fromkeys(pm for lock, pm in (*_PY_LOCKFILES, *_JS_LOCKFILES) if (root / lock).is_file())
+    )
 
     verify: list[str] = []
     if (root / "scripts" / "run_tests.sh").is_file():
@@ -673,15 +680,59 @@ def _project_facts(root: Path) -> list[str]:
             f"make {name}" for name in _VERIFY_TARGETS
             if re.search(rf"^{re.escape(name)}\s*:", makefile, re.MULTILINE)
         )
-    if verify:
-        deduped = list(dict.fromkeys(verify))[:_MAX_VERIFY_COMMANDS]
-        facts.append(f"- Verify: {'; '.join(deduped)}")
 
-    context_files = [c for c in _CONTEXT_FILES if (root / c).is_file()]
-    if context_files:
-        facts.append(f"- Context files: {', '.join(context_files)}")
+    return ProjectFacts(
+        manifests=manifests,
+        package_managers=package_managers,
+        verify_commands=list(dict.fromkeys(verify))[:_MAX_VERIFY_COMMANDS],
+        context_files=[c for c in _CONTEXT_FILES if (root / c).is_file()],
+    )
+
+
+def _project_facts(root: Path) -> list[str]:
+    """Render :func:`detect_project_facts` as workspace-snapshot lines.
+
+    Hands the model its *verify loop* up front — which manifest, which package
+    manager, and the exact test/lint/build commands — instead of making it
+    rediscover them every session. Built once at prompt-build time; the string
+    output must stay byte-stable to preserve the prompt cache.
+    """
+    f = detect_project_facts(root)
+    facts: list[str] = []
+
+    if f.manifests:
+        line = f"- Project: {', '.join(f.manifests[:6])}"
+        if f.package_managers:
+            line += f" ({'/'.join(f.package_managers)})"
+        facts.append(line)
+    if f.verify_commands:
+        facts.append(f"- Verify: {'; '.join(f.verify_commands)}")
+    if f.context_files:
+        facts.append(f"- Context files: {', '.join(f.context_files)}")
 
     return facts
+
+
+def project_facts_for(cwd: Optional[str | Path] = None) -> Optional[dict[str, Any]]:
+    """Structured project facts for ``cwd`` — ``None`` outside a workspace.
+
+    Same detection the system-prompt snapshot uses (git root, else marker root),
+    exposed for non-prompt consumers (the desktop verify UI) so they never
+    re-derive "are we coding?" or duplicate the verify-command sniffing.
+    """
+    resolved = _resolve_cwd(cwd)
+    root = _git_root(resolved) or _marker_root(resolved)
+    if root is None:
+        return None
+
+    f = detect_project_facts(root)
+    return {
+        "root": str(root),
+        "manifests": f.manifests,
+        "packageManagers": f.package_managers,
+        "verifyCommands": f.verify_commands,
+        "contextFiles": f.context_files,
+    }
 
 
 def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:

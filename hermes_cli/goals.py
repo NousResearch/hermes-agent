@@ -76,6 +76,23 @@ CONTINUATION_PROMPT_TEMPLATE = (
     "If you are blocked and need input from the user, say so clearly and stop."
 )
 
+# Used when the goal carries a structured completion contract. The contract
+# block tells the agent exactly what "done" means, how to prove it, what not
+# to break, what's in scope, and when to stop and ask — so it targets the
+# verification surface instead of declaring victory loosely.
+CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE = (
+    "[Continuing toward your standing goal]\n"
+    "Goal: {goal}\n\n"
+    "Completion contract:\n"
+    "{contract_block}\n\n"
+    "Continue working toward the outcome above. Take the next concrete step. "
+    "Stay within the stated boundaries and do not violate the constraints. "
+    "Before claiming the goal is done, satisfy the Verification criterion and "
+    "show the concrete evidence (command output, file contents, test result). "
+    "If you hit the stated stop condition or are otherwise blocked and need "
+    "user input, say so clearly and stop."
+)
+
 # Used when the user has added one or more /subgoal criteria. Surfaced
 # to the agent verbatim so it sees what to target on the next turn,
 # and surfaced to the judge so the verdict considers them too.
@@ -94,25 +111,59 @@ CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
 
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
-    "achieved a user's stated goal. You receive the goal text and the "
-    "agent's most recent response. Your only job is to decide whether "
-    "the goal is fully satisfied based on that response.\n\n"
-    "A goal is DONE only when:\n"
+    "achieved a user's stated goal. You receive the goal text, the agent's "
+    "most recent response, and — when present — a list of background "
+    "processes the agent has running. Decide one of three verdicts.\n\n"
+    "DONE — the goal is fully satisfied:\n"
     "- The response explicitly confirms the goal was completed, OR\n"
     "- The response clearly shows the final deliverable was produced, OR\n"
     "- The response explains the goal is unachievable / blocked / needs "
     "user input (treat this as DONE with reason describing the block).\n\n"
-    "Otherwise the goal is NOT done — CONTINUE.\n\n"
-    "Reply ONLY with a single JSON object on one line:\n"
-    '{\"done\": <true|false>, \"reason\": \"<one-sentence rationale>\"}'
+    "WAIT — the goal is NOT done, but the next step is to wait for async "
+    "work to finish rather than act again. Choose this ONLY when the agent's "
+    "progress is genuinely gated on something running on its own:\n"
+    "- A background process listed below is still running AND the response "
+    "shows the agent is waiting on its result (e.g. a CI poller, build, "
+    "test run, deploy). If the process has a session id, return it in "
+    "``wait_on_session`` — that releases when the process exits OR its "
+    "watch_patterns trigger fires (use this for a long-lived watcher that "
+    "signals mid-run and may never exit). Otherwise return its pid in "
+    "``wait_on_pid`` (releases on exit only).\n"
+    "- The agent says it is rate-limited / backing off / must wait a fixed "
+    "period — return seconds in ``wait_for_seconds``.\n"
+    "Picking WAIT parks the loop without burning a turn; it resumes "
+    "automatically when the pid exits or the time elapses. Do NOT pick WAIT "
+    "just because work remains — only when re-poking now would be pure "
+    "busy-work because the agent can't progress until the async thing "
+    "finishes.\n\n"
+    "CONTINUE — not done, and there is a concrete next step the agent can "
+    "take right now. This is the default when in doubt.\n\n"
+    "Reply ONLY with a single JSON object on one line. Shapes:\n"
+    '{"verdict": "done", "reason": "<one sentence>"}\n'
+    '{"verdict": "continue", "reason": "<one sentence>"}\n'
+    '{"verdict": "wait", "wait_on_session": "<id>", "reason": "<one sentence>"}\n'
+    '{"verdict": "wait", "wait_on_pid": <int>, "reason": "<one sentence>"}\n'
+    '{"verdict": "wait", "wait_for_seconds": <int>, "reason": "<one sentence>"}\n'
+    "The legacy shape {\"done\": <true|false>, \"reason\": \"...\"} is still "
+    "accepted (true=done, false=continue)."
+)
+
+
+# Rendered into the judge prompt when the agent has background processes
+# running. Gives the judge the context it needs to decide WAIT vs CONTINUE
+# (and which pid to wait on) without it having to probe anything itself.
+JUDGE_BACKGROUND_BLOCK_TEMPLATE = (
+    "Background processes the agent currently has running (it may be waiting "
+    "on one of these):\n{background_lines}\n\n"
 )
 
 
 JUDGE_USER_PROMPT_TEMPLATE = (
     "Goal:\n{goal}\n\n"
     "Agent's most recent response:\n{response}\n\n"
+    "{background_block}"
     "Current time: {current_time}\n\n"
-    "Is the goal satisfied?"
+    "Is the goal satisfied — done, continue, or wait?"
 )
 
 # Used when the user has added /subgoal criteria. The judge must
@@ -122,6 +173,7 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "Additional criteria the user added mid-loop (all must also be "
     "satisfied for the goal to be DONE):\n{subgoals_block}\n\n"
     "Agent's most recent response:\n{response}\n\n"
+    "{background_block}"
     "Current time: {current_time}\n\n"
     "Decision: For each numbered criterion above, find concrete "
     "evidence in the agent's response that the criterion is "
@@ -129,9 +181,203 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "met' or 'implying it was done' — require specific evidence (a "
     "file contents excerpt, an output line, a command result). If "
     "ANY criterion lacks specific evidence in the response, the goal "
-    "is NOT done — return CONTINUE.\n\n"
+    "is NOT done — return CONTINUE (or WAIT if blocked on a listed "
+    "background process).\n\n"
     "Is the goal AND every additional criterion satisfied?"
 )
+
+
+# Used when the goal carries a structured completion contract. The judge
+# decides DONE strictly against the Verification criterion and refuses to
+# accept completion when a constraint was violated.
+JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE = (
+    "Goal:\n{goal}\n\n"
+    "Completion contract (the authoritative definition of done):\n"
+    "{contract_block}\n\n"
+    "Agent's most recent response:\n{response}\n\n"
+    "{background_block}"
+    "Current time: {current_time}\n\n"
+    "Decision rules:\n"
+    "- The goal is DONE only when the Verification criterion is satisfied AND "
+    "the response shows concrete evidence of it (a command result, file "
+    "contents excerpt, test/benchmark output) — not a claim like 'done' or "
+    "'all tests pass' without evidence.\n"
+    "- If any stated Constraint was violated, the goal is NOT done — CONTINUE.\n"
+    "- If the response shows the agent is waiting on a listed background "
+    "process to satisfy the Verification criterion (e.g. CI is the "
+    "verification and it's still running), return WAIT on that process "
+    "instead of re-poking — re-poking now would be pure busy-work.\n"
+    "- If the response explains the work is blocked / unachievable / needs "
+    "user input (e.g. the stated Stop condition was hit), treat it as DONE "
+    "with the reason describing the block.\n"
+    "- Otherwise the goal is NOT done — CONTINUE.\n\n"
+    "Is the goal satisfied per its completion contract — done, continue, or wait?"
+)
+
+
+# System prompt for /goal draft — turns a plain-language objective into a
+# structured completion contract the user can review before activating.
+# Adapted from Codex's "let Codex draft the goal" guidance.
+DRAFT_CONTRACT_SYSTEM_PROMPT = (
+    "You turn a user's plain-language objective into a structured completion "
+    "contract for an autonomous coding agent. The contract has five fields:\n"
+    "- outcome: the single end state that must be true when done\n"
+    "- verification: the specific test / command / artifact that PROVES the "
+    "outcome (must be concrete and checkable)\n"
+    "- constraints: what must NOT change or regress\n"
+    "- boundaries: which files, dirs, tools, or systems are in scope\n"
+    "- stop_when: the condition under which the agent should stop and ask "
+    "for human input instead of pushing on\n\n"
+    "Infer sensible, specific values from the objective and any project "
+    "context implied by it. Prefer concrete verification (a named test "
+    "command, a build, a benchmark) over vague phrases. Keep each field to "
+    "one or two sentences. If a field genuinely cannot be inferred, use an "
+    "empty string for it.\n\n"
+    "Reply ONLY with a single JSON object on one line:\n"
+    '{"outcome": "...", "verification": "...", "constraints": "...", '
+    '"boundaries": "...", "stop_when": "..."}'
+)
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Completion contract
+# ──────────────────────────────────────────────────────────────────────
+
+# The five contract fields, in display order. Adapted from OpenAI Codex's
+# "strong goal" guidance: a durable objective works best when it names what
+# "done" means, how to prove it, what must not regress, what tools/paths are
+# in bounds, and when to stop and ask. A bare free-form goal (no contract)
+# stays fully supported — every field defaults empty and is simply omitted
+# from the prompts when unset.
+_CONTRACT_FIELDS = ("outcome", "verification", "constraints", "boundaries", "stop_when")
+
+# Human labels for rendering and for the inline `field: value` parser.
+_CONTRACT_LABELS = {
+    "outcome": "Outcome",
+    "verification": "Verification",
+    "constraints": "Constraints",
+    "boundaries": "Boundaries",
+    "stop_when": "Stop when blocked",
+}
+
+# Inline-input aliases the user may type before a value, mapped to the
+# canonical field name. e.g. `verify: tests pass` or `done when: ...`.
+_CONTRACT_ALIASES = {
+    "outcome": "outcome",
+    "goal": "outcome",
+    "done": "outcome",
+    "done when": "outcome",
+    "verification": "verification",
+    "verify": "verification",
+    "verified by": "verification",
+    "evidence": "verification",
+    "proof": "verification",
+    "constraints": "constraints",
+    "constraint": "constraints",
+    "preserve": "constraints",
+    "must not": "constraints",
+    "do not change": "constraints",
+    "boundaries": "boundaries",
+    "boundary": "boundaries",
+    "scope": "boundaries",
+    "allowed": "boundaries",
+    "files": "boundaries",
+    "stop when": "stop_when",
+    "stop_when": "stop_when",
+    "blocked": "stop_when",
+    "stop if blocked": "stop_when",
+    "give up when": "stop_when",
+}
+
+
+@dataclass
+class GoalContract:
+    """Optional structured completion contract for a goal.
+
+    Each field is free-form prose the user (or :func:`draft_contract`)
+    supplies. Empty fields are omitted everywhere — a goal with no contract
+    behaves exactly like the original free-form goal. The contract is woven
+    into both the continuation prompt (so the agent targets the verification
+    surface and respects constraints) and the judge prompt (so "done" is
+    decided against evidence, not vibes).
+    """
+
+    outcome: str = ""
+    verification: str = ""
+    constraints: str = ""
+    boundaries: str = ""
+    stop_when: str = ""
+
+    def is_empty(self) -> bool:
+        return not any(getattr(self, f).strip() for f in _CONTRACT_FIELDS)
+
+    def to_dict(self) -> Dict[str, str]:
+        return {f: getattr(self, f) for f in _CONTRACT_FIELDS}
+
+    @classmethod
+    def from_dict(cls, data: Optional[Dict[str, Any]]) -> "GoalContract":
+        if not isinstance(data, dict):
+            return cls()
+        return cls(**{f: str(data.get(f) or "").strip() for f in _CONTRACT_FIELDS})
+
+    def render_block(self) -> str:
+        """Render non-empty contract fields as a labelled block. Empty
+        contract → empty string (callers skip the section entirely)."""
+        lines = []
+        for f in _CONTRACT_FIELDS:
+            val = getattr(self, f).strip()
+            if val:
+                lines.append(f"- {_CONTRACT_LABELS[f]}: {val}")
+        return "\n".join(lines)
+
+
+def parse_contract(text: str) -> Tuple[str, GoalContract]:
+    """Split user-typed goal text into a headline + structured contract.
+
+    Supports inline ``field: value`` lines so power users can type a full
+    contract in one shot, e.g.::
+
+        Migrate auth to JWT
+        verify: the auth test suite passes
+        constraints: keep the public /login response shape unchanged
+        boundaries: only touch services/auth and its tests
+        stop when: a schema change needs product sign-off
+
+    The first non-field line(s) become the goal headline; recognized
+    ``field:`` lines populate the contract. Lines for the same field are
+    joined. Unrecognized prefixes stay part of the headline, so a plain
+    free-form goal with an incidental colon (``Fix bug: the parser``)
+    is NOT mangled — only lines whose prefix matches a known alias are
+    pulled out. Returns ``(headline, contract)``.
+    """
+    if not text:
+        return "", GoalContract()
+
+    headline_parts: List[str] = []
+    fields: Dict[str, List[str]] = {f: [] for f in _CONTRACT_FIELDS}
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        matched = False
+        if ":" in line:
+            prefix, _, value = line.partition(":")
+            key = _CONTRACT_ALIASES.get(prefix.strip().lower())
+            if key is not None and value.strip():
+                fields[key].append(value.strip())
+                matched = True
+        if not matched:
+            headline_parts.append(line)
+
+    headline = " ".join(headline_parts).strip()
+    contract = GoalContract(
+        **{f: " ".join(v).strip() for f, v in fields.items()}
+    )
+    # If a headline was given but no explicit `outcome:` field, the headline
+    # IS the outcome — don't duplicate it into the contract block (the goal
+    # text already carries it), so leave outcome empty in that case.
+    return headline, contract
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -159,9 +405,39 @@ class GoalState:
     # them into the verdict. Backwards-compatible: defaults to empty so
     # old state_meta rows load unchanged.
     subgoals: List[str] = field(default_factory=list)
+    # Wait barrier: when the agent is blocked on long-running async work
+    # (CI poller, build, test run, deploy, rate-limit cooldown) the goal loop
+    # PARKS instead of being re-poked every turn into busy-work. Two barrier
+    # kinds, set automatically by the judge (which now sees the live
+    # background-process list and can return a ``wait`` verdict) or manually
+    # via ``/goal wait``:
+    #   • ``waiting_on_pid`` — park until that process exits.
+    #   • ``waiting_on_session`` — park until that process_registry session's
+    #     OWN trigger fires: it exits, OR (if it has watch_patterns) its
+    #     pattern matches. Covers long-lived watchers/servers that signal
+    #     mid-run via a trigger and may never exit. Preferred over raw pid
+    #     when the agent set up a watch_patterns/notify_on_complete process.
+    #   • ``waiting_until``  — park until this wall-clock epoch (time backoff).
+    # While ANY is active, ``evaluate_after_turn`` short-circuits to
+    # should_continue=False without burning a turn or calling the judge. The
+    # barrier auto-clears when the pid exits / the trigger fires / the deadline
+    # passes, then the next turn resumes normal judging. Cleared by that,
+    # ``/goal unwait``, pause, resume, or clear. Backwards-compatible: old
+    # state_meta rows load with no barrier.
+    waiting_on_pid: Optional[int] = None
+    waiting_on_session: Optional[str] = None
+    waiting_until: float = 0.0
+    waiting_reason: Optional[str] = None
+    waiting_since: float = 0.0
+    # Optional structured completion contract (outcome / verification /
+    # constraints / boundaries / stop_when). Empty by default; a goal with
+    # no contract behaves exactly like the original free-form goal.
+    contract: GoalContract = field(default_factory=GoalContract)
 
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False)
+        data = asdict(self)
+        # asdict already recursed GoalContract into a plain dict.
+        return json.dumps(data, ensure_ascii=False)
 
     @classmethod
     def from_json(cls, raw: str) -> "GoalState":
@@ -182,7 +458,18 @@ class GoalState:
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
             subgoals=subgoals,
+            waiting_on_pid=(int(data["waiting_on_pid"]) if data.get("waiting_on_pid") else None),
+            waiting_on_session=(str(data["waiting_on_session"]) if data.get("waiting_on_session") else None),
+            waiting_until=float(data.get("waiting_until", 0.0) or 0.0),
+            waiting_reason=data.get("waiting_reason"),
+            waiting_since=float(data.get("waiting_since", 0.0) or 0.0),
+            contract=GoalContract.from_dict(data.get("contract")),
         )
+
+    # --- contract helpers -------------------------------------------------
+
+    def has_contract(self) -> bool:
+        return self.contract is not None and not self.contract.is_empty()
 
     # --- subgoals helpers -------------------------------------------------
 
@@ -330,6 +617,52 @@ def _truncate(text: str, limit: int) -> str:
     return text[:limit] + "… [truncated]"
 
 
+def _pid_alive(pid: int) -> bool:
+    """Return True if a process with ``pid`` is currently alive.
+
+    Delegates to ``gateway.status._pid_exists`` — the canonical,
+    cross-platform, footgun-safe liveness check (psutil with a ctypes /
+    POSIX fallback). Critically this avoids ``os.kill(pid, 0)``, which on
+    Windows is NOT a no-op: it routes to ``CTRL_C_EVENT`` and hard-kills the
+    target's console process group (bpo-14484). Any error resolves to False
+    (treat unknown as dead) so a stale barrier never wedges the loop — the
+    worst case is the goal resumes one turn early, which is safe.
+    """
+    if not pid or pid <= 0:
+        return False
+    try:
+        from gateway.status import _pid_exists
+
+        return bool(_pid_exists(int(pid)))
+    except Exception:
+        pass
+    # Last-resort fallback if gateway.status is unavailable: psutil directly.
+    try:
+        import psutil  # type: ignore
+
+        return bool(psutil.pid_exists(int(pid)))
+    except Exception:
+        return False
+
+
+def _session_waiting(session_id: str) -> bool:
+    """Whether a goal parked on a process_registry session should stay parked.
+
+    Delegates to ``process_registry.is_session_waiting`` — True while the
+    session is running and (if it has watch_patterns) its trigger hasn't fired.
+    Fail-safe: any import/registry error yields False (don't wait) so a stale
+    barrier can never wedge the loop.
+    """
+    if not session_id:
+        return False
+    try:
+        from tools.process_registry import process_registry
+
+        return bool(process_registry.is_session_waiting(session_id))
+    except Exception:
+        return False
+
+
 _JSON_OBJECT_RE = re.compile(r"\{.*?\}", re.DOTALL)
 
 
@@ -357,17 +690,25 @@ def _goal_judge_max_tokens() -> int:
     return DEFAULT_JUDGE_MAX_TOKENS
 
 
-def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
-    """Parse the judge's reply. Fail-open to ``(False, "<reason>", parse_failed)``.
+def _parse_judge_response(raw: str) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
+    """Parse the judge's reply. Fail-open on unusable output.
 
-    Returns ``(done, reason, parse_failed)``. ``parse_failed`` is True when the
-    judge returned output that couldn't be interpreted as the expected JSON
-    verdict (empty body, prose, malformed JSON). Callers use that flag to
-    auto-pause after N consecutive parse failures so a weak judge model
-    doesn't silently burn the turn budget.
+    Returns ``(verdict, reason, parse_failed, wait_directive)`` where:
+      - ``verdict`` is ``"done"``, ``"continue"``, or ``"wait"``.
+      - ``parse_failed`` is True when the judge returned output that couldn't
+        be interpreted as the expected JSON verdict (empty body, prose,
+        malformed JSON). Callers use it to auto-pause after N consecutive
+        parse failures so a weak judge model doesn't silently burn the budget.
+      - ``wait_directive`` is set only for ``verdict == "wait"``: a dict with
+        ``{"pid": int}`` or ``{"seconds": int}`` (whichever the judge supplied).
+        ``None`` otherwise. If a wait verdict carries neither a usable pid nor
+        seconds, it is downgraded to ``continue`` (can't park on nothing).
+
+    Accepts both the new ``{"verdict": ...}`` shape and the legacy
+    ``{"done": <bool>}`` shape.
     """
     if not raw:
-        return False, "judge returned empty response", True
+        return "continue", "judge returned empty response", True, None
 
     text = raw.strip()
 
@@ -393,17 +734,103 @@ def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
                 data = None
 
     if not isinstance(data, dict):
-        return False, f"judge reply was not JSON: {_truncate(raw, 200)!r}", True
+        return "continue", f"judge reply was not JSON: {_truncate(raw, 200)!r}", True, None
 
-    done_val = data.get("done")
-    if isinstance(done_val, str):
-        done = done_val.strip().lower() in {"true", "yes", "1", "done"}
+    reason = str(data.get("reason") or "").strip() or "no reason provided"
+
+    # Determine verdict — prefer the explicit "verdict" field, fall back to
+    # the legacy "done" boolean.
+    verdict_raw = data.get("verdict")
+    if isinstance(verdict_raw, str):
+        verdict = verdict_raw.strip().lower()
     else:
-        done = bool(done_val)
-    reason = str(data.get("reason") or "").strip()
-    if not reason:
-        reason = "no reason provided"
-    return done, reason, False
+        done_val = data.get("done")
+        if isinstance(done_val, str):
+            done = done_val.strip().lower() in {"true", "yes", "1", "done"}
+        else:
+            done = bool(done_val)
+        verdict = "done" if done else "continue"
+
+    if verdict not in {"done", "continue", "wait"}:
+        verdict = "continue"
+
+    if verdict != "wait":
+        return verdict, reason, False, None
+
+    # Wait verdict: extract a concrete directive (pid or seconds). Accept a
+    # few key spellings the model might emit.
+    def _first_int(*keys: str) -> Optional[int]:
+        for k in keys:
+            v = data.get(k)
+            if v is None:
+                continue
+            try:
+                iv = int(v)
+                if iv > 0:
+                    return iv
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    # Prefer a session-id directive (releases on the process's own trigger —
+    # exit OR watch-pattern match), then pid (exit only), then seconds.
+    sess = data.get("wait_on_session") or data.get("session_id") or data.get("wait_session")
+    if isinstance(sess, str) and sess.strip():
+        return "wait", reason, False, {"session_id": sess.strip()}
+    pid = _first_int("wait_on_pid", "pid", "wait_pid")
+    if pid is not None:
+        return "wait", reason, False, {"pid": pid}
+    seconds = _first_int("wait_for_seconds", "seconds", "wait_seconds")
+    if seconds is not None:
+        return "wait", reason, False, {"seconds": seconds}
+    # Wait with no usable target — can't park on nothing; treat as continue.
+    return "continue", f"{reason} (wait verdict had no target — continuing)", False, None
+
+
+def _render_background_block(background_processes: Optional[List[Dict[str, Any]]]) -> str:
+    """Render the live background-process list for the judge prompt.
+
+    Each entry is a ``process_registry.list_sessions()`` dict. Only RUNNING
+    processes are worth showing (an exited one is nothing to wait on). Returns
+    an empty string when there's nothing running, so the judge prompt is
+    byte-identical to the no-background case (no behavior change for the
+    common path).
+    """
+    if not background_processes:
+        return ""
+    lines: List[str] = []
+    for p in background_processes:
+        if not isinstance(p, dict):
+            continue
+        if p.get("status") == "exited":
+            continue
+        pid = p.get("pid")
+        if not pid:
+            continue
+        cmd = _truncate(str(p.get("command") or "").replace("\n", " ").strip(), 120)
+        uptime = p.get("uptime_seconds")
+        tail = _truncate(str(p.get("output_preview") or "").replace("\n", " ").strip(), 120)
+        sid = p.get("session_id")
+        line = f"- pid {pid}"
+        if sid:
+            line += f" / session {sid}"
+        line += f": {cmd}"
+        if uptime is not None:
+            line += f" (running {uptime}s)"
+        # Surface the process's own trigger so the judge can wait on a
+        # mid-run signal (watch-pattern) or completion, not just exit.
+        wps = p.get("watch_patterns")
+        if wps:
+            hit = " [already matched]" if p.get("watch_hit") else ""
+            line += f" | watch_patterns={wps}{hit}"
+        elif p.get("notify_on_complete"):
+            line += " | notify_on_complete"
+        if tail:
+            line += f" | recent output: {tail}"
+        lines.append(line)
+    if not lines:
+        return ""
+    return JUDGE_BACKGROUND_BLOCK_TEMPLATE.format(background_lines="\n".join(lines))
 
 
 def judge_goal(
@@ -412,11 +839,15 @@ def judge_goal(
     *,
     timeout: float = DEFAULT_JUDGE_TIMEOUT,
     subgoals: Optional[List[str]] = None,
-) -> Tuple[str, str, bool]:
+    background_processes: Optional[List[Dict[str, Any]]] = None,
+    contract: Optional[GoalContract] = None,
+) -> Tuple[str, str, bool, Optional[Dict[str, Any]]]:
     """Ask the auxiliary model whether the goal is satisfied.
 
-    Returns ``(verdict, reason, parse_failed)`` where verdict is ``"done"``,
-    ``"continue"``, or ``"skipped"`` (when the judge couldn't be reached).
+    Returns ``(verdict, reason, parse_failed, wait_directive)`` where verdict
+    is ``"done"``, ``"continue"``, ``"wait"``, or ``"skipped"`` (when the
+    judge couldn't be reached). ``wait_directive`` is set only for ``"wait"``
+    (``{"pid": int}`` or ``{"seconds": int}``); ``None`` otherwise.
 
     ``parse_failed`` is True only when the judge call succeeded but its output
     was unusable (empty or non-JSON). API/transport errors return False — they
@@ -425,39 +856,66 @@ def judge_goal(
     ``DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES``).
 
     ``subgoals`` is an optional list of user-added criteria (from
-    ``/subgoal``) that the judge must also factor into its DONE/CONTINUE
-    decision. When non-empty the prompt switches to the with-subgoals
-    template; otherwise behavior is identical to the original judge.
+    ``/subgoal``) factored into the verdict. ``background_processes`` is the
+    live ``process_registry.list_sessions()`` snapshot; when the agent is
+    waiting on one (a CI poller, build, etc.) the judge can return a ``wait``
+    verdict naming its pid, parking the loop instead of re-poking.
+    ``contract`` is an optional structured completion contract; when present
+    the judge decides DONE strictly against its Verification criterion and
+    refuses completion when a Constraint was violated. All three are additive
+    — a contract, subgoals, and a background-process list can coexist in one
+    judge prompt; when none are set, behavior is identical to the original
+    free-form judge.
 
-    This is deliberately fail-open: any error returns ``("continue", "...", False)``
+    This is deliberately fail-open: any error returns ``("continue", ..., False, None)``
     so a broken judge doesn't wedge progress — the turn budget and the
     consecutive-parse-failures auto-pause are the backstops.
     """
     if not goal.strip():
-        return "skipped", "empty goal", False
+        return "skipped", "empty goal", False, None
     if not last_response.strip():
         # No substantive reply this turn — almost certainly not done yet.
-        return "continue", "empty response (nothing to evaluate)", False
+        return "continue", "empty response (nothing to evaluate)", False, None
 
     try:
         from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
     except Exception as exc:
         logger.debug("goal judge: auxiliary client import failed: %s", exc)
-        return "continue", "auxiliary client unavailable", False
+        return "continue", "auxiliary client unavailable", False, None
 
     try:
         client, model = get_text_auxiliary_client("goal_judge")
     except Exception as exc:
         logger.debug("goal judge: get_text_auxiliary_client failed: %s", exc)
-        return "continue", "auxiliary client unavailable", False
+        return "continue", "auxiliary client unavailable", False, None
 
     if client is None or not model:
-        return "continue", "no auxiliary client configured", False
+        return "continue", "no auxiliary client configured", False, None
 
-    # Build the prompt — pick the with-subgoals variant when applicable.
+    # Build the prompt. Priority: contract > subgoals > plain. When both a
+    # contract and subgoals exist, the subgoals are appended into the
+    # contract block as extra criteria so the judge sees a single source of
+    # truth.
     clean_subgoals = [s.strip() for s in (subgoals or []) if s and s.strip()]
+    background_block = _render_background_block(background_processes)
     current_time = datetime.now(tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
-    if clean_subgoals:
+
+    if contract is not None and not contract.is_empty():
+        contract_block = contract.render_block()
+        if clean_subgoals:
+            extra = "\n".join(
+                f"- Extra criterion {i}: {text}"
+                for i, text in enumerate(clean_subgoals, start=1)
+            )
+            contract_block = f"{contract_block}\n{extra}"
+        prompt = JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE.format(
+            goal=_truncate(goal, 2000),
+            contract_block=_truncate(contract_block, 2500),
+            response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            background_block=background_block,
+            current_time=current_time,
+        )
+    elif clean_subgoals:
         subgoals_block = "\n".join(
             f"- {i}. {text}" for i, text in enumerate(clean_subgoals, start=1)
         )
@@ -465,12 +923,14 @@ def judge_goal(
             goal=_truncate(goal, 2000),
             subgoals_block=_truncate(subgoals_block, 2000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            background_block=background_block,
             current_time=current_time,
         )
     else:
         prompt = JUDGE_USER_PROMPT_TEMPLATE.format(
             goal=_truncate(goal, 2000),
             response=_truncate(last_response, _JUDGE_RESPONSE_SNIPPET_CHARS),
+            background_block=background_block,
             current_time=current_time,
         )
 
@@ -488,17 +948,125 @@ def judge_goal(
         )
     except Exception as exc:
         logger.info("goal judge: API call failed (%s) — falling through to continue", exc)
-        return "continue", f"judge error: {type(exc).__name__}", False
+        return "continue", f"judge error: {type(exc).__name__}", False, None
 
     try:
         raw = resp.choices[0].message.content or ""
     except Exception:
         raw = ""
 
-    done, reason, parse_failed = _parse_judge_response(raw)
-    verdict = "done" if done else "continue"
-    logger.info("goal judge: verdict=%s reason=%s", verdict, _truncate(reason, 120))
-    return verdict, reason, parse_failed
+    verdict, reason, parse_failed, wait_directive = _parse_judge_response(raw)
+    logger.info(
+        "goal judge: verdict=%s reason=%s%s",
+        verdict, _truncate(reason, 120),
+        f" wait={wait_directive}" if wait_directive else "",
+    )
+    return verdict, reason, parse_failed, wait_directive
+
+
+def gather_background_processes(task_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Return the live background-process snapshot for the goal judge.
+
+    Thin, fail-safe wrapper over ``process_registry.list_sessions(task_id)``.
+    Returns only RUNNING processes (an exited one is nothing to wait on) and
+    never raises — any import/registry failure yields ``[]`` so the goal loop
+    degrades to its pre-wait-barrier behavior (judge just won't see processes).
+    The drivers (CLI + gateway) call this and pass the result into
+    ``GoalManager.evaluate_after_turn(background_processes=...)``.
+    """
+    try:
+        from tools.process_registry import process_registry
+
+        sessions = process_registry.list_sessions(task_id=task_id) or []
+    except Exception as exc:
+        logger.debug("gather_background_processes failed: %s", exc)
+        return []
+    return [s for s in sessions if isinstance(s, dict) and s.get("status") != "exited"]
+
+
+def draft_contract(objective: str, *, timeout: float = DEFAULT_JUDGE_TIMEOUT) -> Optional[GoalContract]:
+    """Expand a plain-language objective into a structured completion contract.
+
+    Uses the ``goal_judge`` auxiliary task (main-model-first, cache-safe — it
+    is a side LLM call, not a conversation turn). Returns a populated
+    :class:`GoalContract` on success, or ``None`` when the auxiliary client is
+    unavailable or the model's reply can't be parsed. Callers fall back to a
+    bare free-form goal in that case, so a missing/weak aux model never blocks
+    setting a goal.
+    """
+    objective = (objective or "").strip()
+    if not objective:
+        return None
+
+    try:
+        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
+    except Exception as exc:
+        logger.debug("goal draft: auxiliary client import failed: %s", exc)
+        return None
+
+    try:
+        client, model = get_text_auxiliary_client("goal_judge")
+    except Exception as exc:
+        logger.debug("goal draft: get_text_auxiliary_client failed: %s", exc)
+        return None
+
+    if client is None or not model:
+        return None
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": DRAFT_CONTRACT_SYSTEM_PROMPT},
+                {"role": "user", "content": f"Objective:\n{_truncate(objective, 4000)}"},
+            ],
+            temperature=0,
+            max_tokens=_goal_judge_max_tokens(),
+            timeout=timeout,
+            extra_body=get_auxiliary_extra_body() or None,
+        )
+    except Exception as exc:
+        logger.info("goal draft: API call failed (%s)", exc)
+        return None
+
+    try:
+        raw = resp.choices[0].message.content or ""
+    except Exception:
+        raw = ""
+
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict):
+        logger.debug("goal draft: reply was not JSON: %r", _truncate(raw, 200))
+        return None
+    contract = GoalContract.from_dict(data)
+    return None if contract.is_empty() else contract
+
+
+def _extract_json_object(raw: str) -> Optional[Dict[str, Any]]:
+    """Best-effort: pull the first JSON object out of a model reply.
+
+    Shares the fence-stripping + first-object fallback logic used by the
+    judge parser, but returns the dict (or None) rather than a verdict.
+    """
+    if not raw:
+        return None
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        nl = text.find("\n")
+        if nl != -1:
+            text = text[nl + 1:]
+    try:
+        data = json.loads(text)
+    except Exception:
+        match = _JSON_OBJECT_RE.search(text)
+        if not match:
+            return None
+        try:
+            data = json.loads(match.group(0))
+        except Exception:
+            return None
+    return data if isinstance(data, dict) else None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -540,24 +1108,39 @@ class GoalManager:
     def has_goal(self) -> bool:
         return self._state is not None and self._state.status in {"active", "paused"}
 
+    def has_contract(self) -> bool:
+        return self._state is not None and self._state.has_contract()
+
     def status_line(self) -> str:
         s = self._state
         if s is None or s.status in {"cleared",}:
             return "No active goal. Set one with /goal <text>."
         turns = f"{s.turns_used}/{s.max_turns} turns"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
+        con = ", contract" if self.has_contract() else ""
+        meta = f"{turns}{sub}{con}"
         if s.status == "active":
-            return f"⊙ Goal (active, {turns}{sub}): {s.goal}"
+            if s.waiting_on_session and _session_waiting(s.waiting_on_session):
+                wr = s.waiting_reason or f"session {s.waiting_on_session}"
+                return f"⏳ Goal (parked on {wr}, {meta}): {s.goal}"
+            if s.waiting_on_pid and _pid_alive(s.waiting_on_pid):
+                wr = s.waiting_reason or f"pid {s.waiting_on_pid}"
+                return f"⏳ Goal (parked on {wr}, {meta}): {s.goal}"
+            if s.waiting_until and time.time() < s.waiting_until:
+                remaining = int(s.waiting_until - time.time())
+                wr = s.waiting_reason or f"{remaining}s"
+                return f"⏳ Goal (parked {remaining}s — {wr}, {meta}): {s.goal}"
+            return f"⊙ Goal (active, {meta}): {s.goal}"
         if s.status == "paused":
             extra = f" — {s.paused_reason}" if s.paused_reason else ""
-            return f"⏸ Goal (paused, {turns}{sub}{extra}): {s.goal}"
+            return f"⏸ Goal (paused, {meta}{extra}): {s.goal}"
         if s.status == "done":
-            return f"✓ Goal done ({turns}{sub}): {s.goal}"
-        return f"Goal ({s.status}, {turns}{sub}): {s.goal}"
+            return f"✓ Goal done ({meta}): {s.goal}"
+        return f"Goal ({s.status}, {meta}): {s.goal}"
 
     # --- mutation -----------------------------------------------------
 
-    def set(self, goal: str, *, max_turns: Optional[int] = None) -> GoalState:
+    def set(self, goal: str, *, max_turns: Optional[int] = None, contract: Optional[GoalContract] = None) -> GoalState:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
@@ -568,16 +1151,34 @@ class GoalManager:
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
             created_at=time.time(),
             last_turn_at=0.0,
+            contract=contract if contract is not None else GoalContract(),
         )
         self._state = state
         save_goal(self.session_id, state)
         return state
+
+    def set_contract(self, contract: GoalContract) -> Optional[GoalState]:
+        """Attach or replace the completion contract on the active goal.
+
+        Returns the updated state, or None when there is no goal to attach to.
+        """
+        if self._state is None:
+            return None
+        self._state.contract = contract or GoalContract()
+        save_goal(self.session_id, self._state)
+        return self._state
 
     def pause(self, reason: str = "user-paused") -> Optional[GoalState]:
         if not self._state:
             return None
         self._state.status = "paused"
         self._state.paused_reason = reason
+        # A wait barrier is meaningless once paused — drop it.
+        self._state.waiting_on_pid = None
+        self._state.waiting_on_session = None
+        self._state.waiting_until = 0.0
+        self._state.waiting_reason = None
+        self._state.waiting_since = 0.0
         save_goal(self.session_id, self._state)
         return self._state
 
@@ -586,6 +1187,12 @@ class GoalManager:
             return None
         self._state.status = "active"
         self._state.paused_reason = None
+        # Resuming starts fresh — clear any stale barrier.
+        self._state.waiting_on_pid = None
+        self._state.waiting_on_session = None
+        self._state.waiting_until = 0.0
+        self._state.waiting_reason = None
+        self._state.waiting_since = 0.0
         if reset_budget:
             self._state.turns_used = 0
         save_goal(self.session_id, self._state)
@@ -653,6 +1260,123 @@ class GoalManager:
             return "(no subgoals — use /subgoal <text> to add criteria)"
         return self._state.render_subgoals_block()
 
+    # --- /goal wait barrier -------------------------------------------
+
+    def wait_on(self, pid: int, reason: str = "") -> GoalState:
+        """Park the goal loop on a background process PID.
+
+        While the PID is alive, ``evaluate_after_turn`` returns
+        ``should_continue=False`` without burning a turn or calling the
+        judge — the loop quiesces instead of re-poking the agent into busy
+        work. The barrier auto-clears when the process exits. Requires an
+        active goal. For a process with a watch_patterns/notify_on_complete
+        trigger, prefer ``wait_on_session`` so a mid-run trigger (not just
+        exit) releases the barrier.
+        """
+        if self._state is None or self._state.status != "active":
+            raise RuntimeError("no active goal to park")
+        pid = int(pid)
+        if pid <= 0:
+            raise ValueError("pid must be a positive integer")
+        self._state.waiting_on_pid = pid
+        self._state.waiting_on_session = None
+        self._state.waiting_until = 0.0
+        self._state.waiting_reason = (reason or "").strip() or None
+        self._state.waiting_since = time.time()
+        save_goal(self.session_id, self._state)
+        return self._state
+
+    def wait_on_session(self, session_id: str, reason: str = "") -> GoalState:
+        """Park the goal loop on a process_registry session's OWN trigger.
+
+        Unlike ``wait_on`` (which releases only on PID exit), this releases
+        when the session's trigger fires: it exits, OR — if it was started
+        with ``watch_patterns`` — its pattern matches. This is the right
+        barrier for a long-lived watcher/server/poller that signals mid-run
+        and may never exit. Requires an active goal.
+        """
+        if self._state is None or self._state.status != "active":
+            raise RuntimeError("no active goal to park")
+        session_id = str(session_id or "").strip()
+        if not session_id:
+            raise ValueError("session_id must be a non-empty string")
+        self._state.waiting_on_session = session_id
+        self._state.waiting_on_pid = None
+        self._state.waiting_until = 0.0
+        self._state.waiting_reason = (reason or "").strip() or None
+        self._state.waiting_since = time.time()
+        save_goal(self.session_id, self._state)
+        return self._state
+
+    def wait_for_seconds(self, seconds: int, reason: str = "") -> GoalState:
+        """Park the goal loop until ``seconds`` from now have elapsed.
+
+        Time-based counterpart to ``wait_on`` — for backoff / cooldown waits
+        where there's no process to track (e.g. the agent is rate-limited).
+        The barrier auto-clears once the deadline passes. Requires an active
+        goal.
+        """
+        if self._state is None or self._state.status != "active":
+            raise RuntimeError("no active goal to park")
+        seconds = int(seconds)
+        if seconds <= 0:
+            raise ValueError("seconds must be a positive integer")
+        self._state.waiting_on_pid = None
+        self._state.waiting_on_session = None
+        self._state.waiting_until = time.time() + seconds
+        self._state.waiting_reason = (reason or "").strip() or None
+        self._state.waiting_since = time.time()
+        save_goal(self.session_id, self._state)
+        return self._state
+
+    def stop_waiting(self) -> bool:
+        """Clear any active wait barrier (pid / session / time). Returns True
+        if one was cleared."""
+        if self._state is None:
+            return False
+        if (
+            self._state.waiting_on_pid is None
+            and self._state.waiting_on_session is None
+            and not self._state.waiting_until
+        ):
+            return False
+        self._state.waiting_on_pid = None
+        self._state.waiting_on_session = None
+        self._state.waiting_until = 0.0
+        self._state.waiting_reason = None
+        self._state.waiting_since = 0.0
+        save_goal(self.session_id, self._state)
+        return True
+
+    def is_waiting(self) -> bool:
+        """True iff a barrier is set AND not yet satisfied.
+
+        Session barrier: active until the process exits or its watch-pattern
+        trigger fires. Pid barrier: active while the process is alive. Time
+        barrier: active until the deadline passes. Side effect: a satisfied
+        barrier is cleared here (lazy auto-clear) so the next evaluation
+        resumes normal judging.
+        """
+        s = self._state
+        if s is None:
+            return False
+        if s.waiting_on_session is not None:
+            if _session_waiting(s.waiting_on_session):
+                return True
+            self.stop_waiting()  # session exited or trigger fired
+            return False
+        if s.waiting_on_pid is not None:
+            if _pid_alive(s.waiting_on_pid):
+                return True
+            self.stop_waiting()  # process gone
+            return False
+        if s.waiting_until:
+            if time.time() < s.waiting_until:
+                return True
+            self.stop_waiting()  # deadline passed
+            return False
+        return False
+
     # --- the main entry point called after every turn -----------------
 
     def evaluate_after_turn(
@@ -660,6 +1384,7 @@ class GoalManager:
         last_response: str,
         *,
         user_initiated: bool = True,
+        background_processes: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Run the judge and update state. Return a decision dict.
 
@@ -667,11 +1392,16 @@ class GoalManager:
         continuation prompt we fed ourselves (False). Both increment
         ``turns_used`` because both consume model budget.
 
+        ``background_processes`` is the live ``process_registry.list_sessions()``
+        snapshot for this session. It's handed to the judge so it can decide
+        to WAIT on an in-flight process (CI poller, build, ...) instead of
+        re-poking the agent — the automatic counterpart to ``/goal wait``.
+
         Decision keys:
           - ``status``: current goal status after update
           - ``should_continue``: bool — caller should fire another turn
           - ``continuation_prompt``: str or None
-          - ``verdict``: "done" | "continue" | "skipped" | "inactive"
+          - ``verdict``: "done" | "continue" | "wait" | "skipped" | "inactive"
           - ``reason``: str
           - ``message``: user-visible one-liner to print/send
         """
@@ -686,12 +1416,37 @@ class GoalManager:
                 "message": "",
             }
 
+        # Wait barrier: if the loop is parked (on a live process OR a time
+        # deadline that hasn't passed), quiesce — do NOT burn a turn or call
+        # the judge. Resumes automatically once the barrier clears.
+        if self.is_waiting():
+            if state.waiting_on_session is not None:
+                tgt = f"session {state.waiting_on_session}"
+            elif state.waiting_on_pid is not None:
+                tgt = f"pid {state.waiting_on_pid}"
+            else:
+                remaining = max(0, int(state.waiting_until - time.time()))
+                tgt = f"{remaining}s remaining"
+            reason = state.waiting_reason or tgt
+            return {
+                "status": "active",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "waiting",
+                "reason": reason,
+                "message": f"⏳ Goal parked — waiting on {tgt}: {reason}",
+            }
+
         # Count the turn that just finished.
         state.turns_used += 1
         state.last_turn_at = time.time()
 
-        verdict, reason, parse_failed = judge_goal(
-            state.goal, last_response, subgoals=state.subgoals or None
+        verdict, reason, parse_failed, wait_directive = judge_goal(
+            state.goal,
+            last_response,
+            subgoals=state.subgoals or None,
+            background_processes=background_processes,
+            contract=state.contract if state.has_contract() else None,
         )
         state.last_verdict = verdict
         state.last_reason = reason
@@ -703,6 +1458,31 @@ class GoalManager:
             state.consecutive_parse_failures += 1
         else:
             state.consecutive_parse_failures = 0
+
+        # WAIT verdict: the judge decided the agent is blocked on async work
+        # and re-poking now would be busy-work. Set the barrier and park —
+        # the turn we just counted stands (the judge call happened), but no
+        # continuation fires. The loop resumes automatically when the pid
+        # exits or the deadline passes (next evaluate_after_turn falls through
+        # the is_waiting() short-circuit once the barrier clears).
+        if verdict == "wait" and wait_directive:
+            if wait_directive.get("session_id"):
+                self.wait_on_session(str(wait_directive["session_id"]), reason=reason)
+                tgt = f"session {wait_directive['session_id']}"
+            elif wait_directive.get("pid"):
+                self.wait_on(int(wait_directive["pid"]), reason=reason)
+                tgt = f"pid {wait_directive['pid']}"
+            else:
+                self.wait_for_seconds(int(wait_directive["seconds"]), reason=reason)
+                tgt = f"{wait_directive['seconds']}s"
+            return {
+                "status": "active",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "wait",
+                "reason": reason,
+                "message": f"⏳ Goal parked (judge) — waiting on {tgt}: {reason}",
+            }
 
         if verdict == "done":
             state.status = "done"
@@ -777,12 +1557,35 @@ class GoalManager:
     def next_continuation_prompt(self) -> Optional[str]:
         if not self._state or self._state.status != "active":
             return None
+        # Contract takes priority: it carries the verification surface and
+        # constraints the agent must target. Subgoals fold in as extra
+        # criteria appended to the contract block.
+        if self._state.has_contract():
+            contract_block = self._state.contract.render_block()
+            if self._state.subgoals:
+                extra = "\n".join(
+                    f"- Extra criterion {i}: {text}"
+                    for i, text in enumerate(self._state.subgoals, start=1)
+                )
+                contract_block = f"{contract_block}\n{extra}"
+            return CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE.format(
+                goal=self._state.goal,
+                contract_block=contract_block,
+            )
         if self._state.subgoals:
             return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
                 goal=self._state.goal,
                 subgoals_block=self._state.render_subgoals_block(),
             )
         return CONTINUATION_PROMPT_TEMPLATE.format(goal=self._state.goal)
+
+    def render_contract(self) -> str:
+        """Public helper for the /goal show + /goal draft slash commands."""
+        if self._state is None:
+            return "(no active goal)"
+        if not self._state.has_contract():
+            return "(no completion contract — set one with /goal draft <objective> or inline field: value lines)"
+        return self._state.contract.render_block()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -889,7 +1692,12 @@ def run_kanban_goal_loop(
             return {"outcome": "stopped", "turns_used": turns_used, "reason": f"status={status}"}
 
         # Still open — judge whether the latest response satisfies the card.
-        verdict, reason, _parse_failed = judge_goal(goal_text, last_response)
+        # The kanban worker loop has no wait-barrier concept (workers finish
+        # via kanban_complete / kanban_block, not by parking), so a WAIT
+        # verdict is treated as CONTINUE here.
+        verdict, reason, _parse_failed, _wait = judge_goal(goal_text, last_response)
+        if verdict == "wait":
+            verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
 
         if verdict == "done":
@@ -934,11 +1742,17 @@ def run_kanban_goal_loop(
 
 __all__ = [
     "GoalState",
+    "GoalContract",
     "GoalManager",
+    "parse_contract",
+    "draft_contract",
     "CONTINUATION_PROMPT_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "CONTINUATION_PROMPT_WITH_CONTRACT_TEMPLATE",
     "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "JUDGE_USER_PROMPT_WITH_CONTRACT_TEMPLATE",
+    "DRAFT_CONTRACT_SYSTEM_PROMPT",
     "KANBAN_GOAL_CONTINUATION_TEMPLATE",
     "KANBAN_GOAL_FINALIZE_TEMPLATE",
     "DEFAULT_MAX_TURNS",

@@ -1885,6 +1885,7 @@ export const zh: Translations = {
     opening: '正在打开...',
     hide: '隐藏',
     openPreview: '打开预览',
+    openInBrowser: '在浏览器中打开',
     sourceLineTitle: '点击选择 · shift 点击扩展 · 拖到输入框',
     source: '源码',
     renderedPreview: '预览',

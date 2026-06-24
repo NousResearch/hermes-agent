@@ -177,6 +177,7 @@ _LONG_HANDLERS = frozenset(
         "billing.step_up",
         "browser.manage",
         "cli.exec",
+        "llm.oneshot",
         # Pet RPCs hit the network (manifest fetch / spritesheet download) or do
         # per-frame PNG decode/encode (pet.cells): inline they serialize on the
         # reader thread, so picker previews trickle in one at a time and the
@@ -386,6 +387,59 @@ def _release_active_session_slot(session: dict | None) -> None:
         lease.release()
     except Exception:
         logger.debug("Failed to release active session slot", exc_info=True)
+
+
+def _transfer_active_session_slot(
+    sid: str,
+    session: dict,
+    *,
+    new_session_id: str,
+) -> bool:
+    if not new_session_id:
+        return False
+    lease = session.get("active_session_lease")
+    if lease is None:
+        return True
+    try:
+        from hermes_cli.active_sessions import transfer_active_session
+
+        if transfer_active_session(
+            lease,
+            session_id=new_session_id,
+            metadata={"live_session_id": sid},
+        ):
+            return True
+    except Exception:
+        logger.debug("Failed to transfer active session slot", exc_info=True)
+
+    # Fallback: the in-place transfer could not move the lease (entry pruned /
+    # pid-check transiently failed). Reserve the new slot BEFORE releasing the
+    # old one, so a concurrent gateway at the session cap cannot grab the freed
+    # slot in a release-then-reacquire window and leave this session with no
+    # lease at all (#49041 review). If the reserve fails, KEEP the old lease.
+    new_lease, limit_message = _claim_active_session_slot(
+        new_session_id,
+        live_session_id=sid,
+    )
+    if new_lease is not None:
+        old_lease = session.pop("active_session_lease", None)
+        if old_lease is not None:
+            try:
+                old_lease.release()
+            except Exception:
+                logger.debug("Failed to release stale active session slot", exc_info=True)
+        session["active_session_lease"] = new_lease
+        return True
+    # Reserve failed — retain the existing lease rather than dropping it.
+    if limit_message:
+        logger.warning(
+            "Compression session lease re-anchor failed (kept old lease): "
+            "sid=%s new_session_id=%s reason=%s",
+            sid,
+            new_session_id,
+            limit_message,
+        )
+    return False
 
 
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
@@ -837,6 +891,21 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
 
 
+def _emit_approval_request(sid: str, data: dict | None) -> None:
+    """Emit an ``approval.request`` event to the TUI client with the command
+    redacted. The approval payload is built from the RAW command string, so a
+    credential-shaped value Tirith flagged would otherwise be echoed verbatim
+    to the TUI client (#48456 — third egress transport alongside the chat
+    platforms and the SSE/API stream fixed in #50767). Reuse the shared gateway
+    seam so all approval transports redact consistently."""
+    payload = dict(data or {})
+    if "command" in payload:
+        from gateway.run import _redact_approval_command
+
+        payload["command"] = _redact_approval_command(payload.get("command"))
+    _emit("approval.request", sid, payload)
+
+
 def _status_update(sid: str, kind: str, text: str | None = None):
     body = (text if text is not None else kind).strip()
     if not body:
@@ -1071,7 +1140,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 )
 
                 register_gateway_notify(
-                    key, lambda data: _emit("approval.request", sid, data)
+                    key, lambda data: _emit_approval_request(sid, data)
                 )
                 notify_registered = True
                 load_permanent_allowlist()
@@ -2558,6 +2627,19 @@ def _sync_session_key_after_compress(
     if not new_session_id or new_session_id == old_key:
         return
 
+    lease_reanchored = _transfer_active_session_slot(
+        sid,
+        session,
+        new_session_id=new_session_id,
+    )
+    if not lease_reanchored:
+        logger.warning(
+            "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
+            sid,
+            old_key,
+            new_session_id,
+        )
+
     try:
         from tools.approval import (
             disable_session_yolo,
@@ -2585,7 +2667,7 @@ def _sync_session_key_after_compress(
         try:
             register_gateway_notify(
                 new_session_id,
-                lambda data: _emit("approval.request", sid, data),
+                lambda data: _emit_approval_request(sid, data),
             )
         except Exception:
             pass
@@ -2627,6 +2709,14 @@ def _get_usage(agent) -> dict:
             usage["context_max"] = ctx_max
             usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
+    # Live count of background/async subagents still running (delegate_task
+    # batches + background single delegations). Mirrors the classic CLI status
+    # bar's ⛓ indicator; sourced from the same async_delegation registry.
+    try:
+        from tools.async_delegation import active_count as _async_active_count
+        usage["active_subagents"] = _async_active_count()
+    except Exception:
+        pass
     try:
         from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
 
@@ -3947,7 +4037,7 @@ def _init_session(
     try:
         from tools.approval import register_gateway_notify, load_permanent_allowlist
 
-        register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+        register_gateway_notify(key, lambda data: _emit_approval_request(sid, data))
         load_permanent_allowlist()
     except Exception:
         pass
@@ -4549,6 +4639,24 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"session_id": None})
 
 
+@method("project.facts")
+def _(rid, params: dict) -> dict:
+    """Structured project facts for a cwd — manifests, package manager, the
+    exact verify commands, and context files.
+
+    The same detection the coding-context posture (#43316) bakes into the system
+    prompt, exposed so UIs (the desktop verify surface) consume it instead of
+    re-sniffing. ``{"facts": null}`` means the cwd isn't a code workspace.
+    """
+    try:
+        from agent.coding_context import project_facts_for
+
+        return _ok(rid, {"facts": project_facts_for(params.get("cwd"))})
+    except Exception:
+        logger.exception("project.facts failed")
+        return _ok(rid, {"facts": None})
+
+
 @method("session.resume")
 def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
@@ -4929,7 +5037,7 @@ def _session_live_title(session: dict, key: str) -> str:
 
 
 def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
-    key = str(session.get("session_key") or sid)
+    key = _session_lookup_key(session, fallback=sid)
     agent = session.get("agent")
     history = list(session.get("history") or [])
     status = _session_live_status(sid, session)
@@ -4953,11 +5061,21 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     }
 
 
+def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
+    agent = session.get("agent")
+    return str(
+        getattr(agent, "session_id", None)
+        or session.get("session_key")
+        or fallback
+        or ""
+    )
+
+
 def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
     for sid, session in list(_sessions.items()):
         if session.get("_finalized"):
             continue
-        if str(session.get("session_key") or "") == session_key:
+        if _session_lookup_key(session, fallback=sid) == session_key:
             return sid, session
     return None
 
@@ -5001,7 +5119,7 @@ def _live_session_payload(
         "messages": _history_to_messages(history),
         "running": running,
         "session_id": sid,
-        "session_key": session.get("session_key") or sid,
+        "session_key": _session_lookup_key(session, fallback=sid),
         "started_at": float(session.get("created_at") or time.time()),
         "status": _session_live_status(sid, session),
     }
@@ -5196,6 +5314,84 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4022, str(e))
     except Exception as e:
         return _err(rid, 5007, str(e))
+
+
+def _main_runtime_from_agent(agent) -> dict | None:
+    """Build an aux-client main_runtime override from a live agent.
+
+    Lets a one-shot inherit the session's provider/model/credentials so its
+    output matches the model the user is actually coding with, instead of
+    falling back to the cheapest auto-detected backend.
+    """
+    if agent is None:
+        return None
+    runtime: dict = {}
+    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode"):
+        value = getattr(agent, field, None)
+        if isinstance(value, str) and value.strip():
+            runtime[field] = value.strip()
+        elif field == "api_key" and callable(value):
+            runtime[field] = value
+    return runtime or None
+
+
+@method("llm.oneshot")
+def _(rid, params: dict) -> dict:
+    """Run a single stateless LLM request outside any conversation.
+
+    Generic helper for small generative chores (e.g. a commit message from a
+    diff). Accepts either a named ``template`` + ``variables`` or an explicit
+    ``instructions`` / ``input`` pair. When ``session_id`` resolves to a live
+    session the call inherits that agent's model; otherwise it uses the
+    configured auxiliary ``task`` backend. Never mutates session history, so
+    prompt caching is untouched.
+    """
+    template = (params.get("template") or "").strip() or None
+    instructions = params.get("instructions") or ""
+    user_input = params.get("input") or ""
+    variables = params.get("variables") if isinstance(params.get("variables"), dict) else {}
+    task = (params.get("task") or "title_generation").strip() or "title_generation"
+
+    try:
+        max_tokens = int(params.get("max_tokens") or 1024)
+    except (TypeError, ValueError):
+        max_tokens = 1024
+    temperature = params.get("temperature")
+    if temperature is not None:
+        try:
+            temperature = float(temperature)
+        except (TypeError, ValueError):
+            temperature = None
+
+    if not template and not str(instructions).strip() and not str(user_input).strip():
+        return _err(rid, 4030, "llm.oneshot requires a template or instructions/input")
+
+    # Optional: inherit the live session's model (no error if absent).
+    session = _sessions.get(params.get("session_id") or "")
+    main_runtime = _main_runtime_from_agent(session.get("agent")) if session else None
+
+    try:
+        from agent.oneshot import run_oneshot
+
+        text = run_oneshot(
+            instructions=instructions,
+            user_input=user_input,
+            template=template,
+            variables=variables,
+            task=task,
+            max_tokens=max_tokens,
+            temperature=temperature if temperature is not None else 0.3,
+            main_runtime=main_runtime,
+        )
+    except KeyError as e:
+        return _err(rid, 4031, str(e))
+    except ValueError as e:
+        return _err(rid, 4032, str(e))
+    except Exception as e:
+        logger.warning("llm.oneshot failed: %s", e)
+        return _err(rid, 5030, f"one-shot generation failed: {e}")
+
+    return _ok(rid, {"text": text})
 
 
 @method("handoff.request")
@@ -7140,9 +7336,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             default_max_turns=goal_max_turns,
                         )
                         if goal_mgr.is_active():
+                            try:
+                                from hermes_cli.goals import gather_background_processes as _gather_bg
+                                _bg_procs = _gather_bg()
+                            except Exception:
+                                _bg_procs = None
                             decision = goal_mgr.evaluate_after_turn(
                                 raw,
                                 user_initiated=True,
+                                background_processes=_bg_procs,
                             )
                             verdict_msg = decision.get("message") or ""
                             if verdict_msg:
@@ -9348,6 +9550,15 @@ def _(rid, params: dict) -> dict:
         if not arg:
             return _err(rid, 4004, "usage: /queue <prompt>")
         return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "learn":
+        # Open-ended: build the standards-guided prompt and submit it as a
+        # normal agent turn. The live agent gathers whatever the user
+        # described (dirs, URLs, this conversation, pasted text) with its own
+        # tools and authors the skill via skill_manage. Works on any backend.
+        from agent.learn_prompt import build_learn_prompt
+
+        return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
 
     if name == "retry":
         if not session:

@@ -53,6 +53,8 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
+    # Local project/company memory search (gated on gbrain CLI availability)
+    "gbrain_search", "gbrain_get",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -220,6 +222,12 @@ TOOLSETS = {
     "session_search": {
         "description": "Search and recall past conversations with summarization",
         "tools": ["session_search"],
+        "includes": []
+    },
+
+    "gbrain": {
+        "description": "Read-only local GBrain search for project/company memory context",
+        "tools": ["gbrain_search", "gbrain_get"],
         "includes": []
     },
     

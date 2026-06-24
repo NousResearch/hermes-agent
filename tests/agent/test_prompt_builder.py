@@ -1136,6 +1136,22 @@ class TestEnvironmentHints:
         assert "bash" in result
         assert "PowerShell" in result
 
+    def test_build_environment_hints_reports_windows_11_by_build(self, monkeypatch):
+        import agent.prompt_builder as _pb
+        import sys, platform
+        monkeypatch.setattr(_pb, "is_wsl", lambda: False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(platform, "release", lambda: "10")
+        monkeypatch.setattr(platform, "version", lambda: "10.0.26200")
+        monkeypatch.setattr(platform, "platform", lambda: "Windows-10-10.0.26200-SP0")
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        _pb._clear_backend_probe_cache()
+
+        result = _pb.build_environment_hints()
+
+        assert "Host: Windows (11)" in result
+        assert "Host: Windows (10)" not in result
+
     def test_build_environment_hints_on_macos_local(self, monkeypatch):
         import agent.prompt_builder as _pb
         import sys

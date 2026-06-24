@@ -7,6 +7,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
+import re
 import threading
 import contextvars
 from collections import OrderedDict
@@ -884,6 +885,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 # disk) because the probe captures live backend state that may change
 # across Hermes restarts.
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
+_WINDOWS_11_MIN_BUILD = 22000
 
 
 _WINDOWS_BASH_SHELL_HINT = (
@@ -895,6 +897,22 @@ _WINDOWS_BASH_SHELL_HINT = (
     "(`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their "
     "POSIX equivalents (`ls`, `$FOO`, `grep`)."
 )
+
+
+def _windows_release_label(release: str, version: str, platform_label: str) -> str:
+    """Return the user-facing Windows release, correcting Windows 11 builds."""
+    if release != "10":
+        return release
+    for value in (version or "", platform_label or ""):
+        match = re.search(r"(?:^|[^\d])10\.0\.(\d{5,})(?:[^\d]|$)", value)
+        if not match:
+            continue
+        try:
+            if int(match.group(1)) >= _WINDOWS_11_MIN_BUILD:
+                return "11"
+        except ValueError:
+            continue
+    return release
 
 
 def _probe_remote_backend(env_type: str) -> str | None:
@@ -1008,7 +1026,10 @@ def build_environment_hints() -> str:
         if is_wsl():
             host_lines.append("Host: WSL (Windows Subsystem for Linux)")
         elif sys.platform == "win32":
-            host_lines.append(f"Host: Windows ({platform.release()})")
+            host_lines.append(
+                "Host: Windows "
+                f"({_windows_release_label(platform.release(), platform.version(), platform.platform())})"
+            )
         elif sys.platform == "darwin":
             mac_ver = platform.mac_ver()[0]
             host_lines.append(f"Host: macOS ({mac_ver or platform.release()})")

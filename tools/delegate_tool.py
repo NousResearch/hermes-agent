@@ -98,17 +98,80 @@ def _subagent_auto_approve(command: str, description: str, **kwargs) -> str:
     return "once"
 
 
+def _is_sandbox_environment() -> bool:
+    """Return True when running in a non-production sandbox environment.
+
+    Why: subagent_auto_approve=true is only safe in a dev/test sandbox where
+    no real-user Telegram bot is exposed and destructive side effects are
+    acceptable.  A config flag alone is not a sufficient control because a
+    mis-copied config.yaml or an accidental merge could enable it in prod.
+
+    Mechanical guard: the production stable install is pinned to
+    HERMES_HOME=/opt/hermes/home (set by hermes-gateway.service).  The dev
+    sandbox explicitly sets HERMES_HOME=/opt/hermes/dev/.hermes-home via the
+    hermesdev wrapper.  We also honour HERMES_SANDBOX=1 for CI environments
+    that don't use the /opt/hermes layout.
+
+    What: returns True only when HERMES_HOME contains "dev" in its path OR
+    HERMES_SANDBOX env var is set to a truthy value.  Any path that matches
+    /opt/hermes/home (the exact production mount) returns False regardless of
+    the HERMES_SANDBOX flag if it is missing.
+
+    Test: set HERMES_HOME=/opt/hermes/dev/.hermes-home → True;
+    HERMES_HOME=/opt/hermes/home → False;
+    HERMES_SANDBOX=1 with any HERMES_HOME → True.
+    """
+    # Explicit CI/testing override (highest priority).
+    if is_truthy_value(os.getenv("HERMES_SANDBOX", ""), default=False):
+        return True
+    # Structural check: production path must not contain "dev" component.
+    hermes_home = os.getenv("HERMES_HOME", "").strip()
+    if not hermes_home:
+        return False  # unset → assume production default
+    # Normalise to resolve symlinks / double-slashes before comparing.
+    try:
+        import pathlib
+        resolved = str(pathlib.Path(hermes_home).resolve())
+    except Exception:
+        resolved = hermes_home
+    # "/opt/hermes/dev/" distinguishes the dev sandbox from the stable mount
+    # ("/opt/hermes/home") and the user default ("~/.hermes").
+    if "dev" in resolved.split("/"):
+        return True
+    return False
+
+
 def _get_subagent_approval_callback():
     """Return the callback to install into subagent worker threads.
 
     Config key: delegation.subagent_auto_approve (bool, default False).
     Reads via the same _load_config() path as the rest of delegate_task so
     priority is config.yaml > (no env override for this knob) > default.
+
+    SECURITY: subagent_auto_approve=true is only honoured when the process
+    is running in a sandbox environment (_is_sandbox_environment() returns
+    True). In the production stable install this config key is IGNORED and
+    _subagent_auto_deny is always returned, even if someone accidentally
+    copies config.yaml with the flag set. A comment is not a control; this
+    check is the mechanical enforcement. The signal used is HERMES_HOME path
+    (must contain a "dev" path component) or HERMES_SANDBOX=1 env var for CI.
     """
     cfg = _load_config()
     val = cfg.get("subagent_auto_approve", False)
     if is_truthy_value(val):
-        return _subagent_auto_approve
+        if _is_sandbox_environment():
+            logger.debug(
+                "subagent_auto_approve=true honoured (sandbox environment detected)"
+            )
+            return _subagent_auto_approve
+        # Production path: log and fall through to deny.
+        logger.warning(
+            "subagent_auto_approve=true in config but NOT in sandbox "
+            "(HERMES_HOME=%s, HERMES_SANDBOX unset) — overriding to deny for "
+            "production safety. Set HERMES_SANDBOX=1 in a non-production "
+            "environment to enable auto-approve.",
+            os.getenv("HERMES_HOME", "<unset>"),
+        )
     return _subagent_auto_deny
 
 # Build a description fragment listing toolsets available for subagents.
@@ -3421,4 +3484,158 @@ registry.register(
     check_fn=check_delegate_requirements,
     emoji="🔀",
     dynamic_schema_overrides=_build_dynamic_schema_overrides,
+)
+
+
+# ---------------------------------------------------------------------------
+# delegate_task_async — user-facing fire-and-forget convenience wrapper
+# ---------------------------------------------------------------------------
+# Why: delegate_task(background=True) requires the model to remember to set
+# the background flag; delegate_task_async makes the intent explicit and
+# surfaces async-specific parameters (goal/context/toolsets) without the
+# full delegate_task parameter surface to reduce model confusion.
+# What: thin wrapper over delegate_task(background=True); returns batch_id
+# (delegation_id) immediately.  Result re-enters as a new turn.
+# Test: call with a fast runner (mock _run_single_child); assert returns
+# {"status":"dispatched"} without blocking; assert completion_queue gets
+# an async_delegation event after runner completes.
+
+_DELEGATE_TASK_ASYNC_SCHEMA = {
+    "name": "delegate_task_async",
+    "description": (
+        "Fire-and-forget background subagent. Dispatches the subagent "
+        "immediately and returns a delegation_id handle WITHOUT blocking the "
+        "current turn. The result re-enters the conversation as a new message "
+        "when the child completes — you do NOT need to poll or wait. "
+        "Use for long-running independent research, builds, or investigations "
+        "the user should not be blocked waiting on. "
+        "Returns: {\"status\":\"dispatched\",\"delegation_id\":\"deleg_...\"}. "
+        "To check status mid-turn use check_async_tasks."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "goal": {
+                "type": "string",
+                "description": "The task to delegate to the background subagent.",
+            },
+            "context": {
+                "type": "string",
+                "description": "Additional context for the subagent (optional).",
+            },
+            "toolsets": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Toolsets to give the subagent (defaults to parent toolsets).",
+            },
+            "role": {
+                "type": "string",
+                "description": "Subagent role: 'leaf' (default, cannot delegate) or 'orchestrator'.",
+            },
+        },
+        "required": ["goal"],
+    },
+}
+
+
+def _handle_delegate_task_async(args, **kw):
+    """Handler for delegate_task_async.
+
+    Why: provides a clean surface for fire-and-forget delegation without
+    exposing the full delegate_task schema.
+    What: delegates to delegate_task(background=True) with the given args.
+    Test: mock _run_single_child to be slow; assert returns dispatched handle
+    immediately; assert active_count() == 1; assert completion_queue receives
+    event after mock completes.
+    """
+    return delegate_task(
+        goal=args.get("goal"),
+        context=args.get("context"),
+        toolsets=args.get("toolsets"),
+        role=args.get("role"),
+        background=True,
+        parent_agent=kw.get("parent_agent"),
+    )
+
+
+registry.register(
+    name="delegate_task_async",
+    toolset="delegation",
+    schema=_DELEGATE_TASK_ASYNC_SCHEMA,
+    handler=_handle_delegate_task_async,
+    check_fn=check_delegate_requirements,
+    emoji="⚡",
+)
+
+
+# ---------------------------------------------------------------------------
+# check_async_tasks — poll in-flight and recently-completed background tasks
+# ---------------------------------------------------------------------------
+# Why: a model that dispatched a background subagent may need to know its
+# status before the completion event arrives, without having to wait or poll
+# in a loop.  This tool provides a point-in-time snapshot.
+# What: wraps list_async_delegations() and optionally filters by delegation_id.
+# Test: dispatch two async tasks (mock); call check_async_tasks() with no
+# args — assert both appear; call with delegation_id= first task id — assert
+# exactly one result returned.
+
+_CHECK_ASYNC_TASKS_SCHEMA = {
+    "name": "check_async_tasks",
+    "description": (
+        "Check the status of background subagents dispatched with "
+        "delegate_task(background=true) or delegate_task_async. "
+        "Returns a list of in-flight and recently-completed delegations "
+        "(up to the last 50 completions). Use to inspect status mid-turn; "
+        "do NOT poll in a loop — the result will re-enter automatically."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "delegation_id": {
+                "type": "string",
+                "description": (
+                    "If provided, filter to this specific delegation_id. "
+                    "Omit to list all active/recent delegations."
+                ),
+            },
+        },
+        "required": [],
+    },
+}
+
+
+def _handle_check_async_tasks(args, **kw):
+    """Handler for check_async_tasks.
+
+    Why: lets a model inspect background-task status between turns without
+    the completion notification having to arrive first.
+    What: calls list_async_delegations(), optionally filtered by id.
+    Test: dispatch a gated task; call check_async_tasks; assert status=running;
+    release gate; wait for completion event; call again; assert status=completed.
+    """
+    from tools.async_delegation import list_async_delegations
+
+    records = list_async_delegations()
+    delegation_id = args.get("delegation_id", "").strip() if args.get("delegation_id") else ""
+    if delegation_id:
+        records = [r for r in records if r.get("delegation_id") == delegation_id]
+    return json.dumps(
+        {
+            "async_delegations": records,
+            "count": len(records),
+            "note": (
+                "Results are re-injected automatically as new turns when "
+                "children complete — no polling required."
+            ),
+        },
+        ensure_ascii=False,
+    )
+
+
+registry.register(
+    name="check_async_tasks",
+    toolset="delegation",
+    schema=_CHECK_ASYNC_TASKS_SCHEMA,
+    handler=_handle_check_async_tasks,
+    emoji="🔍",
 )

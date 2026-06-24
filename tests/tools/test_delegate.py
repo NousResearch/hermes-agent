@@ -2693,23 +2693,31 @@ class TestSubagentApprovalCallback(unittest.TestCase):
         )
         self.assertIs(_get_subagent_approval_callback(), _subagent_auto_deny)
 
+    @patch("tools.delegate_tool._is_sandbox_environment", return_value=True)
     @patch(
         "tools.delegate_tool._load_config",
         return_value={"subagent_auto_approve": True},
     )
-    def test_getter_true_is_approve(self, _mock_cfg):
+    def test_getter_true_is_approve(self, _mock_cfg, _mock_sandbox):
+        """subagent_auto_approve=true returns _subagent_auto_approve in a sandbox.
+
+        The _is_sandbox_environment guard is mocked True so the config flag
+        is honoured — this test verifies the happy path, not the guard itself.
+        Guard behaviour is tested separately in test_async_delegation.py.
+        """
         from tools.delegate_tool import (
             _get_subagent_approval_callback,
             _subagent_auto_approve,
         )
         self.assertIs(_get_subagent_approval_callback(), _subagent_auto_approve)
 
+    @patch("tools.delegate_tool._is_sandbox_environment", return_value=True)
     @patch(
         "tools.delegate_tool._load_config",
         return_value={"subagent_auto_approve": "yes"},
     )
-    def test_getter_truthy_string_is_approve(self, _mock_cfg):
-        """is_truthy_value accepts 'yes'/'1'/'true' as truthy."""
+    def test_getter_truthy_string_is_approve(self, _mock_cfg, _mock_sandbox):
+        """is_truthy_value accepts 'yes'/'1'/'true' as truthy (in sandbox)."""
         from tools.delegate_tool import (
             _get_subagent_approval_callback,
             _subagent_auto_approve,

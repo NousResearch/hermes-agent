@@ -471,3 +471,216 @@ def test_gateway_cli_origin_event_left_unrouted():
     assert "platform" not in evt
 
 
+# ---------------------------------------------------------------------------
+# subagent_auto_approve sandbox guard (Code Critic HIGH fix)
+# ---------------------------------------------------------------------------
+
+def test_auto_approve_honoured_in_sandbox_env(monkeypatch):
+    """subagent_auto_approve=true is honoured when HERMES_HOME contains a dev path.
+
+    Why: the mechanical guard must allow the callback in dev/test environments.
+    What: patch HERMES_HOME to the dev sandbox path; assert _subagent_auto_approve
+          is returned (not _subagent_auto_deny).
+    Test: HERMES_HOME=/opt/hermes/dev/.hermes-home with subagent_auto_approve=true
+          → _subagent_auto_approve.
+    """
+    import tools.delegate_tool as dt
+
+    monkeypatch.setenv("HERMES_HOME", "/opt/hermes/dev/.hermes-home")
+    monkeypatch.delenv("HERMES_SANDBOX", raising=False)
+
+    # Patch config to return subagent_auto_approve=true
+    monkeypatch.setattr(dt, "_load_config", lambda: {"subagent_auto_approve": True})
+
+    cb = dt._get_subagent_approval_callback()
+    assert cb is dt._subagent_auto_approve, (
+        "Expected _subagent_auto_approve in sandbox; got _subagent_auto_deny"
+    )
+
+
+def test_auto_approve_blocked_in_production_env(monkeypatch):
+    """subagent_auto_approve=true is BLOCKED when HERMES_HOME is the prod path.
+
+    Why: even if a mis-copied config.yaml sets subagent_auto_approve=true on
+         the production stable install, the mechanical guard must return deny.
+    What: patch HERMES_HOME to the stable prod path; assert _subagent_auto_deny
+          is always returned regardless of config.
+    Test: HERMES_HOME=/opt/hermes/home (prod) → _subagent_auto_deny.
+    """
+    import tools.delegate_tool as dt
+
+    monkeypatch.setenv("HERMES_HOME", "/opt/hermes/home")
+    monkeypatch.delenv("HERMES_SANDBOX", raising=False)
+
+    # Even with auto_approve=true in config, prod guard overrides it.
+    monkeypatch.setattr(dt, "_load_config", lambda: {"subagent_auto_approve": True})
+
+    cb = dt._get_subagent_approval_callback()
+    assert cb is dt._subagent_auto_deny, (
+        "Expected _subagent_auto_deny in production env (HERMES_HOME=/opt/hermes/home)"
+    )
+
+
+def test_auto_approve_honoured_via_hermes_sandbox_flag(monkeypatch):
+    """HERMES_SANDBOX=1 is a CI override that enables auto-approve regardless of HERMES_HOME.
+
+    Why: CI environments may not use the /opt/hermes layout but still need
+         to run with auto-approve for non-interactive testing.
+    Test: HERMES_SANDBOX=1, HERMES_HOME=<prod-like path> → _subagent_auto_approve.
+    """
+    import tools.delegate_tool as dt
+
+    monkeypatch.setenv("HERMES_HOME", "/home/user/.hermes")  # not a dev path
+    monkeypatch.setenv("HERMES_SANDBOX", "1")
+
+    monkeypatch.setattr(dt, "_load_config", lambda: {"subagent_auto_approve": True})
+
+    cb = dt._get_subagent_approval_callback()
+    assert cb is dt._subagent_auto_approve, (
+        "Expected _subagent_auto_approve with HERMES_SANDBOX=1"
+    )
+
+
+def test_auto_approve_false_in_config_always_denies(monkeypatch):
+    """subagent_auto_approve=false always returns deny even in sandbox.
+
+    Why: the default must be deny; this test ensures the flag is necessary.
+    Test: sandbox path + subagent_auto_approve=false → _subagent_auto_deny.
+    """
+    import tools.delegate_tool as dt
+
+    monkeypatch.setenv("HERMES_HOME", "/opt/hermes/dev/.hermes-home")
+    monkeypatch.delenv("HERMES_SANDBOX", raising=False)
+    monkeypatch.setattr(dt, "_load_config", lambda: {"subagent_auto_approve": False})
+
+    cb = dt._get_subagent_approval_callback()
+    assert cb is dt._subagent_auto_deny
+
+
+# ---------------------------------------------------------------------------
+# delegate_task_async tool
+# ---------------------------------------------------------------------------
+
+def test_delegate_task_async_returns_dispatched_handle(monkeypatch):
+    """delegate_task_async dispatches a background subagent and returns handle.
+
+    Why: the tool is a convenience wrapper over delegate_task(background=True).
+    What: assert the return JSON has status=dispatched and a delegation_id.
+    Test: mock _run_single_child to be slow; call _handle_delegate_task_async;
+          assert dispatched immediately; assert active_count==1.
+    """
+    import json
+    from unittest.mock import MagicMock, patch
+    import tools.delegate_tool as dt
+
+    parent = MagicMock()
+    parent._delegate_depth = 0
+    parent.session_id = "sess-async-tool"
+    parent._interrupt_requested = False
+    fake_child = MagicMock()
+    fake_child._delegate_role = "leaf"
+    fake_child._subagent_id = "s-async"
+
+    gate = threading.Event()
+
+    def slow_child(task_index, goal, child=None, parent_agent=None, **kw):
+        gate.wait(timeout=5)
+        return {"task_index": 0, "status": "completed", "summary": "async done",
+                "api_calls": 1, "duration_seconds": 0.05, "model": "m"}
+
+    creds = {"model": "m", "provider": None, "base_url": None,
+             "api_key": None, "api_mode": None, "command": None, "args": None}
+
+    with patch.object(dt, "_build_child_agent", return_value=fake_child), \
+         patch.object(dt, "_run_single_child", side_effect=slow_child), \
+         patch.object(dt, "_resolve_delegation_credentials", return_value=creds):
+        result = dt._handle_delegate_task_async(
+            {"goal": "async research task", "context": "ctx"},
+            parent_agent=parent,
+        )
+
+    parsed = json.loads(result)
+    assert parsed["status"] == "dispatched"
+    assert parsed["delegation_id"].startswith("deleg_")
+    # Child is still running on background thread (gate not set).
+    assert process_registry.completion_queue.empty()
+    assert ad.active_count() == 1
+    gate.set()
+    evt = _drain_one()
+    assert evt is not None
+    assert evt["type"] == "async_delegation"
+    assert evt["summary"] == "async done"
+
+
+# ---------------------------------------------------------------------------
+# check_async_tasks tool
+# ---------------------------------------------------------------------------
+
+def test_check_async_tasks_lists_running_and_recent(monkeypatch):
+    """check_async_tasks returns in-flight delegations with correct status.
+
+    Why: models need to inspect background-task status without waiting.
+    What: dispatch two gated tasks; call check_async_tasks; assert both appear
+          with status=running; release gate; wait for completions; call again.
+    Test: _handle_check_async_tasks({}) returns count==2 while tasks run.
+    """
+    import json
+    import tools.delegate_tool as dt
+
+    gate = threading.Event()
+
+    def blocker():
+        gate.wait(timeout=5)
+        return {"status": "completed", "summary": "x", "api_calls": 1}
+
+    for _ in range(2):
+        ad.dispatch_async_delegation(
+            goal="bg task", context=None, toolsets=None, role="leaf",
+            model="m", session_key="", runner=blocker, max_async_children=5,
+        )
+
+    result = json.loads(dt._handle_check_async_tasks({}))
+    assert result["count"] == 2
+    statuses = {r["status"] for r in result["async_delegations"]}
+    assert "running" in statuses
+
+    gate.set()
+    # Drain completions
+    for _ in range(2):
+        _drain_one(timeout=5)
+
+    result_after = json.loads(dt._handle_check_async_tasks({}))
+    statuses_after = {r["status"] for r in result_after["async_delegations"]}
+    assert "running" not in statuses_after
+
+
+def test_check_async_tasks_filters_by_delegation_id():
+    """check_async_tasks(delegation_id=X) returns only matching record.
+
+    Why: models want to inspect a specific delegation, not all of them.
+    Test: dispatch two tasks; filter by one id; assert count==1.
+    """
+    import json
+    import tools.delegate_tool as dt
+
+    ev = threading.Event()
+
+    def blocker():
+        ev.wait(timeout=5)
+        return {"status": "completed", "summary": "ok"}
+
+    r1 = ad.dispatch_async_delegation(
+        goal="task A", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=blocker, max_async_children=5,
+    )
+    ad.dispatch_async_delegation(
+        goal="task B", context=None, toolsets=None, role="leaf",
+        model="m", session_key="", runner=blocker, max_async_children=5,
+    )
+
+    result = json.loads(dt._handle_check_async_tasks(
+        {"delegation_id": r1["delegation_id"]}
+    ))
+    assert result["count"] == 1
+    assert result["async_delegations"][0]["delegation_id"] == r1["delegation_id"]
+    ev.set()

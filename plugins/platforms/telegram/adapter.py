@@ -13,6 +13,8 @@ import inspect
 import json
 import logging
 import os
+import subprocess
+import tempfile
 import html as _html
 import re
 from datetime import datetime, timezone
@@ -5416,6 +5418,60 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
                     )
+            return
+
+        # --- Hermes ack-alert callbacks (ha:<alert_id>) ---
+        if data.startswith("ha:"):
+            alert_id = data.split(":", 1)[1].strip()
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to acknowledge this alert.")
+                return
+
+            user_display = getattr(query.from_user, "first_name", None) or query_user_name or "Sasha"
+            try:
+                home = _Path(os.environ.get("HERMES_HOME", str(_Path.home() / ".hermes"))).expanduser()
+                if home.parent.name == "profiles":
+                    home = home.parent.parent
+                script = home / "scripts" / "ack_escalation_notify.py"
+                if not script.exists():
+                    await query.answer(text="❌ Ack script missing.")
+                    logger.error("[%s] ack alert script missing: %s", self.name, script)
+                    return
+                cmd = [
+                    sys.executable,
+                    str(script),
+                    "ack",
+                    alert_id,
+                    "--user",
+                    str(user_display),
+                    "--user-id",
+                    caller_id,
+                    "--json",
+                ]
+                result = await asyncio.to_thread(
+                    subprocess.run,
+                    cmd,
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    await query.answer(text="✅ Подтверждено. Звонки остановлены.")
+                else:
+                    detail = (result.stderr or result.stdout or "ack failed").strip()[:160]
+                    await query.answer(text=f"❌ Ack failed: {detail}")
+                    logger.error("[%s] ack alert callback failed rc=%s: %s", self.name, result.returncode, detail)
+            except Exception as exc:
+                await query.answer(text="❌ Ack failed.")
+                logger.error("[%s] ack alert callback exception: %s", self.name, exc, exc_info=True)
             return
 
         # --- Update prompt callbacks ---

@@ -55,7 +55,7 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertIsNotNone(home)
         self.assertEqual(home.chat_id, "user@test.com")
 
-    @patch.dict(os.environ, {}, clear=True)
+    @patch.dict(os.environ, {"LOCALAPPDATA": "C:/Users/test/AppData/Local"}, clear=True)
     def test_email_not_loaded_without_env(self):
         from gateway.config import GatewayConfig, Platform, _apply_env_overrides
         config = GatewayConfig()
@@ -86,6 +86,63 @@ class TestCheckRequirements(unittest.TestCase):
     def test_requirements_empty_env(self):
         from plugins.platforms.email.adapter import check_email_requirements
         self.assertFalse(check_email_requirements())
+
+
+class TestSendImapId(unittest.TestCase):
+    """Verify IMAP ID is only sent when the server advertises support."""
+
+    def test_skips_id_when_capability_missing(self):
+        from plugins.platforms.email.adapter import _send_imap_id
+
+        imap = MagicMock()
+        imap.capabilities = ("IMAP4REV1", "UIDPLUS")
+
+        _send_imap_id(imap)
+
+        imap.xatom.assert_not_called()
+
+    def test_skips_id_when_capabilities_missing(self):
+        from plugins.platforms.email.adapter import _send_imap_id
+
+        imap = MagicMock()
+        del imap.capabilities
+
+        _send_imap_id(imap)
+
+        imap.xatom.assert_not_called()
+
+    def test_sends_id_when_string_capability_present(self):
+        from plugins.platforms.email.adapter import _send_imap_id
+
+        imap = MagicMock()
+        imap.capabilities = ("IMAP4REV1", "ID")
+
+        _send_imap_id(imap)
+
+        imap.xatom.assert_called_once()
+        self.assertEqual(imap.xatom.call_args.args[0], "ID")
+
+    def test_sends_id_when_bytes_capability_present(self):
+        from plugins.platforms.email.adapter import _send_imap_id
+
+        imap = MagicMock()
+        imap.capabilities = (b"IMAP4REV1", b"ID")
+
+        _send_imap_id(imap)
+
+        imap.xatom.assert_called_once()
+        self.assertEqual(imap.xatom.call_args.args[0], "ID")
+
+    def test_id_failure_remains_best_effort(self):
+        from plugins.platforms.email.adapter import _send_imap_id
+
+        imap = MagicMock()
+        imap.capabilities = ("ID",)
+        imap.xatom.side_effect = RuntimeError("ID failed")
+
+        _send_imap_id(imap)
+
+        imap.xatom.assert_called_once()
 
 
 class TestHelperFunctions(unittest.TestCase):
@@ -1391,8 +1448,8 @@ class TestImapConnectionCleanup(unittest.TestCase):
 class TestImapIdExtensionForNetEase(unittest.TestCase):
     """Regression for #22271: 163/NetEase mailbox requires the RFC 2971
     IMAP ID command after LOGIN, otherwise it returns ``BYE Unsafe Login``
-    on every UID SEARCH.  We send ID best-effort after every login so that
-    163 works while non-supporting servers stay unaffected.
+    on every UID SEARCH.  We send ID best-effort when the server advertises
+    support so that 163 works while non-supporting servers stay unaffected.
     """
 
     def _make_adapter(self):
@@ -1413,6 +1470,7 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         adapter = self._make_adapter()
 
         mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1", "ID")
         mock_imap.uid.return_value = ("OK", [b""])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
@@ -1440,6 +1498,7 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
         """_fetch_new_messages must also send ID — it opens its own IMAP session."""
         adapter = self._make_adapter()
         mock_imap = MagicMock()
+        mock_imap.capabilities = ("IMAP4REV1", "ID")
         mock_imap.uid.return_value = ("OK", [b""])
 
         with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
@@ -1452,15 +1511,15 @@ class TestImapIdExtensionForNetEase(unittest.TestCase):
             "LOGIN — the polling path opens a fresh IMAP connection.",
         )
 
-    def test_send_imap_id_swallows_errors_for_non_supporting_servers(self):
-        """Servers that reject ID must not break the connection."""
+    def test_send_imap_id_skips_non_supporting_servers(self):
+        """Servers that do not advertise ID must not receive the command."""
         from plugins.platforms.email.adapter import _send_imap_id
 
         mock_imap = MagicMock()
-        mock_imap.xatom.side_effect = Exception("BAD command unknown: ID")
+        mock_imap.capabilities = ("IMAP4REV1", "UIDPLUS")
 
         _send_imap_id(mock_imap)
-        mock_imap.xatom.assert_called_once()
+        mock_imap.xatom.assert_not_called()
 
 
 class TestConnectSmtp(unittest.TestCase):

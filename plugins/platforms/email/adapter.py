@@ -125,13 +125,23 @@ class _IPv4SMTP_SSL(smtplib.SMTP_SSL):
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
-    """Send RFC 2971 IMAP ID command identifying this client.
+    """Send RFC 2971 IMAP ID command identifying this client when supported.
 
     Required by 163/NetEase mailbox after LOGIN: without it, every UID
-    SEARCH/FETCH returns ``BYE Unsafe Login`` and disconnects.  Other
-    IMAP servers either honor it silently or reject the unknown command;
-    we swallow failures so non-supporting servers keep working.
+    SEARCH/FETCH returns ``BYE Unsafe Login`` and disconnects. Some servers
+    (notably Purelymail) do not advertise RFC 2971 ``ID`` and can leave the
+    connection poisoned after receiving it, causing the next SELECT to fail
+    with ``Unknown command``. Only send ID when the server advertises it.
     """
+    capabilities = getattr(imap, "capabilities", ()) or ()
+    normalized = {
+        cap.decode("ascii", errors="ignore").upper() if isinstance(cap, bytes) else str(cap).upper()
+        for cap in capabilities
+    }
+    if "ID" not in normalized:
+        logger.debug("[Email] IMAP server does not advertise ID capability; skipping ID command")
+        return
+
     try:
         try:
             from hermes_cli import __version__ as _hermes_version

@@ -2173,11 +2173,13 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
+        # Use the job's stored hermes_home for profile isolation (#51853).
+        _job_home_for_env = Path(job["hermes_home"]) if job.get("hermes_home") else _get_hermes_home()
         from dotenv import load_dotenv
         try:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
+            load_dotenv(str(_job_home_for_env / ".env"), override=True, encoding="utf-8")
         except UnicodeDecodeError:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
+            load_dotenv(str(_job_home_for_env / ".env"), override=True, encoding="latin-1")
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
@@ -2197,10 +2199,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         model = job.get("model") or os.getenv("HERMES_MODEL") or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
+        # Use the job's stored hermes_home (the profile that created this job)
+        # so that tool restrictions from restricted profiles are honored at
+        # execution time.  Falls back to the scheduler's own hermes_home for
+        # legacy jobs that predate this field (#51853).
+        _job_hermes_home = Path(job["hermes_home"]) if job.get("hermes_home") else _get_hermes_home()
         _cfg = {}
         try:
             import yaml
-            _cfg_path = str(_get_hermes_home() / "config.yaml")
+            _cfg_path = str(_job_hermes_home / "config.yaml")
             if os.path.exists(_cfg_path):
                 with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
@@ -2269,7 +2276,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         if prefill_file:
             pfpath = Path(prefill_file).expanduser()
             if not pfpath.is_absolute():
-                pfpath = _get_hermes_home() / pfpath
+                pfpath = _job_hermes_home / pfpath
             if pfpath.exists():
                 try:
                     with open(pfpath, "r", encoding="utf-8") as _pf:

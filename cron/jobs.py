@@ -789,6 +789,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    hermes_home: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -833,6 +834,12 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        hermes_home: Optional HERMES_HOME path of the profile that created this
+                job. When set, the scheduler loads config.yaml and tool
+                restrictions from this path at execution time, ensuring
+                restricted profiles cannot escalate privileges via cron.
+                When unset, falls back to the scheduler's own HERMES_HOME
+                (legacy behavior).
 
     Returns:
         The created job dict
@@ -967,6 +974,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "hermes_home": hermes_home or str(get_hermes_home()),
     }
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the

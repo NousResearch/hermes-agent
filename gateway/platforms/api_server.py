@@ -59,6 +59,15 @@ from gateway.platforms.base import (
     is_network_accessible,
 )
 
+# Pre-LLM intent fast-path (weather, …).  Guarded so a missing module is a
+# safe no-op: if intent_fast_path isn't importable we fall back to a stub that
+# always defers to the agent, exactly as if no intent matched.
+try:
+    from intent_fast_path import _intent_fast_path
+except ImportError:  # pragma: no cover - defensive fallback
+    async def _intent_fast_path(text):  # type: ignore[misc]
+        return None
+
 logger = logging.getLogger(__name__)
 
 
@@ -1864,6 +1873,91 @@ class APIServerAdapter(BasePlatformAdapter):
                 {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
                 status=400,
             )
+
+        # ── Pre-LLM intent fast-path ──────────────────────────────────────
+        # Before building any agent, give deterministic intents (weather, …) a
+        # chance to answer directly in ~0.3-0.5s instead of the 21-63s agent
+        # loop.  ``user_message`` is a plain str here.  On a clean hit we return
+        # an OpenAI-shaped response (streaming or not, honoring the ``stream``
+        # flag); on ANY doubt the fast-path returns None and we fall through to
+        # the normal agent pipeline untouched.
+        if isinstance(user_message, str) and user_message.strip():
+            _fp_t0 = time.time()
+            try:
+                _fp_result = await _intent_fast_path(user_message)
+            except Exception:  # pragma: no cover - fast-path must never break chat
+                _fp_result = None
+            if _fp_result is not None:
+                _fp_elapsed_ms = (time.time() - _fp_t0) * 1000.0
+                logger.info(
+                    "intent fast-path hit (%.0f ms, %d chars) — bypassing agent",
+                    _fp_elapsed_ms, len(_fp_result),
+                )
+                _fp_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
+                _fp_model = body.get("model", self._model_name)
+                _fp_created = int(time.time())
+                if stream:
+                    origin = request.headers.get("Origin", "")
+                    sse_headers = {
+                        "Content-Type": "text/event-stream",
+                        "Cache-Control": "no-cache",
+                        "X-Accel-Buffering": "no",
+                    }
+                    cors = self._cors_headers_for_origin(origin) if origin else None
+                    if cors:
+                        sse_headers.update(cors)
+                    fp_response = web.StreamResponse(status=200, headers=sse_headers)
+                    await fp_response.prepare(request)
+                    # Spec-standard 3-chunk stream so strict OpenAI/OpenWebUI
+                    # consumers (the dashboard) parse it cleanly: (1) role-only
+                    # delta, (2) content delta, (3) finish_reason terminator,
+                    # then the [DONE] sentinel.  Packing role+content into one
+                    # delta tripped some strict stream parsers.
+                    role_chunk = {
+                        "id": _fp_id, "object": "chat.completion.chunk",
+                        "created": _fp_created, "model": _fp_model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"role": "assistant"},
+                            "finish_reason": None,
+                        }],
+                    }
+                    await fp_response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
+                    content_chunk = {
+                        "id": _fp_id, "object": "chat.completion.chunk",
+                        "created": _fp_created, "model": _fp_model,
+                        "choices": [{
+                            "index": 0,
+                            "delta": {"content": _fp_result},
+                            "finish_reason": None,
+                        }],
+                    }
+                    await fp_response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                    stop_chunk = {
+                        "id": _fp_id, "object": "chat.completion.chunk",
+                        "created": _fp_created, "model": _fp_model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    }
+                    await fp_response.write(f"data: {json.dumps(stop_chunk)}\n\n".encode())
+                    await fp_response.write(b"data: [DONE]\n\n")
+                    await fp_response.write_eof()
+                    return fp_response
+                return web.json_response({
+                    "id": _fp_id,
+                    "object": "chat.completion",
+                    "created": _fp_created,
+                    "model": _fp_model,
+                    "choices": [{
+                        "index": 0,
+                        "message": {"role": "assistant", "content": _fp_result},
+                        "finish_reason": "stop",
+                    }],
+                    "usage": {
+                        "prompt_tokens": 0,
+                        "completion_tokens": 0,
+                        "total_tokens": 0,
+                    },
+                })
 
         # Allow caller to scope long-term memory (e.g. Honcho) with a
         # stable per-channel identifier via X-Hermes-Session-Key.  This

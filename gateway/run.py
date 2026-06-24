@@ -1287,6 +1287,14 @@ from hermes_constants import get_hermes_home
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
+# Pre-LLM intent fast-path (weather, …).  Guarded so a missing module is a safe
+# no-op that always defers to the normal agent pipeline.
+try:
+    from intent_fast_path import _intent_fast_path
+except ImportError:  # pragma: no cover - defensive fallback
+    async def _intent_fast_path(text):  # type: ignore[misc]
+        return None
+
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
 from dotenv import load_dotenv  # noqa: F401  # backward-compat for tests that monkeypatch this symbol
@@ -8514,6 +8522,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if self._should_send_telegram_lobby_reminder(source):
                 return self._telegram_topic_root_lobby_message()
             return None
+
+        # ── Pre-LLM intent fast-path ──────────────────────────────────
+        # Deterministic intents (weather, …) answer here in ~0.3-0.5s,
+        # before we claim the session sentinel or run any agent.  This is
+        # downstream of auth and Telegram mention-gating / _should_process
+        # (those ran earlier), so those guarantees are preserved.  We skip
+        # slash commands (handled above) and empty text, and on ANY doubt
+        # the fast-path returns None and we fall through untouched.  The
+        # session lock below is intentionally NOT taken for a fast-path
+        # reply, so a fast weather answer never blocks a concurrent real
+        # agent turn for the same session.
+        _fp_msg = (event.text or "").strip()
+        if _fp_msg and not _fp_msg.startswith("/"):
+            _fp_result = await _intent_fast_path(_fp_msg)
+            if _fp_result is not None:
+                return _fp_result
 
         # ── Claim this session before any await ───────────────────────
         # Between here and _run_agent registering the real AIAgent, there

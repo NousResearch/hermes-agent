@@ -281,6 +281,168 @@ class TestRunToolCleanupOnBaseException:
 
 
 # ---------------------------------------------------------------------------
+# Regression: concurrent tool-batch aggregate deadline (HERMES_TOOL_BATCH_TIMEOUT)
+# ---------------------------------------------------------------------------
+
+class TestConcurrentBatchTimeout:
+    """Verify the aggregate batch-deadline escape in
+    ``execute_tool_calls_concurrent``.
+
+    When a tool ignores the per-thread interrupt and runs past
+    ``HERMES_TOOL_BATCH_TIMEOUT``, the executor must:
+
+      1. stop blocking the turn (the ThreadPoolExecutor is shut down with
+         ``wait=False`` so a wedged daemon worker can't pin the turn forever),
+      2. synthesize a timeout result into the wedged tool's still-None slot,
+         flagged ``is_error=True`` with a message naming the batch deadline.
+
+    Critically, that synthesized result tuple is hand-built positionally at
+    the deadline site, so a future change to the ``_run_tool`` results-tuple
+    shape would silently desync it.  This test pins the shape: it runs a
+    normal tool and a wedged tool in the SAME batch and asserts the
+    synthesized timeout tuple unpacks identically to a real ``_run_tool``
+    result (same 7-field arity / downstream contract).  If the tuple drifts,
+    the post-execution unpack (``... = r``) raises ValueError and this test
+    fails loudly — which is the whole point of the regression.
+    """
+
+    @pytest.mark.timeout(30, method="thread")
+    def test_wedged_tool_synthesizes_timeout_result(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import types
+
+        from tools.interrupt import _interrupted_threads, _lock
+        with _lock:
+            _interrupted_threads.clear()
+
+        # Trip the aggregate deadline almost immediately.  The wait loop polls
+        # every 5s, so the deadline is observed on the first poll after the
+        # blocked tool is still running.
+        monkeypatch.setenv("HERMES_TOOL_BATCH_TIMEOUT", "0.5")
+
+        # ── Capture each result tuple as it is unpacked downstream ──────
+        # The post-execution loop unpacks every results[] slot via
+        #   function_name, function_args, function_result, tool_duration,
+        #   is_error, blocked, middleware_trace = r
+        # then calls agent._append_guardrail_observation(name, args, result,
+        # failed=is_error) for non-blocked tools.  By making that a real
+        # function we observe the unpacked fields for BOTH the fast tool and
+        # the synthesized-timeout tool — proving the synthesized tuple
+        # unpacked cleanly into the same 7-field shape.
+        observed = []  # list of (name, args, result, failed)
+
+        def _record_guardrail_observation(name, args, result, failed=False):
+            observed.append((name, args, result, failed))
+            return result
+
+        # ── Minimal mock agent ─────────────────────────────────────────
+        agent = MagicMock()
+        agent._interrupt_requested = False
+        agent._tool_worker_threads = set()
+        agent._tool_worker_threads_lock = threading.Lock()
+        agent.quiet_mode = True
+        agent.tool_progress_mode = "off"
+        agent.tool_progress_callback = None
+        agent.tool_start_callback = None
+        agent.tool_complete_callback = None
+        agent.verbose_logging = False
+        agent._should_emit_quiet_tool_messages = MagicMock(return_value=False)
+        agent._should_start_quiet_spinner = MagicMock(return_value=False)
+        agent._append_guardrail_observation = _record_guardrail_observation
+        # _tool_result_content_for_active_model passes the string through;
+        # downstream make_tool_result_message wants a real string.
+        agent._tool_result_content_for_active_model = lambda name, result: result
+        agent._set_interrupt = lambda active, tid=None: None
+        # No subdirectory hints (a truthy MagicMock would be string-concatenated
+        # onto the result and blow up the post-execution loop).
+        agent._subdirectory_hints.check_tool_call = MagicMock(return_value="")
+        agent._apply_pending_steer_to_tool_results = MagicMock()
+
+        # Guardrails must allow execution (a MagicMock decision is truthy,
+        # but be explicit so a future bool() change can't silently block).
+        agent._tool_guardrails.before_call.return_value.allows_execution = True
+
+        # ── _invoke_tool: 'wedged' blocks past the deadline ignoring the
+        # interrupt signal; 'fast' returns immediately. ────────────────
+        def _invoke_tool(function_name, function_args, *a, **k):
+            if function_name == "wedged":
+                # Block far past the 0.5s deadline, ignoring interrupts — this
+                # is the daemon worker the deadline must abandon.  Sleep well
+                # beyond the executor's 5s poll interval so the only way the
+                # turn can return is via the deadline (not natural completion).
+                time.sleep(30.0)
+                return "wedged finished (should have been abandoned)"
+            return "fast ok"
+
+        agent._invoke_tool = _invoke_tool
+
+        # Bind the real concurrent executor.
+        from run_agent import AIAgent
+        agent._execute_tool_calls_concurrent = types.MethodType(
+            AIAgent._execute_tool_calls_concurrent, agent
+        )
+
+        # ── Two tool calls in one batch: fast + wedged ─────────────────
+        tc_fast = MagicMock()
+        tc_fast.id = "tc_fast"
+        tc_fast.function.name = "fast"
+        tc_fast.function.arguments = "{}"
+
+        tc_wedged = MagicMock()
+        tc_wedged.id = "tc_wedged"
+        tc_wedged.function.name = "wedged"
+        tc_wedged.function.arguments = "{}"
+
+        assistant_msg = MagicMock()
+        assistant_msg.tool_calls = [tc_fast, tc_wedged]
+
+        messages = []
+
+        # (a) The call must RETURN (not hang), despite the wedged tool
+        # sleeping 30s.  The executor polls every 5s, so the 0.5s deadline is
+        # observed at the first poll boundary (~5s).  Anything well under the
+        # wedged tool's 30s sleep proves the deadline — not natural
+        # completion — released the turn.
+        t0 = time.time()
+        agent._execute_tool_calls_concurrent(assistant_msg, messages, "default")
+        elapsed = time.time() - t0
+
+        assert elapsed < 12.0, (
+            f"batch did not honor the deadline; took {elapsed:.2f}s "
+            "(approaching the wedged tool's 30s sleep — deadline did not fire)"
+        )
+
+        # (b) Both tools were observed downstream — i.e. both result tuples
+        # unpacked into 7 fields without a ValueError.  The fast tool and the
+        # synthesized-timeout tuple share the same shape; if the synthesized
+        # tuple's arity drifted, the unpack at the post-execution loop would
+        # raise and we'd never reach _append_guardrail_observation for it.
+        observed_by_name = {name: (name, args, result, failed) for (name, args, result, failed) in observed}
+        assert "fast" in observed_by_name, f"fast tool not observed: {observed}"
+        assert "wedged" in observed_by_name, (
+            f"wedged tool's synthesized timeout result was not unpacked "
+            f"downstream (arity drift would cause this): {observed}"
+        )
+
+        # (c) The wedged tool's synthesized slot is flagged as an error and
+        # its message names the batch deadline.
+        _wname, _wargs, _wresult, _wfailed = observed_by_name["wedged"]
+        assert _wfailed is True, "synthesized timeout result not flagged is_error=True"
+        assert "batch" in _wresult.lower() and "deadline" in _wresult.lower(), (
+            f"timeout message does not mention the batch deadline: {_wresult!r}"
+        )
+
+        # (d) A tool result message for the wedged tool reached the
+        # conversation so the model isn't left with a dangling tool_call.
+        wedged_tool_msgs = [
+            m for m in messages
+            if isinstance(m, dict) and m.get("role") == "tool"
+            and m.get("tool_call_id") == "tc_wedged"
+        ]
+        assert wedged_tool_msgs, f"no tool result message for wedged tool: {messages}"
+
+
+# ---------------------------------------------------------------------------
 # Manual smoke test checklist (not automated)
 # ---------------------------------------------------------------------------
 

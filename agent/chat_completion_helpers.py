@@ -1756,7 +1756,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             _bedrock_stale_timeout = max(_bedrock_stale_base, 240.0)
         else:
             _bedrock_stale_timeout = _bedrock_stale_base
-        _BEDROCK_MAX_STALE_KILLS = int(os.getenv("HERMES_STREAM_MAX_STALE_KILLS", "3"))
+        _BEDROCK_MAX_STALE_KILLS = env_int("HERMES_STREAM_MAX_STALE_KILLS", 3)
         _bedrock_stale_kills = 0
         _bedrock_chunks_at_last_kill = 0
 
@@ -2684,7 +2684,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # if progress resumes we reset, otherwise we give up after _MAX_STALE_KILLS.
     _stale_kills = 0
     _chunks_at_last_kill = 0
-    _MAX_STALE_KILLS = int(os.getenv("HERMES_STREAM_MAX_STALE_KILLS", "3"))
+    _MAX_STALE_KILLS = env_int("HERMES_STREAM_MAX_STALE_KILLS", 3)
     while t.is_alive():
         t.join(timeout=0.3)
 

@@ -1,6 +1,7 @@
 """Tests for hermes_cli.gateway."""
 
 import argparse
+import signal
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -836,6 +837,53 @@ def test_find_gateway_pids_includes_restart_managers_without_systemd(monkeypatch
 
     assert gateway.find_gateway_pids(all_profiles=True) == [708]
     assert calls == [(set(), True, True)]
+
+
+def test_reap_unsupervised_orphans_noop_on_systemd_hosts(monkeypatch):
+    """On supervised hosts a `gateway restart` argv is transient — never reap."""
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    killed = []
+    monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+    # Should not even consult the scan when a supervisor is present.
+    monkeypatch.setattr(
+        gateway, "find_gateway_pids",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("scanned on systemd host")),
+    )
+
+    assert gateway._reap_unsupervised_gateway_orphans() is False
+    assert killed == []
+
+
+def test_reap_unsupervised_orphans_sigterms_then_sigkills_survivor(monkeypatch):
+    """No-systemd: orphan gets SIGTERM, and a survivor is force-killed."""
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None: [708])
+    monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: True)
+    # Orphan ignores SIGTERM (matches the field report) and stays alive, so the
+    # follow-up SIGKILL must fire.
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+
+    sent = []
+    monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    # Collapse the drain window: no real sleeping, and jump past the deadline
+    # after the first check so the loop exits immediately.
+    monkeypatch.setattr(gateway.time, "sleep", lambda _s: None)
+    ticks = iter([0.0, 100.0, 200.0])
+    monkeypatch.setattr(gateway.time, "monotonic", lambda: next(ticks, 200.0))
+
+    assert gateway._reap_unsupervised_gateway_orphans() is True
+    assert (708, signal.SIGTERM) in sent
+    assert (708, signal.SIGKILL) in sent
+
+
+def test_reap_unsupervised_orphans_returns_false_when_none_found(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda exclude_pids=None: [])
+    killed = []
+    monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed.append((pid, sig)))
+
+    assert gateway._reap_unsupervised_gateway_orphans() is False
+    assert killed == []
 
 
 def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch):

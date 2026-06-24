@@ -75,8 +75,16 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
     orchestrator subagent's own delegate children go too (FK safety).
     """
     df = _delegate_from_json()
-    found: set[str] = set()
-    frontier = [sid for sid in parent_ids if sid]
+    seeds = {sid for sid in parent_ids if sid}
+    # Seed the visited set with the parents themselves. A delegation marker
+    # chain can loop back onto a parent — a cycle, or a parent that is also
+    # another parent's delegate child when several ids are deleted at once —
+    # and without this guard that parent would be collected as one of its own
+    # descendants and cascade-deleted along with all of its messages. Callers
+    # delete the parents separately, so parents must never appear in the
+    # returned child set. (#49148)
+    found: set[str] = set(seeds)
+    frontier = list(seeds)
     while frontier:
         ph = ",".join("?" * len(frontier))
         cursor = conn.execute(
@@ -86,7 +94,8 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
         )
         frontier = [row["id"] for row in cursor.fetchall() if row["id"] not in found]
         found.update(frontier)
-    return list(found)
+    # Return only the discovered children — never the parents themselves.
+    return [sid for sid in found if sid not in seeds]
 
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
@@ -566,7 +575,8 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_message_items TEXT,
     platform_message_id TEXT,
     observed INTEGER DEFAULT 0,
-    active INTEGER NOT NULL DEFAULT 1
+    active INTEGER NOT NULL DEFAULT 1,
+    compacted INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -684,6 +694,7 @@ class SessionDB:
         self._lock = threading.Lock()
         self._write_count = 0
         self._fts_enabled = False
+        self._trigram_available = False
         self._fts_unavailable_warned = False
         self._conn = None
         try:
@@ -772,7 +783,33 @@ class SessionDB:
     @staticmethod
     def _is_fts5_unavailable_error(exc: sqlite3.OperationalError) -> bool:
         err = str(exc).lower()
-        return "no such module" in err and "fts5" in err
+        if "no such module" in err and "fts5" in err:
+            return True
+        # SQLite builds that have FTS5 but lack the optional trigram tokenizer
+        # raise "no such tokenizer: trigram" instead of "no such module".
+        # Scope to trigram specifically to avoid masking unrelated tokenizer errors.
+        if "no such tokenizer: trigram" in err:
+            return True
+        return False
+
+    @staticmethod
+    def _is_trigram_unavailable_error(exc: sqlite3.OperationalError) -> bool:
+        """True when only the trigram tokenizer is missing (FTS5 itself works)."""
+        return "no such tokenizer: trigram" in str(exc).lower()
+
+    def _warn_trigram_unavailable(self, exc: sqlite3.OperationalError) -> None:
+        """Log once that the trigram tokenizer is missing; base FTS5 stays enabled."""
+        if getattr(self, "_trigram_unavailable_warned", False):
+            return
+        self._trigram_unavailable_warned = True
+        logger.info(
+            "SQLite trigram tokenizer unavailable for %s "
+            "(requires SQLite >= 3.34, this build is %s); "
+            "CJK/substring search will fall back to LIKE: %s",
+            self.db_path,
+            sqlite3.sqlite_version,
+            exc,
+        )
 
     def _warn_fts5_unavailable(self, exc: sqlite3.OperationalError) -> None:
         self._fts_enabled = False
@@ -818,9 +855,12 @@ class SessionDB:
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
 
     @staticmethod
-    def _rebuild_fts_indexes(cursor: sqlite3.Cursor) -> None:
-        for table_name in ("messages_fts", "messages_fts_trigram"):
-            cursor.execute(f"DELETE FROM {table_name}")
+    def _rebuild_fts_indexes(
+        cursor: sqlite3.Cursor,
+        *,
+        include_trigram: bool = True,
+    ) -> None:
+        cursor.execute("DELETE FROM messages_fts")
         cursor.execute(
             "INSERT INTO messages_fts(rowid, content) "
             "SELECT id, "
@@ -829,6 +869,9 @@ class SessionDB:
             "COALESCE(tool_calls, '') "
             "FROM messages"
         )
+        if not include_trigram:
+            return
+        cursor.execute("DELETE FROM messages_fts_trigram")
         cursor.execute(
             "INSERT INTO messages_fts_trigram(rowid, content) "
             "SELECT id, "
@@ -844,7 +887,12 @@ class SessionDB:
             return True
         except sqlite3.OperationalError as exc:
             if self._is_fts5_unavailable_error(exc):
-                self._warn_fts5_unavailable(exc)
+                # Only disable FTS entirely when the whole module is missing.
+                # A missing trigram tokenizer only affects trigram searches.
+                if self._is_trigram_unavailable_error(exc):
+                    self._warn_trigram_unavailable(exc)
+                else:
+                    self._warn_fts5_unavailable(exc)
                 return None
             if "no such table" in str(exc).lower():
                 return False
@@ -868,7 +916,13 @@ class SessionDB:
         except sqlite3.OperationalError as exc:
             if not self._is_fts5_unavailable_error(exc):
                 raise
-            self._warn_fts5_unavailable(exc)
+            # Only disable FTS entirely when the whole FTS5 module is missing.
+            # A missing specific tokenizer (e.g. trigram) means only that
+            # particular table cannot be created — the base FTS5 table is fine.
+            if self._is_trigram_unavailable_error(exc):
+                self._warn_trigram_unavailable(exc)
+            else:
+                self._warn_fts5_unavailable(exc)
             return False
 
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
@@ -1166,21 +1220,23 @@ class SessionDB:
                         except sqlite3.OperationalError as exc:
                             if not self._is_fts5_unavailable_error(exc):
                                 raise
-                            self._warn_fts5_unavailable(exc)
-                            fts5_available = False
-                            fts_migrations_complete = False
+                            if self._is_trigram_unavailable_error(exc):
+                                self._warn_trigram_unavailable(exc)
+                            else:
+                                self._warn_fts5_unavailable(exc)
+                                fts5_available = False
+                                fts_migrations_complete = False
                             break
 
                     if fts5_available:
                         # Recreate virtual tables + triggers with the new inline-mode
                         # schema that indexes content || tool_name || tool_calls.
-                        if (
-                            self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
-                            and self._ensure_fts_schema(
-                                cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
-                            )
-                        ):
-                            # Backfill both indexes from every existing messages row.
+                        # Handle base and trigram independently — a missing
+                        # trigram tokenizer should not prevent base FTS backfill.
+                        base_fts_ok = self._ensure_fts_schema(
+                            cursor, "messages_fts", FTS_SQL
+                        )
+                        if base_fts_ok:
                             cursor.execute(
                                 "INSERT INTO messages_fts(rowid, content) "
                                 "SELECT id, "
@@ -1189,6 +1245,10 @@ class SessionDB:
                                 "COALESCE(tool_calls, '') "
                                 "FROM messages"
                             )
+                        trigram_ok = self._ensure_fts_schema(
+                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                        )
+                        if trigram_ok:
                             cursor.execute(
                                 "INSERT INTO messages_fts_trigram(rowid, content) "
                                 "SELECT id, "
@@ -1197,8 +1257,12 @@ class SessionDB:
                                 "COALESCE(tool_calls, '') "
                                 "FROM messages"
                             )
-                        else:
+                        if not base_fts_ok:
                             fts_migrations_complete = False
+                        # Track trigram availability for CJK LIKE fallback.
+                        self._trigram_available = trigram_ok
+                    else:
+                        fts_migrations_complete = False
                 else:
                     fts_migrations_complete = False
             if current_version < 12:
@@ -1268,8 +1332,12 @@ class SessionDB:
                 trigram_enabled = self._ensure_fts_schema(
                     cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
                 )
-                if trigram_enabled and triggers_need_repair:
-                    self._rebuild_fts_indexes(cursor)
+                self._trigram_available = trigram_enabled
+                if triggers_need_repair:
+                    self._rebuild_fts_indexes(
+                        cursor,
+                        include_trigram=trigram_enabled,
+                    )
 
         self._conn.commit()
 
@@ -1778,6 +1846,43 @@ class SessionDB:
 
         return cleaned
 
+    def _is_compression_ancestor(
+        self, conn, *, ancestor_id: str, descendant_id: str
+    ) -> bool:
+        """Return True if *ancestor_id* is a compression predecessor of
+        *descendant_id* (walking parent links up the continuation chain).
+
+        The continuation edge is the canonical one shared with
+        :func:`_ephemeral_child_sql` / :meth:`set_session_archived`
+        (``_COMPRESSION_CHILD_SQL``): a parent → child edge counts only when the
+        parent ended with ``end_reason = 'compression'`` and the child started
+        at or after the parent's ``ended_at``, which distinguishes continuations
+        from delegate subagents / branch children that also carry a
+        ``parent_session_id``. Expressed as a single recursive CTE rather than a
+        per-hop Python walk so the edge definition lives in exactly one place.
+        """
+        if not ancestor_id or not descendant_id or ancestor_id == descendant_id:
+            return False
+        # Walk parent links up from the descendant, following only compression
+        # continuation edges, and check whether ancestor_id is reached.
+        edge = _COMPRESSION_CHILD_SQL.format(a="child")
+        row = conn.execute(
+            f"""
+            WITH RECURSIVE ancestors(id) AS (
+                SELECT ?
+                UNION
+                SELECT parent.id
+                FROM ancestors a
+                JOIN sessions child ON child.id = a.id
+                JOIN sessions parent ON parent.id = child.parent_session_id
+                WHERE {edge}
+            )
+            SELECT 1 FROM ancestors WHERE id = ? AND id != ? LIMIT 1
+            """,
+            (descendant_id, ancestor_id, descendant_id),
+        ).fetchone()
+        return row is not None
+
     def set_session_title(self, session_id: str, title: str) -> bool:
         """Set or update a session's title.
 
@@ -1796,9 +1901,29 @@ class SessionDB:
                 )
                 conflict = cursor.fetchone()
                 if conflict:
-                    raise ValueError(
-                        f"Title '{title}' is already in use by session {conflict['id']}"
-                    )
+                    conflict_id = conflict["id"]
+                    # A compression continuation is the live, projected-forward
+                    # head of its conversation; its compressed predecessors are
+                    # ended and hidden from the session list (list_sessions_rich
+                    # projects roots → tip). When the title that "conflicts" is
+                    # held by such a hidden ancestor, the user has no way to free
+                    # it — renaming the visible tip back to the base name would
+                    # dead-end with "already in use by <session they can't see>".
+                    # Treat this as a transfer: move the title off the ancestor
+                    # onto the continuation. Uniqueness is preserved (still only
+                    # one session carries the exact title) and the parent-link
+                    # lineage is untouched.
+                    if self._is_compression_ancestor(
+                        conn, ancestor_id=conflict_id, descendant_id=session_id
+                    ):
+                        conn.execute(
+                            "UPDATE sessions SET title = NULL WHERE id = ?",
+                            (conflict_id,),
+                        )
+                    else:
+                        raise ValueError(
+                            f"Title '{title}' is already in use by session {conflict_id}"
+                        )
             cursor = conn.execute(
                 "UPDATE sessions SET title = ? WHERE id = ?",
                 (title, session_id),
@@ -2470,12 +2595,97 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def _insert_message_rows(self, conn, session_id: str, messages: List[Dict[str, Any]]) -> tuple[int, int]:
+        """Insert *messages* as fresh active rows for *session_id*.
+
+        Shared by :meth:`replace_messages` (delete-then-insert) and
+        :meth:`archive_and_compact` (soft-archive-then-insert). Runs inside the
+        caller's write transaction (takes the live ``conn``). Returns
+        ``(inserted_count, tool_call_count)``. Does NOT touch sessions.* counters
+        — the caller owns that, since the two flows reconcile counts differently.
+        """
+        now_ts = time.time()
+        inserted = 0
+        tool_calls_total = 0
+        for msg in messages:
+            role = msg.get("role", "unknown")
+            tool_calls = msg.get("tool_calls")
+            message_timestamp = now_ts
+            if msg.get("timestamp") is not None:
+                try:
+                    ts_value = msg.get("timestamp")
+                    if hasattr(ts_value, "timestamp"):
+                        message_timestamp = float(ts_value.timestamp())
+                    else:
+                        message_timestamp = float(ts_value)
+                except (TypeError, ValueError):
+                    logger.debug("Ignoring invalid explicit message timestamp: %r", msg.get("timestamp"))
+            reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+            codex_reasoning_items = (
+                msg.get("codex_reasoning_items") if role == "assistant" else None
+            )
+            codex_message_items = (
+                msg.get("codex_message_items") if role == "assistant" else None
+            )
+            reasoning_details_json = (
+                json.dumps(reasoning_details) if reasoning_details else None
+            )
+            codex_items_json = (
+                json.dumps(codex_reasoning_items) if codex_reasoning_items else None
+            )
+            codex_message_items_json = (
+                json.dumps(codex_message_items) if codex_message_items else None
+            )
+            tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+            # Accept either `platform_message_id` (new explicit name) or
+            # `message_id` (yuanbao's existing convention on message dicts).
+            platform_msg_id = (
+                msg.get("platform_message_id") or msg.get("message_id")
+            )
+
+            conn.execute(
+                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                   codex_message_items, platform_message_id, observed)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    role,
+                    self._encode_content(msg.get("content")),
+                    msg.get("tool_call_id"),
+                    tool_calls_json,
+                    msg.get("tool_name"),
+                    message_timestamp,
+                    msg.get("token_count"),
+                    msg.get("finish_reason"),
+                    msg.get("reasoning") if role == "assistant" else None,
+                    msg.get("reasoning_content") if role == "assistant" else None,
+                    reasoning_details_json,
+                    codex_items_json,
+                    codex_message_items_json,
+                    platform_msg_id,
+                    1 if msg.get("observed") else 0,
+                ),
+            )
+            inserted += 1
+            if tool_calls is not None:
+                tool_calls_total += (
+                    len(tool_calls) if isinstance(tool_calls, list) else 1
+                )
+            now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
+        return inserted, tool_calls_total
+
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.
 
         Used by transcript-rewrite flows such as /retry, /undo, and /compress.
         The delete + reinsert sequence must commit as one transaction so a
         mid-rewrite failure does not leave SQLite with a partial transcript.
+
+        DESTRUCTIVE: the prior rows are DELETEd (and drop out of the FTS index).
+        For compaction that must preserve the pre-compaction transcript under
+        the same id, use :meth:`archive_and_compact` instead.
         """
 
         def _do(conn):
@@ -2486,85 +2696,68 @@ class SessionDB:
                 "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
                 (session_id,),
             )
-
-            now_ts = time.time()
-            total_messages = 0
-            total_tool_calls = 0
-            for msg in messages:
-                role = msg.get("role", "unknown")
-                tool_calls = msg.get("tool_calls")
-                message_timestamp = now_ts
-                if msg.get("timestamp") is not None:
-                    try:
-                        ts_value = msg.get("timestamp")
-                        if hasattr(ts_value, "timestamp"):
-                            message_timestamp = float(ts_value.timestamp())
-                        else:
-                            message_timestamp = float(ts_value)
-                    except (TypeError, ValueError):
-                        logger.debug("Ignoring invalid explicit message timestamp: %r", msg.get("timestamp"))
-                reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
-                codex_reasoning_items = (
-                    msg.get("codex_reasoning_items") if role == "assistant" else None
-                )
-                codex_message_items = (
-                    msg.get("codex_message_items") if role == "assistant" else None
-                )
-
-                reasoning_details_json = (
-                    json.dumps(reasoning_details) if reasoning_details else None
-                )
-                codex_items_json = (
-                    json.dumps(codex_reasoning_items) if codex_reasoning_items else None
-                )
-                codex_message_items_json = (
-                    json.dumps(codex_message_items) if codex_message_items else None
-                )
-                tool_calls_json = json.dumps(tool_calls) if tool_calls else None
-                # Accept either `platform_message_id` (new explicit name) or
-                # `message_id` (yuanbao's existing convention on message dicts).
-                platform_msg_id = (
-                    msg.get("platform_message_id") or msg.get("message_id")
-                )
-
-                conn.execute(
-                    """INSERT INTO messages (session_id, role, content, tool_call_id,
-                       tool_calls, tool_name, timestamp, token_count, finish_reason,
-                       reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
-                       codex_message_items, platform_message_id, observed)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        session_id,
-                        role,
-                        self._encode_content(msg.get("content")),
-                        msg.get("tool_call_id"),
-                        tool_calls_json,
-                        msg.get("tool_name"),
-                        message_timestamp,
-                        msg.get("token_count"),
-                        msg.get("finish_reason"),
-                        msg.get("reasoning") if role == "assistant" else None,
-                        msg.get("reasoning_content") if role == "assistant" else None,
-                        reasoning_details_json,
-                        codex_items_json,
-                        codex_message_items_json,
-                        platform_msg_id,
-                        1 if msg.get("observed") else 0,
-                    ),
-                )
-                total_messages += 1
-                if tool_calls is not None:
-                    total_tool_calls += (
-                        len(tool_calls) if isinstance(tool_calls, list) else 1
-                    )
-                now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)
-
+            total_messages, total_tool_calls = self._insert_message_rows(
+                conn, session_id, messages
+            )
             conn.execute(
                 "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
                 (total_messages, total_tool_calls, session_id),
             )
 
         self._execute_write(_do)
+
+    def archive_and_compact(
+        self, session_id: str, compacted_messages: List[Dict[str, Any]]
+    ) -> int:
+        """Non-destructive in-place compaction for a single durable session id.
+
+        Soft-archives every currently-active message (``active = 0``) and
+        inserts *compacted_messages* as fresh active rows — atomically, in one
+        write transaction. The conversation keeps ONE session id for life
+        (#38763) WITHOUT destroying history:
+
+        - The live-context load (:meth:`get_messages_as_conversation`,
+          :meth:`get_messages`) filters ``active = 1`` by default, so the model
+          reloads ONLY the compacted set.
+        - The archived pre-compaction turns stay on disk (active=0) and stay
+          DISCOVERABLE: they are marked compacted=1, and search_messages()
+          includes compacted=1 rows by default — so session_search still finds
+          them, unlike rewind/undo rows (active=0, compacted=0) which stay
+          hidden. They remain in the FTS index (the messages_fts* triggers
+          index on INSERT / drop on DELETE and don't key on active/compacted;
+          flipping to active=0 is a content-preserving UPDATE) and are
+          recoverable via get_messages(..., include_inactive=True).
+
+        This is the durability-preserving alternative to :meth:`replace_messages`
+        for compaction. ``message_count`` is set to the ACTIVE (compacted) count,
+        matching what the live load returns. Returns the new active count.
+        """
+
+        def _do(conn):
+            # Soft-archive the live turns: active=0 hides them from the live
+            # context load, compacted=1 marks them as "summarized away" (vs
+            # rewind/undo's active=0+compacted=0, which means "user took it
+            # back"). search_messages includes compacted=1 rows by default so
+            # the pre-compaction transcript stays discoverable; live-context
+            # loads (active=1 only) still exclude them.
+            conn.execute(
+                "UPDATE messages SET active = 0, compacted = 1 "
+                "WHERE session_id = ? AND active = 1",
+                (session_id,),
+            )
+            inserted, tool_calls_total = self._insert_message_rows(
+                conn, session_id, compacted_messages
+            )
+            # message_count / tool_call_count reflect the LIVE (active) set —
+            # the archived rows are still on disk but not part of the live count.
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (inserted, tool_calls_total, session_id),
+            )
+            return inserted
+
+        return self._execute_write(_do)
+
 
     def get_messages(
         self, session_id: str, include_inactive: bool = False
@@ -2819,6 +3012,24 @@ class SessionDB:
         """
         if not session_id:
             return session_id
+
+        # Follow the compression-continuation chain forward to the live tip
+        # FIRST. Auto-compression ends the current session and forks a
+        # continuation child, but a long-lived parent keeps its own flushed
+        # message rows — so the empty-head walk below never redirects it, and
+        # resuming the parent id reloads the pre-compression transcript while
+        # the turns generated *after* compression (and their responses) sit in
+        # the continuation. ``get_compression_tip`` is lineage-aware: it only
+        # follows children whose parent ended with ``end_reason='compression'``
+        # (created after the parent was ended), so delegation / branch children
+        # never hijack the resume. This is the fix for the desktop "I came back
+        # and the reply isn't there" report on large sessions.
+        try:
+            tip = self.get_compression_tip(session_id)
+        except Exception:
+            tip = session_id
+        if tip and tip != session_id:
+            session_id = tip
 
         with self._lock:
             # If this session already has messages, nothing to redirect.
@@ -3284,8 +3495,12 @@ class SessionDB:
         ignores ``sort``. The trigram CJK path honours ``sort`` like the main
         FTS5 path.
 
-        Rewound (``active=0``) rows are excluded by default. Pass
-        ``include_inactive=True`` to search every row.
+        Rewound (``active=0``, ``compacted=0``) rows are excluded by default —
+        the user took those back. Compaction-archived rows (``active=0``,
+        ``compacted=1``) ARE included by default: they were summarized away from
+        the live context but remain part of the conversation's record, so the
+        pre-compaction transcript stays discoverable after in-place compaction
+        (#38763). Pass ``include_inactive=True`` to search every row regardless.
         """
         if not self._fts_enabled:
             return []
@@ -3320,7 +3535,10 @@ class SessionDB:
         where_clauses = ["messages_fts MATCH ?"]
         params: list = [query]
         if not include_inactive:
-            where_clauses.append("m.active = 1")
+            # Live rows (active=1) AND compaction-archived rows (compacted=1)
+            # are discoverable; only rewind/undo rows (active=0, compacted=0)
+            # are hidden. See archive_and_compact() / #38763.
+            where_clauses.append("(m.active = 1 OR m.compacted = 1)")
 
         if source_filter is not None:
             source_placeholders = ",".join("?" for _ in source_filter)
@@ -3386,7 +3604,8 @@ class SessionDB:
                 self._count_cjk(t) < 3 for t in _tokens_for_check
             )
 
-            if cjk_count >= 3 and not _any_short_cjk:
+            _trigram_succeeded = False
+            if cjk_count >= 3 and not _any_short_cjk and self._trigram_available:
                 # Trigram FTS5 path — quote each non-operator token to handle
                 # FTS5 special chars (%, *, etc.) while preserving boolean
                 # operators (AND, OR, NOT) for multi-term queries.
@@ -3401,7 +3620,7 @@ class SessionDB:
                 tri_where = ["messages_fts_trigram MATCH ?"]
                 tri_params: list = [trigram_query]
                 if not include_inactive:
-                    tri_where.append("m.active = 1")
+                    tri_where.append("(m.active = 1 OR m.compacted = 1)")
                 if source_filter is not None:
                     tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     tri_params.extend(source_filter)
@@ -3435,11 +3654,13 @@ class SessionDB:
                     try:
                         tri_cursor = self._conn.execute(tri_sql, tri_params)
                     except sqlite3.OperationalError:
-                        matches = []
+                        # Trigram query failed at runtime — fall through to LIKE.
+                        pass
                     else:
                         matches = [dict(row) for row in tri_cursor.fetchall()]
-            else:
-                # Short / mixed CJK query: trigram cannot match tokens with
+                        _trigram_succeeded = True
+            if not _trigram_succeeded:
+                # Short / mixed CJK query, trigram unavailable, or trigram
                 # <3 CJK chars. Fall back to LIKE substring search.
                 # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
                 # build one LIKE condition per non-operator token so each term
@@ -4376,6 +4597,83 @@ class SessionDB:
             except sqlite3.OperationalError:
                 return None
         return dict(row) if row else None
+
+    def delete_telegram_topic_binding(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+    ) -> int:
+        """Remove the binding row for a single (chat, thread) pair.
+
+        Called when the Telegram Bot API confirms a topic was deleted
+        externally (``Thread not found`` after the same-thread retry
+        already failed).  Without this prune, the stale row keeps
+        living in ``telegram_dm_topic_bindings`` and the
+        recovery logic in ``gateway.run._recover_telegram_topic_thread_id``
+        cheerfully redirects future inbound messages to the deleted
+        topic, causing tool progress, approvals, and replies to land
+        in the wrong place.  Issue #31501.
+
+        When this prune removes the chat's *last* remaining binding,
+        the chat's row in ``telegram_dm_topic_mode`` is also flipped to
+        ``enabled = 0`` in the same transaction.  Otherwise the chat
+        would be left in topic mode with zero lanes — and
+        ``gateway.run._recover_telegram_topic_thread_id`` keeps treating
+        the chat as topic-enabled, lobby messages keep hunting for a
+        binding that no longer exists, and a user who disabled topics in
+        the Telegram client (rather than via ``/topic off``) stays stuck
+        until the next send happens to fail. Clearing the flag makes
+        recovery fully stand down once the dead topics are gone.
+
+        Returns the number of binding rows deleted (0 when the binding
+        was already absent or the topic-mode tables haven't been
+        migrated yet — both are silent no-ops; we never raise from
+        a cleanup hot path).
+        """
+        chat_id = str(chat_id)
+        thread_id = str(thread_id)
+        deleted = {"count": 0}
+
+        def _do(conn):
+            try:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM telegram_dm_topic_bindings
+                    WHERE chat_id = ? AND thread_id = ?
+                    """,
+                    (chat_id, thread_id),
+                )
+                deleted["count"] = cursor.rowcount or 0
+            except sqlite3.OperationalError:
+                # Tables don't exist yet — nothing to prune.
+                deleted["count"] = 0
+                return
+            if not deleted["count"]:
+                return
+            # If that was the chat's last binding, disable topic mode for
+            # the chat so recovery stops steering lobby messages at a now
+            # empty lane set. Same transaction → no read-after-prune race.
+            try:
+                remaining = conn.execute(
+                    """
+                    SELECT 1 FROM telegram_dm_topic_bindings
+                    WHERE chat_id = ? LIMIT 1
+                    """,
+                    (chat_id,),
+                ).fetchone()
+                if remaining is None:
+                    conn.execute(
+                        "UPDATE telegram_dm_topic_mode "
+                        "SET enabled = 0, updated_at = ? WHERE chat_id = ?",
+                        (time.time(), chat_id),
+                    )
+            except sqlite3.OperationalError:
+                # telegram_dm_topic_mode absent — binding prune still stands.
+                pass
+
+        self._execute_write(_do)
+        return deleted["count"]
 
     def bind_telegram_topic(
         self,

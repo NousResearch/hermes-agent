@@ -13,6 +13,7 @@ import {
   type GatewayEventPayload,
   reasoningPart,
   renderMediaTags,
+  textPart,
   upsertToolPart
 } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
@@ -33,6 +34,7 @@ import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   setCurrentBranch,
@@ -869,9 +871,17 @@ export function useMessageStream({
         if (sessionId) {
           appendReasoningDelta(sessionId, coerceThinkingText(payload?.text))
         }
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: true })
+        }
       } else if (event.type === 'reasoning.available') {
         if (sessionId) {
           appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), true)
+        }
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: true })
         }
       } else if (event.type === 'message.complete') {
         if (!sessionId) {
@@ -894,6 +904,20 @@ export function useMessageStream({
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
+
+          // Pet beat: a finished turn always celebrates — go straight to the
+          // jump, never linger on the run/reason pose. One atom update (clears
+          // toolRunning/reasoning AND sets celebrate together) so no stray "run"
+          // frame leaks to the sprite — including the popped-out overlay, which
+          // mirrors each activity change. The jump runs ~2 loops, then settles.
+          flashPetActivity({ celebrate: true, reasoning: false, toolRunning: false }, 2200)
+
+          // Light up the pet's mail icon if the user wasn't looking when the turn
+          // finished — a glanceable "new message" hint on the popped-out overlay.
+          // Cleared when they open the app via the mail icon or refocus the window.
+          if (typeof document !== 'undefined' && !document.hasFocus()) {
+            markPetUnread()
+          }
         }
 
         if (payload?.usage) {
@@ -906,10 +930,19 @@ export function useMessageStream({
 
         flushQueuedDeltas(sessionId)
         upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
+
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: false, toolRunning: true })
+        }
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
           flushQueuedDeltas(sessionId)
           upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
+
+          if (isActiveEvent) {
+            setPetActivity({ toolRunning: false })
+          }
+
           // A pending clarify blocks the turn, so the first tool.complete after
           // one is the clarify resolving — drop the "needs input" flag here so
           // the sidebar indicator clears as soon as it's answered, not only at
@@ -1080,6 +1113,32 @@ export function useMessageStream({
           // completions / watch matches here — re-sync the status stack.
           void refreshBackgroundProcesses(sessionId)
         }
+      } else if (event.type === 'review.summary') {
+        // Self-improvement background review saved something to memory/skills
+        // and emitted a persistent summary (Python formats it as
+        // "💾 Self-improvement review: …"). The CLI prints this via
+        // prompt_toolkit and the Ink TUI renders it as a system line; the
+        // desktop has neither, so without this handler the skill/memory
+        // change happens silently. Surface it as a persistent system message
+        // in the transcript so the user is always informed — it must not be a
+        // transient toast that can be missed.
+        const text = coerceGatewayText(payload?.text).trim()
+
+        if (text && sessionId) {
+          flushQueuedDeltas(sessionId)
+          updateSessionState(sessionId, state => ({
+            ...state,
+            messages: [
+              ...state.messages,
+              {
+                id: `review-summary-${Date.now()}`,
+                role: 'system',
+                parts: [textPart(text)],
+                timestamp: Math.floor(Date.now() / 1000)
+              }
+            ]
+          }))
+        }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
@@ -1093,6 +1152,11 @@ export function useMessageStream({
           compactedTurnRef.current.delete(sessionId)
         }
 
+        if (isActiveEvent) {
+          setPetActivity({ reasoning: false, toolRunning: false })
+          flashPetActivity({ error: true })
+        }
+
         dispatchNativeNotification({
           body: errorMessage,
           kind: 'turnError',
@@ -1102,8 +1166,13 @@ export function useMessageStream({
 
         if (looksLikeProviderSetup) {
           requestDesktopOnboarding(errorMessage)
-        } else if (isActiveEvent) {
+        } else {
+          // Toast globally, not just when the failing thread is focused: a
+          // turn-ending error (e.g. out of funds) blocks every thread, so the
+          // inline error alone is too easy to miss. The stable id collapses the
+          // same error from multiple blocked threads into one toast.
           notify({
+            id: `gateway-error:${errorMessage}`,
             kind: 'error',
             title: 'Hermes error',
             message: errorMessage

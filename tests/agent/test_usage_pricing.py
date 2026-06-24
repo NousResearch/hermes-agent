@@ -254,185 +254,73 @@ def test_deepseek_v4_pro_estimate_usage_cost():
     assert float(result.amount_usd) == 3.48
 
 
-def test_custom_pricing_override_exact_model_wins(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
-        lambda: {
-            "pricing": {
-                "custom_overrides": {
-                    "enabled": True,
-                    "providers": [
-                        {
-                            "provider": "custom",
-                            "billing_mode": "user_override",
-                            "models": [
-                                {
-                                    "model": "llama3.3:70b",
-                                    "input_cost_per_million": 1.2,
-                                    "output_cost_per_million": 4.8,
-                                }
-                            ],
-                        }
-                    ],
-                }
-            }
-        },
+def test_bedrock_claude_rows_all_carry_cache_pricing():
+    """Invariant: every Bedrock Claude pricing row must carry cache-read AND
+    cache-write rates, otherwise a cached session prices as ``unknown``.
+
+    Bedrock Claude routes through the AnthropicBedrock SDK and injects
+    cache_control, so cached tokens are always reported — the pricing layer
+    must be able to value them.  See #50295.
+    """
+    from agent.usage_pricing import _OFFICIAL_DOCS_PRICING
+
+    claude_rows = [
+        (prov, model)
+        for (prov, model) in _OFFICIAL_DOCS_PRICING
+        if prov == "bedrock" and "claude" in model
+    ]
+    assert claude_rows, "expected at least one bedrock Claude pricing row"
+    for key in claude_rows:
+        entry = _OFFICIAL_DOCS_PRICING[key]
+        assert entry.input_cost_per_million is not None, key
+        assert entry.cache_read_cost_per_million is not None, key
+        assert entry.cache_write_cost_per_million is not None, key
+        # Cache reads are cheaper than fresh input; cache writes cost more.
+        assert entry.cache_read_cost_per_million < entry.input_cost_per_million, key
+        assert entry.cache_write_cost_per_million > entry.input_cost_per_million, key
+
+
+def test_bedrock_cross_region_profile_prefix_resolves_to_pricing():
+    """Cross-region inference profiles (us./global./eu. prefixes) must resolve
+    to the same pricing entry as the bare foundation-model id.  Without prefix
+    normalization, ``us.anthropic.claude-*`` sessions price as unknown.
+    """
+    bedrock_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    bare = get_pricing_entry(
+        "anthropic.claude-sonnet-4-5", provider="bedrock", base_url=bedrock_url
     )
+    assert bare is not None
+    for prefix in ("us.", "global.", "eu."):
+        scoped = get_pricing_entry(
+            f"{prefix}anthropic.claude-sonnet-4-5",
+            provider="bedrock",
+            base_url=bedrock_url,
+        )
+        assert scoped is not None, prefix
+        assert scoped.input_cost_per_million == bare.input_cost_per_million
+        assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
 
-    entry = get_pricing_entry("llama3.3:70b", provider="custom", base_url="http://localhost:11434/v1")
 
-    assert entry is not None
-    assert entry.source == "user_override"
-    assert entry.input_cost_per_million is not None
-    assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == pytest.approx(1.2)
-    assert float(entry.output_cost_per_million) == pytest.approx(4.8)
-
-
-def test_custom_pricing_override_provider_default_fallback(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
-        lambda: {
-            "pricing": {
-                "custom_overrides": {
-                    "enabled": True,
-                    "providers": [
-                        {
-                            "provider": "custom",
-                            "billing_mode": "custom_contract",
-                            "default": {
-                                "input_cost_per_million": 0.7,
-                                "output_cost_per_million": 2.1,
-                            },
-                            "models": [],
-                        }
-                    ],
-                }
-            }
-        },
+def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
+    """A Bedrock Claude session with cache hits must produce a dollar estimate,
+    not ``unknown`` — the user-visible symptom in #50295.
+    """
+    bedrock_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
+    usage = SimpleNamespace(
+        input_tokens=55,
+        output_tokens=7113,
+        cache_read_input_tokens=1369379,
+        cache_creation_input_tokens=42135,
     )
+    canonical = normalize_usage(usage, provider="bedrock", api_mode="anthropic_messages")
+    assert canonical.cache_read_tokens == 1369379
+    assert canonical.cache_write_tokens == 42135
 
-    entry = get_pricing_entry("gemma-3-27b", provider="custom", base_url="http://localhost:11434/v1")
-
-    assert entry is not None
-    assert entry.source == "custom_contract"
-    assert entry.input_cost_per_million is not None
-    assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == pytest.approx(0.7)
-    assert float(entry.output_cost_per_million) == pytest.approx(2.1)
-
-
-def test_custom_pricing_override_active_plan_bucket_wins(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
-        lambda: {
-            "pricing": {
-                "custom_overrides": {
-                    "enabled": True,
-                    "active_plans": {"custom": "enterprise-2026"},
-                    "providers": [
-                        {
-                            "provider": "custom",
-                            "default": {
-                                "input_cost_per_million": 0.7,
-                                "output_cost_per_million": 2.1,
-                            },
-                        },
-                        {
-                            "provider": "custom",
-                            "plan": "enterprise-2026",
-                            "billing_mode": "custom_contract",
-                            "models": [
-                                {
-                                    "model": "gemma-3-27b",
-                                    "input_cost_per_million": 0.5,
-                                    "output_cost_per_million": 1.5,
-                                }
-                            ],
-                        },
-                    ],
-                }
-            }
-        },
+    result = estimate_usage_cost(
+        "us.anthropic.claude-opus-4-6",
+        canonical,
+        provider="bedrock",
+        base_url=bedrock_url,
     )
-
-    entry = get_pricing_entry("gemma-3-27b", provider="custom", base_url="http://localhost:11434/v1")
-
-    assert entry is not None
-    assert entry.source == "custom_contract"
-    assert entry.input_cost_per_million is not None
-    assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == pytest.approx(0.5)
-    assert float(entry.output_cost_per_million) == pytest.approx(1.5)
-
-
-def test_custom_pricing_override_generic_exact_beats_plan_default(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
-        lambda: {
-            "pricing": {
-                "custom_overrides": {
-                    "enabled": True,
-                    "active_plans": {"custom": "enterprise-2026"},
-                    "providers": [
-                        {
-                            "provider": "custom",
-                            "models": [
-                                {
-                                    "model": "gemma-3-27b",
-                                    "input_cost_per_million": 1.1,
-                                    "output_cost_per_million": 3.3,
-                                }
-                            ],
-                        },
-                        {
-                            "provider": "custom",
-                            "plan": "enterprise-2026",
-                            "billing_mode": "custom_contract",
-                            "default": {
-                                "input_cost_per_million": 0.5,
-                                "output_cost_per_million": 1.5,
-                            },
-                        },
-                    ],
-                }
-            }
-        },
-    )
-
-    entry = get_pricing_entry("gemma-3-27b", provider="custom", base_url="http://localhost:11434/v1")
-
-    assert entry is not None
-    assert entry.source == "user_override"
-    assert entry.input_cost_per_million is not None
-    assert entry.output_cost_per_million is not None
-    assert float(entry.input_cost_per_million) == pytest.approx(1.1)
-    assert float(entry.output_cost_per_million) == pytest.approx(3.3)
-
-
-def test_custom_pricing_override_effective_dates_filter_entries(monkeypatch):
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
-        lambda: {
-            "pricing": {
-                "custom_overrides": {
-                    "enabled": True,
-                    "providers": [
-                        {
-                            "provider": "custom",
-                            "default": {
-                                "input_cost_per_million": 0.7,
-                                "output_cost_per_million": 2.1,
-                                "effective_from": "2099-01-01",
-                            },
-                            "models": [],
-                        }
-                    ],
-                }
-            }
-        },
-    )
-
-    entry = get_pricing_entry("gemma-3-27b", provider="custom", base_url="http://localhost:11434/v1")
-
-    assert entry is None
+    assert result.status == "estimated"
+    assert result.amount_usd is not None

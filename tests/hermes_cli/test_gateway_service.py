@@ -599,6 +599,8 @@ class TestLaunchdServiceRecovery:
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        # Not running inside the gateway tree → direct bootout/bootstrap path.
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: None)
 
         gateway_cli.launchd_install()
 
@@ -608,6 +610,110 @@ class TestLaunchdServiceRecovery:
         # The calls list includes launchctl print probes from _launchd_domain()
         # before the bootout/bootstrap calls. Filter to only bootout/bootstrap.
         service_calls = [c for c in calls if "bootout" in c or "bootstrap" in c]
+        assert service_calls[:2] == [
+            ["launchctl", "bootout", f"{domain}/{label}"],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+        ]
+
+    def test_refresh_defers_reload_when_running_inside_gateway_tree(self, tmp_path, monkeypatch):
+        """#43842: when the refresh runs inside the gateway's own process tree,
+        a direct bootout would kill this CLI before bootstrap. The reload must
+        be delegated to a detached helper instead."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_launchd_plist",
+            lambda: (
+                "<plist>--replace\n<key>HERMES_HOME</key>"
+                "<string>/Users/alice/.hermes</string></plist>"
+            ),
+        )
+        # Pretend the gateway is running and that we ARE inside its tree.
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr(
+            gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: pid == 4242
+        )
+
+        run_calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            run_calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        popen_calls = []
+
+        def fake_popen(cmd, **kwargs):
+            popen_calls.append((cmd, kwargs))
+            return SimpleNamespace(pid=9999)
+
+        monkeypatch.setattr(gateway_cli.subprocess, "Popen", fake_popen)
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert result is True
+        # The new plist was written.
+        assert "--replace" in plist_path.read_text(encoding="utf-8")
+        # No DIRECT bootout/bootstrap ran (those would kill us mid-sequence).
+        assert not [c for c in run_calls if "bootout" in c or "bootstrap" in c]
+        # Exactly one detached helper was spawned, in a new session, and it
+        # performs both bootout and bootstrap.
+        assert len(popen_calls) == 1
+        cmd, kwargs = popen_calls[0]
+        assert kwargs.get("start_new_session") is True
+        script = cmd[-1]
+        assert "bootout" in script and "bootstrap" in script
+        assert str(plist_path) in script
+
+    def test_refresh_uses_direct_reload_when_not_inside_gateway_tree(self, tmp_path, monkeypatch):
+        """Normal CLI-initiated refresh (outside the service tree) keeps the
+        direct synchronous bootout/bootstrap path."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_launchd_plist",
+            lambda: (
+                "<plist>--replace\n<key>HERMES_HOME</key>"
+                "<string>/Users/alice/.hermes</string></plist>"
+            ),
+        )
+        # Gateway running, but we are NOT inside its tree.
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda *a, **k: 4242)
+        monkeypatch.setattr(
+            gateway_cli, "_is_pid_ancestor_of_current_process", lambda pid: False
+        )
+
+        run_calls = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            run_calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        popen_calls = []
+        monkeypatch.setattr(
+            gateway_cli.subprocess, "Popen",
+            lambda cmd, **kw: popen_calls.append(cmd) or SimpleNamespace(pid=1),
+        )
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert result is True
+        # No detached helper — direct path taken.
+        assert not popen_calls
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        service_calls = [c for c in run_calls if "bootout" in c or "bootstrap" in c]
         assert service_calls[:2] == [
             ["launchctl", "bootout", f"{domain}/{label}"],
             ["launchctl", "bootstrap", domain, str(plist_path)],

@@ -734,6 +734,100 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
     assert all(sid == winner for sid in server._sessions)
 
 
+def test_session_resume_reuses_live_agent_after_compression_rotation(server, monkeypatch):
+    """Resume must match the live agent's current session_id, not stale session_key."""
+
+    target = "20260409_020202_child"
+    stale_parent = "20260409_010101_parent"
+    sid = "live-rotated"
+    server._sessions[sid] = {
+        "agent": types.SimpleNamespace(model="test/model", session_id=target),
+        "created_at": 123.0,
+        "display_history_prefix": [],
+        "history": [{"role": "assistant", "content": "live child"}],
+        "history_lock": threading.RLock(),
+        "last_active": 123.0,
+        "running": False,
+        "session_key": stale_parent,
+        "transport": server._stdio_transport,
+    }
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, _target):
+            return target
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    result = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100},
+        }
+    )
+
+    assert "error" not in result
+    assert result["result"]["session_id"] == sid
+    assert result["result"]["session_key"] == target
+    assert len(server._sessions) == 1
+
+
+def test_sync_session_key_after_compress_reanchors_active_session_lease(
+    server, monkeypatch, tmp_path
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from hermes_cli.active_sessions import (
+        active_session_registry_snapshot,
+        try_acquire_active_session,
+    )
+
+    lease, message = try_acquire_active_session(
+        session_id="session-old",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+        metadata={"live_session_id": "ui-1"},
+    )
+    assert message is None
+    assert lease is not None
+
+    session = {
+        "active_session_lease": lease,
+        "agent": types.SimpleNamespace(session_id="session-new"),
+        "session_key": "session-old",
+    }
+    fake_approval = types.SimpleNamespace(
+        disable_session_yolo=lambda *_args, **_kwargs: None,
+        enable_session_yolo=lambda *_args, **_kwargs: None,
+        is_session_yolo_enabled=lambda *_args, **_kwargs: False,
+        register_gateway_notify=lambda *_args, **_kwargs: None,
+        unregister_gateway_notify=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args, **_kwargs: None)
+
+    with patch.dict(sys.modules, {"tools.approval": fake_approval}):
+        server._sync_session_key_after_compress("ui-1", session)
+
+    snapshot = active_session_registry_snapshot()
+    assert session["session_key"] == "session-new"
+    assert lease.session_id == "session-new"
+    assert [entry["session_id"] for entry in snapshot] == ["session-new"]
+    lease.release()
+
+
 def test_session_resume_live_payload_uses_current_history_with_ancestors(server, monkeypatch):
     """Live resume should not reuse a stale ancestor-inclusive snapshot."""
 
@@ -1121,20 +1215,45 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
 
 
 @pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
-def test_slash_exec_rejects_pending_input_commands(server, cmd):
-    """slash.exec must reject commands that use _pending_input in the CLI."""
-    sid = "test-session"
-    server._sessions[sid] = {"session_key": sid, "agent": None}
+def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
+    """slash.exec must route _pending_input commands to command.dispatch
+    internally instead of returning the old 4018 "use command.dispatch"
+    fallback error (#48848). Some TUI clients failed that client-side
+    fallback, dropping the input and surfacing "empty command".
 
-    resp = server.handle_request({
+    The contract is that slash.exec produces exactly the response
+    command.dispatch would for the same command — no fragile retry hop.
+    """
+    base, _, arg = cmd.partition(" ")
+
+    def fresh_session():
+        return {"session_key": "test-session", "agent": None}
+
+    sid = "test-session"
+
+    # Response from the (new) internal routing in slash.exec.
+    server._sessions[sid] = fresh_session()
+    routed = server.handle_request({
         "id": "r1",
         "method": "slash.exec",
         "params": {"command": cmd, "session_id": sid},
     })
 
-    assert "error" in resp
-    assert resp["error"]["code"] == 4018
-    assert "pending-input command" in resp["error"]["message"]
+    # Response from calling command.dispatch directly with the parsed parts.
+    server._sessions[sid] = fresh_session()
+    direct = server.handle_request({
+        "id": "r1",
+        "method": "command.dispatch",
+        "params": {"name": base, "arg": arg, "session_id": sid},
+    })
+
+    # slash.exec must no longer emit the old client-fallback rejection.
+    if "error" in routed:
+        assert "pending-input command" not in routed["error"]["message"]
+
+    # Internal routing must yield the same payload as command.dispatch.
+    assert routed.get("result") == direct.get("result")
+    assert routed.get("error") == direct.get("error")
 
 
 def test_command_dispatch_queue_sends_message(server):

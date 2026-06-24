@@ -29,6 +29,10 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.side_effect_dedup import (
+    build_duplicate_send_message_skip_result,
+    find_prior_duplicate_send_message,
+)
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -278,6 +282,19 @@ def _run_agent_tool_execution_middleware(
         api_request_id=getattr(agent, "_current_api_request_id", "") or "",
     )
     return result, observed_args
+
+
+def _build_compression_duplicate_send_result(
+    messages: list[dict[str, Any]],
+    function_name: str,
+    function_args: dict[str, Any],
+) -> str | None:
+    if function_name != "send_message":
+        return None
+    prior_record = find_prior_duplicate_send_message(messages, function_args)
+    if prior_record is None:
+        return None
+    return build_duplicate_send_message_skip_result(function_args, prior_record)
 
 
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -540,16 +557,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         start = time.time()
         try:
             try:
-                result = agent._invoke_tool(
-                    function_name,
-                    function_args,
-                    effective_task_id,
-                    tool_call.id,
-                    messages=messages,
-                    pre_tool_block_checked=True,
-                    skip_tool_request_middleware=True,
-                    tool_request_middleware_trace=list(middleware_trace),
+                result = _build_compression_duplicate_send_result(
+                    messages, function_name, function_args
                 )
+                if result is None:
+                    result = agent._invoke_tool(
+                        function_name,
+                        function_args,
+                        effective_task_id,
+                        tool_call.id,
+                        messages=messages,
+                        pre_tool_block_checked=True,
+                        skip_tool_request_middleware=True,
+                        tool_request_middleware_trace=list(middleware_trace),
+                    )
             except KeyboardInterrupt:
                 try:
                     agent.interrupt("keyboard interrupt")
@@ -1046,6 +1067,23 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 status="blocked",
                 error_type="guardrail_block",
                 error_message=getattr(_guardrail_block_decision, "message", None) or "Tool blocked by guardrail policy",
+                middleware_trace=list(middleware_trace),
+            )
+        elif (
+            duplicate_skip_result := _build_compression_duplicate_send_result(
+                messages, function_name, function_args
+            )
+        ) is not None:
+            function_result = duplicate_skip_result
+            tool_duration = 0.0
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=function_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="ok",
                 middleware_trace=list(middleware_trace),
             )
         elif function_name == "todo":

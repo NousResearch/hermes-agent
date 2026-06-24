@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from agent.codex_responses_adapter import _normalize_codex_response
+from agent.side_effect_dedup import build_send_message_record, render_action_log_block
 
 import run_agent
 from run_agent import AIAgent
@@ -253,6 +254,16 @@ def _mock_tool_call(name="web_search", arguments="{}", call_id=None):
         type="function",
         function=SimpleNamespace(name=name, arguments=arguments),
     )
+
+
+def _summary_action_log_message(*records):
+    return {
+        "role": "assistant",
+        "content": (
+            "[CONTEXT COMPACTION - REFERENCE ONLY]\nsummary"
+            + render_action_log_block(list(records))
+        ),
+    }
 
 
 def _mock_response(
@@ -2589,6 +2600,34 @@ class TestConcurrentToolExecution:
         assert starts == [("c1", "web_search", {"query": "hello"})]
         assert completes == [("c1", "web_search", {"query": "hello"}, '{"success": true}')]
 
+    def test_sequential_skips_duplicate_send_message_from_compaction_log(self, agent):
+        send_args = {
+            "action": "send",
+            "target": "slack:ops",
+            "message": "Build failed on main",
+        }
+        prior_record = build_send_message_record(send_args)
+        tool_call = _mock_tool_call(
+            name="send_message",
+            arguments=json.dumps(send_args),
+            call_id="send-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = [_summary_action_log_message(prior_record)]
+
+        with patch(
+            "run_agent.handle_function_call",
+            side_effect=AssertionError("send_message should be skipped"),
+        ) as mock_handle:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        mock_handle.assert_not_called()
+        result = json.loads(messages[-1]["content"])
+        assert result["success"] is True
+        assert result["skipped"] is True
+        assert result["reason"] == "compression_duplicate_send_message"
+        assert result["target"] == "slack:ops"
+
     def test_concurrent_tool_callbacks_fire_for_each_tool(self, agent):
         tc1 = _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments='{"query":"two"}', call_id="c2")
@@ -2609,6 +2648,34 @@ class TestConcurrentToolExecution:
         assert len(completes) == 2
         assert {entry[0] for entry in completes} == {"c1", "c2"}
         assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
+
+    def test_concurrent_skips_duplicate_send_message_from_compaction_log(self, agent):
+        send_args = {
+            "action": "send",
+            "target": "slack:ops",
+            "message": "Build failed on main",
+        }
+        prior_record = build_send_message_record(send_args)
+        tool_call = _mock_tool_call(
+            name="send_message",
+            arguments=json.dumps(send_args),
+            call_id="send-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = [_summary_action_log_message(prior_record)]
+
+        with patch(
+            "run_agent.handle_function_call",
+            side_effect=AssertionError("send_message should be skipped"),
+        ) as mock_handle:
+            agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        mock_handle.assert_not_called()
+        result = json.loads(messages[-1]["content"])
+        assert result["success"] is True
+        assert result["skipped"] is True
+        assert result["reason"] == "compression_duplicate_send_message"
+        assert result["target"] == "slack:ops"
 
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""

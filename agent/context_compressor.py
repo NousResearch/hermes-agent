@@ -31,6 +31,13 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.side_effect_dedup import (
+    collect_successful_send_message_records,
+    extract_action_log_records,
+    merge_action_log_records,
+    render_action_log_block,
+    strip_action_log_blocks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1614,7 +1621,7 @@ Write only the summary body. Do not include any preamble or prefix."""
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
 PREVIOUS SUMMARY:
-{self._previous_summary}
+{strip_action_log_blocks(self._previous_summary)}
 
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
@@ -2479,6 +2486,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             # into the summarizer prompt via the iterative-update path.
             self._previous_summary = None
 
+        prior_action_records = extract_action_log_records(self._previous_summary or "")
+        new_action_records = collect_successful_send_message_records(turns_to_summarize)
+
         if not self.quiet_mode:
             logger.info(
                 "Context compression triggered (%d tokens >= %d threshold)",
@@ -2592,6 +2602,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                 turns_to_summarize,
                 reason=self._last_summary_error,
             )
+
+        merged_action_records = merge_action_log_records(
+            prior_action_records,
+            new_action_records,
+        )
+        if merged_action_records:
+            summary = strip_action_log_blocks(summary) + render_action_log_block(
+                merged_action_records
+            )
+        self._previous_summary = self._strip_summary_prefix(summary)
 
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"

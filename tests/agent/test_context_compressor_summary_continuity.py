@@ -1,8 +1,14 @@
 """Regression tests for iterative context-summary continuity."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.side_effect_dedup import (
+    build_send_message_record,
+    extract_action_log_records,
+    render_action_log_block,
+)
 
 
 def _compressor() -> ContextCompressor:
@@ -82,6 +88,83 @@ def test_handoff_in_protected_head_populates_previous_summary_before_update():
     with patch.object(compressor, "_generate_summary", side_effect=fake_generate_summary):
         compressor.compress(_messages_with_handoff(old_summary))
 
-    assert compressor._previous_summary == old_summary
+    assert compressor._previous_summary == "new summary from resumed turns"
     assert seen_turns
     assert all(old_summary not in str(msg.get("content", "")) for msg in seen_turns)
+
+
+def test_compress_merges_send_message_action_log_records_into_updated_summary():
+    compressor = _compressor()
+    prior_record = {
+        "tool": "send_message",
+        "target": "slack:ops",
+        "message_sha256": "abc123",
+        "fingerprint": "send_message:slack:ops:abc123",
+    }
+    prior_summary = (
+        "OLD-SUMMARY-BODY durable continuity facts"
+        + render_action_log_block([prior_record])
+    )
+    send_args = {
+        "action": "send",
+        "target": "slack:builds",
+        "message": "Build failed on main",
+    }
+    send_result = {
+        "success": True,
+        "platform": "slack",
+        "chat_id": "C123",
+        "message_id": "m456",
+    }
+    expected_new_record = build_send_message_record(send_args, send_result)
+    messages = [
+        {"role": "system", "content": "system prompt"},
+        {"role": "user", "content": f"{SUMMARY_PREFIX}\n{prior_summary}"},
+        {"role": "assistant", "content": "resume ack"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_send_1",
+                    "type": "function",
+                    "function": {
+                        "name": "send_message",
+                        "arguments": json.dumps(send_args),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_send_1",
+            "content": json.dumps(send_result),
+        },
+        {"role": "user", "content": "continue after notification"},
+        {"role": "assistant", "content": "latest tail reply"},
+        {"role": "user", "content": "final active request stays in protected tail"},
+    ]
+
+    with (
+        patch.object(compressor, "_find_tail_cut_by_tokens", return_value=7),
+        patch(
+            "agent.context_compressor.call_llm",
+            return_value=_response("updated summary body"),
+        ) as mock_call,
+    ):
+        compressed = compressor.compress(messages)
+
+    prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+    assert "OLD-SUMMARY-BODY durable continuity facts" in prompt
+    assert "[HERMES_ACTION_LOG_BEGIN]" not in prompt
+
+    summary_message = next(
+        msg
+        for msg in compressed
+        if "updated summary body" in str(msg.get("content", ""))
+    )
+    records = extract_action_log_records(summary_message["content"])
+    assert {record["fingerprint"] for record in records} == {
+        prior_record["fingerprint"],
+        expected_new_record["fingerprint"],
+    }

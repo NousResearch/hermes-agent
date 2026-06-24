@@ -4173,6 +4173,13 @@ class FeishuAdapter(BasePlatformAdapter):
             return True
 
         if policy == "allowlist":
+            # `*` in the allowlist means "any user" — matches the documented
+            # FEISHU_ALLOWED_USERS=* semantics and the interactive-operator
+            # gate. Without this, `*` was treated as a literal id, so wildcard
+            # allowlists rejected everyone (e.g. approval card clicks, #51684).
+            # An empty allowlist still fails closed.
+            if "*" in allowlist:
+                return True
             return bool(sender_ids and (sender_ids & allowlist))
         if policy == "blacklist":
             return bool(sender_ids and not (sender_ids & blacklist))

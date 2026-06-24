@@ -116,6 +116,69 @@ def test_dispatch_defaults_profile_to_default(
     assert rec.calls == [("start", "gateway-default")]
 
 
+def test_dispatch_restart_uses_configured_sentinel_when_gateway_slot_missing(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+) -> None:
+    """Unsupervised container gateways can expose a restart sentinel instead
+    of a dynamic gateway-default s6 slot."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.service_manager import GatewayNotRegisteredError
+
+    sentinel = tmp_path / "gateway-restart-requested"
+
+    class _MissingDefault(_CallRecorder):
+        def restart(self, name: str) -> None:
+            self.calls.append(("restart", name))
+            raise GatewayNotRegisteredError("default")
+
+    rec = _MissingDefault()
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager", lambda: "s6",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: rec,
+    )
+    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+    monkeypatch.setenv("HERMES_GATEWAY_RESTART_SENTINEL", str(sentinel))
+
+    assert gw._dispatch_via_service_manager_if_s6("restart") is True
+    assert rec.calls == [("restart", "gateway-default")]
+    assert sentinel.exists()
+    out = capsys.readouterr().out
+    assert "Requested gateway restart via" in out
+
+
+def test_dispatch_restart_does_not_use_sentinel_for_other_profile(
+    tmp_path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sentinel restart targets the active container gateway only."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.service_manager import GatewayNotRegisteredError
+
+    sentinel = tmp_path / "gateway-restart-requested"
+
+    class _MissingCoder(_CallRecorder):
+        def restart(self, name: str) -> None:
+            self.calls.append(("restart", name))
+            raise GatewayNotRegisteredError("coder")
+
+    rec = _MissingCoder()
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager", lambda: "s6",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: rec,
+    )
+    monkeypatch.setattr("hermes_cli.gateway._profile_suffix", lambda: "")
+    monkeypatch.setenv("HERMES_GATEWAY_RESTART_SENTINEL", str(sentinel))
+
+    with pytest.raises(SystemExit) as excinfo:
+        gw._dispatch_via_service_manager_if_s6("restart", profile="coder")
+    assert excinfo.value.code == 1
+    assert rec.calls == [("restart", "gateway-coder")]
+    assert not sentinel.exists()
+
+
 # ---------------------------------------------------------------------------
 # _dispatch_all_via_service_manager_if_s6 — --all under s6
 # ---------------------------------------------------------------------------

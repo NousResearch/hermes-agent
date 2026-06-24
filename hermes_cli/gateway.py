@@ -5821,11 +5821,42 @@ def _dispatch_via_service_manager_if_s6(
         else:
             return False
     except GatewayNotRegisteredError as exc:
+        if action == "restart" and _request_restart_via_sentinel_if_configured(profile):
+            return True
         print(f"✗ {exc}")
         sys.exit(1)
     except S6CommandError as exc:
         print(f"✗ {exc}")
         sys.exit(1)
+    return True
+
+
+def _request_restart_via_sentinel_if_configured(profile: str) -> bool:
+    """Request an unsupervised container gateway restart via sentinel.
+
+    Some container deployments run the gateway as the container's main
+    process instead of registering a dynamic ``gateway-<profile>`` s6 slot.
+    In that mode ``hermes gateway restart`` can be wired through a wrapper
+    that watches ``HERMES_GATEWAY_RESTART_SENTINEL``.  Only use the sentinel
+    for the active profile; an explicit ``-p other`` must still fail instead
+    of restarting the wrong gateway.
+    """
+    sentinel = os.environ.get("HERMES_GATEWAY_RESTART_SENTINEL")
+    if not sentinel:
+        return False
+
+    active_profile = _profile_suffix() or "default"
+    if profile != active_profile:
+        return False
+
+    sentinel_path = Path(sentinel)
+    try:
+        sentinel_path.touch()
+    except OSError as exc:
+        print(f"✗ Could not request gateway restart via {sentinel_path}: {exc}")
+        sys.exit(1)
+
+    print(f"✓ Requested gateway restart via {sentinel_path}")
     return True
 
 

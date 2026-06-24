@@ -195,6 +195,20 @@ def fmt_size(n: float) -> str:
 # Track / forget
 # ---------------------------------------------------------------------------
 
+# Paths under $HERMES_HOME that are persistent test suites. Files here must
+# never be auto-tracked as "test" and therefore never deleted by quick().
+_PERSISTENT_TEST_DIRS: frozenset[str] = frozenset({
+    str(get_hermes_home() / "pipeline" / "tests"),
+    str(get_hermes_home() / "hermes-agent" / "tests"),
+})
+
+
+def _is_persistent_test_path(p: Path) -> bool:
+    """Return True if *p* lives under a protected persistent test directory."""
+    resolved = str(p.resolve())
+    return any(resolved.startswith(str(protected)) for protected in _PERSISTENT_TEST_DIRS)
+
+
 def track(path_str: str, category: str, silent: bool = False) -> bool:
     """Register a file for tracking. Returns True if newly tracked."""
     if category not in ALLOWED_CATEGORIES:
@@ -209,6 +223,10 @@ def track(path_str: str, category: str, silent: bool = False) -> bool:
 
     if not is_safe_path(path):
         _log(f"REJECT: {path} (outside HERMES_HOME)")
+        return False
+
+    if category == "test" and _is_persistent_test_path(path):
+        _log(f"SKIP persistent test path: {path}")
         return False
 
     size = path.stat().st_size if path.is_file() else 0

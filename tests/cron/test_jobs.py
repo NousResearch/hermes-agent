@@ -134,6 +134,85 @@ class TestParseSchedule:
         # Same wall-clock the user typed, on the configured clock.
         assert parsed.replace(tzinfo=None) == datetime(2026, 6, 22, 20, 7, 0)
 
+    # ── Natural-language schedule phrases (#51975) ─────────────────
+
+    def test_weekdays_at_9am(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("weekdays at 9am")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 9 * * 1-5"
+
+    def test_weekends_at_6pm(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("weekends at 6pm")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 18 * * 0,6"
+
+    def test_daily_at_9am(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("daily at 9am")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 9 * * *"
+
+    def test_every_day_at_9am(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("every day at 9am")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 9 * * *"
+
+    def test_named_day_single(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("monday at 9am")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 9 * * 1"
+
+    def test_named_day_list_comma(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("monday, wednesday at 9am")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 9 * * 1,3"
+
+    def test_named_day_list_and(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("mon and wed at 9am")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 9 * * 1,3"
+
+    def test_every_named_day(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("every monday 9am")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 9 * * 1"
+
+    def test_every_weekday_at_time(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("every weekday at 9am")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "0 9 * * 1-5"
+
+    def test_natural_with_minutes(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("weekdays at 6:30pm")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "30 18 * * 1-5"
+
+    def test_natural_24h_time(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("daily at 09:05")
+        assert result["kind"] == "cron"
+        assert result["expr"] == "5 9 * * *"
+
+    def test_every_duration_still_works(self):
+        """'every 2h' must remain an interval, not be caught by natural-lang."""
+        result = parse_schedule("every 2h")
+        assert result["kind"] == "interval"
+        assert result["minutes"] == 120
+
+    def test_every_30m_still_works(self):
+        result = parse_schedule("every 30m")
+        assert result["kind"] == "interval"
+        assert result["minutes"] == 30
+
 
 # =========================================================================
 # Timezone-divergence regression (#51021)

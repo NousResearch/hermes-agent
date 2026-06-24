@@ -301,6 +301,147 @@ def parse_duration(s: str) -> int:
     return value * multipliers[unit]
 
 
+_DAY_NAME_TO_NUM: Dict[str, int] = {
+    "monday": 1, "mon": 1,
+    "tuesday": 2, "tue": 2, "tues": 2,
+    "wednesday": 3, "wed": 3,
+    "thursday": 4, "thu": 4, "thur": 4, "thurs": 4,
+    "friday": 5, "fri": 5,
+    "saturday": 6, "sat": 6,
+    "sunday": 0, "sun": 0,
+}
+
+_WEEKDAY_RANGE = "1-5"   # Monday–Friday
+_WEEKEND_RANGE = "0,6"   # Sunday, Saturday
+
+
+def _parse_time_str(time_str: str) -> tuple[int, int]:
+    """Parse '9am', '6:30pm', '09:05', '14:00' into (hour, minute).
+
+    Raises ValueError on unrecognised format.
+    """
+    s = time_str.strip().lower()
+    # 12-hour with am/pm
+    m = re.match(r'^(\d{1,2})(?::(\d{2}))?\s*(am|pm)$', s)
+    if m:
+        hour, minute, ampm = int(m.group(1)), int(m.group(2) or 0), m.group(3)
+        if hour < 1 or hour > 12 or minute < 0 or minute > 59:
+            raise ValueError(f"Invalid time: {time_str}")
+        if ampm == "pm" and hour != 12:
+            hour += 12
+        elif ampm == "am" and hour == 12:
+            hour = 0
+        return hour, minute
+    # 24-hour
+    m = re.match(r'^(\d{1,2}):(\d{2})$', s)
+    if m:
+        hour, minute = int(m.group(1)), int(m.group(2))
+        if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+            raise ValueError(f"Invalid time: {time_str}")
+        return hour, minute
+    raise ValueError(f"Invalid time: {time_str}")
+
+
+def _normalize_natural_schedule(text: str) -> Optional[str]:
+    """Convert natural-language schedule phrases to a cron expression.
+
+    Returns a 5-field cron string on success, or ``None`` when *text* does
+    not match any recognised pattern (caller should fall through to existing
+    parse logic).
+
+    Supported patterns:
+        "weekdays at 9am"                → 0 9 * * 1-5
+        "weekends at 6:30pm"             → 30 18 * * 0,6
+        "daily at 09:05"                 → 5 9 * * *
+        "every day at 9am"               → 0 9 * * *
+        "monday at 9am"                  → 0 9 * * 1
+        "monday, wednesday at 9am"       → 0 9 * * 1,3
+        "mon and wed at 9am"             → 0 9 * * 1,3
+        "every monday 9am"               → 0 9 * * 1
+        "every weekday at 9am"           → 0 9 * * 1-5
+    """
+    s = text.strip().lower()
+
+    # Strip leading "every " — handle "every day at …", "every monday 9am", etc.
+    every_prefix = False
+    if s.startswith("every "):
+        every_prefix = True
+        s = s[6:].strip()
+
+    # ── "day at <time>" / "day <time>" / "daily at <time>" → daily ──
+    if re.match(r'^(day|daily)\b', s):
+        rest = re.sub(r'^(day|daily)\s*', '', s)
+        if rest.startswith("at "):
+            rest = rest[3:].strip()
+        try:
+            h, m = _parse_time_str(rest)
+            return f"{m} {h} * * *"
+        except ValueError:
+            return None
+
+    # ── "weekdays at <time>" → 1-5 ───────────────────────────────────
+    if re.match(r'^weekdays?\b', s):
+        rest = re.sub(r'^weekdays?\s*', '', s)
+        if rest.startswith("at "):
+            rest = rest[3:].strip()
+        try:
+            h, m = _parse_time_str(rest)
+            return f"{m} {h} * * {_WEEKDAY_RANGE}"
+        except ValueError:
+            return None
+
+    # ── "weekends at <time>" → 0,6 ───────────────────────────────────
+    if re.match(r'^weekends?\b', s):
+        rest = re.sub(r'^weekends?\s*', '', s)
+        if rest.startswith("at "):
+            rest = rest[3:].strip()
+        try:
+            h, m = _parse_time_str(rest)
+            return f"{m} {h} * * {_WEEKEND_RANGE}"
+        except ValueError:
+            return None
+
+    # ── Named day lists: "monday, wednesday at 9am" / "mon and wed 9am"
+    #    Also handles bare "monday at 9am" (single day).
+    #    Pattern: <day> (,|and)? <day> ... at? <time>
+    day_time_match = re.match(
+        r'^(' + '|'.join(re.escape(k) for k in _DAY_NAME_TO_NUM) + r')'
+        r'(?:\s*(?:,|and)\s*(' + '|'.join(re.escape(k) for k in _DAY_NAME_TO_NUM) + r'))*'
+        r'\s+(?:at\s+)?'
+        r'(.+)$',
+        s,
+    )
+    if day_time_match:
+        # Re-extract all day names from the string before the time part.
+        # Split on " at " or the last space-before-time boundary.
+        time_part = day_time_match.group(day_time_match.lastindex)
+        day_part = s[: s.rfind(time_part)].strip()
+        # Remove trailing "at" if present
+        day_part = re.sub(r'\s+at\s*$', '', day_part)
+        # Tokenise day names (split on commas, "and", whitespace)
+        tokens = re.split(r'[\s,]+', day_part)
+        day_nums = []
+        for tok in tokens:
+            if tok in ("and", ""):
+                continue
+            if tok in _DAY_NAME_TO_NUM:
+                day_nums.append(_DAY_NAME_TO_NUM[tok])
+            else:
+                # Not a day name — bail out
+                return None
+        if not day_nums:
+            return None
+        try:
+            h, m = _parse_time_str(time_part)
+        except ValueError:
+            return None
+        weekday_field = ",".join(str(d) for d in sorted(set(day_nums)))
+        return f"{m} {h} * * {weekday_field}"
+
+    # Not a natural-language schedule — caller should fall through.
+    return None
+
+
 def parse_schedule(schedule: str) -> Dict[str, Any]:
     """
     Parse schedule string into structured format.
@@ -318,11 +459,33 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         "every 2h"         → recurring every 2 hours
         "0 9 * * *"        → cron expression
         "2026-02-03T14:00" → once at timestamp
+        "weekdays at 9am"  → cron 0 9 * * 1-5
+        "every monday 9am" → cron 0 9 * * 1
     """
     schedule = schedule.strip()
     original = schedule
     schedule_lower = schedule.lower()
-    
+
+    # Natural-language schedule phrases ("weekdays at 9am", "every monday 9am",
+    # "daily at 09:05", etc.) — try before "every X" duration parsing so that
+    # "every monday 9am" is not misinterpreted as "every <duration>".
+    cron_expr = _normalize_natural_schedule(schedule)
+    if cron_expr is not None:
+        if not HAS_CRONITER:
+            raise ValueError(
+                "Natural-language schedules require 'croniter'. "
+                "Install with: pip install croniter"
+            )
+        try:
+            croniter(cron_expr)
+        except Exception as e:
+            raise ValueError(f"Invalid schedule '{original}': {e}")
+        return {
+            "kind": "cron",
+            "expr": cron_expr,
+            "display": cron_expr,
+        }
+
     # "every X" pattern → recurring interval
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()
@@ -397,7 +560,8 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         f"  - Duration: '30m', '2h', '1d' (one-shot)\n"
         f"  - Interval: 'every 30m', 'every 2h' (recurring)\n"
         f"  - Cron: '0 9 * * *' (cron expression)\n"
-        f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
+        f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)\n"
+        f"  - Natural language: 'weekdays at 9am', 'every monday 9am', 'daily at 6pm'"
     )
 
 

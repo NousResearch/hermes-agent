@@ -1237,17 +1237,27 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     # choice explicit here keeps the allowed surface small and auditable.
     suffix = path.suffix.lower()
     if suffix in {".sh", ".bash"}:
-        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
-        # all work.  On native Windows without Git for Windows installed
-        # shutil.which returns None — fall back to a clear error rather
-        # than a FileNotFoundError with a confusing "[WinError 2]"
-        # traceback.
-        _bash = shutil.which("bash") or (
-            "/bin/bash" if os.path.isfile("/bin/bash") else None
-        )
+        # Resolve bash via the shared, Windows-aware resolver.  On Windows it
+        # prefers Git for Windows / our portable Git and skips the System32
+        # WSL launcher (which exits 1 when no distro is installed), so a
+        # `Get-Command bash` that points at the WSL stub no longer breaks
+        # no-agent shell jobs.  On POSIX it is effectively shutil.which("bash")
+        # with the usual /bin fallbacks.  Keep a plain PATH lookup as a last
+        # resort if that module can't be imported in this context.
+        try:
+            from tools.environments.local import _find_bash
+            _bash = _find_bash()
+        except RuntimeError:
+            # Windows with no Git Bash installed — fall through to the
+            # actionable error below rather than spawning the broken WSL stub.
+            _bash = None
+        except Exception:
+            _bash = shutil.which("bash") or (
+                "/bin/bash" if os.path.isfile("/bin/bash") else None
+            )
         if _bash is None:
             return False, (
-                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
+                f"Cannot run .sh/.bash script {path.name!r}: bash not found. "
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )

@@ -752,6 +752,85 @@ class TestCronSchedulerBashResolution:
 
 
 # ---------------------------------------------------------------------------
+# _find_bash must never select the System32 WSL launcher
+# ---------------------------------------------------------------------------
+
+
+class TestFindBashSkipsWslLauncher:
+    """``%SystemRoot%\\System32\\bash.exe`` is the WSL launcher, not Git Bash.
+
+    On a Windows box with no WSL distro installed it exits 1, so it must
+    never be chosen — ``_find_bash`` has to fall through to Git for Windows.
+    These tests force ``_IS_WINDOWS`` on so they run on Linux CI too.
+    """
+
+    def test_detects_system32_wsl_launcher(self, monkeypatch):
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        # Real-world casing seen in the wild: WINDOWS upper, system32 lower.
+        assert local_mod._is_wsl_bash_launcher(r"C:\WINDOWS\system32\bash.exe") is True
+        assert local_mod._is_wsl_bash_launcher("C:/Windows/System32/bash.exe") is True
+        assert local_mod._is_wsl_bash_launcher(r"C:\Windows\Sysnative\bash.exe") is True
+        assert local_mod._is_wsl_bash_launcher(r"C:\Windows\SysWOW64\bash.exe") is True
+
+    def test_git_bash_is_not_a_wsl_launcher(self, monkeypatch):
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert local_mod._is_wsl_bash_launcher(r"C:\Program Files\Git\bin\bash.exe") is False
+        assert local_mod._is_wsl_bash_launcher(
+            r"C:\Users\me\AppData\Local\hermes\git\bin\bash.exe"
+        ) is False
+        assert local_mod._is_wsl_bash_launcher("") is False
+
+    def test_no_op_off_windows(self, monkeypatch):
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert local_mod._is_wsl_bash_launcher(r"C:\Windows\System32\bash.exe") is False
+
+    def test_find_bash_prefers_git_bash_over_wsl_launcher(self, monkeypatch):
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.delenv("HERMES_GIT_BASH_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", r"X:\no-portable-git")
+        # which() resolves to the WSL stub (the bug); a real Git Bash exists.
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: r"C:\Windows\System32\bash.exe")
+        git_bash = "C:/Program Files/Git/bin/bash.exe"
+        # Portable-git candidates absent; the Program Files Git bash exists.
+        monkeypatch.setattr(local_mod.os.path, "isfile", lambda p: str(p).replace("\\", "/") == git_bash)
+        monkeypatch.setenv("ProgramFiles", "C:/Program Files")
+        assert local_mod._find_bash().replace("\\", "/") == git_bash
+
+    def test_find_bash_raises_rather_than_return_wsl_launcher(self, monkeypatch):
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.delenv("HERMES_GIT_BASH_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", r"X:\nope")
+        monkeypatch.setenv("ProgramFiles", r"X:\nope")
+        monkeypatch.setenv("ProgramFiles(x86)", r"X:\nope")
+        # Only the WSL stub is on PATH and no Git Bash exists anywhere.
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: "C:/Windows/System32/bash.exe")
+        monkeypatch.setattr(local_mod.os.path, "isfile", lambda p: False)
+        with pytest.raises(RuntimeError):
+            local_mod._find_bash()
+
+    def test_find_bash_returns_non_wsl_which_result(self, monkeypatch):
+        from tools.environments import local as local_mod
+
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        monkeypatch.delenv("HERMES_GIT_BASH_PATH", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", r"X:\nope")
+        git_bash = "C:/Program Files/Git/bin/bash.exe"
+        monkeypatch.setattr(local_mod.shutil, "which", lambda name: git_bash)
+        monkeypatch.setattr(local_mod.os.path, "isfile", lambda p: False)
+        assert local_mod._find_bash() == git_bash
+
+
+# ---------------------------------------------------------------------------
 # Node-ecosystem launcher resolution (npm / npx / node)
 # ---------------------------------------------------------------------------
 

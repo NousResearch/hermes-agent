@@ -595,6 +595,34 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
 
 
+def _build_plugin_command_context(event: Any, *, session_id: Optional[str] = None):
+    """Build immutable plugin slash-command provenance from a gateway event."""
+    from hermes_cli.plugins import PluginCommandContext
+
+    source = getattr(event, "source", None)
+    platform_obj = getattr(source, "platform", None)
+    platform = getattr(platform_obj, "value", None)
+    if platform is None and platform_obj is not None:
+        platform = str(platform_obj)
+
+    return PluginCommandContext(
+        platform=platform or "",
+        user_id=getattr(source, "user_id", None),
+        user_name=getattr(source, "user_name", None),
+        chat_id=getattr(source, "chat_id", None),
+        chat_name=getattr(source, "chat_name", None),
+        chat_type=getattr(source, "chat_type", None),
+        thread_id=getattr(source, "thread_id", None),
+        guild_id=getattr(source, "guild_id", None),
+        session_id=session_id,
+        message_id=(
+            getattr(source, "message_id", None)
+            or getattr(event, "message_id", None)
+        ),
+        authorized=True,
+    )
+
+
 # Only auto-continue interrupted gateway turns while the interruption is fresh.
 # Stale tool-tail/resume markers can otherwise revive an unrelated old task
 # after a gateway restart when the user's next message starts new work.
@@ -10164,15 +10192,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import (
+                    call_plugin_command_handler,
+                    get_plugin_command_handler,
+                )
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
-                    if asyncio.iscoroutine(result):
+                    result = call_plugin_command_handler(
+                        plugin_handler,
+                        user_args,
+                        command_context=_build_plugin_command_context(event),
+                    )
+                    if inspect.isawaitable(result):
                         result = await result
                     return str(result) if result else None
             except Exception as e:

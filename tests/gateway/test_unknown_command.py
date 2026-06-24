@@ -371,3 +371,53 @@ async def test_command_hook_rewrite_routes_to_plugin(monkeypatch):
     # First emit_collect fires on the original command; after rewrite the
     # dispatcher does NOT re-fire for the new command (one decision per turn).
     assert call_log == ["command:status"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_plugin_command_receives_authenticated_context(monkeypatch):
+    """Gateway plugin slash commands receive immutable source metadata after auth."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError("plugin slash command leaked to the agent")
+    )
+
+    received_contexts = []
+
+    def _handler(raw_args, *, command_context=None):
+        received_contexts.append(command_context)
+        return (
+            f"{raw_args}:"
+            f"{command_context.platform}:"
+            f"{command_context.user_id}:"
+            f"{command_context.user_name}:"
+            f"{command_context.chat_id}:"
+            f"{command_context.chat_type}:"
+            f"{command_context.message_id}:"
+            f"{command_context.authorized}"
+        )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+    from hermes_cli import plugins as _plugins_mod
+
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_commands",
+        lambda: {"audit": {"description": "Audit command"}},
+    )
+    monkeypatch.setattr(
+        _plugins_mod,
+        "get_plugin_command_handler",
+        lambda name: _handler if name == "audit" else None,
+    )
+
+    result = await runner._handle_message(_make_event("/audit approve"))
+
+    assert result == "approve:telegram:u1:tester:c1:dm:m1:True"
+    assert received_contexts
+    assert received_contexts[0].session_id is None
+    with pytest.raises(Exception):
+        received_contexts[0].user_id = "mutated"

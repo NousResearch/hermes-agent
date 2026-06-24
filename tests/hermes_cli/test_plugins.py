@@ -12,9 +12,11 @@ import yaml
 from hermes_cli.plugins import (
     ENTRY_POINTS_GROUP,
     VALID_HOOKS,
+    PluginCommandContext,
     PluginContext,
     PluginManager,
     PluginManifest,
+    call_plugin_command_handler,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
@@ -2057,6 +2059,69 @@ class TestPluginCommands:
 
 
 class TestPluginCommandResultResolution:
+    def test_call_plugin_command_handler_passes_context_when_supported(self):
+        context = PluginCommandContext(
+            platform="telegram",
+            user_id="u1",
+            user_name="tester",
+            chat_id="c1",
+            chat_name=None,
+            chat_type="dm",
+            thread_id=None,
+            guild_id=None,
+            session_id=None,
+            message_id="m1",
+            authorized=True,
+        )
+        received = []
+
+        def _handler(raw_args, *, command_context=None):
+            received.append((raw_args, command_context))
+            return "ok"
+
+        assert call_plugin_command_handler(
+            _handler,
+            "approve",
+            command_context=context,
+        ) == "ok"
+        assert received == [("approve", context)]
+
+    def test_call_plugin_command_handler_passes_none_context_when_supported(self):
+        received = []
+
+        def _handler(raw_args, *, command_context=None):
+            received.append((raw_args, command_context))
+            return "ok"
+
+        assert call_plugin_command_handler(_handler, "status") == "ok"
+        assert received == [("status", None)]
+
+    def test_call_plugin_command_handler_preserves_legacy_raw_args_contract(self):
+        received = []
+
+        def _handler(raw_args):
+            received.append(raw_args)
+            return "ok"
+
+        assert call_plugin_command_handler(
+            _handler,
+            "status",
+            command_context=PluginCommandContext(
+                platform="telegram",
+                user_id="u1",
+                user_name=None,
+                chat_id="c1",
+                chat_name=None,
+                chat_type="dm",
+                thread_id=None,
+                guild_id=None,
+                session_id=None,
+                message_id=None,
+                authorized=True,
+            ),
+        ) == "ok"
+        assert received == ["status"]
+
     def test_returns_sync_values_unchanged(self):
         assert resolve_plugin_command_result("ok") == "ok"
 

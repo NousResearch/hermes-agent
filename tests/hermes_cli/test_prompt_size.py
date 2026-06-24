@@ -24,7 +24,7 @@ def _seed_skill(hermes_home, name, description):
     skill_dir = hermes_home / "skills" / "demo" / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: {description}\n---\n# {name}\nbody\n",
+        f"---\nname: {name}\nversion: 1.0.0\nstatus: vetted\ndescription: {description}\nauthor: Test Author\n---\n# {name}\nbody\n",
         encoding="utf-8",
     )
 

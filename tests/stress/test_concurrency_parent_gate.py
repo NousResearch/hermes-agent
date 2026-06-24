@@ -37,6 +37,8 @@ def run() -> int:
     home = tempfile.mkdtemp(prefix="hermes_parent_gate_stress_")
     os.environ["HERMES_HOME"] = home
     os.environ["HOME"] = home
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
 
     from hermes_cli import kanban_db as kb
 

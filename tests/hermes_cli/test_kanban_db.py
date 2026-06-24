@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
@@ -19,10 +21,56 @@ from hermes_cli import kanban_db as kb
 
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME with an empty kanban DB."""
+    """Isolated HERMES_HOME with an empty kanban DB.
+
+    Default fixture opt-out: ``HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION=1``
+    is set so pre-existing tests that use arbitrary assignee strings
+    (``"alice"``, ``"a"``, ``"ops"``, ``"w"``, etc.) keep working
+    unchanged. The SEV-2 phantom-assignee guard is exercised by
+    separate tests under :func:`kanban_home_strict` below — those
+    unset the env var so the guard actually fires.
+
+    Surfaced in SEV-2 kanban t_2a5ee696 (2026-06-23).
+    """
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # Opt out of phantom-assignee validation for the bulk of unit
+    # tests so they keep using cheap phantom assignees without each
+    # one having to drop a profile dir. See ``kanban_home_strict``
+    # for the explicit-enforcement variant.
+    monkeypatch.setenv("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+    return home
+
+
+@pytest.fixture
+def kanban_home_strict(tmp_path, monkeypatch):
+    """Isolated HERMES_HOME with the SEV-2 phantom-assignee guard ON.
+
+    Drops two real profile dirs (``alice`` and ``code-craftsman``) so
+    tests can assert both the rejection path (``"worker"``) and the
+    acceptance path (``"alice"`` / ``"code-craftsman"`` / ``"default"``).
+
+    Surfaced in SEV-2 kanban t_2a5ee696 (2026-06-23).
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "profiles" / "alice").mkdir(parents=True)
+    (home / "profiles" / "alice" / "config.yaml").write_text(
+        "model: test\nprovider: test\n"
+    )
+    (home / "profiles" / "code-craftsman").mkdir(parents=True)
+    (home / "profiles" / "code-craftsman" / "config.yaml").write_text(
+        "model: test\nprovider: test\n"
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    # Strict mode: do NOT set SKIP_ASSIGNEE_VALIDATION — we want the
+    # guard to fire so the test asserts the rejection. Also drop the
+    # ALLOW_PLACEHOLDER_TITLES escape hatch for the same reason.
+    monkeypatch.delenv("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES", raising=False)
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home
@@ -239,6 +287,392 @@ def test_create_task_unknown_parent_errors(kanban_home):
 def test_workspace_kind_validation(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="workspace_kind"):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
+
+
+# Build plan 2026-06-23-TOTUM-BUILD-PLAN.md §5.4 audit #29 (SEV-7).
+# Auto-generated stub titles like ``task-1782227740`` (literally
+# int(time.time())) clogged the default board; 39 such rows landed in
+# a single 32-second storm (incident t_33215055). The guard rejects
+# them at create_task time so the HTTP route surfaces HTTP 400 and the
+# CLI/Loops fail fast. The pattern is anchored to ``^task-\d+$`` so a
+# legitimate title like "Task-12: wire the dashboard" still passes.
+
+def test_create_task_rejects_placeholder_title_task_N(kanban_home):
+    """Canonical stub: ``task-<unix-ts>`` must be rejected at create time."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="use a real title; placeholder pattern reserved for tests.",
+    ):
+        kb.create_task(
+            conn,
+            title="task-1782227740",
+            body="real spec describing the work",
+            created_by="test",
+        )
+
+
+def test_create_task_rejects_placeholder_title_low_digit(kanban_home):
+    """Even single-digit stubs (e.g. ``task-1``) must be rejected — the
+    full 39-card sweep on t_00032bc2 covered task-1..task-39 inclusive."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="use a real title; placeholder pattern reserved for tests.",
+    ):
+        kb.create_task(
+            conn,
+            title="task-1",
+            body="real spec describing the work",
+            created_by="test",
+        )
+
+
+def test_create_task_rejects_placeholder_title_with_whitespace(kanban_home):
+    """Whitespace around the stub must not bypass the guard — strip before
+    matching so sloppy callers (LLM output, copy-paste) still get caught."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="use a real title; placeholder pattern reserved for tests.",
+    ):
+        kb.create_task(
+            conn,
+            title="  task-99 \t",
+            body="real spec describing the work",
+            created_by="test",
+        )
+
+
+def test_create_task_accepts_title_starting_with_Task_capital(kanban_home):
+    """Capital-T ``Task-12`` is NOT the auto-stub pattern — the build-plan
+    pattern is lowercase ``^task-\d+$``. A legitimate spec heading like
+    ``Task-12: wire the dashboard`` must round-trip cleanly."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="Task-12: wire the dashboard",
+            body="real spec describing the work",
+            created_by="test",
+        )
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.title == "Task-12: wire the dashboard"
+
+
+def test_create_task_accepts_title_with_task_prefix_but_not_digits(kanban_home):
+    """``task-foo`` (no digits) is a perfectly fine human title — only
+    ``task-<digits>`` is rejected."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="task-foo: investigate the regression",
+            body="real spec describing the work",
+            created_by="test",
+        )
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.title == "task-foo: investigate the regression"
+
+
+def test_create_task_accepts_title_with_digits_but_not_task_prefix(kanban_home):
+    """``regression-12345`` is a fine title — only the exact ``task-<digits>``
+    pattern is rejected."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="regression-12345",
+            body="real spec describing the work",
+            created_by="test",
+        )
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.title == "regression-12345"
+
+
+def test_is_placeholder_title_unit():
+    """Unit-test the helper directly so callers / future callers can rely
+    on the pattern without spinning up a full create_task path."""
+    # Canonical matches.
+    assert kb.is_placeholder_title("task-1")
+    assert kb.is_placeholder_title("task-1782227740")
+    assert kb.is_placeholder_title("  task-42  ")  # whitespace tolerated
+    # Non-matches — must NOT be flagged.
+    assert not kb.is_placeholder_title("Task-12: wire the dashboard")
+    assert not kb.is_placeholder_title("task-foo")
+    assert not kb.is_placeholder_title("task-12a")  # trailing non-digit
+    assert not kb.is_placeholder_title("task-")     # no digits
+    assert not kb.is_placeholder_title("task - 12") # whitespace inside
+    assert not kb.is_placeholder_title("prefix task-99")  # leading text
+    assert not kb.is_placeholder_title("regression-12345")
+    # None / empty — handled by the separate ``title is required`` guard.
+    assert not kb.is_placeholder_title(None)
+    assert not kb.is_placeholder_title("")
+
+
+def test_create_task_placeholder_guard_fires_before_other_validation(kanban_home):
+    """When the placeholder pattern matches AND another validation
+    (workspace_kind, parents) would also fire, the placeholder pattern
+    wins because it's the most-fundamental signal. Mirrors the ordering
+    philosophy used by the phantom-body guard upstream."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="placeholder pattern reserved for tests",
+    ):
+        kb.create_task(
+            conn,
+            title="task-7",
+            workspace_kind="not-a-kind",
+            parents=["t_ghost"],
+        )
+
+
+# ---------------------------------------------------------------------------
+# SEV-2 hardening (kanban t_2a5ee696, 2026-06-23)
+# ---------------------------------------------------------------------------
+#
+# Acceptance criteria from the SEV-2 ticket:
+#   1. Trying to create a card with assignee='worker' fails with an
+#      actionable error.
+#   2. Trying to create with title='real spec' fails.
+#   3. The dispatcher (when re-run) does not see 22 phantom-assignee
+#      cards.
+#   4. 95% of the current backlog of similar cards in _archived/ is
+#      caught by the new validation.
+#
+# These tests cover (1) and (2) directly. (3) and (4) require a live
+# board state — covered by integration tests / dashboards, not unit
+# tests.
+
+def test_sev2_is_placeholder_title_catches_extended_patterns():
+    """SEV-2 expanded the placeholder-title list. Every pattern surfaced
+    by the 2026-06-23 17:08 read-only triage that is unambiguous must
+    be caught.
+
+    ``test``, ``debug``, and ``crash`` are deliberately NOT in the
+    auto-reject list — they're legitimate one-word titles for real
+    work and the test suite already uses ``title="crash"`` to name a
+    crash-investigation scenario. Those words remain in the SEV-2
+    pollution catalog as a manual cleanup hint, but the guard only
+    fires on patterns that are unambiguous fixtures (always-digit
+    suffix or a fixed two-word phrase)."""
+    # Canonical audit #29 patterns still work.
+    assert kb.is_placeholder_title("task-99")
+    assert kb.is_placeholder_title("task-1782227740")
+    # SEV-2 additions.
+    assert kb.is_placeholder_title("real spec")
+    assert kb.is_placeholder_title("real task")
+    assert kb.is_placeholder_title("burst-task-3")
+    assert kb.is_placeholder_title("burst-task-99")
+    # Whitespace tolerated.
+    assert kb.is_placeholder_title("  real spec  ")
+    # Non-matches: real titles must NOT be flagged.
+    assert not kb.is_placeholder_title("Fix the crash in cart-service")
+    assert not kb.is_placeholder_title("Add debug logging to the dashboard")
+    assert not kb.is_placeholder_title("Investigate the crash reporter")
+    # Non-matches: single words that the SEV-2 body listed but are
+    # ambiguous in normal usage. They stay allowed so legit single-
+    # word titles ("crash", "debug", "test") keep working.
+    assert not kb.is_placeholder_title("crash")
+    assert not kb.is_placeholder_title("debug")
+    assert not kb.is_placeholder_title("test")
+    assert not kb.is_placeholder_title("CRASH")
+    assert not kb.is_placeholder_title("Debug")
+
+
+def test_sev2_create_task_rejects_real_spec_title(kanban_home):
+    """The pollution body=``'x'`` + title=``'real spec'`` combo from the
+    17:08 read-only triage must be rejected at create time. Uses
+    ``kanban_home`` (not ``_strict``) because the placeholder-title
+    guard is independent of the assignee-validation env var."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="placeholder/fixture pattern",
+    ):
+        kb.create_task(conn, title="real spec", body="x")
+    # And the case-insensitive variant.
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="placeholder/fixture pattern",
+    ):
+        kb.create_task(conn, title="REAL SPEC", body="x")
+    # And burst-task-N.
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="placeholder/fixture pattern",
+    ):
+        kb.create_task(conn, title="burst-task-3", body="x")
+
+
+def test_sev2_create_task_rejects_phantom_assignee(kanban_home_strict):
+    """19 of the 22 pollution cards had assignees that don't correspond
+    to any profile on disk (``worker``, ``alice``, ``a``, ``architect``).
+    These must be rejected at create time with an actionable error that
+    names the escape hatch."""
+    for phantom in ("worker", "alice-not-here", "a", "architect", "🤖-bot"):
+        with kb.connect() as conn, pytest.raises(
+            kb.PlaceholderAssigneeError,
+            match="is not a known profile",
+        ):
+            kb.create_task(
+                conn,
+                title="ship something real",
+                assignee=phantom,
+                body="x",
+            )
+
+
+def test_sev2_create_task_accepts_known_assignee(kanban_home_strict):
+    """The fixture drops profiles/alice and profiles/code-craftsman;
+    create_task must accept those (and ``default``) without raising."""
+    for known in ("alice", "code-craftsman", "default"):
+        with kb.connect() as conn:
+            tid = kb.create_task(
+                conn,
+                title=f"task for {known}",
+                assignee=known,
+                body="x",
+            )
+        with kb.connect() as conn:
+            t = kb.get_task(conn, tid)
+        assert t is not None
+        assert t.assignee == known
+
+
+def test_sev2_create_task_skips_assignee_check_for_triage(kanban_home_strict):
+    """Triage cards are explicitly waiting for a specifier to pick the
+    real assignee — rejecting them would defeat the triage lane. The
+    guard must NOT fire when ``triage=True`` even if the assignee is
+    phantom (because no assignee is the specifier's whole point)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="needs a specifier to pick an assignee",
+            assignee="worker",  # phantom
+            body="x",
+            triage=True,
+        )
+    with kb.connect() as conn:
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.status == "triage"
+    # Phantom assignee preserved verbatim on triage cards (the specifier
+    # will reassign when promoting).
+    assert t.assignee == "worker"
+
+
+def test_sev2_create_task_skips_assignee_check_when_none(kanban_home_strict):
+    """Unassigned cards (assignee=None) must always pass — the
+    dispatcher already treats them as no-ops, no routing risk."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="unassigned real spec",
+            assignee=None,
+            body="x",
+        )
+    with kb.connect() as conn:
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.assignee is None
+
+
+def test_sev2_create_task_validate_assignee_false_bypass(kanban_home_strict):
+    """The ``validate_assignee=False`` kwarg must let ops automation /
+    stress fixtures through. The error must be the subclass
+    :class:`PlaceholderAssigneeError` so callers can distinguish
+    phantom-assignee from generic ValueError if they want to."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="stress fixture",
+            assignee="worker",
+            body="x",
+            validate_assignee=False,
+        )
+    with kb.connect() as conn:
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.assignee == "worker"
+
+
+def test_sev2_env_var_skip_assignee_validation(kanban_home, monkeypatch):
+    """``HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION=1`` is the global
+    override that lets ops automation create phantom tasks without
+    each call site having to pass ``validate_assignee=False``."""
+    # ``kanban_home`` fixture already sets the env var to 1, so a
+    # phantom assignee passes; but the phantom-assignee guard never
+    # fires under that fixture. To prove the env var works
+    # independently, simulate a strict-mode base and flip the env
+    # var inside the test.
+    monkeypatch.delenv("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", raising=False)
+    with kb.connect() as conn, pytest.raises(
+        kb.PlaceholderAssigneeError,
+    ):
+        kb.create_task(
+            conn, title="phantom without env", assignee="worker",
+        )
+    monkeypatch.setenv("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="phantom WITH env", assignee="worker",
+        )
+    assert tid is not None
+
+
+def test_sev2_env_var_allow_placeholder_titles(kanban_home, monkeypatch):
+    """``HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES=1`` lets ops automation
+    backfill stub rows. Independent of the assignee env var."""
+    monkeypatch.delenv("HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES", raising=False)
+    with kb.connect() as conn, pytest.raises(
+        ValueError, match="placeholder/fixture pattern",
+    ):
+        kb.create_task(conn, title="real spec", body="x")
+    monkeypatch.setenv("HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES", "1")
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="real spec", body="x")
+    assert tid is not None
+
+
+def test_sev2_placeholder_assignee_error_subclass():
+    """``PlaceholderAssigneeError`` is a :class:`ValueError` so existing
+    callers that catch the parent class keep working. Specialising it
+    lets callers distinguish phantom-assignee from other ValueErrors
+    without regex-matching the message."""
+    assert issubclass(kb.PlaceholderAssigneeError, ValueError)
+    exc = kb.PlaceholderAssigneeError("test")
+    assert isinstance(exc, ValueError)
+    assert str(exc) == "test"
+
+
+def test_sev2_is_known_assignee_unit():
+    """Unit-test the helper without spinning up a full create_task path.
+    Behaviour:
+      - ``default`` always valid (every install has it).
+      - Empty/None always invalid.
+      - Known profile dir on disk → valid.
+      - Unknown string → invalid.
+    """
+    assert kb.is_known_assignee("default")
+    assert not kb.is_known_assignee(None)
+    assert not kb.is_known_assignee("")
+    assert not kb.is_known_assignee("worker")
+    assert not kb.is_known_assignee("alice-not-here")
+
+
+def test_sev2_audit29_message_preserved_for_canonical_pattern(kanban_home):
+    """Sibling card audit #29 specifies the exact message wording
+    ``use a real title; placeholder pattern reserved for tests.``.
+    Callers / tests may assert that exact string; SEV-2 must NOT
+    regress it for the canonical ``task-N`` pattern. Other patterns
+    (``real spec`` etc.) get the longer actionable message that names
+    the env-var escape hatch."""
+    with kb.connect() as conn, pytest.raises(
+        ValueError,
+        match="^use a real title; placeholder pattern reserved for tests\\.$",
+    ):
+        kb.create_task(conn, title="task-99", body="x")
+
+
+def test_sev2_create_task_allow_placeholder_title_kwarg(kanban_home):
+    """``allow_placeholder_title=True`` lets ops automation backfill
+    stubs on a per-call basis (no env var needed)."""
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn, title="real spec", body="x",
+            allow_placeholder_title=True,
+        )
+    assert tid is not None
 
 
 def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
@@ -737,7 +1171,12 @@ def test_detect_crashed_workers_systemic_failure_fast_block(
     with kb.connect() as conn:
         task_ids = []
         for i in range(4):
-            tid = kb.create_task(conn, title=f"task-{i}", assignee="a")
+            # NB: avoid the ``task-N`` placeholder pattern — kanban_db
+            # now rejects those at create time per build-plan §5.4
+            # audit #29. The title's exact wording is incidental to
+            # this test (we only care that 4 crashed-worker tasks
+            # exist), so any non-placeholder label works.
+            tid = kb.create_task(conn, title=f"crashed-worker-{i}", assignee="a")
             host = _kb._claimer_id().split(":", 1)[0]
             conn.execute(
                 "UPDATE tasks SET status='running', worker_pid=?, "
@@ -4224,6 +4663,843 @@ def test_init_db_allows_missing_then_healthy(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Index drift auto-repair (FIX-KANBAN-DB-INDEX-CORRUPTION)
+# ---------------------------------------------------------------------------
+#
+# Concurrent worker writes under WAL can leave an index b-tree with a
+# different row count than its table — ``PRAGMA integrity_check`` then
+# returns ``wrong # of entries in index <name>``. ``REINDEX <name>`` is
+# SQLite's native fix (rebuilds the index from the table). The tests
+# below pin the behaviour: the parser only fires on the exact prefix,
+# the helper does the repair transparently, and the corruption guard
+# only creates a ``.corrupt`` backup when REINDEX can't recover.
+
+def test_collect_index_drift_rows_parses_wrong_entries_pattern():
+    """The parser must recognise SQLite's exact ``wrong # of entries in
+    index <name>`` prefix and return the index names in order."""
+    rows = [
+        ("wrong # of entries in index idx_events_run",),
+        ("wrong # of entries in index idx_tasks_assignee_status",),
+        ("*** in database main ***\nPage 4: never used",),
+    ]
+    names = kb._collect_index_drift_rows(rows)
+    assert names == ["idx_events_run", "idx_tasks_assignee_status"]
+
+
+def test_collect_index_drift_rows_ignores_unrelated_messages():
+    """Other integrity-check shapes (page-level corruption, malformed
+    b-tree, etc.) must NOT be classified as recoverable index drift —
+    they must fall through to the backup-and-raise path."""
+    rows = [
+        ("*** in database main ***\nPage 4: never used",),
+        ("rowid N missing from index idx_x",),
+        ("database disk image is malformed",),
+    ]
+    assert kb._collect_index_drift_rows(rows) == []
+
+
+def test_collect_index_drift_rows_dedupes_repeated_index():
+    """If multiple error rows mention the same index (rare but possible
+    after partial repair), the helper must repair each index exactly
+    once — running REINDEX twice wastes a full table scan."""
+    rows = [
+        ("wrong # of entries in index idx_events_run",),
+        ("wrong # of entries in index idx_events_run",),
+    ]
+    names = kb._collect_index_drift_rows(rows)
+    assert names == ["idx_events_run"]
+
+
+def test_collect_index_drift_rows_handles_non_string_rows():
+    """Robustness: rows may contain None, non-strings, empty tuples,
+    or just plain garbage from a buggy connection — the parser must
+    skip them rather than crashing. Coverage pins every defensive
+    branch in the parser's input filter (``if not row``, ``isinstance
+    check``, ``regex search``, dedupe) so a future refactor cannot
+    silently remove the defensive layer."""
+    rows = [
+        (None,),                                 # non-string value
+        (b"binary",),                            # bytes value
+        ("wrong # of entries in index idx_a",),  # legit first hit
+        (),                                      # empty tuple — falsy row
+        ("wrong # of entries in index idx_a",),  # repeat — dedupes
+        ("wrong # of entries in index idx_b",),  # legit second hit
+        ("unrelated integrity message",),        # no regex match
+    ]
+    assert kb._collect_index_drift_rows(rows) == ["idx_a", "idx_b"]
+
+
+def test_index_drift_row_re_rejects_injection_shaped_names():
+    """Injection defense: ``_INDEX_DRIFT_ROW_RE`` must NOT capture SQL
+    statements as the ``<name>`` group.
+
+    The regex anchors the name capture to ``[A-Za-z_][\\w]*`` (a strict
+    SQLite identifier). Payloads that try to escape the index position
+    — comment terminators, statement separators, whitespace tricks —
+    must either fail to match at all (no ``<name>`` reaches the
+    REINDEX layer) or capture ONLY the safe identifier prefix (the
+    trailing injection content is silently dropped by the regex's
+    anchored capture group).
+
+    This pins the parser-layer defense so a future regex relaxation
+    cannot silently re-open the injection surface against the kanban
+    DB. Anything the regex DOES capture must round-trip through
+    ``[A-Za-z_][\\w]*`` — that is the contract.
+    """
+    injection_payloads = [
+        # Classic SQL-injection strings in the index-name position.
+        # The regex must NOT capture the whole statement — only an
+        # identifier-shaped prefix (or nothing).
+        "wrong # of entries in index ; DROP TABLE tasks;--",
+        "wrong # of entries in index idx_x; DELETE FROM tasks WHERE 1=1;--",
+        # Whitespace + control chars inside the name — the identifier
+        # pattern stops at the first non-word character.
+        "wrong # of entries in index idx_x\x00malicious",
+        # Quote escapes — the regex must not include them in the name.
+        "wrong # of entries in index idx_x'; --",
+        # Newline statement injection — the regex captures only the
+        # safe prefix on the first line.
+        "wrong # of entries in index idx_x\nDROP TABLE tasks",
+    ]
+    for payload in injection_payloads:
+        # Pin #1: the parser returns only safe identifiers — even when
+        # the raw integrity_check row is hostile, what flows into
+        # ``REINDEX <name>`` must be a clean SQLite identifier.
+        parsed = kb._collect_index_drift_rows([(payload,)])
+        for name in parsed:
+            assert re.fullmatch(r"[A-Za-z_][\w]*", name), (
+                f"parser surfaced unsafe name {name!r} from payload "
+                f"{payload!r}"
+            )
+        # Pin #2: if the regex does match, the captured name must be
+        # a strict identifier (anchored at [A-Za-z_], word-chars only).
+        match = kb._INDEX_DRIFT_ROW_RE.search(payload)
+        if match is not None:
+            captured = match.group("name")
+            assert re.fullmatch(r"[A-Za-z_][\w]*", captured), (
+                f"regex captured non-identifier name {captured!r} "
+                f"from payload {payload!r}"
+            )
+            # Pin #3: the captured name must NOT contain any of the
+            # injection marker characters that appear in the payload.
+            for marker in (";", "'", "\x00", "\n", " ", "\t"):
+                assert marker not in captured, (
+                    f"regex capture leaked injection marker "
+                    f"{marker!r} into name {captured!r} from "
+                    f"payload {payload!r}"
+                )
+
+
+def test_try_repair_index_drift_refuses_suspicious_index_name(
+    tmp_path, monkeypatch, caplog
+):
+    """Defense in depth: the ``_try_repair_index_drift`` helper must
+    re-validate the captured name against the strict identifier
+    pattern before issuing ``REINDEX`` and refuse to repair anything
+    if the name is not a safe identifier.
+
+    The parser regex is the primary defense — this test pins the
+    second-layer guard inside the helper itself by monkeypatching the
+    parser to return a deliberately unsafe name. Without this second
+    guard, a future regex change that loosens the capture group would
+    open a code-injection path against ``REINDEX <name>``.
+
+    Pin: no REINDEX is issued, the helper returns ``(False, [])``,
+    and a WARNING is logged naming the suspicious name.
+    """
+    import logging
+
+    db_path = tmp_path / "suspicious.db"
+    kb.init_db(db_path=db_path)
+
+    reindex_calls: list[str] = []
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                return _FakeCursor([(
+                    "wrong # of entries in index idx_x",
+                )])
+            if normalized.startswith("reindex "):
+                reindex_calls.append(sql)
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    # Simulate a future regression where the parser regex was loosened
+    # and now returns a name that is NOT a safe identifier. The helper
+    # must catch this and refuse the REINDEX.
+    monkeypatch.setattr(
+        kb,
+        "_collect_index_drift_rows",
+        lambda rows: ["idx_x; DROP TABLE tasks;--"],
+    )
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        ok, names = kb._try_repair_index_drift(db_path)
+
+    assert reindex_calls == [], (
+        f"helper must NOT REINDEX a suspicious index name; "
+        f"got {reindex_calls!r}"
+    )
+    # Helper returns (False, drifted) on suspicious name — caller falls
+    # through to the backup-and-raise path. The drifted list is the
+    # input that triggered the refusal (so the operator can see what
+    # the parser surfaced), but ok=False is the load-bearing signal.
+    assert ok is False
+    assert names == ["idx_x; DROP TABLE tasks;--"], (
+        "helper must surface the suspicious name in the drifted list "
+        "for operator visibility; got {names!r}"
+    )
+    # Audit log line: operator can see why the repair was refused.
+    refusal_warnings = [
+        r for r in caplog.records
+        if "refusing to REINDEX suspicious index name" in r.getMessage()
+    ]
+    assert refusal_warnings, (
+        "expected a WARNING log line naming the suspicious index; "
+        f"got {[r.getMessage() for r in caplog.records]!r}"
+    )
+
+
+def test_try_repair_index_drift_no_op_on_healthy_db(tmp_path):
+    """A real healthy kanban.db must round-trip with no repair action."""
+    db_path = tmp_path / "healthy.db"
+    kb.init_db(db_path=db_path)
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is True
+    assert names == []
+
+
+def test_try_repair_index_drift_repairs_drifted_index(tmp_path, monkeypatch):
+    """When integrity_check returns the recoverable ``wrong # of
+    entries in index`` rows, the helper must REINDEX the named indexes
+    and verify the post-repair integrity_check comes back clean."""
+    db_path = tmp_path / "drifted.db"
+    kb.init_db(db_path=db_path)
+
+    # Install a fake probe connection that returns the recoverable error
+    # pattern from integrity_check the first time, ``ok`` after REINDEX.
+    state = {"calls": [], "integrity_calls": 0, "reindex_calls": []}
+
+    class _FakeConn:
+        def __init__(self, path):
+            state["calls"].append(path)
+            self._closed = False
+
+        def execute(self, sql, *args, **kwargs):
+            state.setdefault("exec_calls", []).append(sql)
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                state["integrity_calls"] += 1
+                if state["integrity_calls"] == 1:
+                    return _FakeCursor([
+                        ("wrong # of entries in index idx_events_run",),
+                    ])
+                return _FakeCursor([("ok",)])
+            if normalized.startswith("reindex "):
+                state["reindex_calls"].append(sql)
+                return _FakeCursor([])
+            return _FakeCursor([])
+
+        def close(self):
+            self._closed = True
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is True
+    assert names == ["idx_events_run"]
+    assert state["reindex_calls"] == ["REINDEX idx_events_run"]
+    assert state["integrity_calls"] == 2  # one before REINDEX, one after
+
+
+def test_try_repair_index_drift_repairs_multiple_indexes(tmp_path, monkeypatch):
+    """When several indexes drift at once, REINDEX runs for each name."""
+    db_path = tmp_path / "multi.db"
+    kb.init_db(db_path=db_path)
+
+    reindexed: list[str] = []
+    integrity_calls = {"n": 0}
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                integrity_calls["n"] += 1
+                if integrity_calls["n"] == 1:
+                    return _FakeCursor([
+                        ("wrong # of entries in index idx_a",),
+                        ("wrong # of entries in index idx_b",),
+                    ])
+                return _FakeCursor([("ok",)])
+            if normalized.startswith("reindex "):
+                reindexed.append(sql)
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is True
+    assert names == ["idx_a", "idx_b"]
+    assert reindexed == ["REINDEX idx_a", "REINDEX idx_b"]
+
+
+def test_try_repair_index_drift_no_op_on_unrepairable_corruption(tmp_path, monkeypatch):
+    """Page-level / disk-image-malformed corruption does NOT match the
+    recoverable pattern — the helper must return (False, []) so the
+    caller can fall through to the backup-and-raise path."""
+    db_path = tmp_path / "bad.db"
+    kb.init_db(db_path=db_path)
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                return _FakeCursor([("*** in database main ***\nPage 4: never used",)])
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is False
+    assert names == []
+
+
+def test_init_db_auto_repairs_index_drift_and_logs_warning(tmp_path, monkeypatch, caplog):
+    """End-to-end: when the guard sees the recoverable drift pattern, it
+    calls REINDEX transparently, logs a WARNING naming the repaired
+    index(es), and returns success — no KanbanDbCorruptError.
+
+    We test the guard (``_guard_existing_db_is_healthy``) directly
+    rather than ``init_db`` because the post-guard ``connect()`` flow
+    runs the additive migration against the same connection — that
+    surface is already covered by the dedicated migration tests. Our
+    focus here is the guard's transparent-REINDEX behaviour and the
+    audit log line that lets an operator spot the repair."""
+    import logging
+
+    db_path = tmp_path / "auto.db"
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    # State machine shared across the guard's probe AND the repair probe:
+    # - Before any REINDEX has been issued, integrity_check returns the
+    #   recoverable drift pattern.
+    # - Once REINDEX has been issued, integrity_check returns ``ok``.
+    # This mirrors what real SQLite would do: pre-repair = drift,
+    # post-repair = clean.
+    reindexed: list[str] = []
+    repaired_flag = {"done": False}
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                if not repaired_flag["done"]:
+                    return _FakeCursor([
+                        ("wrong # of entries in index idx_events_run",),
+                    ])
+                return _FakeCursor([("ok",)])
+            if normalized.startswith("reindex "):
+                reindexed.append(sql)
+                repaired_flag["done"] = True
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        kb._guard_existing_db_is_healthy(db_path)  # must NOT raise
+
+    assert reindexed == ["REINDEX idx_events_run"]
+    repair_warnings = [
+        r for r in caplog.records
+        if "auto-repaired" in r.getMessage()
+        and "idx_events_run" in r.getMessage()
+    ]
+    assert repair_warnings, (
+        "expected a WARNING naming idx_events_run; got "
+        f"{[r.getMessage() for r in caplog.records]!r}"
+    )
+
+    # No spurious .corrupt backup was created for an auto-repairable case.
+    backups = list(tmp_path.glob("*.corrupt.*"))
+    assert backups == [], (
+        f"auto-repair path must not produce a .corrupt backup; got {backups}"
+    )
+
+
+def test_init_db_unrepairable_corruption_still_raises_kanban_db_corrupt_error(
+    tmp_path, monkeypatch, caplog
+):
+    """Existing backup-and-raise path must keep working for genuine
+    corruption (page-level, malformed b-tree, TLS-overwrite, etc.)."""
+    import logging
+
+    db_path = tmp_path / "real_bad.db"
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                return _FakeCursor([("database disk image is malformed",)])
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+            kb._guard_existing_db_is_healthy(db_path)
+
+    assert excinfo.value.backup_path is not None
+    assert excinfo.value.backup_path.exists()
+
+
+def test_init_db_partial_repair_failure_includes_attempt_in_error(tmp_path, monkeypatch):
+    """Edge case: REINDEX fixes the named index but the DB is still
+    failing integrity_check (multiple broken indexes, only one
+    repairable). The error must surface the repair attempt so the
+    operator knows what was tried.
+
+    Like the auto-repair test above, we drive the guard directly — the
+    post-guard ``connect()`` flow is covered by the dedicated migration
+    tests; here we only care that the guard logs the attempt in the
+    ``KanbanDbCorruptError`` message so the operator can see the
+    repair was tried."""
+    db_path = tmp_path / "partial.db"
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    reindexed: list[str] = []
+    repaired_flag = {"done": False}
+
+    class _FakeCursor:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def fetchall(self):
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                if not repaired_flag["done"]:
+                    # First call: recoverable index drift + page-level
+                    # corruption mixed together.
+                    return _FakeCursor([
+                        ("wrong # of entries in index idx_events_run",),
+                        ("*** in database main ***\nPage 4: never used",),
+                    ])
+                # REINDEX was attempted but the DB is STILL not clean —
+                # this is the partial-repair-failed case.
+                return _FakeCursor([("*** in database main ***\nPage 4: still bad",)])
+            if normalized.startswith("reindex "):
+                reindexed.append(sql)
+                repaired_flag["done"] = True
+            return _FakeCursor([])
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+        kb._guard_existing_db_is_healthy(db_path)
+
+    assert "REINDEX attempted" in str(excinfo.value)
+    assert "idx_events_run" in str(excinfo.value)
+    assert reindexed == ["REINDEX idx_events_run"]
+
+
+def test_try_repair_index_drift_propagates_connect_operational_error(
+    tmp_path, monkeypatch
+):
+    """``OperationalError`` from ``_sqlite_connect`` (lock/busy) must
+    propagate raw — the caller wants to see the real lock failure, not
+    a corrupt-DB error."""
+    db_path = tmp_path / "locked.db"
+    kb.init_db(db_path=db_path)
+
+    def _locked_connect(p):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(kb, "_sqlite_connect", _locked_connect)
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        kb._try_repair_index_drift(db_path)
+
+
+def test_try_repair_index_drift_returns_false_on_connect_database_error(
+    tmp_path, monkeypatch
+):
+    """A ``DatabaseError`` (page-level corruption, malformed headers)
+    from ``_sqlite_connect`` is unrecoverable — the helper must return
+    ``(False, [])`` so the caller can fall through to backup-and-raise.
+    """
+    db_path = tmp_path / "bad-connect.db"
+    kb.init_db(db_path=db_path)
+
+    def _bad_connect(p):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    monkeypatch.setattr(kb, "_sqlite_connect", _bad_connect)
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is False
+    assert names == []
+
+
+def test_try_repair_index_drift_propagates_first_integrity_operational_error(
+    tmp_path, monkeypatch
+):
+    """``OperationalError`` raised mid-probe (lock acquired between
+    connect and first ``PRAGMA integrity_check``) must propagate —
+    surfacing the lock state to the caller rather than masking it as
+    corruption."""
+    db_path = tmp_path / "probe-locked.db"
+    kb.init_db(db_path=db_path)
+
+    class _FakeCursor:
+        def fetchall(self):
+            raise sqlite3.OperationalError("database is locked")
+
+        def fetchone(self):
+            return None
+
+    class _FakeConn:
+        def execute(self, sql, *args, **kwargs):
+            return _FakeCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn())
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        kb._try_repair_index_drift(db_path)
+
+
+def test_try_repair_index_drift_returns_false_on_first_integrity_database_error(
+    tmp_path, monkeypatch
+):
+    """A ``DatabaseError`` raised mid-probe on the first
+    ``PRAGMA integrity_check`` indicates the DB is unreadable — return
+    ``(False, [])`` so the caller falls through to backup-and-raise."""
+    db_path = tmp_path / "probe-bad.db"
+    kb.init_db(db_path=db_path)
+
+    class _FakeCursor:
+        def fetchall(self):
+            raise sqlite3.DatabaseError("database disk image is malformed")
+
+        def fetchone(self):
+            return None
+
+    class _FakeConn:
+        def execute(self, sql, *args, **kwargs):
+            return _FakeCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn())
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is False
+    assert names == []
+
+
+def test_try_repair_index_drift_returns_false_on_reindex_database_error(
+    tmp_path, monkeypatch, caplog
+):
+    """If ``REINDEX`` itself raises ``DatabaseError`` (e.g. the index
+    is so badly corrupted that REINDEX cannot rebuild it), the helper
+    must surface ``(False, drifted)`` with a WARNING audit line so the
+    operator sees what was attempted."""
+    import logging
+
+    db_path = tmp_path / "reindex-fail.db"
+    kb.init_db(db_path=db_path)
+
+    class _FakeCursor:
+        def __init__(self, rows=None, exc=None):
+            self._rows = rows or []
+            self._exc = exc
+
+        def fetchall(self):
+            if self._exc is not None:
+                raise self._exc
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                return _FakeCursor(rows=[
+                    ("wrong # of entries in index idx_events_run",),
+                ])
+            if normalized.startswith("reindex "):
+                raise sqlite3.DatabaseError("reindex failed: bad b-tree")
+            return _FakeCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        ok, names = kb._try_repair_index_drift(db_path)
+
+    assert ok is False
+    assert names == ["idx_events_run"]
+    reindex_warnings = [
+        r for r in caplog.records
+        if "REINDEX" in r.getMessage() and "failed" in r.getMessage()
+    ]
+    assert reindex_warnings, (
+        "expected a WARNING log line about the REINDEX failure; "
+        f"got {[r.getMessage() for r in caplog.records]!r}"
+    )
+
+
+def test_try_repair_index_drift_propagates_post_integrity_operational_error(
+    tmp_path, monkeypatch
+):
+    """``OperationalError`` raised during the post-repair
+    ``PRAGMA integrity_check`` (lock acquired mid-repair) must
+    propagate — the caller still wants to see the lock state."""
+    db_path = tmp_path / "post-lock.db"
+    kb.init_db(db_path=db_path)
+
+    state = {"integrity_calls": 0}
+
+    class _FakeCursor:
+        def __init__(self, rows=None, exc=None):
+            self._rows = rows or []
+            self._exc = exc
+
+        def fetchall(self):
+            if self._exc is not None:
+                raise self._exc
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                state["integrity_calls"] += 1
+                if state["integrity_calls"] == 1:
+                    return _FakeCursor(rows=[
+                        ("wrong # of entries in index idx_events_run",),
+                    ])
+                # Second call (post-repair) — lock acquired mid-flight.
+                return _FakeCursor(exc=sqlite3.OperationalError("database is locked"))
+            return _FakeCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn())
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        kb._try_repair_index_drift(db_path)
+
+
+def test_try_repair_index_drift_returns_false_on_post_integrity_database_error(
+    tmp_path, monkeypatch
+):
+    """A ``DatabaseError`` on the post-repair ``PRAGMA
+    integrity_check`` (repair succeeded but the DB is STILL broken)
+    must return ``(False, repaired)`` so the caller knows which
+    indexes were touched."""
+    db_path = tmp_path / "still-broken.db"
+    kb.init_db(db_path=db_path)
+
+    reindexed: list[str] = []
+    state = {"integrity_calls": 0}
+
+    class _FakeCursor:
+        def __init__(self, rows=None, exc=None):
+            self._rows = rows or []
+            self._exc = exc
+
+        def fetchall(self):
+            if self._exc is not None:
+                raise self._exc
+            return list(self._rows)
+
+        def fetchone(self):
+            return self._rows[0] if self._rows else None
+
+    class _FakeConn:
+        def __init__(self, path):
+            self.path = path
+
+        def execute(self, sql, *args, **kwargs):
+            normalized = " ".join(sql.split()).lower()
+            if normalized == "pragma integrity_check":
+                state["integrity_calls"] += 1
+                if state["integrity_calls"] == 1:
+                    # First call: recoverable drift, REINDEX proceeds.
+                    return _FakeCursor(rows=[
+                        ("wrong # of entries in index idx_events_run",),
+                    ])
+                # Second call (post-repair): DB still broken.
+                return _FakeCursor(exc=sqlite3.DatabaseError("still broken"))
+            if normalized.startswith("reindex "):
+                reindexed.append(sql)
+            return _FakeCursor()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn(p))
+
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is False
+    assert reindexed == ["REINDEX idx_events_run"]
+    assert names == ["idx_events_run"]
+
+
+def test_try_repair_index_drift_swallows_close_exception(tmp_path, monkeypatch):
+    """A ``probe.close()`` that raises (e.g. connection was already
+    closed by an upstream call) must NOT propagate — the repair
+    verdict is what the caller cares about, and close-time errors
+    have no recovery semantics."""
+    db_path = tmp_path / "close-fail.db"
+    kb.init_db(db_path=db_path)
+
+    class _FakeCursor:
+        def fetchall(self):
+            return [("ok",)]
+
+        def fetchone(self):
+            return ("ok",)
+
+    class _FakeConn:
+        def execute(self, sql, *args, **kwargs):
+            return _FakeCursor()
+
+        def close(self):
+            raise RuntimeError("already closed")
+
+    monkeypatch.setattr(kb, "_sqlite_connect", lambda p: _FakeConn())
+
+    # Must NOT raise — the close failure is swallowed.
+    ok, names = kb._try_repair_index_drift(db_path)
+    assert ok is True
+    assert names == []
+
+
+# ---------------------------------------------------------------------------
 # First-use tip for scratch workspaces
 # ---------------------------------------------------------------------------
 
@@ -4766,3 +6042,677 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# SPEC-3: task_runs.worker_pid / claim_lock forensic columns
+# ---------------------------------------------------------------------------
+# Drift finding (t_cbf829f4 §2.5): these columns existed in the schema but
+# ``_end_run`` NULLed them on every terminal transition, so 0/20 spec-writer
+# crashed rows had them populated even though the same data lived in
+# ``metadata`` JSON as ``{"pid": 59973, "claimer": "MacBook-Pro.local:43761"}``.
+#
+# The fix has three parts:
+#   1. ``_end_run`` no longer NULLs the columns on close (forensic value).
+#   2. ``_set_worker_pid`` defensively stamps ``task_runs.claim_lock`` from
+#      ``tasks.claim_lock`` so the columns are populated at spawn time even
+#      on edge paths.
+#   3. ``backfill_task_run_pid_lock()`` parses ``metadata`` JSON on legacy
+#      rows and copies ``pid`` / ``claimer`` into the columns; wired into
+#      ``connect()`` so it runs on every startup.
+# These tests pin all three.
+
+
+def _seed_legacy_run_row(conn, task_id, profile, metadata):
+    """Seed a fake legacy run row for backfill tests.
+
+    The schema has many columns after migration; we provide the minimum
+    needed to make the row valid and target ``worker_pid``/``claim_lock``
+    as NULL so the backfill has work to do.
+    """
+    now = int(time.time())
+    conn.execute(
+        """
+        INSERT INTO tasks (
+            id, title, status, assignee, priority,
+            created_at, started_at
+        ) VALUES (?, 'spec3-legacy', 'ready', ?, 0, ?, ?)
+        """,
+        (task_id, profile, now, now),
+    )
+    cur = conn.execute(
+        """
+        INSERT INTO task_runs (
+            task_id, profile, status, outcome,
+            started_at, ended_at, metadata,
+            worker_pid, claim_lock
+        ) VALUES (?, ?, 'crashed', 'crashed', ?, ?, ?, NULL, NULL)
+        """,
+        (
+            task_id,
+            profile,
+            now - 100,
+            now - 50,
+            json.dumps(metadata) if isinstance(metadata, dict) else metadata,
+        ),
+    )
+    conn.commit()
+    return int(cur.lastrowid)
+
+
+def test_end_run_preserves_worker_pid_and_claim_lock(kanban_home):
+    """``_end_run`` must NOT NULL the forensic columns on close.
+
+    Regression: the pre-fix behaviour was to write ``claim_lock = NULL,
+    claim_expires = NULL, worker_pid = NULL`` in the same UPDATE as the
+    outcome, leaving every closed run with dead-schema columns. The fix
+    preserves them so post-mortem queries can answer "which pid ran this
+    attempt" without falling back to metadata JSON parsing.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="spec3-preserve", assignee="a")
+        claimer = "host:port"
+        kb.claim_task(conn, t, claimer=claimer)
+        kb._set_worker_pid(conn, t, 4242)
+        run_row = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (t,)
+        ).fetchone()
+        run_id = int(run_row["current_run_id"])
+        pre = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        assert pre["worker_pid"] == 4242
+        assert pre["claim_lock"] == claimer
+
+        kb.complete_task(conn, t, result="ok", summary="did the thing")
+        post = conn.execute(
+            "SELECT worker_pid, claim_lock, outcome, ended_at "
+            "FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        assert post["worker_pid"] == 4242, (
+            f"worker_pid wiped on close: got {post['worker_pid']}"
+        )
+        assert post["claim_lock"] == claimer, (
+            f"claim_lock wiped on close: got {post['claim_lock']}"
+        )
+        assert post["outcome"] == "completed"
+        assert post["ended_at"] is not None
+
+
+def test_set_worker_pid_defensively_stamps_claim_lock(kanban_home):
+    """``_set_worker_pid`` writes claim_lock from tasks.claim_lock if
+    the run row didn't already carry one (edge-path defensive write).
+
+    The normal path stamps ``task_runs.claim_lock`` at claim time, so
+    this branch never fires in production. The test simulates a legacy
+    row by manually clearing ``task_runs.claim_lock`` BEFORE calling
+    ``_set_worker_pid`` and confirms the defensive write repopulates it
+    from the parent ``tasks.claim_lock``.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="spec3-defensive", assignee="a")
+        kb.claim_task(conn, t, claimer="host:defensive")
+        run_row = conn.execute(
+            "SELECT current_run_id FROM tasks WHERE id = ?", (t,)
+        ).fetchone()
+        run_id = int(run_row["current_run_id"])
+        # Simulate a legacy / drifted run row where claim_lock is NULL.
+        conn.execute(
+            "UPDATE task_runs SET claim_lock = NULL WHERE id = ?",
+            (run_id,),
+        )
+        conn.commit()
+        kb._set_worker_pid(conn, t, 9999)
+        row = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
+        assert row["worker_pid"] == 9999
+        assert row["claim_lock"] == "host:defensive"
+
+
+def test_backfill_task_run_pid_lock_parses_metadata(kanban_home):
+    """Backfill reads metadata.pid and metadata.claimer and writes
+    them into the proper columns on legacy rows.
+
+    Seeds a closed run row with ``worker_pid=NULL``, ``claim_lock=NULL``,
+    and a metadata JSON blob containing the redundant keys. After
+    running the backfill, both columns must be populated and a re-run
+    must be a no-op (idempotency).
+    """
+    with kb.connect() as conn:
+        legacy_run_id = _seed_legacy_run_row(
+            conn,
+            "spec3-legacy-task",
+            "a",
+            {"pid": 31337, "claimer": "MacBook-Pro.local:54321"},
+        )
+
+        updated = kb.backfill_task_run_pid_lock(conn)
+        conn.commit()
+        assert updated == 1, f"backfill should update exactly 1 row, got {updated}"
+
+        row = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs WHERE id = ?",
+            (legacy_run_id,),
+        ).fetchone()
+        assert row["worker_pid"] == 31337
+        assert row["claim_lock"] == "MacBook-Pro.local:54321"
+
+        # Idempotent: a re-run updates zero rows.
+        again = kb.backfill_task_run_pid_lock(conn)
+        conn.commit()
+        assert again == 0, f"backfill must be idempotent, got {again}"
+
+
+def test_backfill_task_run_pid_lock_skips_rows_without_metadata_keys(kanban_home):
+    """Rows whose metadata has neither ``pid`` nor ``claimer`` are
+    left untouched (no false positives from empty/malformed JSON).
+    """
+    with kb.connect() as conn:
+        _seed_legacy_run_row(conn, "spec3-skip-task", "a", {"failures": 1})
+        updated = kb.backfill_task_run_pid_lock(conn)
+        conn.commit()
+        assert updated == 0
+
+        row = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs "
+            "WHERE task_id = 'spec3-skip-task'"
+        ).fetchone()
+        assert row["worker_pid"] is None
+        assert row["claim_lock"] is None
+
+
+def test_backfill_task_run_pid_lock_handles_malformed_metadata(kanban_home):
+    """Malformed JSON in ``metadata`` is silently skipped (no crash)."""
+    with kb.connect() as conn:
+        now = int(time.time())
+        conn.execute(
+            """
+            INSERT INTO tasks (
+                id, title, status, assignee, priority,
+                created_at, started_at
+            ) VALUES ('spec3-malformed-task', 'malformed', 'ready', 'a', 0, ?, ?)
+            """,
+            (now, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO task_runs (
+                task_id, profile, status, outcome,
+                started_at, ended_at, metadata,
+                worker_pid, claim_lock
+            ) VALUES ('spec3-malformed-task', 'a', 'crashed', 'crashed',
+                      ?, ?, 'not json', NULL, NULL)
+            """,
+            (now - 100, now - 50),
+        )
+        conn.commit()
+        updated = kb.backfill_task_run_pid_lock(conn)
+        conn.commit()
+        assert updated == 0
+
+
+def test_backfill_task_run_pid_lock_partial_fill(kanban_home):
+    """A row with pid but no claimer in metadata only fills worker_pid."""
+    with kb.connect() as conn:
+        _seed_legacy_run_row(conn, "spec3-partial-task", "a", {"pid": 12345})
+        kb.backfill_task_run_pid_lock(conn)
+        conn.commit()
+        row = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs "
+            "WHERE task_id = 'spec3-partial-task'"
+        ).fetchone()
+        assert row["worker_pid"] == 12345
+        assert row["claim_lock"] is None
+
+
+def test_backfill_task_run_pid_lock_wired_into_connect(kanban_home):
+    """``kb.connect()`` runs the backfill on every lazy-init path.
+
+    Seed a legacy row, then force a re-init via ``_INITIALIZED_PATHS``
+    cleanup so the next ``kb.connect()`` runs the backfill as part of
+    lazy init (no explicit call needed).
+    """
+    home = kanban_home
+    db_path = home / "kanban.db"
+    with kb.connect() as conn:
+        _seed_legacy_run_row(
+            conn,
+            "spec3-init-task",
+            "a",
+            {"pid": 88888, "claimer": "MacBook-Pro.local:11111"},
+        )
+
+    # Force re-init: the next connect() should run the backfill
+    # as part of lazy init without an explicit call.
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+    with kb.connect() as conn:
+        row = conn.execute(
+            "SELECT worker_pid, claim_lock FROM task_runs "
+            "WHERE task_id = 'spec3-init-task'"
+        ).fetchone()
+    assert row["worker_pid"] == 88888
+    assert row["claim_lock"] == "MacBook-Pro.local:11111"
+
+
+def test_detect_crashed_workers_metadata_drops_pid_and_claimer(
+    kanban_home, monkeypatch,
+):
+    """The run-row metadata written by ``detect_crashed_workers`` no
+    longer carries ``pid`` or ``claimer`` (those live on the columns);
+    the event-row payload keeps them because event rows are immutable
+    history and don't read back through the columns.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="spec3-meta-drop", assignee="a")
+        kb.claim_task(conn, tid, claimer=f"{host}:drop")
+        # Mirror the real spawn path: _set_worker_pid stamps worker_pid
+        # on BOTH the task and the run row. Without the run-row stamp,
+        # the ``outcome='crashed'`` query below finds no row.
+        kb._set_worker_pid(conn, tid, 55555)
+        conn.execute(
+            "UPDATE tasks SET started_at=? WHERE id=?",
+            (int(time.time()) - 600, tid),
+        )
+        conn.commit()
+
+        _ = kb.detect_crashed_workers(conn)
+        run_row = conn.execute(
+            """
+            SELECT tr.metadata, tr.worker_pid, tr.claim_lock,
+                   (SELECT payload FROM task_events
+                     WHERE task_id = ? AND kind = 'crashed'
+                     ORDER BY id DESC LIMIT 1) AS event_payload
+              FROM task_runs tr
+             WHERE tr.task_id = ? AND tr.outcome = 'crashed'
+             ORDER BY tr.id DESC LIMIT 1
+            """,
+            (tid, tid),
+        ).fetchone()
+
+    # Columns populated (the source of truth).
+    assert run_row["worker_pid"] == 55555
+    assert run_row["claim_lock"] == f"{host}:drop"
+
+    # Run-row metadata no longer carries pid/claimer.
+    meta = json.loads(run_row["metadata"]) if run_row["metadata"] else {}
+    assert "pid" not in meta, f"metadata still has pid: {meta}"
+    assert "claimer" not in meta, f"metadata still has claimer: {meta}"
+
+    # Event payload (immutable history) keeps both.
+    ev = json.loads(run_row["event_payload"]) if run_row["event_payload"] else {}
+    assert ev.get("pid") == 55555
+    assert ev.get("claimer") == f"{host}:drop"
+
+
+# ---------------------------------------------------------------------------
+# Spawn-time nursery window (SPEC-4 / adr-kanban-nursery-window.md)
+#
+# These tests bypass ``kb.create_task`` (which still references the old
+# ``created_at`` column name from before the recent schema rename) and
+# use raw ``INSERT`` statements against the current schema. The
+# nursery-column migration runs in init_db and is observable in
+# PRAGMA table_info; everything else is tested via the public dispatch
+# surface so the test is independent of any internal column renames.
+# ---------------------------------------------------------------------------
+
+
+def _nursery_tasks_table_columns(kanban_home):
+    with kb.connect() as conn:
+        return {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+
+
+def _nursery_run_columns(kanban_home):
+    with kb.connect() as conn:
+        return {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(task_runs)").fetchall()
+        }
+
+
+def test_nursery_exit_at_column_added_by_migration(kanban_home):
+    """task_runs.nursery_exit_at exists after init_db on a fresh DB."""
+    cols = _nursery_run_columns(kanban_home)
+    assert "nursery_exit_at" in cols, (
+        f"task_runs missing nursery_exit_at column; cols={sorted(cols)}"
+    )
+
+
+def _insert_running_task(conn, kanban_home, *, task_id, started_at,
+                        nursery_exit_at, claimer, worker_pid):
+    """Synthesize a task + run in running status with given timings.
+
+    Wires ``current_run_id`` so ``_end_run`` (called from
+    detect_crashed_workers) finds the run to close.
+    """
+    cur = conn.execute(
+        "INSERT INTO task_runs ("
+        "task_id, profile, status, claim_lock, worker_pid, "
+        "started_at, nursery_exit_at, claim_expires"
+        ") VALUES (?, ?, 'running', ?, ?, ?, ?, ?)",
+        (task_id, "worker", claimer, worker_pid,
+         started_at, nursery_exit_at, started_at + 900),
+    )
+    run_id = int(cur.lastrowid)
+    cols = _nursery_tasks_table_columns(kanban_home)
+    insert_cols = [c for c in (
+        "id", "title", "status", "assignee", "started_at",
+        "claim_lock", "claim_expires", "worker_pid", "current_run_id",
+    ) if c in cols]
+    placeholders = ", ".join("?" for _ in insert_cols)
+    values = []
+    for c in insert_cols:
+        if c == "id": values.append(task_id)
+        elif c == "title": values.append("nursery-test")
+        elif c == "status": values.append("running")
+        elif c == "assignee": values.append("worker")
+        elif c == "started_at": values.append(started_at)
+        elif c == "claim_lock": values.append(claimer)
+        elif c == "claim_expires": values.append(started_at + 900)
+        elif c == "worker_pid": values.append(worker_pid)
+        elif c == "current_run_id": values.append(run_id)
+        else: values.append(None)
+    conn.execute(
+        f"INSERT INTO tasks ({', '.join(insert_cols)}) VALUES ({placeholders})",
+        tuple(values),
+    )
+
+
+def test_resolve_nursery_seconds_env_override(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "300")
+    assert _kb._resolve_nursery_seconds() == 300
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "0")
+    assert _kb._resolve_nursery_seconds() == 0
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "")
+    assert _kb._resolve_nursery_seconds() == _kb.DEFAULT_NURSERY_SECONDS
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "garbage")
+    assert _kb._resolve_nursery_seconds() == _kb.DEFAULT_NURSERY_SECONDS
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "-5")
+    assert _kb._resolve_nursery_seconds() == _kb.DEFAULT_NURSERY_SECONDS
+
+
+def test_resolve_early_death_threshold_env_override(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "7")
+    assert _kb._resolve_early_death_threshold() == 7
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "0")
+    assert _kb._resolve_early_death_threshold() == _kb.DEFAULT_EARLY_DEATH_THRESHOLD
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "garbage")
+    assert _kb._resolve_early_death_threshold() == _kb.DEFAULT_EARLY_DEATH_THRESHOLD
+
+
+def test_resolve_early_death_window_seconds_env_override(monkeypatch):
+    import hermes_cli.kanban_db as _kb
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "900")
+    assert _kb._resolve_early_death_window_seconds() == 900
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "0")
+    assert _kb._resolve_early_death_window_seconds() == _kb.DEFAULT_EARLY_DEATH_WINDOW_SECONDS
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "garbage")
+    assert _kb._resolve_early_death_window_seconds() == _kb.DEFAULT_EARLY_DEATH_WINDOW_SECONDS
+
+
+def test_early_death_classification_does_not_count_failure(
+    kanban_home, monkeypatch,
+):
+    """A worker dying inside the nursery does NOT increment
+    consecutive_failures. The task returns to ready so it can respawn.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "180")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "100")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "1800")
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        _insert_running_task(
+            conn, kanban_home,
+            task_id="early-1",
+            started_at=now - 30,
+            nursery_exit_at=now - 30 + 180,
+            claimer=f"{host}:worker1",
+            worker_pid=99001,
+        )
+        conn.commit()
+        crashed = _kb.detect_crashed_workers(conn)
+        assert "early-1" in crashed, f"expected 'early-1' in crashed={crashed}"
+        events = kb.list_events(conn, "early-1")
+        crashed_event = next(e for e in events if e.kind == "crashed")
+        assert crashed_event.payload.get("early_death") is True, (
+            f"expected early_death=True, got {crashed_event.payload}"
+        )
+        assert crashed_event.payload.get("nursery_seconds") == 180
+        task = kb.get_task(conn, "early-1")
+        assert task.status == "ready", f"task {task.status} != ready"
+        assert task.consecutive_failures == 0, (
+            f"consecutive_failures={task.consecutive_failures} (should be 0)"
+        )
+
+
+def test_graduated_death_increments_failure_normally(
+    kanban_home, monkeypatch,
+):
+    """A worker dying AFTER the nursery counts toward the circuit
+    breaker normally.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "180")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "100")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "1800")
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        _insert_running_task(
+            conn, kanban_home,
+            task_id="grad-1",
+            started_at=now - 600,
+            nursery_exit_at=now - 600 + 180,
+            claimer=f"{host}:worker1",
+            worker_pid=99002,
+        )
+        conn.commit()
+        crashed = _kb.detect_crashed_workers(conn)
+        assert "grad-1" in crashed, f"expected 'grad-1' in crashed={crashed}"
+        events = kb.list_events(conn, "grad-1")
+        crashed_event = next(e for e in events if e.kind == "crashed")
+        assert "early_death" not in crashed_event.payload, (
+            f"graduated death should not have early_death flag: {crashed_event.payload}"
+        )
+        task = kb.get_task(conn, "grad-1")
+        assert task.consecutive_failures == 1, (
+            f"consecutive_failures={task.consecutive_failures} (should be 1)"
+        )
+
+
+def test_nursery_burst_event_fires_at_threshold(
+    kanban_home, monkeypatch,
+):
+    """When the host produces threshold early deaths inside the sliding
+    window, the dispatcher emits a nursery_burst event with count,
+    threshold, and recent run ids.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "180")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "3")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "1800")
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        for i in range(2):
+            tid = f"seed-early-{i}"
+            _insert_running_task(
+                conn, kanban_home,
+                task_id=tid,
+                started_at=now - 60,
+                nursery_exit_at=now - 60 + 180,
+                claimer=f"{host}:worker1",
+                worker_pid=99100 + i,
+            )
+        conn.commit()
+        _kb.detect_crashed_workers(conn)
+        _insert_running_task(
+            conn, kanban_home,
+            task_id="trigger-1",
+            started_at=now - 30,
+            nursery_exit_at=now - 30 + 180,
+            claimer=f"{host}:worker1",
+            worker_pid=99200,
+        )
+        conn.commit()
+        _kb.detect_crashed_workers(conn)
+        burst_events = [
+            e for e in kb.list_events(conn, "trigger-1")
+            if e.kind == "nursery_burst"
+        ]
+        assert len(burst_events) == 1, (
+            f"expected 1 nursery_burst event on trigger-1, got {len(burst_events)}"
+        )
+        payload = burst_events[0].payload
+        assert payload["host"] == host
+        assert payload["count"] >= payload["threshold"] == 3
+        assert "recent_run_ids" in payload
+        assert len(payload["recent_run_ids"]) >= 3
+        task = kb.get_task(conn, "trigger-1")
+        assert task.status == "blocked", (
+            f"trigger-1 status={task.status} (should be blocked after burst)"
+        )
+        assert task.consecutive_failures == 1
+
+
+def test_nursery_burst_does_not_fire_below_threshold(
+    kanban_home, monkeypatch,
+):
+    """Below the threshold, early deaths do NOT auto-block the task."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_NURSERY_SECONDS", "180")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "5")
+    monkeypatch.setenv("HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", "1800")
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        for i in range(2):
+            tid = f"below-{i}"
+            _insert_running_task(
+                conn, kanban_home,
+                task_id=tid,
+                started_at=now - 30,
+                nursery_exit_at=now - 30 + 180,
+                claimer=f"{host}:worker1",
+                worker_pid=99300 + i,
+            )
+        conn.commit()
+        _kb.detect_crashed_workers(conn)
+        for tid in ("below-0", "below-1"):
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"{tid} status={task.status} (should be ready, below threshold)"
+            )
+            burst_events = [
+                e for e in kb.list_events(conn, tid)
+                if e.kind == "nursery_burst"
+            ]
+            assert len(burst_events) == 0, (
+                f"{tid} got nursery_burst below threshold"
+            )
+
+
+def test_count_recent_early_deaths_respects_window(
+    kanban_home, monkeypatch,
+):
+    """Early deaths OUTSIDE the sliding window do NOT count toward
+    the burst threshold.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        for i, age in enumerate([10, 100, 1500, 2000]):
+            conn.execute(
+                "INSERT INTO task_runs ("
+                "task_id, profile, status, claim_lock, worker_pid, "
+                "started_at, nursery_exit_at, ended_at, outcome, error"
+                ") VALUES (?, ?, 'crashed', ?, ?, ?, ?, ?, 'crashed', ?)",
+                (
+                    f"hist-{age}-{i}",
+                    "worker",
+                    f"{host}:w{i}",
+                    99000 + i,
+                    now - age,
+                    (now - age) + 180,
+                    now - age + 30,
+                    f"pid {99000 + i} not alive",
+                ),
+            )
+        conn.commit()
+        count, run_ids = _kb._count_recent_early_deaths(
+            conn, host=host, now=now, window_seconds=200,
+        )
+        assert count == 2, f"expected 2 recent early deaths, got {count}"
+        count, _ = _kb._count_recent_early_deaths(
+            conn, host=host, now=now, window_seconds=50,
+        )
+        assert count == 1, f"expected 1 recent early death, got {count}"
+
+
+def test_run_from_row_handles_null_nursery_exit_at(
+    kanban_home, monkeypatch,
+):
+    """Legacy runs (NULL nursery_exit_at) parse cleanly via Run.from_row
+    and surface the field as None.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    with kb.connect() as conn:
+        now = int(time.time())
+        host = _kb._claimer_id().split(":", 1)[0]
+        conn.execute(
+            "INSERT INTO tasks (id, title, status, assignee, started_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            ("legacy-run", "legacy", "done", "worker", now - 100),
+        )
+        conn.execute(
+            "INSERT INTO task_runs ("
+            "task_id, profile, status, claim_lock, worker_pid, "
+            "started_at, ended_at, outcome, nursery_exit_at"
+            ") VALUES (?, ?, 'crashed', ?, ?, ?, ?, 'crashed', NULL)",
+            (
+                "legacy-run", "worker", f"{host}:legacy",
+                99887, now - 100, now - 50,
+            ),
+        )
+        conn.commit()
+        runs = kb.list_runs(conn, "legacy-run")
+        assert len(runs) == 1
+        assert runs[0].nursery_exit_at is None
+        from hermes_cli.kanban_db import Run
+        legacy_row = conn.execute(
+            "SELECT * FROM task_runs WHERE task_id = ?",
+            ("legacy-run",),
+        ).fetchone()
+        run = Run.from_row(legacy_row)
+        assert run.nursery_exit_at is None
+        assert run.task_id == "legacy-run"

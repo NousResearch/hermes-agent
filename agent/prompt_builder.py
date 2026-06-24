@@ -1301,6 +1301,19 @@ def _parse_skill_file(skill_file: Path) -> tuple[bool, dict, str]:
         raw = skill_file.read_text(encoding="utf-8")
         frontmatter, _ = parse_frontmatter(raw)
 
+        # Frontmatter schema gate — see hermes_cli/skill_loader. A failing
+        # skill is logged and excluded from auto-load (returns is_compatible=False)
+        # so malformed metadata can't poison the gateway startup path. The
+        # validator lives in hermes_cli and is imported lazily to avoid a
+        # hard hermes_cli → agent → hermes_cli cycle at import time.
+        try:
+            from hermes_cli.skill_loader import validate_or_warn
+
+            if not validate_or_warn(skill_file, logger=logger):
+                return False, frontmatter, ""
+        except Exception as _exc:  # pragma: no cover - defensive
+            logger.debug("skill_loader validate_or_warn unavailable: %s", _exc)
+
         if not skill_matches_platform(frontmatter):
             return False, frontmatter, ""
 

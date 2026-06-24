@@ -1289,7 +1289,9 @@ def list_authenticated_providers(
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, cached_provider_model_ids,
         clear_provider_models_cache, get_curated_nous_model_ids,
+        hidden_model_provider_slugs,
     )
+    hidden_providers = hidden_model_provider_slugs()
 
     # Explicit refresh: drop every provider's cached model-id list so the
     # cached_provider_model_ids() calls below all re-fetch live. Without this
@@ -2091,6 +2093,12 @@ def list_authenticated_providers(
             _section4_emitted_slugs.add(slug.lower())
 
     # Sort: current provider first, then by model count descending
+    if hidden_providers:
+        results = [
+            r for r in results
+            if str(r.get("slug") or "").strip().lower() not in hidden_providers
+        ]
+
     results.sort(key=lambda r: (not r["is_current"], -r["total_models"]))
 
     return results

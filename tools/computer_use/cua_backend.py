@@ -497,10 +497,16 @@ class CuaDriverBackend(ComputerUseBackend):
         window_title = ""
 
         if mode == "vision":
-            # screenshot tool: just the PNG, no AX walk.
+            # `get_window_state` with capture_mode="vision" returns the PNG
+            # (no AX walk). The previous implementation called a non-existent
+            # `screenshot` tool, which always returned "Unknown tool".
             sc_out = self._session.call_tool(
-                "screenshot",
-                {"window_id": self._active_window_id, "format": "jpeg", "quality": 85},
+                "get_window_state",
+                {
+                    "pid": self._active_pid,
+                    "window_id": self._active_window_id,
+                    "capture_mode": "vision",
+                },
             )
             if sc_out["images"]:
                 png_b64 = sc_out["images"][0]

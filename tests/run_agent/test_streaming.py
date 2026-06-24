@@ -1657,3 +1657,70 @@ class TestBedrockIamStreamingFallback:
 
         client.converse.assert_not_called()
         assert getattr(agent, "_disable_streaming", False) is False
+
+
+class TestStaleStreamAnthropicRebuild:
+    """Stale-stream pool cleanup must dispatch to the correct client rebuild
+    for Anthropic/Bedrock providers, not always call the OpenAI rebuild."""
+
+    @patch("run_agent.AIAgent._rebuild_anthropic_client")
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_stale_stream_anthropic_calls_rebuild_not_openai(
+        self, mock_openai_rebuild, mock_anthropic_rebuild, monkeypatch,
+    ):
+        """When api_mode is anthropic_messages, stale-stream cleanup must
+        call _rebuild_anthropic_client(), not _replace_primary_openai_client()."""
+        from threading import Event
+
+        from run_agent import AIAgent
+
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.5")
+        monkeypatch.setenv("HERMES_STREAM_READ_TIMEOUT", "0.5")
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+
+        agent = AIAgent(
+            api_key="test-oauth-token",
+            base_url="https://api.anthropic.com",
+            provider="anthropic",
+            model="claude-sonnet-4-5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+
+        _hang = Event()  # never set — stream hangs indefinitely
+
+        class _HangingStream:
+            response = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                _hang.wait(timeout=5)
+                return iter([])
+
+            def get_final_message(self):
+                _hang.wait(timeout=5)
+                return SimpleNamespace(content=[], stop_reason="end_turn")
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = _HangingStream()
+
+        response = agent._interruptible_streaming_api_call({})
+
+        # The stale detector should have fired and dispatched to the
+        # Anthropic rebuild, NOT the OpenAI rebuild.
+        assert mock_anthropic_rebuild.call_count >= 1, (
+            f"_rebuild_anthropic_client was not called for anthropic_messages "
+            f"stale-stream cleanup. Calls: {mock_anthropic_rebuild.call_count}"
+        )
+        assert mock_openai_rebuild.call_count == 0, (
+            f"_replace_primary_openai_client should NOT be called for "
+            f"anthropic_messages. Calls: {mock_openai_rebuild.call_count}"
+        )

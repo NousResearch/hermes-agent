@@ -8875,3 +8875,85 @@ def test_get_usage_clamps_post_compression_sentinel():
     usage = server._get_usage(agent)
     assert "context_used" not in usage
     assert "context_percent" not in usage
+
+
+def test_model_visibility_get_returns_empty_list_when_no_file(tmp_path, monkeypatch):
+    """model_visibility.get returns [] when no desktop-model-visibility.json exists."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+    result = server._methods["model_visibility.get"]("r1", {})
+    assert result["result"]["keys"] == []
+
+
+def test_model_visibility_set_and_get_round_trip(tmp_path, monkeypatch):
+    """model_visibility.set persists keys that model_visibility.get returns."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+    keys = ["openai::gpt-4o", "openai::gpt-4o-mini", "anthropic::claude-sonnet-4"]
+    set_result = server._methods["model_visibility.set"]("r1", {"keys": keys})
+    assert set_result["result"]["ok"] is True
+
+    get_result = server._methods["model_visibility.get"]("r2", {})
+    assert get_result["result"]["keys"] == keys
+
+
+def test_model_visibility_set_rejects_non_list(tmp_path, monkeypatch):
+    """model_visibility.set returns an error when keys is not a list."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+    result = server._methods["model_visibility.set"]("r1", {"keys": "not-a-list"})
+    assert "error" in result
+    assert result["error"]["code"] == 4002
+
+
+def test_model_visibility_set_filters_non_strings(tmp_path, monkeypatch):
+    """model_visibility.set silently drops non-string entries from the keys list."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+    keys = ["valid::key", 42, None, "another::valid"]
+    set_result = server._methods["model_visibility.set"]("r1", {"keys": keys})
+    assert set_result["result"]["ok"] is True
+
+    get_result = server._methods["model_visibility.get"]("r2", {})
+    assert get_result["result"]["keys"] == ["valid::key", "another::valid"]
+
+
+def test_model_visibility_overwrites_previous_data(tmp_path, monkeypatch):
+    """model_visibility.set overwrites any previously stored keys."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+    server._methods["model_visibility.set"]("r1", {"keys": ["old::key"]})
+    server._methods["model_visibility.set"]("r2", {"keys": ["new::key"]})
+
+    get_result = server._methods["model_visibility.get"]("r3", {})
+    assert get_result["result"]["keys"] == ["new::key"]
+
+
+def test_model_visibility_get_handles_corrupted_file(tmp_path, monkeypatch):
+    """model_visibility.get returns [] when the JSON file is corrupted."""
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+    # Write corrupted data
+    p = tmp_path / "desktop-model-visibility.json"
+    p.write_text("not valid json", encoding="utf-8")
+
+    result = server._methods["model_visibility.get"]("r1", {})
+    assert result["result"]["keys"] == []

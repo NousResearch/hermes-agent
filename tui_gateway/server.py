@@ -7497,6 +7497,78 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5031, f"pet.hatch failed: {exc}")
 
 
+# ── Methods: model_visibility ────────────────────────────────────────────
+# Profile-scoped persistence for the desktop app's model visibility
+# preferences (which models to show/hide per provider).  Stored as a simple
+# JSON file under the profile's home so it survives cache clears, origin
+# changes, and Electron userData resets.
+
+_MODEL_VISIBILITY_FILENAME = "desktop-model-visibility.json"
+
+
+def _model_visibility_path(profile_home: Path | None = None) -> Path:
+    """Resolve the model visibility JSON file path for the active profile."""
+    home = profile_home or _hermes_home
+    return Path(home) / _MODEL_VISIBILITY_FILENAME
+
+
+def _read_model_visibility(profile_home: Path | None = None) -> list[str]:
+    """Read the stored model visibility keys, or return an empty list."""
+    p = _model_visibility_path(profile_home)
+    if not p.exists():
+        return []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if isinstance(data, list) and all(isinstance(x, str) for x in data):
+            return data
+        return []
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def _write_model_visibility(keys: list[str], profile_home: Path | None = None) -> None:
+    """Write model visibility keys to the profile-scoped JSON file."""
+    p = _model_visibility_path(profile_home)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(keys, ensure_ascii=False), encoding="utf-8")
+
+
+@method("model_visibility.get")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Return the stored model visibility keys for the active profile.
+
+    Returns ``{"keys": [...]}`` with the list of ``provider::model`` keys,
+    or an empty list if no customization has been saved yet.
+    """
+    try:
+        keys = _read_model_visibility()
+        return _ok(rid, {"keys": keys})
+    except Exception as exc:
+        logger.debug("model_visibility.get failed: %s", exc)
+        return _ok(rid, {"keys": []})
+
+
+@method("model_visibility.set")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Persist model visibility keys for the active profile.
+
+    Params: ``{"keys": ["provider::model", ...]}``.
+    Returns ``{"ok": true}`` on success.
+    """
+    try:
+        raw = params.get("keys")
+        if not isinstance(raw, list):
+            return _err(rid, 4002, "keys must be a list of strings")
+        keys = [str(k) for k in raw if isinstance(k, str)]
+        _write_model_visibility(keys)
+        return _ok(rid, {"ok": True})
+    except Exception as exc:
+        logger.debug("model_visibility.set failed: %s", exc)
+        return _err(rid, 5001, f"model_visibility.set failed: {exc}")
+
+
 @method("credits.view")
 def _(rid, params: dict) -> dict:
     """Structured Nous credit view for the TUI /credits command.

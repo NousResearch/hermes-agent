@@ -1392,6 +1392,88 @@ class TestConnectSmtp(unittest.TestCase):
         self.assertIs(_socket.getaddrinfo, original_getaddrinfo)
 
 
+class TestConnectImap(unittest.TestCase):
+    """Test _connect_imap() helper: IPv6 fallback for IMAP4_SSL connections."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_IMAP_PORT": "993",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            return EmailAdapter(PlatformConfig(enabled=True))
+
+    def test_default_connection_used_when_reachable(self):
+        """When IMAP4_SSL connects normally, no IPv4 fallback is attempted."""
+        from plugins.platforms.email import adapter as email_mod
+
+        adapter = self._make_adapter()
+
+        with patch("imaplib.IMAP4_SSL") as mock_imap_ssl, \
+             patch.object(email_mod, "_IPv4IMAP4_SSL") as mock_ipv4_imap_ssl:
+            mock_server = MagicMock()
+            mock_imap_ssl.return_value = mock_server
+
+            result = adapter._connect_imap()
+
+            mock_imap_ssl.assert_called_once_with("imap.test.com", 993, timeout=30)
+            mock_ipv4_imap_ssl.assert_not_called()
+            self.assertIs(result, mock_server)
+
+    def test_ipv6_timeout_falls_back_to_ipv4(self):
+        """When the default connection times out, retry with IPv4-only IMAP."""
+        import socket as _socket
+        from plugins.platforms.email import adapter as email_mod
+
+        adapter = self._make_adapter()
+
+        with patch("imaplib.IMAP4_SSL", side_effect=_socket.timeout("timed out")), \
+             patch.object(email_mod, "_IPv4IMAP4_SSL") as mock_ipv4_imap_ssl:
+            mock_server = MagicMock()
+            mock_ipv4_imap_ssl.return_value = mock_server
+
+            result = adapter._connect_imap()
+
+            self.assertIs(result, mock_server)
+            mock_ipv4_imap_ssl.assert_called_once_with("imap.test.com", 993, timeout=30)
+
+    def test_tls_verification_error_does_not_retry_ipv4(self):
+        """Certificate failures are security errors, not IPv6 reachability failures."""
+        import ssl as _ssl
+        from plugins.platforms.email import adapter as email_mod
+
+        adapter = self._make_adapter()
+
+        with patch("imaplib.IMAP4_SSL", side_effect=_ssl.SSLError("cert verify failed")), \
+             patch.object(email_mod, "_IPv4IMAP4_SSL") as mock_ipv4_imap_ssl:
+            with self.assertRaises(_ssl.SSLError):
+                adapter._connect_imap()
+
+            mock_ipv4_imap_ssl.assert_not_called()
+
+    def test_connect_uses_connect_imap(self):
+        """connect() must go through _connect_imap(), not call IMAP4_SSL directly."""
+        import asyncio
+
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+        with patch.object(adapter, "_connect_imap", return_value=mock_imap) as mock_ci, \
+             patch.object(adapter, "_connect_smtp") as mock_cs:
+            mock_smtp = MagicMock()
+            mock_cs.return_value = mock_smtp
+
+            result = asyncio.run(adapter.connect())
+
+            self.assertTrue(result)
+            mock_ci.assert_called()
+
+
 class TestConnectionConfigResolution(unittest.TestCase):
     """Host/address resolution and pre-connect validation (#49736)."""
 

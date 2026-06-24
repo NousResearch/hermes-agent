@@ -323,7 +323,7 @@ def build_turn_context(
             )
         elif _compressor.should_compress(_preflight_tokens):
             logger.info(
-                "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
+                "会話履歴の事前整理: 約%sトークンがしきい値%s以上です (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
                 f"{_compressor.threshold_tokens:,}",
                 agent.model,

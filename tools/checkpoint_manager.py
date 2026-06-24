@@ -469,7 +469,7 @@ def _init_store(store: Path, working_dir: str) -> Optional[str]:
     info_dir = store / "info"
     info_dir.mkdir(exist_ok=True)
     (info_dir / "exclude").write_text(
-        "\n".join(DEFAULT_EXCLUDES) + "\n", encoding="utf-8"
+        "\n".join(DEFAULT_EXCLUDES, encoding="utf-8") + "\n", encoding="utf-8"
     )
 
     logger.debug("Initialised checkpoint store at %s", store)
@@ -492,7 +492,7 @@ def _register_project(store: Path, working_dir: str) -> None:
             pass
     try:
         meta_path.parent.mkdir(parents=True, exist_ok=True)
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        meta_path.write_text(json.dumps(meta, encoding="utf-8"), encoding="utf-8")
     except OSError as exc:
         logger.debug("Could not write project metadata %s: %s", meta_path, exc)
 
@@ -514,7 +514,7 @@ def _touch_project(store: Path, working_dir: str) -> None:
     meta["last_touch"] = time.time()
     meta.setdefault("created_at", meta["last_touch"])
     try:
-        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        meta_path.write_text(json.dumps(meta, encoding="utf-8"), encoding="utf-8")
     except OSError as exc:
         logger.debug("Could not update project metadata %s: %s", meta_path, exc)
 
@@ -587,7 +587,7 @@ def _init_shadow_repo(shadow_repo: Path, working_dir: str) -> Optional[str]:
     # (write in addition to the JSON metadata).
     try:
         (shadow_repo / "HERMES_WORKDIR").write_text(
-            str(_normalize_path(working_dir)) + "\n", encoding="utf-8"
+            str(_normalize_path(working_dir, encoding="utf-8")) + "\n", encoding="utf-8"
         )
     except OSError:
         pass
@@ -1535,7 +1535,7 @@ def maybe_auto_prune_checkpoints(
         out["result"] = result
 
         try:
-            marker.write_text(str(now), encoding="utf-8")
+            marker.write_text(str(now, encoding="utf-8"), encoding="utf-8")
         except OSError as exc:
             logger.debug("Could not write checkpoint prune marker: %s", exc)
 

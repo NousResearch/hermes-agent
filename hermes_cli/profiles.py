@@ -373,7 +373,7 @@ def check_alias_collision(name: str) -> Optional[str]:
             expected = wrapper_dir / (f"{canon}.bat" if is_windows else canon)
             if existing_path == str(expected):
                 try:
-                    content = expected.read_text()
+                    content = expected.read_text(encoding="utf-8")
                     if "hermes -p" in content:
                         return None  # it's our wrapper, safe to overwrite
                 except Exception:
@@ -414,7 +414,7 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     if is_windows:
         wrapper_path = wrapper_dir / f"{canon}.bat"
         try:
-            wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n")
+            wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n", encoding="utf-8")
             return wrapper_path
         except OSError as e:
             print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
@@ -423,7 +423,7 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
         wrapper_path = wrapper_dir / canon
         try:
             hermes_exe = shutil.which("hermes") or "hermes"
-            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n')
+            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe, encoding="utf-8")} -p {profile} "$@"\n')
             wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
             return wrapper_path
         except OSError as e:
@@ -446,7 +446,7 @@ def remove_wrapper_script(name: str) -> bool:
         if wrapper_path.exists():
             try:
                 # Verify it's our wrapper before removing
-                content = wrapper_path.read_text()
+                content = wrapper_path.read_text(encoding="utf-8")
                 if "hermes -p" in content:
                     wrapper_path.unlink()
                     return True
@@ -517,7 +517,7 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
         if not is_windows and entry.suffix:
             continue
         try:
-            content = entry.read_text()
+            content = entry.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError):
             continue
         if needle not in content:
@@ -998,11 +998,11 @@ def create_profile(
     if no_skills:
         try:
             (profile_dir / NO_BUNDLED_SKILLS_MARKER).write_text(
-                "This profile opted out of bundled-skill seeding "
-                "(`hermes profile create --no-skills`).\n"
-                "Delete this file to re-enable sync on the next `hermes update`.\n",
-                encoding="utf-8",
-            )
+                    "This profile opted out of bundled-skill seeding "
+                    "(`hermes profile create --no-skills`).\n"
+                    "Delete this file to re-enable sync on the next `hermes update`.\n",
+                    encoding="utf-8",
+                )
         except OSError:
             pass  # best-effort — the feature still works via the empty skills/ dir
 
@@ -1427,7 +1427,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         return
 
     try:
-        raw = pid_file.read_text().strip()
+        raw = pid_file.read_text(encoding="utf-8").strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
         # Route through terminate_pid so Windows uses the appropriate
@@ -1468,7 +1468,7 @@ def get_active_profile() -> str:
     """
     path = _get_active_profile_path()
     try:
-        name = path.read_text().strip()
+        name = path.read_text(encoding="utf-8").strip()
         if not name:
             return "default"
         return name
@@ -1497,7 +1497,7 @@ def set_active_profile(name: str) -> None:
     else:
         # Atomic write
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(canon + "\n")
+        tmp.write_text(canon + "\n", encoding="utf-8")
         tmp.replace(path)
 
 
@@ -1792,7 +1792,7 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
         hosts[new_host] = hosts.pop(source_host)
         tmp = path.with_suffix(path.suffix + ".tmp")
         try:
-            tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+            tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False, encoding="utf-8") + "\n", encoding="utf-8")
             tmp.replace(path)
         except OSError:
             try:

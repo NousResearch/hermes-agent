@@ -1142,6 +1142,32 @@ def run_doctor(args):
             count = cursor.fetchone()[0]
             conn.close()
             check_ok(f"{_DHH}/state.db exists ({count} sessions)")
+
+            # FTS write health probe - detect corrupt FTS indexes that
+            # PRAGMA integrity_check misses.
+            try:
+                from hermes_state import SessionDB
+                db = SessionDB()
+                health = db._probe_fts_write_health()
+                if health is False:
+                    check_warn(
+                        "FTS write health check FAILED - FTS indexes may be corrupt",
+                        "(run 'hermes doctor --fix' or 'hermes sessions repair')"
+                    )
+                    if should_fix:
+                        try:
+                            db.repair_fts_indexes()
+                            check_ok("FTS indexes repaired")
+                            fixed_count += 1
+                        except Exception as e:
+                            check_warn(
+                                "FTS index repair failed",
+                                f"({e})"
+                            )
+                elif health is True:
+                    check_ok("FTS write health check passed")
+            except Exception as e:
+                check_info(f"FTS health probe skipped: {e}")
         except Exception as e:
             check_warn(f"{_DHH}/state.db exists but has issues: {e}")
     else:

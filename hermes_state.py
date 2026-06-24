@@ -530,6 +530,88 @@ class SessionDB:
             "FROM messages"
         )
 
+    def _rebuild_fts_in_place(self) -> bool:
+        """Rebuild FTS5 indexes in-place using the built-in 'rebuild' command.
+
+        Unlike _rebuild_fts_indexes (DELETE + INSERT), this uses the FTS5
+        built-in 'rebuild' command which rewrites the internal b-tree segments
+        from the content table.  This is the recommended recovery strategy for
+        corrupt FTS indexes because it re-indexes all content without dropping
+        or recreating the virtual table.
+
+        Safe for add-only schema — no DDL changes.
+        Returns True if all FTS tables were rebuilt successfully.
+        """
+        all_ok = True
+        with self._lock:
+            for table_name in ("messages_fts", "messages_fts_trigram"):
+                if not self._fts_table_exists(table_name):
+                    continue
+                try:
+                    self._conn.execute(
+                        f"INSERT INTO {table_name}({table_name}) VALUES('rebuild')"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "FTS rebuild failed for %s in %s: %s",
+                        table_name, self.db_path, exc,
+                    )
+                    all_ok = False
+        return all_ok
+
+    def repair_fts_indexes(self) -> bool:
+        """Public entry point: repair corrupt FTS indexes non-destructively.
+
+        Tries in-place rebuild first (FTS5 'rebuild' command). If that
+        doesn't work or health check still fails, falls back to the
+        DELETE + INSERT approach (_rebuild_fts_indexes).
+
+        After repair, runs _probe_fts_write_health() to confirm.
+        Returns True if the health probe passes after repair.
+        """
+        ok = self._rebuild_fts_in_place()
+        if ok:
+            health = self._probe_fts_write_health()
+            if health is True:
+                logger.info("FTS indexes rebuilt in-place for %s", self.db_path)
+                return True
+
+        try:
+            cursor = self._conn.cursor()
+            self._rebuild_fts_indexes(cursor)
+            self._conn.commit()
+        except Exception as exc:
+            logger.warning("FTS index fallback rebuild failed: %s", exc)
+
+        health = self._probe_fts_write_health()
+        if health is True:
+            logger.info("FTS indexes rebuilt via fallback for %s", self.db_path)
+            return True
+
+        # Third-tier: DROP and recreate FTS virtual tables + triggers,
+        # then rebuild from the content table. Handles cases where
+        # shadow tables are structurally corrupt (not just data-corrupt).
+        try:
+            with self._lock:
+                self._conn.execute("DROP TABLE IF EXISTS messages_fts")
+                self._conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
+                self._conn.executescript(FTS_SQL)
+                self._conn.executescript(FTS_TRIGRAM_SQL)
+                cursor = self._conn.cursor()
+                self._rebuild_fts_indexes(cursor)
+                self._conn.commit()
+        except Exception as exc:
+            logger.warning("FTS DROP+recreate failed for %s: %s", self.db_path, exc)
+            return False
+
+        health = self._probe_fts_write_health()
+        if health is True:
+            logger.info("FTS indexes rebuilt via DROP+recreate for %s", self.db_path)
+            return True
+
+        logger.warning("FTS repair completed but health check still fails for %s", self.db_path)
+        return False
+
     def _fts_table_probe(self, cursor: sqlite3.Cursor, table_name: str) -> Optional[bool]:
         try:
             cursor.execute(f"SELECT * FROM {table_name} LIMIT 0")
@@ -561,6 +643,46 @@ class SessionDB:
             if not self._is_fts5_unavailable_error(exc):
                 raise
             self._warn_fts5_unavailable(exc)
+            return False
+
+    def _probe_fts_write_health(self) -> Optional[bool]:
+        """Test that an INSERT through the FTS triggers can succeed.
+
+        Opens a transaction, inserts a harmless probe row into messages,
+        then rolls back.  If the FTS triggers fail (corrupt FTS index),
+        the transaction rolls back and we return False.  Returns True if
+        the write succeeded, None if FTS5 is unavailable.
+
+        This catches the case where PRAGMA integrity_check passes but
+        message writes through FTS triggers fail because the FTS5 index
+        is corrupt.  The transaction is always rolled back so no data
+        is actually persisted.
+        """
+        if not self._fts_enabled:
+            return None
+        probe_session_id = f"_fts_health_probe_{time.time()}"
+        try:
+            with self._lock:
+                self._conn.execute("BEGIN IMMEDIATE")
+                try:
+                    self._conn.execute(
+                        "INSERT OR IGNORE INTO sessions (id, source, started_at) "
+                        "VALUES (?, '_health_probe', ?)",
+                        (probe_session_id, time.time()),
+                    )
+                    self._conn.execute(
+                        "INSERT INTO messages (session_id, role, content, timestamp) "
+                        "VALUES (?, 'user', '_fts_health_probe_message', ?)",
+                        (probe_session_id, time.time()),
+                    )
+                    self._conn.execute("ROLLBACK")
+                    return True
+                except Exception:
+                    self._conn.execute("ROLLBACK")
+                    return False
+        except sqlite3.OperationalError:
+            return False
+        except Exception:
             return False
 
     def _execute_write(self, fn: Callable[[sqlite3.Connection], T]) -> T:
@@ -850,7 +972,7 @@ class SessionDB:
                     for _tbl in ("messages_fts", "messages_fts_trigram"):
                         try:
                             cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
-                        except sqlite3.OperationalError as exc:
+                        except Exception as exc:
                             if not self._is_fts5_unavailable_error(exc):
                                 raise
                             self._warn_fts5_unavailable(exc)
@@ -942,6 +1064,15 @@ class SessionDB:
                     self._rebuild_fts_indexes(cursor)
 
         self._conn.commit()
+
+        if self._fts_enabled:
+            health = self._probe_fts_write_health()
+            if health is False:
+                logger.warning(
+                    "FTS write health probe failed for %s; FTS index may be corrupt. "
+                    "Run `hermes sessions repair` to rebuild FTS indexes.",
+                    self.db_path,
+                )
 
     # =========================================================================
     # Session lifecycle

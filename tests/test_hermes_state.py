@@ -3878,3 +3878,48 @@ class TestSessionIdSearch:
 
         assert [s["id"] for s in matches] == [tip]
         assert matches[0]["_lineage_root_id"] == root
+
+
+class TestFTSWriteHealth:
+    """Regression tests for FTS write health probe and repair (bug #50502)."""
+
+    def test_fts_write_health_probe_healthy_db(self, db):
+        """Probe returns True on a healthy database with messages."""
+        db.create_session("test-fts-session", source="test")
+        db.append_message("test-fts-session", role="user", content="hello")
+        db.append_message("test-fts-session", role="assistant", content="world")
+
+        result = db._probe_fts_write_health()
+        assert result is True, f"Expected True for healthy DB, got {result}"
+
+    def test_fts_write_health_probe_detects_corrupt_index(self, db):
+        """Probe returns False when FTS shadow tables are dropped."""
+        db.create_session("test-fts-corr", source="test")
+        db.append_message("test-fts-corr", role="user", content="hello")
+        db.append_message("test-fts-corr", role="assistant", content="world")
+
+        assert db._probe_fts_write_health() is True
+
+        # Corrupt the FTS index by mangling its shadow table content.
+        # This simulates a corrupt b-tree that PRAGMA integrity_check
+        # often misses but causes FTS triggers to fail on write.
+        try:
+            db._conn.execute("DELETE FROM messages_fts_data")
+            db._conn.execute(
+                "INSERT INTO messages_fts_data VALUES (X'DEADBEEF')"
+            )
+        except sqlite3.OperationalError:
+            pass
+        try:
+            db._conn.execute("DELETE FROM messages_fts_trigram_data")
+            db._conn.execute(
+                "INSERT INTO messages_fts_trigram_data VALUES (X'CAFEBABE')"
+            )
+        except sqlite3.OperationalError:
+            pass
+
+        result = db._probe_fts_write_health()
+        assert result is False, f"Expected False for corrupt FTS, got {result}"
+
+        assert db.repair_fts_indexes() is True
+        assert db._probe_fts_write_health() is True

@@ -1008,7 +1008,14 @@ def build_environment_hints() -> str:
         if is_wsl():
             host_lines.append("Host: WSL (Windows Subsystem for Linux)")
         elif sys.platform == "win32":
-            host_lines.append(f"Host: Windows ({platform.release()})")
+            # platform.release() returns '10.0' for both Windows 10 and 11.
+            # Distinguish by build number: >= 22000 is Windows 11+.
+            try:
+                _build = sys.getwindowsversion().build
+                _win_ver = "11" if _build >= 22000 else "10"
+            except Exception:
+                _win_ver = platform.release()
+            host_lines.append(f"Host: Windows ({_win_ver})")
         elif sys.platform == "darwin":
             mac_ver = platform.mac_ver()[0]
             host_lines.append(f"Host: macOS ({mac_ver or platform.release()})")

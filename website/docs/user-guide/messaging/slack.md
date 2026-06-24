@@ -527,6 +527,35 @@ Slack supports both patterns: `@mention` required to start a conversation by def
 A **1:1 direct message** is a private conversation with one person, so it is mention-exempt. A **group DM (MPIM / multi-person DM)** is a *shared surface* — multiple people can see and trigger the bot — so it obeys the same operator controls as a channel: `require_mention`, `strict_mention`, `free_response_channels`, and `allowed_channels` all apply, and the bot only adds `:eyes:`/`:white_check_mark:` reactions when it is actually `@mentioned`. To let the bot respond freely in a specific group DM, add its channel ID (starts with `G`) to `free_response_channels`.
 :::
 
+### Peer-Agent Smoke Check
+
+For multi-bot Slack deployments that rely on strict per-turn mentions, keep the following profile:
+
+```yaml
+slack:
+  require_mention: true
+  strict_mention: true
+  allow_bots: mentions
+  allowed_channels: ""
+```
+
+After gateway config changes, deploys, or restarts, run this synthetic smoke target:
+
+```bash
+uv run --frozen pytest -q tests/gateway/test_slack_peer_agent_smoke.py -o addopts=''
+```
+
+This target uses in-process synthetic Slack events only. It does not send live Slack messages and does not require real bot tokens by default.
+
+Failure buckets:
+
+- `config:` `test_peer_agent_smoke_preflight_contract` caught a profile mismatch (`require_mention`, `strict_mention`, `allow_bots`, or `allowed_channels`).
+- `platform_connectivity:` the adapter/client was not initialized, so routing smoke is not a trustworthy signal yet.
+- `bot_identity:` the adapter never resolved its bot user ID, so current-message mention checks cannot work.
+- `routing_logic:` the Slack adapter regressed on one of the peer-agent invariants (human mention routing, peer-bot ignore, explicit peer mention admit, or passive ack/status/error suppression).
+
+If this target passes but a live workspace still misroutes messages, investigate Slack token/workspace connectivity and runtime deployment state outside the routing logic itself.
+
 ### Channel allowlist (`allowed_channels`)
 
 Restrict the bot to a fixed set of Slack channels — useful when the bot is invited to many channels but should only respond in a few. When set, messages from channels NOT in this list are **silently ignored**, even if the bot is `@mentioned`.

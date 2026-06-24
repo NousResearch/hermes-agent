@@ -3045,3 +3045,31 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
     tokens = auth_payload["providers"]["openai-codex"].get("tokens", {})
     assert tokens.get("access_token") == "old-access-token"
     assert tokens.get("refresh_token") == "old-refresh-token"
+
+
+# ---------------------------------------------------------------------------
+# _extract_retry_delay_seconds — regex coverage
+# ---------------------------------------------------------------------------
+
+class TestExtractRetryDelaySeconds:
+    def _f(self):
+        from agent.credential_pool import _extract_retry_delay_seconds
+        return _extract_retry_delay_seconds
+
+    def test_gemini_please_retry_in_seconds(self):
+        # Gemini API format: "Please retry in 6.19s"
+        # Pre-fix this returned None and the credential pool defaulted to a
+        # 1-hour block, artificially exhausting the pool under load.
+        assert self._f()("Please retry in 6.19s") == pytest.approx(6.19)
+
+    def test_retry_after_seconds_still_parsed(self):
+        assert self._f()("rate limit hit, retry after 30 seconds") == pytest.approx(30.0)
+
+    def test_retry_in_seconds_without_s_prefix(self):
+        assert self._f()("retry in 5s") == pytest.approx(5.0)
+
+    def test_retry_bare_number(self):
+        assert self._f()("retry 45 sec") == pytest.approx(45.0)
+
+    def test_returns_none_for_unparseable(self):
+        assert self._f()("unrelated error message") is None

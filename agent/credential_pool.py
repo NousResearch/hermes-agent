@@ -293,7 +293,7 @@ def _extract_retry_delay_seconds(message: str) -> Optional[float]:
     if delay_match:
         value = float(delay_match.group(1))
         return value / 1000.0 if delay_match.group(2).lower() == "ms" else value
-    sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
+    sec_match = re.search(r"retry\s+(?:in\s+|after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
     if sec_match:
         return float(sec_match.group(1))
     # "Resets in 4hr 5min" format used by OpenCode Go weekly usage limits

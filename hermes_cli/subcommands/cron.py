@@ -70,6 +70,21 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
+    cron_create.add_argument(
+        "--wrap-response",
+        dest="wrap_response",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Force the cron header/footer ('Cronjob Response: …' / 'To stop or manage this job…') ON for this job, overriding the global config.",
+    )
+    cron_create.add_argument(
+        "--no-wrap-response",
+        dest="wrap_response",
+        action="store_const",
+        const=False,
+        help="Deliver this job's output raw — without the cron header/footer. Useful for briefings you want to read clean.",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -133,6 +148,21 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     cron_edit.add_argument(
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--wrap-response",
+        dest="wrap_response",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Turn the cron header/footer ON for this job (overrides the global config).",
+    )
+    cron_edit.add_argument(
+        "--no-wrap-response",
+        dest="wrap_response",
+        action="store_const",
+        const=False,
+        help="Turn the cron header/footer OFF for this job — deliver raw output.",
     )
 
     # lifecycle actions

@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import copy as _copy
 import json
 import logging
 import os
@@ -48,6 +49,81 @@ def _ra():
     """
     import run_agent
     return run_agent
+
+
+
+def _ensure_required_arrays_in_schema(schema: Any) -> Any:
+    """Ensure outbound JSON Schema object nodes carry array-valued required.
+
+    Some OpenAI-compatible-to-Bedrock proxies translate a missing JSON Schema
+    ``required`` key to ``null``. Bedrock rejects ``inputSchema.required=null``.
+    Keep this as an outbound compatibility pass only; do not mutate agent.tools.
+    """
+    if not isinstance(schema, dict):
+        return schema
+
+    if schema.get("type") == "object" or "properties" in schema:
+        props = schema.get("properties")
+        if not isinstance(props, dict):
+            props = {}
+            schema["properties"] = props
+
+        required = schema.get("required")
+        if isinstance(required, list):
+            schema["required"] = [
+                item for item in required
+                if isinstance(item, str) and item in props
+            ]
+        else:
+            schema["required"] = []
+
+    for key in ("properties", "$defs", "definitions"):
+        value = schema.get(key)
+        if isinstance(value, dict):
+            for child_key, child_schema in list(value.items()):
+                if isinstance(child_schema, dict):
+                    value[child_key] = _ensure_required_arrays_in_schema(child_schema)
+
+    for key in ("items", "additionalProperties"):
+        value = schema.get(key)
+        if isinstance(value, dict):
+            schema[key] = _ensure_required_arrays_in_schema(value)
+
+    for key in ("anyOf", "oneOf", "allOf"):
+        value = schema.get(key)
+        if isinstance(value, list):
+            schema[key] = [
+                _ensure_required_arrays_in_schema(item) if isinstance(item, dict) else item
+                for item in value
+            ]
+
+    return schema
+
+
+def _ensure_required_arrays_for_openai_tools(tools: Any) -> Any:
+    """Normalize a copied outbound tools payload for strict schema translators."""
+    if not isinstance(tools, list):
+        return tools
+
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+
+        function = tool.get("function")
+        if isinstance(function, dict):
+            parameters = function.get("parameters")
+            if isinstance(parameters, dict):
+                function["parameters"] = _ensure_required_arrays_in_schema(parameters)
+
+        input_schema = tool.get("input_schema")
+        if isinstance(input_schema, dict):
+            tool["input_schema"] = _ensure_required_arrays_in_schema(input_schema)
+
+        input_schema_camel = tool.get("inputSchema")
+        if isinstance(input_schema_camel, dict):
+            tool["inputSchema"] = _ensure_required_arrays_in_schema(input_schema_camel)
+
+    return tools
 
 
 def estimate_request_context_tokens(api_payload: Any) -> int:
@@ -554,7 +630,8 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
-    tools_for_api = agent.tools
+    tools_for_api = _copy.deepcopy(agent.tools) if agent.tools else None
+    tools_for_api = _ensure_required_arrays_for_openai_tools(tools_for_api)
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
@@ -627,7 +704,6 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         # main-model swap) sees the already-stripped schema.  See #27907.
         if is_xai_responses:
             try:
-                import copy as _copy
                 from tools.schema_sanitizer import (
                     strip_pattern_and_format,
                     strip_slash_enum,
@@ -635,6 +711,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
                 tools_for_api = _copy.deepcopy(tools_for_api)
                 tools_for_api, _ = strip_pattern_and_format(tools_for_api)
                 tools_for_api, _ = strip_slash_enum(tools_for_api)
+                tools_for_api = _ensure_required_arrays_for_openai_tools(tools_for_api)
             except Exception as exc:
                 logger.warning(
                     "%s⚠️ Failed to sanitize tool schemas for xAI: %s",

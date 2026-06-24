@@ -240,6 +240,19 @@ def _is_backend_available(backend: str) -> bool:
             return has_xai_credentials()
         except Exception:
             return False
+    # Plugin-provided backends: defer to the web registry so providers
+    # registered via register_web_search_provider() (user / 3rd-party web
+    # plugins) are selectable through web.{search,extract,}_backend. Generic —
+    # no per-provider hardcoding. Discovery is triggered first because this
+    # gate can run before the dispatcher's own _ensure_web_plugins_loaded().
+    try:
+        _ensure_web_plugins_loaded()
+        from agent.web_search_registry import get_provider
+        prov = get_provider(backend)
+        if prov is not None:
+            return prov.is_available()
+    except Exception:
+        pass
     return False
 
 

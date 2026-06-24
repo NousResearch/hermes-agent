@@ -728,6 +728,16 @@ PLATFORM_HINTS = {
         "or 'all'). Do not promise the user that a deliver='origin' or "
         "default-deliver cron job will message them in this session."
     ),
+    "tui": (
+        "You are in the Hermes TUI / embedded dashboard chat. Standard Markdown "
+        "is rendered in the chat transcript, including headings, bold, italic, "
+        "inline code, code blocks, links, bullets, numbered lists, block quotes, "
+        "tables, and math. Use readable chat-style formatting when it improves "
+        "clarity — clear spacing, short paragraphs, and emphasis where helpful — "
+        "but do not force every response into bullets or a rigid template. "
+        "File delivery: there is no native attachment channel here; when referring "
+        "to a file you created or changed, state its absolute path plainly."
+    ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "

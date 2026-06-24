@@ -1078,6 +1078,13 @@ class TestPromptBuilderConstants:
         assert "Markdown" in hint
         assert "absolute" in hint
 
+    def test_platform_hints_tui_allows_readable_markdown_without_media_tags(self):
+        hint = PLATFORM_HINTS["tui"]
+        assert "Markdown" in hint
+        assert "readable chat-style formatting" in hint
+        assert "do not force every response into bullets" in hint
+        assert "no native attachment channel" in hint
+
 
 # =========================================================================
 # Environment hints

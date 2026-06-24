@@ -80,8 +80,24 @@ class TestWriteDenyPrefixes:
         path = os.path.join(str(Path.home()), ".ssh", "some_key")
         assert _is_write_denied(path) is True
 
+    def test_case_variant_ssh_prefix_denied_on_case_insensitive_fs(self, monkeypatch):
+        import agent.file_safety as fs
+
+        monkeypatch.setattr(fs, "_paths_case_insensitive", lambda: True)
+        path = os.path.join(str(Path.home()), ".SSH", "some_key")
+
+        assert _is_write_denied(path) is True
+
     def test_aws_prefix(self):
         path = os.path.join(str(Path.home()), ".aws", "credentials")
+        assert _is_write_denied(path) is True
+
+    def test_case_variant_aws_prefix_denied_on_case_insensitive_fs(self, monkeypatch):
+        import agent.file_safety as fs
+
+        monkeypatch.setattr(fs, "_paths_case_insensitive", lambda: True)
+        path = os.path.join(str(Path.home()), ".AWS", "credentials")
+
         assert _is_write_denied(path) is True
 
     def test_gnupg_prefix(self):

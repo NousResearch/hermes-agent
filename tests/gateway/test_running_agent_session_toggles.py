@@ -147,7 +147,7 @@ async def test_fast_rejected_mid_run():
 
     runner._handle_fast_command.assert_not_awaited()
     assert result is not None
-    assert "can't run mid-turn" in result
+    assert "途中では実行できません" in result
     assert "/fast" in result
 
 
@@ -163,7 +163,7 @@ async def test_reasoning_rejected_mid_run():
 
     runner._handle_reasoning_command.assert_not_awaited()
     assert result is not None
-    assert "can't run mid-turn" in result
+    assert "途中では実行できません" in result
     assert "/reasoning" in result
 
 

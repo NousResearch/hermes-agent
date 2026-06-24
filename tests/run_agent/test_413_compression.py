@@ -516,7 +516,7 @@ class TestPreflightCompression:
         assert compressed == [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
         assert new_system_prompt == "new system prompt"
         assert events[0][0] == "lifecycle"
-        assert "Compacting context" in events[0][1]
+        assert "会話履歴を整理" in events[0][1]
         assert events[1] == ("compress", "started")
 
     def test_preflight_compresses_oversized_history(self, agent):

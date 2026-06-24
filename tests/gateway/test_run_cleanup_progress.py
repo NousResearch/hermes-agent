@@ -154,7 +154,13 @@ def _make_runner(adapter):
     return runner
 
 
-def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
+def _install_fakes(
+    monkeypatch,
+    agent_cls,
+    *,
+    cleanup_on: bool,
+    final_response_edits_progress: bool = False,
+):
     """Wire up the module stubs every _run_agent test needs."""
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
 
@@ -174,11 +180,17 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
     # gateway actually reads (``_load_gateway_config`` returns user config).
     cfg = {
         "display": {
+            "final_response_edits_progress": final_response_edits_progress,
             "platforms": {
                 "telegram": {"cleanup_progress": True},
+                "discord": {"cleanup_progress": True},
             }
         }
-    } if cleanup_on else {}
+    } if cleanup_on else {
+        "display": {
+            "final_response_edits_progress": final_response_edits_progress,
+        }
+    }
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: cfg)
     return gateway_run
 
@@ -260,6 +272,60 @@ async def test_cleanup_registers_callback_and_deletes_on_success(monkeypatch, tm
     assert len(adapter.deleted) >= 1, f"deleted={adapter.deleted} sent={adapter.sent}"
     for entry in adapter.deleted:
         assert entry["chat_id"] == "-1001"
+
+
+@pytest.mark.asyncio
+async def test_final_response_can_edit_existing_progress_bubble(monkeypatch, tmp_path):
+    """When opted in, a successful final response edits the progress bubble
+    instead of returning a separate message for the caller to send."""
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(
+        monkeypatch,
+        ProgressAgent,
+        cleanup_on=False,
+        final_response_edits_progress=True,
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.DISCORD, chat_id="chan-1")
+    session_key = "agent:main:discord:group:chan-1"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done"
+    assert result["already_sent"] is True
+    assert adapter.sent, "progress bubble should be sent first"
+    assert adapter.sent[0]["content"] == "🔍 作業中です。"
+    assert "terminal" not in adapter.sent[0]["content"]
+    assert "pwd" not in adapter.sent[0]["content"]
+    assert adapter.edits[-1] == {
+        "chat_id": "chan-1",
+        "message_id": adapter.sent[0]["message_id"],
+        "content": "done",
+    }
+
+
+def test_discord_status_messages_are_compact_japanese():
+    gateway_run = importlib.import_module("gateway.run")
+
+    assert gateway_run._prepare_gateway_status_message(
+        Platform.DISCORD,
+        "context.preflight",
+        "Preflight compression: context is large",
+    ) == "🔍 会話を整理しています。"
+    assert gateway_run._prepare_gateway_status_message(
+        Platform.DISCORD,
+        "tool.status",
+        "running: terminal",
+    ) == "🔍 確認中です。"
 
 
 @pytest.mark.asyncio

@@ -41,22 +41,20 @@ def busy_input_hint_gateway(mode: str) -> str:
     """
     if mode == "queue":
         return (
-            "💡 First-time tip — I queued your message instead of interrupting. "
-            "Send `/busy interrupt` to make new messages stop the current task "
-            "immediately, or `/busy status` to check. This notice won't appear again."
+            "💡 初回だけの補足です。このメッセージは中断せず、次の対応として受け付けました。"
+            "すぐ中断して対応する運用に戻す場合は `/busy interrupt`、状態確認は `/busy status` です。"
+            "この補足は次回から表示しません。"
         )
     if mode == "steer":
         return (
-            "💡 First-time tip — I steered your message into the current run; "
-            "it will arrive after the next tool call instead of interrupting. "
-            "Send `/busy interrupt` or `/busy queue` to change this, or "
-            "`/busy status` to check. This notice won't appear again."
+            "💡 初回だけの補足です。このメッセージは現在の作業に反映します。"
+            "動作を変える場合は `/busy interrupt` または `/busy queue`、状態確認は `/busy status` です。"
+            "この補足は次回から表示しません。"
         )
     return (
-        "💡 First-time tip — I just interrupted my current task to answer you. "
-        "Send `/busy queue` to queue follow-ups for after the current task instead, "
-        "`/busy steer` to inject them mid-run without interrupting, or "
-        "`/busy status` to check. This notice won't appear again."
+        "💡 初回だけの補足です。いまの作業を中断して、このメッセージに対応しています。"
+        "次回以降を中断せず後回しにする場合は `/busy queue`、作業中へ反映する場合は `/busy steer`、状態確認は `/busy status` です。"
+        "この補足は次回から表示しません。"
     )
 
 
@@ -83,9 +81,9 @@ def busy_input_hint_cli(mode: str) -> str:
 
 def tool_progress_hint_gateway() -> str:
     return (
-        "💡 First-time tip — that tool took a while and I'm streaming every step. "
-        "If the progress messages feel noisy, send `/verbose` to cycle modes "
-        "(all → new → off). This notice won't appear again."
+        "💡 初回だけの補足です。時間がかかる作業のため、進捗を表示しています。"
+        "進捗表示が多い場合は `/verbose` で表示量を切り替えられます。"
+        "この補足は次回から表示しません。"
     )
 
 

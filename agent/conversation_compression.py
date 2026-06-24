@@ -344,7 +344,9 @@ def compress_context(
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
         focus_topic,
     )
-    agent._emit_status(COMPACTION_STATUS)
+    agent._emit_status(
+        "🗜️ 会話履歴を整理しています。続きの対応に必要な内容をまとめています。"
+    )
 
     # ── Compression lock ────────────────────────────────────────────────
     # Atomic, state.db-backed lock per session_id.  Without this, two

@@ -1,6 +1,6 @@
 """Tests for reply-to pointer injection in _prepare_inbound_message_text.
 
-The `[Replying to: "..."]` prefix is a *disambiguation pointer*, not
+The `[返信先: "..."]` prefix is a *disambiguation pointer*, not
 deduplication. It must always be injected when the user explicitly replies
 to a prior message — even when the quoted text already exists somewhere
 in the conversation history. History can contain the same or similar text
@@ -55,7 +55,7 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
 
     assert result is not None
     assert result.startswith(
-        '[Replying to: "Japan is great for culture, food, and efficiency."]'
+        '[返信先: "Japan is great for culture, food, and efficiency."]'
     )
     assert result.endswith("What's the best time to go?")
 
@@ -95,7 +95,7 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     )
 
     assert result is not None
-    assert result.startswith(f'[Replying to: "{quoted}"]')
+    assert result.startswith(f'[返信先: "{quoted}"]')
     assert result.endswith("What's the best time to go?")
 
 
@@ -118,7 +118,7 @@ async def test_own_message_reply_prefix_marks_assistant_message():
     )
 
     assert result is not None
-    assert result.startswith('[Replying to your previous message: "Use the direct train."]')
+    assert result.startswith('[自分の直前メッセージへの返信: "Use the direct train."]')
     assert result.endswith("this one")
 
 
@@ -140,7 +140,7 @@ async def test_no_prefix_without_reply_context():
 @pytest.mark.asyncio
 async def test_no_prefix_when_reply_to_text_is_empty():
     """reply_to_message_id alone without text (e.g. a reply to a media-only
-    message) should not produce an empty `[Replying to: ""]` prefix."""
+    message) should not produce an empty `[返信先: ""]` prefix."""
     runner = _make_runner()
     source = _source()
     event = MessageEvent(
@@ -178,5 +178,5 @@ async def test_reply_snippet_truncated_to_500_chars():
     )
 
     assert result is not None
-    assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
+    assert result.startswith('[返信先: "' + "x" * 500 + '"]')
     assert "x" * 501 not in result

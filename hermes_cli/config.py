@@ -2434,6 +2434,17 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Discord natural-language kanban intake. When enabled, the gateway
+        # conservatively detects work requests in normal Discord messages and
+        # creates a limited triage card directly, without exposing full kanban
+        # tools to the regular agent session. Source text is redacted before
+        # persistence and Discord message IDs are used for idempotency.
+        "discord_natural_intake": {
+            "enabled": False,
+            "board": "ai-company-2-0",
+            "default_assignee": "operations-orchestrator",
+            "priority": 0,
+        },
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

@@ -941,6 +941,59 @@ class GatewaySlashCommandsMixin:
             return t("gateway.draining", count=active_agents)
         return EphemeralReply(t("gateway.restart.restarting"))
 
+    async def _handle_restart_all_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /restart-all -- restart every gateway profile."""
+        import subprocess
+        from pathlib import Path
+
+        if self._restart_requested or self._draining:
+            return EphemeralReply("A restart is already in progress.")
+
+        # Find hermes executable: it's a sibling of sys.executable
+        hermes_exe = str(Path(sys.executable).with_name("hermes.exe"))
+        if not Path(hermes_exe).exists():
+            # Fallback: resolve from known install path
+            hermes_exe = str(
+                Path.home() / "AppData" / "Local" / "hermes" / "hermes-agent"
+                / "venv" / "Scripts" / "hermes.exe"
+            )
+
+        profiles_dir = Path.home() / "AppData" / "Local" / "hermes" / "profiles"
+        default_dir = Path.home() / ".hermes"
+
+        profiles: list[tuple[str, str]] = [
+            ("joel", str(profiles_dir / "joel")),
+            ("nimer", str(profiles_dir / "nimer")),
+            ("willem", str(profiles_dir / "willem")),
+            ("default", str(default_dir)),
+        ]
+
+        # Restart others first via subprocess, skip self
+        this_home = os.environ.get("HERMES_HOME", str(default_dir))
+        results: list[str] = []
+        for name, home in profiles:
+            if home == this_home:
+                continue  # restart self last
+            try:
+                subprocess.run(
+                    [hermes_exe, "gateway", "restart"],
+                    env={**os.environ, "HERMES_HOME": home},
+                    timeout=90,
+                    capture_output=True,
+                    text=True,
+                )
+                results.append(f"  {name}: restarted")
+            except subprocess.TimeoutExpired:
+                results.append(f"  {name}: timed out")
+            except Exception as e:
+                results.append(f"  {name}: {e}")
+
+        # Restart self last
+        self.request_restart(detached=True, via_service=False)
+        results.append("  (this gateway): restarting...")
+
+        return EphemeralReply("Restarting all gateways:\n" + "\n".join(results))
+
     async def _handle_version_command(self, event: MessageEvent) -> str:
         """Handle /version — show the running Hermes Agent version."""
         from hermes_cli.banner import format_banner_version_label

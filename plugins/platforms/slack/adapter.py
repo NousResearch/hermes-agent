@@ -969,7 +969,7 @@ class SlackAdapter(BasePlatformAdapter):
             # Renders multi-choice clarify prompts as native Block Kit
             # action buttons instead of a numbered text list (see #503
             # Phase 1 Slack gap — Discord and Telegram already have this).
-            self._app.action("hermes_clarify_choice")(
+            self._app.action(re.compile(r"hermes_clarify_choice_\d+"))(
                 self._handle_clarify_action
             )
             self._app.action("hermes_clarify_other")(
@@ -3074,18 +3074,18 @@ class SlackAdapter(BasePlatformAdapter):
             # emoji are supported, markdown is not.
             elements: List[Dict[str, Any]] = []
             for i, choice in enumerate(choices):
-                elements.append(
-                    {
-                        "type": "button",
-                        "text": {
-                            "type": "plain_text",
-                            "text": str(choice)[:75],
-                        },
-                        "style": "primary" if i == 0 else None,
-                        "action_id": "hermes_clarify_choice",
-                        "value": f"{clarify_id}|{i}",
-                    }
-                )
+                btn = {
+                    "type": "button",
+                    "text": {
+                        "type": "plain_text",
+                        "text": str(choice)[:75],
+                    },
+                    "action_id": f"hermes_clarify_choice_{i}",
+                    "value": f"{clarify_id}|{i}",
+                }
+                if i == 0:
+                    btn["style"] = "primary"
+                elements.append(btn)
 
             elements.append(
                 {

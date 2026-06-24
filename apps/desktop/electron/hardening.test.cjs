@@ -7,10 +7,12 @@ const { pathToFileURL } = require('node:url')
 
 const {
   DEFAULT_FETCH_TIMEOUT_MS,
+  DEFAULT_DATA_URL_READ_MAX_BYTES,
   encryptDesktopSecret,
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
+  resolvePositiveIntegerEnv,
   resolveTimeoutMs,
   sensitiveFileBlockReason
 } = require('./hardening.cjs')
@@ -27,6 +29,28 @@ test('resolveTimeoutMs falls back to defaults and accepts overrides', () => {
   assert.equal(resolveTimeoutMs(0), DEFAULT_FETCH_TIMEOUT_MS)
   assert.equal(resolveTimeoutMs(-25), DEFAULT_FETCH_TIMEOUT_MS)
   assert.equal(resolveTimeoutMs('2750'), 2750)
+})
+
+test('resolvePositiveIntegerEnv accepts positive values and falls back', () => {
+  const previous = process.env.HERMES_DATA_URL_READ_MAX_BYTES
+  try {
+    process.env.HERMES_DATA_URL_READ_MAX_BYTES = '33554432'
+    assert.equal(resolvePositiveIntegerEnv('HERMES_DATA_URL_READ_MAX_BYTES', DEFAULT_DATA_URL_READ_MAX_BYTES), 33554432)
+
+    for (const raw of ['', '0', '-1', 'NaN', '12.5', 'large']) {
+      process.env.HERMES_DATA_URL_READ_MAX_BYTES = raw
+      assert.equal(
+        resolvePositiveIntegerEnv('HERMES_DATA_URL_READ_MAX_BYTES', DEFAULT_DATA_URL_READ_MAX_BYTES),
+        DEFAULT_DATA_URL_READ_MAX_BYTES
+      )
+    }
+  } finally {
+    if (previous === undefined) {
+      delete process.env.HERMES_DATA_URL_READ_MAX_BYTES
+    } else {
+      process.env.HERMES_DATA_URL_READ_MAX_BYTES = previous
+    }
+  }
 })
 
 test('encryptDesktopSecret requires available secure storage', () => {

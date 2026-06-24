@@ -4,7 +4,11 @@ const path = require('node:path')
 const { fileURLToPath } = require('node:url')
 
 const DEFAULT_FETCH_TIMEOUT_MS = 15_000
-const DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
+const DEFAULT_DATA_URL_READ_MAX_BYTES = 16 * 1024 * 1024
+const DATA_URL_READ_MAX_BYTES = resolvePositiveIntegerEnv(
+  'HERMES_DATA_URL_READ_MAX_BYTES',
+  DEFAULT_DATA_URL_READ_MAX_BYTES
+)
 const TEXT_PREVIEW_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 
 const SAFE_ENV_SUFFIXES = new Set(['dist', 'example', 'sample', 'template'])
@@ -17,6 +21,16 @@ function resolveTimeoutMs(timeoutMs, fallbackMs = DEFAULT_FETCH_TIMEOUT_MS) {
 
   if (Number.isFinite(parsed) && parsed > 0) {
     return Math.round(parsed)
+  }
+
+  return fallback
+}
+
+function resolvePositiveIntegerEnv(name, fallback) {
+  const parsed = Number(process.env[name] || '')
+
+  if (Number.isSafeInteger(parsed) && parsed > 0) {
+    return parsed
   }
 
   return fallback
@@ -267,6 +281,7 @@ async function resolveReadableFileForIpc(filePath, options = {}) {
 
 module.exports = {
   DATA_URL_READ_MAX_BYTES,
+  DEFAULT_DATA_URL_READ_MAX_BYTES,
   DEFAULT_FETCH_TIMEOUT_MS,
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   encryptDesktopSecret,
@@ -274,6 +289,7 @@ module.exports = {
   resolveDirectoryForIpc,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
+  resolvePositiveIntegerEnv,
   resolveTimeoutMs,
   sensitiveFileBlockReason
 }

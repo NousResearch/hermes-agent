@@ -58,6 +58,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from utils import env_positive_int
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,14 @@ def _hermes_version() -> str:
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
-MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+DEFAULT_MAX_REQUEST_BYTES = 10_000_000
+
+
+def _resolve_max_request_bytes() -> int:
+    return env_positive_int("API_SERVER_MAX_REQUEST_BYTES", DEFAULT_MAX_REQUEST_BYTES)
+
+
+MAX_REQUEST_BYTES = _resolve_max_request_bytes()
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array

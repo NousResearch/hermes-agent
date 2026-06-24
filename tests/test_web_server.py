@@ -81,6 +81,15 @@ def test_start_server_enables_ws_ping_for_half_open_detection(monkeypatch):
     assert captured["ws_ping_timeout"] == 20.0
 
 
+def test_start_server_configures_ws_max_size_from_env(monkeypatch):
+    captured = _stub_uvicorn(monkeypatch)
+    monkeypatch.setenv("HERMES_DASHBOARD_WS_MAX_SIZE_BYTES", "33554432")
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)
+
+    assert captured["ws_max_size"] == 33_554_432
+
+
 def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):
     """The dashboard/desktop backend must serve uvicorn on the loop *uvicorn*
     selects, not the interpreter default.

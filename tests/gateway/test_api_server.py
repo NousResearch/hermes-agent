@@ -50,6 +50,20 @@ class TestCheckRequirements:
         assert check_api_server_requirements() is False
 
 
+def test_max_request_bytes_env_override(monkeypatch):
+    from gateway.platforms.api_server import (
+        DEFAULT_MAX_REQUEST_BYTES,
+        _resolve_max_request_bytes,
+    )
+
+    monkeypatch.setenv("API_SERVER_MAX_REQUEST_BYTES", "25000000")
+    assert _resolve_max_request_bytes() == 25_000_000
+
+    for raw in ("", "0", "-5", "not-bytes"):
+        monkeypatch.setenv("API_SERVER_MAX_REQUEST_BYTES", raw)
+        assert _resolve_max_request_bytes() == DEFAULT_MAX_REQUEST_BYTES
+
+
 # ---------------------------------------------------------------------------
 # ResponseStore
 # ---------------------------------------------------------------------------

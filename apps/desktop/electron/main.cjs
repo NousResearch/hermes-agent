@@ -642,8 +642,9 @@ app.setAboutPanelOptions({
 
 // Custom scheme for streaming local media (video/audio) into the renderer.
 // Reading large media through `readFileDataUrl` failed: it base64-loads the
-// whole file into memory and is hard-capped at DATA_URL_READ_MAX_BYTES (16 MB),
-// so any non-trivial video silently refused to load. Streaming via a protocol
+// whole file into memory and is capped by DATA_URL_READ_MAX_BYTES (16 MB by
+// default, configurable via HERMES_DATA_URL_READ_MAX_BYTES), so any non-trivial
+// video silently refused to load. Streaming via a protocol
 // handler removes the size cap and gives the <video> element seekable,
 // range-aware playback. Must be registered before the app is ready.
 const MEDIA_PROTOCOL = 'hermes-media'

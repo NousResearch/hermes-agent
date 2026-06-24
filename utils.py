@@ -336,6 +336,18 @@ def env_int(key: str, default: int = 0) -> int:
         return default
 
 
+def env_positive_int(key: str, default: int) -> int:
+    """Read an environment variable as a positive integer, with fallback."""
+    raw = os.getenv(key, "").strip()
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except (ValueError, TypeError):
+        return default
+    return value if value > 0 else default
+
+
 def env_float(key: str, default: float = 0.0) -> float:
     """Read an environment variable as a float, with fallback."""
     raw = os.getenv(key, "").strip()

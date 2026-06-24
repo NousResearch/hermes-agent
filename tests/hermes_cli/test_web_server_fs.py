@@ -128,6 +128,18 @@ def test_fs_read_data_url_rejects_over_cap(client, tmp_path, monkeypatch):
     assert response.status_code == 413
 
 
+def test_fs_data_url_max_bytes_env_override(monkeypatch):
+    monkeypatch.setenv("HERMES_FS_DATA_URL_MAX_BYTES", "24000000")
+    assert web_server._resolve_fs_data_url_max_bytes() == 24_000_000
+
+    for raw in ("", "0", "-2", "not-bytes"):
+        monkeypatch.setenv("HERMES_FS_DATA_URL_MAX_BYTES", raw)
+        assert (
+            web_server._resolve_fs_data_url_max_bytes()
+            == web_server._DEFAULT_FS_DATA_URL_MAX_BYTES
+        )
+
+
 def test_fs_git_root_for_nested_file(client, tmp_path):
     (tmp_path / ".git").mkdir()
     nested = tmp_path / "pkg" / "mod"

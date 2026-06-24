@@ -8,6 +8,7 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    agent_browser_runnable,
     find_hermes_node_executable,
     find_node_executable,
     find_node_executable_on_path,
@@ -424,3 +425,48 @@ class TestSecureParentDir:
         secure_parent_dir(link_target)
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
+class TestAgentBrowserRunnable:
+    """agent_browser_runnable() validates the resolved CLI actually runs.
+
+    Regression coverage for issue #48521: a dangling global symlink left by
+    agent-browser's npm postinstall is reported by ``which`` but fails at exec
+    with exit 127, silently breaking every browser tool. The validator must
+    reject it (and other non-runnable candidates) so callers fall through.
+    """
+
+    def _stub(self, tmp_path, name, body, mode=0o755):
+        p = tmp_path / name
+        p.write_text(body)
+        p.chmod(mode)
+        return p
+
+    def test_none_and_empty_rejected(self):
+        assert agent_browser_runnable(None) is False
+        assert agent_browser_runnable("") is False
+
+    def test_dangling_symlink_rejected(self, tmp_path):
+        link = tmp_path / "agent-browser"
+        link.symlink_to(tmp_path / "does-not-exist")
+        # exists() follows the link → False, so it's rejected without exec.
+        assert agent_browser_runnable(str(link)) is False
+
+    def test_runnable_binary_accepted(self, tmp_path):
+        good = self._stub(tmp_path, "agent-browser", "#!/bin/sh\necho 'agent-browser 0.27.1'\nexit 0\n")
+        assert agent_browser_runnable(str(good)) is True
+
+    def test_nonzero_exit_rejected(self, tmp_path):
+        bad = self._stub(tmp_path, "agent-browser", "#!/bin/sh\nexit 127\n")
+        assert agent_browser_runnable(str(bad)) is False
+
+    def test_not_executable_rejected(self, tmp_path):
+        noexec = self._stub(tmp_path, "agent-browser", "#!/bin/sh\necho hi\n", mode=0o644)
+        assert agent_browser_runnable(str(noexec)) is False
+
+    def test_npx_fallback_form_accepted(self):
+        # The "npx agent-browser" command form is not a real file; npx resolves
+        # the package at run time, so the validator trusts it without stat.
+        assert agent_browser_runnable("npx agent-browser") is True
+        assert agent_browser_runnable("/usr/local/bin/npx agent-browser") is True

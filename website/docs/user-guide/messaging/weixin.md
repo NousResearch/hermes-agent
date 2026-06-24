@@ -34,7 +34,7 @@ Install the required dependencies:
 ```bash
 pip install aiohttp cryptography
 # Optional: for terminal QR code display
-pip install hermes-agent[messaging]
+cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
 ```
 
 ## Setup
@@ -330,4 +330,4 @@ Only one Weixin gateway instance can use a given token at a time. The adapter ac
 | Voice messages show as text | If WeChat provides a transcription, the adapter uses the text. This is expected behavior |
 | Messages appear duplicated | The adapter deduplicates by message ID. If you see duplicates, check if multiple gateway instances are running |
 | `iLink POST ... HTTP 4xx/5xx` | API error from the iLink service. Check your token validity and network connectivity |
-| Terminal QR code doesn't render | Reinstall with the messaging extra: `pip install hermes-agent[messaging]`. Alternatively, open the URL printed above the QR |
+| Terminal QR code doesn't render | Reinstall with the messaging extra: `cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"`. Alternatively, open the URL printed above the QR |

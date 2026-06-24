@@ -110,6 +110,57 @@ class TestParseSchedule:
         with pytest.raises(ValueError):
             parse_schedule("99 99 99 99 99")
 
+    def test_naive_iso_anchors_to_configured_tz_not_server_local(self, monkeypatch):
+        """A naive ISO timestamp must be interpreted in the CONFIGURED Hermes
+        timezone, NOT the server's local timezone (#51021).
+
+        Regression: when the configured zone differs from the server's local
+        zone (common on cloud hosts running UTC), parse_schedule used
+        ``dt.astimezone()`` (server-local), baking in the wrong offset. The
+        due-check compares against ``_hermes_now()`` (configured zone), so the
+        stored instant landed hours off the user's wall-clock intent — far
+        enough that one-shots never became due. This asserts the parsed offset
+        matches the configured-now offset, the invariant that keeps the stored
+        instant on the same clock the scheduler checks against.
+        """
+        configured_now = datetime(2026, 6, 22, 20, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: configured_now)
+
+        result = parse_schedule("2026-06-22T20:07:00")  # naive, user wall-clock
+
+        assert result["kind"] == "once"
+        parsed = datetime.fromisoformat(result["run_at"])
+        assert parsed.utcoffset() == configured_now.utcoffset()
+        # Same wall-clock the user typed, on the configured clock.
+        assert parsed.replace(tzinfo=None) == datetime(2026, 6, 22, 20, 7, 0)
+
+
+# =========================================================================
+# Timezone-divergence regression (#51021)
+# =========================================================================
+
+class TestNaiveScheduleTimezoneDivergence:
+    """End-to-end: a one-shot created with a naive recent-past timestamp must
+    become due even when the configured Hermes timezone differs from the
+    server's local timezone. Before #51021 the naive value was anchored to
+    server-local, so the job never fired."""
+
+    def test_recent_past_oneshot_is_due_under_diverging_tz(self, tmp_cron_dir, monkeypatch):
+        # Configured zone: a fixed +05:30 offset. The server's actual local
+        # zone is irrelevant to the parse now — that is the whole point.
+        configured = timezone(timedelta(hours=5, minutes=30))
+        now = datetime(2026, 6, 22, 20, 7, 30, tzinfo=configured)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        # 30s ago in the configured wall clock, supplied as a NAIVE string.
+        naive_str = (now - timedelta(seconds=30)).replace(tzinfo=None).isoformat()
+        job = create_job(prompt="test message", schedule=naive_str, deliver="local")
+
+        due = get_due_jobs()
+        assert any(d["id"] == job["id"] for d in due), (
+            f"one-shot should be due; next_run_at={job['next_run_at']}"
+        )
+
 
 # =========================================================================
 # compute_next_run
@@ -685,10 +736,11 @@ class TestGetDueJobs:
         assert len(due) == 1
         assert due[0]["id"] == job["id"]
 
-    def test_stale_past_due_skipped(self, tmp_cron_dir):
-        """Recurring jobs past their dynamic grace window are fast-forwarded, not fired.
+    def test_stale_past_due_runs_once_and_fast_forwards(self, tmp_cron_dir):
+        """Recurring jobs past their grace window run once now and fast-forward next_run_at.
 
         For an hourly job, grace = 30 min. Setting 35 min late exceeds the window.
+        The job should be returned as due (execute once) with next_run_at in the future.
         """
         job = create_job(prompt="Stale", schedule="every 1h")
         # Force next_run_at to 35 minutes ago (beyond the 30-min grace for hourly)
@@ -697,12 +749,61 @@ class TestGetDueJobs:
         save_jobs(jobs)
 
         due = get_due_jobs()
-        assert len(due) == 0
-        # next_run_at should be fast-forwarded to the future
+        # Job is returned as due — execute once now instead of skipping
+        assert len(due) == 1
+        assert due[0]["id"] == job["id"]
+        # next_run_at should be fast-forwarded to the future (accumulated slots skipped)
         updated = get_job(job["id"])
         from cron.jobs import _ensure_aware, _hermes_now
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
+
+
+    def test_long_execution_does_not_perpetually_defer(self, tmp_cron_dir, monkeypatch):
+        """#33315: a recurring job whose runtime exceeds interval+grace must still
+        run once when the tick comes back, not skip forever.
+
+        Reproduces the production loop: a 5-min interval job whose previous run
+        overran the interval, leaving next_run_at ~11 min in the past — beyond
+        the 150s grace for a 5m interval. The job must be returned as due (run
+        once) AND have next_run_at fast-forwarded (so accumulated missed slots
+        don't all fire)."""
+        from cron.jobs import _ensure_aware, _hermes_now
+        job = create_job(prompt="Long job", schedule="every 5m")
+        jobs = load_jobs()
+        # 11 minutes ago: > grace (150s for a 5m interval) — the "still running" miss.
+        stale = (_hermes_now() - timedelta(minutes=11)).isoformat()
+        jobs[0]["next_run_at"] = stale
+        jobs[0]["last_run_at"] = (_hermes_now() - timedelta(minutes=1)).isoformat()
+        save_jobs(jobs)
+
+        due = get_due_jobs()
+        assert [j["id"] for j in due] == [job["id"]], "long-execution job was skipped (perpetual-defer bug)"
+        # next_run_at fast-forwarded into the future (no burst of missed slots).
+        nxt = _ensure_aware(datetime.fromisoformat(get_job(job["id"])["next_run_at"]))
+        assert nxt > _hermes_now()
+
+
+    def test_stale_repeat_limited_job_consumes_one_run_on_catchup(self, tmp_cron_dir, monkeypatch):
+        """#33315 behavior note: a stale recurring job with a repeat.times limit
+        fires ONCE on catch-up and consumes one of its runs (it is no longer
+        silently skipped). Pins the documented repeat-count interaction so it
+        isn't changed accidentally."""
+        from cron.jobs import _hermes_now
+        job = create_job(prompt="Limited", schedule="every 5m", repeat=3)
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (_hermes_now() - timedelta(minutes=11)).isoformat()
+        jobs[0]["last_run_at"] = (_hermes_now() - timedelta(minutes=11)).isoformat()
+        save_jobs(jobs)
+
+        # The stale job is returned to fire once (not skipped).
+        due = get_due_jobs()
+        assert [j["id"] for j in due] == [job["id"]]
+        # Simulate the run completing: mark_job_run increments completed.
+        mark_job_run(job["id"], True)
+        survived = get_job(job["id"])
+        assert survived is not None, "job should survive (3 > 1 completed)"
+        assert survived["repeat"]["completed"] == 1
 
     def test_future_not_returned(self, tmp_cron_dir):
         create_job(prompt="Not yet", schedule="every 1h")
@@ -911,10 +1012,15 @@ class TestGetDueJobs:
             }]
         )
 
-        # The wall-clock time has already passed, so this follows the existing
-        # stale-run fast-forward behavior instead of the timezone-migration
-        # repair path for future wall-clock runs.
-        assert get_due_jobs() == []
+        # The wall-clock time has already passed, so this does NOT take the
+        # timezone-migration repair path (which is for still-future wall-clock
+        # runs). It falls through to the stale-grace path, which — since #33315
+        # — runs the job once now and fast-forwards next_run_at (rather than
+        # skipping). The key assertion for THIS test is that the repaired
+        # next_run_at is the normal next cron occurrence, not the migration
+        # path's same-day rebase.
+        due = get_due_jobs()
+        assert [j["id"] for j in due] == ["cron-tz-missed"]  # runs once now (#33315)
         repaired = datetime.fromisoformat(get_job("cron-tz-missed")["next_run_at"])
         assert repaired == datetime(2026, 5, 26, 9, 0, 0, tzinfo=current_tz)
 

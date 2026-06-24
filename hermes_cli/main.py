@@ -7724,8 +7724,9 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
 
     The normal path (``ensure_uv()`` in managed_uv) installs the managed
     standalone uv into ``$HERMES_HOME/bin/uv``, but on Termux the official
-    installer may not work (glibc vs bionic).  Fall back to ``pip install uv``
-    which gets a Termux-compatible binary.
+    installer may not work (glibc vs bionic).  Prefer a uv already on PATH
+    (e.g. ``pkg install uv``); only if there is none do we fall back to a
+    wheel-only ``pip install uv`` so we never source-build the Rust crate.
     """
     from hermes_cli.managed_uv import resolve_uv
 
@@ -7734,9 +7735,21 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
         return existing
     if not _is_termux_env():
         return None
+    # A Termux-packaged uv lands on PATH but not in the managed bin dir, so
+    # resolve_uv() misses it. Use it before pip, which has no Android wheel and
+    # would otherwise build uv from source on a low-memory device.
+    system_uv = shutil.which("uv")
+    if system_uv:
+        return system_uv
     try:
         print("  → Termux detected: trying to install uv for faster dependency updates...")
-        subprocess.run(pip_cmd + ["install", "uv"], cwd=PROJECT_ROOT, check=False)
+        result = subprocess.run(
+            pip_cmd + ["install", "uv", "--only-binary", ":all:"],
+            cwd=PROJECT_ROOT,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
     except Exception:
         pass
     # After pip install, check managed path first, then PATH
@@ -8040,10 +8053,26 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     # Note: upstream/<branch> may not exist for non-main branches (a fork's
     # bb/gui has no upstream counterpart), so when the caller picks a
     # non-default branch we skip the upstream probe and use origin directly.
+    # Installer checkouts are shallow (`git clone --depth 1`). A plain
+    # `git fetch` would unshallow the repo (dragging in the whole history —
+    # the exact cost the shallow clone avoided) and the rev-list count below
+    # would then report a huge bogus "behind" number. Detect shallow up front:
+    # fetch with --depth 1 to preserve the boundary and report presence-only.
+    is_shallow = (
+        subprocess.run(
+            git_cmd + ["rev-parse", "--is-shallow-repository"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        == "true"
+    )
+    depth_args = ["--depth", "1"] if is_shallow else []
+
     if branch == "main":
         print("→ Fetching from upstream...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "upstream", branch],
+            git_cmd + ["fetch"] + depth_args + ["upstream", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8052,7 +8081,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
             # Fallback to origin if upstream doesn't exist
             print("→ Fetching from origin...")
             fetch_result = subprocess.run(
-                git_cmd + ["fetch", "origin", branch],
+                git_cmd + ["fetch"] + depth_args + ["origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
@@ -8066,7 +8095,7 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
         # Non-default branch: compare against origin/<branch> directly.
         print("→ Fetching from origin...")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin", branch],
+            git_cmd + ["fetch"] + depth_args + ["origin", branch],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8099,6 +8128,26 @@ def _cmd_update_check(branch: str = "main", *, branch_explicit: bool = False):
     if verify_result.returncode != 0:
         print(f"✗ Branch '{branch}' not found on {compare_branch.split('/', 1)[0]}.")
         sys.exit(1)
+
+    if is_shallow:
+        # No history to count across the shallow boundary. Compare tip SHAs and
+        # report presence-only (mirrors the banner's _check_via_local_git).
+        head_sha = subprocess.run(
+            git_cmd + ["rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT, capture_output=True, text=True,
+        ).stdout.strip()
+        target_sha = subprocess.run(
+            git_cmd + ["rev-parse", compare_branch],
+            cwd=PROJECT_ROOT, capture_output=True, text=True,
+        ).stdout.strip()
+        if head_sha and target_sha and head_sha == target_sha:
+            print("✓ Already up to date.")
+        else:
+            print(f"⚕ Update available (behind {compare_branch}).")
+            from hermes_cli.config import recommended_update_command
+
+            print(f"  Run '{recommended_update_command()}' to install.")
+        return
 
     rev_result = subprocess.run(
         git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
@@ -8395,6 +8444,31 @@ def _pause_windows_gateways_for_update() -> dict | None:
         logger.debug("Could not discover Windows gateway PIDs before update: %s", exc)
         return None
     if not running_pids:
+        # No gateway is running right now, but the user may have installed an
+        # autostart entry (Scheduled Task or Startup-folder login item) — that
+        # is an explicit "I want a gateway" signal. A gateway that died between
+        # updates (e.g. the spawning terminal/TUI closed, taking its child with
+        # it) would otherwise never come back: the autostart entry only fires on
+        # the next login, and the update flow's resume path only relaunched
+        # gateways that were running when the update began. Cold-start one after
+        # the update so an installed gateway is actually up post-update. Users
+        # who run gateway-less (no autostart entry) get nothing forced on them.
+        try:
+            from hermes_cli import gateway_windows
+
+            if gateway_windows.is_installed():
+                return {
+                    "resume_needed": True,
+                    "profiles": {},
+                    "unmapped_pids": [],
+                    "unmapped": [],
+                    "cold_start_if_installed": True,
+                }
+        except Exception as exc:
+            logger.debug(
+                "Could not check Windows gateway autostart state before update: %s",
+                exc,
+            )
         return None
 
     profile_processes = {}
@@ -8472,6 +8546,51 @@ def _pause_windows_gateways_for_update() -> dict | None:
     }
 
 
+def _cold_start_windows_gateway_after_update() -> None:
+    """Start a fresh detached gateway after update when one is installed but down.
+
+    Invoked from ``_resume_windows_gateways_after_update`` for the
+    ``cold_start_if_installed`` case: no gateway was running when the update
+    began, but an autostart entry (Scheduled Task / Startup-folder login item)
+    is installed, signalling the user wants a gateway. Unlike the relaunch
+    paths — which watch an old PID and respawn once it exits — this is a direct
+    fresh spawn via the same windowless ``pythonw`` + breakaway path that
+    ``hermes gateway start`` uses (``gateway_windows._spawn_detached``).
+
+    Best-effort and idempotent: re-checks that nothing is running first so a
+    concurrent start (e.g. the autostart entry firing) can't produce a
+    duplicate gateway.
+    """
+    if not _is_windows():
+        return
+    try:
+        from hermes_cli import gateway_windows
+        from hermes_cli.gateway import find_gateway_pids
+    except Exception as exc:
+        logger.debug("Could not load Windows gateway cold-start helpers: %s", exc)
+        return
+
+    # Re-check liveness right before spawning — between pause and resume the
+    # autostart entry may have already brought a gateway up, or a leftover
+    # process may have re-registered. Don't double-start.
+    try:
+        if list(find_gateway_pids(all_profiles=True)):
+            return
+    except Exception as exc:
+        logger.debug("Could not re-check gateway liveness before cold-start: %s", exc)
+        return
+
+    try:
+        pid = gateway_windows._spawn_detached()
+    except Exception as exc:
+        logger.debug("Could not cold-start Windows gateway after update: %s", exc)
+        return
+
+    if pid:
+        print()
+        print(f"  ✓ Starting Windows gateway after update (PID {pid})")
+
+
 def _resume_windows_gateways_after_update(token: dict | None) -> None:
     """Restart Windows profile gateways previously paused for update."""
     if not token or not token.get("resume_needed"):
@@ -8482,7 +8601,10 @@ def _resume_windows_gateways_after_update(token: dict | None) -> None:
 
     profiles = token.get("profiles") or {}
     unmapped = token.get("unmapped") or []
+    cold_start = bool(token.get("cold_start_if_installed"))
     if not profiles and not any(u.get("argv") for u in unmapped):
+        if cold_start:
+            _cold_start_windows_gateway_after_update()
         return
 
     try:
@@ -9488,13 +9610,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("FHS PATH guard check failed: %s", e)
 
         # Refresh the cua-driver binary used by the Computer Use toolset.
-        # The upstream installer is gated on macOS and on the binary already
-        # being on PATH, so this is a no-op for users who don't have it.
-        # Tying the refresh to ``hermes update`` gives users a predictable
-        # cadence (matches when they pull new agent code) without adding
-        # startup latency or a per-launch GitHub API call.
+        # The upstream installer is gated on supported platforms and on the
+        # binary already being on PATH, so this is a no-op for users who
+        # don't have it. Tying the refresh to ``hermes update`` gives users a
+        # predictable cadence (matches when they pull new agent code) without
+        # adding startup latency or a per-launch GitHub API call.
         try:
-            if sys.platform == "darwin" and shutil.which("cua-driver"):
+            if sys.platform in ("darwin", "win32", "linux") and shutil.which("cua-driver"):
                 from hermes_cli.tools_config import install_cua_driver
 
                 print()
@@ -11419,7 +11541,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
+        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -12312,6 +12434,26 @@ def main():
         logging.getLogger(__name__).debug("curator CLI wiring failed: %s", _exc)
 
     # =========================================================================
+    # pets command — petdex animated mascots (CLI / TUI / desktop display)
+    # =========================================================================
+    pets_parser = subparsers.add_parser(
+        "pets",
+        help="Browse, install, and select petdex animated pets",
+        description=(
+            "Petdex (https://github.com/crafter-station/petdex) is a public "
+            "gallery of animated sprite pets for coding agents. Install one "
+            "and Hermes shows it reacting to agent activity across the CLI, "
+            "TUI, and desktop app."
+        ),
+    )
+    try:
+        from hermes_cli.pets import register_cli as _register_pets_cli
+
+        _register_pets_cli(pets_parser)
+    except Exception as _exc:
+        logging.getLogger(__name__).debug("pets CLI wiring failed: %s", _exc)
+
+    # =========================================================================
     # memory command  (parser built in hermes_cli/subcommands/memory.py)
     # =========================================================================
     build_memory_parser(subparsers, cmd_memory=cmd_memory)
@@ -12326,23 +12468,28 @@ def main():
     # =========================================================================
     computer_use_parser = subparsers.add_parser(
         "computer-use",
-        help="Manage the Computer Use (cua-driver) backend (macOS)",
+        help="Manage the Computer Use (cua-driver) backend (macOS/Windows/Linux)",
         description=(
             "Install or check the cua-driver binary used by the\n"
-            "`computer_use` toolset. macOS-only.\n\n"
+            "`computer_use` toolset. Supported on macOS, Windows, and\n"
+            "Linux.\n\n"
             "Use `hermes computer-use install` to fetch and run the\n"
             "upstream cua-driver installer. This is equivalent to the\n"
             "post-setup hook that `hermes tools` runs when you first\n"
             "enable the Computer Use toolset, and is a stable target\n"
             "for re-running the install if it didn't fire (e.g. when\n"
-            "toggling the toolset on a returning-user setup)."
+            "toggling the toolset on a returning-user setup).\n\n"
+            "Use `hermes computer-use doctor` to run cua-driver's\n"
+            "`health_report` MCP tool and surface its check matrix\n"
+            "(TCC, bundle identity, version, platform support, ...)\n"
+            "in human-readable form."
         ),
     )
     computer_use_sub = computer_use_parser.add_subparsers(dest="computer_use_action")
 
     computer_use_install = computer_use_sub.add_parser(
         "install",
-        help="Install or repair the cua-driver binary (macOS)",
+        help="Install or repair the cua-driver binary (macOS/Windows/Linux)",
     )
     computer_use_install.add_argument(
         "--upgrade",
@@ -12357,6 +12504,69 @@ def main():
         "status",
         help="Print whether cua-driver is installed and on PATH",
     )
+    computer_use_doctor = computer_use_sub.add_parser(
+        "doctor",
+        help="Run cua-driver `health_report` and surface the check matrix",
+        description=(
+            "Drive cua-driver's stable `health_report` MCP tool and render\n"
+            "its check matrix (TCC permissions, bundle identity, version,\n"
+            "platform support, screenshot probe, …) as human-readable\n"
+            "output. cua-driver owns the health model; this command stays\n"
+            "thin so new checks added upstream surface here without code\n"
+            "changes. Exits 0 when overall=ok, 1 when degraded/failed, 2\n"
+            "when the binary is missing or unreachable."
+        ),
+    )
+    computer_use_doctor.add_argument(
+        "--include",
+        action="append",
+        default=[],
+        metavar="CHECK",
+        help=(
+            "Run only the listed checks. Repeat for multiple "
+            "(e.g. --include tcc_accessibility --include bundle_identity). "
+            "Unknown names are reported by cua-driver."
+        ),
+    )
+    computer_use_doctor.add_argument(
+        "--skip",
+        action="append",
+        default=[],
+        metavar="CHECK",
+        help="Skip the listed checks. Repeat for multiple. Wins over --include.",
+    )
+    computer_use_doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the raw structured payload as JSON (same shape as `tools/call`).",
+    )
+    computer_use_perms = computer_use_sub.add_parser(
+        "permissions",
+        help="Check or grant macOS Accessibility + Screen Recording (macOS)",
+        description=(
+            "Computer Use drives the Mac through cua-driver, whose TCC grants\n"
+            "attach to cua-driver's own identity (com.trycua.driver) — not the\n"
+            "terminal or the Hermes app. `status` reports the driver's grant\n"
+            "state; `grant` launches CuaDriver via LaunchServices so the macOS\n"
+            "permission dialog is attributed to the process that does the work."
+        ),
+    )
+    computer_use_perms_sub = computer_use_perms.add_subparsers(
+        dest="computer_use_perms_action"
+    )
+    computer_use_perms_status = computer_use_perms_sub.add_parser(
+        "status",
+        help="Report Accessibility + Screen Recording grant state (read-only)",
+    )
+    computer_use_perms_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the normalized permission payload as JSON.",
+    )
+    computer_use_perms_sub.add_parser(
+        "grant",
+        help="Request the grants (opens the dialog attributed to CuaDriver)",
+    )
 
     def cmd_computer_use(args):
         action = getattr(args, "computer_use_action", None)
@@ -12367,13 +12577,20 @@ def main():
         if action == "status":
             import shutil
             import subprocess
-            path = shutil.which("cua-driver")
+            from hermes_cli.tools_config import _cua_driver_cmd
+            # Honor HERMES_CUA_DRIVER_CMD for local-build testing — same
+            # resolver `install_cua_driver` and the runtime backend use,
+            # so `status` reports what `computer_use` will actually invoke.
+            driver_cmd = _cua_driver_cmd()
+            path = shutil.which(driver_cmd)
             if path:
                 version = ""
                 try:
+                    from hermes_cli.tools_config import _cua_driver_env
                     version = subprocess.run(
-                        ["cua-driver", "--version"],
+                        [path, "--version"],
                         capture_output=True, text=True, timeout=5,
+                        env=_cua_driver_env(),
                     ).stdout.strip()
                 except Exception:
                     pass
@@ -12381,10 +12598,66 @@ def main():
                     print(f"cua-driver: installed at {path} ({version})")
                 else:
                     print(f"cua-driver: installed at {path}")
-                print("  Refresh to latest: hermes computer-use install --upgrade")
+                try:
+                    from tools.computer_use.cua_backend import cua_driver_update_check
+                    st = cua_driver_update_check()
+                    if st and st.get("update_available"):
+                        latest = st.get("latest_version") or "?"
+                        print(f"  ⬆ Update available: cua-driver {latest}.")
+                        print("    Run: hermes computer-use install --upgrade")
+                    elif st:
+                        print("  ✓ Up to date.")
+                    else:
+                        # Older driver (no check-update verb) or offline.
+                        print("  Refresh to latest: hermes computer-use install --upgrade")
+                except Exception:
+                    print("  Refresh to latest: hermes computer-use install --upgrade")
                 return
             print("cua-driver: not installed")
             print("  Run: hermes computer-use install")
+            return
+        if action == "doctor":
+            from tools.computer_use.doctor import run_doctor
+            code = run_doctor(
+                include=list(getattr(args, "include", []) or []),
+                skip=list(getattr(args, "skip", []) or []),
+                json_output=bool(getattr(args, "json", False)),
+            )
+            sys.exit(code)
+        if action == "permissions":
+            perms_action = getattr(args, "computer_use_perms_action", None)
+            if perms_action == "grant":
+                from tools.computer_use.permissions import request_permissions_grant
+                sys.exit(request_permissions_grant())
+            if perms_action == "status":
+                import json as _json
+                from tools.computer_use.permissions import computer_use_status
+                st = computer_use_status()
+                if bool(getattr(args, "json", False)):
+                    print(_json.dumps(st, indent=2, sort_keys=True))
+                    sys.exit(0 if st["ready"] else 1)
+                if not st["platform_supported"]:
+                    print(f"Computer Use is not supported on {st['platform']}.")
+                    sys.exit(1)
+                if not st["installed"]:
+                    print("cua-driver: not installed. Run: hermes computer-use install")
+                    sys.exit(1)
+                glyph = lambda v: "✅" if v is True else ("❌" if v is False else "•")  # noqa: E731
+                print(f"cua-driver: {st['version'] or 'installed'} ({st['platform']})")
+                if st["can_grant"]:  # macOS TCC permissions
+                    print(f"  {glyph(st['accessibility'])} Accessibility")
+                    print(f"  {glyph(st['screen_recording'])} Screen Recording")
+                    if not st["ready"]:
+                        print("  Grant: hermes computer-use permissions grant")
+                else:  # no TCC model — readiness is driver health
+                    print(f"  {glyph(st['ready'])} driver health (no permission toggles on {st['platform']})")
+                for c in st["checks"]:
+                    if c["status"] != "ok":
+                        print(f"  ⚠ {c['label']}: {c['message']}")
+                if st["error"]:
+                    print(f"  ⚠ {st['error']}")
+                sys.exit(0 if st["ready"] else 1)
+            computer_use_perms.print_help()
             return
         # No subcommand → show help
         computer_use_parser.print_help()

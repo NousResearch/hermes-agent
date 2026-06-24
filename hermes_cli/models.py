@@ -3793,6 +3793,37 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
             provider_label = "OpenAI Codex" if normalized == "openai-codex" else "xAI Grok OAuth (SuperGrok / Premium+)"
+            # Plausibility gate (#45006): the soft-accept (#16172 / #19729) exists
+            # for entitlement-gated *hidden* slugs the curated listing hasn't
+            # caught up with — but those are always the provider's own family
+            # (openai-codex -> gpt-*; xai-oauth -> grok-*). Accepting an
+            # unrelated typed name (e.g. `qwen3.5-4b`, `llama-3.1-8b`) here turns
+            # what should be an actionable "did you mean --provider <x>?" error
+            # into a confusing success that 400s on the next turn. Only soft-
+            # accept names that share the provider's family prefix; reject the
+            # rest with guidance to pin the right provider.
+            _family_prefixes = {
+                "openai-codex": ("gpt-", "codex-", "o1", "o3", "o4"),
+                "xai-oauth": ("grok-",),
+            }.get(normalized, ())
+            _lower = requested_for_lookup.strip().lower()
+            _plausible = (not _family_prefixes) or any(
+                _lower.startswith(p) for p in _family_prefixes
+            )
+            if not _plausible:
+                return {
+                    "accepted": False,
+                    "persist": False,
+                    "recognized": False,
+                    "message": (
+                        f"`{requested}` doesn't look like a {provider_label} model "
+                        f"and isn't in its listing, so it was not accepted. If it "
+                        f"belongs to another configured provider, switch with "
+                        f"`--provider <slug>` (or select it from the `/model` "
+                        f"picker)."
+                        f"{suggestion_text}"
+                    ),
+                }
             return {
                 "accepted": True,
                 "persist": True,

@@ -444,6 +444,17 @@ DANGEROUS_PATTERNS = [
     # to regex at detection time. Catch the structural pattern instead.
     (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
     (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
+    # PID extraction for self-termination: the agent can run `pgrep -f hermes`
+    # to learn the gateway PID, then `kill -TERM <PID>` in a separate command.
+    # Block the PID-extraction step — pgrep/pidof targeting hermes processes
+    # is never needed for diagnostics (use `ps aux | grep` instead).
+    (r'\b(pgrep|pidof)\b.*\b(hermes|gateway|cli\.py)\b', "extract hermes/gateway PID (self-termination setup)"),
+    # kill with signal flags (e.g. kill -TERM, kill -15, kill -HUP) — when the
+    # agent has already extracted the PID via a prior command, the kill itself
+    # must also be gated.  Plain `kill 12345` (default SIGTERM, no flag) is
+    # left unflagged because the agent cannot reliably know which PID is the
+    # gateway without first running pgrep (which is now blocked above).
+    (r'\bkill\s+-[A-Za-z0-9]+', "kill with signal flag (potential self-termination)"),
     # File copy/move/edit into sensitive system paths (/etc/ and macOS
     # /private/etc/ mirror).
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),

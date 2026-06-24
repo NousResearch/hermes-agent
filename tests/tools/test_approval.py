@@ -1058,8 +1058,52 @@ class TestPgrepKillExpansion:
         assert dangerous is True
 
     def test_safe_kill_pid_not_flagged(self):
-        """A plain 'kill 12345' (literal PID, no expansion) must stay safe."""
+        """A plain 'kill 12345' (literal PID, no signal flag) must stay safe."""
         cmd = "kill 12345"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is False
+
+    def test_kill_term_flag_detected(self):
+        """kill -TERM <PID> must be caught (signal flag = potential self-termination)."""
+        cmd = "kill -TERM 12345"
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "signal" in desc.lower() or "self-termination" in desc.lower()
+
+    def test_kill_15_flag_detected(self):
+        """kill -15 (numeric signal) must be caught."""
+        cmd = "kill -15 12345"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_kill_hup_flag_detected(self):
+        """kill -HUP must be caught."""
+        cmd = "kill -HUP 12345"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_pgrep_hermes_detected(self):
+        """pgrep targeting hermes processes must be caught (PID extraction)."""
+        cmd = 'pgrep -f "hermes.*gateway"'
+        dangerous, _, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "pgrep" in desc.lower() or "pid" in desc.lower()
+
+    def test_pgrep_gateway_detected(self):
+        """pgrep targeting gateway must be caught."""
+        cmd = "pgrep -f gateway"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_pidof_hermes_detected(self):
+        """pidof targeting hermes must be caught."""
+        cmd = "pidof hermes"
+        dangerous, _, _ = detect_dangerous_command(cmd)
+        assert dangerous is True
+
+    def test_pgrep_unrelated_not_flagged(self):
+        """pgrep targeting unrelated processes must not be flagged."""
+        cmd = "pgrep -f nginx"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
 

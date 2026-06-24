@@ -1317,6 +1317,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             body=args.body,
             assignee=args.assignee,
             created_by=args.created_by or _profile_author(),
+            creator_profile=_profile_author(),
             workspace_kind=ws_kind,
             workspace_path=ws_path,
             branch_name=branch_name,

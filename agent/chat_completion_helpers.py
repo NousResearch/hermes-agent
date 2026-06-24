@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -117,9 +118,10 @@ def _is_openai_codex_backend(agent) -> bool:
 
 def _env_float(name: str, default: float) -> float:
     try:
-        return float(os.getenv(name, str(default)))
+        value = float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+    return value if math.isfinite(value) else default
 
 
 def interruptible_api_call(agent, api_kwargs: dict):

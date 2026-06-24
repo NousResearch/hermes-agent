@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -1176,10 +1177,11 @@ def _get_script_timeout() -> int:
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
-    Scripts must reside within HERMES_HOME/scripts/.  Both relative and
-    absolute paths are resolved and validated against this directory to
-    prevent arbitrary script execution via path traversal or absolute
-    path injection.
+    Scripts are resolved against the **canonical** ``~/.hermes/scripts/``
+    directory first, then fall back to ``HERMES_HOME/scripts/`` for
+    profile-scoped scripts.  Both relative and absolute paths are resolved
+    and validated against one of these directories to prevent arbitrary
+    script execution via path traversal or absolute path injection.
 
     Supported interpreters (chosen by file extension):
 
@@ -1197,35 +1199,59 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     Args:
         script_path: Path to the script.  Relative paths are resolved
-            against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
-            are also validated to ensure they stay within the scripts dir.
+            against ``~/.hermes/scripts/`` first, with
+            ``HERMES_HOME/scripts/`` as a fallback.  Absolute and
+            ~-prefixed paths are also validated to ensure they stay
+            within one of the scripts directories.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    scripts_dir = _get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    scripts_dir_resolved = scripts_dir.resolve()
-
     raw = Path(script_path).expanduser()
-    if raw.is_absolute():
-        path = raw.resolve()
-    else:
-        path = (scripts_dir / raw).resolve()
 
-    # Guard against path traversal, absolute path injection, and symlink
-    # escape — scripts MUST reside within HERMES_HOME/scripts/.
-    try:
-        path.relative_to(scripts_dir_resolved)
-    except ValueError:
-        return False, (
-            f"Blocked: script path resolves outside the scripts directory "
-            f"({scripts_dir_resolved}): {script_path!r}"
-        )
+    # Primary: canonical ~/.hermes/scripts/ (shared across all profiles)
+    canonical_dir = (Path.home() / ".hermes" / "scripts").resolve()
 
-    if not path.exists():
-        return False, f"Script not found: {path}"
+    # Secondary: HERMES_HOME/scripts/ (profile-specific fallback)
+    profile_dir = _get_hermes_home() / "scripts"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    profile_dir_resolved = profile_dir.resolve()
+
+    # Deduplicate: when HERMES_HOME is ~/.hermes, both point to the same dir
+    search_dirs = [canonical_dir]
+    if canonical_dir != profile_dir_resolved:
+        search_dirs.append(profile_dir_resolved)
+
+    path = None
+    found_container = False
+    for scripts_dir_resolved in search_dirs:
+        if raw.is_absolute():
+            candidate = raw.resolve()
+        else:
+            candidate = (scripts_dir_resolved / raw).resolve()
+
+        # Guard against path traversal, absolute path injection, and
+        # symlink escape — scripts MUST reside within this directory.
+        try:
+            candidate.relative_to(scripts_dir_resolved)
+        except ValueError:
+            continue
+
+        found_container = True
+        if candidate.exists() and candidate.is_file():
+            path = candidate
+            break
+
+    if path is None:
+        checked = ", ".join(str(d) for d in search_dirs)
+        if not found_container:
+            return False, (
+                f"Blocked: script path resolves outside the scripts "
+                f"directories ({checked}): {script_path!r}"
+            )
+        return False, f"Script not found: {script_path} (checked {checked})"
+
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
@@ -2374,47 +2400,96 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     Returns True if the job was processed (even if the job itself failed —
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
-    try:
-        success, output, final_response, error = run_job(job)
+    # ── Dispatch retry for transient errors ──────────────────────────
+    # When run_job() fails with a transient dispatch-level error
+    # (BrokenPipeError, ConnectionError, TimeoutError), retry
+    # immediately instead of waiting for the next cron tick.  Max 3
+    # attempts with 5/15/30s backoff.  Non-transient failures
+    # (missing model, AuthError, etc.) are never retried.
+    _DISPATCH_RETRY_MAX = 3
+    _DISPATCH_RETRY_DELAYS = [5, 15, 30]
+    _TRANSIENT_SIGNALS = (
+        "Broken pipe", "Errno 32", "Connection refused",
+        "Connection reset", "timed out", "Timeout",
+        "Connection aborted", "Network is unreachable",
+        "No route to host",
+    )
 
-        output_file = save_job_output(job["id"], output)
-        if verbose:
-            logger.info("Output saved to: %s", output_file)
+    def _is_transient_dispatch_failure(error_msg: Optional[str]) -> bool:
+        if not error_msg:
+            return False
+        return any(sig.lower() in error_msg.lower() for sig in _TRANSIENT_SIGNALS)
 
-        # Deliver the final response to the origin/target chat.
-        # If the agent responded with [SILENT], skip delivery (but
-        # output is already saved above).  Failed jobs always deliver.
-        deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
-        # Treat whitespace-only final responses the same as empty
-        # responses: do not deliver a blank message, and let the
-        # empty-response guard below mark the run as a soft failure.
-        should_deliver = bool(deliver_content.strip())
-        if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
-            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-            should_deliver = False
+    job_id = job["id"]
+    for _attempt in range(1, _DISPATCH_RETRY_MAX + 1):
+        try:
+            success, output, final_response, error = run_job(job)
 
-        delivery_error = None
-        if should_deliver:
-            try:
-                delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-            except Exception as de:
-                delivery_error = str(de)
-                logger.error("Delivery failed for job %s: %s", job["id"], de)
+            # If the job failed with a transient error and we have retries left,
+            # retry immediately rather than marking the job as failed.
+            if not success and _is_transient_dispatch_failure(error) and _attempt < _DISPATCH_RETRY_MAX:
+                delay = _DISPATCH_RETRY_DELAYS[_attempt - 1]
+                job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+                logger.warning(
+                    "Job '%s': transient dispatch error (attempt %d/%d), retrying in %ds: %s",
+                    job_name, _attempt, _DISPATCH_RETRY_MAX, delay, error,
+                )
+                time.sleep(delay)
+                continue
 
-        # Treat empty final_response as a soft failure so last_status
-        # is not "ok" — the agent ran but produced nothing useful.
-        # (issue #8585)
-        if success and not final_response.strip():
-            success = False
-            error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+            # Success or non-transient failure — save output, deliver, mark.
+            output_file = save_job_output(job["id"], output)
+            if verbose:
+                logger.info("Output saved to: %s", output_file)
 
-        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        return True
+            # Deliver the final response to the origin/target chat.
+            # If the agent responded with [SILENT], skip delivery (but
+            # output is already saved above).  Failed jobs always deliver.
+            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            # Treat whitespace-only final responses the same as empty
+            # responses: do not deliver a blank message, and let the
+            # empty-response guard below mark the run as a soft failure.
+            should_deliver = bool(deliver_content.strip())
+            if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                should_deliver = False
 
-    except Exception as e:
-        logger.error("Error processing job %s: %s", job['id'], e)
-        mark_job_run(job["id"], False, str(e))
-        return False
+            delivery_error = None
+            if should_deliver:
+                try:
+                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                except Exception as de:
+                    delivery_error = str(de)
+                    logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+            # Treat empty final_response as a soft failure so last_status
+            # is not "ok" — the agent ran but produced nothing useful.
+            # (issue #8585)
+            if success and not final_response.strip():
+                success = False
+                error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
+
+            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            return True
+
+        except Exception as e:
+            if _is_transient_dispatch_failure(str(e)) and _attempt < _DISPATCH_RETRY_MAX:
+                delay = _DISPATCH_RETRY_DELAYS[_attempt - 1]
+                job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+                logger.warning(
+                    "Job '%s': transient dispatch error (attempt %d/%d), retrying in %ds: %s",
+                    job_name, _attempt, _DISPATCH_RETRY_MAX, delay, e,
+                )
+                time.sleep(delay)
+                continue
+            logger.error("Error processing job %s: %s", job['id'], e)
+            mark_job_run(job["id"], False, str(e))
+            return False
+
+    # Defensive: should never reach here, but if we do, mark as failed.
+    logger.error("Error processing job %s: retry loop exhausted", job['id'])
+    mark_job_run(job["id"], False, "Retry loop exhausted")
+    return False
 
 
 def _notify_provider_jobs_changed() -> None:

@@ -956,6 +956,13 @@ def run_conversation(
     # over instead of spinning. Reset here so each turn starts fresh. See #26080.
     agent._auth_pool_refresh_counts = {}
 
+    # Reset the per-turn usage holder forwarded to the context engine's
+    # on_turn_complete() observation hook. Set after each successful provider
+    # response (see below); left as None on turns that never reach a response
+    # (early failure / interrupt) so the hook receives None rather than a
+    # stale prior turn's usage.
+    agent._last_turn_usage = None
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.
@@ -2741,6 +2748,14 @@ def run_conversation(
                         "reasoning_tokens": canonical_usage.reasoning_tokens,
                     }
                     agent.context_compressor.update_from_response(usage_dict)
+
+                    # Stash this response's canonical usage so the post-turn
+                    # on_turn_complete() observation hook can forward it (the
+                    # same dict shape passed to update_from_response). A turn
+                    # may make several API calls; the engine's per-turn signal
+                    # of interest is the cost/size of the latest assembled
+                    # request, so we keep the most recent call's usage.
+                    agent._last_turn_usage = dict(usage_dict)
                 elif getattr(
                     agent.context_compressor,
                     "awaiting_real_usage_after_compression",

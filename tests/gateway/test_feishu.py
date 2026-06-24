@@ -417,6 +417,97 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_redacts_email_when_feishu_content_audit_rejects_email(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._client = object()
+        audit_response = SimpleNamespace(
+            success=lambda: False,
+            code=230028,
+            msg="The messages do NOT pass the audit, ext=contain sensitive data: EMAIL_ADDRESS",
+        )
+        ok_response = SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(message_id="om_redacted"),
+        )
+
+        with patch.object(
+            adapter,
+            "_feishu_send_with_retry",
+            new_callable=AsyncMock,
+            side_effect=[audit_response, ok_response],
+        ) as mock_send:
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="Contact **Alice** at alice.smith@example.com",
+                    reply_to="om_parent",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_redacted")
+        self.assertEqual(mock_send.call_count, 2)
+        self.assertEqual(mock_send.call_args_list[0].kwargs["msg_type"], "post")
+        fallback_kwargs = mock_send.call_args_list[1].kwargs
+        self.assertEqual(fallback_kwargs["msg_type"], "text")
+        self.assertEqual(fallback_kwargs["reply_to"], "om_parent")
+        self.assertEqual(
+            json.loads(fallback_kwargs["payload"]),
+            {"text": "Contact Alice at alice.smith [at] example.com"},
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_redacts_email_when_feishu_content_audit_rejects_email(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    return SimpleNamespace(
+                        success=lambda: False,
+                        code=230028,
+                        msg="The messages do NOT pass the audit, ext=contain sensitive data: EMAIL_ADDRESS",
+                    )
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                    content="Contact **Alice** at alice.smith@example.com",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_progress")
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "post")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+        self.assertEqual(
+            captured["calls"][1].request_body.content,
+            json.dumps({"text": "Contact Alice at alice.smith [at] example.com"}, ensure_ascii=False),
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_get_chat_info_uses_real_feishu_chat_api(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

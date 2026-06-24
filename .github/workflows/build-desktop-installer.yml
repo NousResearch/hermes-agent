@@ -1,0 +1,67 @@
+name: Build Desktop Installer (Universal macOS)
+
+on:
+  workflow_dispatch:
+    inputs:
+      upload_release:
+        description: 'Upload to GitHub Release (requires tag)'
+        required: false
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'installer-v*'
+
+jobs:
+  build-macos-universal:
+    name: Build Universal macOS DMG
+    runs-on: macos-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      
+      - name: Install dependencies (monorepo root)
+        run: npm ci
+      
+      - name: Build universal DMG
+        run: |
+          cd apps/bootstrap-installer
+          npx tauri build --target universal-apple-darwin
+      
+      - name: Verify universal binary
+        run: |
+          DMG=$(find apps/bootstrap-installer/src-tauri/target/universal-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
+          echo "DMG: $DMG"
+          hdiutil attach "$DMG" -mountpoint /tmp/verify-dmg -readonly -nobrowse
+          EXE="/tmp/verify-dmg/Hermes.app/Contents/MacOS/Hermes-Setup"
+          echo "Binary architectures:"
+          lipo -info "$EXE"
+          hdiutil detach /tmp/verify-dmg -quiet
+      
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Hermes-Setup-macOS-universal
+          path: apps/bootstrap-installer/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          retention-days: 30
+      
+      - name: Upload to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/installer-v') || inputs.upload_release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: apps/bootstrap-installer/src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          draft: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -126,29 +126,16 @@ def _resolve_resolution() -> str:
 def _xai_image_field(source: str) -> Dict[str, str]:
     """Build the xAI ``image`` field for an edit request.
 
-    xAI's ``/v1/images/edits`` accepts a public HTTPS URL or a base64 data URI.
-    Local file paths are read and encoded into a ``data:`` URI.
+    xAI's ``/v1/images/edits`` accepts ``{"url": <ref>, "type": "image_url"}``
+    where ``<ref>`` is a public URL or a base64 data URI. The shared resolver
+    validates the source (read denylist + magic-byte sniff for local files);
+    public URLs and image data URIs pass through unchanged, while local file
+    paths are inlined as a ``data:`` URI whose content type comes from the
+    file's magic bytes.
     """
-    source = source.strip()
-    lower = source.lower()
-    if lower.startswith(("http://", "https://", "data:")):
-        return {"url": source, "type": "image_url"}
-    # Local file path → base64 data URI.
-    import base64
-    import os as _os
+    from agent.image_source import resolve_image_source
 
-    # Enforce the shared credential-read guard before reading local bytes
-    # (same boundary the OpenAI / OpenRouter / Codex image providers apply).
-    from agent.file_safety import raise_if_read_blocked
-
-    raise_if_read_blocked(source)
-    with open(_os.path.expanduser(source), "rb") as fh:  # windows-footgun: ok
-        raw = fh.read()
-    ext = (_os.path.splitext(source)[1].lstrip(".") or "png").lower()
-    if ext == "jpg":
-        ext = "jpeg"
-    b64 = base64.b64encode(raw).decode("utf-8")
-    return {"url": f"data:image/{ext};base64,{b64}", "type": "image_url"}
+    return {"url": resolve_image_source(source).as_url_or_inline(), "type": "image_url"}
 
 
 # ---------------------------------------------------------------------------

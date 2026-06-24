@@ -20,7 +20,6 @@ Pricing shown in UI strings is as-of the initial commit; we accept drift and
 update when it's noticed.
 """
 
-import base64
 import json
 import logging
 import os
@@ -689,26 +688,6 @@ def _build_fal_edit_payload(
 # the codebase use; it is a standalone limit, not shared state.
 _MAX_INLINE_BASE64_BYTES = 20 * 1024 * 1024
 
-# Enough leading bytes to identify any format ``_sniff_mime_from_bytes`` knows
-# (the longest check inspects offset 12).
-_SNIFF_BYTES = 64
-
-_ACCEPTED_IMAGE_TYPES = "PNG, JPEG, GIF, WEBP, BMP, HEIC"
-
-
-def _require_image_mime(head: bytes, ref: str) -> str:
-    """Return the sniffed image MIME for *head*, or raise if it isn't an image."""
-    from agent.image_routing import _sniff_mime_from_bytes
-
-    mime = _sniff_mime_from_bytes(head)
-    if mime is None:
-        raise ValueError(
-            f"Source image is not a recognised image file: {ref}. "
-            f"image_generate edits accept image sources only "
-            f"({_ACCEPTED_IMAGE_TYPES})."
-        )
-    return mime
-
 
 def _ensure_managed_payload_within_cap(encoded_len: int) -> None:
     """Reject a managed-mode inline payload past the encoded-size ceiling.
@@ -728,56 +707,12 @@ def _ensure_managed_payload_within_cap(encoded_len: int) -> None:
 def _projected_data_uri_len(raw_len: int) -> int:
     """Length a ``data:`` URI would have for *raw_len* source bytes.
 
-    base64 is 4 chars per 3 bytes; ``_SNIFF_BYTES`` of slack covers the
+    base64 is 4 chars per 3 bytes; ``SNIFF_BYTES`` of slack covers the
     ``data:<mime>;base64,`` header.
     """
-    return 4 * ((raw_len + 2) // 3) + _SNIFF_BYTES
+    from agent.image_source import SNIFF_BYTES
 
-
-def _require_data_uri_is_image(value: str, ref: str) -> None:
-    """Validate a ``data:`` URI declares an image and carries image bytes.
-
-    The declared MIME is checked, and the base64 payload's leading bytes are
-    decoded and sniffed — a label alone isn't trusted, mirroring the magic-byte
-    check applied to local files. Only base64 image data URIs are accepted.
-    """
-    header, _, payload = value.partition(",")
-    if not header.lower().startswith("data:image/"):
-        raise ValueError(
-            f"Source data URI is not an image: {ref}. image_generate edits "
-            f"accept image sources only ({_ACCEPTED_IMAGE_TYPES})."
-        )
-    if ";base64" not in header.lower():
-        raise ValueError(f"Image data URIs must be base64-encoded: {ref}")
-
-    # RFC 2397 permits whitespace (some encoders wrap at 76 cols), so drop
-    # leading whitespace and strip it from a bounded slice before sniffing.
-    compact = "".join(payload.lstrip()[: _SNIFF_BYTES * 2].split())
-    prefix = compact[:_SNIFF_BYTES]
-    prefix = prefix[: len(prefix) - (len(prefix) % 4)]
-    try:
-        head = base64.b64decode(prefix)
-    except Exception as exc:  # noqa: BLE001 — malformed payload, reject clearly
-        raise ValueError(f"Source data URI has malformed base64: {ref}") from exc
-    _require_image_mime(head, ref)
-
-
-def _local_path_from_ref(value: str) -> str:
-    """Map a non-URL reference to a filesystem path, accepting ``file://``.
-
-    Rejects a remote ``file://`` host (``file://server/share/x``) rather than
-    silently dropping it and reading the local ``/share/x``.
-    """
-    if not value.lower().startswith("file://"):
-        return os.path.expanduser(value)
-
-    import urllib.parse
-    import urllib.request
-
-    parsed = urllib.parse.urlparse(value)
-    if parsed.netloc and parsed.netloc.lower() != "localhost":
-        raise ValueError(f"Unsupported remote file:// host: {value}")
-    return urllib.request.url2pathname(parsed.path)
+    return 4 * ((raw_len + 2) // 3) + SNIFF_BYTES
 
 
 def _resolve_fal_source_image(ref: str, *, managed: bool) -> str:
@@ -786,14 +721,15 @@ def _resolve_fal_source_image(ref: str, *, managed: bool) -> str:
     FAL edit endpoints fetch ``image_urls`` server-side, so a local path or a
     ``data:`` URI — which is what a user-attached image looks like once the
     gateway has downloaded it to disk and surfaced it to the model — can't be
-    passed through verbatim. Each reference is normalised:
+    passed through verbatim. The shared resolver validates and classifies the
+    reference (see :mod:`agent.image_source`); this function then packages it
+    for FAL:
 
       * ``http(s)://`` URIs and image ``data:`` URIs pass through unchanged.
       * a local file (including ``file://``) is uploaded to FAL storage in
         direct mode (a hosted URL keeps large images out of the request body);
         under the managed gateway, which exposes no upload endpoint, it is
-        inlined as a ``data:`` URI carried in the JSON payload. The content
-        type is taken from the file's magic bytes, not its extension.
+        inlined as a ``data:`` URI carried in the JSON payload.
 
     ``managed`` selects the backend so the gateway is resolved once per
     request rather than once per image.
@@ -805,50 +741,28 @@ def _resolve_fal_source_image(ref: str, *, managed: bool) -> str:
     same reason — a direct-mode user expects their attachment to reach the
     model, not to be silently swapped for an oversized inline payload.
     """
-    value = (ref or "").strip()
-    if not value:
-        raise ValueError("Empty source image reference")
+    from agent.image_source import SourceKind, resolve_image_source
 
-    # Only the scheme prefix matters here; avoid lowercasing a large data: URI.
-    low = value[:8].lower()
-    if low.startswith(("http://", "https://")):
-        return value
-    if low.startswith("data:"):
-        _require_data_uri_is_image(value, ref)
+    source = resolve_image_source(ref)
+
+    if source.kind is SourceKind.REMOTE:
+        return source.value
+
+    if source.kind is SourceKind.DATA_URI:
         if managed:
-            _ensure_managed_payload_within_cap(len(value))
-        return value
+            _ensure_managed_payload_within_cap(len(source.value))
+        return source.value
 
-    path = _local_path_from_ref(value)
-    if not os.path.isfile(path):
-        raise ValueError(
-            f"Source image not found: {ref}. Pass a public URL, a data: URI, "
-            f"or a readable local image file."
-        )
-
-    # Apply the same read denylist the file Read tool uses, so a credential
-    # store or secret-bearing file can't be uploaded to FAL just because its
-    # bytes happen to look like an image.
-    from agent.file_safety import raise_if_read_blocked
-
-    raise_if_read_blocked(path)
-
-    # Direct mode only needs the header to confirm the file is an image — the
-    # uploader streams the rest from disk; managed mode reads the whole file
-    # because it has to inline the bytes.
+    # Local file. Direct mode hands FAL the path so the uploader streams it
+    # from disk; managed mode inlines the bytes as a ``data:`` URI.
     if not managed:
-        with open(path, "rb") as handle:
-            _require_image_mime(handle.read(_SNIFF_BYTES), ref)
         _load_fal_client()
-        return fal_client.upload_file(path)
+        return fal_client.upload_file(source.path)
 
     # Reject by size before reading, so an oversized file isn't buffered just
     # to be turned down.
-    _ensure_managed_payload_within_cap(_projected_data_uri_len(os.path.getsize(path)))
-    with open(path, "rb") as handle:
-        raw = handle.read()
-    mime = _require_image_mime(raw[:_SNIFF_BYTES], ref)
-    return f"data:{mime};base64,{base64.b64encode(raw).decode('ascii')}"
+    _ensure_managed_payload_within_cap(_projected_data_uri_len(os.path.getsize(source.path)))
+    return source.as_data_uri()
 
 
 def _resolve_fal_source_images(source_images: list, *, managed: bool) -> list:

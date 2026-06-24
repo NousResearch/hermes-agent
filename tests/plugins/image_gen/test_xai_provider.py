@@ -404,3 +404,44 @@ class TestXAIImageFieldReadGuard:
             _xai_image_field(str(auth_json))
 
 
+class TestSourceImageHardening:
+    """_xai_image_field delegates validation to the shared resolver."""
+
+    _PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+    def test_remote_url_passes_through(self):
+        from plugins.image_gen.xai import _xai_image_field
+
+        assert _xai_image_field("https://x.com/a.png") == {
+            "url": "https://x.com/a.png",
+            "type": "image_url",
+        }
+
+    def test_local_image_inlined_as_data_uri(self, tmp_path):
+        from plugins.image_gen.xai import _xai_image_field
+
+        path = tmp_path / "cat.png"
+        path.write_bytes(self._PNG)
+
+        field = _xai_image_field(str(path))
+
+        assert field["type"] == "image_url"
+        assert field["url"].startswith("data:image/png;base64,")
+
+    def test_denylisted_local_rejected(self, tmp_path):
+        from plugins.image_gen.xai import _xai_image_field
+
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(self._PNG)
+
+        with pytest.raises(ValueError, match="Access denied"):
+            _xai_image_field(str(env_file))
+
+    def test_non_image_local_rejected(self, tmp_path):
+        from plugins.image_gen.xai import _xai_image_field
+
+        path = tmp_path / "notes.txt"
+        path.write_text("not an image")
+
+        with pytest.raises(ValueError, match="not a recognised image file"):
+            _xai_image_field(str(path))

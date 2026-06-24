@@ -1,0 +1,91 @@
+name: zalo-platform
+label: Zalo
+kind: platform
+version: 0.2.0
+description: >
+  Zalo Bot Platform gateway adapter for Hermes Agent. Uses the official
+  Zalo Bot API over long polling, with an optional external URL intake page
+  for links that Zalo does not deliver to bots.
+author: Hermes Agent contributors
+requires_env:
+  - name: ZALO_BOT_TOKEN
+    description: "Zalo Bot Platform token from Zalo Bot Manager"
+    prompt: "Zalo bot token"
+    password: true
+optional_env:
+  - name: ZALO_ALLOWED_USERS
+    description: "Comma-separated Zalo user IDs allowed to talk to this bot"
+    prompt: "Allowed Zalo users"
+    password: false
+  - name: ZALO_ALLOW_ALL_USERS
+    description: "Allow all Zalo users to talk to this bot"
+    prompt: "Allow all Zalo users? (true/false)"
+    password: false
+  - name: ZALO_DM_ONLY
+    description: "Ignore Zalo group/channel messages and only respond in private chats"
+    prompt: "Only respond in private chats? (true/false)"
+    password: false
+  - name: ZALO_API_BASE
+    description: "Zalo Bot API base URL (default: https://bot-api.zaloplatforms.com)"
+    prompt: "Zalo API base URL"
+    password: false
+  - name: ZALO_POLL_TIMEOUT_SECONDS
+    description: "Long-poll HTTP timeout in seconds (default: 25)"
+    prompt: "Poll timeout seconds"
+    password: false
+  - name: ZALO_POLL_INTERVAL_SECONDS
+    description: "Delay between long-poll requests after each response (default: 1)"
+    prompt: "Poll interval seconds"
+    password: false
+  - name: ZALO_PARSE_MODE
+    description: "Text formatting mode for sendMessage: markdown, html, or blank for plain text"
+    prompt: "Zalo parse mode"
+    password: false
+  - name: ZALO_SUPPRESS_NOISY_STATUS
+    description: "Hide transient gateway status notices such as preflight compression, context compaction, retry backoff, and auxiliary-model chatter (default: true)"
+    prompt: "Suppress noisy gateway status notices? (true/false)"
+    password: false
+  - name: ZALO_HOME_CHANNEL
+    description: "Default chat ID for cron / notification delivery"
+    prompt: "Home chat ID"
+    password: false
+  - name: ZALO_HOME_CHANNEL_NAME
+    description: "Human label for the home chat"
+    prompt: "Home chat label"
+    password: false
+  - name: ZALO_WEBHOOK_URL
+    description: "Public HTTPS webhook URL configured in Zalo Bot Manager"
+    prompt: "Webhook public URL"
+    password: false
+  - name: ZALO_WEBHOOK_SECRET
+    description: "Secret token expected in the X-Bot-Api-Secret-Token webhook header"
+    prompt: "Webhook secret"
+    password: true
+  - name: ZALO_WEBHOOK_PATH
+    description: "Local webhook path to listen on (default: /zalo/webhook)"
+    prompt: "Webhook path"
+    password: false
+  - name: ZALO_WEBHOOK_HOST
+    description: "Local webhook bind host (default: 127.0.0.1)"
+    prompt: "Webhook bind host"
+    password: false
+  - name: ZALO_WEBHOOK_PORT
+    description: "Local webhook bind port (default: 18787)"
+    prompt: "Webhook bind port"
+    password: false
+  - name: ZALO_WEBHOOK_AUTO_REGISTER
+    description: "Call setWebhook on startup when webhook URL and secret are configured"
+    prompt: "Auto-register webhook? (true/false)"
+    password: false
+  - name: ZALO_DELETE_WEBHOOK_ON_POLLING_START
+    description: "When using long polling, call deleteWebhook on startup to clear a stale Bot Platform webhook (default: false)"
+    prompt: "Delete stale webhook before polling? (true/false)"
+    password: false
+  - name: ZALO_URL_INTAKE_PUBLIC_BASE
+    description: "Public HTTPS base URL for the URL intake page"
+    prompt: "URL intake public base"
+    password: false
+  - name: ZALO_URL_INTAKE_PENDING_FILE
+    description: "Local pending-submissions JSON file used by the URL intake server"
+    prompt: "URL intake pending file"
+    password: false

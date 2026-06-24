@@ -536,6 +536,33 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
 
+### Zalo Bot Platform
+
+Used by the bundled Zalo platform plugin (`plugins/platforms/zalo/`). See [Messaging Gateway → Zalo](/user-guide/messaging/zalo) for full setup.
+
+| Variable | Description |
+|----------|-------------|
+| `ZALO_BOT_TOKEN` | Bot Platform token from Zalo Bot Manager. Required. |
+| `ZALO_ALLOWED_USERS` | Comma-separated Zalo user/chat IDs allowed to talk to the bot. |
+| `ZALO_ALLOW_ALL_USERS` | Dev-only escape hatch that accepts any user. Default: `false`. |
+| `ZALO_DM_ONLY` | Ignore Zalo group/channel messages and respond only in private chats. |
+| `ZALO_API_BASE` | Zalo Bot API base URL. Defaults to `https://bot-api.zaloplatforms.com`. |
+| `ZALO_POLL_TIMEOUT_SECONDS` | Long-poll HTTP timeout in seconds. Default: `25`. |
+| `ZALO_POLL_INTERVAL_SECONDS` | Delay between long-poll requests. Default: `1`. |
+| `ZALO_PARSE_MODE` | Outbound text parse mode: `markdown`, `html`, or blank for plain text. |
+| `ZALO_SUPPRESS_NOISY_STATUS` | Hide transient gateway status notices such as preflight compression, context compaction, retry backoff, and auxiliary-model chatter. Default: `true`. |
+| `ZALO_HOME_CHANNEL` | Default delivery target for cron jobs with `deliver: zalo`. |
+| `ZALO_HOME_CHANNEL_NAME` | Human label for the home channel. |
+| `ZALO_WEBHOOK_URL` | Public HTTPS webhook URL configured in Zalo Bot Manager. Enables webhook mode when paired with `ZALO_WEBHOOK_SECRET`. |
+| `ZALO_WEBHOOK_SECRET` | Secret token expected in the `X-Bot-Api-Secret-Token` webhook header. |
+| `ZALO_WEBHOOK_PATH` | Local webhook path. Default: `/zalo/webhook`. |
+| `ZALO_WEBHOOK_HOST` | Local webhook bind host. Default: `127.0.0.1`. |
+| `ZALO_WEBHOOK_PORT` | Local webhook bind port. Default: `18787`. |
+| `ZALO_WEBHOOK_AUTO_REGISTER` | Call `setWebhook` on startup when URL and secret are configured. |
+| `ZALO_DELETE_WEBHOOK_ON_POLLING_START` | When using long polling, call `deleteWebhook` on startup to clear a stale Bot Platform webhook. Default: `false`. |
+| `ZALO_URL_INTAKE_PUBLIC_BASE` | Optional public HTTPS base URL for a link-intake page. |
+| `ZALO_URL_INTAKE_PENDING_FILE` | Local JSON file used by the URL-intake server to hand submitted links to the adapter. |
+
 ### ntfy (push notifications)
 
 [ntfy](https://ntfy.sh/) is a lightweight HTTP-based push notification service. Subscribe to a topic from the [ntfy mobile app](https://ntfy.sh/docs/subscribe/phone/), publish to that topic to talk to the agent.

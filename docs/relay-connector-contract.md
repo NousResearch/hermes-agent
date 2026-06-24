@@ -259,6 +259,57 @@ the wake SIGNAL so a future scale-to-zero behaviour layer can rely on "buffered
 > primitive is "buffered event for a sleeping instance ⇒ its wakeUrl gets poked";
 > WHAT makes the instance sleep (and wake-to-serve) is the behaviour layer.
 
+### 3.4 Obligations on a future scale-to-zero behaviour layer
+
+§3.2 and §3.3 ship the **primitives**; this section is the **contract a separate
+scale-to-zero behaviour workstream must honour to consume them safely.** It owns
+the *decision* to suspend, the actual machine suspend, and the platform/health
+model — none of which live here — but it MUST hold these guarantees, which the
+primitives assume:
+
+1. **Register a `wakeUrl` before the instance can ever be suspended.** A
+   suspended instance with no registered `wakeUrl` is a black hole — buffered
+   inbound never triggers a poke, so it sleeps through its own traffic until
+   something else reconnects it. The behaviour layer MUST ensure a reachable
+   wake target is registered (self-hosted: `--wake-url`; managed: stamped) as a
+   precondition of allowing suspend. A wake URL that is unreachable while the
+   machine is suspended (e.g. points at the suspended machine itself with no
+   platform autostart in front) is equivalent to none.
+2. **Drain through `going_idle` → await `going_idle_ack` BEFORE tearing down the
+   socket or suspending.** Never suspend with an un-acked flip in flight. The
+   ack is the connector's confirmation that delivery for this instance is now
+   buffered-only; a machine that suspends after sending `going_idle` but before
+   the ack can drop the inbound that races the flip. The gateway already gates
+   socket teardown on the ack (Q-5.3c); the suspend step MUST sit *after* a
+   clean drain completes, not race it.
+3. **Keep the NET-NEW reconnect loop live as a precondition of suspend.** The
+   wake→drain contract is "poke ⇒ the gateway re-dials ⇒ the connector drains on
+   the reconnect handshake." If the reconnect loop is disabled, a poke lands on a
+   machine that never re-dials and the buffer strands. The behaviour layer must
+   not suspend an instance whose relay transport won't reconnect on wake.
+4. **Treat suspended ≠ down in the health model (Q-5.3b).** A suspended instance
+   is healthy-asleep, not failed. The health/monitoring layer MUST distinguish
+   the two (e.g. via the platform machine-state) so a suspended instance is not
+   restarted, alerted on, or reaped as unhealthy — that would defeat the suspend
+   and can race the wake/drain.
+5. **The wake poke is best-effort and rate-limited — do not assume exactly-once
+   or immediate wake.** At most one poke per cooldown window per instance, and a
+   failed poke is swallowed. The behaviour layer must not rely on the poke as a
+   guaranteed/prompt signal; correctness still rests on "the gateway drains
+   whenever it next reconnects." A belt-and-suspenders wake (e.g. a scheduled
+   job that also reconnects) is the behaviour layer's call, not the primitive's.
+6. **Suspend only when genuinely idle — and idle is connector-observable, not
+   gateway-guessed.** WHAT counts as idle (no in-flight turn + no inbound for N
+   min) is the behaviour layer's policy, but it must compose with the existing
+   drain machinery (`gateway_state` running→draining) rather than introduce a
+   parallel relay-only idle path — the same integration constraint §3.2 places
+   on `going_idle`.
+
+These are guarantees the behaviour layer OWES the primitives; the primitives owe
+the behaviour layer only what §3.2/§3.3 already specify (a flip-on-going_idle,
+a durable per-instance buffer + ack-gated reconnect drain, and a poke on the
+first buffered event for a flipped instance).
+
 ---
 
 ## 4. Outbound: action set

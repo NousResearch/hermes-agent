@@ -949,7 +949,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         }
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertEqual(creds["model"], "qwen2.5-coder")
-        self.assertEqual(creds["provider"], "custom")
+        self.assertEqual(creds["provider"], "openrouter")
         self.assertEqual(creds["base_url"], "http://localhost:1234/v1")
         self.assertEqual(creds["api_key"], "local-key")
         self.assertEqual(creds["api_mode"], "chat_completions")

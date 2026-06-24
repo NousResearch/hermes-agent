@@ -83,10 +83,10 @@ across profiles with its own filter).
 The default `hermes-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal (`pty` extra on POSIX). Install both with:
 
 ```bash
-cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"
+pip install 'hermes-agent[web,pty]'
 ```
 
-The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"` includes both extras and is the easiest path if you also want messaging/voice/etc.
+The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `pip install hermes-agent[all]` includes both extras and is the easiest path if you also want messaging/voice/etc.
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
 
@@ -119,12 +119,10 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 
 **Resume an existing session:** from the **Sessions** tab, click the play icon (▶) next to any session. That jumps to `/chat?resume=<id>` and launches the TUI with `--resume`, loading the full history.
 
-**Session switcher (right rail):** the Chat tab carries its own ChatGPT-style conversation list in a thin right rail beside the terminal, so you can swap conversations without leaving the page. The rail stacks the model picker on top and the session list directly below it; the terminal takes up most of the screen. The list shows your most recent sessions for the active profile — title (falling back to a message preview), relative last-active time, message count, and the source channel for non-CLI sessions. Click any row to resume it in place (the terminal respawns with that conversation's history); the active session is highlighted. **New chat** starts a fresh session, and a refresh control re-pulls the list. The rail is read-only for switching — delete, rename, export, and bulk cleanup still live on the **Sessions** tab. On narrow screens it folds into a slide-over panel.
-
 **Prerequisites:**
 
 - Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)
-- `ptyprocess` — installed by the `pty` extra (`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`, or `[all]` covers both)
+- `ptyprocess` — installed by the `pty` extra (`pip install 'hermes-agent[web,pty]'`, or `[all]` covers both)
 - POSIX kernel (Linux, macOS, or WSL2).  The `/chat` terminal pane specifically needs a POSIX PTY — native Windows Python has no equivalent, so on a native Windows install the rest of the dashboard (sessions, jobs, metrics, config editor) works but the `/chat` tab will show a banner telling you to use WSL2 for that feature.
 
 Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
@@ -410,6 +408,22 @@ return `404`. The `/api/pty` WebSocket accepts the same parameter to spawn
 a chat under the selected profile.
 :::
 
+Authenticated API calls accept the ephemeral dashboard token through `X-Hermes-Session-Token: TOKEN` (preferred) or the legacy `Authorization: Bearer *** header.
+
+### ARD catalog and inspection endpoints
+
+Hermes exposes Agentic Resource Discovery (ARD) endpoints for discovering local capabilities, publishing `ai-catalog.json`, and inspecting candidate entries without installing them:
+
+| Endpoint | Auth | Description |
+|---|---|---|
+| `POST /api/ard/search` | token | ARD-compatible search. Body uses `query.text`, optional `query.filter.type`, and `pageSize`. |
+| `GET /api/ard/catalog?visibility=public\|private` | token | Return an in-memory ARD catalog. `private` may include local `stdio:<name>` placeholders; use only from authenticated local/dashboard clients. |
+| `POST /api/ard/publish` | token | Generate and write an ARD catalog. Body fields: `domain`, `visibility` (`public` or `private`), and optional `output_path`. |
+| `POST /api/ard/inspect` | token | Inspect one ARD entry by URN without installing/registering it. Body field: `identifier`. Returns entry, source catalog, risk decision, `next_action`, and `install_performed: false`. |
+| `GET /.well-known/ai-catalog.json` | none | Public ARD discovery endpoint. Always public-only; it never serves the private catalog. |
+
+`POST /api/ard/inspect` returns `400` for a missing identifier and `404` when the URN is not found. Use `/ard inspect <urn>` in the CLI for the same no-install report, `/ard regress` for the built-in discovery regression pack, and `/ard compare-search` to compare current local search against an optional external `skill-search` CLI.
+
 ### GET /api/status
 
 Returns agent version, gateway status, platform states, and active session count.
@@ -584,8 +598,6 @@ The gate is on if and only if:
 ### Fail-closed semantics
 
 If the gate would engage but **no** `DashboardAuthProvider` is registered (no Nous plugin, no custom plugin), `hermes dashboard` refuses to bind with an explicit error message. There is no "default-deny but accept everything" fallback — a misconfigured gated dashboard never starts.
-
-When you run `hermes dashboard --host 0.0.0.0` **interactively** (a real terminal) and no provider is configured yet, Hermes doesn't just fail — it offers to set one up on the spot: pick **username & password** (writes `dashboard.basic_auth` to `config.yaml` and you're running in seconds) or **OAuth** (points you at `hermes dashboard register`). Non-interactive callers — Docker/s6, CI, piped runs — skip the prompt and hit the fail-closed error above, so an unattended deploy still never starts without auth.
 
 ### Default provider: Nous Research
 

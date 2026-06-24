@@ -344,25 +344,13 @@ export const api = {
       window.location.assign("/login");
       return r;
     }),
-  getSessions: (
-    limit = 20,
-    offset = 0,
-    profile = getManagementProfile(),
-    order: "created" | "recent" = "created",
-  ) =>
+  getSessions: (limit = 20, offset = 0, profile = getManagementProfile()) =>
     fetchJSON<PaginatedSessions>(
-      appendProfileParam(
-        `/api/sessions?limit=${limit}&offset=${offset}&order=${order}`,
-        profile,
-      ),
+      appendProfileParam(`/api/sessions?limit=${limit}&offset=${offset}`, profile),
     ),
   getSessionMessages: (id: string, profile = getManagementProfile()) =>
     fetchJSON<SessionMessagesResponse>(
       appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/messages`, profile),
-    ),
-  getSessionDetail: (id: string, profile = getManagementProfile()) =>
-    fetchJSON<SessionInfo>(
-      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}`, profile),
     ),
   getSessionLatestDescendant: (id: string) =>
     fetchJSON<SessionLatestDescendantResponse>(
@@ -1165,6 +1153,12 @@ export const api = {
     fetchJSON<SkillHubScan>(
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
+  inspectArdEntry: (identifier: string) =>
+    fetchJSON<ArdInspectResponse>("/api/ard/inspect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ identifier }),
+    }),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).
@@ -1219,6 +1213,20 @@ export interface SkillHubResult {
   trust_level: string;
   repo: string | null;
   tags: string[];
+}
+
+export interface ArdInspectResponse {
+  ok: boolean;
+  identifier: string;
+  source_catalog?: string;
+  install_performed?: boolean;
+  error?: string;
+  risk?: {
+    decision?: string;
+    risk?: string | number;
+    next_action?: string;
+    reasons?: string[];
+  };
 }
 
 /** Lock-entry summary for an already-installed hub skill (keyed by identifier). */
@@ -1358,7 +1366,6 @@ export interface MessagingPlatformEnvVar {
   redacted_value: string | null;
   description: string;
   prompt: string;
-  help: string;
   url: string | null;
   is_password: boolean;
   advanced: boolean;

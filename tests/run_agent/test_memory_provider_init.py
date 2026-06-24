@@ -107,6 +107,41 @@ class CoreShadowProvider:
         ]
 
 
+class HonchoToolProvider:
+    """Provider exposing the Honcho tool names without importing Honcho SDK."""
+
+    name = "honcho"
+
+    def get_tool_schemas(self):
+        return [
+            {"name": "honcho_search", "description": "Search Honcho memory"},
+            {"name": "honcho_conclude", "description": "Save a Honcho conclusion"},
+        ]
+
+
+class OtherMemoryToolProvider:
+    """Non-Honcho provider used to prove the honcho toolset is provider-specific."""
+
+    name = "other-memory"
+
+    def get_tool_schemas(self):
+        return [
+            {"name": "other_memory_search", "description": "Search another memory backend"},
+        ]
+
+
+class OverbroadHonchoToolProvider:
+    """Honcho-like provider that reports a non-Honcho tool too."""
+
+    name = "honcho"
+
+    def get_tool_schemas(self):
+        return [
+            {"name": "honcho_search", "description": "Search Honcho memory"},
+            {"name": "other_memory_search", "description": "Search another memory backend"},
+        ]
+
+
 def test_core_tool_names_rejected_from_memory_routing_table():
     """Memory tools shadowing core tool names are rejected at registration (#40466).
 
@@ -134,6 +169,165 @@ def test_core_tool_names_rejected_from_memory_routing_table():
     assert "clarify" not in schema_names
     assert "delegate_task" not in schema_names
     assert "honcho_search" in schema_names
+
+
+def test_honcho_toolset_enables_memory_provider_tool_injection():
+    """Restricted sessions can opt into Honcho tools by naming the honcho toolset."""
+    from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+
+    mm = MemoryManager()
+    mm.add_provider(HonchoToolProvider())
+    agent = SimpleNamespace(
+        _memory_manager=mm,
+        tools=[],
+        enabled_toolsets=["honcho"],
+        valid_tool_names=set(),
+    )
+
+    added = inject_memory_provider_tools(agent)
+    tool_names = {tool["function"]["name"] for tool in agent.tools}
+
+    assert added == 2
+    assert tool_names == {"honcho_search", "honcho_conclude"}
+    assert agent.valid_tool_names == tool_names
+
+
+def test_honcho_toolset_only_injects_matching_provider_tool_names():
+    from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+
+    mm = MemoryManager()
+    mm.add_provider(OverbroadHonchoToolProvider())
+    agent = SimpleNamespace(
+        _memory_manager=mm,
+        tools=[],
+        enabled_toolsets=["honcho"],
+        valid_tool_names=set(),
+    )
+
+    added = inject_memory_provider_tools(agent)
+    tool_names = {tool["function"]["name"] for tool in agent.tools}
+
+    assert added == 1
+    assert tool_names == {"honcho_search"}
+    assert agent.valid_tool_names == tool_names
+
+
+def test_existing_core_memory_tool_keeps_provider_injection_compatible():
+    from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+
+    mm = MemoryManager()
+    mm.add_provider(OverbroadHonchoToolProvider())
+    agent = SimpleNamespace(
+        _memory_manager=mm,
+        tools=[{"type": "function", "function": {"name": "memory"}}],
+        enabled_toolsets=["terminal"],
+        valid_tool_names=set(),
+    )
+
+    added = inject_memory_provider_tools(agent)
+    tool_names = {tool["function"]["name"] for tool in agent.tools}
+
+    assert added == 2
+    assert tool_names == {"memory", "honcho_search", "other_memory_search"}
+    assert agent.valid_tool_names == {"honcho_search", "other_memory_search"}
+
+
+def test_honcho_toolset_does_not_enable_other_memory_provider_tools():
+    from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+
+    mm = MemoryManager()
+    mm.add_provider(OtherMemoryToolProvider())
+    agent = SimpleNamespace(
+        _memory_manager=mm,
+        tools=[],
+        enabled_toolsets=["honcho"],
+        valid_tool_names=set(),
+    )
+
+    added = inject_memory_provider_tools(agent)
+
+    assert added == 0
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
+
+
+def test_unrelated_restricted_toolset_does_not_inject_memory_provider_tools():
+    from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+
+    mm = MemoryManager()
+    mm.add_provider(HonchoToolProvider())
+    agent = SimpleNamespace(
+        _memory_manager=mm,
+        tools=[],
+        enabled_toolsets=["terminal"],
+        valid_tool_names=set(),
+    )
+
+    added = inject_memory_provider_tools(agent)
+
+    assert added == 0
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
+
+
+def test_disabled_honcho_toolset_suppresses_provider_tool_injection():
+    from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+
+    mm = MemoryManager()
+    mm.add_provider(HonchoToolProvider())
+    agent = SimpleNamespace(
+        _memory_manager=mm,
+        tools=[],
+        enabled_toolsets=["honcho"],
+        disabled_toolsets=["honcho"],
+        valid_tool_names=set(),
+    )
+
+    added = inject_memory_provider_tools(agent)
+
+    assert added == 0
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
+
+
+def test_disabled_memory_toolset_suppresses_provider_tool_injection():
+    from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+
+    mm = MemoryManager()
+    mm.add_provider(HonchoToolProvider())
+    agent = SimpleNamespace(
+        _memory_manager=mm,
+        tools=[],
+        enabled_toolsets=None,
+        disabled_toolsets=["memory"],
+        valid_tool_names=set(),
+    )
+
+    added = inject_memory_provider_tools(agent)
+
+    assert added == 0
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
+
+
+def test_disabled_all_toolsets_suppresses_provider_tool_injection():
+    from agent.memory_manager import MemoryManager, inject_memory_provider_tools
+
+    mm = MemoryManager()
+    mm.add_provider(HonchoToolProvider())
+    agent = SimpleNamespace(
+        _memory_manager=mm,
+        tools=[],
+        enabled_toolsets=None,
+        disabled_toolsets=["*"],
+        valid_tool_names=set(),
+    )
+
+    added = inject_memory_provider_tools(agent)
+
+    assert added == 0
+    assert agent.tools == []
+    assert agent.valid_tool_names == set()
 
 
 def test_aiagent_forwards_warning_callback_to_cli_memory_provider():

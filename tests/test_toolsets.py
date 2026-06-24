@@ -229,6 +229,18 @@ class TestToolsetConsistency:
         # silently let a platform diverge so far that nothing is shared).
         assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"
 
+    def test_honcho_toolset_exposes_provider_tools_without_core_memory_tool(self):
+        tools = set(resolve_toolset("honcho"))
+
+        assert {
+            "honcho_conclude",
+            "honcho_search",
+            "honcho_profile",
+            "honcho_reasoning",
+            "honcho_context",
+        }.issubset(tools)
+        assert "memory" not in tools
+
 
 class TestPluginToolsets:
     def test_get_all_toolsets_includes_plugin_toolset(self, monkeypatch):

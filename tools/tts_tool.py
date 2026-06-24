@@ -396,7 +396,10 @@ BUILTIN_TTS_PROVIDERS = frozenset({
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
 DEFAULT_COMMAND_TTS_OUTPUT_FORMAT = "mp3"
 COMMAND_TTS_OUTPUT_FORMATS = frozenset({"mp3", "wav", "ogg", "flac"})
-DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 5000
+# Command providers often implement their own chunking/retry, so the generic
+# tool cap can be generous. Keep it high enough that a normal multi-paragraph
+# response is handed to the provider whole rather than amputated mid-sentence.
+DEFAULT_COMMAND_TTS_MAX_TEXT_LENGTH = 20000
 
 
 def _get_provider_section(tts_config: Dict[str, Any], name: str) -> Dict[str, Any]:
@@ -2161,15 +2164,25 @@ def text_to_speech_tool(
     # OpenAI handler.
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
 
-    # Truncate very long text with a warning. The cap is per-provider
-    # (OpenAI 4096, xAI 15k, MiniMax 10k, ElevenLabs model-aware, etc.).
+    # Over-limit input fails loudly with an actionable error instead of being
+    # silently truncated. Silent truncation drops the tail of the user's
+    # requested reading with no signal; returning the limits lets the caller
+    # split the text and retry deterministically.
     max_len = _resolve_max_text_length(provider, tts_config)
     if len(text) > max_len:
         logger.warning(
-            "TTS text too long for provider %s (%d chars), truncating to %d",
+            "TTS text too long for provider %s (%d chars > %d); caller must chunk input",
             provider, len(text), max_len,
         )
-        text = text[:max_len]
+        return json.dumps({
+            "success": False,
+            "error": (
+                f"TTS text is too long for provider {provider}: "
+                f"{len(text)} chars > {max_len}. Split into multiple calls."
+            ),
+            "max_text_length": max_len,
+            "input_length": len(text),
+        }, ensure_ascii=False)
 
     # Detect platform from gateway env var to choose the best output format.
     # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can

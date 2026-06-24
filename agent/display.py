@@ -884,6 +884,30 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         if err and (data.get("success") is False or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
 
+    # MCP tool results wrap output in {"result": ..., "structuredContent": {...}}
+    # where "error": null / false is normal and not a real failure.  The
+    # generic string scan below would falsely match the "error" key name.
+    if isinstance(data, dict) and "structuredContent" in data:
+        sc = data["structuredContent"]
+        if isinstance(sc, dict):
+            sc_success = sc.get("success")
+            sc_error = sc.get("error")
+            if sc_success is True and (sc_error is None or sc_error is False):
+                return False, ""
+            # Some MCP servers nest status inside response
+            sc_resp = sc.get("response")
+            if isinstance(sc_resp, dict):
+                resp_success = sc_resp.get("success")
+                resp_error = sc_resp.get("error")
+                if resp_success is True and (resp_error is None or resp_error is False):
+                    return False, ""
+                # Real error in nested response — surface the message
+                if isinstance(resp_error, str) and resp_error:
+                    return True, f" [{_trim_error(resp_error)}]"
+            # Real error at structuredContent top-level
+            if isinstance(sc_error, str) and sc_error:
+                return True, f" [{_trim_error(sc_error)}]"
+
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —
     # treat them as successes since failures would be JSON-encoded strings.

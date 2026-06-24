@@ -125,8 +125,15 @@ _JSON_FIELD_RE = re.compile(
 # while the header name and scheme word are preserved for debuggability. The
 # previous rule only matched ``Bearer``, so ``Basic <base64 user:pass>`` and
 # ``token <pat>`` leaked verbatim into logs/transcripts.
+# Characters valid in a credential token value.  Matches everything
+# ``\S+`` would except common code-syntax delimiters (quotes, braces,
+# brackets, parens, angle brackets, backslash, comma, semicolon) so
+# that redaction never consumes a trailing delimiter and corrupts
+# surrounding code (issue #33801).
+_TOKEN_CHARS = r"[^\s\"'<>{}\[\]()\\,;]+"
+
 _AUTH_HEADER_RE = re.compile(
-    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?(\S+)",
+    r"((?:Proxy-)?Authorization:\s*)([A-Za-z][\w.+-]*\s+)?(" + _TOKEN_CHARS + r")",
     re.IGNORECASE,
 )
 
@@ -138,7 +145,7 @@ _SECRET_HEADER_NAMES = (
     r"(?:x-api-key|x-goog-api-key|api-key|apikey|x-api-token|x-auth-token|x-access-token)"
 )
 _SECRET_HEADER_RE = re.compile(
-    rf"({_SECRET_HEADER_NAMES}\s*:\s*)(\S+)",
+    rf"({_SECRET_HEADER_NAMES}\s*:\s*)(" + _TOKEN_CHARS + r")",
     re.IGNORECASE,
 )
 

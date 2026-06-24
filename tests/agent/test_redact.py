@@ -171,6 +171,120 @@ class TestAuthHeaders:
         assert redact_sensitive_text(text) == text
 
 
+class TestAuthHeaderSyntaxSafety:
+    """Regression tests for #33801: \\S+ in _AUTH_HEADER_RE and
+    _SECRET_HEADER_RE greedily captures trailing quotes / braces / brackets,
+    corrupting code syntax in tool call arguments, execute_code, and heredocs.
+
+    Test strings are built dynamically from fragments so the redaction regex
+    doesn't fire on the test source itself.
+    """
+
+    @staticmethod
+    def _auth_str(token, scheme="Bearer", header="Authorization"):
+        """Build an 'Authorization: Bearer <token>' string without triggering
+        the redaction regex on the test source."""
+        dq = chr(34)
+        return f"{dq}{header}: {scheme} {token}{dq}"
+
+    @staticmethod
+    def _api_key_str(token, header="x-api-key"):
+        dq = chr(34)
+        return f"{dq}{header}: {token}{dq}"
+
+    # --- Layer 1-3: closing quote consumed by \S+ (short token) ---
+
+    def test_short_bearer_token_quote_preserved(self):
+        token = "abcdefghijkl"  # 12 chars — token+quote = 13 < 18 floor
+        text = self._auth_str(token)
+        result = redact_sensitive_text(text)
+        assert token not in result, "token should be redacted"
+        assert result.count(chr(34)) == text.count(chr(34)), \
+            "closing quote must be preserved"
+        assert result.endswith(chr(34)), "closing quote must survive"
+
+    def test_short_basic_auth_quote_preserved(self):
+        token = "dXNlcjpsb25n"  # 12 chars
+        text = self._auth_str(token, scheme="Basic")
+        result = redact_sensitive_text(text)
+        assert token not in result
+        assert result.count(chr(34)) == text.count(chr(34))
+
+    # --- Layer 1-3: closing quote consumed by \S+ (long token) ---
+
+    def test_long_bearer_token_quote_preserved(self):
+        token = "dGhp...mc"  # 28 chars — mask keeps head/tail
+        text = self._auth_str(token)
+        result = redact_sensitive_text(text)
+        assert token not in result
+        assert result.count(chr(34)) == text.count(chr(34))
+        assert result.endswith(chr(34))
+
+    # --- Layer 5: dict literal braces consumed by \S+ ---
+
+    def test_brace_after_token_preserved(self):
+        dq = chr(34)
+        token = "abcdefghijklmnop"  # 16 chars
+        # Build: {X: "AUTHHEADER BEARER <token>"} without triggering redactor
+        hdr = "Authorization" + chr(58) + " Bearer "
+        text = "{X: " + dq + hdr + token + dq + "}"
+        result = redact_sensitive_text(text)
+        assert token not in result
+        assert result.endswith("}"), f"expected trailing brace, got: {result!r}"
+        assert result.count("}") == text.count("}")
+
+    # --- Layer 4: API-key style headers have the same \S+ problem ---
+
+    def test_x_api_key_short_token_quote_preserved(self):
+        token = "abcdefghijkl"  # 12 chars
+        text = self._api_key_str(token)
+        result = redact_sensitive_text(text)
+        assert token not in result
+        assert result.count(chr(34)) == text.count(chr(34))
+
+    def test_api_key_long_token_quote_preserved(self):
+        token = "dGhp...mc"
+        text = self._api_key_str(token, header="api-key")
+        result = redact_sensitive_text(text)
+        assert token not in result
+        assert result.count(chr(34)) == text.count(chr(34))
+
+    # --- Redaction still works in plain log lines (no delimiters) ---
+
+    def test_log_line_still_redacts(self):
+        token = "dGhp...mc"
+        text = "Authorization: Bearer " + token
+        result = redact_sensitive_text(text)
+        assert token not in result
+        assert "Authorization: Bearer" in result
+
+    def test_api_key_log_line_still_redacts(self):
+        token = "dGhp...mc"
+        text = "x-api-key: " + token
+        result = redact_sensitive_text(text)
+        assert token not in result
+        assert "x-api-key:" in result
+
+    # --- Proxy-Authorization with trailing quote ---
+
+    def test_proxy_auth_quote_preserved(self):
+        token = "dXNlcjpsb25n"
+        text = self._auth_str(token, header="Proxy-Authorization")
+        result = redact_sensitive_text(text)
+        assert token not in result
+        assert result.count(chr(34)) == text.count(chr(34))
+
+    # --- code_file=True still needs AUTH redaction but must be syntax-safe ---
+
+    def test_code_file_mode_preserves_quotes(self):
+        token = "abcdefghijkl"
+        text = self._auth_str(token)
+        result = redact_sensitive_text(text, code_file=True)
+        assert token not in result, "AUTH redaction must still fire for code_file=True"
+        assert result.count(chr(34)) == text.count(chr(34)), \
+            "closing quote must be preserved even in code_file mode"
+
+
 class TestApiKeyHeaders:
     def test_x_api_key_header_masked(self):
         text = "x-api-key: opaque-provider-key-1234567890"

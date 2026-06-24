@@ -6,6 +6,7 @@ import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
+import { SessionHoverCard } from '@/components/session-hover-card'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -123,9 +124,20 @@ export function SidebarSessionRow({
         {...rest}
       >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
-        <button
-          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
-          onClick={event => {
+        {/*
+          Session hover summary card (issue #45103). The card wraps the
+          row's existing <button> and is a no-op when no summary or
+          preview is available, so rows with no metadata behave
+          exactly as before. On narrow viewports (<600px) the card
+          component itself suppresses the popover and renders the
+          children untouched — the row below is responsible for any
+          mobile highlight via a `data-summary-mobile` attribute if
+          v1 ships one. See SessionHoverCard for the design notes.
+        */}
+        <SessionHoverCard session={session}>
+          <button
+            className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left group-hover:pr-12"
+            onClick={event => {
             if (event.shiftKey) {
               event.preventDefault()
               event.stopPropagation()
@@ -207,6 +219,7 @@ export function SidebarSessionRow({
             {title}
           </span>
         </button>
+        </SessionHoverCard>
         <div className="relative z-2 grid w-[1.375rem] place-items-center">
           {!isWorking && (
             <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">

@@ -978,6 +978,24 @@ def _clear_backend_probe_cache() -> None:
     _BACKEND_PROBE_CACHE.clear()
 
 
+def _windows_display_release() -> str:
+    """Return the user-facing Windows release name ('11' / '10').
+
+    ``platform.release()`` reports ``"10"`` on BOTH Windows 10 and Windows 11
+    because they share kernel version 10.0; the editions are distinguished only
+    by build number (>= 22000 is Windows 11). Without this, the system prompt
+    tells the model the host is Windows 10 on every Windows 11 machine (#51755).
+    Falls back to ``platform.release()`` if the build can't be read.
+    """
+    import sys
+    import platform
+    try:
+        build = sys.getwindowsversion().build
+    except Exception:
+        return platform.release()
+    return "11" if build >= 22000 else "10"
+
+
 def build_environment_hints() -> str:
     """Return environment-specific guidance for the system prompt.
 
@@ -1008,7 +1026,7 @@ def build_environment_hints() -> str:
         if is_wsl():
             host_lines.append("Host: WSL (Windows Subsystem for Linux)")
         elif sys.platform == "win32":
-            host_lines.append(f"Host: Windows ({platform.release()})")
+            host_lines.append(f"Host: Windows ({_windows_display_release()})")
         elif sys.platform == "darwin":
             mac_ver = platform.mac_ver()[0]
             host_lines.append(f"Host: macOS ({mac_ver or platform.release()})")

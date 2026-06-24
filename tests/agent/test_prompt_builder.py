@@ -1556,3 +1556,43 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+
+
+# =========================================================================
+# Windows release detection (Windows 11 vs 10) — #51755
+# =========================================================================
+
+class TestWindowsDisplayRelease:
+    """platform.release() reports '10' on both Windows 10 and 11; the build
+    number (>= 22000 == Windows 11) is the only reliable discriminator."""
+
+    def _patch_build(self, monkeypatch, build):
+        import sys as _sys
+        from collections import namedtuple
+        WV = namedtuple("WV", ["build"])
+        monkeypatch.setattr(_sys, "getwindowsversion", lambda: WV(build=build), raising=False)
+
+    def test_windows_11_build(self, monkeypatch):
+        from agent.prompt_builder import _windows_display_release
+        self._patch_build(monkeypatch, 26200)
+        assert _windows_display_release() == "11"
+
+    def test_windows_11_threshold(self, monkeypatch):
+        from agent.prompt_builder import _windows_display_release
+        self._patch_build(monkeypatch, 22000)
+        assert _windows_display_release() == "11"
+
+    def test_windows_10_build(self, monkeypatch):
+        from agent.prompt_builder import _windows_display_release
+        self._patch_build(monkeypatch, 19045)
+        assert _windows_display_release() == "10"
+
+    def test_falls_back_when_unavailable(self, monkeypatch):
+        import sys as _sys
+        import platform as _platform
+        from agent.prompt_builder import _windows_display_release
+
+        def _boom():
+            raise OSError("not on windows")
+        monkeypatch.setattr(_sys, "getwindowsversion", _boom, raising=False)
+        assert _windows_display_release() == _platform.release()

@@ -592,6 +592,42 @@ def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
     return (is_foundry_host or is_legacy_azoai_host) and "/anthropic" in path
 
 
+def _is_zai_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for Z.AI's Anthropic-compatible endpoint family.
+
+    Z.AI's GLM Anthropic wire endpoints currently reject requests when the
+    Anthropic Python SDK advertises itself via ``User-Agent`` and the
+    ``X-Stainless-*`` identity headers. The OpenAI-compatible Z.AI endpoints are
+    unaffected; restrict this match to Z.AI hosts whose path actually routes to
+    an Anthropic-compatible surface.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    parsed = urlparse(normalized)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    path = (parsed.path or "").lower()
+    return host in {"api.z.ai", "open.bigmodel.cn"} and "/anthropic" in path
+
+
+def _build_header_sanitizing_http_client(*, timeout, user_agent: str | None = None):
+    """Return an ``httpx.Client`` that strips SDK identity headers per request."""
+    import httpx
+
+    def _sanitize_request(request: "httpx.Request") -> None:
+        for header_name in list(request.headers.keys()):
+            lowered = header_name.lower()
+            if lowered == "user-agent" or lowered == "x-stainless" or lowered.startswith("x-stainless-"):
+                request.headers.pop(header_name, None)
+        if user_agent:
+            request.headers["User-Agent"] = user_agent
+
+    return httpx.Client(
+        timeout=timeout,
+        event_hooks={"request": [_sanitize_request]},
+    )
+
+
 def _common_betas_for_base_url(
     base_url: str | None,
     *,
@@ -800,6 +836,11 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+        if _is_zai_anthropic_endpoint(normalized_base_url):
+            kwargs["http_client"] = _build_header_sanitizing_http_client(
+                timeout=kwargs["timeout"],
+                user_agent="python-httpx",
+            )
     elif _is_oauth_token(api_key):
         # OAuth access token / setup-token → Bearer auth + Claude Code identity.
         # Anthropic routes OAuth requests based on user-agent and headers;

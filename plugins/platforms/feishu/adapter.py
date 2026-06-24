@@ -163,6 +163,12 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_FEISHU_CONTENT_AUDIT_REJECTION_CODE = "230028"
+_FEISHU_EMAIL_AUDIT_MARKER = "EMAIL_ADDRESS"
+_EMAIL_ADDRESS_RE = re.compile(
+    r"(?<![\w.+-])([A-Z0-9._%+-]{1,64})@([A-Z0-9.-]+\.[A-Z]{2,})(?![\w.-])",
+    re.IGNORECASE,
+)
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -527,6 +533,31 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
     plain = strip_markdown(plain)
     return plain
+
+
+def _is_feishu_email_audit_rejection(response: Any) -> bool:
+    """Return True when Feishu rejected content for containing an email address."""
+    if not response:
+        return False
+    code = str(getattr(response, "code", "") or "")
+    if code != _FEISHU_CONTENT_AUDIT_REJECTION_CODE:
+        return False
+    msg = str(getattr(response, "msg", "") or "")
+    return _FEISHU_EMAIL_AUDIT_MARKER in msg
+
+
+def _redact_email_addresses_for_feishu_audit(text: str) -> str:
+    """Replace email address separators with a human-readable form Feishu accepts."""
+    return _EMAIL_ADDRESS_RE.sub(lambda m: f"{m.group(1)} [at] {m.group(2)}", text)
+
+
+def _build_email_audit_text_fallback(content: str, *, source_msg_type: str) -> Optional[str]:
+    """Build a text payload with emails redacted, or None when nothing changed."""
+    fallback_text = _strip_markdown_to_plain_text(content) if source_msg_type == "post" else content
+    redacted = _redact_email_addresses_for_feishu_audit(fallback_text)
+    if redacted == fallback_text:
+        return None
+    return json.dumps({"text": redacted}, ensure_ascii=False)
 
 
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
@@ -1822,6 +1853,20 @@ class FeishuAdapter(BasePlatformAdapter):
                         reply_to=reply_to,
                         metadata=metadata,
                     )
+                if not self._response_succeeded(response) and _is_feishu_email_audit_rejection(response):
+                    fallback_payload = _build_email_audit_text_fallback(chunk, source_msg_type=msg_type)
+                    if fallback_payload:
+                        logger.warning(
+                            "[Feishu] Message rejected by content audit for email address; "
+                            "retrying with redacted email text"
+                        )
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=fallback_payload,
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
                 last_response = response
 
             return self._finalize_send_result(last_response, "send failed")
@@ -1855,8 +1900,22 @@ class FeishuAdapter(BasePlatformAdapter):
                     content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
                 )
                 fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
-                fallback_response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
-                result = self._finalize_send_result(fallback_response, "update failed")
+                response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
+                result = self._finalize_send_result(response, "update failed")
+            if not result.success and _is_feishu_email_audit_rejection(response):
+                fallback_payload = _build_email_audit_text_fallback(content, source_msg_type=msg_type)
+                if fallback_payload:
+                    logger.warning(
+                        "[Feishu] Message update rejected by content audit for email address; "
+                        "retrying with redacted email text"
+                    )
+                    fallback_body = self._build_update_message_body(
+                        msg_type="text",
+                        content=fallback_payload,
+                    )
+                    fallback_request = self._build_update_message_request(message_id=message_id, request_body=fallback_body)
+                    response = await asyncio.to_thread(self._client.im.v1.message.update, fallback_request)
+                    result = self._finalize_send_result(response, "update failed")
             if result.success:
                 result.message_id = message_id
             return result

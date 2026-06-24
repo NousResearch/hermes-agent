@@ -235,7 +235,35 @@ class TestCamofoxInteractions:
         mock_post.return_value = _mock_response(json_data={"ok": True})
         result = json.loads(camofox_type("@e3", "hello world", task_id="t5"))
         assert result["success"] is True
-        assert result["typed"] == "hello world"
+        assert result["typed"] == "[redacted typed text]"
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_type_never_echoes_raw_secret(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab5b", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t5b")
+
+        typed_text = "my_secret_password_123"
+        mock_post.return_value = _mock_response(json_data={"ok": True})
+        result = json.loads(camofox_type("@password", typed_text, task_id="t5b"))
+        assert result["success"] is True
+        assert typed_text not in json.dumps(result)
+        assert result["typed"] == "[redacted typed text]"
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_type_failure_never_echoes_raw_secret(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab5c", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t5c")
+
+        typed_text = "my_secret_password_123"
+        mock_post.side_effect = RuntimeError(f"camofox failed while typing {typed_text}")
+        raw_result = camofox_type("@password", typed_text, task_id="t5c")
+        result = json.loads(raw_result)
+
+        assert result["success"] is False
+        assert typed_text not in raw_result
+        assert "[redacted typed text]" in raw_result
 
     @patch("tools.browser_camofox.requests.post")
     def test_scroll(self, mock_post, monkeypatch):

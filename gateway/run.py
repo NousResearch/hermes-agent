@@ -9094,6 +9094,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None
 
+        try:
+            from gateway.canonical_brain_routeback_context import (
+                build_routeback_context_prompt_for_session,
+            )
+
+            _routeback_context_prompt = build_routeback_context_prompt_for_session(context)
+            if _routeback_context_prompt:
+                context_prompt += "\n\n" + _routeback_context_prompt
+        except Exception as exc:
+            logger.debug("Canonical Brain route-back context prompt failed: %s", exc)
+
         # Auto-load skill(s) for topic/channel bindings (Telegram DM Topics,
         # Discord channel_skill_bindings).  Supports a single name or ordered list.
         # Only inject on NEW sessions — ongoing conversations already have the

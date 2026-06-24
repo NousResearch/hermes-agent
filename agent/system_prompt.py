@@ -170,7 +170,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # path is blocked) are not model-family specific.  Gated only by
     # config.yaml ``agent.task_completion_guidance`` (default True) so
     # users who want a leaner prompt can turn it off.
-    if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
+    is_subagent = getattr(agent, "_delegate_depth", 0) > 0
+    if not is_subagent and getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
 
     # Universal parallel-tool-call guidance.  Tells the model to batch
@@ -185,13 +186,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(PARALLEL_TOOL_CALL_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
+    # Subagents get a focused task — skip per-tool guidance that adds bloat.
     tool_guidance = []
-    if "memory" in agent.valid_tool_names:
-        tool_guidance.append(MEMORY_GUIDANCE)
-    if "session_search" in agent.valid_tool_names:
-        tool_guidance.append(SESSION_SEARCH_GUIDANCE)
-    if "skill_manage" in agent.valid_tool_names:
-        tool_guidance.append(SKILLS_GUIDANCE)
+    if not is_subagent:
+        if "memory" in agent.valid_tool_names:
+            tool_guidance.append(MEMORY_GUIDANCE)
+        if "session_search" in agent.valid_tool_names:
+            tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+        if "skill_manage" in agent.valid_tool_names:
+            tool_guidance.append(SKILLS_GUIDANCE)
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see

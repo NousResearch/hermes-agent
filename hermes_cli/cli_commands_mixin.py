@@ -1433,7 +1433,18 @@ class CLICommandsMixin:
             print("\n⚡ Learning a skill from what you described...")
         else:
             print("\n⚡ Learning a skill from this conversation...")
-        if hasattr(self, "_pending_input"):
+        # Run the learn prompt as the next agent turn via the one-shot
+        # _pending_agent_seed the interactive loop consumes immediately after
+        # process_command() returns (same reliable path as /blueprint and
+        # /prompt). The earlier _pending_input.put() approach broke in the
+        # desktop/TUI app: that surface dispatches slash commands on the UI
+        # thread (_submit_buffer_text) and via the Enter handler, and the
+        # requeued message could be dropped before process_loop re-drained it,
+        # so the "⚡ Learning..." line printed but no agent turn ever started.
+        if hasattr(self, "_pending_agent_seed"):
+            self._pending_agent_seed = msg
+        elif hasattr(self, "_pending_input"):
+            # Fallback for any caller without the seed attribute.
             self._pending_input.put(msg)
         else:  # pragma: no cover - defensive (no live input loop)
             print("  /learn needs an active chat session to run.")

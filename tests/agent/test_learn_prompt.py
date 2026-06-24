@@ -71,3 +71,39 @@ class TestLearnRegistryWiring:
         from hermes_cli.commands import resolve_command
 
         assert not resolve_command("learn").cli_only
+
+
+class TestLearnDispatchSeedsAgentTurn:
+    """Regression: /learn must seed the next agent turn via _pending_agent_seed.
+
+    The desktop/TUI app dispatches slash commands on the UI thread
+    (_submit_buffer_text) and through the Enter handler. The original handler
+    used self._pending_input.put(msg), which the interactive loop could drop
+    before re-draining — the "Learning..." line printed but no turn ran. The
+    interactive loop consumes _pending_agent_seed immediately after
+    process_command() returns (same path as /blueprint, /prompt), so the
+    handler must set that attribute.
+    """
+
+    def _make_handler(self):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Fake(CLICommandsMixin):
+            def __init__(self):
+                self._pending_agent_seed = None
+
+        return _Fake()
+
+    def test_learn_sets_pending_agent_seed_to_the_built_prompt(self):
+        h = self._make_handler()
+        h._handle_learn_command("/learn the auth flow in ~/projects/acme")
+        assert h._pending_agent_seed is not None
+        # It must be the standards-bearing prompt, not the raw user text.
+        assert "skill_manage" in h._pending_agent_seed
+        assert "~/projects/acme" in h._pending_agent_seed
+
+    def test_bare_learn_seeds_a_conversation_distillation_turn(self):
+        h = self._make_handler()
+        h._handle_learn_command("/learn")
+        assert h._pending_agent_seed is not None
+        assert "conversation" in h._pending_agent_seed.lower()

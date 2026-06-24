@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
 import { notify, notifyError } from '@/store/notifications'
+import { $autoTts } from '@/store/voice-playback'
 
 import { useMicRecorder } from './use-mic-recorder'
 
@@ -50,6 +51,8 @@ export function useVoiceConversation({
   const busyRef = useRef(busy)
   const statusRef = useRef<ConversationStatus>('idle')
   const wasEnabledRef = useRef(enabled)
+  // auto_tts read from $autoTts store — refreshed on every config refresh
+
 
   useEffect(() => {
     enabledRef.current = enabled
@@ -221,6 +224,15 @@ export function useVoiceConversation({
   }, [handle, handleTurn, onFatalError, voiceCopy.couldNotStartSession, voiceCopy.microphoneFailed])
 
   const speak = useCallback(async (text: string) => {
+    if (!$autoTts.get()) {
+      // TTS disabled — skip speech, but keep conversation moving
+      if (enabledRef.current) {
+        pendingStartRef.current = true
+      }
+      setStatus('idle')
+      return
+    }
+
     setStatus('speaking')
 
     try {

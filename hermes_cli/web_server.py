@@ -4062,12 +4062,56 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+def _render_personality_prompt_for_web(value: Any) -> str:
+    if isinstance(value, dict):
+        parts = [value.get("system_prompt", "")]
+        if value.get("tone"):
+            parts.append(f'Tone: {value["tone"]}')
+        if value.get("style"):
+            parts.append(f'Style: {value["style"]}')
+        return "\n".join(p for p in parts if p)
+    return str(value)
+
+
+def _sync_personality_prompt_for_web_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    display = config.get("display")
+    if not isinstance(display, dict) or "personality" not in display:
+        return config
+
+    raw = str(display.get("personality") or "").strip()
+    name = raw.lower()
+
+    agent = config.get("agent")
+    if not isinstance(agent, dict):
+        agent = {}
+        config["agent"] = agent
+
+    if not name or name in {"none", "default", "neutral"}:
+        display["personality"] = ""
+        agent["system_prompt"] = ""
+        return config
+
+    personalities = agent.get("personalities")
+    if not isinstance(personalities, dict):
+        personalities = {}
+
+    if name not in personalities:
+        raise ValueError(f"Unknown personality: `{raw}`.")
+
+    display["personality"] = name
+    agent["system_prompt"] = _render_personality_prompt_for_web(personalities[name])
+    return config
+
+
 @app.put("/api/config")
 async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     try:
         with _profile_scope(body.profile or profile):
-            save_config(_denormalize_config_from_web(body.config))
+            config = _denormalize_config_from_web(body.config)
+            save_config(_sync_personality_prompt_for_web_config(config))
         return {"ok": True}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except HTTPException:
         raise
     except Exception:

@@ -203,6 +203,40 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ============================================================================
+# ApexNodes China mirror mode (opt-in via HERMES_CN_MIRRORS=1)
+# ============================================================================
+# OFF by default: with the flag unset this entire block is skipped and the
+# installer behaves byte-for-byte like upstream (curl|bash one-liner, CI, etc).
+#
+# The packaged ApexNodes desktop sets HERMES_CN_MIRRORS=1 (and, once provisioned,
+# HERMES_RUNTIME_COS_BASE) from electron/bootstrap-runner.cjs so a fresh mainland-
+# China machine can install without reaching github.com / pypi.org /
+# registry.npmjs.org directly. The split is deliberate:
+#   * Our runtime source + uv (no public CN mirror exists) come from our own
+#     public-read COS bucket — see _download_runtime_tarball / _install_uv_from_cos.
+#   * Every public third-party dependency uses an established CN mirror below.
+# Each value uses ${VAR:-default} so an operator can override any single mirror
+# via the real environment without editing this script.
+#
+# MAINTENANCE: this block lives in the canonical installer so the packaged copy
+# is byte-identical to the tested one. Keep it when merging upstream install.sh.
+_cn_enabled() { [ "${HERMES_CN_MIRRORS:-0}" = "1" ]; }
+
+if _cn_enabled; then
+    # Python package index → Tsinghua TUNA (PyPI mirror).
+    export UV_DEFAULT_INDEX="${UV_DEFAULT_INDEX:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+    export UV_INDEX_URL="${UV_INDEX_URL:-$UV_DEFAULT_INDEX}"
+    export PIP_INDEX_URL="${PIP_INDEX_URL:-https://pypi.tuna.tsinghua.edu.cn/simple}"
+    # uv-managed CPython (astral python-build-standalone) → npmmirror binary mirror.
+    export UV_PYTHON_INSTALL_MIRROR="${UV_PYTHON_INSTALL_MIRROR:-https://registry.npmmirror.com/-/binary/python-build-standalone}"
+    # npm registry + Electron binaries → npmmirror.
+    export npm_config_registry="${npm_config_registry:-https://registry.npmmirror.com}"
+    export ELECTRON_MIRROR="${ELECTRON_MIRROR:-https://npmmirror.com/mirrors/electron/}"
+    # Node.js dist tarballs → npmmirror binary mirror (consumed by install_node).
+    export HERMES_NODE_DIST_BASE="${HERMES_NODE_DIST_BASE:-https://registry.npmmirror.com/-/binary/node}"
+fi
+
+# ============================================================================
 # Helper functions
 # ============================================================================
 
@@ -487,6 +521,89 @@ detect_os() {
 # Dependency checks
 # ============================================================================
 
+# Map the current OS/arch to an astral uv release target triple (the names uv
+# publishes its tarballs under, e.g. uv-aarch64-apple-darwin.tar.gz). Used to
+# build the COS mirror download URL in CN mode. Returns non-zero (no output)
+# for unsupported platforms so the caller falls back to the astral installer.
+_uv_target_triple() {
+    local arch
+    arch="$(uname -m)"
+    case "$OS" in
+        macos)
+            case "$arch" in
+                arm64|aarch64) echo "aarch64-apple-darwin" ;;
+                x86_64) echo "x86_64-apple-darwin" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        linux)
+            case "$arch" in
+                x86_64) echo "x86_64-unknown-linux-gnu" ;;
+                aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+# CN mode: fetch a prebuilt uv from our public-read COS bucket instead of the
+# astral.sh installer, which downloads the binary from github.com (blocked in
+# mainland China). The publish script (scripts/publish-runtime-tarball.sh)
+# mirrors uv-<triple>.tar.gz next to the runtime tarball. On any failure we
+# return non-zero so install_uv falls through to the astral path. Sets UV_CMD.
+_install_uv_from_cos() {
+    _cn_enabled || return 1
+    [ -n "${HERMES_RUNTIME_COS_BASE:-}" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+
+    local triple
+    triple="$(_uv_target_triple)" || return 1
+    [ -n "$triple" ] || return 1
+
+    local url="${HERMES_RUNTIME_COS_BASE%/}/uv-${triple}.tar.gz"
+    local tmp
+    tmp="$(mktemp -d 2>/dev/null || echo "/tmp/hermes-uv.$$")"
+    mkdir -p "$tmp" "$HERMES_HOME/bin"
+
+    log_info "Fetching uv from COS mirror: $url"
+    if ! curl -fsSL --max-time 120 "$url" -o "$tmp/uv.tar.gz"; then
+        log_warn "COS uv download failed ($url) — will try the astral.sh installer"
+        rm -rf "$tmp"
+        return 1
+    fi
+    if ! tar xzf "$tmp/uv.tar.gz" -C "$tmp" 2>/dev/null; then
+        log_warn "COS uv tarball could not be extracted — will try the astral.sh installer"
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    # uv tarballs unpack into uv-<triple>/{uv,uvx}; locate the binaries by name.
+    local found foundx
+    found="$(find "$tmp" -type f -name uv 2>/dev/null | head -1)"
+    if [ -z "$found" ]; then
+        log_warn "uv binary not found inside COS tarball — will try the astral.sh installer"
+        rm -rf "$tmp"
+        return 1
+    fi
+    cp "$found" "$HERMES_HOME/bin/uv"
+    chmod +x "$HERMES_HOME/bin/uv"
+    foundx="$(find "$tmp" -type f -name uvx 2>/dev/null | head -1)"
+    if [ -n "$foundx" ]; then
+        cp "$foundx" "$HERMES_HOME/bin/uvx"
+        chmod +x "$HERMES_HOME/bin/uvx"
+    fi
+    rm -rf "$tmp"
+
+    if [ ! -x "$HERMES_HOME/bin/uv" ]; then
+        return 1
+    fi
+    UV_CMD="$HERMES_HOME/bin/uv"
+    UV_VERSION=$($UV_CMD --version 2>/dev/null)
+    log_success "Managed uv installed from COS mirror ($UV_VERSION)"
+    return 0
+}
+
 install_uv() {
     if [ "$DISTRO" = "termux" ]; then
         log_info "Termux detected — using Python's stdlib venv + pip instead of uv"
@@ -504,6 +621,11 @@ install_uv() {
         UV_CMD="$_managed_uv"
         UV_VERSION=$($UV_CMD --version 2>/dev/null)
         log_success "Managed uv found ($UV_VERSION)"
+        return 0
+    fi
+
+    # CN mode: prefer our COS mirror (github-free) before the astral.sh installer.
+    if _install_uv_from_cos; then
         return 0
     fi
 
@@ -810,8 +932,12 @@ install_node() {
             ;;
     esac
 
-    # Resolve the latest v22.x.x tarball name from the index page
-    local index_url="https://nodejs.org/dist/latest-v${NODE_VERSION}.x/"
+    # Resolve the latest v22.x.x tarball name from the index page. HERMES_NODE_DIST_BASE
+    # lets CN mode point this at the npmmirror Node binary mirror (set in the CN
+    # block above); it defaults to the official nodejs.org dist server.
+    local node_dist_base="${HERMES_NODE_DIST_BASE:-https://nodejs.org/dist}"
+    node_dist_base="${node_dist_base%/}"
+    local index_url="${node_dist_base}/latest-v${NODE_VERSION}.x/"
     local tarball_name
     tarball_name=$(curl -fsSL "$index_url" \
         | grep -oE "node-v${NODE_VERSION}\.[0-9]+\.[0-9]+-${node_os}-${node_arch}\.tar\.xz" \
@@ -1115,6 +1241,52 @@ show_manual_install_hint() {
 # Installation
 # ============================================================================
 
+# CN mode: download the pinned runtime source as a tarball from our public-read
+# COS bucket instead of git-cloning github.com (blocked/slow in mainland China).
+# The tarball is `git archive --prefix=hermes-agent/` of the pinned upstream
+# commit — a clean source tree with NO .git directory. Keyed by the pinned
+# commit (preferred) or branch so the COS object matches the build stamp.
+# Returns 0 with INSTALL_DIR populated on success; non-zero (and INSTALL_DIR
+# removed) on any failure so clone_repo falls back to a normal git clone.
+_download_runtime_tarball() {
+    _cn_enabled || return 1
+    [ -n "${HERMES_RUNTIME_COS_BASE:-}" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+
+    local key="${INSTALL_COMMIT:-$BRANCH}"
+    [ -n "$key" ] || return 1
+
+    local url="${HERMES_RUNTIME_COS_BASE%/}/hermes-agent-${key}.tar.gz"
+    local tmp
+    tmp="$(mktemp -d 2>/dev/null || echo "/tmp/hermes-src.$$")"
+    mkdir -p "$tmp"
+
+    log_info "Downloading runtime source from COS mirror: $url"
+    if ! curl -fsSL --max-time 300 "$url" -o "$tmp/runtime.tar.gz"; then
+        log_warn "COS runtime download failed ($url) — falling back to git clone"
+        rm -rf "$tmp"
+        return 1
+    fi
+
+    mkdir -p "$INSTALL_DIR"
+    # Archive is built with --prefix=hermes-agent/, so strip the leading dir.
+    if ! tar xzf "$tmp/runtime.tar.gz" -C "$INSTALL_DIR" --strip-components=1; then
+        log_warn "COS runtime tarball could not be extracted — falling back to git clone"
+        rm -rf "$tmp" "$INSTALL_DIR"
+        return 1
+    fi
+    rm -rf "$tmp"
+
+    if [ ! -f "$INSTALL_DIR/pyproject.toml" ]; then
+        log_warn "COS runtime tarball missing pyproject.toml — falling back to git clone"
+        rm -rf "$INSTALL_DIR"
+        return 1
+    fi
+
+    log_success "Runtime source ready from COS mirror ($key)"
+    return 0
+}
+
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
 
@@ -1197,11 +1369,19 @@ clone_repo() {
                     log_info "Restore manually with: git stash apply $autostash_ref"
                 fi
             fi
+        elif _cn_enabled && [ -f "$INSTALL_DIR/pyproject.toml" ]; then
+            # CN install: INSTALL_DIR was populated from the COS source tarball on
+            # a previous (interrupted) run — no .git, but a valid checkout. Reuse
+            # it instead of erroring out so the repository stage stays idempotent.
+            log_info "Existing COS-mirror checkout found at $INSTALL_DIR, reusing"
         else
             log_error "Directory exists but is not a git repository: $INSTALL_DIR"
             log_info "Remove it or choose a different directory with --dir"
             exit 1
         fi
+    elif _download_runtime_tarball; then
+        # CN mode (fresh install): source came from our COS bucket, no git needed.
+        log_success "Repository ready (COS mirror)"
     else
         # Try SSH first (for private repo access), fall back to HTTPS
         # GIT_SSH_COMMAND disables interactive prompts and sets a short timeout
@@ -1224,7 +1404,9 @@ clone_repo() {
 
     cd "$INSTALL_DIR"
 
-    if [ -n "$INSTALL_COMMIT" ]; then
+    # Pin only matters for git checkouts; a COS source tarball is already built
+    # from the pinned commit and has no .git to check out against.
+    if [ -n "$INSTALL_COMMIT" ] && [ -d "$INSTALL_DIR/.git" ]; then
         log_info "Pinning checkout to commit $INSTALL_COMMIT..."
         if ! git cat-file -e "$INSTALL_COMMIT^{commit}" 2>/dev/null; then
             git fetch origin "$INSTALL_COMMIT" || true

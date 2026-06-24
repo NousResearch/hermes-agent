@@ -8,6 +8,8 @@ const {
   runBootstrap,
   resolveInstallScript,
   installedAgentInstallScript,
+  bundledInstallScript,
+  cnInstallEnv,
   cachedScriptPath
 } = require('./bootstrap-runner.cjs')
 
@@ -134,5 +136,89 @@ test('resolveInstallScript rethrows when the 404 fallback is unavailable', async
     )
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('bundledInstallScript resolves the installer shipped in resourcesPath', () => {
+  const dir = mkTmpHome()
+  try {
+    assert.equal(bundledInstallScript(dir), null, 'absent before the script exists')
+    assert.equal(bundledInstallScript(null), null, 'null resourcesPath -> null')
+
+    const scriptPath = path.join(dir, SCRIPT_NAME)
+    fs.writeFileSync(scriptPath, '#!/bin/sh\necho bundled\n')
+    assert.equal(bundledInstallScript(dir), scriptPath)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('resolveInstallScript prefers the bundled installer over the GitHub download', async () => {
+  const home = mkTmpHome()
+  const resources = mkTmpHome()
+  try {
+    const bundled = path.join(resources, SCRIPT_NAME)
+    fs.writeFileSync(bundled, '#!/bin/sh\necho bundled\n')
+
+    let downloadCalled = false
+    const logs = []
+    const result = await resolveInstallScript({
+      installStamp: { commit: 'a'.repeat(40) },
+      sourceRepoRoot: null,
+      resourcesPath: resources,
+      hermesHome: home,
+      emit: ev => logs.push(ev),
+      _download: async () => {
+        downloadCalled = true
+        throw new Error('bundled script must short-circuit before any download')
+      }
+    })
+
+    assert.equal(result.source, 'bundled')
+    assert.equal(result.path, bundled)
+    assert.equal(downloadCalled, false, 'a bundled script must not trigger a network download')
+    assert.ok(
+      logs.some(ev => /using bundled/.test(ev.line || '')),
+      'emits a "using bundled" log line'
+    )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(resources, { recursive: true, force: true })
+  }
+})
+
+test('cnInstallEnv is empty when CN mode is off and populated when on', () => {
+  const savedFlag = process.env.HERMES_CN_MIRRORS
+  const savedBase = process.env.HERMES_RUNTIME_COS_BASE
+  try {
+    delete process.env.HERMES_CN_MIRRORS
+    delete process.env.HERMES_RUNTIME_COS_BASE
+
+    // Off by default (no opt-in, no env) -> spawn env untouched.
+    assert.deepEqual(cnInstallEnv(), {})
+    assert.deepEqual(cnInstallEnv({ cnMirrors: false }), {})
+
+    // On via the passed flag, with the COS base threaded through.
+    assert.deepEqual(cnInstallEnv({ cnMirrors: true, runtimeCosBase: 'https://cos.example/runtime' }), {
+      HERMES_CN_MIRRORS: '1',
+      HERMES_RUNTIME_COS_BASE: 'https://cos.example/runtime'
+    })
+
+    // An explicit env flag of '0' forces CN mode off even when the caller opts in.
+    process.env.HERMES_CN_MIRRORS = '0'
+    assert.deepEqual(cnInstallEnv({ cnMirrors: true }), {})
+
+    // An explicit env flag of '1' forces it on and the env COS base wins.
+    process.env.HERMES_CN_MIRRORS = '1'
+    process.env.HERMES_RUNTIME_COS_BASE = 'https://override.example/r'
+    assert.deepEqual(cnInstallEnv({ cnMirrors: false, runtimeCosBase: 'https://passed/r' }), {
+      HERMES_CN_MIRRORS: '1',
+      HERMES_RUNTIME_COS_BASE: 'https://override.example/r'
+    })
+  } finally {
+    if (savedFlag === undefined) delete process.env.HERMES_CN_MIRRORS
+    else process.env.HERMES_CN_MIRRORS = savedFlag
+    if (savedBase === undefined) delete process.env.HERMES_RUNTIME_COS_BASE
+    else process.env.HERMES_RUNTIME_COS_BASE = savedBase
   }
 })

@@ -33,6 +33,7 @@ jobs:
   # (all lanes true) so post-merge validation is never weakened.
   # ─────────────────────────────────────────────────────────────────────
   detect:
+    name: Detect affected areas
     runs-on: ubuntu-latest
     outputs:
       python: ${{ steps.classify.outputs.python }}
@@ -54,12 +55,15 @@ jobs:
   # Skipped workflows (if condition is false) don't spin up runners.
   # ─────────────────────────────────────────────────────────────────────
   tests:
+    name: Python tests
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
     with:
       slice_count: 8
+
   lint:
+    name: Python lints
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/lint.yml
@@ -67,40 +71,48 @@ jobs:
       event_name: ${{ needs.detect.outputs.event_name }}
 
   typecheck:
+    name: TypeScript
     needs: detect
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/typecheck.yml
 
   docs-site:
+    name: Docs Site
     needs: detect
     if: needs.detect.outputs.site == 'true'
     uses: ./.github/workflows/docs-site-checks.yml
 
   history-check:
+    name: Deny unrelated histories
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request'
     uses: ./.github/workflows/history-check.yml
 
   contributor-check:
+    name: Check contributors
     needs: detect
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/contributor-check.yml
 
   uv-lockfile:
+    name: Check uv.lock
     needs: detect
     uses: ./.github/workflows/uv-lockfile-check.yml
 
   docker-lint:
+    name: Lint Docker scripts
     needs: detect
     if: needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker-lint.yml
 
   docker:
+    name: Build&Test Docker image
     needs: detect
     if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker.yml
 
   supply-chain:
+    name: Supply-chain scan
     needs: detect
     if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.scan == 'true' || needs.detect.outputs.deps == 'true' || needs.detect.outputs.mcp_catalog == 'true')
     uses: ./.github/workflows/supply-chain-audit.yml
@@ -111,7 +123,7 @@ jobs:
       mcp_catalog: ${{ needs.detect.outputs.mcp_catalog == 'true' }}
 
   osv-scanner:
-    needs: detect
+    name: OSV scan
     uses: ./.github/workflows/osv-scanner.yml
 
   # ─────────────────────────────────────────────────────────────────────

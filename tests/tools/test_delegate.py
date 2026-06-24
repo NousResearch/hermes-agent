@@ -386,7 +386,7 @@ class TestDelegateTask(unittest.TestCase):
                 goal="Use fallback route",
                 context=None,
                 toolsets=None,
-                model="claude-sonnet-4-5",
+                model="high-output-child-model",
                 max_iterations=10,
                 parent_agent=parent,
                 task_count=1,
@@ -397,7 +397,7 @@ class TestDelegateTask(unittest.TestCase):
             )
 
         _, kwargs = MockAgent.call_args
-        self.assertEqual(kwargs["model"], "claude-sonnet-4-5")
+        self.assertEqual(kwargs["model"], "high-output-child-model")
         self.assertEqual(kwargs["provider"], "anthropic")
         self.assertEqual(kwargs["api_mode"], "anthropic_messages")
         # The subagent UI/result metadata must not keep showing the parent's
@@ -405,7 +405,7 @@ class TestDelegateTask(unittest.TestCase):
         progress_cb = kwargs["tool_progress_callback"]
         progress_cb("subagent.start", preview="Use fallback route")
         progress_kwargs = parent.tool_progress_callback.call_args.kwargs
-        self.assertEqual(progress_kwargs["model"], "claude-sonnet-4-5")
+        self.assertEqual(progress_kwargs["model"], "high-output-child-model")
 
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)

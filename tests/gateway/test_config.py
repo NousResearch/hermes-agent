@@ -188,6 +188,20 @@ class TestStreamingConfig:
         assert restored.buffer_threshold == 24
         assert restored.fresh_final_after_seconds == 0.0
 
+    def test_from_dict_non_finite_numeric_values_fall_back_to_defaults(self):
+        for value in ("nan", "inf", "-inf", float("nan"), float("inf"), float("-inf")):
+            restored = StreamingConfig.from_dict(
+                {
+                    "edit_interval": value,
+                    "buffer_threshold": value,
+                    "fresh_final_after_seconds": value,
+                }
+            )
+
+            assert restored.edit_interval == 0.8
+            assert restored.buffer_threshold == 24
+            assert restored.fresh_final_after_seconds == 0.0
+
 
 class TestGatewayConfigRoundtrip:
     def test_full_roundtrip(self):

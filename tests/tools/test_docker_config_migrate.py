@@ -202,3 +202,58 @@ def test_docker_config_migrate_restores_backups_when_version_does_not_advance(
 
     assert config_path.read_text(encoding="utf-8") == original_config
     assert env_path.read_text(encoding="utf-8") == original_env
+
+
+def test_docker_config_migrate_second_boot_preserves_env_byte_for_byte(tmp_path: Path) -> None:
+    """Regression for #51579: booting ``gateway run`` twice (i.e. a host
+    reboot under ``--restart unless-stopped``) must not strip or rewrite
+    ``$HERMES_HOME/.env``. The first boot migrates the stale config and bumps
+    ``_config_version``; the second boot must be a no-op that leaves ``.env``
+    byte-identical to what the user supplied.
+
+    This exercises the real script + real ``migrate_config`` + real file I/O
+    via subprocess — not mocks — so it covers the actual Docker boot path,
+    not just the failure-rollback shapes above.
+    """
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    config_path.write_text(
+        yaml.safe_dump(
+            {
+                "_config_version": 11,
+                "gateway": {"provider": "telegram"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_env = (
+        "TELEGRAM_BOT_TOKEN=secret-bot-token\n"
+        "TELEGRAM_ALLOWED_USERS=123456789\n"
+        "OPENROUTER_API_KEY=sk-test-provider-key\n"
+    )
+    env_path.write_text(original_env, encoding="utf-8")
+    env_bytes_before = env_path.read_bytes()
+
+    # ── First boot: stale config migrates, version advances. ──
+    first = _run_migration(tmp_path)
+    assert first.returncode == 0, first.stderr
+    assert "Migrating config schema 11 ->" in first.stdout
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+    # The token (and every other credential) must survive the migration.
+    assert env_path.exists(), ".env must never be deleted by the boot migration"
+    assert env_path.read_bytes() == env_bytes_before
+
+    config_after_first = config_path.read_bytes()
+    first_boot_backups = sorted(tmp_path.glob("config.yaml.bak-*"))
+
+    # ── Second boot (host reboot): version is current, must be a no-op. ──
+    second = _run_migration(tmp_path)
+    assert second.returncode == 0, second.stderr
+    assert "Migrating config schema" not in second.stdout
+    # .env is still present and byte-for-byte identical to the original.
+    assert env_path.exists()
+    assert env_path.read_bytes() == env_bytes_before
+    # config.yaml is untouched by the second boot, and no new backup is made.
+    assert config_path.read_bytes() == config_after_first
+    assert sorted(tmp_path.glob("config.yaml.bak-*")) == first_boot_backups

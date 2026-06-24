@@ -1,5 +1,5 @@
 name: otel
-version: "0.2.0"
+version: "0.3.0"
 description: "Optional OpenTelemetry (OTLP) observability for Hermes — exports turns, LLM calls, and tool usage as OTel GenAI-convention spans (gen_ai.*) AND dashboard-shaped OTLP log records, with local-model cost estimated from model size, to any OTLP backend. Opt in with `hermes plugins enable observability/otel`; HERMES_OTEL_* env vars configure spans, logs, and cost after the plugin is enabled."
 author: NousResearch
 hooks:

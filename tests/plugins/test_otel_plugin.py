@@ -43,6 +43,7 @@ from plugins.observability.otel.log_emitter import (
     EVENT_API_RESPONSE,
     EVENT_SESSION_START,
     EVENT_TOOL_RESULT,
+    EVENT_USER_PROMPT,
     OtelLogEmitter,
 )
 
@@ -393,6 +394,34 @@ class TestLogEmitter:
         assert "a.txt" in attrs[EVENT_TOOL_RESULT]["tool_input"]
         assert "done" in attrs[EVENT_TOOL_RESULT]["tool_output"]
 
+    def test_user_prompt_record_shape_and_content(self, log_exporter_and_logger):
+        exporter, otel_logger = log_exporter_and_logger
+        emitter = OtelLogEmitter(otel_logger, agent_name="hermes", capture_content=True)
+
+        emitter.user_prompt(session_id="sess-1", prompt="fix the failing test", model="llama3.1:8b")
+
+        rec = _log_attrs(exporter.get_finished_logs())[EVENT_USER_PROMPT]
+        assert rec["event.name"] == EVENT_USER_PROMPT
+        assert rec["session.id"] == "sess-1"
+        assert rec["model"] == "llama3.1:8b"
+        assert rec["agent_type"] == "hermes"
+        assert rec["gen_ai.system"] == "hermes"
+        # The prompt text is rendered in the dashboard's prompt drill-down.
+        assert rec["prompt"] == "fix the failing test"
+        assert rec["prompt_length"] == len("fix the failing test")
+
+    def test_user_prompt_length_emitted_without_content(self, log_exporter_and_logger):
+        exporter, otel_logger = log_exporter_and_logger
+        emitter = OtelLogEmitter(otel_logger, capture_content=False)
+
+        emitter.user_prompt(session_id="s", prompt="secret prompt")
+
+        rec = _log_attrs(exporter.get_finished_logs())[EVENT_USER_PROMPT]
+        # Length is non-sensitive metadata, always present...
+        assert rec["prompt_length"] == len("secret prompt")
+        # ...but the text itself is privacy-gated off.
+        assert "prompt" not in rec
+
     def test_emit_never_raises_on_bad_logger(self):
         class _BoomLogger:
             def emit(self, *_a, **_k):
@@ -498,6 +527,39 @@ class TestPluginAdapter:
         assert attrs["gen_ai.prompt"] == "email the report to john@example.com"
         assert attrs["gen_ai.completion"] == "Sure — sending it to john@example.com now."
 
+    def test_pre_llm_call_emits_user_prompt_log_record_once_per_turn(
+        self, exporter_and_tracer, monkeypatch
+    ):
+        """The prompt must reach the dashboard LOG stream (event.name
+        ``user_prompt``), not only the span — and exactly once per turn even
+        though ``pre_llm_call`` fires once per LLM call inside a tool loop.
+
+        This is the fix for "Hermes sessions show tool calls + API responses
+        but no prompts in /agent-coding": the prompt only ever rode on the span
+        as ``gen_ai.prompt``, which the log-record-based dashboard never sees.
+        """
+        monkeypatch.setenv("HERMES_OTEL_CAPTURE_CONTENT", "true")
+        exporter, tracer = exporter_and_tracer
+        plugin, provider = _fresh_plugin()
+        monkeypatch.setattr(provider, "build_tracer", lambda **_: tracer)
+        log_exporter, otel_logger = _in_memory_logger()
+        monkeypatch.setattr(provider, "build_logger", lambda **_: otel_logger)
+
+        ctx = _FakeCtx()
+        plugin.register(ctx)
+        ctx.hooks["on_session_start"](session_id="sess-p", model="hermes-x")
+        # Two pre_llm_calls within one turn (a tool loop) — prompt logged once.
+        ctx.hooks["pre_llm_call"](session_id="sess-p", model="hermes-x", user_message="refactor it")
+        ctx.hooks["pre_llm_call"](session_id="sess-p", model="hermes-x", user_message="refactor it")
+        ctx.hooks["transform_llm_output"](session_id="sess-p", response_text="done")
+        ctx.hooks["on_session_end"](session_id="sess-p")
+
+        records = [dict(r.log_record.attributes or {}) for r in log_exporter.get_finished_logs()]
+        prompts = [r for r in records if r.get("event.name") == EVENT_USER_PROMPT]
+        assert len(prompts) == 1
+        assert prompts[0]["prompt"] == "refactor it"
+        assert prompts[0]["session.id"] == "sess-p"
+
     def test_prompt_and_response_gated_by_capture_content(
         self, exporter_and_tracer, monkeypatch
     ):
@@ -559,9 +621,11 @@ class TestPluginAdapter:
         assert list(spans[OP_CHAT].attributes["gen_ai.response.finish_reasons"]) == ["stop"]
         assert spans[OP_EXECUTE_TOOL].attributes["gen_ai.tool.name"] == "read_file"
 
-        # The richer scope ALSO emits dashboard log records for the same events.
+        # The richer scope ALSO emits dashboard log records for the same events,
+        # including the per-turn user_prompt record (event.name user_prompt).
         log_attrs = _log_attrs(log_exporter.get_finished_logs())
         assert set(log_attrs) == {
+            EVENT_USER_PROMPT,
             EVENT_SESSION_START,
             EVENT_API_RESPONSE,
             EVENT_TOOL_RESULT,

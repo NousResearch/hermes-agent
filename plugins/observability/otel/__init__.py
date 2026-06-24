@@ -295,6 +295,22 @@ def on_pre_llm_call(**kwargs: Any) -> None:
             _OPEN_TURN_SPANS[session_id] = span
     except Exception:
         logger.debug("on_pre_llm_call: failed to open turn span", exc_info=True)
+    # Dashboard log record for the prompt (best-effort, never raises). The span
+    # carries the prompt as gen_ai.prompt, but the /agent-coding dashboard is
+    # built from log records — without a `user_prompt` record a Hermes session
+    # shows tool calls and API responses but no prompts. Emitted once per turn:
+    # the tool-loop-continuation guard above early-returns on later pre_llm_calls
+    # of the same turn, so this line is only reached on the turn's first call.
+    log_emitter = _get_log_emitter()
+    if log_emitter is not None:
+        try:
+            log_emitter.user_prompt(
+                session_id=session_id,
+                prompt=kwargs.get("user_message"),
+                model=kwargs.get("model"),
+            )
+        except Exception:
+            logger.debug("on_pre_llm_call: failed to emit user_prompt log", exc_info=True)
 
 
 def on_transform_llm_output(**kwargs: Any) -> None:
@@ -462,7 +478,8 @@ def register(ctx) -> None:
     ``observability/langfuse`` and ``observability/nemo_relay`` plugins:
 
     * session lifecycle    → ``invoke_agent`` span open/close
-    * pre_llm_call         → stamp the user prompt onto the open turn span
+    * pre_llm_call         → stamp the user prompt onto the open turn span +
+                             emit a ``user_prompt`` dashboard log record
     * transform_llm_output → stamp the model response onto the open turn span
     * post_api_request     → ``chat`` span (tokens, cost, finish reason, TTFT)
     * post_tool_call       → ``execute_tool`` span (tool name/type, errors)

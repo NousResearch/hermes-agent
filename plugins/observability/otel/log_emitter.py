@@ -13,7 +13,9 @@ Sessions / Leaderboards / breakdown views exactly like a Claude Code session.
 
 Field contract the dashboard aggregates on (see the agent-coding API routes):
 
-    attributes.event.name      session_start | api_response | tool_result
+    attributes.event.name      user_prompt | session_start | api_response | tool_result
+    attributes.prompt          user prompt text    (user_prompt, content-gated)
+    attributes.prompt_length   user prompt length  (user_prompt, always)
     attributes.model           model id            (by_model breakdown)
     attributes.tool_name       tool name           (by_tool breakdown)
     attributes.cost_usd        float               (leaderboard cost sums)
@@ -44,8 +46,11 @@ from typing import Any, Mapping, Sequence
 logger = logging.getLogger(__name__)
 
 # Event names — `agent_coding.*` keeps them namespaced and obviously ours, while
-# the dashboard keys only on the bare `event.name` value (session_start /
-# api_response / tool_result) via the attribute promotions below.
+# the dashboard keys only on the bare `event.name` value (user_prompt /
+# session_start / api_response / tool_result) via the attribute promotions below.
+# `user_prompt` matches Claude Code's `claude_code.user_prompt`, so Hermes
+# prompts populate the dashboard's Prompts count + prompt-text drill-down.
+EVENT_USER_PROMPT = "user_prompt"
 EVENT_SESSION_START = "session_start"
 EVENT_API_RESPONSE = "api_response"
 EVENT_TOOL_RESULT = "tool_result"
@@ -169,6 +174,45 @@ class OtelLogEmitter:
         if self._capture_content and user_prompt:
             attrs["prompt"] = _safe_str(user_prompt)
         self._emit(EVENT_SESSION_START, attrs, body=user_prompt if self._capture_content else None)
+
+    # -- user prompt ------------------------------------------------------
+
+    def user_prompt(
+        self,
+        *,
+        session_id: str | None,
+        prompt: str | None,
+        model: str | None = None,
+    ) -> None:
+        """Emit one ``user_prompt`` record per turn (the developer's input).
+
+        This is the record the TraceVerse ``/agent-coding`` dashboard keys on
+        for its prompt count and prompt-text drill-down — its event name
+        (``user_prompt``) matches Claude Code's ``claude_code.user_prompt``.
+
+        It exists because Hermes delivers the prompt to ``pre_llm_call`` (not
+        ``on_session_start``), and :mod:`emitter` only puts it on the span as
+        ``gen_ai.prompt`` — which the *log-record*-based dashboard never reads.
+        Without this record a Hermes session shows tool calls and API responses
+        but no prompts.
+
+        ``prompt_length`` is non-sensitive and always emitted; the prompt text
+        rides on ``attributes.prompt`` and the record body, both privacy-gated
+        by ``capture_content`` (and secret-redacted by the ingest pipeline).
+        """
+        attrs: dict[str, Any] = {
+            "session.id": session_id,
+            "model": model,
+        }
+        if prompt is not None:
+            attrs["prompt_length"] = len(prompt)
+        if self._capture_content and prompt:
+            attrs["prompt"] = _safe_str(prompt)
+        self._emit(
+            EVENT_USER_PROMPT,
+            attrs,
+            body=prompt if self._capture_content else None,
+        )
 
     # -- LLM call ---------------------------------------------------------
 

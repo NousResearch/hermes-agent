@@ -645,12 +645,23 @@ def is_container() -> bool:
     # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
     # runtime still shows up in the mount table (overlay rootfs, runtime mount
     # paths), so scan mountinfo as a last resort.
+    #
+    # On WSL2 with Docker Desktop, the WSL2 kernel itself contains containerd
+    # entries in mountinfo even when running natively (not inside any
+    # container). The earlier checks (/.dockerenv, KUBERNETES_SERVICE_HOST,
+    # /proc/1/cgroup) already catch real containers inside WSL, so on WSL we
+    # only treat kubepods/crio (not containerd) as container indicators.
     try:
         with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
             mountinfo = f.read()
-            if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
-                _container_detected = True
-                return True
+            if is_wsl():
+                if any(marker in mountinfo for marker in ("kubepods", "crio")):
+                    _container_detected = True
+                    return True
+            else:
+                if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
+                    _container_detected = True
+                    return True
     except OSError:
         pass
     _container_detected = False

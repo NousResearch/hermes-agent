@@ -274,6 +274,58 @@ class TestIsContainer:
         monkeypatch.setattr("builtins.open", _fake_open)
         assert is_container() is True
 
+    def test_wsl_skips_containerd_marker(self, monkeypatch, tmp_path):
+        """On WSL2, containerd marker in mountinfo does NOT trigger container
+        detection (Docker Desktop mounts containerd into the WSL2 kernel)."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/\n")
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            "1234 1233 0:42 /containerd/.../rootfs / rw - overlay overlay rw\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        # containerd marker alone should NOT trigger on WSL (only kubepods/crio do)
+        assert is_container() is False
+
+    def test_wsl_still_detects_kubepods(self, monkeypatch, tmp_path):
+        """On WSL2, kubepods marker in mountinfo still triggers detection."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(hermes_constants, "is_wsl", lambda: True)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/\n")
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            "1234 1233 0:42 /kubepods/.../rootfs / rw - overlay overlay rw\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is True
+
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
         monkeypatch.setattr(hermes_constants, "_container_detected", True)

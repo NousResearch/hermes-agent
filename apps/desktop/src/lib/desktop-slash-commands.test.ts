@@ -165,8 +165,10 @@ describe('desktop slash command curation', () => {
   })
 
   it('explains known commands that desktop owns elsewhere', () => {
+    // /model with args triggers the model picker (not unavailable)
     expect(desktopSlashUnavailableMessage('/model sonnet')).toContain('model picker')
-    expect(desktopSlashUnavailableMessage('/skills')).toContain('desktop sidebar')
+    // /skills is now executable (was unavailable, now exec with hidden: true)
+    expect(desktopSlashUnavailableMessage('/skills')).toBeNull()
     expect(desktopSlashUnavailableMessage('/clear')).toContain('terminal interface')
   })
 

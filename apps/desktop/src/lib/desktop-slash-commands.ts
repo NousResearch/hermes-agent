@@ -113,7 +113,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   },
 
   // Overlay pickers
-  { name: '/model', description: 'Switch the model for this session', surface: exec(), args: true },
+  { name: '/model', description: 'Switch the model for this session', surface: picker('model'), args: true, hidden: true },
   {
     name: '/resume',
     description: 'Resume a saved session',
@@ -127,16 +127,16 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/background', description: 'Run a prompt in the background', aliases: ['/bg', '/btw'], surface: exec() },
   { name: '/compress', description: 'Compress this conversation context', surface: exec() },
   { name: '/debug', description: 'Create a debug report', surface: exec() },
-  { name: '/fast', description: 'Toggle fast mode for this session', surface: exec(), args: true },
+  { name: '/fast', description: 'Toggle fast mode for this session', surface: exec(), args: true, hidden: true },
   { name: '/goal', description: 'Manage the standing goal for this session', surface: exec() },
   { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },
   { name: '/pet', description: 'Toggle or adopt a petdex mascot (/pet, /pet list, /pet boba)', surface: action('pet'), args: true },
   { name: '/queue', description: 'Queue a prompt for the next turn', aliases: ['/q'], surface: exec() },
-  { name: '/reasoning', description: 'Set the reasoning level for this session', surface: exec(), args: true },
+  { name: '/reasoning', description: 'Set the reasoning level for this session', surface: exec(), args: true, hidden: true },
   { name: '/retry', description: 'Retry the last user message', surface: exec() },
   { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },
   { name: '/save', description: 'Save the current transcript to JSON', surface: exec() },
-  { name: '/skills', description: 'Manage skills for this session', surface: exec(), args: true },
+  { name: '/skills', description: 'Manage skills for this session', surface: exec(), args: true, hidden: true },
   { name: '/status', description: 'Show current session status', surface: exec() },
   { name: '/steer', description: 'Steer the current run after the next tool call', surface: exec() },
   { name: '/stop', description: 'Stop running background processes', surface: exec() },
@@ -144,7 +144,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/undo', description: 'Remove the last user/assistant exchange', surface: exec() },
   { name: '/usage', description: 'Show token usage for this session', surface: exec() },
   { name: '/version', description: 'Show Hermes Agent version', surface: exec() },
-  { name: '/voice', description: 'Toggle voice mode for this session', surface: exec(), args: true },
+  { name: '/voice', description: 'Toggle voice mode for this session', surface: exec(), args: true, hidden: true },
 
   // No desktop surface, but carry an alias (underscore spelling variants).
   { name: '/reload-mcp', aliases: ['/reload_mcp'], surface: unavailable('advanced') },

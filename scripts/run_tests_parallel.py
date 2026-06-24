@@ -81,7 +81,7 @@ _DURATIONS_FILE = "test_durations.json"
 
 
 def _count_tests(
-    files: List[Path], repo_root: Path, pytest_passthrough: List[str]
+    files: List[Path], repo_root: Path
 ) -> dict[Path, int]:
     """Run ``pytest --co -q`` once to count individual tests per file.
 
@@ -113,7 +113,6 @@ def _count_tests(
         "--co", "-q",
         *ignore_args,
         *[str(f) for f in files],
-        *pytest_passthrough,
     ]
     try:
         result = subprocess.run(
@@ -697,7 +696,7 @@ def main() -> int:
         return 1
 
     # Count individual tests per file via a single pytest --co pass.
-    test_counts = _count_tests(files, repo_root, pytest_passthrough)
+    test_counts = _count_tests(files, repo_root)
     total_tests = sum(test_counts.values())
 
     # Apply slicing if requested — distribute files across CI jobs by

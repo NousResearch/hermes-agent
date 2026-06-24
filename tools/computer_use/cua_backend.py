@@ -394,6 +394,140 @@ def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[
     return elements
 
 
+_PROCESS_NAME_CACHE: Dict[int, str] = {}
+
+
+def _process_name_for_pid(pid: int) -> str:
+    cached = _PROCESS_NAME_CACHE.get(pid)
+    if cached is not None:
+        return cached
+    name = ""
+    try:
+        import psutil  # type: ignore
+
+        proc = psutil.Process(pid)
+        name = proc.name() or os.path.basename(proc.exe() or "")
+    except Exception:
+        name = ""
+    _PROCESS_NAME_CACHE[pid] = name
+    return name
+
+
+def _first_list_field(*containers: Any, names: Tuple[str, ...]) -> List[Dict[str, Any]]:
+    for container in containers:
+        if not isinstance(container, dict):
+            continue
+        for name in names:
+            value = container.get(name)
+            if isinstance(value, list):
+                return [item for item in value if isinstance(item, dict)]
+    return []
+
+
+def _apps_from_tool_result(out: Dict[str, Any]) -> List[Dict[str, Any]]:
+    structured = out.get("structuredContent") or {}
+    data = out.get("data")
+    apps = _first_list_field(structured, data, names=("apps", "_legacy_apps"))
+    if apps:
+        return apps
+    if isinstance(data, list):
+        return [item for item in data if isinstance(item, dict)]
+    return []
+
+
+def _raw_window_bounds(raw: Dict[str, Any]) -> Optional[Tuple[int, int, int, int]]:
+    bounds = raw.get("bounds")
+    if isinstance(bounds, dict):
+        try:
+            return (
+                int(bounds.get("x", 0)),
+                int(bounds.get("y", 0)),
+                int(bounds.get("width", bounds.get("w", 0))),
+                int(bounds.get("height", bounds.get("h", 0))),
+            )
+        except (TypeError, ValueError):
+            return None
+    try:
+        return (
+            int(raw["x"]),
+            int(raw["y"]),
+            int(raw.get("width", raw.get("w", 0))),
+            int(raw.get("height", raw.get("h", 0))),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _window_is_parked_offscreen(bounds: Optional[Tuple[int, int, int, int]]) -> bool:
+    if bounds is None:
+        return False
+    x, y, width, height = bounds
+    # Windows parks minimized/tool windows around -32000. Some cua-driver
+    # builds still report those rows as is_on_screen=true, so filter them here.
+    return width <= 0 or height <= 0 or x <= -30000 or y <= -30000
+
+
+def _windows_from_tool_result(out: Dict[str, Any]) -> List[Dict[str, Any]]:
+    structured = out.get("structuredContent") or {}
+    data = out.get("data")
+    raw_windows = _first_list_field(
+        structured,
+        data,
+        names=("windows", "_legacy_windows"),
+    )
+    windows: List[Dict[str, Any]] = []
+    for raw in raw_windows:
+        try:
+            pid = int(raw["pid"])
+            window_id = int(raw.get("window_id", raw.get("id")))
+        except (KeyError, TypeError, ValueError):
+            continue
+        title = raw.get("title") if isinstance(raw.get("title"), str) else ""
+        process_name = _process_name_for_pid(pid)
+        has_explicit_app_name = isinstance(raw.get("app_name"), str) and bool(raw.get("app_name"))
+        app_name = (
+            raw.get("app_name")
+            or raw.get("app")
+            or raw.get("name")
+            or raw.get("bundle_id")
+            or process_name
+            or title
+            or ""
+        )
+        if not isinstance(app_name, str):
+            app_name = str(app_name)
+        match_text = (
+            f"{app_name} {process_name}" if has_explicit_app_name else f"{app_name} {title} {process_name}"
+        )
+        raw_bounds = _raw_window_bounds(raw)
+        explicit_off_screen = bool(raw.get("off_screen", False))
+        explicitly_not_on_screen = raw.get("is_on_screen") is False
+        windows.append({
+            "app_name": app_name,
+            "pid": pid,
+            "window_id": window_id,
+            "off_screen": bool(
+                explicit_off_screen
+                or explicitly_not_on_screen
+                or _window_is_parked_offscreen(raw_bounds)
+            ),
+            "title": title,
+            "z_index": raw.get("z_index", 0),
+            "match_text": match_text.lower(),
+        })
+    return windows
+
+
+def _frontmost_sort_key(window: Dict[str, Any]) -> float:
+    try:
+        z_index = float(window.get("z_index", 0))
+    except (TypeError, ValueError):
+        z_index = 0.0
+    # cua-driver reports Windows z-order with larger values closer to the
+    # foreground; macOS/Linux builds use lower values for the frontmost row.
+    return -z_index if sys.platform == "win32" else z_index
+
+
 def _image_dimensions_from_bytes(raw: bytes) -> Tuple[int, int]:
     """Best-effort PNG/JPEG dimension sniffing without extra dependencies."""
     if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
@@ -1009,12 +1143,46 @@ class CuaDriverBackend(ComputerUseBackend):
         return cua_driver_binary_available()
 
     # ── Capture ────────────────────────────────────────────────────
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
         """Capture the frontmost on-screen window (optionally filtered by app name).
 
-        Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
-        `get_window_state` (ax/som) or `screenshot` (vision).
+        When *both* `pid` and `window_id` are supplied, the wrapper skips
+        `list_windows` entirely and calls `get_window_state(pid, window_id)`
+        directly. This is the escape hatch for when discovery is broken
+        (cua-driver's MCP stdio channel returns empty for `list_windows`
+        even though the daemon itself — reachable via the `cua-driver`
+        CLI or via direct process inspection — can see the window).
+        The cua-driver CLI equivalent is::
+
+            cat > /tmp/hermes_args.json <<EOF
+            {"pid": 34300, "window_id": 27984774}
+            EOF
+            cat /tmp/hermes_args.json | cua-driver call get_window_state
+
+        Frontmost-window capture (the default) still walks `list_windows`
+        and picks the topmost match.
         """
+        # ── Direct-target path: pid + window_id supplied by the caller ──
+        # Surface 2 of the Hermes-fix issue: bypass list_windows when the
+        # caller already has both identifiers (e.g. resolved out-of-band
+        # via PowerShell, `cua-driver list_windows`, or psutil). The daemon
+        # accepts (pid, window_id) directly, so the wrapper just hands
+        # them through. This branch exists specifically because list_windows
+        # can return [] even when cua-driver-rs itself sees the window.
+        if pid is not None and window_id is not None:
+            return self._capture_window(
+                mode=mode,
+                pid=int(pid),
+                window_id=int(window_id),
+                app_name=app or "",
+            )
+
         # Step 1: enumerate on-screen windows to find target pid/window_id.
         # Surface 3 of NousResearch/hermes-agent#47072: read the canonical
         # `structuredContent.windows` array directly. Pre-fix the wrapper
@@ -1027,20 +1195,8 @@ class CuaDriverBackend(ComputerUseBackend):
             "list_windows",
             {"on_screen_only": True, "session": self._session_id},
         )
-        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "off_screen": not w.get("is_on_screen", True),
-                "title": w.get("title", ""),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
-        # Sort by z_index descending (lowest z_index = frontmost on macOS).
-        windows.sort(key=lambda w: w["z_index"])
+        windows = _windows_from_tool_result(lw_out)
+        windows.sort(key=_frontmost_sort_key)
 
         if not windows:
             return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
@@ -1090,7 +1246,7 @@ class CuaDriverBackend(ComputerUseBackend):
             )
         elif app:
             app_lower = app.lower()
-            filtered = [w for w in windows if app_lower in w["app_name"].lower()]
+            filtered = [w for w in windows if app_lower in w["match_text"]]
             if not filtered:
                 return CaptureResult(
                     mode=mode, width=0, height=0, png_b64=None,
@@ -1103,10 +1259,28 @@ class CuaDriverBackend(ComputerUseBackend):
                     ),
                     png_bytes_len=0,
                 )
-            windows = filtered
+            visible_filtered = [w for w in filtered if not w["off_screen"]]
+            if not visible_filtered:
+                return CaptureResult(
+                    mode=mode, width=0, height=0, png_b64=None,
+                    elements=[], app="",
+                    window_title=(
+                        f"<matched app={app!r}, but all matching windows are "
+                        f"off-screen or minimized; restore the window or launch "
+                        f"a new visible window before capture()>"
+                    ),
+                    png_bytes_len=0,
+                )
+            windows = visible_filtered
 
         # Pick first on-screen window (sorted by z_index / z-order above).
-        target = next((w for w in windows if not w["off_screen"]), windows[0])
+        target = next((w for w in windows if not w["off_screen"]), None)
+        if target is None:
+            return CaptureResult(
+                mode=mode, width=0, height=0, png_b64=None,
+                elements=[], app="", window_title="<no on-screen window found>",
+                png_bytes_len=0,
+            )
         self._active_pid = target["pid"]
         self._active_window_id = target["window_id"]
         app_name = target["app_name"]
@@ -1243,6 +1417,140 @@ class CuaDriverBackend(ComputerUseBackend):
             png_b64=png_b64,
             elements=elements,
             app=app_name,
+            window_title=window_title,
+            png_bytes_len=png_bytes_len,
+            image_mime_type=image_mime_type,
+        )
+
+    def _capture_window(
+        self,
+        *,
+        mode: str,
+        pid: int,
+        window_id: int,
+        app_name: str,
+    ) -> CaptureResult:
+        """Capture a specific (pid, window_id) without consulting list_windows.
+
+        The escape hatch used by ``capture(pid=..., window_id=...)`` and
+        ``focus_app(pid=..., window_id=...)``. Mirrors the post-``target``
+        body of the frontmost-window capture path so the two branches
+        produce identical-shaped results — the only difference is that
+        this one resolves the window from caller-supplied identifiers.
+
+        Failure semantics: if cua-driver rejects the (pid, window_id)
+        pair, returns the error from the driver verbatim in
+        ``window_title`` (caller-visible) and an empty CaptureResult.
+        Better a clear "no such window" than a silent 0x0 that the caller
+        has to debug downstream.
+        """
+        # Record the active pid/window so subsequent click/type/drag calls
+        # land on the same window without re-querying. Mirrors lines
+        # 1283-1284 of the frontmost capture path.
+        self._active_pid = pid
+        self._active_window_id = window_id
+        # Update _last_app only if the caller passed one; never overwrite
+        # a previously resolved app name with empty.
+        if app_name:
+            self._last_app = app_name
+
+        png_b64: Optional[str] = None
+        image_mime_type: Optional[str] = None
+        elements: List[UIElement] = []
+        width = height = 0
+        window_title = ""
+
+        if mode == "vision":
+            use_screenshot = (
+                self._session._has_tool("screenshot")
+                or not self._session.capabilities_discovered
+            )
+            sc_out: Optional[Dict[str, Any]] = None
+            if use_screenshot:
+                sc_out = self._session.call_tool(
+                    "screenshot",
+                    {
+                        "window_id": window_id,
+                        "format": "jpeg",
+                        "quality": 85,
+                        "session": self._session_id,
+                    },
+                )
+                png_b64, image_mime_type = _image_from_tool_result(sc_out)
+                if not png_b64:
+                    sc_out = None
+            if sc_out is None:
+                gws_out = self._session.call_tool(
+                    "get_window_state",
+                    {
+                        "pid": pid,
+                        "window_id": window_id,
+                        "session": self._session_id,
+                    },
+                )
+                png_b64, image_mime_type = _image_from_tool_result(gws_out)
+                text = gws_out.get("data") if isinstance(gws_out.get("data"), str) else ""
+                _, tree = _split_tree_text(text) if "_split_tree_text" in globals() else ("", "")
+                wt = re.search(r'AXWindow\s+"([^"]+)"', tree) if tree else None
+                if wt:
+                    window_title = wt.group(1)
+        else:
+            # AX / SOM: get_window_state returns tree + screenshot in one round-trip.
+            try:
+                gws_out = self._session.call_tool(
+                    "get_window_state",
+                    {
+                        "pid": pid,
+                        "window_id": window_id,
+                        "session": self._session_id,
+                    },
+                )
+            except Exception as e:
+                # Mirror the frontmost-path behavior: a failure here
+                # surfaces as a non-empty window_title the caller can read
+                # rather than a 0x0 CaptureResult they'd have to chase.
+                return CaptureResult(
+                    mode=mode, width=0, height=0, png_b64=None,
+                    elements=[], app=app_name,
+                    window_title=f"<get_window_state failed: {e}>",
+                    png_bytes_len=0,
+                )
+            text = gws_out.get("data") if isinstance(gws_out.get("data"), str) else ""
+            summary, tree = _split_tree_text(text) if "_split_tree_text" in globals() else ("", "")
+            sc_elements = (gws_out.get("structuredContent") or {}).get("elements")
+            if isinstance(sc_elements, list) and sc_elements:
+                elements = _parse_elements_from_structured(sc_elements)
+            else:
+                elements = _parse_elements_from_tree(tree) if tree else []
+            self._snapshot_tokens = {
+                e.index: e.element_token
+                for e in elements
+                if e.element_token
+            }
+            png_b64, image_mime_type = _image_from_tool_result(gws_out)
+            wt = re.search(r'AXWindow\s+"([^"]+)"', tree) if tree else None
+            if wt:
+                window_title = wt.group(1)
+
+        png_bytes_len = 0
+        if png_b64:
+            try:
+                raw = base64.b64decode(png_b64, validate=False)
+                png_bytes_len = len(raw)
+                detected_width, detected_height = _image_dimensions_from_bytes(raw)
+                if detected_width and detected_height:
+                    width = detected_width
+                    height = detected_height
+            except Exception:
+                png_bytes_len = len(png_b64) * 3 // 4
+
+        return CaptureResult(
+            mode=mode,
+            width=width,
+            height=height,
+            png_b64=png_b64,
+            elements=elements,
+            app=app_name or self._last_app or "",
             window_title=window_title,
             png_bytes_len=png_bytes_len,
             image_mime_type=image_mime_type,
@@ -1400,6 +1708,9 @@ class CuaDriverBackend(ComputerUseBackend):
     # ── Introspection ──────────────────────────────────────────────
     def list_apps(self) -> List[Dict[str, Any]]:
         out = self._session.call_tool("list_apps", {"session": self._session_id})
+        apps = _apps_from_tool_result(out)
+        if apps:
+            return apps
         data = out["data"]
         if isinstance(data, list):
             return data
@@ -1415,7 +1726,13 @@ class CuaDriverBackend(ComputerUseBackend):
             return apps
         return []
 
-    def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
+    def focus_app(
+        self,
+        app: str,
+        raise_window: bool = False,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> ActionResult:
         """Target an app for subsequent actions without stealing system focus.
 
         cua-driver background-automation never needs to bring a window to the
@@ -1425,27 +1742,37 @@ class CuaDriverBackend(ComputerUseBackend):
         its pid/window_id so that subsequent click/type calls hit the right
         process.
 
+        When *pid* + *window_id* are both supplied, the list_windows
+        round-trip is skipped and the supplied identifiers are recorded
+        directly. Same escape hatch as ``capture(pid=..., window_id=...)``
+        — useful when discovery is broken and the caller has the
+        identifiers from an out-of-band source (PowerShell,
+        ``cua-driver list_windows``, psutil).
+
         raise_window=True is intentionally ignored: stealing the user's focus
         is exactly what this backend is designed to avoid.
         """
+        # ── Direct-target path: caller already has pid + window_id ──
+        if pid is not None and window_id is not None:
+            self._active_pid = int(pid)
+            self._active_window_id = int(window_id)
+            if app:
+                self._last_app = app
+            return ActionResult(
+                ok=True, action="focus_app",
+                message=f"Targeted pid {self._active_pid}, window "
+                        f"{self._active_window_id} without raising window.",
+            )
+
         lw_out = self._session.call_tool(
             "list_windows",
             {"on_screen_only": True, "session": self._session_id},
         )
-        raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
-        windows.sort(key=lambda w: w["z_index"])
+        windows = _windows_from_tool_result(lw_out)
+        windows.sort(key=_frontmost_sort_key)
 
         app_lower = app.lower()
-        matched = [w for w in windows if app_lower in w["app_name"].lower()]
+        matched = [w for w in windows if app_lower in w["match_text"] and not w["off_screen"]]
         # Don't silently fall back to the frontmost window when the filter
         # matches nothing — that hides the real failure (often a localized
         # macOS app name mismatch, e.g. caller passed "Calculator" but

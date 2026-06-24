@@ -99,7 +99,26 @@ class ComputerUseBackend(ABC):
 
     # ── Capture ─────────────────────────────────────────────────────
     @abstractmethod
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult: ...
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
+        """Capture a window.
+
+        When both ``pid`` and ``window_id`` are supplied, the backend
+        should bypass its app-name discovery path and target the
+        caller-identified window directly. This is the escape hatch for
+        when discovery (list_apps / list_windows) is broken but the
+        caller has the identifiers from another source (psutil,
+        PowerShell, the cua-driver CLI directly).
+
+        Implementations MUST accept the keyword arguments but treat
+        pid/window_id as optional — callers that don't supply them keep
+        the original frontmost-window behavior.
+        """
 
     # ── Pointer actions ─────────────────────────────────────────────
     @abstractmethod
@@ -152,8 +171,20 @@ class ComputerUseBackend(ABC):
         """Return running apps with bundle IDs, PIDs, window counts."""
 
     @abstractmethod
-    def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
-        """Route input to `app` (by name or bundle ID). Default: focus without raise."""
+    def focus_app(
+        self,
+        app: str,
+        raise_window: bool = False,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> ActionResult:
+        """Route input to ``app`` (by name or bundle ID).
+
+        Default: focus without raise. When both ``pid`` and ``window_id``
+        are supplied, implementations should bypass app-name discovery
+        (skip the list_windows round-trip) and record the caller-supplied
+        identifiers directly. See ``capture`` for the rationale.
+        """
 
     # ── Native-value mutation ────────────────────────────────────────
     @abstractmethod

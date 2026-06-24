@@ -118,11 +118,23 @@ function downloadInstallScript(commit, destPath) {
       .get(url, res => {
         if (res.statusCode === 301 || res.statusCode === 302) {
           // GitHub raw shouldn't redirect for a SHA URL, but follow once
-          // defensively.
+          // defensively. Validate the redirect target is https and on
+          // raw.githubusercontent.com before following.
           out.close()
           fs.unlinkSync(tmpPath)
+          const redirectUrl = res.headers.location || ''
+          try {
+            const parsed = new URL(redirectUrl)
+            if (parsed.protocol !== 'https:' || parsed.hostname !== 'raw.githubusercontent.com') {
+              reject(new Error('Redirect to unexpected host: ' + redirectUrl))
+              return
+            }
+          } catch {
+            reject(new Error('Invalid redirect URL: ' + redirectUrl))
+            return
+          }
           https
-            .get(res.headers.location, res2 => {
+            .get(redirectUrl, res2 => {
               if (res2.statusCode !== 200) {
                 reject(
                   new Error(

@@ -81,6 +81,11 @@ function probeGatewayWebSocket(wsUrl, options = {}) {
       } catch {
         // ignore — best effort teardown
       }
+      try {
+        removeListeners()
+      } catch {
+        // ignore — best effort cleanup
+      }
       resolve(result)
     }
 
@@ -140,6 +145,13 @@ function probeGatewayWebSocket(wsUrl, options = {}) {
     addListener(socket, 'error', onError)
     addListener(socket, 'close', onClose)
 
+    const removeListeners = () => {
+      removeListener(socket, 'open', onOpen)
+      removeListener(socket, 'message', onMessage)
+      removeListener(socket, 'error', onError)
+      removeListener(socket, 'close', onClose)
+    }
+
     if (connectTimeoutMs > 0) {
       connectTimer = setTimeout(() => {
         finish({
@@ -156,10 +168,18 @@ function addListener(socket, type, handler) {
     socket.addEventListener(type, handler)
     return
   }
-  // Node's global WebSocket implements addEventListener; this fallback keeps the
-  // helper usable with the `ws` package's EventEmitter shape too.
   if (typeof socket.on === 'function') {
     socket.on(type, handler)
+  }
+}
+
+function removeListener(socket, type, handler) {
+  if (typeof socket.removeEventListener === 'function') {
+    socket.removeEventListener(type, handler)
+    return
+  }
+  if (typeof socket.off === 'function') {
+    socket.off(type, handler)
   }
 }
 

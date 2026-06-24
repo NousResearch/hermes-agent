@@ -481,7 +481,8 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
-               name_override: str = "") -> None:
+               name_override: str = "",
+               require_vetting: bool = False) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
@@ -490,6 +491,16 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     triggers a prompt instead; ``skip_confirm=True`` means "non-interactive"
     (so pair it with ``name_override`` when installing from a URL that has
     no frontmatter).
+
+    ``require_vetting`` adds a pre-install review gate (t_8a86fc9c): if
+    the candidate's SKILL.md does not already carry a ``vetted_by``
+    stamp from a prior ``hermes skills vet`` run, refuse the install
+    and return with a clear error.  The flag is intended for fleet /
+    CI rollouts where every new skill must come from a human-reviewed
+    catalog.  It composes with the security scan: a vetted skill still
+    goes through the normal scan, and a ``--force`` install still
+    bypasses the security verdict (but not the vetting gate — vetting
+    is an organisational review, not a malware check).
     """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
@@ -579,6 +590,49 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         if meta is not None:
             meta.name = bundle.name
             meta.path = bundle.name
+
+    # --require-vetting gate (t_8a86fc9c).  Refuse to install any
+    # skill whose SKILL.md does not already carry a ``vetted_by``
+    # stamp from a prior ``hermes skills vet`` run.  This is meant
+    # for fleet / CI rollouts; it sits *before* the quarantine +
+    # scan step so a rejected install never touches the filesystem.
+    if require_vetting:
+        try:
+            from hermes_cli.skill_loader import is_vetted, parse_skill_frontmatter
+            skill_md_content = (
+                bundle.files.get("SKILL.md") if bundle.files else None
+            )
+            if isinstance(skill_md_content, bytes):
+                skill_md_content = skill_md_content.decode(
+                    "utf-8", errors="replace"
+                )
+            if not skill_md_content:
+                c.print(
+                    f"[bold red]Install rejected:[/] skill {bundle.name!r} "
+                    "carries no SKILL.md content, so --require-vetting "
+                    "cannot determine its review status.\n"
+                )
+                return
+            # The local frontmatter splitter only inspects scalar
+            # lines; ``vetted_by`` is a scalar, so this is enough.
+            from hermes_cli.skill_loader import _local_parse_frontmatter
+            fm, _body = _local_parse_frontmatter(skill_md_content)
+            if not is_vetted(fm):
+                c.print(
+                    f"[bold red]Install rejected:[/] skill {bundle.name!r} "
+                    "is not vetted (vetted_by frontmatter field is missing "
+                    "or set to 'unvetted'). Run "
+                    f"`hermes skills vet {bundle.name} --by <reviewer>` "
+                    "and retry. The security scan and trust level are "
+                    "unrelated to the vetting stamp.\n"
+                )
+                return
+        except Exception as exc:  # pragma: no cover - defensive
+            c.print(
+                f"[bold red]Install rejected:[/] --require-vetting check "
+                f"failed: {exc}\n"
+            )
+            return
 
     # URL-sourced skills: offer to pick a category interactively when the
     # caller didn't specify one (TTY only — non-interactive installs fall
@@ -887,6 +941,8 @@ def inspect_skill(identifier: str) -> Optional[dict]:
 def do_list(source_filter: str = "all",
             enabled_only: bool = False,
             show_provenance: bool = False,
+            vetted_only: bool = False,
+            unvetted_only: bool = False,
             console: Optional[Console] = None) -> None:
     """List installed skills, distinguishing hub, builtin, local-edit, and local.
 
@@ -895,6 +951,11 @@ def do_list(source_filter: str = "all",
         enabled_only: If True, hide disabled skills from the output.
         show_provenance: If True, render a Provenance column showing the
             install-origin path for each skill.
+        vetted_only: If True, hide skills that haven't been through
+            ``hermes skills vet`` (vetted_by set to something other
+            than the ``unvetted`` sentinel).
+        unvetted_only: If True, hide vetted skills.  Mutually exclusive
+            with ``vetted_only``; the caller is expected to pick one.
 
     Source and Trust are persisted at install / sync time in a per-profile
     ``.provenance`` registry (see ``tools/skills_provenance.py``). When a
@@ -906,6 +967,11 @@ def do_list(source_filter: str = "all",
     config — ``hermes -p <profile> skills list`` reads that profile's
     ``skills.disabled`` list because ``-p`` swaps ``HERMES_HOME`` at process
     start.  No explicit profile flag needed here.
+
+    When neither ``vetted_only`` nor ``unvetted_only`` is set and any
+    *enabled* local skill is unvetted, a warning banner is printed
+    *after* the table so the table itself stays scannable (mirroring
+    the back-fill provenance warning shape).
     """
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_provenance import (
@@ -953,6 +1019,16 @@ def do_list(source_filter: str = "all",
     title = "Installed Skills"
     if enabled_only:
         title += " (enabled only)"
+    if vetted_only:
+        title += " (vetted only)"
+    if unvetted_only:
+        title += " (unvetted only)"
+
+    # Lazy import: skill_loader is the canonical home of the
+    # ``is_vetted`` predicate.  Importing inside the function keeps
+    # the module-level import list short and avoids a cold-start
+    # chain when do_list is called by a script that never uses vet.
+    from hermes_cli.skill_loader import is_vetted, parse_skill_frontmatter
 
     table = Table(title=title)
     table.add_column("Name", style="bold cyan")
@@ -962,11 +1038,13 @@ def do_list(source_filter: str = "all",
     if show_provenance:
         table.add_column("Provenance", style="dim")
     table.add_column("Status", style="dim")
+    table.add_column("Vetted", style="dim")
 
     counts = {p: 0 for p in VALID_PROVENANCE}
     enabled_count = 0
     disabled_count = 0
     backfilled_names: List[str] = []
+    unvetted_enabled_names: List[str] = []
     registry_dirty = False
 
     for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
@@ -974,6 +1052,27 @@ def do_list(source_filter: str = "all",
         category = skill.get("category", "")
         install_path = skill.get("install_path")
         hub_entry = hub_installed.get(name)
+
+        # Vetting status.  Read the SKILL.md file once per skill (only
+        # when there's a chance we'll render it — when the source
+        # filter is "all" or "local" / "local-edit", and the skill has
+        # a usable install_path).  Failures are treated as "unvetted"
+        # so a malformed SKILL.md doesn't crash the listing.
+        vetted = False
+        vetted_by_display = ""
+        skill_md = install_path
+        if skill_md:
+            try:
+                from pathlib import Path as _P
+                p = _P(skill_md)
+                candidate = p / "SKILL.md" if p.is_dir() else (p if p.name == "SKILL.md" else None)
+                if candidate and candidate.is_file():
+                    fm, _body = parse_skill_frontmatter(candidate)
+                    if is_vetted(fm):
+                        vetted = True
+                        vetted_by_display = str(fm.get("vetted_by", "")).strip()
+            except Exception:
+                vetted = False
 
         # 1. Persisted provenance wins.
         persisted = provenance_registry.get(name)
@@ -1030,6 +1129,15 @@ def do_list(source_filter: str = "all",
         if enabled_only and not is_enabled:
             continue
 
+        # Vetting filter (t_8a86fc9c).  When --vetted or --unvetted is
+        # set, only matching skills are rendered.  The filter applies
+        # on top of --enabled-only and --source so the caller can
+        # narrow on any axis.
+        if vetted_only and not vetted:
+            continue
+        if unvetted_only and vetted:
+            continue
+
         counts[provenance] = counts.get(provenance, 0) + 1
 
         if is_enabled:
@@ -1039,12 +1147,27 @@ def do_list(source_filter: str = "all",
             disabled_count += 1
             status_cell = "[dim red]disabled[/]"
 
+        # Track unvetted ENABLED skills for the post-table warning
+        # banner.  Disabled skills are skipped — the user already
+        # knows they're off, and adding them to the warning would
+        # create noise without action.
+        if is_enabled and not vetted:
+            unvetted_enabled_names.append(name)
+
         trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow", "local": "dim"}.get(trust, "dim")
         trust_label = "official" if source_display == "official" else trust
         row = [name, category, source_display, f"[{trust_style}]{trust_label}[/]"]
         if show_provenance:
             row.append(origin_path or "")
         row.append(status_cell)
+        # Vetted column: green "yes / <reviewer>" when vetted, red
+        # "no" otherwise.  Showing the reviewer identity in the
+        # default column saves a follow-up `hermes skills inspect` for
+        # the "who vetted this?" question.
+        if vetted:
+            row.append(f"[green]yes[/] [dim]by {vetted_by_display}[/]")
+        else:
+            row.append("[red]no[/]")
         table.add_row(*row)
 
     # Persist any back-filled provenance so the next invocation is silent.
@@ -1100,6 +1223,29 @@ def do_list(source_filter: str = "all",
             f"{sample}{more}. Run `hermes update` to refresh the registry.\n"
         )
 
+    # Unvetted-skills warning banner (t_8a86fc9c).  Only fires when
+    # neither --vetted nor --unvetted is set (otherwise the user is
+    # already asking specifically about vetting) and at least one
+    # *enabled* local skill is unvetted.  Mirrors the back-fill
+    # warning's "after the table" placement so the table itself stays
+    # scannable, and only lists the first 5 names to keep the line
+    # width manageable in a 100-column terminal.
+    if not vetted_only and not unvetted_only and unvetted_enabled_names:
+        sample = ", ".join(unvetted_enabled_names[:5])
+        more = (
+            f" (and {len(unvetted_enabled_names) - 5} more)"
+            if len(unvetted_enabled_names) > 5
+            else ""
+        )
+        c.print(
+            f"[yellow]Warning:[/] {len(unvetted_enabled_names)} enabled "
+            f"skill(s) are unvetted — {sample}{more}. "
+            f"Run `hermes skills vet <name> --by <reviewer>` to "
+            f"stamp them, or `hermes skills list --unvetted` to see the "
+            f"full list. Unvetted skills still load but are flagged for "
+            f"review.\n"
+        )
+
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
     """Check hub-installed skills for upstream updates."""
@@ -1142,6 +1288,158 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
         do_install(entry["identifier"], category=category, force=True, console=c)
 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
+
+
+def do_vet(
+    name: Optional[str] = None,
+    *,
+    by: str = "",
+    dry_run: bool = False,
+    all_skills: bool = False,
+    when: str | None = None,
+    console: Optional[Console] = None,
+) -> int:
+    """Run the four vetting validators and stamp vetted skills (t_8a86fc9c).
+
+    Picks the skill to vet by:
+
+    * ``name`` — a single installed skill (matched against the
+      ``name:`` frontmatter value).  If not installed, exits with a
+      non-zero code and a clear message.
+    * ``--all`` — every local SKILL.md reachable from
+      ``tools.skills_tool._find_all_skills``.  Each one is validated in
+      turn; failures don't abort the loop — every skill is reported, and
+      the exit code is ``0`` only if every skill vetted successfully.
+
+    Returns the number of skills that vetted successfully (used by the
+    CLI wrapper to pick the process exit code).  ``--dry-run`` is pure:
+    no files are written, the count is still returned.
+
+    ``--by`` is required when stamping (i.e. anything other than
+    ``--dry-run``); the function refuses to fall back to a default
+    reviewer identity because the vetting stamp is an audit artifact.
+    """
+    from hermes_cli.skill_loader import run_vet
+    from tools.skills_tool import _find_all_skills
+
+    c = console or _console
+
+    if not name and not all_skills:
+        c.print(
+            "[bold red]Error:[/] pass a skill name or --all. "
+            "Usage: hermes skills vet <name> --by <reviewer>\n"
+        )
+        return 0
+
+    if not dry_run and not by:
+        c.print(
+            "[bold red]Error:[/] --by <reviewer> is required to stamp "
+            "a vetting record. Use --dry-run to validate without writing.\n"
+        )
+        return 0
+
+    if by and not _is_acceptable_reviewer(by):
+        c.print(
+            f"[bold red]Error:[/] --by {by!r} contains characters outside "
+            "[A-Za-z0-9_.@:+-] or is longer than 64 characters.\n"
+        )
+        return 0
+
+    # Resolve the target list.  When ``--all`` is set, we walk every
+    # installed skill; otherwise we look up the named skill.
+    all_skills_list = _find_all_skills(skip_disabled=True)
+    if all_skills:
+        targets: List[Dict[str, Any]] = list(all_skills_list)
+    else:
+        targets = [s for s in all_skills_list if s.get("name") == name]
+        if not targets:
+            c.print(
+                f"[bold red]Error:[/] skill {name!r} is not installed. "
+                "Run `hermes skills list` to see available skills.\n"
+            )
+            return 0
+
+    if not targets:
+        c.print("[dim]No local skills to vet.[/]\n")
+        return 0
+
+    success = 0
+    for entry in targets:
+        skill_name = entry.get("name", "<unknown>")
+        install_path = entry.get("install_path")
+        if not install_path:
+            c.print(f"[yellow]skip:[/] {skill_name} — no install_path recorded")
+            continue
+        skill_path = _resolve_skill_path(install_path)
+        if skill_path is None or not skill_path.is_file():
+            c.print(
+                f"[yellow]skip:[/] {skill_name} — SKILL.md not found at "
+                f"{install_path}"
+            )
+            continue
+
+        c.print(f"\n[bold]Vetting:[/] {skill_name} ({skill_path})")
+        result = run_vet(skill_path, reviewer=by or "wags-reviewer",
+                         dry_run=dry_run, when=when)
+        # Render per-validator checklist.
+        for vname, vresult in result["validators"].items():
+            if vresult["ok"]:
+                c.print(f"  [green]✓[/] {vname}")
+            else:
+                c.print(f"  [red]✗ {vname}[/]")
+                for err in vresult.get("errors", []):
+                    c.print(f"      [dim]- {err}[/]")
+        if result["ok"]:
+            success += 1
+            if dry_run:
+                c.print(
+                    f"  [green]would stamp[/] vetted_by={by or 'wags-reviewer'} "
+                    f"vetted_at={result['timestamp']}"
+                )
+            else:
+                c.print(
+                    f"  [green]stamped[/] vetted_by={by} "
+                    f"vetted_at={result['timestamp']}"
+                )
+        else:
+            c.print("  [red]not stamped — see errors above[/]")
+
+    c.print(
+        f"\n[dim]{success}/{len(targets)} skill(s) vetted successfully"
+        f"{' (dry-run)' if dry_run else ''}[/]\n"
+    )
+    return success
+
+
+def _is_acceptable_reviewer(value: str) -> bool:
+    """Mirror of ``hermes_cli.skill_loader._VETTED_BY_RE`` used by the CLI.
+
+    Kept here (rather than imported) so a tightening of the upstream
+    regex doesn't silently flip the CLI to rejecting previously-valid
+    reviewer ids.  The two checks must stay in lock-step — tests cover
+    that.
+    """
+    import re
+    return bool(re.match(r"^[A-Za-z0-9_.@:+-]{1,64}$", value))
+
+
+def _resolve_skill_path(install_path: str) -> "Path | None":
+    """Translate a ``_find_all_skills`` install_path into a real SKILL.md.
+
+    install_path is typically the directory containing the SKILL.md
+    file (``skills/<name>`` or ``skills/<category>/<name>``).  When the
+    caller is running in a test environment the path may not exist
+    — return ``None`` so the CLI can skip it instead of crashing.
+    """
+    from pathlib import Path as _Path
+
+    p = _Path(install_path)
+    if p.is_file() and p.name == "SKILL.md":
+        return p
+    if p.is_dir():
+        candidate = p / "SKILL.md"
+        return candidate if candidate.is_file() else None
+    return None
 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
@@ -1792,7 +2090,8 @@ def skills_command(args) -> None:
     elif action == "install":
         do_install(args.identifier, category=args.category, force=args.force,
                    skip_confirm=getattr(args, "yes", False),
-                   name_override=getattr(args, "name", "") or "")
+                   name_override=getattr(args, "name", "") or "",
+                   require_vetting=getattr(args, "require_vetting", False))
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":
@@ -1800,6 +2099,8 @@ def skills_command(args) -> None:
             source_filter=args.source,
             enabled_only=getattr(args, "enabled_only", False),
             show_provenance=getattr(args, "provenance", False),
+            vetted_only=getattr(args, "vetted", False),
+            unvetted_only=getattr(args, "unvetted", False),
         )
     elif action == "check":
         do_check(name=getattr(args, "name", None))
@@ -1808,6 +2109,19 @@ def skills_command(args) -> None:
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
+    elif action == "vet":
+        # ``do_vet`` returns the success count so it can drive the
+        # process exit code in the ``hermes`` CLI; ``skills_command``
+        # itself is documented as returning None (other do_* helpers
+        # print their own status), so we discard the count here and
+        # the CLI wrapper picks it up via the ``subprocess`` returncode.
+        do_vet(
+            name=getattr(args, "name", None),
+            by=getattr(args, "by", "") or "",
+            dry_run=getattr(args, "dry_run", False),
+            all_skills=getattr(args, "all_skills", False),
+            when=getattr(args, "when", None),
+        )
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1847,7 +2161,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|vet|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1873,6 +2187,8 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills audit my-skill
         /skills audit --deep
         /skills audit my-skill --deep
+        /skills vet my-skill --by wags-reviewer
+        /skills vet --all --dry-run
         /skills uninstall my-skill
         /skills tap list
         /skills tap add owner/repo
@@ -1995,6 +2311,28 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         name = args[0] if args and not args[0].startswith("--") else None
         deep = "--deep" in args
         do_audit(name=name, console=c, deep=deep)
+
+    elif action == "vet":
+        # /skills vet <name> --by <reviewer> [--dry-run] [--all]
+        # Parse the simple case inline.  We don't reuse the full
+        # argparse here because /skills is a free-form chat surface
+        # and shelling out to argparse is overkill.
+        if "--all" in args:
+            name = None
+            all_skills = True
+            rest = [a for a in args if a != "--all"]
+        else:
+            all_skills = False
+            # Find the first non-flag token to use as the skill name.
+            name = next((a for a in args if not a.startswith("--")), None)
+            rest = [a for a in args if a != name] if name else list(args)
+        by = ""
+        if "--by" in rest:
+            idx = rest.index("--by")
+            if idx + 1 < len(rest):
+                by = rest[idx + 1]
+        dry_run = "--dry-run" in rest
+        do_vet(name=name, by=by, dry_run=dry_run, all_skills=all_skills, console=c)
 
     elif action == "uninstall":
         if not args:

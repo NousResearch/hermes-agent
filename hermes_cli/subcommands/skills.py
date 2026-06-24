@@ -85,6 +85,16 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         "--force", action="store_true", help="Install despite blocked scan verdict"
     )
     skills_install.add_argument(
+        "--require-vetting",
+        action="store_true",
+        help=(
+            "Refuse to install a skill whose SKILL.md does not already "
+            "carry a vetted_by stamp (i.e. has not been through "
+            "`hermes skills vet`). Use in CI / fleet-rollout pipelines "
+            "to enforce a review gate on every new install."
+        ),
+    )
+    skills_install.add_argument(
         "--yes",
         "-y",
         action="store_true",
@@ -116,6 +126,18 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         "skill was seeded from (e.g. ~/.hermes/skills/apple/macos-computer-use "
         "for a builtin, the upstream registry path for a hub install).",
     )
+    skills_list.add_argument(
+        "--vetted",
+        action="store_true",
+        help="Show only vetted skills (those with a non-'unvetted' "
+        "vetted_by frontmatter field, set by `hermes skills vet`).",
+    )
+    skills_list.add_argument(
+        "--unvetted",
+        action="store_true",
+        help="Show only unvetted skills. Useful as a TODO list for "
+        "`hermes skills vet <name> --by <reviewer>` runs.",
+    )
 
     skills_check = skills_subparsers.add_parser(
         "check", help="Check installed hub skills for updates"
@@ -143,6 +165,50 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         "--deep",
         action="store_true",
         help="Run AST-level analysis on Python files (opt-in diagnostic)",
+    )
+
+    skills_vet = skills_subparsers.add_parser(
+        "vet",
+        help="Run the four vetting validators and stamp vetted skills (t_8a86fc9c)",
+        description=(
+            "Run the four SKILL.md vetting validators (frontmatter, security, "
+            "content-quality, link/file-existence) and, on success, stamp "
+            "vetted_at + vetted_by in the SKILL.md frontmatter. "
+            "Use --dry-run to validate without writing."
+        ),
+    )
+    skills_vet.add_argument(
+        "name",
+        nargs="?",
+        help="Specific installed skill to vet. Required unless --all is set.",
+    )
+    skills_vet.add_argument(
+        "--by",
+        default="",
+        help=(
+            "Reviewer identity to record in vetted_by (e.g. 'wags-reviewer', "
+            "'human:charlie'). Required to stamp; ignored with --dry-run."
+        ),
+    )
+    skills_vet.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate without writing vetted_at / vetted_by.",
+    )
+    skills_vet.add_argument(
+        "--all",
+        action="store_true",
+        dest="all_skills",
+        help="Vet every local installed skill.",
+    )
+    skills_vet.add_argument(
+        "--when",
+        default=None,
+        help=(
+            "Override the vetted_at timestamp (ISO-8601, e.g. "
+            "'2026-06-23T18:30:00Z'). Defaults to the current UTC time. "
+            "Useful for tests, audits, and backfilling stamps."
+        ),
     )
 
     skills_uninstall = skills_subparsers.add_parser(

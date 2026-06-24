@@ -695,8 +695,12 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     def _bot_id_cache_path(self) -> _Path:
         """Location where the resolved bot user_id is cached across restarts."""
-        base = os.getenv("HERMES_HOME", str(_Path.home() / ".hermes"))
-        return _Path(base) / "google_chat_bot_id.json"
+        try:
+            from hermes_constants import get_hermes_home as _get_hermes_home
+            base = _get_hermes_home()
+        except (ModuleNotFoundError, ImportError):
+            base = _Path.home() / ".hermes"
+        return base / "google_chat_bot_id.json"
 
     def _load_cached_bot_id(self) -> Optional[str]:
         path = self._bot_id_cache_path()

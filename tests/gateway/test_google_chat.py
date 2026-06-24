@@ -351,6 +351,47 @@ class TestGoogleOwnedHost:
         assert _is_google_owned_host(url) is False
 
 
+class TestBotIdCachePath:
+    """``_bot_id_cache_path`` must resolve through the profile-aware
+    HERMES_HOME helper (``hermes_constants.get_hermes_home``), not a raw
+    ``os.getenv`` read. A raw read ignores the context-local override, so the
+    bot-id cache lands in the default profile while the rest of the adapter's
+    state (e.g. the thread-count store) follows the active profile.
+    """
+
+    def test_honors_hermes_home_env(self, tmp_path, monkeypatch):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        # Clear any sticky context-local override so the env var decides.
+        token = set_hermes_home_override(None)
+        try:
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+            a = GoogleChatAdapter(_base_config())
+            assert a._bot_id_cache_path() == tmp_path / "google_chat_bot_id.json"
+        finally:
+            reset_hermes_home_override(token)
+
+    def test_honors_context_local_profile_override(self, tmp_path, monkeypatch):
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        # The regression: HERMES_HOME is unset in the environment but a
+        # per-task profile override is active. The cache path must follow it.
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        profile = tmp_path / "profiles" / "profileA"
+        token = set_hermes_home_override(profile)
+        try:
+            a = GoogleChatAdapter(_base_config())
+            assert a._bot_id_cache_path() == profile / "google_chat_bot_id.json"
+        finally:
+            reset_hermes_home_override(token)
+
+
 # ===========================================================================
 # Config validation (inside connect())
 # ===========================================================================

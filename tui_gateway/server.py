@@ -922,6 +922,91 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     _emit("status.update", sid, {"kind": out_kind, "text": body})
 
 
+# ── Non-blocking stream delta writer ─────────────────────────────────
+# Prevents stdout backpressure from blocking the provider streaming thread.
+# When stdout pipe buffer is full, write_json blocks in StdioTransport.write.
+# If this happens inside the stream_callback (called from the provider
+# thread), the interrupt mechanism cannot fire — the provider thread is stuck
+# in a write syscall and never advances to the interrupt check.
+#
+# StreamDeltaWriter interposes a bounded queue between the provider thread
+# and the stdout write.  If the queue fills up (writer can't drain fast
+# enough), deltas are dropped — a cosmetic loss only, since the full
+# response text is assembled from the final message list, not from deltas.
+# The provider thread never blocks on stdout, so interrupt checks continue
+# to fire promptly.
+
+
+class StreamDeltaWriter:
+    """Async writer that decouples stream deltas from stdout backpressure.
+
+    Usage::
+
+        writer = StreamDeltaWriter(sid, streamer, max_queue=256)
+        writer.start()
+        # ... use writer.push(delta) as the stream_callback ...
+        writer.stop()  # drain remaining + join thread
+    """
+
+    __slots__ = ("_sid", "_streamer", "_queue", "_thread", "_stop_event")
+
+    def __init__(self, sid: str, streamer, *, max_queue: int = 256):
+        self._sid = sid
+        self._streamer = streamer
+        self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "StreamDeltaWriter":
+        self._thread = threading.Thread(
+            target=self._drain_loop, name="stream-delta-writer", daemon=True
+        )
+        self._thread.start()
+        return self
+
+    def push(self, delta: str) -> None:
+        """Enqueue a delta for async writing. Drops if queue is full."""
+        try:
+            self._queue.put_nowait(delta)
+        except queue.Full:
+            # Drop delta — cosmetic loss. The full response is assembled
+            # from result["messages"], not from streamed deltas.
+            pass
+
+    def stop(self, timeout: float = 2.0) -> None:
+        """Signal stop and wait for the writer thread to drain and exit."""
+        self._stop_event.set()
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+
+    def _drain_loop(self) -> None:
+        """Drain queued deltas to _emit until stopped."""
+        while not self._stop_event.is_set():
+            try:
+                delta = self._queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            self._emit_delta(delta)
+        # Final drain — flush anything remaining after stop signal
+        while True:
+            try:
+                delta = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            self._emit_delta(delta)
+
+    def _emit_delta(self, delta: str) -> None:
+        payload = {"text": delta}
+        if self._streamer:
+            try:
+                r = self._streamer.feed(delta)
+                if r is not None:
+                    payload["rendered"] = r
+            except Exception:
+                pass
+        _emit("message.delta", self._sid, payload)
+
+
 def _estimate_image_tokens(width: int, height: int) -> int:
     """Very rough UI estimate for image prompt cost.
 
@@ -2852,6 +2937,27 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
     except Exception:
         yolo = False
+    # ── Blue/green slot detection ──
+    slot_name = ""
+    slot_branch = ""
+    try:
+        _hermes_home = os.path.expanduser("~/.hermes")
+        _link = os.path.join(_hermes_home, "hermes-agent")
+        if os.path.islink(_link):
+            _target = os.path.basename(os.readlink(_link))
+            slot_name = _target.replace("hermes-agent-", "")  # "blue" or "green"
+            # Get branch name for extra context
+            import subprocess
+            _slot_dir = os.path.join(_hermes_home, _target)
+            _branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=_slot_dir, capture_output=True, text=True, timeout=2
+            )
+            if _branch.returncode == 0 and _branch.stdout.strip():
+                slot_branch = _branch.stdout.strip()
+    except Exception:
+        pass
+
     info: dict = {
         "model": getattr(agent, "model", ""),
         "provider": getattr(agent, "provider", ""),
@@ -2873,6 +2979,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "update_command": "",
         "usage": _get_usage(agent),
         "profile_name": _current_profile_name(),
+        "slot": f"{slot_name} · {slot_branch}" if slot_name and slot_branch else slot_name,
     }
     try:
         from hermes_cli import __version__, __release_date__
@@ -7219,24 +7326,26 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 else:
                     run_message = _enrich_with_attached_images(prompt, images)
 
-            def _stream(delta):
-                with session["history_lock"]:
-                    _append_inflight_delta(session, delta)
-                payload = {"text": delta}
-                if streamer and (r := streamer.feed(delta)) is not None:
-                    payload["rendered"] = r
-                _emit("message.delta", sid, payload)
+            # Non-blocking stream delta writer — decouples the provider
+            # streaming thread from stdout backpressure.  See class docstring.
+            delta_writer = StreamDeltaWriter(sid, streamer).start()
 
             run_kwargs = {
                 "conversation_history": list(history),
-                "stream_callback": _stream,
+                "stream_callback": delta_writer.push,
             }
             try:
                 if "task_id" in inspect.signature(agent.run_conversation).parameters:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
-            result = agent.run_conversation(run_message, **run_kwargs)
+
+            try:
+                result = agent.run_conversation(run_message, **run_kwargs)
+            finally:
+                # Stop the writer — drains remaining queued deltas (or discards
+                # on interrupt).  Must run even on exception to join the thread.
+                delta_writer.stop()
 
             last_reasoning = None
             status_note = None

@@ -301,6 +301,13 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
             <Text color={t.color.muted}> · Nous Research</Text>
           </Text>
 
+          {info.slot && (
+            <Text color={t.color.muted}>
+              {'⬡ '}
+              <Text color={t.color.accent}>{info.slot}</Text>
+            </Text>
+          )}
+
           <Text color={t.color.muted} wrap="truncate-end">
             {info.cwd || process.cwd()}
           </Text>

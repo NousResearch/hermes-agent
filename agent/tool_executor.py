@@ -68,6 +68,15 @@ def _budget_for_agent(agent) -> BudgetConfig:
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
 
+# Hard watchdog timeout for any single tool call (seconds).  If a tool
+# exceeds this, the executor treats it as timed-out and returns an error
+# to the conversation loop — preventing indefinite hangs.  Individual tools
+# have their own (shorter) timeouts, but this is the last-resort backstop
+# for bugs that bypass per-tool enforcement (e.g. deadlocked approval
+# flows, stuck CDP connections, unresponsive MCP servers).
+# Override via HERMES_TOOL_WATCHDOG_TIMEOUT env var.
+_TOOL_WATCHDOG_TIMEOUT: int = int(os.environ.get("HERMES_TOOL_WATCHDOG_TIMEOUT", "300"))
+
 
 def _flush_session_db_after_tool_progress(
     agent,
@@ -650,8 +659,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 # concurrent tool batches. Also check for user interrupts
                 # so we don't block indefinitely when the user sends /stop
                 # or a new message during concurrent tool execution.
+                #
+                # WATCHDOG: if any single tool exceeds _TOOL_WATCHDOG_TIMEOUT,
+                # force-interrupt it and record a timeout error.  This prevents
+                # indefinite hangs from deadlocked tools that bypass their own
+                # internal timeouts (e.g. stuck CDP connections, deadlocked
+                # approval calls).
                 _conc_start = time.time()
                 _interrupt_logged = False
+                _watchdog_fired = False
                 while True:
                     done, not_done = concurrent.futures.wait(
                         futures, timeout=5.0,
@@ -679,16 +695,69 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         concurrent.futures.wait(not_done, timeout=3.0)
                         break
 
-                    _conc_elapsed = int(time.time() - _conc_start)
+                    # ── Watchdog: hard timeout for stuck tools ─────────
+                    _conc_elapsed = time.time() - _conc_start
+                    if _conc_elapsed >= _TOOL_WATCHDOG_TIMEOUT and not _watchdog_fired:
+                        _watchdog_fired = True
+                        _timed_out_names = [
+                            parsed_calls[futures.index(f)][1]
+                            for f in not_done
+                            if f in futures
+                        ]
+                        logger.error(
+                            "WATCHDOG: %d tool(s) exceeded %ds timeout — "
+                            "forcing interrupt: %s",
+                            len(not_done), _TOOL_WATCHDOG_TIMEOUT,
+                            ", ".join(_timed_out_names),
+                        )
+                        agent._vprint(
+                            f"{agent.log_prefix}🐕 Watchdog: {len(not_done)} tool(s) "
+                            f"timed out after {int(_conc_elapsed)}s — killing: "
+                            f"{', '.join(_timed_out_names)}",
+                            force=True,
+                        )
+                        # Set per-thread interrupt so tools with interrupt
+                        # checks can exit gracefully.
+                        for f in not_done:
+                            f.cancel()
+                        try:
+                            agent._interrupt_requested = True
+                            with agent._tool_worker_threads_lock:
+                                for tid in list(agent._tool_worker_threads):
+                                    _ra()._set_interrupt(True, tid)
+                        except Exception:
+                            pass
+                        # Give tools a moment to notice and exit
+                        concurrent.futures.wait(not_done, timeout=5.0)
+                        # Record timeout results for any that still didn't finish
+                        for f in not_done:
+                            if not f.done():
+                                idx = futures.index(f)
+                                tool_name = parsed_calls[idx][1]
+                                results[idx] = (
+                                    tool_name,
+                                    parsed_calls[idx][2],  # args
+                                    f"Error executing tool '{tool_name}': "
+                                    f"WATCHDOG TIMEOUT after {int(_conc_elapsed)}s. "
+                                    f"The tool hung and was forcibly terminated. "
+                                    f"This is a bug — the tool should have its own "
+                                    f"internal timeout but it failed to fire.",
+                                    _conc_elapsed,
+                                    True,  # is_error
+                                    False,  # blocked
+                                )
+                        break
+
+                    _conc_elapsed_int = int(_conc_elapsed)
                     # Heartbeat every ~30s (6 × 5s poll intervals)
-                    if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
+                    if _conc_elapsed_int > 0 and _conc_elapsed_int % 30 < 6:
                         _still_running = [
                             parsed_calls[futures.index(f)][1]
                             for f in not_done
                             if f in futures
                         ]
                         agent._touch_activity(
-                            f"concurrent tools running ({_conc_elapsed}s, "
+                            f"concurrent tools running ({_conc_elapsed_int}s, "
                             f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
                         )
     finally:
@@ -847,6 +916,71 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if num_tools > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
+
+
+def _invoke_with_watchdog(agent, function_name: str, function_args: dict,
+                          effective_task_id: str, tool_call_id: str, **kwargs):
+    """Run handle_function_call with a watchdog timeout on a background thread.
+
+    If the tool exceeds _TOOL_WATCHDOG_TIMEOUT, the thread is interrupted and
+    a timeout error string is returned.  This prevents the sequential tool
+    execution path from hanging indefinitely on a stuck tool.
+    """
+    result_holder: list = [None]
+    error_holder: list = [None]
+    worker_tid_holder: list = [None]
+
+    def _run():
+        worker_tid_holder[0] = threading.current_thread().ident
+        # Register this thread so interrupt signals can reach it
+        with agent._tool_worker_threads_lock:
+            agent._tool_worker_threads.add(worker_tid_holder[0])
+        try:
+            result_holder[0] = _ra().handle_function_call(
+                function_name, function_args, effective_task_id,
+                tool_call_id=tool_call_id,
+                session_id=agent.session_id or "",
+                **kwargs,
+            )
+        except Exception as e:
+            error_holder[0] = e
+        finally:
+            with agent._tool_worker_threads_lock:
+                agent._tool_worker_threads.discard(worker_tid_holder[0])
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(timeout=_TOOL_WATCHDOG_TIMEOUT)
+
+    if worker.is_alive():
+        # Tool exceeded watchdog — set interrupt to unblock it
+        logger.error(
+            "WATCHDOG: tool '%s' exceeded %ds timeout (sequential path) — "
+            "setting interrupt",
+            function_name, _TOOL_WATCHDOG_TIMEOUT,
+        )
+        try:
+            agent._interrupt_requested = True
+            if worker_tid_holder[0] is not None:
+                _ra()._set_interrupt(True, worker_tid_holder[0])
+            with agent._tool_worker_threads_lock:
+                for tid in list(agent._tool_worker_threads):
+                    _ra()._set_interrupt(True, tid)
+        except Exception:
+            pass
+        # Give it a brief grace period to exit
+        worker.join(timeout=5.0)
+        return (
+            f"Error executing tool '{function_name}': "
+            f"WATCHDOG TIMEOUT after {_TOOL_WATCHDOG_TIMEOUT}s. "
+            f"The tool hung and was forcibly terminated. "
+            f"This is a bug — the tool should have its own "
+            f"internal timeout but it failed to fire."
+        )
+
+    if error_holder[0] is not None:
+        raise error_holder[0]
+    return result_holder[0]
 
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -1284,10 +1418,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 spinner.start()
             _spinner_result = None
             try:
-                function_result = _ra().handle_function_call(
-                    function_name, function_args, effective_task_id,
-                    tool_call_id=tool_call.id,
-                    session_id=agent.session_id or "",
+                function_result = _invoke_with_watchdog(
+                    agent, function_name, function_args, effective_task_id,
+                    tool_call.id,
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,
@@ -1326,10 +1459,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     agent._vprint(f"  {cute_msg}")
         else:
             try:
-                function_result = _ra().handle_function_call(
-                    function_name, function_args, effective_task_id,
-                    tool_call_id=tool_call.id,
-                    session_id=agent.session_id or "",
+                function_result = _invoke_with_watchdog(
+                    agent, function_name, function_args, effective_task_id,
+                    tool_call.id,
                     turn_id=getattr(agent, "_current_turn_id", "") or "",
                     api_request_id=getattr(agent, "_current_api_request_id", "") or "",
                     enabled_tools=list(agent.valid_tool_names) if agent.valid_tool_names else None,

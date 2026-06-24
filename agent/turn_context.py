@@ -235,6 +235,11 @@ def build_turn_context(
         agent._compression_warning = None  # send once
 
     # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
+    # Refresh max_iterations from live config so mid-session config changes
+    # (e.g. user bumps agent.max_turns from 120 to 1000) take effect without
+    # requiring a /new or restart.  Only applies to TUI/CLI long-lived agents.
+    from agent.conversation_loop import _refresh_max_iterations
+    agent.max_iterations = _refresh_max_iterations(agent)
     agent.iteration_budget = IterationBudget(agent.max_iterations)
 
     # Log conversation turn start for debugging/observability.

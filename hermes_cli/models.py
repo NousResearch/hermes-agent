@@ -3449,6 +3449,53 @@ def github_model_reasoning_efforts(
     return _github_reasoning_efforts_for_model_id(str(model_id or normalized))
 
 
+# Module-level cache for the Copilot catalog used by reasoning-effort lookups.
+# Mirrors the get_copilot_model_context cache: the live /models catalog is the
+# only source that reports reasoning_effort for Copilot-hosted Claude models, so
+# it must be supplied to github_model_reasoning_efforts. Caching it in-process
+# for 1 hour avoids an HTTP round-trip on every turn (the reasoning gates below
+# are hit several times per turn).
+_copilot_reasoning_catalog_cache: Optional[list[dict[str, Any]]] = None
+_copilot_reasoning_catalog_cache_time: float = 0.0
+_COPILOT_REASONING_CATALOG_CACHE_TTL = 3600  # 1 hour
+
+
+def get_copilot_reasoning_efforts(
+    model_id: Optional[str], api_key: Optional[str] = None
+) -> list[str]:
+    """Return reasoning-effort levels for a Copilot model, catalog-backed.
+
+    ``github_model_reasoning_efforts(model_id)`` with no catalog falls through to
+    the static GPT/o-series table and returns ``[]`` for Claude, even though the
+    live Copilot ``/models`` catalog advertises ``reasoning_effort`` support for
+    opus/sonnet. This wrapper supplies that catalog from a 1-hour in-process
+    cache so Claude (and any future catalog-only model) resolves correctly,
+    without an HTTP fetch on every call.
+
+    Falls back to the bare resolver (static table) when no catalog is available,
+    so behaviour degrades gracefully offline instead of raising.
+    """
+    global _copilot_reasoning_catalog_cache, _copilot_reasoning_catalog_cache_time
+
+    catalog = _copilot_reasoning_catalog_cache
+    fresh = catalog is not None and (
+        time.time() - _copilot_reasoning_catalog_cache_time
+        < _COPILOT_REASONING_CATALOG_CACHE_TTL
+    )
+    if not fresh:
+        fetched = fetch_github_model_catalog(api_key=api_key)
+        if fetched:
+            catalog = fetched
+            _copilot_reasoning_catalog_cache = fetched
+            _copilot_reasoning_catalog_cache_time = time.time()
+        else:
+            catalog = _copilot_reasoning_catalog_cache  # keep any stale catalog
+
+    # Pass catalog explicitly: github_model_reasoning_efforts re-fetches when
+    # api_key is set but catalog is None, which would defeat this cache.
+    return github_model_reasoning_efforts(model_id, catalog=catalog)
+
+
 def probe_api_models(
     api_key: Optional[str],
     base_url: Optional[str],

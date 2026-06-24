@@ -232,7 +232,7 @@ def thumbnail_png(slug: str, *, source_url: str = "", timeout: float = 30.0) -> 
     break a direct ``<img src=cdn>`` and lets the result ride the authenticated
     gateway as a same-origin data URL.
     """
-    slug = slug.strip()
+    slug = _safe_slug(slug)
     if not slug:
         return None
 

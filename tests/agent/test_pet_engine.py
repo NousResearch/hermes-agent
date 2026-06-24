@@ -369,3 +369,28 @@ def test_vscode_terminal_ignores_leaked_graphics_env(monkeypatch):
         monkeypatch.setenv(leaked, "1")
         assert render.detect_terminal_graphics() == "unicode"
         monkeypatch.delenv(leaked)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# thumbnail_png — slug sanitization (path-traversal guard)
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_thumbnail_png_rejects_path_traversal(tmp_path, monkeypatch):
+    """A slug containing path separators must not escape the thumbs directory."""
+    monkeypatch.setattr(store, "_thumbs_dir", lambda: tmp_path / ".thumbs")
+    (tmp_path / ".thumbs").mkdir()
+
+    result = store.thumbnail_png("../../etc/passwd")
+    assert result is None
+
+    written = list((tmp_path / ".thumbs").iterdir())
+    assert len(written) == 0
+
+
+def test_thumbnail_png_rejects_dotdot(tmp_path, monkeypatch):
+    """Bare '..' slug must be rejected."""
+    monkeypatch.setattr(store, "_thumbs_dir", lambda: tmp_path / ".thumbs")
+    (tmp_path / ".thumbs").mkdir()
+
+    result = store.thumbnail_png("..")
+    assert result is None

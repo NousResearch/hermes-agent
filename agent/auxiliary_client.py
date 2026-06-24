@@ -2490,6 +2490,52 @@ def _is_payment_error(exc: Exception) -> bool:
     return False
 
 
+def _is_server_error(exc: Exception) -> bool:
+    """Detect server-side errors that warrant provider fallback.
+
+    Returns True for HTTP 500-504 status codes (Internal Server Error,
+    Bad Gateway, Service Unavailable, Gateway Timeout) and gRPC
+    UNAVAILABLE status.  These indicate the provider's servers had an
+    issue, distinct from client-side problems like billing or auth.
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int) and 500 <= status <= 504:
+        return True
+    err_lower = str(exc).lower()
+    # gRPC status code literal "UNAVAILABLE" — the gRPC string, not
+    # just the plain-English word "unavailable".  Both appear in the
+    # error representation so a simple substring match is sufficient.
+    if "unavailable" in err_lower:
+        return True
+    return False
+
+
+def _is_unavailable_error(exc: Exception) -> bool:
+    """Detect transient service unavailability errors.
+
+    Returns True for HTTP 503 (Service Unavailable), HTTP 429 with
+    server-overload messaging, and errors whose text explicitly says
+    the service is temporarily unavailable.
+
+    Distinct from :func:`_is_server_error` which covers the broader
+    5xx range, and from :func:`_is_rate_limit_error` which handles
+    client-side rate limiting (too many requests from this caller).
+    """
+    status = getattr(exc, "status_code", None)
+    err_lower = str(exc).lower()
+    if status == 503:
+        return True
+    if status == 429:
+        if any(kw in err_lower for kw in (
+            "overloaded", "back off", "service busy",
+            "try again later",
+        )):
+            return True
+    if "service unavailable" in err_lower or "temporarily unavailable" in err_lower:
+        return True
+    return False
+
+
 def _nous_portal_account_has_fresh_paid_access() -> bool:
     """Return True only when the fresh Nous account API says paid access is allowed."""
     try:
@@ -5642,6 +5688,16 @@ def call_llm(
         # common case where a user runs out of OpenRouter credits but has
         # Codex OAuth or another provider available.
         #
+        # ── Server error fallback ────────────────────────────────────
+        # When the provider returns a 5xx status code (500-504) or gRPC
+        # UNAVAILABLE, fall back to an alternative provider.  The server
+        # is having issues that the client cannot resolve.
+        #
+        # ── Service-unavailable fallback ─────────────────────────────
+        # When the provider returns 503 (Service Unavailable) or 429 with
+        # server-overload messaging, fall back to another provider instead
+        # of retrying the same overloaded endpoint.
+        #
         # ── Connection error fallback ────────────────────────────────
         # When a provider endpoint is unreachable (DNS failure, connection
         # refused, timeout), try alternative providers.  This handles stale
@@ -5655,19 +5711,26 @@ def call_llm(
         # against the same rate-limited endpoint.
         should_fallback = (
             _is_payment_error(first_err)
+            or _is_server_error(first_err)
+            or _is_unavailable_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
         )
         # Respect explicit provider choice for transient errors (auth, request
         # validation, etc.) but allow fallback when the provider clearly cannot
-        # serve the request due to capacity: payment/quota exhaustion and
-        # connection failures are capacity problems, not request constraints.
+        # serve the request due to capacity: payment/quota exhaustion, server
+        # errors, and connection failures are capacity problems, not request
+        # constraints.
         # See #26803: daily token quota (429 + "too many tokens per day") must
         # fall back just like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
         # Capacity errors bypass the explicit-provider gate: the provider
         # literally cannot serve this request regardless of user intent.
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
+        is_capacity_error = (
+            _is_payment_error(first_err)
+            or _is_server_error(first_err)
+            or _is_connection_error(first_err)
+        )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
@@ -5680,6 +5743,10 @@ def call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif _is_unavailable_error(first_err):
+                reason = "service unavailable"
+            elif _is_server_error(first_err):
+                reason = "server error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -6107,14 +6174,20 @@ async def async_call_llm(
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
         should_fallback = (
             _is_payment_error(first_err)
+            or _is_server_error(first_err)
+            or _is_unavailable_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
         )
-        # Capacity errors (payment/quota/connection) bypass the explicit-provider
+        # Capacity errors (payment/quota/server/connection) bypass the explicit-provider
         # gate — the provider cannot serve the request regardless of user intent.
         # See #26803: daily token quota must fall back like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
+        is_capacity_error = (
+            _is_payment_error(first_err)
+            or _is_server_error(first_err)
+            or _is_connection_error(first_err)
+        )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
@@ -6123,6 +6196,10 @@ async def async_call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif _is_unavailable_error(first_err):
+                reason = "service unavailable"
+            elif _is_server_error(first_err):
+                reason = "server error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

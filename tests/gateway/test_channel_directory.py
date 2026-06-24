@@ -186,6 +186,48 @@ class TestResolveChannelName:
             assert resolve_channel_name("telegram", "Dev Group (group)") == "456"
             assert resolve_channel_name("telegram", "Coaching Chat / topic 17585 (group)") == "-1001:17585"
 
+    def test_alias_list_resolves_known_support_ops_backend_lane(self, tmp_path):
+        platforms = {
+            "discord": [
+                {
+                    "id": "1504852408227069993",
+                    "name": "backend",
+                    "guild": "Adventico",
+                    "type": "channel",
+                    "aliases": [
+                        "BE",
+                        "ВЕ",
+                        "Алекс",
+                        "Алек",
+                        "Алекс/Иво",
+                        "Алекс/Ивчо",
+                    ],
+                }
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("discord", "BE") == "1504852408227069993"
+            assert resolve_channel_name("discord", "ВЕ") == "1504852408227069993"
+            assert resolve_channel_name("discord", "Алекс") == "1504852408227069993"
+            assert resolve_channel_name("discord", "Алек") == "1504852408227069993"
+            assert resolve_channel_name("discord", "Алекс / Иво") == "1504852408227069993"
+            assert resolve_channel_name("discord", "Алекс / Ивчо") == "1504852408227069993"
+
+    def test_alias_list_does_not_create_prefix_overmatch(self, tmp_path):
+        platforms = {
+            "discord": [
+                {
+                    "id": "1504852408227069993",
+                    "name": "backend",
+                    "guild": "Adventico",
+                    "type": "channel",
+                    "aliases": ["Алекс"],
+                }
+            ]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("discord", "Александър") is None
+
 
 class TestBuildFromSessions:
     def _write_sessions(self, tmp_path, sessions_data):
@@ -517,6 +559,31 @@ class TestChannelAliases:
             # And the friendly name resolves back to the JID
             assert resolve_channel_name("whatsapp", "general") == "120363@g.us"
             assert resolve_channel_name("whatsapp", "GENERAL") == "120363@g.us"
+
+    def test_alias_entry_with_name_and_aliases_resolves_without_renaming_to_alias(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "discord": [{"id": "1504852408227069993", "name": "backend", "guild": "Adventico", "type": "channel"}]
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             self._setup_aliases(tmp_path, {
+                 "discord": {
+                     "1504852408227069993": {
+                         "name": "backend",
+                         "aliases": ["BE", "ВЕ", "Алекс", "Алекс/Иво", "Алекс/Ивчо"],
+                     }
+                 }
+             }):
+            result = load_directory()
+
+            entry = result["platforms"]["discord"][0]
+            assert entry["name"] == "backend"
+            assert "Алекс/Ивчо" in entry["aliases"]
+            assert resolve_channel_name("discord", "Алекс / Ивчо") == "1504852408227069993"
+
+            display = format_directory_for_display()
+            assert "discord:#backend" in display
+            assert "aliases:" in display
+            assert "Алекс/Ивчо" in display
 
     def test_alias_injects_undiscovered_group(self, tmp_path):
         """A group named in the alias file but not yet seen in any session is

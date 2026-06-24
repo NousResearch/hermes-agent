@@ -8,6 +8,7 @@ action="list" and for resolving human-friendly channel names to numeric IDs.
 
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -22,11 +23,14 @@ DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
 # channel_directory.json don't survive. Aliases declared here are re-applied
 # on every build AND every load, giving durable human-friendly names (and
 # letting you pre-name a chat before it has produced any traffic).
-# Format: {"<platform>": {"<chat_id>": "<friendly name>", ...}, ...}
+# Format:
+# {"<platform>": {"<chat_id>": "<friendly name>", ...}, ...}
+# or:
+# {"<platform>": {"<chat_id>": {"name": "<friendly name>", "aliases": [...]}, ...}, ...}
 CHANNEL_ALIASES_PATH = get_hermes_home() / "channel_aliases.json"
 
 
-def _load_channel_aliases() -> Dict[str, Dict[str, str]]:
+def _load_channel_aliases() -> Dict[str, Dict[str, Any]]:
     if not CHANNEL_ALIASES_PATH.exists():
         return {}
     try:
@@ -35,6 +39,62 @@ def _load_channel_aliases() -> Dict[str, Dict[str, str]]:
         return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _alias_entry_parts(raw: Any) -> tuple[Optional[str], list[str]]:
+    """Return ``(friendly_name, aliases)`` for a channel_aliases entry."""
+    if isinstance(raw, str):
+        friendly = raw.strip()
+        return (friendly or None), []
+    if not isinstance(raw, dict):
+        return None, []
+
+    friendly = raw.get("name")
+    if isinstance(friendly, str):
+        friendly = friendly.strip() or None
+    else:
+        friendly = None
+
+    aliases_raw = raw.get("aliases", [])
+    if isinstance(aliases_raw, str):
+        aliases_raw = [aliases_raw]
+    aliases: list[str] = []
+    seen: set[str] = set()
+    if isinstance(aliases_raw, list):
+        for alias in aliases_raw:
+            if not isinstance(alias, str):
+                continue
+            alias = alias.strip()
+            if not alias:
+                continue
+            normalized = _normalize_channel_query(alias)
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            aliases.append(alias)
+    return friendly, aliases
+
+
+def _merge_entry_aliases(entry: Dict[str, Any], aliases: list[str]) -> None:
+    if not aliases:
+        return
+    existing_raw = entry.get("aliases", [])
+    existing = existing_raw if isinstance(existing_raw, list) else []
+    merged: list[str] = []
+    seen: set[str] = set()
+    for alias in [*existing, *aliases]:
+        if not isinstance(alias, str):
+            continue
+        alias = alias.strip()
+        if not alias:
+            continue
+        normalized = _normalize_channel_query(alias)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        merged.append(alias)
+    if merged:
+        entry["aliases"] = merged
 
 
 def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
@@ -51,27 +111,42 @@ def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
         entries = platforms.setdefault(plat_name, [])
         if not isinstance(entries, list):
             continue
-        for chat_id, friendly in id_map.items():
-            if not isinstance(friendly, str) or not friendly.strip():
+        for chat_id, raw_alias_entry in id_map.items():
+            friendly, aliases = _alias_entry_parts(raw_alias_entry)
+            if not friendly and not aliases:
                 continue
             chat_id = str(chat_id)
-            friendly = friendly.strip()
             matched = False
             for e in entries:
                 if isinstance(e, dict) and e.get("id") == chat_id:
-                    e["name"] = friendly
+                    if friendly:
+                        e["name"] = friendly
+                    _merge_entry_aliases(e, aliases)
                     matched = True
             if not matched:
                 entries.append({
                     "id": chat_id,
-                    "name": friendly,
+                    "name": friendly or chat_id,
                     "type": "group" if str(chat_id).endswith("@g.us") else "dm",
                     "thread_id": None,
+                    "aliases": aliases,
                 })
 
 
 def _normalize_channel_query(value: str) -> str:
-    return value.lstrip("#").strip().lower()
+    normalized = value.lstrip("#").strip().casefold()
+    normalized = re.sub(r"\s*/\s*", "/", normalized)
+    normalized = re.sub(r"\s+", " ", normalized)
+    return normalized
+
+
+def _channel_aliases(channel: Dict[str, Any]) -> list[str]:
+    aliases = channel.get("aliases", [])
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    if not isinstance(aliases, list):
+        return []
+    return [alias for alias in aliases if isinstance(alias, str) and alias.strip()]
 
 
 def _channel_target_name(platform_name: str, channel: Dict[str, Any]) -> str:
@@ -360,6 +435,9 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
             return ch["id"]
         if _normalize_channel_query(_channel_target_name(platform_name, ch)) == query:
             return ch["id"]
+        for alias in _channel_aliases(ch):
+            if _normalize_channel_query(alias) == query:
+                return ch["id"]
 
     # 2. Guild-qualified match for Discord ("GuildName/channel")
     if "/" in query:
@@ -405,19 +483,32 @@ def format_directory_for_display() -> str:
             for guild_name, guild_channels in sorted(guilds.items()):
                 lines.append(f"Discord ({guild_name}):")
                 for ch in sorted(guild_channels, key=lambda c: c["name"]):
-                    lines.append(f"  discord:{_channel_target_name(plat_name, ch)}")
+                    suffix = _format_alias_suffix(ch)
+                    lines.append(f"  discord:{_channel_target_name(plat_name, ch)}{suffix}")
             if dms:
                 lines.append("Discord (DMs):")
                 for ch in dms:
-                    lines.append(f"  discord:{_channel_target_name(plat_name, ch)}")
+                    suffix = _format_alias_suffix(ch)
+                    lines.append(f"  discord:{_channel_target_name(plat_name, ch)}{suffix}")
             lines.append("")
         else:
             lines.append(f"{plat_name.title()}:")
             for ch in channels:
-                lines.append(f"  {plat_name}:{_channel_target_name(plat_name, ch)}")
+                suffix = _format_alias_suffix(ch)
+                lines.append(f"  {plat_name}:{_channel_target_name(plat_name, ch)}{suffix}")
             lines.append("")
 
     lines.append('Use these as the "target" parameter when sending.')
     lines.append('Bare platform name (e.g. "telegram") sends to home channel.')
 
     return "\n".join(lines)
+
+
+def _format_alias_suffix(channel: Dict[str, Any]) -> str:
+    aliases = _channel_aliases(channel)
+    if not aliases:
+        return ""
+    visible = ", ".join(aliases[:8])
+    if len(aliases) > 8:
+        visible = f"{visible}, ..."
+    return f" (aliases: {visible})"

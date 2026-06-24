@@ -89,6 +89,76 @@ def _should_run_preflight_estimate(
     return estimate_messages_tokens_rough(messages) >= threshold_tokens
 
 
+def _read_running_summary(session_id: str) -> Optional[str]:
+    """Read the running session summary file, returning its content or ``None``.
+
+    Returns ``None`` when the file is missing or empty — callers degrade to
+    full-history mode.
+    """
+    from hermes_constants import get_hermes_home
+
+    path = get_hermes_home() / "sessions" / session_id / "running_summary.md"
+    if not path.exists():
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except Exception:
+        return None
+    if not text.strip():
+        return None
+    # Truncate to last ~2000 chars to keep the summary block compact.
+    if len(text) > 2000:
+        text = "…" + text[-2000:]
+    return text
+
+
+def _window_conversation_history(
+    messages: List[Dict[str, Any]],
+    session_id: str,
+    max_verbatim_messages: int,
+) -> tuple:
+    """Apply context windowing: keep last N messages verbatim, summarize the rest.
+
+    Returns ``(messages, summary)`` where *messages* is the windowed list
+    and *summary* is the summary text (or ``None`` if no windowing was applied).
+
+    The summary is injected as a synthetic user-role message placed before
+    the verbatim window.  Tool-call/result pairs are never split — the
+    window boundary extends backward to include the full chain.
+    """
+    if max_verbatim_messages <= 0 or len(messages) <= max_verbatim_messages:
+        return messages, None
+
+    summary = _read_running_summary(session_id)
+    if not summary:
+        return messages, None
+
+    # Walk backward from the cut point to avoid splitting tool-call chains.
+    # If the first message in the verbatim window is a ``tool``-role result,
+    # extend the window backward until we find the ``assistant`` message
+    # that initiated those calls.
+    cut = len(messages) - max_verbatim_messages
+    while cut > 0 and messages[cut].get("role") == "tool":
+        cut -= 1
+    # If we landed on an assistant message with tool_calls, keep going
+    # backward to include the user message that triggered the chain.
+    if cut > 0 and messages[cut].get("role") == "assistant" and messages[cut].get("tool_calls"):
+        cut -= 1
+
+    verbatim = messages[cut:]
+
+    summary_msg = {
+        "role": "user",
+        "content": (
+            "[Earlier in this session — summary of what happened before "
+            "the messages below.  This is context, not a new instruction.]\n\n"
+            f"{summary}"
+        ),
+    }
+
+    return [summary_msg] + verbatim, summary
+
+
 @dataclass
 class TurnContext:
     """Values produced by the turn prologue and consumed by the turn loop."""
@@ -302,6 +372,35 @@ def build_turn_context(
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
+
+    # ── Context windowing ──
+    # When max_verbatim_messages is set, replace early messages with a
+    # summary block.  The current turn is always in the verbatim window.
+    _max_verbatim = 0
+    try:
+        from hermes_cli.config import load_config as _load_config
+        _cfg = _load_config() or {}
+        _ctx_cfg = _cfg.get("context") if isinstance(_cfg, dict) else None
+        if isinstance(_ctx_cfg, dict):
+            _max_verbatim = int(_ctx_cfg.get("max_verbatim_messages", 0) or 0)
+    except Exception:
+        pass
+    if _max_verbatim > 0 and agent.session_id:
+        _windowed, _window_summary = _window_conversation_history(
+            messages, agent.session_id, _max_verbatim,
+        )
+        if _window_summary is not None:
+            messages = _windowed
+            # Recalculate the user message index — windowing may have
+            # shifted it (summary block inserted at position 0).
+            current_turn_user_idx = len(messages) - 1
+            agent._persist_user_message_idx = current_turn_user_idx
+            logger.info(
+                "Context windowing: %d messages → %d (summary %d chars)",
+                len(conversation_history or []) + 1,
+                len(messages),
+                len(_window_summary),
+            )
 
     if not agent.quiet_mode:
         _print_preview = summarize_user_message_for_log(user_message)

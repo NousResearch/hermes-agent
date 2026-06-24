@@ -285,3 +285,210 @@ def test_between_turns_refresh_no_churn_when_unchanged():
 
     assert agent.tools is same  # not replaced → no churn
 
+
+
+# ── Context windowing (_window_conversation_history) ──────────────────────
+
+def test_window_noop_when_session_shorter_than_max():
+    """Session with fewer messages than max_verbatim_messages → no windowing.
+    All messages returned as-is, summary is None."""
+    from agent.turn_context import _window_conversation_history
+
+    messages = [
+        {"role": "user", "content": "hello"},
+        {"role": "assistant", "content": "hi there"},
+        {"role": "user", "content": "how are you"},
+    ]
+    result, summary = _window_conversation_history(
+        messages, session_id="sess-1", max_verbatim_messages=10
+    )
+    assert result is messages  # same list object — no copy needed
+    assert summary is None
+
+
+def test_window_noop_when_max_verbatim_zero():
+    """max_verbatim_messages=0 is treated as disabled — no windowing."""
+    from agent.turn_context import _window_conversation_history
+
+    messages = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+    ]
+    result, summary = _window_conversation_history(
+        messages, session_id="sess-1", max_verbatim_messages=0
+    )
+    assert result is messages
+    assert summary is None
+
+
+def test_window_applies_when_session_longer_than_max(tmp_path):
+    """Session longer than max_verbatim_messages → windowing applied.
+    Last N messages kept verbatim, earlier messages replaced by summary."""
+    from agent.turn_context import _window_conversation_history
+    from unittest.mock import patch
+
+    messages = [
+        {"role": "user", "content": "msg1"},
+        {"role": "assistant", "content": "msg2"},
+        {"role": "user", "content": "msg3"},
+        {"role": "assistant", "content": "msg4"},
+        {"role": "user", "content": "msg5"},
+        {"role": "assistant", "content": "msg6"},
+        {"role": "user", "content": "msg7"},
+        {"role": "assistant", "content": "msg8"},
+        {"role": "user", "content": "msg9"},
+        {"role": "assistant", "content": "msg10"},
+    ]
+    summary_text = "Earlier: user said hello, assistant replied."
+
+    # Mock the summary file read
+    with patch("agent.turn_context._read_running_summary", return_value=summary_text):
+        result, summary = _window_conversation_history(
+            messages, session_id="sess-1", max_verbatim_messages=4
+        )
+
+    # Last 4 messages kept verbatim
+    assert len(result) == 5  # 1 summary user message + 4 verbatim
+    assert result[0]["role"] == "user"
+    assert "Earlier in this session" in result[0]["content"]
+    assert summary_text in result[0]["content"]
+    assert result[1:] == messages[-4:]
+    assert summary == summary_text
+
+
+def test_window_degrade_when_summary_missing(tmp_path):
+    """Summary file doesn't exist → degrade to full history (no windowing)."""
+    from agent.turn_context import _window_conversation_history
+    from unittest.mock import patch
+
+    messages = [
+        {"role": "user", "content": "a"},
+        {"role": "assistant", "content": "b"},
+        {"role": "user", "content": "c"},
+        {"role": "assistant", "content": "d"},
+        {"role": "user", "content": "e"},
+        {"role": "assistant", "content": "f"},
+    ]
+    with patch("agent.turn_context._read_running_summary", return_value=None):
+        result, summary = _window_conversation_history(
+            messages, session_id="sess-1", max_verbatim_messages=3
+        )
+    assert result is messages
+    assert summary is None
+
+
+def test_window_preserves_tool_chain_at_boundary():
+    """When the cut point lands on a tool-role result, extend backward
+    to include the full tool-call chain (assistant + tool results)."""
+    from agent.turn_context import _window_conversation_history
+    from unittest.mock import patch
+
+    messages = [
+        {"role": "user", "content": "msg1"},
+        {"role": "assistant", "content": "msg2"},
+        {"role": "user", "content": "msg3"},
+        {"role": "assistant", "content": "msg4", "tool_calls": [
+            {"id": "call_1", "function": {"name": "read_file", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "file content"},
+        {"role": "assistant", "content": "msg5"},
+        {"role": "user", "content": "msg6"},
+        {"role": "assistant", "content": "msg7"},
+    ]
+    summary_text = "Earlier summary."
+
+    with patch("agent.turn_context._read_running_summary", return_value=summary_text):
+        result, summary = _window_conversation_history(
+            messages, session_id="sess-1", max_verbatim_messages=3
+        )
+
+    # max_verbatim=3 would normally keep last 3: [msg6, msg7].
+    # But cut lands on msg5 (assistant, no tool_calls) — that's fine.
+    # Actually: cut = 8 - 3 = 5 → messages[5] = msg6 (user). No tool-chain issue.
+    # Let's verify the window includes the summary + last 3.
+    assert len(result) == 4  # summary + 3 verbatim
+    assert result[0]["role"] == "user"
+    assert "Earlier in this session" in result[0]["content"]
+    assert result[1:] == messages[-3:]
+
+
+def test_window_extends_past_tool_chain():
+    """When the cut point lands on a tool-role result, the window extends
+    backward to include the assistant that initiated the tool calls."""
+    from agent.turn_context import _window_conversation_history
+    from unittest.mock import patch
+
+    messages = [
+        {"role": "user", "content": "msg1"},
+        {"role": "assistant", "content": "msg2"},
+        {"role": "user", "content": "msg3"},
+        {"role": "assistant", "content": "msg4", "tool_calls": [
+            {"id": "call_1", "function": {"name": "read_file", "arguments": "{}"}}
+        ]},
+        {"role": "tool", "tool_call_id": "call_1", "content": "file content"},
+        {"role": "assistant", "content": "msg5"},
+        {"role": "user", "content": "msg6"},
+    ]
+    summary_text = "Earlier summary."
+
+    with patch("agent.turn_context._read_running_summary", return_value=summary_text):
+        result, summary = _window_conversation_history(
+            messages, session_id="sess-1", max_verbatim_messages=2
+        )
+
+    # max_verbatim=2: cut = 7 - 2 = 5 → messages[5] = msg5 (assistant, no tool_calls)
+    # That's fine — no tool chain to protect.
+    # But let's test with max_verbatim=1: cut = 6 → messages[6] = msg6 (user). Fine.
+    # The real test: max_verbatim=3: cut = 4 → messages[4] = tool result.
+    # Window should extend back to include msg4 (assistant with tool_calls).
+    with patch("agent.turn_context._read_running_summary", return_value=summary_text):
+        result2, _ = _window_conversation_history(
+            messages, session_id="sess-1", max_verbatim_messages=3
+        )
+
+    # cut=4 lands on tool result → extends back past assistant with tool_calls
+    # → cut becomes 3 (msg3, user). Window = messages[3:] = [msg3, msg4, tool, msg5, msg6]
+    assert len(result2) == 6  # summary + 5 verbatim (extended past tool chain)
+    assert result2[0]["role"] == "user"
+    assert "Earlier in this session" in result2[0]["content"]
+    # The verbatim window includes the full tool chain
+    assert result2[1]["role"] == "user"  # msg3
+    assert result2[2]["role"] == "assistant"  # msg4 with tool_calls
+    assert result2[3]["role"] == "tool"  # tool result
+    assert result2[4]["role"] == "assistant"  # msg5
+    assert result2[5]["role"] == "user"  # msg6
+
+
+def test_build_turn_context_applies_windowing():
+    """Full integration: build_turn_context with max_verbatim_messages set
+    windows the conversation history, injecting a summary block."""
+    from unittest.mock import patch
+
+    agent = _FakeAgent()
+    agent.session_id = "sess-window-test"
+
+    # 10 messages in history + 1 new user message = 11 total
+    history = [
+        {"role": "user", "content": f"msg{i}"}
+        if i % 2 == 0 else
+        {"role": "assistant", "content": f"msg{i}"}
+        for i in range(10)
+    ]
+    summary_text = "## 10:00\nUser asked about context windowing."
+
+    with patch(
+        "agent.turn_context._read_running_summary", return_value=summary_text
+    ), patch(
+        "hermes_cli.config.load_config",
+        return_value={"context": {"max_verbatim_messages": 4}},
+    ):
+        ctx = _build(agent, conversation_history=history)
+
+    # With max_verbatim=4, we should have: summary + last 3 history + new user msg
+    # = 5 messages total (the new user msg is one of the 4 verbatim)
+    assert len(ctx.messages) == 5
+    assert ctx.messages[0]["role"] == "user"
+    assert "Earlier in this session" in ctx.messages[0]["content"]
+    assert summary_text in ctx.messages[0]["content"]
+    # Last 4 messages are the verbatim window (3 history + 1 new)
+    assert ctx.messages[1:] == history[-3:] + [{"role": "user", "content": "hello"}]

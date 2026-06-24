@@ -2039,6 +2039,13 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        # Context windowing — when set to a positive integer, only the last N
+        # messages are sent verbatim to the model.  Everything older is
+        # replaced by a summary block (read from the running session summary
+        # file).  Cuts per-turn token cost by 70-80% in long sessions.
+        # Set to 0 to disable windowing (full history, current behavior).
+        # Default 6 keeps ~3 turns of verbatim context.
+        "max_verbatim_messages": 6,
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt

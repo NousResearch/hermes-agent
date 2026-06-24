@@ -605,6 +605,26 @@ def recover_with_credential_pool(
     """
     pool = agent._credential_pool
     if pool is None:
+        # No credential pool configured (single-key setup).
+        # Classify 429s to distinguish transient rate limits from
+        # genuine quota exhaustion.  Transient limits (e.g. "high
+        # demand") should retry the primary after a short backoff
+        # instead of falling back.  Quota exhaustion should fall
+        # back immediately.  See #PR.
+        if status_code == 429 and isinstance(error_context, dict):
+            _msg = str(error_context.get("message", "") or "").lower()
+            _code = str(error_context.get("reason", "") or "").lower()
+            # Quota-exhaustion keywords take precedence.
+            _is_quota = any(kw in _msg or kw in _code for kw in (
+                "quota", "month", "billing", "insufficient_quota",
+            ))
+            if not _is_quota:
+                # Transient rate limit — signal the caller to retry
+                # with backoff instead of falling back.
+                try:
+                    agent._transient_rate_limit = True
+                except Exception:
+                    pass
         return False, has_retried_429
 
     # Defensive guard: if a fallback provider is active and its provider name

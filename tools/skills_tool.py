@@ -67,6 +67,7 @@ Usage:
 """
 
 import json
+import locale
 import logging
 
 from hermes_constants import get_hermes_home, display_hermes_home
@@ -136,6 +137,25 @@ def _skill_lookup_path_error(name: str) -> Optional[str]:
     if has_traversal_component(candidate):
         return "Skill name cannot contain '..' path traversal components."
     return None
+
+
+def _read_skill_text(path: Path) -> str:
+    """Read a skill text file with a narrow fallback for Windows locale files."""
+    encodings: list[str] = ["utf-8", "utf-8-sig"]
+    preferred = (locale.getpreferredencoding(False) or "").strip()
+    if preferred and preferred.lower() not in {"utf-8", "utf8", "utf-8-sig"}:
+        encodings.append(preferred)
+
+    last_error: UnicodeDecodeError | None = None
+    for encoding in encodings:
+        try:
+            return path.read_text(encoding=encoding)
+        except UnicodeDecodeError as exc:
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    return path.read_text(encoding="utf-8")
 
 
 def load_env() -> Dict[str, str]:
@@ -779,7 +799,7 @@ def _serve_plugin_skill(
         )
 
     try:
-        content = skill_md.read_text(encoding="utf-8")
+        content = _read_skill_text(skill_md)
     except Exception as e:
         return json.dumps(
             {"success": False, "error": f"Failed to read skill '{namespace}:{bare}': {e}"},
@@ -1120,7 +1140,7 @@ def skill_view(
 
         # Read the file once — reused for platform check and main content below
         try:
-            content = skill_md.read_text(encoding="utf-8")
+            content = _read_skill_text(skill_md)
         except Exception as e:
             return json.dumps(
                 {
@@ -1265,7 +1285,7 @@ def skill_view(
 
             # Read the file content
             try:
-                content = target_file.read_text(encoding="utf-8")
+                content = _read_skill_text(target_file)
             except UnicodeDecodeError:
                 # Binary file - return info about it instead
                 return json.dumps(

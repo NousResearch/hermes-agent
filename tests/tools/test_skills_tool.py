@@ -373,6 +373,31 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
+    def test_skill_view_falls_back_to_locale_encoding_for_skill_md(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "tools.skills_tool.locale.getpreferredencoding",
+                return_value="cp1252",
+            ),
+        ):
+            skill_dir = tmp_path / "windows-skill"
+            skill_dir.mkdir(parents=True, exist_ok=True)
+            content = (
+                "---\n"
+                "name: windows-skill\n"
+                "description: Description for windows-skill.\n"
+                "---\n\n"
+                "# windows-skill\n\n"
+                "Résumé – café.\n"
+            )
+            (skill_dir / "SKILL.md").write_bytes(content.encode("cp1252"))
+            raw = skill_view("windows-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Résumé – café." in result["content"]
+
     def test_view_skill_by_frontmatter_name_when_dir_differs(self, tmp_path):
         # The on-disk directory ("alias-dir") differs from the skill's
         # frontmatter name ("real-skill-name"). skills_list() exposes the
@@ -476,6 +501,24 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is True
         assert "Endpoint info" in result["content"]
+
+    def test_view_reference_file_falls_back_to_locale_encoding(self, tmp_path):
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch(
+                "tools.skills_tool.locale.getpreferredencoding",
+                return_value="cp1252",
+            ),
+        ):
+            skill_dir = _make_skill(tmp_path, "my-skill")
+            refs_dir = skill_dir / "references"
+            refs_dir.mkdir()
+            (refs_dir / "api.md").write_bytes("Résumé – endpoint info.".encode("cp1252"))
+            raw = skill_view("my-skill", file_path="references/api.md")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Résumé – endpoint info." in result["content"]
 
     def test_view_nonexistent_file(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

@@ -483,6 +483,27 @@ detect_os() {
     log_success "Detected: $OS ($DISTRO)"
 }
 
+is_rpm_family_distro() {
+    case "$1" in
+        fedora|rhel|centos|rocky|alma|ol|oraclelinux) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+get_linux_pkg_install_cmd() {
+    case "$1" in
+        ubuntu|debian) echo "apt install -y" ;;
+        arch) echo "pacman -S --noconfirm" ;;
+        *)
+            if is_rpm_family_distro "$1"; then
+                echo "dnf install -y"
+            else
+                return 1
+            fi
+            ;;
+    esac
+}
+
 # ============================================================================
 # Dependency checks
 # ============================================================================
@@ -635,24 +656,26 @@ attempt_install_git() {
             if [ "$(id -u 2>/dev/null || echo 1000)" -ne 0 ]; then
                 command -v sudo >/dev/null 2>&1 && sudo_cmd="sudo"
             fi
+            local pkg_install
+            pkg_install="$(get_linux_pkg_install_cmd "$DISTRO" || true)"
+            if [ -z "$pkg_install" ]; then
+                return 1
+            fi
             case "$DISTRO" in
                 ubuntu|debian)
                     log_info "Installing Git via apt..."
                     $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
-                    $sudo_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git >/dev/null 2>&1 || true
-                    ;;
-                fedora)
-                    log_info "Installing Git via dnf..."
-                    $sudo_cmd dnf install -y git >/dev/null 2>&1 || true
                     ;;
                 arch)
                     log_info "Installing Git via pacman..."
-                    $sudo_cmd pacman -S --noconfirm git >/dev/null 2>&1 || true
                     ;;
                 *)
-                    return 1
+                    if is_rpm_family_distro "$DISTRO"; then
+                        log_info "Installing Git via dnf..."
+                    fi
                     ;;
             esac
+            $sudo_cmd $pkg_install git >/dev/null 2>&1 || true
             command -v git >/dev/null 2>&1 && return 0
             return 1
             ;;
@@ -698,7 +721,7 @@ check_git() {
                 ubuntu|debian)
                     log_info "  sudo apt update && sudo apt install git"
                     ;;
-                fedora)
+                fedora|rhel|centos|rocky|alma|ol|oraclelinux)
                     log_info "  sudo dnf install git"
                     ;;
                 arch)
@@ -1004,11 +1027,7 @@ install_system_packages() {
 
     # ── Linux: resolve package manager command ──
     local pkg_install=""
-    case "$DISTRO" in
-        ubuntu|debian) pkg_install="apt install -y"   ;;
-        fedora)        pkg_install="dnf install -y"   ;;
-        arch)          pkg_install="pacman -S --noconfirm" ;;
-    esac
+    pkg_install="$(get_linux_pkg_install_cmd "$DISTRO" || true)"
 
     if [ -n "$pkg_install" ]; then
         local install_cmd="$pkg_install ${pkgs[*]}"
@@ -1099,7 +1118,9 @@ show_manual_install_hint() {
         linux)
             case "$DISTRO" in
                 ubuntu|debian) log_info "  sudo apt install $pkg" ;;
-                fedora)        log_info "  sudo dnf install $pkg" ;;
+                fedora|rhel|centos|rocky|alma|ol|oraclelinux)
+                    log_info "  sudo dnf install $pkg"
+                    ;;
                 arch)          log_info "  sudo pacman -S $pkg"   ;;
                 *)             log_info "  Use your package manager or visit the project homepage" ;;
             esac
@@ -1962,7 +1983,7 @@ install_node_deps() {
                         log_warn "Playwright browser installation failed — browser tools will not work."
                     }
                     ;;
-                fedora|rhel|centos|rocky|alma)
+                fedora|rhel|centos|rocky|alma|ol|oraclelinux)
                     log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
                     log_info "Install Chromium system dependencies manually before using browser tools:"
                     log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
@@ -2273,7 +2294,7 @@ ensure_browser() {
                 arch)
                     log_info "Try: sudo pacman -S chromium"
                     ;;
-                fedora|rhel|centos)
+                fedora|rhel|centos|rocky|alma|ol|oraclelinux)
                     log_info "Try: sudo dnf install -y chromium"
                     ;;
             esac

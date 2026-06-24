@@ -20,6 +20,7 @@ import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
+import { isComposerAstEnabled } from '@/lib/composer-ast-flag'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
@@ -59,6 +60,7 @@ import {
   shouldAutoDrain,
   updateQueuedPrompt
 } from '@/store/composer-queue'
+import { setComposerDocument } from '@/store/composer-document'
 import { $statusItemsBySession } from '@/store/composer-status'
 import { $previewStatusBySession } from '@/store/preview-status'
 import { notify } from '@/store/notifications'
@@ -72,6 +74,7 @@ import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '.
 import { AttachmentList } from './attachments'
 import { ContextMenu } from './context-menu'
 import { ComposerControls } from './controls'
+import { syncDocumentFromDom } from './document-sync'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
 import {
   type ComposerInsertMode,
@@ -623,8 +626,7 @@ export function ChatBar({
       return false
     }
 
-    draftRef.current = nextDraft
-    aui.composer().setText(nextDraft)
+    flushEditorToDraft(editor)
     requestMainFocus()
 
     return true
@@ -711,6 +713,11 @@ export function ChatBar({
     if (nextDraft !== draftRef.current) {
       draftRef.current = nextDraft
       aui.composer().setText(nextDraft)
+    }
+
+    // When the composer flag is on, mirror the DOM into $composerDocument.
+    if (isComposerAstEnabled()) {
+      setComposerDocument(syncDocumentFromDom(editor))
     }
 
     window.setTimeout(refreshTrigger, 0)
@@ -863,8 +870,7 @@ export function ChatBar({
     const keepTriggerOpen = starter || expandsToArgs
 
     const finish = () => {
-      draftRef.current = composerPlainText(editor)
-      aui.composer().setText(draftRef.current)
+      flushEditorToDraft(editor)
       requestMainFocus()
       keepTriggerOpen ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
     }
@@ -1695,12 +1701,11 @@ export function ChatBar({
     const editor = editorRef.current
 
     if (editor) {
-      const domText = composerPlainText(editor)
-
-      if (domText !== draftRef.current) {
-        draftRef.current = domText
-        aui.composer().setText(domText)
+      if (composingRef.current) {
+        composingRef.current = false
       }
+
+      flushEditorToDraft(editor)
     }
 
     const text = draftRef.current

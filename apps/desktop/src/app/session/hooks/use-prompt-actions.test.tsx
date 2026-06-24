@@ -3,12 +3,28 @@ import type { MutableRefObject } from 'react'
 import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { textPart } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
-import { $busy, $connection, $messages, $sessions, setSessions } from '@/store/session'
+import {
+  clearComposerDocument,
+  createAttachmentToken,
+  setComposerDocument
+} from '@/store/composer-document'
+import { $busy, $connection, $messages, $sessions, setCurrentCwd, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from './use-prompt-actions'
+
+beforeEach(() => {
+  vi.stubEnv('VITE_HERMES_COMPOSER_AST', 'false')
+  clearComposerDocument()
+})
+
+afterEach(() => {
+  vi.unstubAllEnvs()
+  clearComposerDocument()
+  $composerAttachments.set([])
+})
 
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
@@ -1070,6 +1086,97 @@ describe('usePromptActions eager attachment upload (drop-time)', () => {
     await Promise.resolve()
     expect(requestGateway).not.toHaveBeenCalledWith('file.attach', expect.anything())
   })
+
+  it('submits inline refs in rawText without dropping them when an image pill is also attached', async () => {
+    $connection.set({ mode: 'local' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => 'data:image/jpeg;base64,/9j/4AAQ')
+      }
+    })
+
+    const longImagePath =
+      '/home/user/tmp/wechat_sim/com.tencent.xinWeChat/Data/7e321e0bb349fc2cdb4b12028661f846.jpg'
+    const inlineText =
+      '你调用codex给我出封面图 然后出的封面图放到这边 @folder:`Desktop/sage/xhs_covers` 封面图上面我的照片用这张 把我抠出来 @image:`' +
+      longImagePath +
+      '`'
+
+    const imagePill: ComposerAttachment = {
+      id: 'image:portrait',
+      kind: 'image',
+      label: '7e321e0bb349fc2cdb4b12028661f846.jpg',
+      path: longImagePath,
+      previewUrl: 'data:image/jpeg;base64,/9j/4AAQ'
+    }
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+      if (method === 'image.attach') {
+        return {
+          attached: true,
+          path: '/workspace/.hermes/attached/7e321e0bb349fc2cdb4b12028661f846.jpg'
+        } as never
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    const ok = await handle!.submitText(inlineText, { attachments: [imagePill] })
+
+    expect(ok).toBe(true)
+    expect(calls.map(c => c.method)).toEqual(['image.attach', 'prompt.submit'])
+
+    const submitText = String(calls[1]?.params?.text ?? '')
+    // Inline refs stay embedded in the user sentence.
+    expect(submitText).toContain('@folder:`Desktop/sage/xhs_covers`')
+    expect(submitText).toContain('你调用codex给我出封面图')
+    // Image pill has no refText — it does not prepend a second copy of the path.
+    expect(submitText).not.toMatch(/^@file:/m)
+    expect((submitText.match(/@image:/g) ?? []).length).toBe(1)
+  })
+
+  it('prepends attachment pill refText above visibleText and mirrors it in the bubble', async () => {
+    const folderPill: ComposerAttachment = {
+      id: 'folder:xhs',
+      kind: 'folder',
+      label: 'xhs_covers',
+      path: '/home/user/Desktop/sage/xhs_covers',
+      refText: '@folder:`Desktop/sage/xhs_covers`'
+    }
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    const seeds: Record<string, unknown>[] = []
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const visible = '你调用codex给我出封面图 然后出的封面图放到这边'
+    const ok = await handle!.submitText(visible, { attachments: [folderPill] })
+
+    expect(ok).toBe(true)
+    const gatewayText = String(calls[0]?.params?.text ?? '')
+    expect(gatewayText).toBe('@folder:`Desktop/sage/xhs_covers`\n\n' + visible)
+    const userMessage = (seeds.at(-1)?.messages as { role: string; parts: unknown[] }[] | undefined)?.find(
+      m => m.role === 'user'
+    )
+    expect(userMessage?.parts[0]).toEqual(textPart(gatewayText))
+  })
 })
 
 describe('uploadComposerAttachment remote read failures', () => {
@@ -1118,5 +1225,237 @@ describe('uploadComposerAttachment remote read failures', () => {
         { remote: true, requestGateway: vi.fn(async () => ({}) as never), sessionId: RUNTIME_SESSION_ID }
       )
     ).rejects.toThrow('ENOENT: no such file')
+  })
+})
+
+describe('usePromptActions submit / AST document mode', () => {
+  beforeEach(() => {
+    vi.stubEnv('VITE_HERMES_COMPOSER_AST', 'true')
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    vi.unstubAllEnvs()
+    clearComposerDocument()
+    $composerAttachments.set([])
+  })
+
+  it('compiles the composer document to wire text and carries it on the optimistic bubble', async () => {
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    // Order: prose, folder ref, prose — the gateway text must preserve it and
+    // the folder kind must compile to @folder: (not @file:).
+    setComposerDocument([
+      { type: 'text', value: 'check ' },
+      createAttachmentToken({ kind: 'folder', path: '/a/b/dir', displayName: 'dir' }),
+      { type: 'text', value: ' please' }
+    ])
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const sent = await handle!.submitText('check @folder:`/a/b/dir` please')
+
+    expect(sent).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'check @folder:`/a/b/dir` please',
+      document: expect.any(Array),
+      document_version: 1
+    })
+
+    const lastSeed = seeds[seeds.length - 1]
+    const messages = (lastSeed?.messages ?? []) as ChatMessage[]
+    const optimistic = messages.find(m => m.role === 'user')
+
+    // Bubble body is compiled from the same MessageDocument as the gateway text.
+    expect(optimistic?.document).toBeTruthy()
+    expect(optimistic?.documentVersion).toBe(1)
+    expect(chatMessageText(optimistic!)).toBe('check @folder:`/a/b/dir` please')
+  })
+
+  it('falls back to importing wire text when the live document is empty', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    clearComposerDocument()
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    await handle!.submitText('hi @file: Desktop/x report')
+
+    // The malformed `@file: ` space form is imported and re-emitted well-formed.
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({
+        session_id: RUNTIME_SESSION_ID,
+        text: 'hi @file:`Desktop/x` report',
+        document_version: 1
+      })
+    )
+  })
+
+  it('merges attachment pills passed via options into the document (UI send path)', async () => {
+    $connection.set({ mode: 'local' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => 'data:image/jpeg;base64,/9j/4AAQ')
+      }
+    })
+
+    clearComposerDocument()
+
+    const folderPath = '/home/user/Desktop/sage/xhs_covers'
+    const imagePath =
+      '/home/user/tmp/wechat_sim/com.tencent.xinWeChat/Data/7e321e0bb349fc2cdb4b12028661f846.jpg'
+    const visible = '你调用codex给我出封面图 然后出的封面图放到这边'
+    const pills: ComposerAttachment[] = [
+      {
+        id: 'folder:xhs',
+        kind: 'folder',
+        label: 'xhs_covers',
+        path: folderPath,
+        refText: `@folder:${folderPath}`
+      },
+      {
+        id: 'image:portrait',
+        kind: 'image',
+        label: '7e321e0bb349fc2cdb4b12028661f846.jpg',
+        path: imagePath,
+        previewUrl: 'data:image/jpeg;base64,/9j/4AAQ'
+      }
+    ]
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+      if (method === 'image.attach') {
+        return {
+          attached: true,
+          path: '/workspace/.hermes/attached/7e321e0bb349fc2cdb4b12028661f846.jpg'
+        } as never
+      }
+      return {} as never
+    })
+
+    const seeds: Record<string, unknown>[] = []
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const sent = await handle!.submitText(visible, { attachments: pills.map(p => ({ ...p })) })
+
+    expect(sent).toBe(true)
+    expect(calls.map(c => c.method)).toEqual(['image.attach', 'prompt.submit'])
+
+    const submitParams = calls[1]?.params ?? {}
+    const gatewayText = String(submitParams.text ?? '')
+
+    expect(gatewayText).toContain('@folder:')
+    expect(gatewayText).toContain('@image:')
+    expect(gatewayText).toContain(visible)
+
+    const document = submitParams.document as { type: string; kind?: string }[] | undefined
+    expect(document?.filter(t => t.type === 'attachment').length).toBeGreaterThanOrEqual(2)
+
+    const optimistic = (seeds.at(-1)?.messages as ChatMessage[] | undefined)?.find(m => m.role === 'user')
+    expect(chatMessageText(optimistic!)).toBe(gatewayText)
+    expect(optimistic?.document?.some(t => t.type === 'attachment')).toBe(true)
+  })
+
+  it('dedupes inline folder against absolute pill and prepends image only (A2 mixed)', async () => {
+    $connection.set({ mode: 'local' } as never)
+    setCurrentCwd('/home/user')
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl: vi.fn(async () => 'data:image/jpeg;base64,/9j/4AAQ')
+      }
+    })
+
+    const folderRel = 'Desktop/sage/xhs_covers'
+    const folderAbs = '/home/user/Desktop/sage/xhs_covers'
+    const imagePath = '/home/user/tmp/wechat_sim/portrait.jpg'
+    const visible = '你调用codex给我出封面图 然后出的封面图放到这边 '
+
+    setComposerDocument([
+      { type: 'text', value: visible },
+      createAttachmentToken({ kind: 'folder', path: folderRel, displayName: 'xhs_covers' }),
+      { type: 'text', value: ' ' }
+    ])
+
+    const pills: ComposerAttachment[] = [
+      {
+        id: 'folder:xhs',
+        kind: 'folder',
+        label: 'xhs_covers',
+        path: folderAbs,
+        refText: `@folder:${folderAbs}`
+      },
+      {
+        id: 'image:portrait',
+        kind: 'image',
+        label: 'portrait.jpg',
+        path: imagePath,
+        previewUrl: 'data:image/jpeg;base64,/9j/4AAQ'
+      }
+    ]
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+      if (method === 'image.attach') {
+        return {
+          attached: true,
+          path: '/workspace/.hermes/attached/portrait.jpg'
+        } as never
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const sent = await handle!.submitText(`${visible}@folder:\`Desktop/sage/xhs_covers\` `, {
+      attachments: pills.map(p => ({ ...p }))
+    })
+
+    expect(sent).toBe(true)
+    expect(calls.map(c => c.method)).toEqual(['image.attach', 'prompt.submit'])
+
+    const submitParams = calls[1]?.params ?? {}
+    const gatewayText = String(submitParams.text ?? '')
+
+    expect(gatewayText.match(/@folder:/g)?.length).toBe(1)
+    expect(gatewayText).toContain('@image:')
+    expect(gatewayText).toContain('你调用codex')
+
+    const document = submitParams.document as { type: string; kind?: string; path?: string }[] | undefined
+    const attachmentTokens = document?.filter(t => t.type === 'attachment') ?? []
+
+    expect(attachmentTokens).toHaveLength(2)
+    expect(attachmentTokens.filter(t => t.kind === 'folder')).toHaveLength(1)
+    expect(attachmentTokens.find(t => t.kind === 'folder')?.path).toBe(folderAbs)
   })
 })

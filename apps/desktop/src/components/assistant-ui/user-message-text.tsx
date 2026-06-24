@@ -1,7 +1,9 @@
 import type { FC } from 'react'
 import { Fragment, useMemo } from 'react'
 
+import { MessageDocumentView } from '@/components/assistant-ui/message-document-view'
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
+import { importFromWireText, type MessageDocument, isAttachmentToken } from '@/lib/message-document'
 import { cn } from '@/lib/utils'
 
 // User messages should render the bare-minimum of markdown: backtick `code`
@@ -93,10 +95,35 @@ function splitInlineCode(text: string): InlineNode[] {
 interface UserMessageTextProps {
   text: string
   className?: string
+  /** When present, render from tokens instead of importFromWireText fallback. */
+  document?: MessageDocument
 }
 
-export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) => {
+export const UserMessageText: FC<UserMessageTextProps> = ({ className, document, text }) => {
+  const resolvedDocument = useMemo(() => {
+    if (document?.length) {
+      return document
+    }
+
+    if (!text.includes('@')) {
+      return null
+    }
+
+    const imported = importFromWireText(text)
+
+    return imported.some(isAttachmentToken) ? imported : null
+  }, [document, text])
+
   const top = useMemo(() => splitFences(text), [text])
+
+  if (resolvedDocument) {
+    return (
+      <MessageDocumentView
+        className={cn('wrap-anywhere block', className)}
+        document={resolvedDocument}
+      />
+    )
+  }
 
   return (
     <span className={cn('block', className)} data-slot="aui_user-message-text">

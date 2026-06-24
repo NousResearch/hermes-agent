@@ -499,7 +499,7 @@ def run_conversation(
     conversation_history: List[Dict[str, Any]] = None,
     task_id: str = None,
     stream_callback: Optional[callable] = None,
-    persist_user_message: Optional[str] = None,
+    persist_user_message: Optional[Any] = None,
     persist_user_timestamp: Optional[float] = None,
 ) -> Dict[str, Any]:
     """
@@ -513,12 +513,11 @@ def run_conversation(
         stream_callback: Optional callback invoked with each text delta during streaming.
             Used by the TTS pipeline to start audio generation before the full response.
             When None (default), API calls use the standard non-streaming path.
-        persist_user_message: Optional clean user message to store in
-            transcripts/history when user_message contains API-only
-            synthetic prefixes.
+        persist_user_message: Optional clean user message (str) or desktop envelope
+            (dict with text/document/document_version) to store in transcripts/history
+            when user_message contains API-only synthetic prefixes or expanded context.
         persist_user_timestamp: Optional platform event timestamp to store
             as metadata on that persisted user message.
-                or queuing follow-up prefetch work.
 
     Returns:
         Dict: Complete conversation result with final response and message history

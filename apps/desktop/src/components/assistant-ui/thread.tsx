@@ -93,6 +93,7 @@ import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon, XIcon } from '@/lib/icons'
+import { type MessageDocument, isAttachmentToken } from '@/lib/message-document'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -799,6 +800,14 @@ function messageAttachmentRefs(value: unknown): string[] {
   return value.every(ref => typeof ref === 'string') ? value : EMPTY_ATTACHMENT_REFS
 }
 
+function messageDocumentFromMetadata(value: unknown): MessageDocument | undefined {
+  if (!Array.isArray(value) || value.length === 0) {
+    return undefined
+  }
+
+  return value as MessageDocument
+}
+
 function StickyHumanMessageContainer({
   attachments,
   children,
@@ -907,9 +916,25 @@ const UserMessage: FC<{
   })
 
   const attachmentRefs = useAuiState(s => {
-    const custom = (s.message.metadata?.custom ?? {}) as { attachmentRefs?: unknown }
+    const custom = (s.message.metadata?.custom ?? {}) as {
+      attachmentRefs?: unknown
+      document?: unknown
+    }
 
-    return messageAttachmentRefs(custom.attachmentRefs)
+    const refs = messageAttachmentRefs(custom.attachmentRefs)
+    const document = messageDocumentFromMetadata(custom.document)
+
+    if (document?.some(isAttachmentToken)) {
+      return EMPTY_ATTACHMENT_REFS
+    }
+
+    return refs
+  })
+
+  const userDocument = useAuiState(s => {
+    const custom = (s.message.metadata?.custom ?? {}) as { document?: unknown }
+
+    return messageDocumentFromMetadata(custom.document)
   })
 
   // Sticky human bubbles clamp to ~2 lines with a soft fade so a long prompt
@@ -993,7 +1018,7 @@ const UserMessage: FC<{
           clicking to edit can't grow the bubble by a sub-pixel and reflow the
           turn 1px. */}
       <div className="min-h-[1.25rem]" ref={clampInnerRef}>
-        <UserMessageText className="wrap-anywhere" text={messageText} />
+        <UserMessageText className="wrap-anywhere" document={userDocument} text={messageText} />
       </div>
     </div>
   )

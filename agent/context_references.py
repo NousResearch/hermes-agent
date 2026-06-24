@@ -15,7 +15,7 @@ from agent.model_metadata import estimate_tokens_rough
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
-    rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
+    rf"(?<![\w/])@(?:(?P<simple>diff|staged)\b|(?P<kind>file|folder|git|url):\s*(?P<value>{_QUOTED_REFERENCE_VALUE}(?::\d+(?:-\d+)?)?|\S+))"
 )
 TRAILING_PUNCTUATION = ",.;!?"
 _SENSITIVE_HOME_DIRS = (".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", ".config/gh")
@@ -53,6 +53,17 @@ class ContextReferenceResult:
     message: str
     original_message: str
     references: list[ContextReference] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    injected_tokens: int = 0
+    expanded: bool = False
+    blocked: bool = False
+
+
+@dataclass
+class DocumentExpansionResult:
+    message: str
+    original_message: str
+    image_paths: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     injected_tokens: int = 0
     expanded: bool = False
@@ -549,3 +560,159 @@ def _code_fence_language(path: Path) -> str:
         ".toml": "toml",
     }
     return mapping.get(path.suffix.lower(), "")
+
+
+def _compile_document_wire_text(document: list[dict]) -> str:
+    parts: list[str] = []
+    for token in document:
+        if not isinstance(token, dict):
+            continue
+        if token.get("type") == "text":
+            parts.append(str(token.get("value") or ""))
+        elif token.get("type") == "attachment":
+            kind = str(token.get("kind") or "file")
+            path = str(token.get("path") or "")
+            parts.append(f"@{kind}:{path}")
+    return "".join(parts)
+
+
+async def expand_document_async(
+    document: list[dict],
+    *,
+    cwd: str | Path,
+    context_length: int,
+    url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
+    allowed_root: str | Path | None = None,
+) -> DocumentExpansionResult:
+    """Expand a structured desktop MessageDocument without regex discovery."""
+    cwd_path = Path(cwd).expanduser().resolve()
+    allowed_root_path = (
+        Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
+    )
+    original_message = _compile_document_wire_text(document)
+    text_parts: list[str] = []
+    refs: list[ContextReference] = []
+    image_paths: list[str] = []
+
+    for token in document:
+        if not isinstance(token, dict):
+            continue
+        if token.get("type") == "text":
+            text_parts.append(str(token.get("value") or ""))
+            continue
+        if token.get("type") != "attachment":
+            continue
+
+        kind = str(token.get("kind") or "file")
+        path = str(token.get("path") or "")
+        raw = f"@{kind}:{path}"
+        start = sum(len(part) for part in text_parts)
+        text_parts.append(raw)
+
+        if kind == "image":
+            if path:
+                image_paths.append(path)
+            continue
+
+        if kind in {"file", "folder"}:
+            refs.append(
+                ContextReference(
+                    raw=raw,
+                    kind=kind,
+                    target=path,
+                    start=start,
+                    end=start + len(raw),
+                )
+            )
+
+    prose = "".join(text_parts)
+    warnings: list[str] = []
+    blocks: list[str] = []
+    injected_tokens = 0
+
+    for ref in refs:
+        warning, block = await _expand_reference(
+            ref,
+            cwd_path,
+            url_fetcher=url_fetcher,
+            allowed_root=allowed_root_path,
+        )
+        if warning:
+            warnings.append(warning)
+        if block:
+            blocks.append(block)
+            injected_tokens += estimate_tokens_rough(block)
+
+    hard_limit = max(1, int(context_length * 0.50))
+    soft_limit = max(1, int(context_length * 0.25))
+    if injected_tokens > hard_limit:
+        warnings.append(
+            f"@ context injection refused: {injected_tokens} tokens exceeds the 50% hard limit ({hard_limit})."
+        )
+        return DocumentExpansionResult(
+            message=prose,
+            original_message=original_message,
+            image_paths=image_paths,
+            warnings=warnings,
+            injected_tokens=injected_tokens,
+            expanded=False,
+            blocked=True,
+        )
+
+    if injected_tokens > soft_limit:
+        warnings.append(
+            f"@ context injection warning: {injected_tokens} tokens exceeds the 25% soft limit ({soft_limit})."
+        )
+
+    stripped = _remove_reference_tokens(prose, refs)
+    final = stripped
+    if warnings:
+        final = f"{final}\n\n--- Context Warnings ---\n" + "\n".join(f"- {warning}" for warning in warnings)
+    if blocks:
+        final = f"{final}\n\n--- Attached Context ---\n\n" + "\n\n".join(blocks)
+
+    return DocumentExpansionResult(
+        message=final.strip(),
+        original_message=original_message,
+        image_paths=image_paths,
+        warnings=warnings,
+        injected_tokens=injected_tokens,
+        expanded=bool(blocks or warnings),
+        blocked=False,
+    )
+
+
+def expand_document(
+    document: list[dict],
+    *,
+    cwd: str | Path,
+    context_length: int,
+    url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
+    allowed_root: str | Path | None = None,
+) -> DocumentExpansionResult:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(
+            expand_document_async(
+                document,
+                cwd=cwd,
+                context_length=context_length,
+                url_fetcher=url_fetcher,
+                allowed_root=allowed_root,
+            )
+        )
+
+    import concurrent.futures
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(
+            asyncio.run,
+            expand_document_async(
+                document,
+                cwd=cwd,
+                context_length=context_length,
+                url_fetcher=url_fetcher,
+                allowed_root=allowed_root,
+            ),
+        ).result()

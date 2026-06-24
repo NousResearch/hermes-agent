@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 
 import { triggerHaptic } from '@/lib/haptics'
+import type { MessageDocument } from '@/lib/message-document'
 
 export interface ComposerAttachment {
   id: string
@@ -33,13 +34,16 @@ const EMPTY_SESSION_DRAFT: SessionDraft = { attachments: [], text: '' }
 export interface SessionDraft {
   attachments: ComposerAttachment[]
   text: string
+  /** Structured document for token-aware render; not persisted — `text` is searchable on reload. */
+  document?: MessageDocument
 }
 
 const draftKey = (scope: string | null | undefined) => scope?.trim() || NEW_SESSION_DRAFT_KEY
 
 const cloneDraft = (draft: SessionDraft): SessionDraft => ({
   attachments: draft.attachments.map(attachment => ({ ...attachment })),
-  text: draft.text
+  text: draft.text,
+  ...(draft.document ? { document: draft.document.map(token => ({ ...token })) } : {})
 })
 
 function loadPersistedDraftTexts(): [string, SessionDraft][] {

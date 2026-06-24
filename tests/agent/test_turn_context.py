@@ -174,6 +174,22 @@ def test_persist_user_message_becomes_original():
     assert ctx.messages[-1]["content"] == "api-prefixed"
 
 
+def test_persist_user_message_dict_envelope_becomes_original():
+    agent = _FakeAgent()
+    envelope = {
+        "text": "wire @file:`foo`",
+        "document": [{"type": "text", "value": "wire"}],
+        "document_version": 1,
+    }
+    ctx = _build(
+        agent,
+        user_message="expanded prose for api",
+        persist_user_message=envelope,
+    )
+    assert ctx.original_user_message == envelope
+    assert ctx.messages[-1]["content"] == "expanded prose for api"
+
+
 def test_memory_nudge_fires_at_interval():
     agent = _FakeAgent()
     agent._memory_nudge_interval = 1

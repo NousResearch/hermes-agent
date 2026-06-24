@@ -36,4 +36,14 @@ describe('hermesDirectiveFormatter.parse', () => {
       { kind: 'text', text: ' the entry point' }
     ])
   })
+
+  it('parses refs with a space after the colon (malformed wire form)', () => {
+    const segments = hermesDirectiveFormatter.parse('放到这边\n@file: Desktop/sage/xhs_covers 封面图上面')
+
+    expect(segments).toEqual([
+      { kind: 'text', text: '放到这边\n' },
+      { kind: 'mention', type: 'file', label: 'xhs_covers', id: 'Desktop/sage/xhs_covers' },
+      { kind: 'text', text: ' 封面图上面' }
+    ])
+  })
 })

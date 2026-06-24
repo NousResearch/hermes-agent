@@ -2,6 +2,7 @@ import type { ThreadMessageLike } from '@assistant-ui/react'
 
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
+import type { DOCUMENT_VERSION, MessageDocument } from '@/lib/message-document'
 import { parseTodos } from '@/lib/todos'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
 
@@ -18,6 +19,10 @@ export type ChatMessage = {
   hidden?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
+  /** Optional MessageDocument for token-aware user bubble render. */
+  document?: MessageDocument
+  /** Schema version of `document`, for forward-compatible migrations. */
+  documentVersion?: typeof DOCUMENT_VERSION
 }
 
 export type GatewayEventPayload = {
@@ -121,6 +126,37 @@ export function chatMessageText(message: ChatMessage): string {
 const ATTACHED_CONTEXT_MARKER_RE = /(?:^|\n)--- Attached Context ---\s*\n/
 const CONTEXT_WARNINGS_MARKER_RE = /(?:^|\n)--- Context Warnings ---[\s\S]*$/
 const CONTEXT_REF_RE = /@(file|folder|url|image|tool|terminal):(?:"[^"\n]+"|'[^'\n]+'|`[^`\n]+`|\S+)/g
+
+export interface DesktopUserEnvelope {
+  text: string
+  document?: MessageDocument
+  documentVersion?: typeof DOCUMENT_VERSION
+}
+
+/** Parse a persisted desktop user envelope from SQLite content (snake_case keys). */
+export function parseDesktopUserEnvelope(content: unknown): DesktopUserEnvelope | null {
+  if (!content || typeof content !== 'object' || Array.isArray(content)) {
+    return null
+  }
+
+  const row = content as Record<string, unknown>
+
+  if (typeof row.text !== 'string' || row.document_version === undefined) {
+    return null
+  }
+
+  if (row.document_version !== 1) {
+    return null
+  }
+
+  const document = Array.isArray(row.document) ? (row.document as MessageDocument) : undefined
+
+  return {
+    text: row.text,
+    document,
+    documentVersion: 1
+  }
+}
 
 function textFromUnknown(value: unknown, depth = 0): string {
   if (typeof value === 'string') {
@@ -755,7 +791,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     }
 
     const content = message.content || message.text || message.context || message.name
-    const displayContent = displayContentForMessage(message.role, content)
+    const envelope = message.role === 'user' ? parseDesktopUserEnvelope(content) : null
+    const displayContent = displayContentForMessage(message.role, envelope?.text ?? content)
     const parts: ChatMessagePart[] = []
 
     const reasoning =
@@ -825,7 +862,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       id: `${message.timestamp || Date.now()}-${index}-${message.role}`,
       role: message.role,
       parts,
-      timestamp: message.timestamp
+      timestamp: message.timestamp,
+      ...(message.role === 'user' && envelope?.document?.length
+        ? { document: envelope.document, documentVersion: envelope.documentVersion }
+        : {})
     })
 
     activeAssistantIndex = message.role === 'assistant' ? result.length - 1 : null
@@ -910,6 +950,39 @@ export function preserveLocalAssistantErrors(
     .map(message => ({ ...message, pending: false }))
 
   return [...mergedNextMessages, ...preserved]
+}
+
+export function preserveLocalUserDocuments(
+  nextMessages: ChatMessage[],
+  currentMessages: ChatMessage[]
+): ChatMessage[] {
+  const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
+  const tailUserInCurrent = [...currentMessages].reverse().find(message => message.role === 'user' && !message.hidden)
+  const tailUserInNext = [...nextMessages].reverse().find(message => message.role === 'user' && !message.hidden)
+
+  if (!tailUserInCurrent?.document?.length || !tailUserInNext || tailUserInNext.document?.length) {
+    return nextMessages
+  }
+
+  const currentText = normalize(chatMessageText(tailUserInCurrent))
+  const nextText = normalize(chatMessageText(tailUserInNext))
+
+  if (!currentText || currentText !== nextText) {
+    return nextMessages
+  }
+
+  return nextMessages.map(message =>
+    message.id === tailUserInNext.id
+      ? {
+          ...message,
+          document: tailUserInCurrent.document,
+          documentVersion: tailUserInCurrent.documentVersion,
+          attachmentRefs: tailUserInCurrent.attachmentRefs?.length
+            ? tailUserInCurrent.attachmentRefs
+            : message.attachmentRefs
+        }
+      : message
+  )
 }
 
 export function branchGroupForUser(userMessage: ChatMessage): string {

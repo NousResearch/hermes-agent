@@ -664,6 +664,13 @@ END;
 """
 
 
+def _unwrap_desktop_user_content(content: Any) -> Any:
+    """Extract wire text from a desktop MessageDocument envelope for agent replay."""
+    if isinstance(content, dict) and "text" in content and "document_version" in content:
+        return str(content["text"])
+    return content
+
+
 class SessionDB:
     """
     SQLite-backed session storage with FTS5 search.
@@ -3108,6 +3115,8 @@ class SessionDB:
         messages = []
         for row in rows:
             content = self._decode_content(row["content"])
+            if row["role"] == "user":
+                content = _unwrap_desktop_user_content(content)
             if row["role"] in {"user", "assistant"} and isinstance(content, str):
                 content = sanitize_context(content).strip()
             msg = {"role": row["role"], "content": content}

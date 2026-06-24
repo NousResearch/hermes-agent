@@ -6488,6 +6488,28 @@ class TestPersistUserMessageOverride:
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
 
+    def test_persist_session_rewrites_current_turn_with_desktop_envelope(self, agent):
+        agent._session_db = MagicMock()
+        agent.session_id = "session-123"
+        agent._last_flushed_db_idx = 0
+        envelope = {
+            "text": "wire @file:`foo`",
+            "document": [{"type": "text", "value": "wire"}],
+            "document_version": 1,
+        }
+        agent._persist_user_message_idx = 0
+        agent._persist_user_message_override = envelope
+        messages = [
+            {"role": "user", "content": "expanded for api"},
+            {"role": "assistant", "content": "Hi!"},
+        ]
+
+        agent._persist_session(messages, [])
+
+        assert messages[0]["content"] == envelope
+        first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
+        assert first_db_write["content"] == envelope
+
 
 class TestReasoningReplayForStrictProviders:
     """Assistant replay must preserve provider-native reasoning fields."""

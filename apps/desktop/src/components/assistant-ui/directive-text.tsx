@@ -159,7 +159,12 @@ export const DIRECTIVE_CHIP_CLASS =
 const CANONICAL_DIRECTIVE_RE = /:([\w-]{1,64})\[([^\]\n]{1,1024})\](?:\{name=([^}\n]{1,1024})\})?/g
 
 const HERMES_DIRECTIVE_RE = new RegExp(
-  '@(file|folder|url|image|tool|line|terminal|session):(' + '`[^`\\n]+`' + '|"[^"\\n]+"' + "|'[^'\\n]+'" + '|\\S+' + ')',
+  '@(file|folder|url|image|tool|line|terminal|session):\\s*(' +
+    '`[^`\\n]+`' +
+    '|"[^"\\n]+"' +
+    "|'[^'\\n]+'" +
+    '|\\S+' +
+    ')',
   'g'
 )
 

@@ -5,12 +5,14 @@ import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
+import { isComposerAstEnabled } from '@/lib/composer-ast-flag'
 import {
   addComposerAttachment,
   type ComposerAttachment,
   removeComposerAttachment,
   setComposerTerminalSelection
 } from '@/store/composer'
+import { createAttachmentToken, insertAttachmentToken } from '@/store/composer-document'
 import { notify, notifyError } from '@/store/notifications'
 
 import type { ImageDetachResponse } from '../../types'
@@ -220,6 +222,19 @@ interface ComposerActionsOptions {
 /** Add to the main composer and focus it. All sidebar/picker/drop attach paths funnel through here. */
 const attachToMain = (attachment: ComposerAttachment) => {
   addComposerAttachment(attachment)
+
+  if (isComposerAstEnabled() && attachment.path && ['file', 'folder', 'image'].includes(attachment.kind)) {
+    insertAttachmentToken(
+      createAttachmentToken({
+        id: attachment.id,
+        kind: attachment.kind as 'file' | 'folder' | 'image',
+        path: attachment.path,
+        displayName: attachment.label,
+        previewUrl: attachment.previewUrl
+      })
+    )
+  }
+
   requestComposerFocus('main')
 }
 

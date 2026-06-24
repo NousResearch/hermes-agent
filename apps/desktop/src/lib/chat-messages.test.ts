@@ -5,7 +5,9 @@ import {
   appendAssistantTextPart,
   appendReasoningPart,
   chatMessageText,
+  parseDesktopUserEnvelope,
   preserveLocalAssistantErrors,
+  preserveLocalUserDocuments,
   renderMediaTags,
   toChatMessages,
   upsertToolPart
@@ -154,6 +156,83 @@ describe('toChatMessages', () => {
     ])
 
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
+  })
+
+  it('restores MessageDocument from a persisted desktop user envelope', () => {
+    const [message] = toChatMessages([
+      {
+        content: {
+          text: 'look at @file:`Desktop/sage/xhs_covers` please',
+          document_version: 1,
+          document: [
+            { type: 'text', value: 'look at ' },
+            {
+              type: 'attachment',
+              id: 'attachment-1',
+              kind: 'file',
+              path: 'Desktop/sage/xhs_covers',
+              displayName: 'xhs_covers'
+            },
+            { type: 'text', value: ' please' }
+          ]
+        },
+        role: 'user',
+        timestamp: 1
+      }
+    ])
+
+    expect(message.document).toHaveLength(3)
+    expect(message.documentVersion).toBe(1)
+    expect(chatMessageText(message)).toContain('@file:`Desktop/sage/xhs_covers`')
+  })
+
+  it('legacy string user messages are unchanged', () => {
+    const [message] = toChatMessages([{ role: 'user', content: 'plain hello', timestamp: 1 }])
+
+    expect(message.document).toBeUndefined()
+    expect(chatMessageText(message)).toBe('plain hello')
+  })
+})
+
+describe('parseDesktopUserEnvelope', () => {
+  it('returns null for non-envelope content', () => {
+    expect(parseDesktopUserEnvelope('plain')).toBeNull()
+    expect(parseDesktopUserEnvelope({ text: 'x' })).toBeNull()
+  })
+
+  it('parses a v1 envelope', () => {
+    const envelope = parseDesktopUserEnvelope({
+      text: 'hi',
+      document_version: 1,
+      document: [{ type: 'text', value: 'hi' }]
+    })
+
+    expect(envelope?.text).toBe('hi')
+    expect(envelope?.documentVersion).toBe(1)
+  })
+})
+
+describe('preserveLocalUserDocuments', () => {
+  it('merges document from optimistic tail user when hydrate lacks it', () => {
+    const current: ChatMessage[] = [
+      {
+        id: 'u1',
+        role: 'user',
+        parts: [{ type: 'text', text: 'hello @file:`foo`' }],
+        document: [{ type: 'text', value: 'hello ' }, { type: 'attachment', id: 'a', kind: 'file', path: 'foo', displayName: 'foo' }]
+      }
+    ]
+    const next: ChatMessage[] = [
+      {
+        id: 'u2',
+        role: 'user',
+        parts: [{ type: 'text', text: 'hello @file:`foo`' }]
+      }
+    ]
+
+    const merged = preserveLocalUserDocuments(next, current)
+
+    expect(merged[0].document).toHaveLength(2)
   })
 })
 

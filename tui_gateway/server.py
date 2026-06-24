@@ -2807,7 +2807,8 @@ def _current_profile_name() -> str:
 # checkout), surfacing a one-click "update to align" prompt instead of failing
 # cryptically downstream. Bump whenever the desktop's backend contract changes.
 # v2: adds the file.attach RPC (remote-gateway non-image file upload).
-DESKTOP_BACKEND_CONTRACT = 2
+# v3: persists desktop MessageDocument envelope on document-path user turns.
+DESKTOP_BACKEND_CONTRACT = 3
 
 
 def _session_info(agent, session: dict | None = None) -> dict:
@@ -6827,6 +6828,13 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     sid, text = params.get("session_id", ""), params.get("text", "")
     truncate_user_ordinal = params.get("truncate_before_user_ordinal")
+    document = params.get("document")
+    document_version = params.get("document_version")
+    if document is not None:
+        if document_version != 1:
+            return _err(rid, 4004, "unsupported document_version")
+        if not isinstance(document, list):
+            return _err(rid, 4004, "document must be a list")
     session, err = _sess_nowait(params, rid)
     if err:
         return err
@@ -6886,7 +6894,7 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
                 _clear_inflight_turn(session)
             return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(rid, sid, session, text, document=document, document_version=document_version)
 
     threading.Thread(target=run_after_agent_ready, daemon=True).start()
     return _ok(rid, {"status": "streaming"})
@@ -7088,8 +7096,48 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     return stop
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
+def _stage_document_images(session: dict, document: list) -> None:
+    """Queue image attachment nodes from a structured document before submit."""
+    try:
+        from cli import _IMAGE_EXTENSIONS, _resolve_attachment_path, _split_path_input
+    except ImportError:
+        return
+
+    images = session.setdefault("attached_images", [])
+    seen = set(images)
+
+    for token in document:
+        if not isinstance(token, dict):
+            continue
+        if token.get("type") != "attachment" or token.get("kind") != "image":
+            continue
+        raw = str(token.get("path") or "").strip()
+        if not raw:
+            continue
+        path_token, _remainder = _split_path_input(raw)
+        image_path = _resolve_attachment_path(path_token)
+        if image_path is None:
+            continue
+        if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
+            continue
+        resolved = str(image_path)
+        if resolved not in seen:
+            images.append(resolved)
+            seen.add(resolved)
+
+
+def _run_prompt_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    document=None,
+    document_version=None,
+) -> None:
     with session["history_lock"]:
+        if isinstance(document, list):
+            _stage_document_images(session, document)
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
@@ -7128,8 +7176,47 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             cols = session.get("cols", 80)
             streamer = make_stream_renderer(cols)
             prompt = text
+            persist_user_message = None
 
-            if isinstance(prompt, str) and "@" in prompt:
+            if isinstance(document, list) and document_version == 1:
+                from agent.context_references import expand_document
+                from agent.model_metadata import get_model_context_length
+
+                ctx_len = get_model_context_length(
+                    getattr(agent, "model", "") or _resolve_model(),
+                    base_url=getattr(agent, "base_url", "") or "",
+                    api_key=getattr(agent, "api_key", "") or "",
+                    provider=getattr(agent, "provider", "") or "",
+                    config_context_length=getattr(
+                        agent, "_config_context_length", None
+                    ),
+                )
+                ctx = expand_document(
+                    document,
+                    cwd=cwd,
+                    allowed_root=cwd,
+                    context_length=ctx_len,
+                )
+                if ctx.blocked:
+                    _emit(
+                        "error",
+                        sid,
+                        {
+                            "message": "\n".join(ctx.warnings)
+                            or "Context reference expansion blocked"
+                        },
+                    )
+                    with session["history_lock"]:
+                        session["running"] = False
+                        _clear_inflight_turn(session)
+                    return
+                prompt = ctx.message
+                persist_user_message = {
+                    "text": text,
+                    "document": document,
+                    "document_version": document_version,
+                }
+            elif isinstance(prompt, str) and "@" in prompt:
                 from agent.context_references import preprocess_context_references
                 from agent.model_metadata import get_model_context_length
 
@@ -7229,6 +7316,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 "conversation_history": list(history),
                 "stream_callback": _stream,
             }
+            if persist_user_message is not None:
+                run_kwargs["persist_user_message"] = persist_user_message
             try:
                 if "task_id" in inspect.signature(agent.run_conversation).parameters:
                     run_kwargs["task_id"] = session["session_key"]

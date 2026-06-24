@@ -11345,7 +11345,12 @@ def cmd_dashboard(args):
         # re-executing the dashboard for a non-default profile.  Use
         # subprocess.Popen + sys.exit() on Windows to avoid the crash.
         if sys.platform == "win32":
-            proc = subprocess.Popen(reexec_argv, env=env)
+            create_no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            proc = subprocess.Popen(
+                reexec_argv,
+                env=env,
+                creationflags=create_no_window,
+            )
             sys.exit(proc.wait())
         else:
             os.execvpe(sys.executable, reexec_argv, env)

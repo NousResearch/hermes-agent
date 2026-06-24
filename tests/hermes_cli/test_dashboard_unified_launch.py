@@ -87,6 +87,37 @@ class TestUnifiedDashboardRouting:
         from hermes_constants import get_default_hermes_root
         assert env.get("HERMES_HOME") == str(get_default_hermes_root())
 
+    def test_windows_reexec_uses_no_window_flag(self, main_mod, monkeypatch):
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        monkeypatch.setattr(main_mod, "_dashboard_listening", lambda host, port: False)
+        monkeypatch.setattr(main_mod.sys, "platform", "win32")
+
+        popen_calls = []
+
+        class FakeProc:
+            def wait(self):
+                return 0
+
+        def fake_popen(*args, **kwargs):
+            popen_calls.append((args, kwargs))
+            return FakeProc()
+
+        monkeypatch.setattr(
+            main_mod.subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False
+        )
+        monkeypatch.setattr(main_mod.subprocess, "Popen", fake_popen)
+
+        with pytest.raises(SystemExit) as exc:
+            main_mod.cmd_dashboard(_args())
+
+        assert exc.value.code == 0
+        assert len(popen_calls) == 1
+        _args_used, kwargs = popen_calls[0]
+        assert kwargs["creationflags"] & 0x08000000
+
     def test_reexec_pins_docker_machine_root(self, main_mod, monkeypatch):
         """In the Docker layout (HERMES_HOME=/opt/data, profiles under
         /opt/data/profiles/<name>) the reroute must pin the child to the

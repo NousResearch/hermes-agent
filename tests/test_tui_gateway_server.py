@@ -4100,6 +4100,46 @@ def test_commands_catalog_surfaces_quick_commands(monkeypatch):
     assert resp["result"]["canon"]["/notes"] == "/notes"
 
 
+def test_commands_catalog_surfaces_skill_commands_in_categories(monkeypatch):
+    import agent.skill_commands as skill_commands
+
+    long_description = "x" * 121
+    truncated_description = ("x" * 120) + "…"
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(
+        skill_commands,
+        "scan_skill_commands",
+        lambda: {
+            "/gif-search": {
+                "name": "gif-search",
+                "description": "Search for animated GIFs",
+            },
+            "/long-skill": {
+                "name": "long-skill",
+                "description": long_description,
+            },
+        },
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "commands.catalog", "params": {}}
+    )
+
+    pairs = dict(resp["result"]["pairs"])
+    assert pairs["/gif-search"] == "Search for animated GIFs"
+    assert pairs["/long-skill"] == truncated_description
+    assert resp["result"]["skill_count"] == 2
+
+    skills_cat = next(
+        c for c in resp["result"]["categories"] if c["name"] == "Skills"
+    )
+    skill_pairs = dict(skills_cat["pairs"])
+    assert skill_pairs == {
+        "/gif-search": "Search for animated GIFs",
+        "/long-skill": truncated_description,
+    }
+
+
 def test_commands_catalog_includes_tui_mouse_command():
     resp = server.handle_request(
         {"id": "1", "method": "commands.catalog", "params": {}}

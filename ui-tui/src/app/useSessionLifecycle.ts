@@ -18,6 +18,7 @@ import type {
   SetupStatusResponse
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
+import { applyScrollState, restoreScrollState } from '../lib/scrollPersistence.js'
 import type { Msg, PanelSection, SessionInfo, Usage } from '../types.js'
 
 import type { ComposerActions, GatewayRpc, StateSetter } from './interfaces.js'
@@ -181,7 +182,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       resetSession()
       setSessionStartedAt(Date.now())
 
-      writeActiveSessionFile(r.session_id)
+      // Store the DURABLE key (stored_session_id), not the ephemeral live
+      // session_id, so the orchestrator can resume THIS session after a renderer
+      // recycle (session.resume looks up by the persisted key / session_key).
+      writeActiveSessionFile(r.stored_session_id ?? r.session_id)
       patchUiState({
         info,
         sid: r.session_id,
@@ -337,7 +341,19 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               void closeSession(previousSid)
             }
 
-            setTimeout(() => scrollRef.current?.scrollToBottom(), 0)
+            // Stage 1: on a deliberate renderer RECYCLE we restore the scroll
+            // position the previous renderer persisted (keyed by the resumed
+            // sid), so the recycle is invisible. Absent/stale/corrupt → null →
+            // applyScrollState falls back to scrollToBottom (today's behaviour),
+            // so this is never worse than before, only seamless on a recycle.
+            setTimeout(() => {
+              const handle = scrollRef.current
+              if (!handle) {
+                return
+              }
+              const restored = restoreScrollState(r.session_id)
+              applyScrollState(handle, restored)
+            }, 0)
           })
           .catch((e: Error) => {
             sys(`error: ${e.message}`)

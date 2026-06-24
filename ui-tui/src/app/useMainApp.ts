@@ -24,7 +24,10 @@ import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage } from '../lib/messages.js'
 import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { registerRecycleHandler } from '../lib/recycleBridge.js'
+import { persistScrollState } from '../lib/scrollPersistence.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
+import { getViewportSnapshot } from '../lib/viewportStore.js'
 import { buildToolTrailLine, formatAbandonedClarify, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
@@ -481,6 +484,34 @@ export function useMainApp(gw: GatewayClient) {
     exit()
     process.exit(code)
   }, [exit, gw])
+
+  // Stage 1 SEAMLESS RECYCLE: persist the current scroll position keyed by the
+  // live sid, then exit 0. In attach mode `gw.kill()` only closes THIS
+  // renderer's ws (this.proc is null — no spawned gateway child), so the
+  // durable gateway + in-flight turn survive. The orchestrator respawns a fresh
+  // renderer with HERMES_TUI_RESUME=<sid>; it resumes the live session (adopting
+  // the running turn via the gateway's _live_session_payload) and restores the
+  // scroll position — so the recycle is invisible to the user. Guarded by
+  // canRecycle(): never fires in spawned-gateway mode where exiting would kill
+  // the session.
+  const recycle = useCallback(() => {
+    try {
+      const sid = getUiState().sid
+      const handle = scrollRef.current
+      if (sid && handle) {
+        const snap = getViewportSnapshot(handle)
+        persistScrollState(sid, { top: snap.top, atBottom: snap.atBottom })
+      }
+    } catch {
+      // best-effort: a failed persist just means the fresh renderer falls back
+      // to scrollToBottom — never blocks the recycle.
+    }
+    gw.kill('app.recycle')
+    exit()
+    process.exit(0)
+  }, [exit, gw])
+
+  useEffect(() => registerRecycleHandler(recycle), [recycle])
 
   const session = useSessionLifecycle({
     colsRef,

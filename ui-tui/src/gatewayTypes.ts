@@ -220,6 +220,10 @@ export interface SetupStatusResponse {
 export interface SessionCreateResponse {
   info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
+  // The DURABLE/persisted session key (what session.resume looks up). Distinct
+  // from session_id, which is the ephemeral in-memory live id. The active-session
+  // file must store THIS so a resume/recycle can re-attach to the live session.
+  stored_session_id?: string
 }
 
 export interface SessionResumeResponse {
@@ -310,7 +314,6 @@ export interface SessionUndoResponse {
 }
 
 export interface SessionUsageResponse {
-  active_subagents?: number
   cache_read?: number
   cache_write?: number
   calls?: number

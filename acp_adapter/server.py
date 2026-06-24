@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import base64
 import contextvars
 import json
+import re
 import logging
 import os
 from collections import defaultdict, deque
@@ -357,6 +358,55 @@ def _embedded_resource_to_parts(block: EmbeddedResourceContentBlock) -> list[dic
     return []
 
 
+def _parse_line_range_from_uri(uri: str) -> tuple[int, int] | None:
+    """Parse line range from URI fragment.
+
+    Supported formats:
+      - file:///path.py#L13-L20
+      - file:///path.py#13-20
+      - file:///path.py:13:20
+    Returns (start, end) 1-indexed, or None.
+    """
+    if "#" in uri:
+        fragment = uri.split("#", 1)[1]  # after last #
+        m = re.match(r"L?(\d+)[-:,]L?(\d+)", fragment)
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    if ":" in uri:
+        # Try file:///path.py:13:20  (note: colon in path after scheme)
+        rest = uri.split("://", 1)[-1] if "://" in uri else uri
+        # Find the last two colon-separated numbers
+        m = re.search(r":(\d+):(\d+)$", rest)
+        if m and not m.group(1).startswith("0"):
+            return int(m.group(1)), int(m.group(2))
+    return None
+
+
+def _extract_range_from_meta(
+    meta: dict[str, Any] | None,
+) -> tuple[int, int] | None:
+    """Extract (start, end) from a _meta dict.
+
+    Supports:
+      - {"range": {"start": 13, "end": 20}}
+      - {"start_line": 13, "end_line": 20}
+      - {"start": 13, "end": 20}
+    """
+    if not meta or not isinstance(meta, dict):
+        return None
+    r = meta.get("range")
+    if isinstance(r, dict):
+        start = r.get("start") or r.get("start_line")
+        end = r.get("end") or r.get("end_line")
+        if start and end:
+            return int(start), int(end)
+    start = meta.get("start_line") or meta.get("start")
+    end = meta.get("end_line") or meta.get("end")
+    if start and end:
+        return int(start), int(end)
+    return None
+
+
 def _extract_text(
     prompt: list[
         TextContentBlock
@@ -366,13 +416,164 @@ def _extract_text(
         | EmbeddedResourceContentBlock
     ],
 ) -> str:
-    """Extract plain text from ACP content blocks for display/commands."""
+    """Extract plain text from ACP content blocks for display/commands.
+
+    Handles:
+    - TextContentBlock: plain text
+    - EmbeddedResourceContentBlock (TextResourceContents): @-referenced files
+        with line range extraction from URI fragments or _meta
+    - ImageContentBlock: saves image and embeds [Image: path]
+    - AudioContentBlock: saves audio and embeds [Audio: path]
+    - ResourceContentBlock: reads file content from disk
+    """
     parts: list[str] = []
+    img_counter = 0
+    audio_counter = 0
+
     for block in prompt:
+        # ---- TextContentBlock (plain text) ----
         if isinstance(block, TextContentBlock):
             parts.append(block.text)
-        elif hasattr(block, "text"):
+            continue
+
+        # ---- ImageContentBlock ----
+        if isinstance(block, ImageContentBlock):
+            img_counter += 1
+            mime = block.mime_type or "image/png"
+            ext = _mime_to_ext(mime, ".png")
+            fname = f"/tmp/hermes_acp_img_{img_counter}{ext}"
+            try:
+                data = base64.b64decode(block.data)
+                with open(fname, "wb") as f:
+                    f.write(data)
+                parts.append(f"[Image: {fname}]")
+            except Exception as exc:
+                logger.warning("Failed to save image block: %s", exc)
+            continue
+
+        # ---- AudioContentBlock ----
+        if isinstance(block, AudioContentBlock):
+            audio_counter += 1
+            mime = block.mime_type or "audio/wav"
+            ext = _mime_to_ext(mime, ".wav")
+            fname = f"/tmp/hermes_acp_audio_{audio_counter}{ext}"
+            try:
+                data = base64.b64decode(block.data)
+                with open(fname, "wb") as f:
+                    f.write(data)
+                parts.append(f"[Audio: {fname}]")
+            except Exception as exc:
+                logger.warning("Failed to save audio block: %s", exc)
+            continue
+
+        # ---- EmbeddedResourceContentBlock (@-referenced files) ----
+        if isinstance(block, EmbeddedResourceContentBlock):
+            resource = block.resource
+
+            # TextResourceContents
+            if hasattr(resource, "text"):
+                uri: str = getattr(resource, "uri", "") or ""
+                text: str = resource.text
+
+                line_range = _parse_line_range_from_uri(uri)
+                if not line_range:
+                    line_range = _extract_range_from_meta(
+                        getattr(resource, "field_meta", None)
+                    )
+                if not line_range:
+                    line_range = _extract_range_from_meta(
+                        getattr(block, "field_meta", None)
+                    )
+                if not line_range:
+                    annotations = getattr(block, "annotations", None)
+                    if annotations:
+                        line_range = _extract_range_from_meta(
+                            getattr(annotations, "field_meta", None)
+                        )
+
+                if line_range:
+                    start, end = line_range
+                    lines = text.splitlines(keepends=False)
+                    total = len(lines)
+                    range_span = end - start + 1
+                    if range_span > 0 and total > range_span * 2:
+                        start = max(1, min(start, total))
+                        end = max(start, min(end, total))
+                        selected = lines[start - 1 : end]
+                        snippet = "\n".join(selected)
+                        file_label = f"[File: {uri} (lines {start}-{end}/{total})]"
+                        parts.append(f"{file_label}\n{snippet}")
+                    else:
+                        file_label = f"[File: {uri} (lines {start}-{end})]"
+                        parts.append(f"{file_label}\n{text}")
+                else:
+                    file_label = f"[File: {uri}]"
+                    parts.append(f"{file_label}\n{text}")
+                continue
+
+            # BlobResourceContents (image/audio in embedded resources)
+            if hasattr(resource, "blob"):
+                uri = getattr(resource, "uri", "") or ""
+                mime_type = getattr(resource, "mime_type", None) or ""
+                blob_data = resource.blob
+
+                if mime_type.startswith("image/"):
+                    img_counter += 1
+                    ext = _mime_to_ext(mime_type, ".png")
+                    fname = f"/tmp/hermes_acp_img_{img_counter}{ext}"
+                    try:
+                        data = base64.b64decode(blob_data)
+                        with open(fname, "wb") as f:
+                            f.write(data)
+                        parts.append(f"[Image: {fname}]")
+                    except Exception as exc:
+                        logger.warning("Failed to save embedded image: %s", exc)
+                elif mime_type.startswith("audio/"):
+                    audio_counter += 1
+                    ext = _mime_to_ext(mime_type, ".wav")
+                    fname = f"/tmp/hermes_acp_audio_{audio_counter}{ext}"
+                    try:
+                        data = base64.b64decode(blob_data)
+                        with open(fname, "wb") as f:
+                            f.write(data)
+                        parts.append(f"[Audio: {fname}]")
+                    except Exception as exc:
+                        logger.warning("Failed to save embedded audio: %s", exc)
+                else:
+                    parts.append(f"[Embedded blob: {uri or 'unknown'}] (mime: {mime_type})")
+                continue
+
+            parts.append("[Embedded resource: unknown type]")
+            continue
+
+        # ---- ResourceContentBlock (file link) ----
+        if isinstance(block, ResourceContentBlock):
+            uri = block.uri
+            parsed = urlparse(uri)
+            fpath = parsed.path
+            line_range = _parse_line_range_from_uri(uri)
+            try:
+                with open(fpath, "r") as f:
+                    content = f.read()
+                if line_range:
+                    start, end = line_range
+                    lines = content.splitlines(keepends=False)
+                    total = len(lines)
+                    start = max(1, min(start, total))
+                    end = max(start, min(end, total))
+                    selected = lines[start - 1 : end]
+                    snippet = "\n".join(selected)
+                    parts.append(f"[File: {uri} (lines {start}-{end}/{total})]\n{snippet}")
+                else:
+                    parts.append(f"[File: {uri}]\n{content}")
+            except Exception as exc:
+                parts.append(f"[File: {uri}] (unreadable: {exc})")
+            continue
+
+        # ---- Catch-all for unknown blocks with text ----
+        if hasattr(block, "text"):
             parts.append(str(block.text))
+
     return "\n".join(parts)
 
 
@@ -441,6 +642,28 @@ def _content_blocks_to_openai_user_content(
         return "\n".join(text_parts)
 
     return parts
+
+
+def _mime_to_ext(mime_type: str, fallback: str = ".bin") -> str:
+    """Map a MIME type to a file extension."""
+    _MIME_EXT_MAP = {
+        "image/png": ".png",
+        "image/jpeg": ".jpg",
+        "image/jpg": ".jpg",
+        "image/gif": ".gif",
+        "image/webp": ".webp",
+        "image/svg+xml": ".svg",
+        "image/bmp": ".bmp",
+        "audio/wav": ".wav",
+        "audio/wave": ".wav",
+        "audio/mpeg": ".mp3",
+        "audio/mp3": ".mp3",
+        "audio/mp4": ".m4a",
+        "audio/ogg": ".ogg",
+        "audio/flac": ".flac",
+        "audio/webm": ".webm",
+    }
+    return _MIME_EXT_MAP.get(mime_type, fallback)
 
 
 class HermesACPAgent(acp.Agent):
@@ -882,7 +1105,11 @@ class HermesACPAgent(acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=HERMES_VERSION),
             agent_capabilities=AgentCapabilities(
                 load_session=True,
-                prompt_capabilities=PromptCapabilities(image=True),
+                prompt_capabilities=PromptCapabilities(
+                    image=True,
+                    audio=True,
+                    embedded_context=True,
+                ),
                 session_capabilities=SessionCapabilities(
                     fork=SessionForkCapabilities(),
                     list=SessionListCapabilities(),

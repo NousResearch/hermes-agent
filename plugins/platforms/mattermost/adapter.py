@@ -236,6 +236,21 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("MM API PUT %s network error: %s", path, exc)
             return {}
 
+    async def _api_delete(self, path: str) -> Dict[str, Any]:
+        """DELETE /api/v4/{path}. Returns the parsed JSON body (e.g. {\"status\": \"OK\"})."""
+        import aiohttp
+        url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
+        try:
+            async with self._session.delete(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM API DELETE %s → %s: %s", path, resp.status, body[:200])
+                    return {}
+                return await resp.json()
+        except aiohttp.ClientError as exc:
+            logger.error("MM API DELETE %s network error: %s", path, exc)
+            return {}
+
     async def _upload_file(
         self, channel_id: str, file_data: bytes, filename: str, content_type: str = "application/octet-stream"
     ) -> Optional[str]:
@@ -406,6 +421,16 @@ class MattermostAdapter(BasePlatformAdapter):
         if not data or "id" not in data:
             return SendResult(success=False, error="Failed to edit post")
         return SendResult(success=True, message_id=data["id"])
+
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a post by its ID.
+
+        Returns True when Mattermost confirms deletion (``{"status": "OK"}``),
+        False on any error. ``chat_id`` is accepted for API symmetry but
+        Mattermost's DELETE /api/v4/posts/{id} endpoint does not need it.
+        """
+        data = await self._api_delete(f"posts/{message_id}")
+        return bool(data and data.get("status") == "OK")
 
     async def send_image(
         self,

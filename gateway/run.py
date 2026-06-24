@@ -67,6 +67,10 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+# Max characters for the live-thinking bubble text before truncation.
+# Mattermost posts are capped at 16 383 chars but one very long thought can
+# fill a channel thread; 1 500 chars is intentionally conservative.
+_LIVE_THINKING_MAX = 1500
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -16256,6 +16260,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             platform=source.platform,
             require_platform_override_for={Platform.MATTERMOST},
         )
+        # Live-thinking bubble: a single post edited in place with each
+        # completed thought, then deleted when the final answer lands.
+        # Must be explicitly opted in per-platform (default false).
+        _live_thinking_enabled = _resolve_gateway_display_bool(
+            user_config,
+            platform_key,
+            "live_thinking",
+            default=False,
+            platform=source.platform,
+            require_platform_override_for={Platform.MATTERMOST},
+        )
         needs_progress_queue = tool_progress_enabled or _thinking_enabled
 
 
@@ -16327,6 +16342,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _cleanup_progress = False
             _cleanup_adapter = None
         _cleanup_msg_ids: List[str] = []
+        # Live-thinking bubble state — one post edited in place per thought.
+        # Tracked independently so the bubble is always deleted on success
+        # regardless of whether _cleanup_progress is set.
+        _live_thinking_adapter = (
+            self.adapters.get(source.platform) if _live_thinking_enabled else None
+        )
+        if _live_thinking_adapter is not None and (
+            type(_live_thinking_adapter).delete_message is BasePlatformAdapter.delete_message
+        ):
+            # Platform doesn't support deletion; edit-in-place still works but
+            # the bubble won't be cleaned up — log and carry on.
+            logger.warning(
+                "live_thinking enabled but %s adapter has no delete_message; "
+                "bubble will not be deleted after final answer",
+                source.platform.value if source.platform else "unknown",
+            )
+        _live_thinking_post_ids: List[str] = []  # at most one id at steady state
+        # Serialize bubble updates so near-simultaneous thoughts can never race
+        # into duplicate or orphaned posts. FIFO lock => a later thought overrides
+        # an earlier one in place (the desired "override" semantics), and the
+        # send-vs-edit decision is always made against a settled post-id list.
+        _live_thinking_lock = asyncio.Lock()
         # First-touch onboarding latch: fires at most once per run, even if
         # several tools exceed the threshold.
         long_tool_hint_fired = [False]
@@ -17225,7 +17262,69 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         _stream_consumer.on_commentary(text)
                     return
-                if already_streamed or not _status_adapter or not str(text or "").strip():
+                if already_streamed or not str(text or "").strip():
+                    return
+                # ------------------------------------------------------------------
+                # Live-thinking bubble: edit a single post in place (Mattermost and
+                # any adapter that implements edit_message + delete_message).
+                # ------------------------------------------------------------------
+                if _live_thinking_enabled and _live_thinking_adapter:
+                    _bubble_text = str(text).strip()
+                    if len(_bubble_text) > _LIVE_THINKING_MAX:
+                        _bubble_text = _bubble_text[:_LIVE_THINKING_MAX - 3] + "..."
+                    # Capture a non-None local so the async closure has a
+                    # concrete reference (avoids Pyright Optional false-positives).
+                    _lta = _live_thinking_adapter
+
+                    async def _update_live_bubble(bubble_text: str = _bubble_text) -> None:
+                        # Serialize the whole read-decide-write section: only one
+                        # bubble update touches the post-id list at a time, so a
+                        # later thought always edits the existing post instead of
+                        # racing into a duplicate (or orphaning the first send).
+                        async with _live_thinking_lock:
+                            try:
+                                _existing_id = _live_thinking_post_ids[0] if _live_thinking_post_ids else None
+                                _edit_ok = False
+                                if _existing_id:
+                                    try:
+                                        _res = await _lta.edit_message(
+                                            _status_chat_id,
+                                            _existing_id,
+                                            bubble_text,
+                                        )
+                                        _edit_ok = getattr(_res, "success", False)
+                                    except Exception as _ee:
+                                        logger.debug("live_thinking edit failed: %s", _ee)
+                                if not _edit_ok:
+                                    # No existing post (or edit failed) — send a fresh one.
+                                    _send_res = await _lta.send(
+                                        _status_chat_id,
+                                        bubble_text,
+                                        metadata=_non_conversational_metadata(
+                                            _status_thread_metadata,
+                                            platform=source.platform,
+                                        ),
+                                    )
+                                    _new_id = getattr(_send_res, "message_id", None)
+                                    if getattr(_send_res, "success", False) and _new_id:
+                                        if _live_thinking_post_ids:
+                                            _live_thinking_post_ids[0] = str(_new_id)
+                                        else:
+                                            _live_thinking_post_ids.append(str(_new_id))
+                            except Exception as _ble:
+                                logger.debug("live_thinking bubble update error: %s", _ble)
+
+                    safe_schedule_threadsafe(
+                        _update_live_bubble(),
+                        _loop_for_step,
+                        logger=logger,
+                        log_message="live_thinking bubble scheduling error",
+                    )
+                    return  # don't also send a regular interim post
+                # ------------------------------------------------------------------
+                # Default path: send each thought as a standalone status post.
+                # ------------------------------------------------------------------
+                if not _status_adapter:
                     return
                 safe_schedule_threadsafe(
                     _status_adapter.send(
@@ -17430,7 +17529,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
-            agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
+            agent.interim_assistant_callback = _interim_assistant_cb if (_want_interim_messages or _live_thinking_enabled) else None
             agent.status_callback = _status_callback_sync
             # Credits / out-of-band notices (usage bands, depletion, restored).
             # Messaging has no persistent status bar, so each notice is a
@@ -19183,6 +19282,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
+
+        # Live-thinking bubble cleanup: delete the bubble after the final answer
+        # lands regardless of _cleanup_progress. The whole point is that the
+        # bubble goes away once the real response is visible.
+        if (
+            _live_thinking_enabled
+            and _live_thinking_adapter is not None
+            and _live_thinking_post_ids
+            and session_key
+            and isinstance(response, dict)
+            and not response.get("failed")
+            and hasattr(_live_thinking_adapter, "register_post_delivery_callback")
+        ):
+            _lt_ids_snapshot = list(_live_thinking_post_ids)
+            _lt_chat_id_snapshot = source.chat_id
+            _lt_adapter_snapshot = _live_thinking_adapter
+            _lt_loop_snapshot = asyncio.get_running_loop()
+
+            def _cleanup_live_thinking_bubble() -> None:
+                async def _delete_lt_bubble() -> None:
+                    for _mid in _lt_ids_snapshot:
+                        try:
+                            await _lt_adapter_snapshot.delete_message(
+                                _lt_chat_id_snapshot, _mid
+                            )
+                        except Exception:
+                            pass
+                try:
+                    safe_schedule_threadsafe(
+                        _delete_lt_bubble(), _lt_loop_snapshot,
+                        logger=logger,
+                        log_message="Live-thinking bubble cleanup scheduling error",
+                    )
+                except Exception:
+                    pass
+
+            try:
+                _live_thinking_adapter.register_post_delivery_callback(
+                    session_key,
+                    _cleanup_live_thinking_bubble,
+                    generation=run_generation,
+                )
+            except Exception as _ltpe:
+                logger.debug("Live-thinking bubble post-delivery registration failed: %s", _ltpe)
 
         return response
 

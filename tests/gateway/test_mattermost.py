@@ -2,6 +2,7 @@
 import json
 import os
 import time
+from types import SimpleNamespace
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
@@ -1034,3 +1035,218 @@ async def test_mattermost_dm_post_does_not_seed_thread_root():
     msg_event = adapter.handle_message.call_args[0][0]
     assert msg_event.source.thread_id is None
     assert msg_event.source.message_id == "dm_post_123"
+
+
+# ---------------------------------------------------------------------------
+# _api_delete + delete_message
+# ---------------------------------------------------------------------------
+
+import asyncio
+
+
+def _run(coro):
+    """Run an async coroutine in a temporary event loop."""
+    return asyncio.get_event_loop().run_until_complete(coro)
+
+
+class TestMattermostDeleteMessage:
+    """delete_message uses _api_delete → DELETE /api/v4/posts/{id}."""
+
+    @pytest.fixture
+    def adapter(self):
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+
+        a = object.__new__(MattermostAdapter)
+        a._base_url = "https://mm.example.com"
+        a._token = "test-token"
+        a._session = MagicMock()
+        return a
+
+    def test_delete_message_success(self, adapter):
+        """Returns True when the API returns {\"status\": \"OK\"}."""
+        adapter._api_delete = AsyncMock(return_value={"status": "OK"})
+        result = _run(adapter.delete_message("channel123", "post_abc"))
+        adapter._api_delete.assert_awaited_once_with("posts/post_abc")
+        assert result is True
+
+    def test_delete_message_api_error(self, adapter):
+        """Returns False when the API returns an empty dict (HTTP error)."""
+        adapter._api_delete = AsyncMock(return_value={})
+        result = _run(adapter.delete_message("channel123", "post_abc"))
+        assert result is False
+
+    def test_delete_message_wrong_status(self, adapter):
+        """Returns False when status value is not 'OK'."""
+        adapter._api_delete = AsyncMock(return_value={"status": "error"})
+        result = _run(adapter.delete_message("channel123", "post_abc"))
+        assert result is False
+
+    def test_api_delete_issues_delete_request(self, adapter):
+        """_api_delete calls session.delete with correct URL and headers."""
+        # Patch aiohttp inside the adapter module so this test works in
+        # envs without aiohttp installed (aiohttp is an optional dep here).
+        import sys
+        import types
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"status": "OK"})
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        adapter._session.delete = MagicMock(return_value=mock_resp)
+
+        # Provide a minimal aiohttp stub so the import inside _api_delete works.
+        fake_aiohttp = types.ModuleType("aiohttp")
+        fake_aiohttp.ClientError = Exception
+        fake_aiohttp.ClientTimeout = MagicMock(return_value=None)
+        with patch.dict(sys.modules, {"aiohttp": fake_aiohttp}):
+            result = _run(adapter._api_delete("posts/post_xyz"))
+
+        adapter._session.delete.assert_called_once()
+        call_args = adapter._session.delete.call_args
+        assert "posts/post_xyz" in call_args[0][0]
+        assert result == {"status": "OK"}
+
+    def test_api_delete_logs_and_returns_empty_on_http_error(self, adapter):
+        """_api_delete returns {} on HTTP 4xx/5xx."""
+        import sys
+        import types
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 404
+        mock_resp.text = AsyncMock(return_value="post not found")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        adapter._session.delete = MagicMock(return_value=mock_resp)
+
+        fake_aiohttp = types.ModuleType("aiohttp")
+        fake_aiohttp.ClientError = Exception
+        fake_aiohttp.ClientTimeout = MagicMock(return_value=None)
+        with patch.dict(sys.modules, {"aiohttp": fake_aiohttp}):
+            result = _run(adapter._api_delete("posts/gone"))
+
+        assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Live-thinking bubble: concurrency / race-safety
+#
+# The gateway schedules one _update_live_bubble coroutine per completed thought
+# onto a single event loop. Without serialization, two thoughts that complete
+# near-simultaneously can both observe an empty post-id list, both send, and
+# orphan one post (tracked for neither edit nor delete). The production code
+# guards the whole read-decide-write section with an asyncio.Lock. These tests
+# reproduce that exact critical section and prove: exactly one post is ever
+# created, every later thought edits it in place, and nothing is orphaned.
+# ---------------------------------------------------------------------------
+class TestLiveThinkingBubbleConcurrency:
+    """asyncio.Lock around the bubble update must prevent duplicate/orphan posts."""
+
+    @staticmethod
+    def _make_bubble_updater(post_ids, lock, adapter, chat_id="chan_1"):
+        """Build an _update_live_bubble closure identical in shape to gateway/run.py."""
+        async def _update_live_bubble(bubble_text):
+            async with lock:
+                existing_id = post_ids[0] if post_ids else None
+                edit_ok = False
+                if existing_id:
+                    res = await adapter.edit_message(chat_id, existing_id, bubble_text)
+                    edit_ok = getattr(res, "success", False)
+                if not edit_ok:
+                    send_res = await adapter.send(chat_id, bubble_text)
+                    new_id = getattr(send_res, "message_id", None)
+                    if getattr(send_res, "success", False) and new_id:
+                        if post_ids:
+                            post_ids[0] = str(new_id)
+                        else:
+                            post_ids.append(str(new_id))
+        return _update_live_bubble
+
+    class _FakeAdapter:
+        """send() mints sequential ids; edit_message() succeeds only for the live id."""
+        def __init__(self):
+            self.sent = []
+            self.edited = []
+            self._counter = 0
+            self._live_id = None
+
+        async def send(self, chat_id, text, **kwargs):
+            # Yield control so concurrent tasks can interleave at the await point.
+            await asyncio.sleep(0)
+            self._counter += 1
+            mid = f"post_{self._counter}"
+            self.sent.append(mid)
+            self._live_id = mid
+            return SimpleNamespace(success=True, message_id=mid)
+
+        async def edit_message(self, chat_id, message_id, text, **kwargs):
+            await asyncio.sleep(0)
+            self.edited.append((message_id, text))
+            # An edit only succeeds against the post that actually exists.
+            ok = message_id == self._live_id
+            return SimpleNamespace(success=ok, message_id=message_id)
+
+    @pytest.mark.asyncio
+    async def test_concurrent_updates_create_single_post_no_orphans(self):
+        """20 simultaneous thoughts → exactly 1 send, 19 edits, 1 tracked id."""
+        post_ids = []
+        lock = asyncio.Lock()
+        fake = self._FakeAdapter()
+        update = self._make_bubble_updater(post_ids, lock, fake)
+
+        await asyncio.gather(*(update(f"thought {i}") for i in range(20)))
+
+        # Exactly one post ever created — no duplicates, no orphans.
+        assert len(fake.sent) == 1, f"expected 1 send, got {len(fake.sent)}: {fake.sent}"
+        # Every subsequent thought edited that one post in place.
+        assert len(fake.edited) == 19
+        # Exactly one id is tracked, and it's the one that was sent.
+        assert post_ids == [fake.sent[0]]
+        # Every edit targeted the live post — nothing edited a stale/orphan id.
+        assert all(mid == fake.sent[0] for mid, _ in fake.edited)
+
+    @pytest.mark.asyncio
+    async def test_serialized_updates_behave_identically(self):
+        """Sequential awaits (the common case) must give the same single-post result."""
+        post_ids = []
+        lock = asyncio.Lock()
+        fake = self._FakeAdapter()
+        update = self._make_bubble_updater(post_ids, lock, fake)
+
+        for i in range(5):
+            await update(f"thought {i}")
+
+        assert len(fake.sent) == 1
+        assert len(fake.edited) == 4
+        assert post_ids == [fake.sent[0]]
+
+    @pytest.mark.asyncio
+    async def test_first_send_failure_then_recovery_creates_one_post(self):
+        """If the very first send fails, the next thought must still create exactly one post."""
+        post_ids = []
+        lock = asyncio.Lock()
+
+        class _FlakyAdapter(self._FakeAdapter):
+            def __init__(self):
+                super().__init__()
+                self._fail_next_send = True
+
+            async def send(self, chat_id, text, **kwargs):
+                await asyncio.sleep(0)
+                if self._fail_next_send:
+                    self._fail_next_send = False
+                    return SimpleNamespace(success=False, message_id=None)
+                return await super().send(chat_id, text, **kwargs)
+
+        fake = _FlakyAdapter()
+        update = self._make_bubble_updater(post_ids, lock, fake)
+
+        await asyncio.gather(*(update(f"thought {i}") for i in range(4)))
+
+        # First send failed (no id tracked), later sends produce exactly one post.
+        assert len(post_ids) == 1
+        assert post_ids[0] in fake.sent
+        # No edit ever targeted a None / orphan id.
+        assert all(mid is not None for mid, _ in fake.edited)

@@ -53,6 +53,11 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     # live, just cleaned up after success so the chat doesn't fill up with
     # stale breadcrumbs. Failed runs leave bubbles in place as breadcrumbs.
     "cleanup_progress": False,
+    # When true, show a single live-editing "thinking bubble" that is updated
+    # in place for each completed interim thought, then deleted when the final
+    # answer lands. Strictly opt-in — default false everywhere. Must be
+    # enabled explicitly per-platform (e.g. display.platforms.mattermost.live_thinking: true).
+    "live_thinking": False,
 }
 
 # ---------------------------------------------------------------------------
@@ -240,6 +245,7 @@ def _normalise(setting: str, value: Any) -> Any:
         "interim_assistant_messages",
         "long_running_notifications",
         "busy_ack_detail",
+        "live_thinking",
     }:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}

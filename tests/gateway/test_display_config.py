@@ -555,3 +555,65 @@ class TestReasoningStyle:
 
         config = {"display": {"reasoning_style": "SUBTEXT"}}
         assert resolve_display_setting(config, "telegram", "reasoning_style") == "subtext"
+
+
+# ---------------------------------------------------------------------------
+# live_thinking — opt-in single-bubble edit-in-place thinking visibility
+# ---------------------------------------------------------------------------
+
+class TestLiveThinking:
+    """``live_thinking`` is off by default and resolvable per-platform."""
+
+    def test_default_off_for_all_platforms(self):
+        """No config set → live_thinking resolves to False everywhere."""
+        from gateway.display_config import resolve_display_setting
+
+        for plat in ("telegram", "discord", "slack", "mattermost", "email"):
+            assert resolve_display_setting({}, plat, "live_thinking") is False
+
+    def test_global_true_applies_to_all_platforms(self):
+        """display.live_thinking=true opts in globally."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"live_thinking": True}}
+        assert resolve_display_setting(config, "telegram", "live_thinking") is True
+        assert resolve_display_setting(config, "mattermost", "live_thinking") is True
+        assert resolve_display_setting(config, "discord", "live_thinking") is True
+
+    def test_per_platform_override_wins(self):
+        """display.platforms.<plat>.live_thinking beats the global value."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "live_thinking": False,
+                "platforms": {
+                    "mattermost": {"live_thinking": True},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "mattermost", "live_thinking") is True
+        assert resolve_display_setting(config, "telegram", "live_thinking") is False
+
+    def test_yaml_off_string_normalises_to_false(self):
+        """YAML 1.1 bare ``off`` becomes string 'off' — treat as False."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {"mattermost": {"live_thinking": "off"}},
+            }
+        }
+        assert resolve_display_setting(config, "mattermost", "live_thinking") is False
+
+    def test_yaml_true_string_variants_normalise_to_true(self):
+        """String 'true'/'yes'/'on'/'1' all resolve to True."""
+        from gateway.display_config import resolve_display_setting
+
+        for val in ("true", "yes", "on", "1"):
+            config = {
+                "display": {
+                    "platforms": {"mattermost": {"live_thinking": val}},
+                }
+            }
+            assert resolve_display_setting(config, "mattermost", "live_thinking") is True, val

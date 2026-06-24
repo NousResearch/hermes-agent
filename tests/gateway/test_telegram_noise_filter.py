@@ -31,6 +31,26 @@ def test_non_telegram_status_is_unchanged():
     assert _prepare_gateway_status_message("local", "lifecycle", message) == message
 
 
+def test_platform_adapter_can_filter_its_own_status_messages():
+    """Plugin platforms can opt into Telegram-like chat-noise filtering."""
+
+    class _Adapter:
+        def prepare_gateway_status_message(self, event_type, message):
+            assert event_type == "lifecycle"
+            assert message == "hide me"
+            return None
+
+    assert (
+        _prepare_gateway_status_message(
+            "zalo",
+            "lifecycle",
+            "hide me",
+            adapter=_Adapter(),
+        )
+        is None
+    )
+
+
 def test_telegram_status_sanitizes_raw_provider_security_errors():
     """Provider policy/security bodies should be replaced before chat delivery."""
     raw = (

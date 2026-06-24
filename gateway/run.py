@@ -387,11 +387,35 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     return redacted
 
 
-def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
+def _prepare_gateway_status_message(
+    platform: Any,
+    event_type: str,
+    message: str,
+    adapter: Any = None,
+) -> Optional[str]:
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
     if not text:
         return None
+    adapter_filter = getattr(adapter, "prepare_gateway_status_message", None)
+    if callable(adapter_filter):
+        try:
+            filtered = adapter_filter(event_type, text)
+        except Exception as exc:
+            logger.debug(
+                "Platform status filter failed for %s/%s: %s",
+                _gateway_platform_value(platform),
+                event_type,
+                exc,
+                exc_info=True,
+            )
+        else:
+            if filtered is None:
+                return None
+            text = str(filtered).strip()
+            if not text:
+                return None
+
     if _gateway_platform_value(platform) != "telegram":
         return text
 
@@ -15290,6 +15314,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.platform,
                 event_type,
                 message,
+                adapter=_status_adapter,
             )
             if prepared_message is None:
                 logger.debug(

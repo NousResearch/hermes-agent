@@ -565,6 +565,28 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.API_SERVER].enabled is False
         assert Platform.API_SERVER not in config.get_connected_platforms()
 
+    def test_bridges_zalo_status_filter_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  zalo:\n"
+            "    enabled: true\n"
+            "    suppress_noisy_status: false\n"
+            "    gateway_restart_notification: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        zalo = config.platforms[Platform("zalo")]
+        assert zalo.enabled is True
+        assert zalo.extra["suppress_noisy_status"] is False
+        assert zalo.gateway_restart_notification is False
+
     def test_bridges_nested_gateway_platforms_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -83,10 +83,15 @@ ZALO_HOME_CHANNEL_NAME=Zalo Home
 Then enable the platform in `~/.hermes/config.yaml`:
 
 ```yaml
-gateway:
-  platforms:
-    zalo:
-      enabled: true
+platforms:
+  zalo:
+    enabled: true
+    # Hide transient status chatter like preflight compression, compaction,
+    # retry backoff, and auxiliary-model notices. Defaults to true.
+    suppress_noisy_status: true
+    # Disable gateway shutdown/restart/startup lifecycle pings on Zalo.
+    # Defaults to true when omitted.
+    gateway_restart_notification: false
 ```
 
 Restart the gateway:
@@ -119,4 +124,5 @@ This adapter uses the official Zalo Bot Platform API and is packaged as a bundle
 | Webhook starts but receives nothing | Check the public HTTPS URL, `ZALO_WEBHOOK_PATH`, and Bot Manager webhook settings. |
 | Long polling receives nothing after webhook testing | Clear the Bot Platform webhook or set `ZALO_DELETE_WEBHOOK_ON_POLLING_START=true` for the long-polling profile. |
 | Link cards are unreadable | Configure URL intake, or ask the user to send the URL as broken plain text such as `docs . google . com / spreadsheets / d / SHEET_ID`. |
-| Compression/compaction notices are hidden | This is the default Zalo behavior. Set `ZALO_SUPPRESS_NOISY_STATUS=false` if you want those transient gateway notices delivered. |
+| Compression/compaction notices are hidden | This is the default Zalo behavior. Set `platforms.zalo.suppress_noisy_status: false` or `ZALO_SUPPRESS_NOISY_STATUS=false` if you want those transient gateway notices delivered. |
+| Gateway shutdown/restart notices are noisy | Set `platforms.zalo.gateway_restart_notification: false`. |

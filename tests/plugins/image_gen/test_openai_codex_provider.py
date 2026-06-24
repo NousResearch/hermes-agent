@@ -129,11 +129,12 @@ class TestGenerate:
 
         captured = {}
 
-        def _collect(token, *, prompt, size, quality):
+        def _collect(token, *, prompt, size, quality, image_urls=None):
             captured.update(codex_plugin._build_responses_payload(
                 prompt=prompt,
                 size=size,
                 quality=quality,
+                image_urls=image_urls,
             ))
             return _b64_png()
 
@@ -218,6 +219,91 @@ class TestGenerate:
         assert result["success"] is False
         assert result["error_type"] == "api_error"
         assert "cloudflare 403" in result["error"]
+
+
+# ── Image-to-image ───────────────────────────────────────────────────────────
+
+
+class TestImageToImage:
+    def test_capabilities_report_image_modality(self, provider):
+        caps = provider.capabilities()
+        assert "image" in caps["modalities"]
+        assert caps["max_reference_images"] >= 1
+
+    def _capture_payload(self, monkeypatch):
+        """Patch _collect_image_b64 to record the built Responses payload."""
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        captured = {}
+
+        def _collect(token, *, prompt, size, quality, image_urls=None):
+            captured.update(codex_plugin._build_responses_payload(
+                prompt=prompt,
+                size=size,
+                quality=quality,
+                image_urls=image_urls,
+            ))
+            return _b64_png()
+
+        monkeypatch.setattr(codex_plugin, "_collect_image_b64", _collect)
+        return captured
+
+    def test_local_source_inlined_as_input_image(self, provider, monkeypatch, tmp_path):
+        captured = self._capture_payload(monkeypatch)
+        png = tmp_path / "src.png"
+        png.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        result = provider.generate("make it night", image_url=str(png))
+
+        assert result["success"] is True
+        assert result["modality"] == "image"
+
+        content = captured["input"][0]["content"]
+        text_parts = [p for p in content if p["type"] == "input_text"]
+        image_parts = [p for p in content if p["type"] == "input_image"]
+        assert len(text_parts) == 1
+        assert len(image_parts) == 1
+        assert image_parts[0]["image_url"].startswith("data:image/png;base64,")
+
+    def test_remote_sources_passed_through_in_order(self, provider, monkeypatch):
+        captured = self._capture_payload(monkeypatch)
+
+        provider.generate(
+            "edit",
+            image_url="https://example.com/a.png",
+            reference_image_urls=["https://example.com/b.png"],
+        )
+
+        content = captured["input"][0]["content"]
+        image_urls = [p["image_url"] for p in content if p["type"] == "input_image"]
+        assert image_urls == ["https://example.com/a.png", "https://example.com/b.png"]
+
+    def test_text_only_payload_has_no_input_image(self, provider, monkeypatch):
+        captured = self._capture_payload(monkeypatch)
+
+        provider.generate("a cat")
+
+        content = captured["input"][0]["content"]
+        assert all(p["type"] != "input_image" for p in content)
+
+    def test_denylisted_local_source_rejected(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        env_file = tmp_path / ".env"
+        env_file.write_bytes(bytes.fromhex(_PNG_HEX))
+
+        result = provider.generate("edit", image_url=str(env_file))
+
+        assert result["success"] is False
+        assert "Access denied" in result["error"]
+
+    def test_non_image_local_source_rejected(self, provider, monkeypatch, tmp_path):
+        monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: "codex-token")
+        path = tmp_path / "notes.txt"
+        path.write_text("not an image")
+
+        result = provider.generate("edit", image_url=str(path))
+
+        assert result["success"] is False
+        assert "not a recognised image file" in result["error"]
 
 
 # ── Plugin entry point ──────────────────────────────────────────────────────

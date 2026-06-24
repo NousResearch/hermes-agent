@@ -1604,6 +1604,7 @@ def init_agent(
             api_mode=agent.api_mode,
             default_headers=agent._default_headers,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            max_tokens=agent.max_tokens,
         )
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place

@@ -248,6 +248,16 @@ def _content_length_for_budget(raw_content: Any) -> int:
     return total
 
 
+def _estimate_msg_budget_tokens(msg: dict) -> int:
+    """Token estimate for one message in the tail-protection budget walks."""
+    content_len = _content_length_for_budget(msg.get("content") or "")
+    tokens = content_len // _CHARS_PER_TOKEN + 10
+    for tc in msg.get("tool_calls") or []:
+        if isinstance(tc, dict):
+            tokens += len(str(tc)) // _CHARS_PER_TOKEN
+    return tokens
+
+
 def _content_text_for_contains(content: Any) -> str:
     """Return a best-effort text view of message content.
 
@@ -649,6 +659,7 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         default_headers: Optional[Dict[str, str]] = None,
+        max_tokens: int | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
         self.model = model
@@ -658,8 +669,13 @@ class ContextCompressor(ContextEngine):
         self.api_mode = api_mode
         self.default_headers = default_headers if isinstance(default_headers, dict) and default_headers else None
         self.context_length = context_length
+        # max_tokens=None here means "caller didn't specify" → keep the existing
+        # output reservation. A switch that genuinely changes the output budget
+        # passes the new value explicitly. (#43547)
+        if max_tokens is not None:
+            self.max_tokens = self._coerce_max_tokens(max_tokens)
         self.threshold_tokens = self._compute_threshold_tokens(
-            context_length, self.threshold_percent
+            context_length, self.threshold_percent, self.max_tokens,
         )
         # Recalculate token budgets for the new context length so the
         # compressor stays calibrated after a model switch (e.g. 200K → 32K).
@@ -699,10 +715,25 @@ class ContextCompressor(ContextEngine):
     _MIN_CTX_TRIGGER_RATIO = 0.85
 
     @staticmethod
-    def _compute_threshold_tokens(context_length: int, threshold_percent: float) -> int:
+    def _coerce_max_tokens(value: Any) -> int | None:
+        """Normalize a max_tokens value to a positive int or None."""
+        if value is None:
+            return None
+        try:
+            ivalue = int(value)
+        except (TypeError, ValueError):
+            return None
+        return ivalue if ivalue > 0 else None
+
+    @staticmethod
+    def _compute_threshold_tokens(
+        context_length: int,
+        threshold_percent: float,
+        max_tokens: int | None = None,
+    ) -> int:
         """Compute the compaction trigger threshold in tokens.
 
-        The base value is ``context_length * threshold_percent``, floored at
+        The base value is ``effective_input_budget * threshold_percent``, floored at
         ``MINIMUM_CONTEXT_LENGTH`` so large-context models don't compress
         prematurely at 50%. BUT that floor degenerates at small windows: for a
         model whose ``context_length`` is at/below the minimum (e.g. a 64K
@@ -715,14 +746,17 @@ class ContextCompressor(ContextEngine):
         small model uses most of its context before compacting, but below
         100% so compaction fires before the provider rejects the request.
         """
-        pct_value = int(context_length * threshold_percent)
+        effective_input_budget = context_length - (max_tokens or 0)
+        if effective_input_budget <= 0:
+            effective_input_budget = context_length
+        pct_value = int(effective_input_budget * threshold_percent)
         floored = max(pct_value, MINIMUM_CONTEXT_LENGTH)
         # If flooring pushed the threshold to/over the window it can never be
         # reached. Trigger at 85% of the window so a minimum-context model
         # rides most of its budget before compacting instead of wasting half.
-        if context_length > 0 and floored >= context_length:
-            return max(1, min(int(context_length * ContextCompressor._MIN_CTX_TRIGGER_RATIO),
-                              context_length - 1))
+        if effective_input_budget > 0 and floored >= effective_input_budget:
+            return max(1, min(int(effective_input_budget * ContextCompressor._MIN_CTX_TRIGGER_RATIO),
+                              effective_input_budget - 1))
         return floored
 
     def __init__(
@@ -741,6 +775,7 @@ class ContextCompressor(ContextEngine):
         api_mode: str = "",
         default_headers: Optional[Dict[str, str]] = None,
         abort_on_summary_failure: bool = False,
+        max_tokens: int | None = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -748,6 +783,10 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.default_headers = default_headers if isinstance(default_headers, dict) and default_headers else None
+        # Output-token reservation: providers carve max_tokens out of the
+        # context window, so auto-compression should track the usable input
+        # budget. None = provider default => assume no explicit reservation.
+        self.max_tokens = self._coerce_max_tokens(max_tokens)
         self.threshold_percent = threshold_percent
         self.protect_first_n = protect_first_n
         self.protect_last_n = protect_last_n
@@ -771,7 +810,7 @@ class ContextCompressor(ContextEngine):
         # guards the degenerate case where the floor would equal/exceed the
         # window (small models), so auto-compression can still fire (#14690).
         self.threshold_tokens = self._compute_threshold_tokens(
-            self.context_length, threshold_percent
+            self.context_length, threshold_percent, self.max_tokens,
         )
         self.compression_count = 0
 
@@ -863,6 +902,8 @@ class ContextCompressor(ContextEngine):
         """
         if rough_tokens < self.threshold_tokens:
             return False
+        if self.awaiting_real_usage_after_compression:
+            return True
         if self.last_real_prompt_tokens <= 0:
             return False
         if self.last_real_prompt_tokens >= self.threshold_tokens:
@@ -959,13 +1000,7 @@ class ContextCompressor(ContextEngine):
             min_protect = min(protect_tail_count, len(result))
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
-                raw_content = msg.get("content") or ""
-                content_len = _content_length_for_budget(raw_content)
-                msg_tokens = content_len // _CHARS_PER_TOKEN + 10
-                for tc in msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
-                        msg_tokens += len(args) // _CHARS_PER_TOKEN
+                msg_tokens = _estimate_msg_budget_tokens(msg)
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
                     break
@@ -2238,13 +2273,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             raw_accumulated = 0
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
-                raw_content = raw_msg.get("content") or ""
-                raw_len = _content_length_for_budget(raw_content)
-                raw_tok = raw_len // _CHARS_PER_TOKEN + 10
-                for tc in raw_msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
-                        raw_tok += len(args) // _CHARS_PER_TOKEN
+                raw_tok = _estimate_msg_budget_tokens(raw_msg)
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j
                     break

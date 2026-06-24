@@ -483,6 +483,38 @@ class ProcessRegistry:
         self._move_to_finished(session)
         return session
 
+    @staticmethod
+    def _proc_alive(proc) -> bool:
+        """True if a psutil.Process is running and not a zombie.
+
+        A zombie is already dead (just unreaped), so there's nothing to SIGKILL.
+        """
+        try:
+            import psutil
+            if not proc.is_running():
+                return False
+            return proc.status() != psutil.STATUS_ZOMBIE
+        except Exception:
+            return False
+
+    @staticmethod
+    def _daemon_term_grace_seconds() -> float:
+        """Grace window (s) between SIGTERM and escalated SIGKILL.
+
+        Read from ``terminal.daemon_term_grace_seconds`` in config.yaml; floored
+        at 0 (0 disables escalation). Falls back to the DEFAULT_CONFIG value if
+        config is unreadable, so callers always get a sane number.
+        """
+        try:
+            from hermes_cli.config import read_raw_config, cfg_get, DEFAULT_CONFIG
+            cfg = read_raw_config()
+            val = cfg_get(cfg, "terminal", "daemon_term_grace_seconds")
+            if val is None:
+                val = DEFAULT_CONFIG["terminal"]["daemon_term_grace_seconds"]
+            return max(float(val), 0.0)
+        except Exception:
+            return 2.0
+
     @classmethod
     def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
         """Terminate a host-visible PID and its descendants.
@@ -496,12 +528,17 @@ class ProcessRegistry:
         POSIX: walks the process tree with ``psutil`` and SIGTERMs
         children before the parent so subprocess trees (e.g. Chromium
         renderers/GPU helpers spawned by an ``agent-browser`` daemon)
-        don't get reparented to init and survive cleanup.
+        don't get reparented to init and survive cleanup.  After a bounded
+        grace window (``terminal.daemon_term_grace_seconds``) any tree member
+        that ignored SIGTERM — a daemon stalled in its signal handler — is
+        escalated to SIGKILL so it can't leak indefinitely.  Set the grace to
+        0 to disable escalation (SIGTERM only).
 
         Windows: shells out to ``taskkill /PID <pid> /T /F``. This is
         the documented Microsoft primitive for tree-kill and matches the
-        existing convention in ``gateway.status.terminate_pid``. We can't
-        reuse the POSIX psutil path on Windows because:
+        existing convention in ``gateway.status.terminate_pid``.  ``/F`` is
+        already a hard kill, so no separate escalation step is needed.  We
+        can't reuse the POSIX psutil path on Windows because:
 
           1. Windows doesn't maintain a Unix-style process tree —
              ``psutil.Process.children(recursive=True)`` walks PPID
@@ -550,18 +587,60 @@ class ProcessRegistry:
         import psutil
         try:
             parent = psutil.Process(pid)
-            for child in parent.children(recursive=True):
-                try:
-                    child.terminate()
-                except psutil.NoSuchProcess:
-                    pass
-            parent.terminate()
         except psutil.NoSuchProcess:
             return
         except (OSError, PermissionError):
             try:
                 os.kill(pid, signal.SIGTERM)
             except (OSError, ProcessLookupError, PermissionError):
+                pass
+            return
+
+        # Snapshot the whole tree (children before parent) and SIGTERM each.
+        try:
+            targets = parent.children(recursive=True)
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+            targets = []
+        targets.append(parent)
+
+        for proc in targets:
+            try:
+                proc.terminate()
+            except psutil.NoSuchProcess:
+                pass
+            except (psutil.AccessDenied, OSError):
+                pass
+
+        # Escalate to SIGKILL for anything that ignored SIGTERM within the
+        # grace window — a daemon stalled in its signal handler would otherwise
+        # leak indefinitely.
+        grace = cls._daemon_term_grace_seconds()
+        if grace <= 0:
+            return
+        # Sleep out the grace window, then independently re-probe every target
+        # and SIGKILL any survivor.  We deliberately do NOT trust
+        # ``psutil.wait_procs``'s gone/alive partition here: it reaps via
+        # ``Process.wait()`` and can mis-partition when a target transitions
+        # through a zombie state or when reaping is racy across a parent/child
+        # tree, which left survivors un-killed.  A direct liveness re-probe is
+        # deterministic.
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline:
+            if not any(cls._proc_alive(_p) for _p in targets):
+                break
+            time.sleep(0.05)
+        for proc in targets:
+            try:
+                if not cls._proc_alive(proc):
+                    continue
+                proc.kill()  # SIGKILL on POSIX
+                logger.info(
+                    "Escalated to SIGKILL for pid %d (ignored SIGTERM within "
+                    "%.1fs grace)", proc.pid, grace,
+                )
+            except psutil.NoSuchProcess:
+                pass
+            except (psutil.AccessDenied, OSError):
                 pass
 
     # ----- Spawn -----
@@ -975,6 +1054,42 @@ class ProcessRegistry:
     def is_completion_consumed(self, session_id: str) -> bool:
         """Check if a completion notification was already consumed via wait/log."""
         return session_id in self._completion_consumed
+
+    def is_session_waiting(self, session_id: str) -> bool:
+        """Whether a goal loop parked on this session should still be parked.
+
+        Used by the goal-loop wait barrier (``hermes_cli.goals``) to support
+        waiting on a process's OWN trigger, not just its exit. A session is
+        "still waiting" when:
+          - it is still running, AND
+          - if it has ``watch_patterns``, none has matched yet (so a
+            long-lived watcher that fires a trigger mid-run — and may never
+            exit — unblocks the moment its pattern hits, not on exit).
+
+        Returns False (don't wait) when the session has exited, its watch
+        pattern has already fired, or the session is unknown — so a stale or
+        already-triggered barrier can never wedge the loop.
+        """
+        if not session_id:
+            return False
+        with self._lock:
+            session = self._running.get(session_id) or self._finished.get(session_id)
+        if session is None:
+            return False
+        # Refresh detached/remote state so .exited is current.
+        try:
+            self._refresh_detached_session(session)
+        except Exception:
+            pass
+        if session.exited:
+            return False
+        # Watch-pattern process: the trigger is a pattern match, not exit.
+        # Once any match has been delivered, the wait is satisfied even though
+        # the process keeps running (server/daemon/watcher case).
+        if session.watch_patterns and not session._watch_disabled:
+            if session._watch_hits > 0:
+                return False
+        return True
 
     def _drain_should_skip(self, session_id: str) -> bool:
         """Whether the CLI drain should skip a completion event for this session.
@@ -1421,6 +1536,14 @@ class ProcessRegistry:
                 "status": "exited" if s.exited else "running",
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
             }
+            # Trigger metadata so a goal-loop judge can decide to wait on this
+            # process's OWN signal (a watch-pattern match or completion), not
+            # just its exit. A watcher with watch_patterns may never exit.
+            if s.watch_patterns and not s._watch_disabled:
+                entry["watch_patterns"] = list(s.watch_patterns)
+                entry["watch_hit"] = s._watch_hits > 0
+            if s.notify_on_complete:
+                entry["notify_on_complete"] = True
             if s.exited:
                 entry["exit_code"] = s.exit_code
             if s.detached:

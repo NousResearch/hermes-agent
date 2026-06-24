@@ -27,6 +27,112 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+# ---------------------------------------------------------------------------
+# Background-review model routing
+# ---------------------------------------------------------------------------
+
+
+def _resolve_review_runtime(agent: Any) -> Dict[str, Any]:
+    """Resolve provider/model/credentials for the review fork."""
+    parent_runtime = agent._current_main_runtime()
+    parent_api_mode = parent_runtime.get("api_mode") or None
+    if parent_api_mode == "codex_app_server":
+        parent_api_mode = "codex_responses"
+    parent = {
+        "provider": agent.provider,
+        "model": agent.model,
+        "api_key": parent_runtime.get("api_key") or None,
+        "base_url": parent_runtime.get("base_url") or None,
+        "api_mode": parent_api_mode,
+        "default_headers": parent_runtime.get("default_headers") or None,
+        "routed": False,
+    }
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return parent
+    aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+    task = aux.get("background_review", {}) if isinstance(aux.get("background_review"), dict) else {}
+    task_provider = (str(task.get("provider", "")).strip() or None)
+    task_model = (str(task.get("model", "")).strip() or None)
+    task_base_url = (str(task.get("base_url", "")).strip() or None)
+    task_api_key = (str(task.get("api_key", "")).strip() or None)
+    if not (task_provider and task_provider != "auto" and task_model):
+        return parent
+    if task_provider == (agent.provider or "") and task_model == (agent.model or ""):
+        return parent
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        rp = resolve_runtime_provider(
+            requested=task_provider,
+            target_model=task_model,
+            explicit_api_key=task_api_key,
+            explicit_base_url=task_base_url,
+        )
+        return {
+            "provider": rp.get("provider") or task_provider,
+            "model": task_model,
+            "api_key": rp.get("api_key"),
+            "base_url": rp.get("base_url"),
+            "api_mode": rp.get("api_mode"),
+            "default_headers": rp.get("default_headers") or None,
+            "routed": True,
+        }
+    except Exception as e:
+        logger.debug("background-review aux routing failed (%s); using main model", e)
+        return parent
+
+
+def _msg_text(m: Dict) -> str:
+    c = m.get("content")
+    if isinstance(c, str):
+        return c.strip()
+    if isinstance(c, list):
+        return " ".join(b.get("text", "") for b in c if isinstance(b, dict)).strip()
+    return ""
+
+
+def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]:
+    """Compact replay for the routed (different-model) path only."""
+    msgs = list(messages_snapshot or [])
+    if len(msgs) <= tail:
+        return msgs
+    keep = msgs[-tail:]
+    while keep and isinstance(keep[0], dict) and keep[0].get("role") == "tool":
+        tail += 1
+        if len(msgs) <= tail:
+            return msgs
+        keep = msgs[-tail:]
+    old = msgs[:-len(keep)]
+    lines: List[str] = []
+    for m in old:
+        if not isinstance(m, dict):
+            continue
+        role = m.get("role", "message")
+        text = _msg_text(m).replace("\n", " ")
+        if role == "user" and text:
+            lines.append(f"USER: {text[:300]}")
+        elif role == "assistant":
+            tcs = m.get("tool_calls") or []
+            if tcs:
+                names = [(tc.get("function") or {}).get("name", "?") for tc in tcs if isinstance(tc, dict)]
+                lines.append(f"ASSISTANT[tools: {', '.join(names)}]")
+            if text:
+                lines.append(f"ASSISTANT: {text[:200]}")
+    digest = {
+        "role": "user",
+        "content": (
+            "[Earlier conversation digest — older turns summarised to bound the "
+            "review's cold-write cost on the routed aux model. Recent turns "
+            "follow verbatim below.]\n" + "\n".join(lines)
+        ),
+    }
+    return [digest] + keep
+
+
 # Review-prompt strings — used by ``spawn_background_review_thread`` to build
 # the user-message that the forked review agent receives.  AIAgent exposes
 # them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) for back-compat;
@@ -480,26 +586,12 @@ def _run_review_in_thread(
         with open(os.devnull, "w", encoding="utf-8") as _devnull, \
              contextlib.redirect_stdout(_devnull), \
              contextlib.redirect_stderr(_devnull):
-            # Inherit the parent agent's live runtime (provider, model,
-            # base_url, api_key, api_mode) so the fork uses the exact
-            # same credentials the main turn is using.  Without this,
-            # AIAgent.__init__ re-runs auto-resolution from env vars,
-            # which fails for OAuth-only providers, session-scoped
-            # creds, or credential-pool setups where the resolver can't
-            # reconstruct auth from scratch -- producing the spurious
-            # "No LLM provider configured" warning at end of turn.
-            _parent_runtime = agent._current_main_runtime()
-            _parent_api_mode = _parent_runtime.get("api_mode") or None
-            # The review fork needs to call agent-loop tools (memory,
-            # skill_manage). Those tools require Hermes' own dispatch,
-            # which the codex_app_server runtime bypasses entirely
-            # (it runs the turn inside codex's subprocess). So when
-            # the parent is on codex_app_server, downgrade the review
-            # fork to codex_responses — same auth/credentials, but
-            # talks to the OpenAI Responses API directly so Hermes
-            # owns the loop and the agent-loop tools dispatch.
-            if _parent_api_mode == "codex_app_server":
-                _parent_api_mode = "codex_responses"
+            # Inherit the parent agent's live runtime by default, or route to
+            # auxiliary.background_review.{provider,model} when configured. The
+            # codex_app_server -> codex_responses downgrade is applied inside
+            # the resolver so the fork can still dispatch Hermes tools.
+            _rt = _resolve_review_runtime(agent)
+            _routed = bool(_rt.get("routed"))
             # skip_memory=True keeps the review fork from
             # touching external memory plugins (honcho, mem0,
             # supermemory, etc.).  Without it, the fork's
@@ -519,15 +611,15 @@ def _run_review_in_thread(
             # in the request body — Anthropic's cache key includes it.
             # (The runtime whitelist below still restricts dispatch.)
             review_agent = AIAgent(
-                model=agent.model,
+                model=_rt.get("model") or agent.model,
                 max_iterations=16,
                 quiet_mode=True,
                 platform=agent.platform,
-                provider=agent.provider,
-                api_mode=_parent_api_mode,
-                base_url=_parent_runtime.get("base_url") or None,
-                api_key=_parent_runtime.get("api_key") or None,
-                default_headers=_parent_runtime.get("default_headers") or None,
+                provider=_rt.get("provider") or agent.provider,
+                api_mode=_rt.get("api_mode"),
+                base_url=_rt.get("base_url") or None,
+                api_key=_rt.get("api_key") or None,
+                default_headers=_rt.get("default_headers") or None,
                 credential_pool=getattr(agent, "_credential_pool", None),
                 parent_session_id=agent.session_id,
                 enabled_toolsets=getattr(agent, "enabled_toolsets", None),
@@ -556,25 +648,12 @@ def _run_review_in_thread(
             # _vprint and leak past the stdout redirect (they go via
             # _print_fn/status_callback, which bypass sys.stdout).
             review_agent.suppress_status_output = True
-            # Inherit the parent's cached system prompt verbatim so
-            # the review fork's outbound HTTP request hits the same
-            # Anthropic/OpenRouter prefix cache the parent warmed.
-            # Without this, the fork rebuilds the system prompt from
-            # scratch (fresh _hermes_now() timestamp, fresh
-            # session_id, narrower toolset → different skills_prompt)
-            # and the byte-exact prefix-cache key misses. See
-            # issue #25322 and PR #17276 for the full analysis +
-            # measured impact (~26% end-to-end cost reduction on
-            # Sonnet 4.5).
-            review_agent._cached_system_prompt = agent._cached_system_prompt
-            # Defensive: pin session_start + session_id to the
-            # parent's so any code path that re-renders parts of
-            # the system prompt (compression, plugin hooks) still
-            # produces byte-identical output. The cached-prompt
-            # assignment above already short-circuits the normal
-            # rebuild path, but these pins guarantee parity even
-            # if a future code path bypasses the cache.
-            review_agent.session_start = agent.session_start
+            # Share the parent's warm cached system prompt ONLY when the review
+            # runs on the SAME model. A routed review is cache-cold regardless,
+            # so let it build a prompt for its own model/runtime.
+            if not _routed:
+                review_agent._cached_system_prompt = agent._cached_system_prompt
+                review_agent.session_start = agent.session_start
             review_agent.session_id = agent.session_id
             # The fork shares the parent's live session_id (pinned above for
             # prefix-cache parity). It is single-lifecycle and calls close()
@@ -616,6 +695,10 @@ def _run_review_in_thread(
                 ),
             )
             try:
+                _review_history = (
+                    _digest_history(messages_snapshot) if _routed
+                    else messages_snapshot
+                )
                 review_agent.run_conversation(
                     user_message=(
                         prompt
@@ -623,7 +706,7 @@ def _run_review_in_thread(
                         "management tools. Other tools will be denied "
                         "at runtime — do not attempt them."
                     ),
-                    conversation_history=messages_snapshot,
+                    conversation_history=_review_history,
                 )
             finally:
                 clear_thread_tool_whitelist()

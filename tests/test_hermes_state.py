@@ -973,6 +973,8 @@ class TestMessageStorage:
         db.create_session("root", "tui")
         db.append_message("root", role="user", content="first prompt")
         db.append_message("root", role="assistant", content="first answer")
+        # End parent with model_switch so lineage walking follows the link
+        db.end_session("root", "model_switch")
         db.create_session("child", "tui", parent_session_id="root")
         db.append_message("child", role="user", content="second prompt")
         db.append_message("child", role="assistant", content="second answer")
@@ -991,12 +993,38 @@ class TestMessageStorage:
         db.append_message("root", role="user", content="same prompt")
         db.append_message("root", role="user", content="same prompt")
         db.append_message("root", role="assistant", content="answer")
+        # End parent with model_switch so lineage walking follows the link
+        db.end_session("root", "model_switch")
         db.create_session("child", "tui", parent_session_id="root")
         db.append_message("child", role="user", content="next prompt")
 
         conv = db.get_messages_as_conversation("child", include_ancestors=True)
 
         assert [m["content"] for m in conv if m["role"] == "user"] == ["same prompt", "next prompt"]
+
+    def test_get_messages_as_conversation_skips_compression_ancestors(self, db):
+        """Lineage walking must stop at non-model_switch boundaries.
+
+        Compression-split parents have their content summarised into the
+        child session.  Replaying the raw parent messages would inject
+        stale/duplicate context.
+        """
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="old prompt")
+        db.append_message("root", role="assistant", content="old answer")
+        # End parent with compression — NOT model_switch
+        db.end_session("root", "compression")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="new prompt")
+        db.append_message("child", role="assistant", content="new answer")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        # Should only contain child messages — root was compression-ended
+        assert [m["content"] for m in conv] == [
+            "new prompt",
+            "new answer",
+        ]
 
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")

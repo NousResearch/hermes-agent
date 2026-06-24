@@ -3523,6 +3523,14 @@ class SessionDB:
         return messages
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
+        """Walk parent_session_id chain back to root, return [root, ..., tip].
+
+        Only follows links where the **parent** session was ended with
+        ``end_reason = 'model_switch'``.  This prevents compression-split
+        ancestors (whose content was already summarised into the child)
+        from being replayed as raw history, which would cause duplicate
+        or stale context.
+        """
         if not session_id:
             return [session_id]
 
@@ -3541,7 +3549,27 @@ class SessionDB:
                 ).fetchone()
                 if row is None:
                     break
-                current = row["parent_session_id"] if hasattr(row, "keys") else row[0]
+                parent_id = row["parent_session_id"] if hasattr(row, "keys") else row[0]
+                if not parent_id:
+                    break
+                # Only follow the link when the parent was ended by a
+                # model switch — compression and other split types have
+                # their own continuation semantics and must not be
+                # replayed as raw ancestor messages.
+                parent_row = self._conn.execute(
+                    "SELECT end_reason FROM sessions WHERE id = ?",
+                    (parent_id,),
+                ).fetchone()
+                if parent_row is None:
+                    break
+                parent_end_reason = (
+                    parent_row["end_reason"]
+                    if hasattr(parent_row, "keys")
+                    else parent_row[0]
+                )
+                if parent_end_reason != "model_switch":
+                    break
+                current = parent_id
         return list(reversed(chain)) or [session_id]
 
     @staticmethod

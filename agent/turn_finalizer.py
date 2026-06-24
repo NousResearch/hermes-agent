@@ -50,6 +50,10 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
+    # Defensive: never let nudge-retry stream suppression survive into
+    # finalization or the next turn, regardless of which loop exit path fired.
+    agent._suppress_nudge_stream = False
+
     if final_response is None and (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0

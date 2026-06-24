@@ -159,6 +159,8 @@ def build_turn_context(
     agent._codex_incomplete_retries = 0
     agent._thinking_prefill_retries = 0
     agent._post_tool_empty_retried = False
+    # Per-turn: never carry nudge-retry stream suppression across turns.
+    agent._suppress_nudge_stream = False
     agent._last_content_with_tools = None
     agent._last_content_tools_all_housekeeping = False
     agent._mute_post_response = False

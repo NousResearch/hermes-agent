@@ -4216,6 +4216,16 @@ class AIAgent:
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
+        # Empty-response nudge recovery: when the model returns empty after
+        # tool calls, the loop appends an internal nudge and retries. The
+        # retry iteration's streamed deltas are internal recovery text and
+        # MUST NOT be delivered live to the client (they leaked to Telegram
+        # before the real final answer). The loop sets ``_suppress_nudge_stream``
+        # before the nudge ``continue`` and clears it once the real no-tool-call
+        # answer is confirmed, at which point it re-delivers the buffered final
+        # answer. Drop everything while suppressed.
+        if getattr(self, "_suppress_nudge_stream", False):
+            return
         # If a tool iteration set the break flag, prepend a single paragraph
         # break before the first real text delta.  This prevents the original
         # problem (text concatenation across tool boundaries) without stacking

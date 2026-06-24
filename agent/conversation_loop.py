@@ -4266,6 +4266,11 @@ def run_conversation(
                             ),
                             "_empty_recovery_synthetic": True,
                         })
+                        # Suppress live stream delivery for the nudge-retry
+                        # iteration so internal recovery text never leaks to the
+                        # client. Cleared (and the real answer re-delivered) at
+                        # the no-tool-call final-answer confirmation below.
+                        agent._suppress_nudge_stream = True
                         continue
 
                     # ── Thinking-only prefill continuation ──────────
@@ -4468,7 +4473,17 @@ def run_conversation(
                     messages.pop()
 
                 messages.append(final_msg)
-                
+
+                # If this turn went through an empty-response nudge retry, its
+                # live deltas were suppressed (see _suppress_nudge_stream). Now
+                # that the real no-tool-call answer is confirmed, clear the flag
+                # and deliver the buffered final answer through the stream so the
+                # client receives the real response (and only the real response).
+                if getattr(agent, "_suppress_nudge_stream", False):
+                    agent._suppress_nudge_stream = False
+                    if final_response:
+                        agent._fire_stream_delta(final_response)
+
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")

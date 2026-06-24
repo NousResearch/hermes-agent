@@ -108,9 +108,6 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 }
 
 
-MAX_COMMANDS_PER_SCOPE = 30
-
-
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
 
@@ -2030,7 +2027,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                        _yaml.dump(
+                            config,
+                            f,
+                            default_flow_style=False,
+                            sort_keys=False,
+                            allow_unicode=True,
+                        )
                         f.flush()
                         os.fsync(f.fileno())
                     atomic_replace(tmp_path, config_path)
@@ -2422,11 +2425,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     BotCommandScopeAllGroupChats,
                     BotCommandScopeDefault,
                 )
-                from hermes_cli.commands import telegram_menu_commands
+                from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
                 # Telegram allows up to 100 commands but has an undocumented
-                # payload size limit (~4KB total).  Limit to 30 core commands
-                # to stay well under the threshold while covering all categories.
-                menu_commands, hidden_count = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                # payload size limit (~4KB total).  Hermes defaults to 60 to
+                # keep built-ins plus common skill commands visible while
+                # staying under the threshold; users can tune the cap via
+                # platforms.telegram.extra.command_menu.
+                max_commands = telegram_menu_max_commands()
+                menu_commands, hidden_count = telegram_menu_commands(max_commands=max_commands)
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 # Register for all scopes independently — Telegram picks the
                 # narrowest matching scope per chat type (forum topics fall
@@ -2445,7 +2451,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 if hidden_count:
                     logger.info(
                         "[%s] Telegram menu: %d commands registered, %d hidden (over %d limit). Use /commands for full list.",
-                        self.name, len(menu_commands), hidden_count, 30,
+                        self.name, len(menu_commands), hidden_count, max_commands,
                     )
             except Exception as e:
                 logger.warning(
@@ -2969,11 +2975,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 return rich_result
 
         # Pre-flight: if content already exceeds the limit, split-and-deliver
-        # without round-tripping a doomed edit.
+        # without round-tripping a doomed edit.  During streaming
+        # (finalize=False) we truncate instead of splitting — splitting creates
+        # continuation messages whose IDs become the new edit target, and on
+        # the next token chunk the full accumulated text is re-edited into the
+        # continuation, triggering another split → infinite duplication loop
+        # (#48648).  The full content is delivered when finalize=True.
         if utf16_len(content) > self.MAX_MESSAGE_LENGTH:
-            return await self._edit_overflow_split(
-                chat_id, message_id, content, finalize=finalize, metadata=metadata,
-            )
+            if finalize:
+                return await self._edit_overflow_split(
+                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                )
+            content = self._truncate_stream_overflow_preview(content)
 
         try:
             if not finalize:
@@ -3022,9 +3035,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] edit_message overflow (%d UTF-16 > %d), splitting",
                     self.name, utf16_len(content), self.MAX_MESSAGE_LENGTH,
                 )
-                return await self._edit_overflow_split(
-                    chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                if finalize:
+                    return await self._edit_overflow_split(
+                        chat_id, message_id, content, finalize=finalize, metadata=metadata,
+                    )
+                # Mid-stream: truncate and retry instead of splitting (#48648).
+                truncated = self._truncate_stream_overflow_preview(content)
+                await self._bot.edit_message_text(
+                    chat_id=int(chat_id),
+                    message_id=int(message_id),
+                    text=truncated,
                 )
+                return SendResult(success=True, message_id=message_id)
             # Flood control / RetryAfter — short waits are retried inline,
             # long waits return a failure immediately so streaming can fall back
             # to a normal final send instead of leaving a truncated partial.
@@ -3086,6 +3108,21 @@ class TelegramAdapter(BasePlatformAdapter):
                 exc_info=True,
             )
             return SendResult(success=False, error=str(e))
+
+    def _truncate_stream_overflow_preview(self, content: str) -> str:
+        """Return a one-message preview for oversized streaming edits.
+
+        Streaming edits must keep targeting the original message. Splitting a
+        mid-stream preview creates continuation messages and moves the active
+        message id, so the next accumulated-token edit repeats the overflow
+        cycle (#48648). Final edits still use ``_edit_overflow_split`` to
+        deliver the complete response.
+        """
+        return self.truncate_message(
+            content,
+            self.MAX_MESSAGE_LENGTH,
+            len_fn=utf16_len,
+        )[0]
 
     async def _edit_overflow_split(
         self,
@@ -6178,8 +6215,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 if chat_id in self._forum_command_registered:
                     return
                 from telegram import BotCommand, BotCommandScopeChat
-                from hermes_cli.commands import telegram_menu_commands
-                menu_commands, _ = telegram_menu_commands(max_commands=MAX_COMMANDS_PER_SCOPE)
+                from hermes_cli.commands import telegram_menu_commands, telegram_menu_max_commands
+                menu_commands, _ = telegram_menu_commands(max_commands=telegram_menu_max_commands())
                 bot_commands = [BotCommand(name, desc) for name, desc in menu_commands]
                 await self._bot.set_my_commands(bot_commands, scope=BotCommandScopeChat(chat_id=chat_id))
                 self._forum_command_registered.add(chat_id)

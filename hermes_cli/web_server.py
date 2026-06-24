@@ -6123,6 +6123,7 @@ try:
     from agent.anthropic_adapter import (
         _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID,
         _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL,
+        _OAUTH_TOKEN_URLS as _ANTHROPIC_OAUTH_TOKEN_URLS,
         _OAUTH_REDIRECT_URI as _ANTHROPIC_OAUTH_REDIRECT_URI,
         _OAUTH_SCOPES as _ANTHROPIC_OAUTH_SCOPES,
         _generate_pkce as _generate_pkce_pair,
@@ -6311,22 +6312,31 @@ def _submit_anthropic_pkce(
         "redirect_uri": _ANTHROPIC_OAUTH_REDIRECT_URI,
         "code_verifier": sess["verifier"],
     }).encode()
-    req = urllib.request.Request(
-        _ANTHROPIC_OAUTH_TOKEN_URL,
-        data=exchange_data,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "hermes-dashboard/1.0",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            result = json.loads(resp.read().decode())
-    except Exception as e:
+    # Anthropic migrated the OAuth token endpoint to platform.claude.com;
+    # console.anthropic.com now 404s. Try the new host first, then fall back.
+    result = None
+    last_exc = None
+    for _endpoint in _ANTHROPIC_OAUTH_TOKEN_URLS:
+        req = urllib.request.Request(
+            _endpoint,
+            data=exchange_data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "hermes-dashboard/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                result = json.loads(resp.read().decode())
+            break
+        except Exception as e:
+            last_exc = e
+            continue
+    if result is None:
         with _oauth_sessions_lock:
             sess["status"] = "error"
-            sess["error_message"] = f"Token exchange failed: {e}"
+            sess["error_message"] = f"Token exchange failed: {last_exc}"
         return {"ok": False, "status": "error", "message": sess["error_message"]}
 
     access_token = result.get("access_token", "")
@@ -7916,7 +7926,7 @@ async def cron_fire_webhook(request: Request):
     Returns 202 immediately and runs the job in the background so a long agent
     turn never trips NAS's HTTP timeout.
     """
-    from plugins.cron.chronos.verify import get_fire_verifier
+    from plugins.cron_providers.chronos.verify import get_fire_verifier
 
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
@@ -13074,4 +13084,45 @@ def start_server(
             if server.started:
                 await server.shutdown()
 
-    asyncio.run(_serve())
+    # On POSIX, keep the long-standing ``asyncio.run(_serve())`` behavior
+    # unchanged — Python's default loop there is already a SelectorEventLoop
+    # (or uvloop when uvicorn[standard] installs it), which is exactly what
+    # uvicorn serves on. Touching that path would only widen the blast radius
+    # for no benefit.
+    #
+    # On Windows it is broken: ``asyncio.run`` defaults to a ProactorEventLoop,
+    # but uvicorn's socket-serving stack assumes a SelectorEventLoop on win32
+    # (``uvicorn/loops/asyncio.py`` forces it, and ``uvicorn.Server.run`` threads
+    # ``config.get_loop_factory()`` into its runner for exactly this reason).
+    # Driving uvicorn on the proactor loop makes ``server.startup()`` bind a
+    # socket that never accepts — the dashboard / desktop backend prints
+    # "Skipping web UI build" and then hangs forever with the port LISTENING but
+    # no TCP handshake completing (#50641). So *only on Windows* we mirror
+    # uvicorn's own machinery and run on the loop factory it picks.
+    if sys.platform != "win32":
+        asyncio.run(_serve())
+        return
+
+    # Windows-only path. Resolve the runner + loop factory FIRST (and fall back
+    # to a hand-installed Windows selector policy only when uvicorn predates the
+    # loop-factory API, < 0.36). The actual serve call is then OUTSIDE the
+    # try/except so genuine serve-time errors (port in use, KeyboardInterrupt)
+    # propagate normally instead of being swallowed and double-run.
+    try:
+        from uvicorn._compat import asyncio_run as _runner
+
+        _loop_factory = config.get_loop_factory()
+    except Exception:
+        _runner = None
+        _loop_factory = None
+        try:
+            asyncio.set_event_loop_policy(
+                asyncio.WindowsSelectorEventLoopPolicy()  # type: ignore[attr-defined]
+            )
+        except Exception:
+            pass
+
+    if _runner is not None:
+        _runner(_serve(), loop_factory=_loop_factory)
+    else:
+        asyncio.run(_serve())

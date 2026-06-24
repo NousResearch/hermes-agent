@@ -134,6 +134,10 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
     )
+    cron_edit.add_argument(
+        "--profile",
+        help="Pin this job to a Hermes profile. Pass an empty string to clear the pin.",
+    )
 
     # lifecycle actions
     cron_pause = cron_subparsers.add_parser("pause", help="Pause a scheduled job")

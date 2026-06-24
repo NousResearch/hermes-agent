@@ -125,6 +125,31 @@ When `workdir` is set:
 Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate: the cron worker applies the job workdir through process-global terminal state, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
 :::
 
+## Pinning a job to a profile
+
+In multi-profile setups, several gateways may read the same cron store and race for the shared `tick.lock`. By default that behavior is unchanged: jobs with no `profile` field (or `profile: null`) may be ticked by any gateway that wins the lock.
+
+Set `profile` when a job depends on profile-specific skills, memory, config, or MCP servers and must run in that profile's context:
+
+```python
+cronjob(
+    action="create",
+    schedule="0 9 * * *",
+    profile="dev",
+    skills=["release-checklist"],
+    prompt="Run the dev release checklist and summarize blockers.",
+)
+```
+
+Pinned jobs are only considered due by the gateway running the matching profile. For example, `profile="dev"` runs in the `dev` gateway and is skipped by the `default` gateway. Omit `profile`, set it to `null`, or clear it with an empty string to restore any-profile ticking.
+
+```bash
+hermes cron edit <job_id> --profile dev
+hermes cron edit <job_id> --profile ""   # clear the pin
+```
+
+`hermes cron list` shows a `Profile:` line only for jobs with an active pin.
+
 ## Editing jobs
 
 You do not need to delete and recreate jobs just to change them.

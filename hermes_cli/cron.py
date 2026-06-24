@@ -144,6 +144,9 @@ def cron_list(show_all: bool = False):
         workdir = job.get("workdir")
         if workdir:
             print(f"    Workdir:   {workdir}")
+        profile = job.get("profile")
+        if profile:
+            print(f"    Profile:   {profile}")
 
         # Execution history
         last_status = job.get("last_status")
@@ -341,6 +344,7 @@ def cron_edit(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", None),
+        profile=getattr(args, "profile", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -360,6 +364,8 @@ def cron_edit(args):
         print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
+    if updated.get("profile"):
+        print(f"  Profile: {updated['profile']}")
     return 0
 
 

@@ -57,7 +57,13 @@ def _parse_dt(value: Any) -> Optional[datetime]:
     if value in {None, ""}:
         return None
     if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return None
+        try:
+            return datetime.fromtimestamp(numeric, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
     if isinstance(value, str):
         text = value.strip()
         if not text:

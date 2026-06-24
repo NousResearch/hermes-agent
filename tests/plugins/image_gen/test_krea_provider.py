@@ -309,6 +309,35 @@ class TestGenerate:
         assert len(payload["image_style_references"]) == 10  # capped at 10
         assert payload["creativity"] == "high"
 
+    def test_string_style_references_converted_to_objects(self):
+        """Krea requires {url, strength} objects; bare URL strings must be
+        converted (a string yields a 422 'Expected object, received string')."""
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        submit = _submit_response()
+        poll = _poll_response(_completed_job())
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+             patch(
+                 "plugins.image_gen.krea.save_url_image",
+                 return_value=Path("/tmp/x.png"),
+             ), \
+             patch("plugins.image_gen.krea.time.sleep"):
+            KreaImageGenProvider().generate(
+                prompt="test",
+                image_style_references=[
+                    "https://x.com/a.png",
+                    {"url": "https://x.com/b.png", "strength": 1.2},
+                ],
+            )
+
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["image_style_references"] == [
+            {"url": "https://x.com/a.png", "strength": 0.6},
+            {"url": "https://x.com/b.png", "strength": 1.2},
+        ]
+
     def test_unknown_kwargs_ignored(self):
         """Forward-compat: unknown kwargs must not break generate()."""
         from plugins.image_gen.krea import KreaImageGenProvider

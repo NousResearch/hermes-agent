@@ -54,7 +54,10 @@ def _title_case_slug(value: Optional[str]) -> Optional[str]:
 
 
 def _parse_dt(value: Any) -> Optional[datetime]:
-    if value in {None, ""}:
+    # Dispatch by type, not `value in {None, ""}` — set membership hashes value
+    # first, so an unhashable list/dict from the usage API would raise TypeError
+    # and sink the whole snapshot. The str branch still maps "" / blank to None.
+    if value is None:
         return None
     if isinstance(value, (int, float)):
         return datetime.fromtimestamp(float(value), tz=timezone.utc)

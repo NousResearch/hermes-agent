@@ -542,6 +542,74 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source="official_docs_snapshot",
         pricing_version="minimax-pricing-2026-04",
     ),
+    # ── HuggingFace Router (model catalog convention: per-M prices) ─────────
+    # HF router returns pricing in model-catalog format (per-million tokens),
+    # NOT in per-token format like OpenAI's /models endpoint.  The HF-specific
+    # path in get_pricing_entry() passes price_is_per_million=True to avoid
+    # the ×1M multiplication bug.  These entries are a safety-net fallback.
+    # Source: https://huggingface.co/pricing
+    (
+        "huggingface",
+        "glm-5.1",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("3.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        source="official_docs_snapshot",
+        source_url="https://huggingface.co/pricing",
+        pricing_version="hf-model-catalog-2026-06",
+    ),
+    (
+        "huggingface",
+        "glm-5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("3.00"),
+        cache_read_cost_per_million=Decimal("1.00"),
+        source="official_docs_snapshot",
+        source_url="https://huggingface.co/pricing",
+        pricing_version="hf-model-catalog-2026-06",
+    ),
+    (
+        "huggingface",
+        "gemini-3.1-pro-preview",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("2.00"),
+        output_cost_per_million=Decimal("12.00"),
+        source="official_docs_snapshot",
+        source_url="https://huggingface.co/pricing",
+        pricing_version="hf-model-catalog-2026-06",
+    ),
+    (
+        "huggingface",
+        "qwen3.7-max",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("3.00"),
+        source="official_docs_snapshot",
+        source_url="https://huggingface.co/pricing",
+        pricing_version="hf-model-catalog-2026-06",
+    ),
+    (
+        "huggingface",
+        "deepseek-v4-pro",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("3.00"),
+        source="official_docs_snapshot",
+        source_url="https://huggingface.co/pricing",
+        pricing_version="hf-model-catalog-2026-06",
+    ),
+    (
+        "huggingface",
+        "kimi-k2.6",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("1.00"),
+        output_cost_per_million=Decimal("3.00"),
+        source="official_docs_snapshot",
+        source_url="https://huggingface.co/pricing",
+        pricing_version="hf-model-catalog-2026-06",
+    ),
 }
 
 
@@ -668,6 +736,7 @@ def _pricing_entry_from_metadata(
     *,
     source_url: str,
     pricing_version: str,
+    price_is_per_million: bool = False,
 ) -> Optional[PricingEntry]:
     if model_id not in metadata:
         return None
@@ -687,6 +756,19 @@ def _pricing_entry_from_metadata(
     )
     if prompt is None and completion is None and request is None:
         return None
+
+    if price_is_per_million:
+        return PricingEntry(
+            input_cost_per_million=prompt,
+            output_cost_per_million=completion,
+            cache_read_cost_per_million=cache_read,
+            cache_write_cost_per_million=cache_write,
+            request_cost=request,
+            source="provider_models_api",
+            source_url=source_url,
+            pricing_version=pricing_version,
+            fetched_at=_UTC_NOW(),
+        )
 
     def _per_token_to_per_million(value: Optional[Decimal]) -> Optional[Decimal]:
         if value is None:
@@ -724,6 +806,16 @@ def get_pricing_entry(
         )
     if route.provider == "openrouter":
         return _openrouter_pricing_entry(route)
+    if route.provider == "huggingface" or (route.base_url and "huggingface.co" in route.base_url):
+        entry = _pricing_entry_from_metadata(
+            fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),
+            route.model,
+            source_url=f"{route.base_url.rstrip('/')}/models",
+            pricing_version="hf-router-models-api",
+            price_is_per_million=True,
+        )
+        if entry:
+            return entry
     if route.base_url:
         entry = _pricing_entry_from_metadata(
             fetch_endpoint_model_metadata(route.base_url, api_key=api_key or ""),

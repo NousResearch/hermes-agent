@@ -29,6 +29,10 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.delegation_router_lock import (
+    should_block_tool as _delegation_router_should_block_tool,
+    synthetic_block_result as _delegation_router_synthetic_block_result,
+)
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -334,20 +338,51 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
-            agent,
-            function_name=function_name,
-            function_args=function_args,
-            effective_task_id=effective_task_id,
-            tool_call_id=getattr(tool_call, "id", "") or "",
-        )
+        _router_lock_decision = _delegation_router_should_block_tool(agent, function_name, function_args)
+        _router_lock_block = None
+        if _router_lock_decision.blocks_execution:
+            _router_lock_block = _delegation_router_synthetic_block_result(
+                _router_lock_decision,
+                function_name,
+            )
+            middleware_trace = []
+        else:
+            function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+            )
+            # Middleware can rewrite arguments (not names).  Re-check for
+            # argument-sensitive tools such as process(action=...).
+            _router_lock_decision = _delegation_router_should_block_tool(agent, function_name, function_args)
+            if _router_lock_decision.blocks_execution:
+                _router_lock_block = _delegation_router_synthetic_block_result(
+                    _router_lock_decision,
+                    function_name,
+                )
 
         # ── Block evaluation (BEFORE checkpoint preflight) ───────────
         # We must know whether the tool will execute before touching
         # checkpoint state (dedup slot, real snapshots).
         block_result = None
         blocked_by_guardrail = False
-        if _ts_scope_block is not None:
+        if _router_lock_block is not None:
+            block_result = _router_lock_block
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=block_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="delegation_router_lock",
+                error_message=_router_lock_decision.reason,
+                middleware_trace=list(middleware_trace),
+            )
+        elif _ts_scope_block is not None:
             # Out-of-scope tool_call: reject before hooks/guardrails/dispatch.
             block_result = _ts_scope_block
             _emit_terminal_post_tool_call(
@@ -842,18 +877,36 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
-        function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
-            agent,
-            function_name=function_name,
-            function_args=function_args,
-            effective_task_id=effective_task_id,
-            tool_call_id=getattr(tool_call, "id", "") or "",
-        )
+        _router_lock_decision = _delegation_router_should_block_tool(agent, function_name, function_args)
+        _router_lock_block = None
+        if _router_lock_decision.blocks_execution:
+            _router_lock_block = _delegation_router_synthetic_block_result(
+                _router_lock_decision,
+                function_name,
+            )
+            middleware_trace = []
+        else:
+            function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+            )
+            _router_lock_decision = _delegation_router_should_block_tool(agent, function_name, function_args)
+            if _router_lock_decision.blocks_execution:
+                _router_lock_block = _delegation_router_synthetic_block_result(
+                    _router_lock_decision,
+                    function_name,
+                )
 
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
         _block_error_type = "plugin_block"
-        if _ts_scope_block is not None:
+        if _router_lock_block is not None:
+            _block_msg = _router_lock_decision.reason
+            _block_error_type = "delegation_router_lock"
+        elif _ts_scope_block is not None:
             _block_msg = _ts_scope_block
             _block_error_type = "tool_scope_block"
         else:
@@ -953,8 +1006,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         tool_start_time = time.time()
 
         if _block_msg is not None:
-            # Tool blocked by plugin policy — return error without executing.
-            function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
+            # Tool blocked by router lock, plugin policy, or tool-search scope —
+            # return one synthetic result without executing.
+            function_result = _router_lock_block if _router_lock_block is not None else json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0
             _emit_terminal_post_tool_call(
                 agent,

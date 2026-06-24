@@ -1730,6 +1730,33 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         function_args = {}
 
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
+    if not pre_tool_block_checked:
+        try:
+            from agent.delegation_router_lock import should_block_tool, synthetic_block_result
+            _router_decision = should_block_tool(agent, function_name, function_args)
+            if _router_decision.blocks_execution:
+                result = synthetic_block_result(_router_decision, function_name)
+                try:
+                    from model_tools import _emit_post_tool_call_hook
+                    _emit_post_tool_call_hook(
+                        function_name=function_name,
+                        function_args=function_args,
+                        result=result,
+                        task_id=effective_task_id or "",
+                        session_id=getattr(agent, "session_id", "") or "",
+                        tool_call_id=tool_call_id or "",
+                        turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                        status="blocked",
+                        error_type="delegation_router_lock",
+                        error_message=_router_decision.reason,
+                        middleware_trace=list(_tool_middleware_trace),
+                    )
+                except Exception:
+                    pass
+                return result
+        except Exception:
+            pass
     try:
         from hermes_cli.middleware import apply_tool_request_middleware
 
@@ -1745,6 +1772,35 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             )
             function_args = _tool_request_mw.payload
             _tool_middleware_trace = _tool_request_mw.trace
+            if not isinstance(function_args, dict):
+                function_args = {}
+            if not pre_tool_block_checked:
+                try:
+                    from agent.delegation_router_lock import should_block_tool, synthetic_block_result
+                    _router_decision = should_block_tool(agent, function_name, function_args)
+                    if _router_decision.blocks_execution:
+                        result = synthetic_block_result(_router_decision, function_name)
+                        try:
+                            from model_tools import _emit_post_tool_call_hook
+                            _emit_post_tool_call_hook(
+                                function_name=function_name,
+                                function_args=function_args,
+                                result=result,
+                                task_id=effective_task_id or "",
+                                session_id=getattr(agent, "session_id", "") or "",
+                                tool_call_id=tool_call_id or "",
+                                turn_id=getattr(agent, "_current_turn_id", "") or "",
+                                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                                status="blocked",
+                                error_type="delegation_router_lock",
+                                error_message=_router_decision.reason,
+                                middleware_trace=list(_tool_middleware_trace),
+                            )
+                        except Exception:
+                            pass
+                        return result
+                except Exception:
+                    pass
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
 

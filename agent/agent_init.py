@@ -1111,6 +1111,16 @@ def init_agent(
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
     }
+    # Parent-session delegation router/verifier lock.  Restored from the
+    # session DB at turn start so gateway paths that create a fresh AIAgent per
+    # message preserve the delegation authority boundary.
+    try:
+        from agent.delegation_router_lock import empty_state as _empty_delegation_router_lock_state
+        agent._delegation_router_lock_state = _empty_delegation_router_lock_state()
+        agent._delegation_router_lock_same_turn_scopes = []
+    except Exception:
+        agent._delegation_router_lock_state = {"version": 1, "locks": []}
+        agent._delegation_router_lock_same_turn_scopes = []
     
     # In-memory todo list for task planning (one per agent/session)
     from tools.todo_tool import TodoStore

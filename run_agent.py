@@ -5195,6 +5195,17 @@ class AIAgent:
         """
         tool_calls = assistant_message.tool_calls
 
+        # Same-turn delegation boundary: a model response that delegates
+        # non-trivial work must not also perform parent-side implementation in
+        # the same tool batch, even if the implementation call appears before
+        # delegate_task in model order.  The executor consults this transient
+        # state before checkpointing, callbacks, hooks, or dispatch.
+        try:
+            from agent.delegation_router_lock import prepare_same_turn_lock
+            prepare_same_turn_lock(self, tool_calls)
+        except Exception:
+            pass
+
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
@@ -5207,6 +5218,11 @@ class AIAgent:
                 assistant_message, messages, effective_task_id, api_call_count
             )
         finally:
+            try:
+                from agent.delegation_router_lock import clear_same_turn_lock
+                clear_same_turn_lock(self)
+            except Exception:
+                pass
             self._executing_tools = False
 
     def _dispatch_delegate_task(self, function_args: dict) -> str:
@@ -5228,7 +5244,7 @@ class AIAgent:
         #     gateway session the async result would route back to.
         # The schema-level `background` param is intentionally ignored here.
         _is_subagent = getattr(self, "_delegate_depth", 0) > 0
-        return _delegate_task(
+        result = _delegate_task(
             goal=function_args.get("goal"),
             context=function_args.get("context"),
             toolsets=function_args.get("toolsets"),
@@ -5240,6 +5256,15 @@ class AIAgent:
             background=(not _is_subagent),
             parent_agent=self,
         )
+        try:
+            from agent.delegation_router_lock import activate_after_delegate_result
+            activate_after_delegate_result(self, function_args, result)
+        except Exception:
+            # Delegation succeeded or failed independently; lock persistence
+            # errors must never corrupt the tool result protocol, but in-memory
+            # enforcement remains fail-closed where activation succeeded.
+            pass
+        return result
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None,

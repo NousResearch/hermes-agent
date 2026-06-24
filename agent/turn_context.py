@@ -89,6 +89,15 @@ def build_turn_context(
     install_safe_stdio()
 
     agent._ensure_db_session()
+    try:
+        from agent.delegation_router_lock import (
+            mark_async_completion_from_text,
+            restore_agent_state_from_session,
+        )
+        restore_agent_state_from_session(agent)
+        mark_async_completion_from_text(agent, user_message)
+    except Exception:
+        pass
 
     # Tell auxiliary_client what the live main provider/model are for this turn.
     try:

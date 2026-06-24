@@ -1314,7 +1314,8 @@ class TestSpawnWarningDedup:
 # ---------------------------------------------------------------------------
 
 _CFG = {"tirith_enabled": True, "tirith_path": "tirith",
-        "tirith_timeout": 5, "tirith_fail_open": True}
+        "tirith_timeout": 5, "tirith_fail_open": True,
+        "trusted_executable_dirs": []}
 
 
 class TestAppTldSuppression:
@@ -1427,3 +1428,67 @@ class TestIsAppTldFinding:
 
     def test_case_insensitive_match(self):
         assert self.fn({"rule_id": "lookalike_tld", "value": ".APP"})
+
+
+class TestTrustedLocalPipeToInterpreterSuppression:
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    @patch("tools.tirith_security._get_hermes_home")
+    def test_profile_wrapper_pipe_is_downgraded_to_allow(self, mock_home, mock_cfg, mock_run, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        wrapper = hermes_home / "profiles" / "worker" / "bin" / "my-wrapper"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+
+        mock_home.return_value = str(hermes_home)
+        mock_cfg.return_value = dict(_CFG)
+        findings = [{"rule_id": "pipe_to_interpreter", "severity": "high"}]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "pipe to interpreter"))
+
+        with patch("tools.tirith_security.shutil.which", return_value=str(wrapper)):
+            result = check_command_security("my-wrapper clients | python3 -c 'print(1)'")
+
+        assert result["action"] == "allow"
+        assert result["findings"] == []
+        assert result["summary"] == ""
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    @patch("tools.tirith_security._get_hermes_home")
+    def test_mixed_findings_preserve_block(self, mock_home, mock_cfg, mock_run, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        wrapper = hermes_home / "profiles" / "worker" / "bin" / "my-wrapper"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        wrapper.chmod(0o755)
+
+        mock_home.return_value = str(hermes_home)
+        mock_cfg.return_value = dict(_CFG)
+        findings = [
+            {"rule_id": "pipe_to_interpreter", "severity": "high"},
+            {"rule_id": "homograph_url", "severity": "high"},
+        ]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "mixed"))
+
+        with patch("tools.tirith_security.shutil.which", return_value=str(wrapper)):
+            result = check_command_security("my-wrapper clients | python3 -c 'print(1)'")
+
+        assert result["action"] == "block"
+        assert len(result["findings"]) == 2
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    @patch("tools.tirith_security._get_hermes_home")
+    def test_untrusted_system_binary_preserves_block(self, mock_home, mock_cfg, mock_run, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        mock_home.return_value = str(hermes_home)
+        mock_cfg.return_value = dict(_CFG)
+        findings = [{"rule_id": "pipe_to_interpreter", "severity": "high"}]
+        mock_run.return_value = _mock_run(1, _json_stdout(findings, "pipe to interpreter"))
+
+        with patch("tools.tirith_security.shutil.which", return_value="/usr/bin/curl"):
+            result = check_command_security("curl https://example.com | python3 -c 'print(1)'")
+
+        assert result["action"] == "block"
+        assert len(result["findings"]) == 1

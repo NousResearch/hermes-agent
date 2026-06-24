@@ -25,6 +25,8 @@ import json
 import logging
 import os
 import platform
+from pathlib import Path
+import shlex
 import shutil
 import stat
 import subprocess
@@ -72,6 +74,7 @@ def _load_security_config() -> dict:
         "tirith_path": "tirith",
         "tirith_timeout": 5,
         "tirith_fail_open": True,
+        "trusted_executable_dirs": [],
     }
     try:
         from hermes_cli.config import load_config
@@ -84,6 +87,7 @@ def _load_security_config() -> dict:
         "tirith_path": os.getenv("TIRITH_BIN", cfg.get("tirith_path", defaults["tirith_path"])),
         "tirith_timeout": _env_int("TIRITH_TIMEOUT", cfg.get("tirith_timeout", defaults["tirith_timeout"])),
         "tirith_fail_open": _env_bool("TIRITH_FAIL_OPEN", cfg.get("tirith_fail_open", defaults["tirith_fail_open"])),
+        "trusted_executable_dirs": cfg.get("trusted_executable_dirs", defaults["trusted_executable_dirs"]) or [],
     }
 
 
@@ -790,6 +794,14 @@ def check_command_security(command: str) -> dict:
         elif action == "warn":
             summary = "security warning detected (details unavailable)"
 
+    # Suppress pipe-to-interpreter findings for trusted local executables such
+    # as profile-local wrapper scripts. These are already under the user's
+    # control and do not carry the remote-content risk that tirith is guarding.
+    if findings and _all_findings_are_trusted_local_pipe_to_interpreter(findings, command, cfg):
+        action = "allow"
+        findings = []
+        summary = ""
+
     # Suppress warn verdicts that consist solely of a lookalike_tld finding for
     # the .app TLD.  .app is a legitimate gTLD used by many production services
     # and the "can be confused with file extensions" heuristic generates false
@@ -820,3 +832,114 @@ def _is_app_tld_finding(finding: dict) -> bool:
         if val is not None and ".app" in str(val).lower():
             return True
     return False
+
+
+def _all_findings_are_trusted_local_pipe_to_interpreter(
+    findings: list[dict],
+    command: str,
+    cfg: dict,
+) -> bool:
+    """Return True when every finding is a trusted-local pipe_to_interpreter hit."""
+    if not findings:
+        return False
+    executable = _resolve_first_piped_executable(command)
+    if executable is None or not _is_trusted_local_executable(executable, cfg):
+        return False
+    return all(_is_pipe_to_interpreter_finding(finding) for finding in findings)
+
+
+def _is_pipe_to_interpreter_finding(finding: dict) -> bool:
+    return isinstance(finding, dict) and finding.get("rule_id") == "pipe_to_interpreter"
+
+
+def _resolve_first_piped_executable(command: str) -> Path | None:
+    """Resolve the left-hand executable in a single pipe command."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars="|")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return None
+
+    if tokens.count("|") != 1:
+        return None
+
+    pipe_index = tokens.index("|")
+    if pipe_index <= 0:
+        return None
+
+    executable = tokens[0]
+    if "/" in executable:
+        candidate = Path(executable).expanduser()
+        try:
+            return candidate.resolve(strict=True)
+        except OSError:
+            return None
+
+    resolved = shutil.which(executable)
+    if not resolved:
+        return None
+    try:
+        return Path(resolved).resolve(strict=True)
+    except OSError:
+        return None
+
+
+def _is_trusted_local_executable(path: Path, cfg: dict) -> bool:
+    """Return True for user-owned executables in trusted local script dirs."""
+    try:
+        stat_result = path.stat()
+    except OSError:
+        return False
+
+    if not path.is_file() or not os.access(path, os.X_OK):
+        return False
+
+    getuid = getattr(os, "getuid", None)
+    if callable(getuid) and stat_result.st_uid != getuid():
+        return False
+
+    resolved = path.resolve()
+    if _is_under_directory(resolved, Path.home().resolve() / ".local" / "bin"):
+        return True
+
+    hermes_home = Path(_get_hermes_home()).expanduser().resolve()
+    if _is_under_directory(resolved, hermes_home / "bin"):
+        return True
+    if _is_under_profile_bin(resolved, hermes_home):
+        return True
+
+    configured_dirs = cfg.get("trusted_executable_dirs") or []
+    for directory in configured_dirs:
+        try:
+            trusted_dir = Path(os.path.expanduser(str(directory))).resolve()
+        except OSError:
+            continue
+        if _is_under_directory(resolved, trusted_dir):
+            return True
+
+    return False
+
+
+def _is_under_profile_bin(path: Path, hermes_home: Path) -> bool:
+    """Return True for executables in <root>/profiles/<name>/bin/."""
+    candidates = [hermes_home / "profiles"]
+    if hermes_home.parent.name == "profiles":
+        candidates.append(hermes_home.parent)
+
+    for profiles_root in candidates:
+        try:
+            rel = path.relative_to(profiles_root.resolve())
+        except ValueError:
+            continue
+        if len(rel.parts) >= 3 and rel.parts[1] == "bin":
+            return True
+    return False
+
+
+def _is_under_directory(path: Path, directory: Path) -> bool:
+    try:
+        path.relative_to(directory)
+        return True
+    except ValueError:
+        return False

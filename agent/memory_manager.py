@@ -354,8 +354,21 @@ class MemoryManager:
                     provider.name, existing,
                 )
                 return
-            self._has_external = True
 
+        # Load schemas before mutating state so a failure leaves the manager clean.
+        try:
+            schemas = list(provider.get_tool_schemas())
+        except Exception as e:
+            logger.error(
+                "Memory provider '%s' get_tool_schemas() raised during registration, "
+                "provider NOT added: %s",
+                provider.name, e,
+            )
+            return
+
+        # Commit state only after schema loading succeeds.
+        if not is_builtin:
+            self._has_external = True
         self._providers.append(provider)
 
         # Core tool names are reserved — a memory provider must never register
@@ -370,7 +383,7 @@ class MemoryManager:
         _core_tool_names = set(_HERMES_CORE_TOOLS)
 
         # Index tool names → provider for routing
-        for schema in provider.get_tool_schemas():
+        for schema in schemas:
             tool_name = schema.get("name", "")
             if tool_name in _core_tool_names:
                 logger.warning(
@@ -394,7 +407,7 @@ class MemoryManager:
         logger.info(
             "Memory provider '%s' registered (%d tools)",
             provider.name,
-            len(provider.get_tool_schemas()),
+            len(schemas),
         )
 
     @property

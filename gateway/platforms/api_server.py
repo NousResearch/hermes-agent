@@ -3834,7 +3834,43 @@ class APIServerAdapter(BasePlatformAdapter):
                     "timestamp": ts,
                     "text": preview or "",
                 })
-            # _thinking and subagent_progress are intentionally not forwarded
+            elif event_type in {"subagent.start", "subagent.complete"}:
+                event = {
+                    "event": event_type,
+                    "run_id": run_id,
+                    "timestamp": ts,
+                }
+                if preview is not None:
+                    event["preview"] = preview
+                for key in (
+                    "goal",
+                    "task_count",
+                    "task_index",
+                    "subagent_id",
+                    "parent_id",
+                    "depth",
+                    "model",
+                    "tool_count",
+                    "status",
+                    "summary",
+                    "duration_seconds",
+                    "input_tokens",
+                    "output_tokens",
+                    "reasoning_tokens",
+                    "api_calls",
+                    "cost_usd",
+                    "files_read",
+                    "files_written",
+                    "output_tail",
+                ):
+                    value = kwargs.get(key)
+                    if value is not None:
+                        event[key] = value
+                _push(event)
+            # _thinking, subagent.tool, and subagent_progress are intentionally
+            # not forwarded on the /v1/runs stream: they are high-volume UI
+            # noise. Lifecycle boundaries (start/complete) still need to land
+            # so clients can observe delegate_task timeouts and failures.
 
         return _callback
 

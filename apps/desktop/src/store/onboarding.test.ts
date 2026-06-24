@@ -194,7 +194,7 @@ describe('OAuth onboarding', () => {
       throw new Error(`unexpected api path: ${path}`)
     })
 
-    const requestGateway: OnboardingContext['requestGateway'] = async method => {
+    const requestGateway: OnboardingContext['requestGateway'] = async (method, params) => {
       if (method === 'reload.env') {
         return {} as never
       }
@@ -204,6 +204,8 @@ describe('OAuth onboarding', () => {
       }
 
       if (method === 'setup.runtime_check') {
+        expect(params).toEqual({ provider: 'nous' })
+
         return { ok: true } as never
       }
 
@@ -241,6 +243,14 @@ describe('OAuth onboarding', () => {
     }
 
     expect(calls.some(c => c.path === '/api/model/set')).toBe(true)
+
+    const optionsIndex = calls.findIndex(c => c.path === '/api/model/options')
+    const recommendedIndex = calls.findIndex(c => c.path.startsWith('/api/model/recommended-default'))
+    const setIndex = calls.findIndex(c => c.path === '/api/model/set')
+
+    expect(optionsIndex).toBeGreaterThanOrEqual(0)
+    expect(recommendedIndex).toBeGreaterThan(optionsIndex)
+    expect(setIndex).toBeGreaterThan(recommendedIndex)
   })
 })
 

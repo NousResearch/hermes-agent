@@ -325,6 +325,28 @@ class TestUpdateJob:
         assert get_job(job["id"]) is not None
         assert get_job("../escape") is None
 
+    def test_create_rejects_unknown_deliver_target(self, tmp_cron_dir):
+        with pytest.raises(ValueError, match="Invalid cron deliver target"):
+            create_job(
+                prompt="Notify me",
+                schedule="every 1h",
+                deliver="telegr",
+            )
+
+    def test_update_rejects_invalid_deliver_and_preserves_existing_value(self, tmp_cron_dir):
+        job = create_job(
+            prompt="Notify me",
+            schedule="every 1h",
+            deliver="origin",
+        )
+
+        with pytest.raises(ValueError, match="Invalid cron deliver target"):
+            update_job(job["id"], {"deliver": "telegr"})
+
+        fetched = get_job(job["id"])
+        assert fetched is not None
+        assert fetched["deliver"] == "origin"
+
 
 class TestPauseResumeJob:
     def test_pause_sets_state(self, tmp_cron_dir):

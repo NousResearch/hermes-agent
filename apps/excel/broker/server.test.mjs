@@ -14,6 +14,9 @@ import {
   moneyValueForLabel,
   statementSummaryRows,
   statementTransactionRows,
+  buildAccountingDataSheet,
+  callHermesModel,
+  capMessagesSize,
   truncateText,
   windowsPathToWsl,
   extensionOf,
@@ -139,8 +142,11 @@ test("normalizeAction: all action types plus unknown", () => {
   const fc = normalizeAction({ type: "format_cells", style: ["header"] });
   assert.deepStrictEqual(fc.style, ["header"]);
 
-  assert.strictEqual(normalizeAction({ type: "execute_office_js" }), null);
-  assert.ok(normalizeAction({ type: "execute_office_js", code: "context.workbook.load();" }));
+  // execute_office_js no longer carries code — it maps to an honest "unsupported" note.
+  const ex = normalizeAction({ type: "execute_office_js", code: "context.workbook.load();", explanation: "do a thing" });
+  assert.strictEqual(ex.type, "unsupported");
+  assert.strictEqual(ex.explanation, "do a thing");
+  assert.ok(!("code" in ex), "normalized action must not carry executable code");
 
   const rr = normalizeAction({ type: "read_range", range: "Sheet2!A1:B10", reason: "check totals" });
   assert.strictEqual(rr.type, "read_range");
@@ -185,6 +191,44 @@ test("normalizeAction: conditional_format normalizes operator synonyms, defaults
 
   // A non-between operator drops a stray value2.
   assert.strictEqual(normalizeAction({ type: "conditional_format", range: "A1", operator: "lessThan", value: 1, value2: 2 }).value2, undefined);
+});
+
+test("normalizeAction: structured structural ops (replacing execute_office_js)", () => {
+  // merge / unmerge
+  assert.deepStrictEqual(normalizeAction({ type: "merge_cells", range: "A1:D1", across: true }), {
+    type: "merge_cells",
+    range: "A1:D1",
+    across: true,
+  });
+  assert.strictEqual(normalizeAction({ type: "merge_cells" }), null);
+
+  // insert/delete rows resolve at+count → an entire-row range, sheet-qualified.
+  assert.strictEqual(normalizeAction({ type: "insert_rows", sheet: "Sheet1", at: 3, count: 2 }).range, "Sheet1!3:4");
+  assert.strictEqual(normalizeAction({ type: "delete_rows", at: 5, count: 1 }).range, "5:5");
+
+  // insert/delete columns resolve a letter+count → an entire-column range.
+  assert.strictEqual(normalizeAction({ type: "insert_columns", at: "C", count: 2 }).range, "C:D");
+  assert.strictEqual(normalizeAction({ type: "delete_columns", sheet: "S", at: "B", count: 1 }).range, "S!B:B");
+
+  // sizes require a positive number
+  assert.strictEqual(normalizeAction({ type: "set_column_width", range: "A:A", width: 14 }).size, 14);
+  assert.strictEqual(normalizeAction({ type: "set_row_height", range: "1:1", height: 0 }), null);
+
+  // freeze requires at least one axis; unfreeze always valid
+  assert.deepStrictEqual(normalizeAction({ type: "freeze_panes", rows: 1 }), { type: "freeze_panes", rows: 1, columns: 0, sheet: "" });
+  assert.strictEqual(normalizeAction({ type: "freeze_panes", rows: 0, columns: 0 }), null);
+  assert.strictEqual(normalizeAction({ type: "unfreeze_panes" }).type, "unfreeze_panes");
+
+  // sort defaults + clear target whitelist
+  const sort = normalizeAction({ type: "sort_range", range: "A2:D9", column: 2 });
+  assert.deepStrictEqual(sort, { type: "sort_range", range: "A2:D9", column: 2, ascending: true, has_header: false });
+  assert.strictEqual(normalizeAction({ type: "clear_range", range: "A1:B2", target: "everything" }).target, "contents");
+  assert.strictEqual(normalizeAction({ type: "clear_range", range: "A1:B2", target: "formats" }).target, "formats");
+
+  // rename/delete sheet
+  assert.strictEqual(normalizeAction({ type: "rename_sheet", to: "Summary" }).to, "Summary");
+  assert.strictEqual(normalizeAction({ type: "rename_sheet" }), null);
+  assert.strictEqual(normalizeAction({ type: "delete_sheet", name: "Old" }).name, "Old");
 });
 
 test("normalizeActions: prefers actions array, falls back to legacy write", () => {
@@ -423,6 +467,34 @@ test("translateFormula: bug #3 — out-of-grid refs are left unchanged, not clam
   assert.strictEqual(translateFormula("=A1048576", 7, 0), "=A1048576");
 });
 
+test("translateFormula: FR-1 — a range whose 2nd endpoint overflows still shifts the in-grid 1st", () => {
+  // The bottom endpoint can't move past the last row, but the top must still shift.
+  assert.strictEqual(translateFormula("=A1:A1048576", 1, 0), "=A2:A1048576");
+  assert.strictEqual(translateFormula("=SUM(A1:A1048575)", 2, 0), "=SUM(A3:A1048575)");
+  // Column-overflow on the second endpoint: first still moves, second stays.
+  assert.strictEqual(translateFormula("=A1:XFC1", 0, 2), "=C1:XFC1");
+});
+
+test("translateFormula: FR-2 — R1C1 fragments are not mistaken for A1 refs", () => {
+  assert.strictEqual(translateFormula("=R[1]C2", 22, 7), "=R[1]C2");
+  assert.strictEqual(translateFormula("=RC[-1]", 22, 7), "=RC[-1]");
+  assert.strictEqual(translateFormula("=SUM(R[1]C1:R[3]C1)", 22, 7), "=SUM(R[1]C1:R[3]C1)");
+});
+
+test("translateFormula: FR-3 — mixed sheet-qualifier ranges are skipped, never half-shifted", () => {
+  assert.strictEqual(translateFormula("=B2:Sheet1!C5", 22, 7), "=B2:Sheet1!C5");
+  assert.strictEqual(translateFormula("=A1:'Bank Rec'!B9", 22, 7), "=A1:'Bank Rec'!B9");
+  // A normal (unqualified) range still shifts both endpoints.
+  assert.strictEqual(translateFormula("=B2:C5", 22, 7), "=I24:J27");
+});
+
+test("translateFormula: FR-4 — a cell-shaped table name (AB12[Total]) is left whole", () => {
+  assert.strictEqual(translateFormula("=AB12[Total]", 22, 7), "=AB12[Total]");
+  assert.strictEqual(translateFormula("=B2[#All]", 22, 7), "=B2[#All]");
+  // A real ref immediately before a function call paren is still skipped (existing rule).
+  assert.strictEqual(translateFormula("=LOG10(B2)", 22, 7), "=LOG10(I24)");
+});
+
 test("translateMatrixFormulas: shifts formula cells, leaves literals", () => {
   const table = [
     ["Item", "Qty", "Price", "Total"],
@@ -505,7 +577,7 @@ test("scanWrittenCells: error cells and all-zero formula columns", () => {
 });
 
 test("expectsWorkbookActions / claimsWorkbookChange: the claims-success-without-actions guard", () => {
-  // Jeff's live transcript, 2026-06-11: "can you put this into a spreadsheet?"
+  // From a real field transcript: "can you put this into a spreadsheet?"
   assert.ok(expectsWorkbookActions({ prompt: "can you put this into a spreadsheet?", files: [] }));
   assert.ok(expectsWorkbookActions({ prompt: "ok can you organize it into a the spread sheet for me", files: [] }));
   assert.ok(expectsWorkbookActions({ prompt: "anything", files: [{ extracted_text: "statement text" }] }));
@@ -520,7 +592,7 @@ test("expectsWorkbookActions / claimsWorkbookChange: the claims-success-without-
 });
 
 test("fallbackResponse: write-intent prompt with parsed data builds a sheet, not a preview dump", () => {
-  // Jeff's live transcript, 2026-06-11: model call timed out and the fallback
+  // From a real field transcript: model call timed out and the fallback
   // dumped raw markdown instead of building from the already-parsed statement.
   const body = {
     prompt: "Parse thhis PDF and make a workbook with its financial data",
@@ -542,6 +614,78 @@ test("fallbackResponse: write-intent prompt with parsed data builds a sheet, not
     "This operation was aborted",
   );
   assert.strictEqual((qa.actions || []).length, 0);
+});
+
+test("scanWrittenCells: requires error punctuation, so '#NUMBER' text is not flagged", () => {
+  // The false-alarm fix: a legitimate label that starts with #NUM must pass.
+  const labels = [
+    ["Item", "Note"],
+    ["A", "#NUMBER of units"],
+    ["B", "#REFERENCE doc"],
+  ];
+  assert.strictEqual(scanWrittenCells(labels).ok, true);
+
+  // Real Excel error values (with their punctuation) are still caught.
+  const real = [
+    ["Item", "Total"],
+    ["A", "#REF!"],
+    ["B", "#N/A"],
+    ["C", "#NAME?"],
+  ];
+  const scan = scanWrittenCells(real);
+  assert.strictEqual(scan.ok, false);
+  assert.strictEqual(scan.errors.length, 3);
+});
+
+test("buildAccountingDataSheet: pins the summary + transactions shape", () => {
+  const sheet = buildAccountingDataSheet(statementFixture);
+  assert.ok(Array.isArray(sheet) && sheet.length > 3);
+  assert.deepStrictEqual(sheet[0], ["Bank Statement Summary", "", "", "", ""]);
+  assert.ok(sheet.some((row) => row[0] === "Transactions"));
+  // The transactions block carries the 5-column header.
+  assert.ok(sheet.some((row) => row.length === 5 && row[0] === "Date" && row[4] === "Balance"));
+});
+
+test("capMessagesSize: trims oldest history, never the system prompt, to fit budget", () => {
+  const messages = [
+    { role: "system", content: "S" },
+    { role: "user", content: "OLD".repeat(50) },
+    { role: "assistant", content: "MID".repeat(50) },
+    { role: "user", content: "REQUEST".repeat(10) },
+  ];
+  capMessagesSize(messages, 120);
+  assert.strictEqual(messages[0].role, "system", "system prompt is preserved");
+  assert.ok(messages.length < 4, "at least one old turn was dropped");
+});
+
+test("callHermesModel: invalid JSON twice falls back; claims-success-without-actions is repaired", async () => {
+  // Injected model that never returns JSON → two bad replies → honest fallback.
+  const bad = async () => "totally not json";
+  const fb = await callHermesModel({ prompt: "do something", files: [] }, { post: bad });
+  assert.strictEqual(fb.source, "fallback");
+  assert.deepStrictEqual(fb.actions, []);
+
+  // First reply claims success with no actions; the corrective retry supplies them.
+  let call = 0;
+  const claimsThenFixes = async () => {
+    call += 1;
+    return call === 1
+      ? '{"message":"Done. The sheet has been populated.","actions":[]}'
+      : '{"message":"Created.","actions":[{"type":"create_sheet","name":"X","values":[["A","B"],["1","2"]]}]}';
+  };
+  const fixed = await callHermesModel(
+    { prompt: "put this into a spreadsheet", files: [] },
+    { post: claimsThenFixes },
+  );
+  assert.strictEqual(fixed.source, "llm");
+  assert.strictEqual(fixed.actions.length, 1);
+  assert.strictEqual(fixed.actions[0].type, "create_sheet");
+});
+
+test("uniqueExportName: safeExportName caps length and keeps the .csv suffix", () => {
+  const long = safeExportName("A".repeat(300));
+  assert.ok(long.endsWith(".csv"));
+  assert.ok(long.length <= 124, `name length ${long.length}`);
 });
 
 test("matrixToCsv and safeExportName", () => {

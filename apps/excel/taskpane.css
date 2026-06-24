@@ -1,123 +1,310 @@
+/* Hermes for Excel — task pane skin.
+   Ported from the desktop design system (apps/desktop/src/styles.css +
+   DESIGN.md): Nous blue accent, flat-not-boxed surfaces, hairline strokes,
+   soft radii, no focus rings, light + dark. Tokens are resolved to rgba/hex
+   here (rather than color-mix) so the pane renders identically across the
+   Excel webviews — WebView2 on Windows and WKWebView on Mac. */
+
 :root {
   color-scheme: light;
-  font-family: "Aptos", "Segoe UI", Arial, sans-serif;
-  background: #f7f7f4;
-  color: #1f2933;
+
+  /* Brand + semantic */
+  --accent: #0053fd;            /* --theme-primary (Nous blue) */
+  --accent-strong: #0046d6;
+  --accent-on: #fcfcfc;         /* --dt-primary-foreground */
+  --warm: #cf806d;              /* --theme-warm */
+  --green: #1f8a65;             /* --ui-green */
+  --red: #cf2d56;               /* --ui-red / --dt-destructive */
+
+  /* Surfaces (flat) */
+  --bg-chrome: #f4f6fb;         /* --ui-bg-chrome */
+  --bg-card: #ffffff;           /* --ui-bg-editor */
+  --bg-input: #ffffff;
+  --bg-soft: #eef2ff;           /* secondary accent fill */
+  --bg-soft-2: #e6edff;         /* accent-soft */
+  --bg-hover: rgba(0, 83, 253, 0.06);
+
+  /* Text hierarchy (--ui-text-*) */
+  --text-primary: #17171a;
+  --text-secondary: rgba(23, 23, 26, 0.72);
+  --text-tertiary: rgba(23, 23, 26, 0.64); /* raised from 0.52 to clear WCAG 4.5:1 on light surfaces */
+
+  /* Hairlines (--ui-stroke-*) */
+  --stroke: rgba(23, 23, 26, 0.12);
+  --stroke-soft: rgba(23, 23, 26, 0.07);
+  --stroke-accent: rgba(0, 83, 253, 0.22);
+
+  /* Focus ring (low-alpha accent glow for the textarea) */
+  --ring: rgba(0, 83, 253, 0.10);
+
+  /* Elevation (--shadow-nous, downward-pooled) */
+  --shadow-nous:
+    0 2px 4px -2px rgba(0, 0, 0, 0.07),
+    0 8px 12px -6px rgba(0, 0, 0, 0.06),
+    0 20px 28px -14px rgba(0, 0, 0, 0.06);
+
+  /* Geometry (radius-scalar 0.6) */
+  --r-sm: 5px;
+  --r-md: 7px;
+  --r-lg: 9px;
+
+  --font-sans: "Segoe UI", -apple-system, BlinkMacSystemFont, system-ui, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", "SF Mono", ui-monospace, Consolas, monospace;
+
+  font-family: var(--font-sans);
+  background: var(--bg-chrome);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    color-scheme: dark;
+
+    --accent: #4f8cff;
+    --accent-strong: #3a7bff;
+    --accent-on: #0b0b0d;
+    --green: #55a583;
+    --red: #e75e78;
+
+    --bg-chrome: #0d0d0f;
+    --bg-card: #161618;
+    --bg-input: #161618;
+    --bg-soft: rgba(79, 140, 255, 0.12);
+    --bg-soft-2: rgba(79, 140, 255, 0.16);
+    --bg-hover: rgba(255, 255, 255, 0.06);
+
+    --text-primary: rgba(255, 255, 255, 0.92);
+    --text-secondary: rgba(255, 255, 255, 0.68);
+    --text-tertiary: rgba(255, 255, 255, 0.46);
+
+    --stroke: rgba(255, 255, 255, 0.13);
+    --stroke-soft: rgba(255, 255, 255, 0.08);
+    --stroke-accent: rgba(79, 140, 255, 0.30);
+
+    --ring: rgba(79, 140, 255, 0.22);
+
+    --shadow-nous:
+      0 2px 4px -2px rgba(0, 0, 0, 0.4),
+      0 8px 14px -6px rgba(0, 0, 0, 0.35),
+      0 20px 30px -14px rgba(0, 0, 0, 0.3);
+  }
 }
 
 * {
   box-sizing: border-box;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 body {
   margin: 0;
-  min-width: 320px;
+  min-width: 300px;
 }
 
 button,
 textarea {
   font: inherit;
+  color: inherit;
 }
 
+/* ── Buttons — one shape, variants by class (mirrors button.tsx) ───────── */
 button {
-  border: 1px solid #b8c0c8;
-  background: #ffffff;
-  color: #1f2933;
-  border-radius: 6px;
-  padding: 8px 10px;
+  border: 1px solid var(--stroke);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border-radius: var(--r-md);
+  padding: 7px 12px;
   cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
 }
 
 button:hover {
-  border-color: #64748b;
-}
-
-button.primary {
-  border-color: #0f766e;
-  background: #0f766e;
-  color: white;
+  background: var(--bg-hover);
+  border-color: var(--stroke-accent);
 }
 
 button:disabled {
   cursor: wait;
-  opacity: 0.7;
+  opacity: 0.55;
 }
 
+button.primary {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--accent-on);
+  font-weight: 600;
+}
+
+button.primary:hover {
+  background: var(--accent-strong);
+  border-color: transparent;
+}
+
+button.ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
+button.ghost:hover {
+  background: var(--bg-hover);
+  border-color: transparent;
+  color: var(--text-primary);
+}
+
+/* ── Layout ────────────────────────────────────────────────────────────── */
 .app {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 100vh; /* fallback if the host doesn't propagate height */
   padding: 14px;
 }
 
 .topbar {
   display: flex;
   justify-content: space-between;
-  align-items: flex-start;
+  align-items: center;
+  gap: 10px;
   position: sticky;
   top: 0;
   z-index: 5;
-  background: #f7f7f4;
-  padding: 4px 0 6px;
+  background: var(--bg-chrome);
+  padding: 4px 0 8px;
+  border-bottom: 1px solid var(--stroke-soft);
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+/* BrandMark — the Hermes glyph on a soft tile, per DESIGN.md. */
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  border-radius: var(--r-md);
+  flex-shrink: 0;
+  background: #ffffff;
+  box-shadow: 0 0 0 1px var(--stroke-soft);
+  object-fit: contain;
+}
+
+.brand-text {
+  min-width: 0;
 }
 
 .topbar-actions {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   flex-shrink: 0;
 }
 
 .topbar-actions button {
   padding: 4px 10px;
   font-size: 12px;
-  background: #f3f4f6;
-  border-color: #b8c0c8;
-  color: #374151;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-secondary);
 }
 
 .topbar-actions button:hover {
-  background: #e5e7eb;
-  border-color: #64748b;
+  background: var(--bg-hover);
+  border-color: transparent;
+  color: var(--text-primary);
 }
 
 h1 {
   margin: 0;
-  font-size: 24px;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   line-height: 1.1;
+  color: var(--text-primary);
 }
 
 p {
-  margin: 4px 0 0;
+  margin: 2px 0 0;
 }
 
 #status {
-  color: #5f6b7a;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+/* ── Messages — flat reading column (assistant prose), tinted user bubble ─ */
+.messages {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 160px;
+  padding: 4px 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--stroke) transparent;
+}
+
+.message {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Assistant: flat, no box — the reply is the deliverable, not a card. */
+.message.hermes {
+  color: var(--text-primary);
+  padding: 2px 2px;
+}
+
+/* User: soft accent-tinted bubble, self-contained. */
+.message.user {
+  align-self: flex-end;
+  max-width: 92%;
+  padding: 8px 11px;
+  border-radius: var(--r-lg) var(--r-lg) var(--r-sm) var(--r-lg);
+  background: var(--bg-soft-2);
+  color: var(--text-primary);
+}
+
+/* ── Composer ──────────────────────────────────────────────────────────── */
+.composer {
+  display: grid;
+  gap: 8px;
 }
 
 .dropzone {
   position: relative;
   display: block;
-  min-height: 38px;
-  padding: 10px 12px;
-  border: 1px dashed #8996a3;
-  border-radius: 8px;
-  background: #ffffff;
-  color: #546179;
+  min-height: 36px;
+  padding: 9px 12px;
+  border: 1px dashed var(--stroke);
+  border-radius: var(--r-md);
+  background: var(--bg-card);
+  color: var(--text-tertiary);
   text-align: left;
-  font-size: 13px;
+  font-size: 12px;
+  transition: background-color 120ms ease, border-color 120ms ease;
 }
 
-.dropzone.dragover {
-  border-color: #0f766e;
-  background: #ecfdf5;
-}
-
+.dropzone.dragover,
 .composer.dragover .dropzone,
 .composer.dragover textarea {
-  border-color: #0f766e;
-  background: #ecfdf5;
+  border-color: var(--accent);
+  border-style: solid;
+  background: var(--bg-soft);
 }
 
 .dropzone input {
@@ -129,9 +316,6 @@ p {
 
 .dropzone span {
   display: block;
-}
-
-.dropzone span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -149,80 +333,134 @@ p {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  padding: 6px 8px;
-  border: 1px solid #d7dde3;
-  border-radius: 6px;
-  background: #ffffff;
+  padding: 6px 10px;
+  border: 1px solid var(--stroke-soft);
+  border-radius: var(--r-sm);
+  background: var(--bg-card);
+  color: var(--text-secondary);
   font-size: 12px;
 }
 
-.messages {
+.file-list li span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-list li span:last-child {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  padding: 10px 11px;
+  background: var(--bg-input);
+  color: var(--text-primary);
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+textarea::placeholder {
+  color: var(--text-tertiary);
+}
+
+textarea:focus {
+  outline: none;
+  border-color: var(--stroke-accent);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+/* No permanent ring on mouse :focus, but a visible 2px accent ring on
+   keyboard :focus-visible (WCAG 2.4.7). The textarea keeps its own glow. */
+button:focus,
+input:focus {
+  outline: none;
+}
+
+button:focus-visible,
+input[type="file"]:focus-visible,
+.review input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.review {
   display: flex;
-  flex: 1;
-  flex-direction: column;
+  gap: 7px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.review input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.actions {
+  display: block;
+}
+
+.actions .primary {
+  width: 100%;
+  padding: 9px 12px;
+}
+
+/* ── Pending review bar (Apply / Discard) ──────────────────────────────── */
+.pending-actions {
+  display: flex;
   gap: 8px;
-  min-height: 160px;
-  padding: 4px 0;
-  overflow-y: auto;
+  margin: 4px 0;
 }
 
-.message {
-  padding: 10px;
-  border-radius: 8px;
-  background: #ffffff;
-  border: 1px solid #d7dde3;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+.pending-actions button {
+  font-size: 13px;
+  padding: 7px 16px;
 }
 
-.message.user {
-  border-color: #b7c9ff;
-  background: #f0f5ff;
-}
-
-.message.hermes {
-  border-color: #badbcc;
-  background: #f2fbf6;
-}
-
-.composer {
-  display: grid;
-  gap: 8px;
-}
-
+/* ── Work indicator ────────────────────────────────────────────────────── */
 .work-indicator {
   display: grid;
-  grid-template-columns: 24px 1fr auto;
+  grid-template-columns: 22px 1fr auto;
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid #99c2b9;
-  border-radius: 8px;
-  background: #eefaf6;
-  color: #164e45;
+  border: 1px solid var(--stroke);
+  border-radius: var(--r-md);
+  background: var(--bg-soft);
+  color: var(--text-primary);
   font-size: 13px;
+  box-shadow: var(--shadow-nous);
 }
 
 .work-indicator[hidden] {
   display: none;
 }
 
-.work-indicator strong,
-.work-indicator span {
+.work-indicator strong {
   display: block;
+  font-weight: 600;
 }
 
 .work-indicator span {
+  display: block;
   margin-top: 2px;
-  color: #47615d;
+  color: var(--text-tertiary);
   font-size: 12px;
 }
 
 .spinner {
-  width: 20px;
-  height: 20px;
-  border: 3px solid #b9d8d1;
-  border-top-color: #0f766e;
+  width: 18px;
+  height: 18px;
+  border: 2.5px solid var(--stroke-accent);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -233,61 +471,20 @@ p {
   }
 }
 
-textarea {
-  width: 100%;
-  resize: vertical;
-  border: 1px solid #b8c0c8;
-  border-radius: 8px;
-  padding: 10px;
-}
+@media (prefers-reduced-motion: reduce) {
+  /* Stop rotation entirely — static accent ring with a subtle opacity pulse. */
+  .spinner {
+    border-color: var(--accent);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
 
-.actions {
-  display: block;
-}
-
-.actions .primary {
-  width: 100%;
-}
-
-.review {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-  font-size: 12px;
-  color: #546179;
-  cursor: pointer;
-}
-
-.review input {
-  margin: 0;
-}
-
-button.ghost {
-  background: transparent;
-  border: 1px solid transparent;
-  color: #546179;
-  padding: 4px 8px;
-  font-size: 12px;
-}
-
-button.ghost:hover {
-  background: #e5e7eb;
-  border-color: #b8c0c8;
-}
-
-.pending-actions {
-  display: flex;
-  gap: 8px;
-  margin: 8px 0;
-}
-
-.pending-actions button {
-  font-size: 13px;
-  padding: 6px 14px;
-}
-
-.pending-actions .primary {
-  border-color: #0f766e;
-  background: #0f766e;
-  color: white;
+  @keyframes pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.4;
+    }
+  }
 }

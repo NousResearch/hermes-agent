@@ -4,6 +4,15 @@ const brokerUrls = [
   "http://localhost:8787",
 ].filter((url, index, list) => url && list.indexOf(url) === index);
 
+// Per-install token injected same-origin by the bridge into the served page. Echoed
+// on every /api/* call so the bridge can require it (defeats other-origin callers).
+const bridgeToken = document.querySelector('meta[name="hermes-bridge-token"]')?.content || "";
+function bridgeHeaders(extra = {}) {
+  return bridgeToken ? { ...extra, "x-hermes-token": bridgeToken } : extra;
+}
+
+const REVIEW_MODE_STORAGE_KEY = "hermes-review-mode";
+
 const state = {
   files: [],
   selection: null,
@@ -19,7 +28,10 @@ const state = {
   undoStack: [],
   workbookKey: "",
   controller: null,
-  reviewMode: false,
+  // Default ON: workbook changes are held for explicit Apply unless the user
+  // persistently opts out. Restored from localStorage in Office.onReady so the
+  // safe state survives pane reloads.
+  reviewMode: true,
 };
 
 const els = {
@@ -164,7 +176,7 @@ function stopWorkIndicator(finalStatus = "Ready") {
 async function checkBridgeHealth(showStatus = false) {
   for (const brokerUrl of brokerUrls) {
     try {
-      const response = await fetch(`${brokerUrl}/api/health`, { cache: "no-store" });
+      const response = await fetch(`${brokerUrl}/api/health`, { cache: "no-store", headers: bridgeHeaders() });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const health = await response.json();
       state.bridgeOk = true;
@@ -190,7 +202,13 @@ function updateFileList() {
   for (const file of state.files) {
     const li = document.createElement("li");
     const sizeKb = Math.max(1, Math.round(file.size / 1024));
-    li.innerHTML = `<span>${file.name}</span><span>${sizeKb} KB</span>`;
+    // textContent, not innerHTML — a crafted filename must never become live DOM,
+    // especially in the same realm that runs model-authored Office.js.
+    const nameSpan = document.createElement("span");
+    nameSpan.textContent = file.name;
+    const sizeSpan = document.createElement("span");
+    sizeSpan.textContent = `${sizeKb} KB`;
+    li.append(nameSpan, sizeSpan);
     els.fileList.appendChild(li);
   }
   els.dropLabel.textContent = state.files.length
@@ -311,7 +329,7 @@ async function postChat(payload, options = {}) {
     try {
       const response = await fetch(`${brokerUrl}/api/chat`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: bridgeHeaders({ "content-type": "application/json" }),
         body,
         signal: options.signal,
       });
@@ -380,7 +398,7 @@ async function verifyWrittenRange(address) {
         : range;
       target.load("values");
       await context.sync();
-      return target.values;
+      return { values: target.values, truncated };
     });
   } catch {
     return null;
@@ -390,7 +408,9 @@ async function verifyWrittenRange(address) {
 // Mirror of the broker's scanWrittenCells (kept in sync; tested in server.test.mjs).
 function scanWrittenCells(values) {
   if (!Array.isArray(values)) return { errors: [], zeroFormulaColumns: [], ok: true };
-  const errorRegex = /^#(REF|DIV\/0|VALUE|NAME\?|N\/A|NULL|NUM)!?/i;
+  // Mirrors the broker's scanWrittenCells: require the error punctuation so labels
+  // like "#NUMBER of units" are not mistaken for Excel error cells.
+  const errorRegex = /^#(REF!|DIV\/0!|VALUE!|NUM!|NULL!|NAME\?|N\/A)(?![A-Za-z0-9])/i;
   const errors = [];
   const nonEmpty = {};
   const zeros = {};
@@ -442,7 +462,21 @@ function describeActions(actions) {
       if (action.type === "create_sheet") return `Create sheet "${action.name}" (${(action.values || []).length} rows)`;
       if (action.type === "format_cells") return `Format ${action.range}`;
       if (action.type === "conditional_format") return `Highlight ${action.range} where value ${action.operator} ${action.value}`;
-      if (action.type === "execute_office_js") return `Run workbook script: ${action.explanation}`;
+      if (action.type === "merge_cells") return `Merge ${action.range}`;
+      if (action.type === "unmerge_cells") return `Unmerge ${action.range}`;
+      if (action.type === "insert_rows") return `Insert rows at ${action.range}`;
+      if (action.type === "insert_columns") return `Insert columns at ${action.range}`;
+      if (action.type === "delete_rows") return `Delete rows ${action.range}`;
+      if (action.type === "delete_columns") return `Delete columns ${action.range}`;
+      if (action.type === "set_column_width") return `Set column width on ${action.range}`;
+      if (action.type === "set_row_height") return `Set row height on ${action.range}`;
+      if (action.type === "freeze_panes") return `Freeze ${action.rows || 0} row(s) / ${action.columns || 0} column(s)`;
+      if (action.type === "unfreeze_panes") return "Unfreeze panes";
+      if (action.type === "autofit") return `Autofit ${action.range}`;
+      if (action.type === "rename_sheet") return `Rename sheet to "${action.to}"`;
+      if (action.type === "delete_sheet") return `Delete sheet "${action.name}"`;
+      if (action.type === "sort_range") return `Sort ${action.range}`;
+      if (action.type === "clear_range") return `Clear ${action.target} of ${action.range}`;
       return null;
     })
     .filter(Boolean)
@@ -466,7 +500,13 @@ function normalizeMatrix(values) {
 function parseStartCell(startCell) {
   const ref = String(startCell || state.selection?.address || "A1").trim();
   const bang = ref.lastIndexOf("!");
-  const sheetName = bang >= 0 ? ref.slice(0, bang).replace(/^'|'$/g, "") : state.workbook?.activeSheet;
+  // A sheet name with special chars is quoted and inner apostrophes are doubled,
+  // e.g. 'Bob''s Data'!A1. Strip the outer quotes, then un-double '' → ' so
+  // worksheets.getItem receives the real name ("Bob's Data") and doesn't throw.
+  const sheetName =
+    bang >= 0
+      ? ref.slice(0, bang).replace(/^'(.*)'$/, "$1").replace(/''/g, "'")
+      : state.workbook?.activeSheet;
   const address = bang >= 0 ? ref.slice(bang + 1) : ref;
   return { sheetName, address: address || "A1" };
 }
@@ -477,6 +517,13 @@ function rangeFromRef(context, ref) {
     ? context.workbook.worksheets.getItem(sheetName)
     : context.workbook.worksheets.getActiveWorksheet();
   return sheet.getRange(address);
+}
+
+// Whole-column (A:A) / whole-row (1:1) ranges would format ~1M cells — reject so a
+// stray model range can't freeze Excel or apply a conditional format to the grid.
+function isUnboundedRange(ref) {
+  const { address } = parseStartCell(ref);
+  return /^[A-Za-z]{1,3}:[A-Za-z]{1,3}$/.test(address) || /^\d+:\d+$/.test(address);
 }
 
 function safeSheetName(name, fallback = "Hermes Output") {
@@ -631,6 +678,8 @@ async function beforeWriteCellsSnapshot(action, values) {
         address: target.address,
         formulas: target.formulas,
         numberFormat: target.numberFormat,
+        // When auto_format ran, undo must also strip the fills/fonts/borders it added.
+        formatted: !!action.auto_format,
       });
       if (state.undoStack.length > 10) state.undoStack.shift();
     });
@@ -639,8 +688,16 @@ async function beforeWriteCellsSnapshot(action, values) {
   }
 }
 
-function createSheetUndoRecord(name) {
-  state.undoStack.push({ kind: "create_sheet", name });
+function createSheetUndoRecord(name, rows) {
+  state.undoStack.push({ kind: "create_sheet", name, rows });
+  if (state.undoStack.length > 10) state.undoStack.shift();
+}
+
+// A change Hermes can't programmatically reverse (formatting, conditional format,
+// or model-authored Office.js). Sits on the stack so a later Undo announces it
+// instead of silently reverting an unrelated earlier write.
+function pushNonUndoable(type) {
+  state.undoStack.push({ kind: "non_undoable", type });
   if (state.undoStack.length > 10) state.undoStack.shift();
 }
 
@@ -651,9 +708,18 @@ async function undoLast() {
   }
   const record = state.undoStack.pop();
   try {
-    if (record.kind === "write_cells") {
+    if (record.kind === "non_undoable") {
+      // Don't cascade into an earlier write — that would revert something the user
+      // didn't ask to undo. Tell them to use Excel's own Undo instead.
+      addMessage(
+        "hermes",
+        `The last change (${record.type.replace(/_/g, " ")}) can't be undone by Hermes — use Excel's Undo (Ctrl+Z) for it.`,
+      );
+    } else if (record.kind === "write_cells") {
       await Excel.run(async (context) => {
         const range = rangeFromRef(context, record.address);
+        // Strip any auto_format fills/fonts/borders before restoring the prior content.
+        if (record.formatted) range.clear(Excel.ClearApplyTo.formats);
         range.formulas = record.formulas;
         range.numberFormat = record.numberFormat;
         await context.sync();
@@ -662,11 +728,25 @@ async function undoLast() {
     } else if (record.kind === "create_sheet") {
       await Excel.run(async (context) => {
         const sheet = context.workbook.worksheets.getItemOrNullObject(record.name);
+        const used = sheet.getUsedRangeOrNullObject();
+        used.load(["rowCount"]);
         await context.sync();
-        if (!sheet.isNullObject) sheet.delete();
+        if (sheet.isNullObject) {
+          addMessage("hermes", `The sheet "${record.name}" is already gone.`);
+          return;
+        }
+        // Don't delete a sheet the user kept working on after Hermes created it.
+        if (!used.isNullObject && record.rows && used.rowCount > record.rows) {
+          addMessage(
+            "hermes",
+            `"${record.name}" was edited after Hermes created it — leaving it in place. Delete the sheet yourself if you no longer want it.`,
+          );
+          return;
+        }
+        sheet.delete();
         await context.sync();
+        addMessage("hermes", `Removed the sheet Hermes created: ${record.name}.`);
       });
-      addMessage("hermes", `Removed the sheet Hermes created: ${record.name}.`);
     }
     saveChatHistory();
   } catch (error) {
@@ -720,12 +800,15 @@ async function createSheetAction(action) {
     sheet.activate();
     target.load("address");
     await context.sync();
-    createSheetUndoRecord(name);
+    createSheetUndoRecord(name, values.length);
     return { status: `Created ${name} and wrote ${values.length} row(s) to ${target.address}.`, address: target.address };
   });
 }
 
 async function formatCellsAction(action) {
+  if (isUnboundedRange(action.range)) {
+    throw new Error(`"${action.range}" is an unbounded whole-column/row range; use a bounded range like Sheet1!A2:D100.`);
+  }
   return Excel.run(async (context) => {
     const range = rangeFromRef(context, action.range);
     range.load(["address", "rowCount", "columnCount"]);
@@ -757,6 +840,9 @@ function conditionalFormula(value) {
 }
 
 async function conditionalFormatAction(action) {
+  if (isUnboundedRange(action.range)) {
+    throw new Error(`"${action.range}" is an unbounded whole-column/row range; use a bounded range like Sheet1!G2:G100.`);
+  }
   return Excel.run(async (context) => {
     const range = rangeFromRef(context, action.range);
     const cf = range.conditionalFormats.add(Excel.ConditionalFormatType.cellValue);
@@ -776,20 +862,151 @@ async function conditionalFormatAction(action) {
   });
 }
 
-async function executeOfficeJsAction(action) {
-  const code = String(action.code || "").trim();
-  if (!code) return null;
-  if (/\bExcel\.run\s*\(/.test(code)) {
-    throw new Error("Hermes action used nested Excel.run; ask again with direct Office.js code.");
-  }
+// ── Structured structural operations ────────────────────────────────────────
+// These replace the old execute_office_js / new Function path: each is a fixed,
+// audited Office.js call, so the pane never evals model-authored code (the CSP
+// has no 'unsafe-eval'). The broker validates/normalizes every field first.
 
+function worksheetFor(context, name) {
+  return name ? context.workbook.worksheets.getItem(name) : context.workbook.worksheets.getActiveWorksheet();
+}
+
+async function mergeCellsAction(action) {
+  if (isUnboundedRange(action.range)) {
+    throw new Error(`"${action.range}" is unbounded; merge a specific range like A1:D1.`);
+  }
   return Excel.run(async (context) => {
-    const fn = new Function("context", `"use strict"; return (async () => {\n${code}\n})();`);
-    await fn(context);
+    rangeFromRef(context, action.range).merge(action.across === true);
     await context.sync();
-    return action.explanation ? `Ran workbook edit: ${action.explanation}` : "Ran workbook edit.";
+    return `Merged ${action.range}.`;
   });
 }
+
+async function unmergeCellsAction(action) {
+  return Excel.run(async (context) => {
+    rangeFromRef(context, action.range).unmerge();
+    await context.sync();
+    return `Unmerged ${action.range}.`;
+  });
+}
+
+async function insertCellsAction(action, axis) {
+  return Excel.run(async (context) => {
+    rangeFromRef(context, action.range).insert(
+      axis === "rows" ? Excel.InsertShiftDirection.down : Excel.InsertShiftDirection.right,
+    );
+    await context.sync();
+    return `Inserted ${axis} at ${action.range}.`;
+  });
+}
+
+async function deleteCellsAction(action, axis) {
+  return Excel.run(async (context) => {
+    rangeFromRef(context, action.range).delete(
+      axis === "rows" ? Excel.DeleteShiftDirection.up : Excel.DeleteShiftDirection.left,
+    );
+    await context.sync();
+    return `Deleted ${axis} at ${action.range}.`;
+  });
+}
+
+async function setSizeAction(action) {
+  return Excel.run(async (context) => {
+    const range = rangeFromRef(context, action.range);
+    if (action.type === "set_column_width") range.format.columnWidth = action.size;
+    else range.format.rowHeight = action.size;
+    await context.sync();
+    return `Set ${action.type === "set_column_width" ? "column width" : "row height"} on ${action.range}.`;
+  });
+}
+
+async function freezePanesAction(action) {
+  return Excel.run(async (context) => {
+    const sheet = worksheetFor(context, action.sheet);
+    if (action.rows) sheet.freezePanes.freezeRows(action.rows);
+    if (action.columns) sheet.freezePanes.freezeColumns(action.columns);
+    await context.sync();
+    const parts = [action.rows ? `${action.rows} row(s)` : "", action.columns ? `${action.columns} column(s)` : ""].filter(Boolean);
+    return `Froze ${parts.join(" and ")}.`;
+  });
+}
+
+async function unfreezePanesAction(action) {
+  return Excel.run(async (context) => {
+    worksheetFor(context, action.sheet).freezePanes.unfreeze();
+    await context.sync();
+    return "Unfroze panes.";
+  });
+}
+
+async function autofitAction(action) {
+  return Excel.run(async (context) => {
+    const range = rangeFromRef(context, action.range);
+    if (action.columns) range.format.autofitColumns();
+    if (action.rows) range.format.autofitRows();
+    await context.sync();
+    return `Autofit ${action.range}.`;
+  });
+}
+
+async function renameSheetAction(action) {
+  return Excel.run(async (context) => {
+    worksheetFor(context, action.from).name = action.to;
+    await context.sync();
+    return `Renamed sheet to "${action.to}".`;
+  });
+}
+
+async function deleteSheetAction(action) {
+  return Excel.run(async (context) => {
+    const sheet = context.workbook.worksheets.getItemOrNullObject(action.name);
+    await context.sync();
+    if (sheet.isNullObject) return `Sheet "${action.name}" was not found.`;
+    sheet.delete();
+    await context.sync();
+    return `Deleted sheet "${action.name}".`;
+  });
+}
+
+async function sortRangeAction(action) {
+  return Excel.run(async (context) => {
+    rangeFromRef(context, action.range).sort.apply(
+      [{ key: action.column, ascending: action.ascending }],
+      false,
+      action.has_header,
+    );
+    await context.sync();
+    return `Sorted ${action.range}.`;
+  });
+}
+
+async function clearRangeAction(action) {
+  const map = { contents: Excel.ClearApplyTo.contents, formats: Excel.ClearApplyTo.formats, all: Excel.ClearApplyTo.all };
+  return Excel.run(async (context) => {
+    rangeFromRef(context, action.range).clear(map[action.target] || Excel.ClearApplyTo.contents);
+    await context.sync();
+    return `Cleared ${action.target} of ${action.range}.`;
+  });
+}
+
+// Dispatch table: action type → handler. Every entry is a fixed Office.js call.
+const STRUCTURAL_ACTIONS = {
+  merge_cells: (action) => mergeCellsAction(action),
+  unmerge_cells: (action) => unmergeCellsAction(action),
+  insert_rows: (action) => insertCellsAction(action, "rows"),
+  insert_columns: (action) => insertCellsAction(action, "columns"),
+  delete_rows: (action) => deleteCellsAction(action, "rows"),
+  delete_columns: (action) => deleteCellsAction(action, "columns"),
+  set_column_width: (action) => setSizeAction(action),
+  set_row_height: (action) => setSizeAction(action),
+  freeze_panes: (action) => freezePanesAction(action),
+  unfreeze_panes: (action) => unfreezePanesAction(action),
+  autofit: (action) => autofitAction(action),
+  rename_sheet: (action) => renameSheetAction(action),
+  delete_sheet: (action) => deleteSheetAction(action),
+  sort_range: (action) => sortRangeAction(action),
+  clear_range: (action) => clearRangeAction(action),
+};
 
 function actionsFromLegacyWrite(write) {
   if (!write || write.mode === "none") return [];
@@ -806,30 +1023,49 @@ function actionsFromLegacyWrite(write) {
 async function runWorkbookActions(result) {
   const actions = Array.isArray(result.actions) ? result.actions : actionsFromLegacyWrite(result.write);
   const statusLines = [];
+  let nonUndoableApplied = false;
   for (const action of actions) {
     if (!action || typeof action !== "object") continue;
-    // One bad action (usually model-authored execute_office_js code) must not
-    // abort the rest or mask the statuses of writes that already succeeded.
+    // One bad action must not abort the rest or mask the statuses of writes that
+    // already succeeded.
     try {
       if (action.type === "write_cells" || action.type === "create_sheet") {
         const res = action.type === "write_cells" ? await writeCellsAction(action) : await createSheetAction(action);
         if (!res) continue;
         statusLines.push(res.status);
         // Re-read what we just wrote and warn if formulas didn't land (error cells / all-zero columns).
-        const written = await verifyWrittenRange(res.address);
-        if (written) {
-          const scan = scanWrittenCells(written);
+        const verified = await verifyWrittenRange(res.address);
+        if (verified && verified.values) {
+          const scan = scanWrittenCells(verified.values);
           if (!scan.ok) statusLines.push(verificationWarning(res.address, scan));
+          else if (verified.truncated)
+            statusLines.push(`Spot-checked the first 300×30 cells of ${res.address}; cells beyond that weren't re-verified.`);
         }
       }
-      if (action.type === "format_cells") statusLines.push(await formatCellsAction(action));
-      if (action.type === "conditional_format") statusLines.push(await conditionalFormatAction(action));
-      if (action.type === "execute_office_js") statusLines.push(await executeOfficeJsAction(action));
+      if (action.type === "format_cells") {
+        statusLines.push(await formatCellsAction(action));
+        nonUndoableApplied = true;
+      }
+      if (action.type === "conditional_format") {
+        statusLines.push(await conditionalFormatAction(action));
+        nonUndoableApplied = true;
+      }
+      if (STRUCTURAL_ACTIONS[action.type]) {
+        statusLines.push(await STRUCTURAL_ACTIONS[action.type](action));
+        nonUndoableApplied = true;
+      }
+      if (action.type === "unsupported") {
+        statusLines.push(
+          `Hermes proposed a custom script ("${action.explanation}"), which the add-in no longer runs. Ask for it as a specific operation (merge, sort, insert/delete rows or columns, freeze, clear, rename/delete sheet, etc.).`,
+        );
+      }
       if (action.type === "export") statusLines.push(await exportAction(action));
     } catch (error) {
       statusLines.push(`One step failed (${action.type}): ${error.message} — other changes were still applied.`);
     }
   }
+  // One barrier per apply guards any earlier write from a surprise Undo (see undoLast).
+  if (nonUndoableApplied) pushNonUndoable("formatting / scripted change");
   return statusLines.filter(Boolean);
 }
 
@@ -839,7 +1075,7 @@ async function exportAction(action) {
       try {
         const response = await fetch(`${brokerUrl}/api/export`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: bridgeHeaders({ "content-type": "application/json" }),
           body: JSON.stringify({ name: action.name, values: action.values || action.table }),
         });
         if (!response.ok) continue;
@@ -963,14 +1199,21 @@ function renderReviewButtons(result, filesToSend, fileLines) {
     addMessage("hermes", "Discarded — no changes made.");
   });
 
+  bar.setAttribute("role", "group");
+  bar.setAttribute("aria-label", "Review pending workbook changes");
   bar.appendChild(applyBtn);
   bar.appendChild(discardBtn);
   els.messages.appendChild(bar);
   els.messages.scrollTop = els.messages.scrollHeight;
+  // Move focus to Apply so keyboard/AT users land on the actionable control rather
+  // than having it announced as passive text inside the polite live region.
+  applyBtn.focus();
 }
 
 function wireActions() {
   els.prompt.addEventListener("keydown", (event) => {
+    // Don't submit mid-IME-composition (CJK/accented input commits with Enter).
+    if (event.isComposing || event.keyCode === 229) return;
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
       els.chatForm.requestSubmit();
@@ -983,6 +1226,9 @@ function wireActions() {
   if (els.reviewToggle) {
     els.reviewToggle.addEventListener("change", (event) => {
       state.reviewMode = event.target.checked;
+      try {
+        localStorage.setItem(REVIEW_MODE_STORAGE_KEY, state.reviewMode ? "1" : "0");
+      } catch {}
     });
   }
 
@@ -1051,8 +1297,19 @@ Office.onReady((info) => {
     state.workbookKey = "default";
   }
   loadChatHistory();
+  loadReviewMode();
   wireDropzone();
   wireActions();
   startBridgeMonitor();
   setStatus("Ready");
 });
+
+function loadReviewMode() {
+  try {
+    const stored = localStorage.getItem(REVIEW_MODE_STORAGE_KEY);
+    if (stored !== null) state.reviewMode = stored === "1";
+  } catch {
+    // Storage may be denied; keep the safe in-memory default (review ON).
+  }
+  if (els.reviewToggle) els.reviewToggle.checked = state.reviewMode;
+}

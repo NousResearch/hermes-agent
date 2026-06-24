@@ -66,7 +66,7 @@ file-writing path and runs only on an explicit export action.
 | `create_sheet` | `name`, `values` | pane |
 | `format_cells` | `range`, `style[]`, fonts/borders/number formats | pane |
 | `conditional_format` | `range`, `operator`, `value`, `value2?`, `fill_color`, `font_color` | pane |
-| `execute_office_js` | `explanation`, `code` (no nested Excel.run) | pane |
+| structural ops | `merge_cells`/`unmerge_cells` (`range`), `insert_rows`/`delete_rows`/`insert_columns`/`delete_columns` (`sheet?`,`at`,`count`), `set_column_width`/`set_row_height` (`range`,`width`/`height`), `freeze_panes` (`rows`,`columns`)/`unfreeze_panes`, `autofit` (`range`), `rename_sheet` (`from?`,`to`), `delete_sheet` (`name`), `sort_range` (`range`,`column`,`ascending`,`has_header`), `clear_range` (`range`,`target`) | pane |
 | `read_range` | `range`, `reason` | pane (loop) |
 | `export` | `name`, `values` | pane → POST /api/export |
 
@@ -117,11 +117,13 @@ adding a second translation layer double-shifts formulas.
 - **No prose in cells.** Cell values are short labels, numbers, or formulas
   (~40 chars). Paragraph-length "QA Notes" rows both produce terrible sheets and
   destabilize the local model into stopping mid-JSON; long text goes in `message`.
-- **Prefer native actions over `execute_office_js`.** `write_cells`,
-  `create_sheet`, `format_cells`, and `conditional_format` are reliable;
-  embedding Office.js code in a JSON string is the top cause of unparseable
-  replies. Reserve `execute_office_js` for structural changes with no native
-  action, and prefer single-quoted JS string literals there to cut escaping.
+- **No arbitrary code.** There is no `execute_office_js` action; the pane never
+  evals model-authored code (the served CSP has no `'unsafe-eval'`). Every
+  structural change has a dedicated structured action (merge, insert/delete
+  rows/columns, freeze, autofit, sort, clear, rename/delete sheet, widths). A
+  request that none of the actions can express is declined in `message`, not
+  coded around. (Legacy `execute_office_js` replies are surfaced as an
+  `unsupported` note, never run.)
 - Workbook changes happen ONLY through actions. The agent must not use its own
   tools or filesystem. **Deployment requirement:** run the API server platform
   with file/terminal/code-execution toolsets disabled (hermes-agent config:

@@ -10,9 +10,12 @@
   <body>
     <main class="app">
       <header class="topbar">
-        <div>
-          <h1>Hermes</h1>
-          <p id="status">Starting Excel bridge...</p>
+        <div class="brand">
+          <img class="brand-mark" src="./assets/icon-64.png" alt="" aria-hidden="true" />
+          <div class="brand-text">
+            <h1>Hermes</h1>
+            <p id="status">Starting Excel bridge...</p>
+          </div>
         </div>
         <div class="topbar-actions">
           <button id="undoButton" type="button" title="Undo the last workbook change Hermes made">Undo</button>
@@ -33,8 +36,8 @@
         </section>
         <label class="review"><input type="checkbox" id="reviewToggle" /> Review changes before applying</label>
         <div id="dropzone" class="dropzone">
-          <input id="fileInput" type="file" multiple accept=".pdf,.xlsx,.xls,.csv,.txt,.doc,.docx,.png,.jpg,.jpeg" />
-          <span id="dropLabel">Drop files here or click to attach</span>
+          <input id="fileInput" type="file" multiple accept=".pdf,.xlsx,.xls,.csv,.txt,.doc,.docx,.png,.jpg,.jpeg" aria-label="Attach files" />
+          <span id="dropLabel">Drop files here, into the message box, or click to attach</span>
         </div>
         <ul id="fileList" class="file-list"></ul>
         <textarea id="prompt" rows="3" placeholder="Ask Hermes to edit this workbook..."></textarea>

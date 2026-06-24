@@ -5,22 +5,79 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { randomUUID } from "node:crypto";
 import zlib from "node:zlib";
-import { translateMatrixFormulas, anchorFromAddress } from "./formula-rebase.mjs";
+import {
+  translateMatrixFormulas,
+  anchorFromAddress,
+  columnLettersToNumber,
+  numberToColumnLetters,
+} from "./formula-rebase.mjs";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-const uploadsDir = path.join(root, "uploads");
 const port = Number(process.env.PORT || 8787);
+
+// Writable data root, deliberately OUTSIDE the served web root so uploaded source
+// documents and exported CSVs are never reachable over HTTP (serveStatic only ever
+// serves the pane whitelist below). Defaults per-platform; override with HERMES_EXCEL_DATA_DIR.
+const dataDir = process.env.HERMES_EXCEL_DATA_DIR || defaultDataDir();
+const uploadsDir = path.join(dataDir, "uploads");
+const exportsDir = path.join(dataDir, "exports");
+
+// Per-install shared secret. When set, /api/* requires it (x-hermes-token header
+// or ?token=). Empty = single-user localhost dev (origin/host checks still apply).
+const bridgeToken = process.env.HERMES_EXCEL_BRIDGE_TOKEN || "";
+// Only the bridge's own origin(s) may call /api/* — defeats arbitrary websites and
+// DNS-rebinding from reaching the loopback bridge. Comma-list extra origins if needed.
+const allowedOrigins = new Set([
+  `http://localhost:${port}`,
+  `http://127.0.0.1:${port}`,
+  ...(process.env.HERMES_EXCEL_ALLOWED_ORIGINS || "").split(",").map((s) => s.trim()).filter(Boolean),
+]);
+
 const llmBaseUrl = (process.env.HERMES_EXCEL_LLM_BASE_URL || "http://127.0.0.1:8642/v1").replace(/\/$/, "");
 const llmModel = process.env.HERMES_EXCEL_LLM_MODEL || "hermes-agent";
 const llmApiKey = process.env.HERMES_EXCEL_LLM_API_KEY || readHermesApiServerKey() || "local";
 const llmTimeoutMs = Number(process.env.HERMES_EXCEL_LLM_TIMEOUT_MS || 180000);
+const llmRequestBudgetMs = Number(process.env.HERMES_EXCEL_LLM_REQUEST_BUDGET_MS || 420000);
 const llmMaxTokens = Number(process.env.HERMES_EXCEL_LLM_MAX_TOKENS || 8000);
+const maxPromptChars = Number(process.env.HERMES_EXCEL_MAX_PROMPT_CHARS || 180000);
 const doclingBaseUrl = (process.env.HERMES_EXCEL_DOCLING_URL || "http://127.0.0.1:8200").replace(/\/$/, "");
 const doclingTimeoutMs = Number(process.env.HERMES_EXCEL_DOCLING_TIMEOUT_MS || 300000);
+// How Docling shares files with this bridge: wsl (translate paths + read via wsl cat),
+// native (same filesystem), docker (same as native, mounted). Default wsl on Windows.
+const doclingMode = (process.env.HERMES_EXCEL_DOCLING_MODE || (process.platform === "win32" ? "wsl" : "native")).toLowerCase();
+const wslDistro = process.env.HERMES_EXCEL_WSL_DISTRO || "Ubuntu-24.04";
+const doclingOutputDir = process.env.HERMES_EXCEL_DOCLING_OUTPUT_DIR || "";
 const maxExtractedCharsPerFile = Number(process.env.HERMES_EXCEL_MAX_EXTRACTED_CHARS_PER_FILE || 32000);
 const maxExtractedCharsTotal = Number(process.env.HERMES_EXCEL_MAX_EXTRACTED_CHARS_TOTAL || 96000);
+const maxUploadBytesPerFile = Number(process.env.HERMES_EXCEL_MAX_UPLOAD_BYTES || 25 * 1024 * 1024);
+const maxUploadFiles = Number(process.env.HERMES_EXCEL_MAX_UPLOAD_FILES || 12);
+// One source of truth for the workbook read-round budget (pane stops one round later).
+const MAX_READ_ROUNDS = 5;
 const execFileAsync = promisify(execFile);
+
+// Per-platform default for the writable data dir (uploads/exports/logs).
+function defaultDataDir() {
+  if (process.platform === "win32") {
+    const base = process.env.LOCALAPPDATA || path.join(process.env.USERPROFILE || ".", "AppData", "Local");
+    return path.join(base, "hermes", "excel-addin", "data");
+  }
+  if (process.platform === "darwin") {
+    return path.join(process.env.HOME || ".", "Library", "Application Support", "hermes-excel-addin");
+  }
+  const xdg = process.env.XDG_DATA_HOME || path.join(process.env.HOME || ".", ".local", "share");
+  return path.join(xdg, "hermes-excel-addin");
+}
+
+// Where the Hermes gateway writes its config.yaml, per platform.
+function hermesConfigPath() {
+  if (process.env.HERMES_CONFIG) return process.env.HERMES_CONFIG;
+  if (process.platform === "win32") return path.join(process.env.LOCALAPPDATA || "", "hermes", "config.yaml");
+  if (process.platform === "darwin") return path.join(process.env.HOME || "", "Library", "Application Support", "hermes", "config.yaml");
+  const xdg = process.env.XDG_CONFIG_HOME || path.join(process.env.HOME || "", ".config");
+  return path.join(xdg, "hermes", "config.yaml");
+}
 const iconPng = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAIklEQVR42mP8z8Dwn4ECwESJ5lEDRg0YNWDUgFEDBgAxygQh6tKGxAAAAABJRU5ErkJggg==",
   "base64",
@@ -36,7 +93,7 @@ const mime = {
 };
 
 function readHermesApiServerKey() {
-  const configPath = path.join(process.env.LOCALAPPDATA || "", "hermes", "config.yaml");
+  const configPath = hermesConfigPath();
   if (!configPath || !existsSync(configPath)) return "";
 
   try {
@@ -62,13 +119,57 @@ function readHermesApiServerKey() {
   return "";
 }
 
-function send(res, status, body, contentType = "application/json; charset=utf-8") {
-  res.writeHead(status, {
-    "content-type": contentType,
-    "access-control-allow-origin": "*",
+// CORS is an allowlist, never "*". A same-origin request (the pane fetching the
+// bridge that served it) sends no Origin and needs no ACAO; a cross-origin request
+// gets ACAO echoed back only if its Origin is on the allowlist — every other
+// website is blocked by the browser. Loopback bind alone does not contain a fetch
+// from a page the user is visiting, so this is the real containment boundary.
+function allowOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return null;
+  return allowedOrigins.has(origin) ? origin : null;
+}
+
+function corsHeaders(origin) {
+  if (!origin) return {};
+  return {
+    "access-control-allow-origin": origin,
+    vary: "Origin",
     "access-control-allow-methods": "GET,POST,OPTIONS",
-    "access-control-allow-headers": "content-type",
-  });
+    "access-control-allow-headers": "content-type, x-hermes-token",
+  };
+}
+
+// Reject a foreign Host header (DNS-rebinding): the bridge only answers to its own
+// loopback names on the configured port.
+function hostOk(req) {
+  const host = String(req.headers.host || "").toLowerCase();
+  return (
+    host === `localhost:${port}` ||
+    host === `127.0.0.1:${port}` ||
+    host === "localhost" ||
+    host === "127.0.0.1" ||
+    host === "[::1]" ||
+    host === `[::1]:${port}`
+  );
+}
+
+// When a per-install token is configured, /api/* requires it (header or ?token=).
+function tokenOk(req) {
+  if (!bridgeToken) return true;
+  let provided = req.headers["x-hermes-token"];
+  if (!provided) {
+    try {
+      provided = new URL(req.url, `http://${req.headers.host}`).searchParams.get("token") || "";
+    } catch {
+      provided = "";
+    }
+  }
+  return provided === bridgeToken;
+}
+
+function send(res, status, body, contentType = "application/json; charset=utf-8", origin = null) {
+  res.writeHead(status, { "content-type": contentType, ...corsHeaders(origin) });
   res.end(typeof body === "string" ? body : JSON.stringify(body, null, 2));
 }
 
@@ -329,16 +430,68 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 30000) {
   }
 }
 
-async function readWslText(wslPath) {
-  const { stdout } = await execFileAsync("wsl.exe", ["-d", "Ubuntu-24.04", "--", "cat", wslPath], {
-    maxBuffer: maxExtractedCharsPerFile * 4,
-    windowsHide: true,
+function sleep(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(new Error("aborted"));
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        clearTimeout(timer);
+        reject(new Error("aborted"));
+      },
+      { once: true },
+    );
   });
-  return stdout;
 }
 
-async function extractWithDocling(filePath) {
-  const sourcePath = windowsPathToWsl(filePath);
+// The path Docling reports points into Docling's host (WSL/native/Docker). Translate
+// the source path the same way; how we READ the result depends on doclingMode.
+function doclingSourcePath(filePath) {
+  return doclingMode === "wsl" ? windowsPathToWsl(filePath) : path.resolve(filePath);
+}
+
+// Containment: a spoofed or compromised Docling at 127.0.0.1:8200 could return an
+// arbitrary result path. Refuse parent-traversal and (when a known output root is
+// configured) anything outside it, before we cat/read it.
+function assertSafeDoclingPath(mdPath) {
+  const p = String(mdPath || "");
+  if (!p) throw new Error("Docling returned an empty result path");
+  if (p.includes("..")) throw new Error("Refusing Docling result path with parent traversal");
+  if (doclingMode === "wsl") {
+    if (!p.startsWith("/")) throw new Error("Refusing non-absolute Docling result path");
+    if (doclingOutputDir && p !== doclingOutputDir && !p.startsWith(doclingOutputDir.replace(/\/?$/, "/"))) {
+      throw new Error("Docling result path is outside the configured output dir");
+    }
+  } else {
+    const resolved = path.resolve(p);
+    if (doclingOutputDir) {
+      const rootDir = path.resolve(doclingOutputDir);
+      if (resolved !== rootDir && !resolved.startsWith(rootDir + path.sep)) {
+        throw new Error("Docling result path is outside the configured output dir");
+      }
+    }
+  }
+  return p;
+}
+
+async function readDoclingResultText(mdPath, signal) {
+  assertSafeDoclingPath(mdPath);
+  if (doclingMode === "wsl") {
+    const { stdout } = await execFileAsync("wsl.exe", ["-d", wslDistro, "--", "cat", mdPath], {
+      maxBuffer: maxExtractedCharsPerFile * 4,
+      windowsHide: true,
+      timeout: 30000,
+      signal,
+    });
+    return stdout;
+  }
+  // native / docker: Docling shares this host's filesystem.
+  return await readFile(mdPath, "utf8");
+}
+
+async function extractWithDocling(filePath, signal) {
+  const sourcePath = doclingSourcePath(filePath);
   const created = await fetchJsonWithTimeout(
     `${doclingBaseUrl}/jobs`,
     {
@@ -354,14 +507,15 @@ async function extractWithDocling(filePath) {
   const started = Date.now();
   let latest = created;
   while (Date.now() - started < doclingTimeoutMs) {
-    await new Promise((resolve) => setTimeout(resolve, 1500));
+    if (signal?.aborted) throw new Error("client disconnected during Docling parse");
+    await sleep(1500, signal);
     latest = await fetchJsonWithTimeout(`${doclingBaseUrl}/jobs/${jobId}`, {}, 30000);
     if (latest.status === "done") {
       const result = await fetchJsonWithTimeout(`${doclingBaseUrl}/jobs/${jobId}/result`, {}, 30000);
       if (result.markdown || result.text) return truncateText(result.markdown || result.text);
       const mdPath = result.md_path || result.result_md_path || result.markdown_path;
       if (!mdPath) throw new Error(`Docling job ${jobId} finished without markdown path`);
-      return truncateText(await readWslText(mdPath));
+      return truncateText(await readDoclingResultText(mdPath, signal));
     }
     if (["failed", "review"].includes(latest.status)) {
       throw new Error(`Docling job ${jobId} ${latest.status}: ${latest.error || "no details"}`);
@@ -370,15 +524,50 @@ async function extractWithDocling(filePath) {
   throw new Error(`Docling timed out after ${Math.round(doclingTimeoutMs / 1000)}s`);
 }
 
-async function prepareAttachedFiles(files = []) {
+async function prepareAttachedFiles(files = [], signal) {
   await mkdir(uploadsDir, { recursive: true });
   const contexts = [];
   let totalChars = 0;
+  // Cap the number of attachments per request; the rest are reported, not processed.
+  const accepted = (Array.isArray(files) ? files : []).slice(0, maxUploadFiles);
 
-  for (const file of files) {
+  for (const file of accepted) {
     const safeName = String(file.name || "upload.bin").replace(/[^a-zA-Z0-9._-]/g, "_").slice(-100);
-    const out = path.join(uploadsDir, `${Date.now()}-${safeName}`);
-    const bytes = Buffer.from(file.base64 || "", "base64");
+
+    // Reject oversize BEFORE decoding the base64 into memory (DoS guard). base64 is
+    // ~4/3 the byte size; check the encoded length first, then the decoded length.
+    const b64 = String(file.base64 || "");
+    const limitMb = Math.round(maxUploadBytesPerFile / (1024 * 1024));
+    if (b64.length > Math.ceil((maxUploadBytesPerFile * 4) / 3) + 16) {
+      contexts.push({
+        name: file.name || safeName,
+        type: file.type || "application/octet-stream",
+        size: file.size || 0,
+        saved_path: "",
+        extraction_status: "failed",
+        extraction_error: `File exceeds the ${limitMb}MB upload limit`,
+        extracted_text: "",
+      });
+      continue;
+    }
+    const bytes = Buffer.from(b64, "base64");
+    if (bytes.length > maxUploadBytesPerFile) {
+      contexts.push({
+        name: file.name || safeName,
+        type: file.type || "application/octet-stream",
+        size: bytes.length,
+        saved_path: "",
+        extraction_status: "failed",
+        extraction_error: `File exceeds the ${limitMb}MB upload limit`,
+        extracted_text: "",
+      });
+      continue;
+    }
+
+    // Collision-proof, un-guessable name: Date.now() alone clobbers two same-name
+    // uploads in the same millisecond (cross-linking their extracted text), and a
+    // predictable name aids enumeration. The data dir is not HTTP-served regardless.
+    const out = path.join(uploadsDir, `${randomUUID()}-${safeName}`);
     await writeFile(out, bytes);
 
     const context = {
@@ -397,7 +586,7 @@ async function prepareAttachedFiles(files = []) {
       context.extracted_text = simple;
     } else {
       try {
-        context.extracted_text = await extractWithDocling(out);
+        context.extracted_text = await extractWithDocling(out, signal);
         context.extraction_status = "parsed";
         context.extraction_method = "docling";
       } catch (error) {
@@ -410,6 +599,9 @@ async function prepareAttachedFiles(files = []) {
         } else {
           context.extraction_status = "failed";
           context.extraction_error = error.message;
+          // Don't leave an unparseable upload behind for the 7-day pruner.
+          await unlink(out).catch(() => {});
+          context.saved_path = "";
         }
       }
     }
@@ -527,7 +719,9 @@ function normalizeMatrix(matrix) {
 // all-zero (the symptom of formulas anchored at the wrong cell).
 function scanWrittenCells(values) {
   if (!Array.isArray(values)) return { errors: [], zeroFormulaColumns: [], ok: true };
-  const errorRegex = /^#(REF|DIV\/0|VALUE|NAME\?|N\/A|NULL|NUM)!?/i;
+  // Excel error values carry their punctuation (#REF!, #NAME?, #N/A). Requiring it
+  // (and a non-alphanumeric boundary) avoids false alarms on labels like "#NUMBER".
+  const errorRegex = /^#(REF!|DIV\/0!|VALUE!|NUM!|NULL!|NAME\?|N\/A)(?![A-Za-z0-9])/i;
   const errors = [];
   const nonEmpty = {};
   const zeros = {};
@@ -552,14 +746,24 @@ function scanWrittenCells(values) {
   return { errors, zeroFormulaColumns, ok: errors.length === 0 && zeroFormulaColumns.length === 0 };
 }
 
-const exportsDir = path.join(root, "exports");
-
 function safeExportName(name) {
   const sanitized = String(name || "hermes-export")
     .replace(/[^A-Za-z0-9._-]/g, "")
-    .replace(/^\.+/, "");
+    .replace(/^\.+/, "")
+    .slice(0, 120);
   const base = sanitized || "hermes-export";
   return base.toLowerCase().endsWith(".csv") ? base : `${base}.csv`;
+}
+
+// Never silently overwrite an existing export: suffix -2, -3, ... on collision.
+function uniqueExportPath(name) {
+  const ext = path.extname(name);
+  const base = name.slice(0, name.length - ext.length);
+  let candidate = path.join(exportsDir, name);
+  for (let index = 2; existsSync(candidate); index += 1) {
+    candidate = path.join(exportsDir, `${base}-${index}${ext}`);
+  }
+  return candidate;
 }
 
 function matrixToCsv(values) {
@@ -577,12 +781,13 @@ function matrixToCsv(values) {
 }
 
 async function handleExport(req, res) {
+  const origin = allowOrigin(req);
   const body = await readJson(req);
-  if (!body.values) return send(res, 400, { error: "Missing values" });
+  if (!body.values) return send(res, 400, { error: "Missing values" }, undefined, origin);
   await mkdir(exportsDir, { recursive: true });
-  const filePath = path.join(exportsDir, safeExportName(body.name));
+  const filePath = uniqueExportPath(safeExportName(body.name));
   await writeFile(filePath, matrixToCsv(normalizeMatrix(body.values) || []), "utf8");
-  return send(res, 200, { ok: true, path: filePath });
+  return send(res, 200, { ok: true, path: filePath }, undefined, origin);
 }
 
 async function pruneUploads(maxAgeMs = Number(process.env.HERMES_EXCEL_UPLOADS_TTL_MS || 7 * 24 * 60 * 60 * 1000)) {
@@ -663,14 +868,82 @@ function normalizeAction(action) {
       border_color: action.border_color ? String(action.border_color) : undefined,
     };
   }
-  if (type === "execute_office_js") {
-    const code = String(action.code || "").trim();
-    if (!code) return null;
+  // ── Structured structural operations (replace arbitrary execute_office_js) ──
+  if (type === "merge_cells") {
+    const range = String(action.range || "").trim();
+    if (!range) return null;
+    return { type, range: range.slice(0, 80), across: action.across === true };
+  }
+  if (type === "unmerge_cells") {
+    const range = String(action.range || "").trim();
+    if (!range) return null;
+    return { type, range: range.slice(0, 80) };
+  }
+  if (type === "insert_rows" || type === "delete_rows") {
+    const at = Math.max(1, Math.floor(Number(action.at ?? action.row ?? 1)) || 1);
+    const count = Math.min(1000, Math.max(1, Math.floor(Number(action.count ?? 1)) || 1));
+    const prefix = action.sheet ? `${String(action.sheet)}!` : "";
+    return { type, range: `${prefix}${at}:${at + count - 1}` };
+  }
+  if (type === "insert_columns" || type === "delete_columns") {
+    const start = columnLettersToNumber(String(action.at ?? action.column ?? "A").replace(/[^A-Za-z]/g, "")) || 1;
+    const count = Math.min(1000, Math.max(1, Math.floor(Number(action.count ?? 1)) || 1));
+    const prefix = action.sheet ? `${String(action.sheet)}!` : "";
+    return { type, range: `${prefix}${numberToColumnLetters(start)}:${numberToColumnLetters(start + count - 1)}` };
+  }
+  if (type === "set_column_width" || type === "set_row_height") {
+    const range = String(action.range || "").trim();
+    const size = Number(action.width ?? action.height ?? action.size);
+    if (!range || !Number.isFinite(size) || size <= 0) return null;
+    return { type, range: range.slice(0, 80), size: Math.min(2000, size) };
+  }
+  if (type === "freeze_panes") {
+    const rows = Number.isFinite(Number(action.rows)) ? Math.max(0, Math.floor(Number(action.rows))) : 0;
+    const columns = Number.isFinite(Number(action.columns)) ? Math.max(0, Math.floor(Number(action.columns))) : 0;
+    if (!rows && !columns) return null;
+    return { type, rows, columns, sheet: action.sheet ? String(action.sheet).slice(0, 31) : "" };
+  }
+  if (type === "unfreeze_panes") {
+    return { type, sheet: action.sheet ? String(action.sheet).slice(0, 31) : "" };
+  }
+  if (type === "autofit") {
+    const range = String(action.range || "").trim();
+    if (!range) return null;
+    return { type, range: range.slice(0, 80), columns: action.columns !== false, rows: action.rows !== false };
+  }
+  if (type === "rename_sheet") {
+    const to = String(action.to || action.name || "").trim();
+    if (!to) return null;
+    return { type, from: action.from ? String(action.from).slice(0, 31) : "", to: to.slice(0, 31) };
+  }
+  if (type === "delete_sheet") {
+    const name = String(action.name || action.sheet || "").trim();
+    if (!name) return null;
+    return { type, name: name.slice(0, 31) };
+  }
+  if (type === "sort_range") {
+    const range = String(action.range || "").trim();
+    if (!range) return null;
     return {
       type,
-      explanation: String(action.explanation || "workbook edit").slice(0, 200),
-      code,
+      range: range.slice(0, 80),
+      column: Math.max(0, Math.floor(Number(action.column ?? 0)) || 0),
+      ascending: action.ascending !== false,
+      has_header: action.has_header === true,
     };
+  }
+  if (type === "clear_range") {
+    const range = String(action.range || "").trim();
+    if (!range) return null;
+    const target = ["contents", "formats", "all"].includes(String(action.target || "").toLowerCase())
+      ? String(action.target).toLowerCase()
+      : "contents";
+    return { type, range: range.slice(0, 80), target };
+  }
+  if (type === "execute_office_js") {
+    // Arbitrary code execution is removed. Surface the intent honestly instead of
+    // running it; the pane renders a "not supported, use a structured op" note.
+    return { type: "unsupported", explanation: String(action.explanation || "custom Office.js script").slice(0, 200) };
   }
   if (type === "read_range") {
     if (!action.range) return null;
@@ -978,12 +1251,21 @@ function buildSystemPrompt(loopBudgetExhausted) {
     "The user's workbook is already open in Excel in front of them. You cannot touch the filesystem: do NOT create, save, or write any files, and do NOT use any of your own tools. The ONLY way to change the workbook is to return actions in the JSON reply; the Excel add-in executes them in the open workbook.",
     "Return JSON only. No markdown.",
     "The JSON schema is:",
-    '{"message":"short user-facing reply","actions":[{"type":"write_cells","start_cell":"Sheet1!A1","values":[["matrix"]],"allow_overwrite":true,"auto_format":true},{"type":"create_sheet","name":"Sheet Name","values":[["matrix"]]},{"type":"format_cells","range":"Sheet Name!A1:D1","style":["header"],"auto_fit":true},{"type":"conditional_format","range":"Sheet Name!G2:G31","operator":"lessThan","value":0.25,"fill_color":"#FFC7CE","font_color":"#9C0006"},{"type":"execute_office_js","explanation":"what changes","code":"Office.js code body that uses context"}]}',
+    '{"message":"short user-facing reply","actions":[{"type":"write_cells","start_cell":"Sheet1!A1","values":[["matrix"]],"allow_overwrite":true,"auto_format":true},{"type":"create_sheet","name":"Sheet Name","values":[["matrix"]]},{"type":"format_cells","range":"Sheet Name!A1:D1","style":["header"],"auto_fit":true},{"type":"conditional_format","range":"Sheet Name!G2:G31","operator":"lessThan","value":0.25,"fill_color":"#FFC7CE","font_color":"#9C0006"}]}',
+    "Structural operations (use these instead of any custom code; one action each): "
+      + '{"type":"merge_cells","range":"A1:D1","across":false}, {"type":"unmerge_cells","range":"A1:D1"}, '
+      + '{"type":"insert_rows","sheet":"Sheet1","at":3,"count":2}, {"type":"delete_rows","sheet":"Sheet1","at":3,"count":2}, '
+      + '{"type":"insert_columns","sheet":"Sheet1","at":"C","count":1}, {"type":"delete_columns","sheet":"Sheet1","at":"C","count":1}, '
+      + '{"type":"set_column_width","range":"A:C","width":14}, {"type":"set_row_height","range":"1:1","height":22}, '
+      + '{"type":"freeze_panes","rows":1,"columns":0}, {"type":"unfreeze_panes"}, '
+      + '{"type":"autofit","range":"A:F"}, {"type":"rename_sheet","from":"Sheet1","to":"Summary"}, '
+      + '{"type":"delete_sheet","name":"Old"}, {"type":"sort_range","range":"A2:D20","column":1,"ascending":true,"has_header":false}, '
+      + '{"type":"clear_range","range":"A1:D20","target":"contents"}.',
     'A read action is also available: {"type":"read_range","range":"Sheet Name!A1:D200","reason":"short why"}.',
     "COMPLETE THE ENTIRE TASK IN THIS ONE REPLY. You get no follow-up turn except to receive read_range results you explicitly request. Never say you will continue 'in a couple of actions', 'next', or 'then' — emit every action the task needs right now, in this single actions array.",
     "Each cell value must be short — a label, a number, or a formula. Formulas are encouraged (see the A1-relative formula rule below); the only limit is on prose, not on formulas or numbers. NEVER put a sentence, explanation, or multi-clause note (more than ~40 characters of prose) inside a cell, and never build a 'QA Notes' block out of long prose rows — that corrupts the output and makes the model stop mid-reply. If the user wants a QA note, keep it to a few short cells or put the explanation in the 'message' field instead of in the sheet.",
     "Use conditional_format (NOT execute_office_js) to highlight cells by value, e.g. Margin % below a threshold. operator is one of lessThan, lessThanOrEqual, greaterThan, greaterThanOrEqual, equalTo, notEqualTo, between, notBetween. For percentage columns the underlying cell value is a decimal, so 'below 25%' means value 0.25 (not 25). fill_color/font_color are hex; default is light-red fill #FFC7CE with dark-red font #9C0006.",
-    "Prefer the native actions (write_cells, create_sheet, format_cells, conditional_format) over execute_office_js — they are reliable. Only use execute_office_js for structural changes that have no native action. If you do, the code is a JSON string: prefer single quotes for any JS string literal so you do not have to escape double quotes, and keep the code short.",
+    "There is NO arbitrary-code action. For any structural change (merge, insert/delete rows or columns, column width, row height, freeze panes, autofit, sort, clear, rename or delete a sheet) use the matching structured action above. If a request truly cannot be expressed with the available actions, say so plainly in the message and make no changes — never emit code.",
     "When you need cell data that was not provided (another worksheet, a wider range), return ONLY read_range actions (max 5) plus a one-line message; the add-in will run the reads and call you again with the data under TOOL RESULTS. Then give the final answer with write actions.",
     "The workbook context lists every sheet with its used range; you may read from any of them.",
     "Never invent, estimate, or placeholder financial numbers. If data is missing and cannot be read, state exactly what is missing.",
@@ -994,9 +1276,7 @@ function buildSystemPrompt(loopBudgetExhausted) {
     "Use create_sheet for new reports, schedules, balance sheets, exports, and generated tables.",
     "Use write_cells for edits to the current sheet or a requested range. start_cell may include a sheet name like Sheet1!A1.",
     "Use format_cells after writing when you know the final ranges. Named styles: number, integer, currency, percent, ratio, text, header, total-row, subtotal, input, blank-section.",
-    "Use execute_office_js only when cell values are not enough, such as formatting, formulas across dynamic ranges, or workbook structure changes.",
-    "Do not include nested Excel.run in execute_office_js code; the add-in already supplies context.",
-    "In execute_office_js code, context is an Excel RequestContext: worksheets are context.workbook.worksheets (never context.worksheets), and you must not call context.sync() at the end — the add-in does.",
+    "For workbook structure changes (merge, insert/delete rows/columns, freeze, sort, clear, rename/delete sheet, widths/heights), use the structured structural actions listed above — one action per operation.",
     "If no workbook action is needed, return actions: [].",
     "Keep message short; the workbook actions are the real output.",
     "Keep numeric/accounting output compact and presentation-ready.",
@@ -1017,7 +1297,7 @@ function buildSystemPrompt(loopBudgetExhausted) {
 }
 
 function buildChatMessages(body) {
-  const loopBudgetExhausted = Number(body.loop_count || 0) >= 5;
+  const loopBudgetExhausted = Number(body.loop_count || 0) >= MAX_READ_ROUNDS;
   const messages = [{ role: "system", content: buildSystemPrompt(loopBudgetExhausted) }];
 
   const history = Array.isArray(body.history) ? body.history : [];
@@ -1076,10 +1356,38 @@ function buildChatMessages(body) {
     });
   }
 
+  // Keep the assembled prompt under a char budget so an oversize attachment set or a
+  // long history can't exceed the model's context window — which otherwise surfaces
+  // as a confusing invalid-JSON fallback rather than an honest "input too large".
+  return capMessagesSize(messages, maxPromptChars);
+}
+
+function messagesChars(messages) {
+  return messages.reduce((sum, message) => sum + String(message.content || "").length, 0);
+}
+
+function capMessagesSize(messages, budget) {
+  // Drop oldest history turns (index 1+, never the system prompt at 0 or the last
+  // two messages which carry the actual request) until under budget.
+  while (messagesChars(messages) > budget && messages.length > 3) {
+    messages.splice(1, 1);
+  }
+  // Still over: hard-truncate the largest remaining non-system body (the attachment text).
+  if (messages.length > 1 && messagesChars(messages) > budget) {
+    let largest = 1;
+    for (let i = 2; i < messages.length; i += 1) {
+      if (String(messages[i].content || "").length > String(messages[largest].content || "").length) largest = i;
+    }
+    const content = String(messages[largest].content || "");
+    const over = messagesChars(messages) - budget;
+    if (content.length > over + 60) {
+      messages[largest].content = `${content.slice(0, content.length - over - 60)}\n\n[truncated to fit the context budget]`;
+    }
+  }
   return messages;
 }
 
-async function callHermesModel(body) {
+async function callHermesModel(body, { signal, post: injectedPost } = {}) {
   const fileSummary = (body.files || []).map((file) => ({
     name: file.name,
     type: file.type,
@@ -1093,33 +1401,41 @@ async function callHermesModel(body) {
     temperature: 0.1,
     max_tokens: llmMaxTokens,
     messages: buildChatMessages(body),
+    // The bridge NEVER executes model tool calls — only the JSON `actions` it
+    // returns — so tools are already inert here. When the gateway honors it,
+    // HERMES_EXCEL_LOCK_TOOLS=1 also hard-disables tool use at the model.
+    ...(process.env.HERMES_EXCEL_LOCK_TOOLS === "1" ? { tool_choice: "none" } : {}),
   };
 
-  // Each call gets its own full timeout: a busy gateway can eat most of the
-  // budget on the first generation, and corrective retries must not start
-  // life already half-expired.
-  const postOnce = async (messages) => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), llmTimeoutMs);
-    try {
-      const response = await fetch(`${llmBaseUrl}/chat/completions`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${llmApiKey}`,
-        },
-        body: JSON.stringify({ ...payload, messages }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        throw new Error(`LLM HTTP ${response.status}: ${await response.text().catch(() => "")}`);
+  // Each call gets its own full timeout AND honors the request-wide signal (overall
+  // budget + client disconnect): a busy gateway can eat most of the budget on the
+  // first generation, and corrective retries must not start life already half-expired.
+  // Injectable for tests; the default makes the real gateway call.
+  const postOnce =
+    injectedPost ||
+    (async (messages) => {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), llmTimeoutMs);
+      const reqSignal = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
+      try {
+        const response = await fetch(`${llmBaseUrl}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${llmApiKey}`,
+          },
+          body: JSON.stringify({ ...payload, messages }),
+          signal: reqSignal,
+        });
+        if (!response.ok) {
+          throw new Error(`LLM HTTP ${response.status}: ${await response.text().catch(() => "")}`);
+        }
+        const json = await response.json();
+        return json.choices?.[0]?.message?.content || "";
+      } finally {
+        clearTimeout(timeout);
       }
-      const json = await response.json();
-      return json.choices?.[0]?.message?.content || "";
-    } finally {
-      clearTimeout(timeout);
-    }
-  };
+    });
 
   try {
     const content = await postOnce(payload.messages);
@@ -1144,7 +1460,7 @@ async function callHermesModel(body) {
       return readableFileAnswer(body, "the model tried to refuse a file that the local parser already read");
     }
     let actions = normalizeActions(parsed, body);
-    if (Number(body.loop_count || 0) >= 5) {
+    if (Number(body.loop_count || 0) >= MAX_READ_ROUNDS) {
       actions = actions.filter((action) => action.type !== "read_range");
     }
     // The model sometimes claims success ("Done.", "has been populated")
@@ -1163,7 +1479,7 @@ async function callHermesModel(body) {
       const retryParsed = extractJsonObject(retryContent);
       if (retryParsed && typeof retryParsed === "object") {
         let retryActions = normalizeActions(retryParsed, body);
-        if (Number(body.loop_count || 0) >= 5) {
+        if (Number(body.loop_count || 0) >= MAX_READ_ROUNDS) {
           retryActions = retryActions.filter((action) => action.type !== "read_range");
         }
         if (retryActions.length) {
@@ -1268,7 +1584,7 @@ function fallbackResponse(body, reason = null) {
       parsedFiles.length ? `Readable file text: ${parsedFiles.map((file) => file.name).join(", ")}` : "",
       failedFiles.length ? `Files not read: ${failedFiles.map((file) => `${file.name}: ${file.extraction_error}`).join("; ")}` : "",
       `Configured LLM: ${llmBaseUrl} / ${llmModel}`,
-      "Check the Hermes window started by start-windows-native-hermes-api.cmd, then ask again.",
+      "Check that the Hermes gateway is running with the api_server platform enabled (`hermes gateway run`), then ask again.",
     ].filter(Boolean).join("\n"),
     actions: [],
     files: (body.files || []).map((file) => ({
@@ -1285,43 +1601,94 @@ function fallbackResponse(body, reason = null) {
 
 async function handleChat(req, res) {
   pruneUploads().catch(() => {});
+  const origin = allowOrigin(req);
+  // One end-to-end deadline covering Docling + every model retry, plus abort the
+  // whole chain if the client disconnects — no more 10-minute orphaned requests.
+  const controller = new AbortController();
+  const onClose = () => controller.abort();
+  req.on("close", onClose);
+  const budget = setTimeout(() => controller.abort(), llmRequestBudgetMs);
   const body = await readJson(req);
-  // Loop rounds echo parsed_files back so attachments are not re-uploaded or re-parsed.
-  body.files =
-    Array.isArray(body.parsed_files) && body.parsed_files.length
-      ? body.parsed_files
-      : await prepareAttachedFiles(body.files || []);
-
   try {
-    return send(res, 200, await callHermesModel(body));
+    // Loop rounds echo parsed_files back so attachments are not re-uploaded or re-parsed.
+    body.files =
+      Array.isArray(body.parsed_files) && body.parsed_files.length
+        ? body.parsed_files
+        : await prepareAttachedFiles(body.files || [], controller.signal);
+
+    return send(res, 200, await callHermesModel(body, { signal: controller.signal }), undefined, origin);
   } catch (error) {
-    return send(res, 200, fallbackResponse(body, error.message));
+    return send(res, 200, fallbackResponse(body, error.message), undefined, origin);
+  } finally {
+    clearTimeout(budget);
+    req.off("close", onClose);
   }
 }
 
+// Only these top-level files plus assets/<name> are ever served. The broker source,
+// uploads/, exports/, manifest, tests, and everything else are never HTTP-reachable.
+const SERVABLE_FILES = new Set(["/taskpane.html", "/taskpane.css", "/taskpane.js"]);
+
+function paneCsp() {
+  // Tight enough to constrain exfiltration (connect-src self+loopback) and block
+  // plugins/embedding, loose enough for Office.js. No 'unsafe-eval': the pane no
+  // longer uses new Function (structural ops are fixed structured actions), so
+  // script execution is limited to 'self' + Office.js. Disable the whole header
+  // with HERMES_EXCEL_DISABLE_CSP=1 if Office.js misbehaves on a given host.
+  return [
+    "default-src 'self'",
+    "script-src 'self' https://appsforoffice.microsoft.com https://*.office.com",
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data:",
+    `connect-src 'self' http://localhost:${port} http://127.0.0.1:${port}`,
+    "object-src 'none'",
+    "base-uri 'none'",
+    "frame-ancestors https://*.officeapps.live.com https://*.office.com",
+  ].join("; ");
+}
+
 async function serveStatic(req, res) {
+  const origin = allowOrigin(req);
   const url = new URL(req.url, `http://${req.headers.host}`);
   let pathname = decodeURIComponent(url.pathname);
   if (pathname === "/") pathname = "/taskpane.html";
+
+  const isAsset = /^\/assets\/[A-Za-z0-9._-]+$/.test(pathname);
+  if (!SERVABLE_FILES.has(pathname) && !isAsset) {
+    return send(res, 404, "not found", "text/plain; charset=utf-8", origin);
+  }
+
   // Real icons ship in assets/; the embedded pixel is only a fallback so a
   // bare checkout still renders a ribbon button.
   if (pathname.startsWith("/assets/icon-") && !existsSync(path.normalize(path.join(root, pathname)))) {
-    res.writeHead(200, {
-      "content-type": "image/png",
-      "access-control-allow-origin": "*",
-    });
+    res.writeHead(200, { "content-type": "image/png", ...corsHeaders(origin) });
     return res.end(iconPng);
   }
   const file = path.normalize(path.join(root, pathname));
-  if (!file.startsWith(root) || !existsSync(file)) {
-    return send(res, 404, "not found", "text/plain; charset=utf-8");
+  // Anchor the containment check with a trailing separator so a sibling directory
+  // whose name merely starts with root cannot satisfy a bare prefix test.
+  if ((file !== root && !file.startsWith(root + path.sep)) || !existsSync(file)) {
+    return send(res, 404, "not found", "text/plain; charset=utf-8", origin);
   }
   const ext = path.extname(file);
-  const bytes = await readFile(file);
-  res.writeHead(200, {
-    "content-type": mime[ext] || "application/octet-stream",
-    "access-control-allow-origin": "*",
-  });
+  let bytes = await readFile(file);
+  const headers = { "content-type": mime[ext] || "application/octet-stream", ...corsHeaders(origin) };
+  if (pathname === "/taskpane.html") {
+    if (bridgeToken) {
+      // Same-origin token handoff: only the bridge's own origin receives the page
+      // (cross-origin reads are CORS-blocked), so embedding the token here is safe
+      // and the pane echoes it on every /api/* call.
+      const html = bytes
+        .toString("utf8")
+        .replace(/<\/head>/i, `  <meta name="hermes-bridge-token" content="${bridgeToken}" />\n  </head>`);
+      bytes = Buffer.from(html, "utf8");
+    }
+    if (process.env.HERMES_EXCEL_DISABLE_CSP !== "1") {
+      headers["content-security-policy"] = paneCsp();
+      headers["x-content-type-options"] = "nosniff";
+    }
+  }
+  res.writeHead(200, headers);
   res.end(bytes);
 }
 
@@ -1332,7 +1699,13 @@ async function checkHermesEndpoint() {
     },
   });
   if (!response.ok) {
-    throw new Error(`Hermes API Server check failed: HTTP ${response.status} ${await response.text().catch(() => "")}`);
+    const hint =
+      response.status === 401 && llmApiKey === "local"
+        ? ` — the api_server key autodetect found nothing at ${hermesConfigPath()}; set HERMES_EXCEL_LLM_API_KEY explicitly`
+        : "";
+    throw new Error(
+      `Hermes API Server check failed: HTTP ${response.status} ${await response.text().catch(() => "")}${hint}`,
+    );
   }
   const json = await response.json();
   const models = Array.isArray(json.data) ? json.data.map((item) => item.id).filter(Boolean).join(", ") : "unknown";
@@ -1398,17 +1771,27 @@ if (isMainModule) {
       console.error("uncaughtException:", error);
     });
     const server = http.createServer(async (req, res) => {
+      const origin = allowOrigin(req);
       try {
-        if (req.method === "OPTIONS") return send(res, 204, "");
-        if (req.method === "GET" && req.url === "/api/health") return send(res, 200, await healthStatus());
+        // Reject a foreign Host header before doing anything (DNS-rebinding guard).
+        if (!hostOk(req)) return send(res, 421, { error: "bad host" }, undefined, origin);
+        if (req.method === "OPTIONS") return send(res, 204, "", "text/plain; charset=utf-8", origin);
+
+        const apiPath = req.url.split("?")[0];
+        // Every /api/* call requires the per-install token (when one is configured).
+        if (apiPath.startsWith("/api/") && !tokenOk(req)) {
+          return send(res, 401, { error: "unauthorized" }, undefined, origin);
+        }
+
+        if (req.method === "GET" && apiPath === "/api/health") return send(res, 200, await healthStatus(), undefined, origin);
         // `await` is load-bearing: without it a rejection inside a handler
         // (e.g. an aborted upload stream) escapes this try/catch and crashes
         // the process as an unhandled rejection.
-        if (req.method === "POST" && req.url === "/api/chat") return await handleChat(req, res);
-        if (req.method === "POST" && req.url === "/api/export") return await handleExport(req, res);
+        if (req.method === "POST" && apiPath === "/api/chat") return await handleChat(req, res);
+        if (req.method === "POST" && apiPath === "/api/export") return await handleExport(req, res);
         return await serveStatic(req, res);
       } catch (error) {
-        return send(res, 500, { error: error.message });
+        return send(res, 500, { error: error.message }, undefined, origin);
       }
     });
 
@@ -1450,4 +1833,7 @@ export {
   expectsWorkbookActions,
   claimsWorkbookChange,
   promptWantsWorkbookOutput,
+  callHermesModel,
+  capMessagesSize,
+  uniqueExportPath,
 };

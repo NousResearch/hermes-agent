@@ -3,7 +3,12 @@
 // Exits non-zero if any assertion fails.
 
 const BASE_URL = process.env.HERMES_EXCEL_BRIDGE_URL || "http://127.0.0.1:8787";
+const TOKEN = process.env.HERMES_EXCEL_BRIDGE_TOKEN || "";
 const TIMEOUT_MS = 120000;
+
+function authHeaders(extra = {}) {
+  return TOKEN ? { ...extra, "x-hermes-token": TOKEN } : extra;
+}
 
 const results = { pass: 0, fail: 0, skip: 0 };
 
@@ -25,7 +30,7 @@ function skip(label, reason) {
 async function post(path, body, opts = {}) {
   const res = await fetch(`${BASE_URL}${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: authHeaders({ "content-type": "application/json" }),
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(opts.timeoutMs || TIMEOUT_MS),
   });
@@ -41,9 +46,15 @@ function formulasOf(action) {
 async function testHealth() {
   console.log("\n--- 1. health ---");
   try {
-    const res = await fetch(`${BASE_URL}/api/health`, { signal: AbortSignal.timeout(TIMEOUT_MS) });
+    const res = await fetch(`${BASE_URL}/api/health`, { headers: authHeaders(), signal: AbortSignal.timeout(TIMEOUT_MS) });
     const data = await res.json();
-    assert("health.ok", data.ok === true || data.hermes?.ok === true, JSON.stringify(data));
+    // The documented contract: ok === (hermes.ok AND docling.ok). Verify the
+    // relationship holds regardless of which upstreams happen to be up right now.
+    assert(
+      "health.and-contract",
+      data.ok === ((data.hermes?.ok === true) && (data.docling?.ok === true)),
+      JSON.stringify({ ok: data.ok, hermes: data.hermes?.ok, docling: data.docling?.ok }),
+    );
     const hermesOk = data.hermes?.ok === true;
     console.log(hermesOk ? "INFO: Hermes reachable — running model assertions." : "INFO: Hermes down — running fallback assertions.");
     return hermesOk;
@@ -192,9 +203,34 @@ function testExport() {
   return post("/api/export", { name: "smoke test!!", values: [["A", "B,c"], [1, 2]] })
     .then((res) => {
       assert("export.ok", res.ok === true && typeof res.path === "string", JSON.stringify(res));
-      assert("export.name-sanitized", /smoketest\.csv$/.test(res.path || ""), `path=${res.path}`);
+      // Sanitized base name, optionally suffixed -2/-3 by the no-overwrite guard.
+      assert("export.name-sanitized", /smoketest(-\d+)?\.csv$/.test(res.path || ""), `path=${res.path}`);
     })
     .catch((error) => assert("export.request", false, error.message));
+}
+
+async function testSecurity() {
+  console.log("\n--- 8. security surface (whitelist + host guard) ---");
+  const code = async (path, opts = {}) => {
+    try {
+      const res = await fetch(`${BASE_URL}${path}`, { ...opts, signal: AbortSignal.timeout(15000) });
+      return res.status;
+    } catch (error) {
+      return `ERR ${error.message}`;
+    }
+  };
+  assert("sec.no-source", (await code("/broker/server.mjs")) === 404, "broker source must not be served");
+  assert("sec.no-uploads", (await code("/uploads/x")) === 404, "uploads must not be served");
+  assert("sec.no-manifest", (await code("/manifest.xml")) === 404, "manifest must not be served");
+  // The Host-header guard can't be exercised here — undici forbids overriding Host —
+  // so verify it out-of-band with curl: `curl -H 'Host: evil' $BASE/api/health` ⇒ 421.
+  skip("sec.bad-host", "undici forbids setting the Host header; verify with curl (expect 421)");
+  if (TOKEN) {
+    assert("sec.token-required", (await code("/api/health")) === 401, "missing token must be 401");
+    assert("sec.token-accepted", (await code("/api/health", { headers: authHeaders() })) === 200, "valid token must be 200");
+  } else {
+    skip("sec.token", "no HERMES_EXCEL_BRIDGE_TOKEN set on this bridge");
+  }
 }
 
 function testHonestyNote() {
@@ -211,6 +247,7 @@ async function main() {
   await testMultiturn(hermesOk);
   await testMediumBuild(hermesOk);
   await testExport();
+  await testSecurity();
   testHonestyNote();
   console.log(`\n--- ${results.pass} passed, ${results.fail} failed, ${results.skip} skipped ---`);
   process.exit(results.fail > 0 ? 1 : 0);

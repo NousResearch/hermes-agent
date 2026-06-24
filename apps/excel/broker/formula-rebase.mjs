@@ -12,10 +12,14 @@ const MAX_COLUMNS = 16384; // XFD
 const MAX_ROWS = 1048576;
 
 // Optional sheet qualifier, then a cell ref or range with independent $ anchors.
-// The trailing lookahead rejects function names (LOG10() and partial identifiers;
-// the leading lookbehind rejects matches inside longer names or after a sheet "!".
+// The trailing lookahead rejects function names (LOG10() and partial identifiers)
+// AND a following "[" (so a cell-shaped table name like AB12[Total] is left whole);
+// the leading lookbehind rejects matches inside longer names, after a sheet "!", or
+// after a "]" (so the trailing C of an R1C1 ref like R[1]C2 is not read as a column).
+// The range tail captures its OWN optional sheet qualifier so a mixed-qualifier range
+// (B2:Sheet1!C5) is recognized as one match and skipped, never half-shifted.
 const REF_PATTERN =
-  /(?<![\w$.!:])((?:'(?:[^']|'')*'|[A-Za-z_][\w.]*)!)?(\$?)([A-Za-z]{1,3})(\$?)(\d{1,7})(?::(\$?)([A-Za-z]{1,3})(\$?)(\d{1,7}))?(?![\w(])/g;
+  /(?<![\w$.!:\]])((?:'(?:[^']|'')*'|[A-Za-z_][\w.]*)!)?(\$?)([A-Za-z]{1,3})(\$?)(\d{1,7})(?::((?:'(?:[^']|'')*'|[A-Za-z_][\w.]*)!)?(\$?)([A-Za-z]{1,3})(\$?)(\d{1,7}))?(?![\w([])/g;
 
 export function columnLettersToNumber(letters) {
   const text = String(letters || "").toUpperCase();
@@ -67,14 +71,18 @@ function shiftEndpoint(columnAnchor, letters, rowAnchor, digits, rowOffset, colO
 function shiftRefs(code, rowOffset, colOffset) {
   return code.replace(
     REF_PATTERN,
-    (match, sheet, columnAnchor1, letters1, rowAnchor1, digits1, columnAnchor2, letters2, rowAnchor2, digits2) => {
-      if (sheet) return match;
+    (match, sheet, columnAnchor1, letters1, rowAnchor1, digits1, sheet2, columnAnchor2, letters2, rowAnchor2, digits2) => {
+      // A sheet qualifier on EITHER endpoint means a cross-sheet ref/range: never shift.
+      if (sheet || sheet2) return match;
       const first = shiftEndpoint(columnAnchor1, letters1, rowAnchor1, digits1, rowOffset, colOffset);
       if (first === null) return match;
       if (letters2 === undefined) return first;
+      // If the range's second endpoint cannot shift (it would leave the grid), keep
+      // the original endpoint rather than freezing the whole range at its old anchor —
+      // Excel itself clamps a range that can't grow. The in-grid first half still moves.
       const second = shiftEndpoint(columnAnchor2, letters2, rowAnchor2, digits2, rowOffset, colOffset);
-      if (second === null) return match;
-      return `${first}:${second}`;
+      const originalSecond = `${columnAnchor2}${letters2}${rowAnchor2}${digits2}`;
+      return `${first}:${second === null ? originalSecond : second}`;
     },
   );
 }

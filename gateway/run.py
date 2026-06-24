@@ -10999,12 +10999,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
+        voice_key = self._voice_key(event.source.platform, chat_id)
+        voice_mode = self._voice_mode.get(voice_key)
         is_voice_input = (event.message_type == MessageType.VOICE)
+
+        auto_tts_default = False
+        if is_voice_input and voice_mode is None:
+            try:
+                from hermes_cli.config import load_config as _load_full_config
+                _full_cfg = _load_full_config()
+                auto_tts_default = bool(
+                    (_full_cfg.get("voice") or {}).get("auto_tts", False)
+                )
+            except Exception:
+                auto_tts_default = False
 
         should = (
             (voice_mode == "all")
             or (voice_mode == "voice_only" and is_voice_input)
+            or (is_voice_input and auto_tts_default)
         )
         if not should:
             return False

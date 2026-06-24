@@ -4241,6 +4241,64 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
 
+        # --- Agents-reminders callbacks (ar:done:<reminder_id>) ---
+        if data.startswith("ar:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3 and parts[1] == "done":
+                reminder_id = parts[2]
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ No autorizado.")
+                    return
+                try:
+                    import os
+                    import subprocess
+                    env = os.environ.copy()
+                    env.update({
+                        "AGENTS_REMINDERS_DB": "/home/mtg/.hermes/external/agents-reminders/data/reminders.db",
+                        "AGENTS_REMINDERS_JOBS_DIR": "/home/mtg/.hermes/external/agents-reminders/data/jobs",
+                        "AGENTS_REMINDERS_LOG_DIR": "/home/mtg/.hermes/external/agents-reminders/logs",
+                        "AGENTS_REMINDERS_TZ_OFFSET": "-3",
+                        "TZ": "America/Argentina/Salta",
+                        "PATH": f"/home/mtg/.local/bin:{env.get('PATH', '')}",
+                    })
+                    proc = subprocess.run(
+                        [
+                            "python3",
+                            "/home/mtg/.hermes/external/agents-reminders/bin/reminder-manage.py",
+                            "confirm",
+                            "--id",
+                            reminder_id,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                        env=env,
+                    )
+                    if proc.returncode == 0:
+                        await query.answer(text="✅ Tomado. Corto los seguimientos.")
+                        try:
+                            original = getattr(query.message, "text", None) or "Recordatorio"
+                            await query.edit_message_text(
+                                text=f"{original}\n\n✅ Tomado",
+                                reply_markup=None,
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        logger.error("agents-reminders confirm failed for %s: %s", reminder_id, proc.stderr or proc.stdout)
+                        await query.answer(text="No pude confirmar el recordatorio.")
+                except Exception as exc:
+                    logger.error("agents-reminders callback failed for %s: %s", reminder_id, exc)
+                    await query.answer(text="Error confirmando recordatorio.")
+            return
+
         # --- Exec approval callbacks (ea:choice:id) ---
         if data.startswith("ea:"):
             parts = data.split(":", 2)

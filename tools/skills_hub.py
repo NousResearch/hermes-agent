@@ -3176,6 +3176,7 @@ class HubLockFile:
         install_path: str,
         files: List[str],
         metadata: Optional[Dict[str, Any]] = None,
+        provenance: str = "hub",
     ) -> None:
         # Validate both the skill name and the install path SHAPE before
         # writing into lock.json. A poisoned lock entry is the precondition
@@ -3183,6 +3184,9 @@ class HubLockFile:
         # write time so the file never carries the bad state.
         safe_name = _validate_skill_name(name)
         safe_install_path = _normalize_lock_install_path(install_path, safe_name)
+        if provenance not in {"hub", "builtin", "local-edit", "local"}:
+            logger.debug("Unknown provenance %r for %s — defaulting to 'hub'", provenance, safe_name)
+            provenance = "hub"
         data = self.load()
         data["installed"][safe_name] = {
             "source": source,
@@ -3193,10 +3197,24 @@ class HubLockFile:
             "install_path": safe_install_path,
             "files": files,
             "metadata": metadata or {},
+            "provenance": provenance,
             "installed_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         self.save(data)
+
+        # Mirror the provenance into the per-profile registry so
+        # `hermes skills list` can read it from one place. Failures here
+        # are debug-only — the lock file is the authoritative install
+        # record, the registry is a derived view.
+        try:
+            from tools.skills_provenance import record
+            resolved_origin = safe_install_path
+            if not os.path.isabs(resolved_origin):
+                resolved_origin = str((SKILLS_DIR / safe_install_path).resolve())
+            record(safe_name, provenance, resolved_origin)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("Could not mirror hub provenance for %s: %s", safe_name, exc, exc_info=True)
 
     def record_uninstall(self, name: str) -> None:
         data = self.load()

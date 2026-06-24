@@ -661,10 +661,17 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                 category = _get_category_from_path(skill_md)
 
                 seen_names.add(name)
+                # ``install_path`` is the resolved on-disk location of the
+                # skill directory — used by ``hermes skills list`` to compute
+                # provenance (builtin / hub / local-edit / local) without
+                # re-walking the skills tree. ``Path`` is fine to serialize
+                # for in-process callers; convert at the boundary if a
+                # consumer needs a string.
                 skills.append({
                     "name": name,
                     "description": description,
                     "category": category,
+                    "install_path": skill_dir,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -737,12 +744,24 @@ def skills_list(category: str = None, task_id: str = None) -> str:
             {s.get("category") for s in all_skills if s.get("category")}
         )
 
+        # JSON-serialize the install_path (a Path object) before encoding so
+        # the agent gets a string it can echo / diff / log. ``_find_all_skills``
+        # added the field for the t_d38756e0 provenance work; consumers that
+        # only care about name/description/category can ignore it.
+        skills_jsonable = []
+        for skill in all_skills:
+            entry = {k: v for k, v in skill.items() if k != "install_path"}
+            ip = skill.get("install_path")
+            if ip is not None:
+                entry["install_path"] = str(ip)
+            skills_jsonable.append(entry)
+
         return json.dumps(
             {
                 "success": True,
-                "skills": all_skills,
+                "skills": skills_jsonable,
                 "categories": categories,
-                "count": len(all_skills),
+                "count": len(skills_jsonable),
                 "hint": "Use skill_view(name) to see full content, tags, and linked files",
             },
             ensure_ascii=False,

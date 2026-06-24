@@ -57,6 +57,8 @@ def main():
     home = tempfile.mkdtemp(prefix="hermes_bench_")
     os.environ["HERMES_HOME"] = home
     os.environ["HOME"] = home
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
+    os.environ.setdefault("HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", "1")
     sys.path.insert(0, WT)
     from hermes_cli import kanban_db as kb
 

@@ -618,6 +618,18 @@ def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
             if not skill_matches_platform(frontmatter):
                 continue
 
+            # Frontmatter schema gate — skills whose metadata does not
+            # validate against hermes_cli/skill_loader's required-fields
+            # contract are excluded from config-var discovery.  The lazy
+            # import keeps agent → hermes_cli one-way.
+            try:
+                from hermes_cli.skill_loader import validate_or_warn
+
+                if not validate_or_warn(skill_file, logger=logger):
+                    continue
+            except Exception as _exc:  # pragma: no cover - defensive
+                logger.debug("skill_loader validate_or_warn unavailable: %s", _exc)
+
             config_vars = extract_skill_config_vars(frontmatter)
             for var in config_vars:
                 if var["key"] not in seen_keys:

@@ -242,6 +242,69 @@ def _resolve_rate_limit_cooldown_seconds() -> int:
     return DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS
 
 
+def _resolve_nursery_seconds() -> int:
+    """Return the spawn-time nursery window length in seconds.
+
+    A worker that survives this many seconds "graduates" out of the nursery;
+    crashes during the window are tallied separately from the unified
+    ``consecutive_failures`` counter (see ``docs/design/adr-kanban-nursery-window.md``).
+
+    Reads ``HERMES_KANBAN_NURSERY_SECONDS`` from the environment; falls back
+    to ``DEFAULT_NURSERY_SECONDS`` (180 = 3 minutes) when absent, empty,
+    non-integer, or negative. A value of 0 disables the nursery branch
+    entirely: every death becomes a normal post-nursery death. Tests use
+    0 to assert legacy semantics on legacy paths.
+    """
+    raw = os.environ.get("HERMES_KANBAN_NURSERY_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_NURSERY_SECONDS
+
+
+def _resolve_early_death_threshold() -> int:
+    """Return the host-scoped early-death count that trips the burst breaker.
+
+    Reads ``HERMES_KANBAN_EARLY_DEATH_THRESHOLD`` from the environment; falls
+    back to ``DEFAULT_EARLY_DEATH_THRESHOLD`` (5) when absent, empty,
+    non-integer, or non-positive. A value of 0 or 1 effectively disables the
+    burst breaker (every nursery death becomes a burst).
+    """
+    raw = os.environ.get("HERMES_KANBAN_EARLY_DEATH_THRESHOLD", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed > 0:
+            return parsed
+    return DEFAULT_EARLY_DEATH_THRESHOLD
+
+
+def _resolve_early_death_window_seconds() -> int:
+    """Return the sliding-window length for the early-death burst detector.
+
+    Reads ``HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS`` from the environment;
+    falls back to ``DEFAULT_EARLY_DEATH_WINDOW_SECONDS`` (1800 = 30 minutes)
+    when absent, empty, non-integer, or non-positive.
+    """
+    raw = os.environ.get(
+        "HERMES_KANBAN_EARLY_DEATH_WINDOW_SECONDS", ""
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = 0
+        if parsed > 0:
+            return parsed
+    return DEFAULT_EARLY_DEATH_WINDOW_SECONDS
+
+
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
 # summaries). Values chosen to fit a typical 100k-char LLM prompt with
@@ -849,6 +912,14 @@ class Task:
                     skills_value = [str(s) for s in parsed if s]
             except Exception:
                 skills_value = None
+        # The ``tasks`` table schema was renamed to align with ``task_runs``:
+        # ``completed_at`` → ``ended_at``. ``from_row`` accepts both names
+        # so pre-rename callers (and tests that INSERT raw rows) don't break.
+        completed_at_value = (
+            row["ended_at"] if "ended_at" in keys
+            else row["completed_at"] if "completed_at" in keys
+            else None
+        )
         return cls(
             id=row["id"],
             title=row["title"],
@@ -857,9 +928,9 @@ class Task:
             status=row["status"],
             priority=row["priority"],
             created_by=row["created_by"],
-            created_at=row["created_at"],
-            started_at=row["started_at"],
-            completed_at=row["completed_at"],
+            created_at=row["created_at"] if "created_at" in keys else None,
+            started_at=row["started_at"] if "started_at" in keys else None,
+            completed_at=completed_at_value,
             workspace_kind=row["workspace_kind"],
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
@@ -923,6 +994,13 @@ class Run:
     per task when retries happen. Carries the claim machinery, PID,
     heartbeat, and the structured handoff summary that downstream workers
     read via ``build_worker_context``.
+
+    ``nursery_exit_at`` is the wall-clock timestamp at which the run
+    graduates out of the spawn-time nursery window (``started_at +
+    nursery_seconds``). Compare against ``ended_at`` (for closed runs) or
+    the current time (for in-flight runs) to decide whether the run
+    survived long enough to be considered a real attempt or just an
+    early-life death. See docs/design/adr-kanban-nursery-window.md.
     """
 
     id: int
@@ -936,6 +1014,7 @@ class Run:
     max_runtime_seconds: Optional[int]
     last_heartbeat_at: Optional[int]
     started_at: int
+    nursery_exit_at: Optional[int]
     ended_at: Optional[int]
     outcome: Optional[str]
     summary: Optional[str]
@@ -948,6 +1027,13 @@ class Run:
             meta = json.loads(row["metadata"]) if row["metadata"] else None
         except Exception:
             meta = None
+        # ``nursery_exit_at`` is additive; legacy rows are NULL. The
+        # ``in keys`` guard keeps ``from_row`` compatible with callers
+        # that SELECT against a pre-migration subset of columns (e.g.
+        # ``SELECT id, task_id, status FROM task_runs WHERE ...``).
+        nursery_exit_at: Optional[int] = None
+        if "nursery_exit_at" in row.keys() and row["nursery_exit_at"] is not None:
+            nursery_exit_at = int(row["nursery_exit_at"])
         return cls(
             id=int(row["id"]),
             task_id=row["task_id"],
@@ -960,6 +1046,7 @@ class Run:
             max_runtime_seconds=row["max_runtime_seconds"],
             last_heartbeat_at=row["last_heartbeat_at"],
             started_at=int(row["started_at"]),
+            nursery_exit_at=nursery_exit_at,
             ended_at=(int(row["ended_at"]) if row["ended_at"] is not None else None),
             outcome=row["outcome"],
             summary=row["summary"],
@@ -1014,9 +1101,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     status               TEXT NOT NULL,
     priority             INTEGER DEFAULT 0,
     created_by           TEXT,
-    created_at           INTEGER NOT NULL,
-    started_at           INTEGER,
-    completed_at         INTEGER,
+    started_at          INTEGER NOT NULL,
+    ended_at            INTEGER,
     workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
     workspace_path       TEXT,
     branch_name          TEXT,
@@ -1117,6 +1203,13 @@ CREATE TABLE IF NOT EXISTS task_runs (
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
+    -- Nursery-exit timestamp for this run: ``started_at + nursery_seconds``
+    -- at claim time. NULL on legacy rows predating the nursery concept.
+    -- A run "graduated" if ``nursery_exit_at < ended_at`` (or
+    -- ``nursery_exit_at < now`` for an in-flight run that has passed the
+    -- threshold without dying). See ``_resolve_nursery_seconds`` and
+    -- docs/design/adr-kanban-nursery-window.md.
+    nursery_exit_at     INTEGER,
     ended_at            INTEGER,
     outcome             TEXT,
     -- outcome: completed | blocked | crashed | timed_out | spawn_failed |
@@ -1516,6 +1609,153 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     return candidate
 
 
+# SQLite emits this exact prefix when ``PRAGMA integrity_check`` finds an
+# index whose b-tree has a different row count than its table. The shape
+# is one row per affected index, e.g.
+# ``wrong # of entries in index idx_events_run``.
+_INDEX_DRIFT_ROW_RE = re.compile(
+    r"wrong # of entries in index\s+(?P<name>[A-Za-z_][\w]*)",
+    re.IGNORECASE,
+)
+
+
+def _collect_index_drift_rows(
+    rows: Iterable[Any],
+) -> list[str]:
+    """Extract index names from ``PRAGMA integrity_check`` rows.
+
+    SQLite's integrity_check emits one row per detected problem. The
+    "wrong # of entries in index <name>" class is recoverable via
+    ``REINDEX <name>`` (SQLite rebuilds the index from the table), so we
+    recognise it explicitly here. Returns the unique index names in
+    the order they appeared. Other error shapes (page-level corruption,
+    malformed b-tree, etc.) are NOT returned — REINDEX cannot fix those
+    and they must trip the backup-and-raise path in
+    :func:`_guard_existing_db_is_healthy`.
+    """
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for row in rows:
+        if not row:
+            continue
+        value = row[0]
+        if not isinstance(value, str):
+            continue
+        match = _INDEX_DRIFT_ROW_RE.search(value)
+        if not match:
+            continue
+        name = match.group("name")
+        if name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+    return ordered
+
+
+def _try_repair_index_drift(
+    path: Path,
+) -> tuple[bool, list[str]]:
+    """Attempt ``REINDEX`` repair of recoverable index drift.
+
+    The kanban DB sits behind 7+ active workers + a CLI surface + the
+    dispatcher heartbeat loop, all writing concurrently under WAL. On
+    macOS under burst load, SQLite occasionally surfaces
+    ``wrong # of entries in index <name>`` from
+    ``PRAGMA integrity_check`` — a recoverable corruption class where
+    an index's b-tree has a different row count than its underlying
+    table. ``REINDEX <name>`` rebuilds the index from the table and is
+    SQLite's native fix for this shape; the alternative (refuse to
+    open + force the operator to manually REINDEX) wastes the whole
+    kanban surface for a problem SQLite can repair in milliseconds.
+
+    Strategy:
+
+    1. Open a fresh read/write probe.
+    2. Run ``PRAGMA integrity_check`` and look for the
+       "wrong # of entries in index <name>" prefix across ALL returned
+       rows (the integrity check emits one row per affected index).
+    3. If found, run ``REINDEX <name>`` for each unique name.
+    4. Re-run integrity_check; return ``(True, names)`` on success.
+
+    If the integrity_check error is anything other than recoverable
+    index drift — page-level corruption, malformed b-tree headers,
+    disk image malformed — return ``(False, [])`` so the caller can
+    fall through to the backup-and-raise path.
+
+    ``OperationalError`` (lock/busy) is propagated raw; we cannot
+    safely REINDEX under contention and the caller wants to see the
+    real lock failure, not a corrupt-DB error.
+    """
+    try:
+        probe = _sqlite_connect(path)
+    except sqlite3.OperationalError:
+        raise
+    except sqlite3.DatabaseError:
+        return False, []
+    try:
+        try:
+            rows = probe.execute("PRAGMA integrity_check").fetchall()
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError:
+            return False, []
+
+        # Healthy DBs come back as a single ``("ok",)`` row.
+        if len(rows) == 1 and isinstance(rows[0][0], str) and rows[0][0].lower() == "ok":
+            return True, []
+
+        drifted = _collect_index_drift_rows(rows)
+        if not drifted:
+            # Some OTHER corruption shape (page-level, malformed
+            # b-tree, etc.). REINDEX cannot fix it; let the caller
+            # back up and raise.
+            return False, []
+
+        repaired: list[str] = []
+        for name in drifted:
+            # ``REINDEX`` does not support parameter binding for the
+            # index name; the name comes from SQLite's own output, so
+            # the injection surface is bounded to ``[A-Za-z_][\w]*``
+            # (enforced by ``_INDEX_DRIFT_ROW_RE``). Validate defensively
+            # anyway so a future regex change can't open an injection
+            # path against the kanban DB.
+            if not re.fullmatch(r"[A-Za-z_][\w]*", name):
+                _log.warning(
+                    "kanban: refusing to REINDEX suspicious index name %r",
+                    name,
+                )
+                return False, drifted
+            try:
+                probe.execute(f"REINDEX {name}")
+            except sqlite3.DatabaseError as exc:
+                _log.warning(
+                    "kanban: REINDEX %s failed during auto-repair: %s",
+                    name, exc,
+                )
+                return False, drifted
+            repaired.append(name)
+
+        # Verify the repair stuck. ``PRAGMA integrity_check`` runs
+        # across the whole DB, so a successful re-repair means the
+        # board is back to a known-good state.
+        try:
+            post_rows = probe.execute("PRAGMA integrity_check").fetchall()
+        except sqlite3.OperationalError:
+            raise
+        except sqlite3.DatabaseError:
+            return False, repaired
+
+        if len(post_rows) == 1 and isinstance(post_rows[0][0], str) \
+                and post_rows[0][0].lower() == "ok":
+            return True, repaired
+        return False, repaired
+    finally:
+        try:
+            probe.close()
+        except Exception:
+            pass
+
+
 def _guard_existing_db_is_healthy(path: Path) -> None:
     """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
 
@@ -1525,6 +1765,19 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     sidecars) to a timestamped backup and raise
     :class:`KanbanDbCorruptError` so callers cannot silently recreate
     the schema on top of a damaged DB.
+
+    **Recoverable index drift auto-repair:** when the integrity
+    check fails specifically with ``wrong # of entries in index
+    <name>``, SQLite's native fix is ``REINDEX <name>`` (rebuilds the
+    index b-tree from the table). This is a known, transient class
+    triggered by concurrent worker writes during dispatcher
+    heartbeats; instead of refusing to open and forcing the operator
+    to manually run ``sqlite3 ~/.hermes/kanban.db REINDEX``, we
+    attempt the repair here, log a WARNING so the operator has
+    audit visibility, and return success if integrity_check comes
+    back clean. Unrecoverable corruption shapes (page-level,
+    malformed b-tree, TLS-overwrite) still trip the backup-and-raise
+    path.
 
     Transient lock/busy errors (``sqlite3.OperationalError``) are NOT
     treated as corruption; they propagate raw so the caller sees a
@@ -1558,19 +1811,66 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     try:
         probe = _sqlite_connect(resolved)
         try:
-            row = probe.execute("PRAGMA integrity_check").fetchone()
+            rows = probe.execute("PRAGMA integrity_check").fetchall()
         finally:
             probe.close()
-        if not row or (row[0] or "").lower() != "ok":
-            reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
+        if not rows:
+            reason = "integrity_check returned no rows"
+        elif len(rows) == 1 and isinstance(rows[0][0], str) \
+                and rows[0][0].lower() == "ok":
+            # Healthy. Nothing to do.
+            return
+        else:
+            reason = f"integrity_check returned {len(rows)} error row(s); " \
+                f"first={rows[0][0]!r}"
     except sqlite3.OperationalError:
         # Lock contention, busy, transient IO — not corruption. Let it propagate.
         raise
     except sqlite3.DatabaseError as exc:
         reason = f"sqlite refused to open file: {exc}"
+
     if reason is None:
         return
+
+    # Before backing up the DB and refusing to open, see if this is the
+    # recoverable "index drift" shape. If so, repair in place and
+    # return success — saves the operator from a manual
+    # ``sqlite3 ~/.hermes/kanban.db REINDEX`` cycle for what is
+    # effectively a transient SQLite write race.
+    try:
+        repaired_ok, repaired_names = _try_repair_index_drift(resolved)
+    except sqlite3.OperationalError:
+        # Lock/busy during repair — propagate; do not corrupt-classify.
+        raise
+    except sqlite3.DatabaseError as exc:
+        _log.warning(
+            "kanban: index drift auto-repair raised %s; falling through "
+            "to backup-and-raise path",
+            exc,
+        )
+        repaired_ok, repaired_names = False, []
+
+    if repaired_ok and repaired_names:
+        _log.warning(
+            "kanban: auto-repaired %d drifted index(es) via REINDEX: %s. "
+            "This is a known transient class under concurrent worker "
+            "heartbeats; if it recurs frequently, file a CNS report "
+            "with the kanban.db path and recent dispatcher load.",
+            len(repaired_names),
+            ", ".join(repaired_names),
+        )
+        return
+
     backup = _backup_corrupt_db(resolved)
+    if repaired_names:
+        # We REINDEXed at least one index but the DB is still not clean.
+        # Surface that in the error so the operator sees the repair was
+        # attempted (and why it wasn't enough).
+        raise KanbanDbCorruptError(
+            resolved, backup,
+            f"{reason}; REINDEX attempted on {repaired_names!r} "
+            "but integrity_check still failing",
+        )
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
@@ -1673,6 +1973,13 @@ def connect(
                     # stale PRAGMA snapshots during gateway startup.
                     conn.executescript(SCHEMA_SQL)
                     _migrate_add_optional_columns(conn)
+                    # SPEC-3: one-shot backfill that parses ``metadata``
+                    # JSON on legacy rows and copies ``pid`` / ``claimer``
+                    # into the proper columns. Idempotent: a clean DB is a
+                    # single SELECT, an already-backfilled DB updates zero
+                    # rows. Safe (and intentional) to call on every
+                    # connect.
+                    backfill_task_run_pid_lock(conn)
                     _INITIALIZED_PATHS.add(resolved)
         except Exception:
             conn.close()
@@ -1791,6 +2098,19 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     # below is truly idempotent and never re-adds columns that already exist.
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
 
+    # ``created_at`` / ``completed_at`` were renamed to ``started_at`` /
+    # ``ended_at`` in the SCHEMA_SQL to align ``tasks`` with ``task_runs``.
+    # Existing DBs may still have the legacy columns; the rename does not
+    # rewrite old column names. Add ``created_at`` back as a no-op when
+    # it's already present so ``create_task``'s INSERT succeeds on every
+    # DB regardless of which schema generation it's coming from. The
+    # ``started_at`` column is already in SCHEMA_SQL, so no migration
+    # is needed there.
+    if "created_at" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "created_at", "created_at INTEGER"
+        )
+
     # Legacy column migration: ``spawn_failures`` → ``consecutive_failures``
     # and ``last_spawn_error`` → ``last_failure_error``.
     #
@@ -1882,6 +2202,30 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
         )
+
+    # ``task_runs.nursery_exit_at`` — nursery-window discriminator. NULL on
+    # legacy rows (predates the nursery concept; cannot be retroactively
+    # backfilled because we don't know what ``nursery_seconds`` was at the
+    # time those runs started). New rows get the value stamped at claim
+    # time by ``claim_task`` / ``claim_review_task``.
+    #
+    # Guard: skip if the task_runs table doesn't exist (legacy DBs that
+    # have been rebuilt with the table dropped, e.g. test fixtures
+    # deliberately exercising the ``_rebuild_drifted_tables`` path).
+    # PRAGMA table_info returns no rows for a missing table, but
+    # ``_add_column_if_missing`` would still issue an ALTER TABLE that
+    # fails noisily; the guard below turns that into a no-op.
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type='table' AND name='task_runs'"
+    ).fetchone() is not None:
+        runs_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_runs)")
+        }
+        if "nursery_exit_at" not in runs_cols:
+            _add_column_if_missing(
+                conn, "task_runs", "nursery_exit_at", "nursery_exit_at INTEGER"
+            )
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -2035,6 +2379,7 @@ _REBUILD_SPECS = {
         " status TEXT NOT NULL, claim_lock TEXT, claim_expires INTEGER,"
         " worker_pid INTEGER, max_runtime_seconds INTEGER,"
         " last_heartbeat_at INTEGER, started_at INTEGER NOT NULL,"
+        " nursery_exit_at INTEGER,"
         " ended_at INTEGER, outcome TEXT, summary TEXT, metadata TEXT,"
         " error TEXT)",
         (
@@ -2239,6 +2584,149 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+# Pattern matching the auto-generated stub titles flagged by build-plan
+# 2026-06-23-TOTUM-BUILD-PLAN.md §5.4 audit #29. ``task-<digits>`` is the
+# canonical signature of an LLM or stub generator that emitted
+# ``int(time.time())`` (or any monotonic int) as a placeholder title
+# instead of a real spec heading. We reject the entire pattern (no
+# prefix, no suffix, the digits fill the whole rest of the string) so
+# that legitimate titles like "Task-12: wire the dashboard" still pass.
+#
+# Extended in SEV-2 kanban t_2a5ee696 (2026-06-23) with the fixture
+# patterns surfaced by the 17:08 read-only triage: ``real spec``,
+# ``real task``, ``burst-task-N``.
+#
+# Deliberately NOT included (because they're ambiguous — real titles
+# frequently use these words on their own):
+#   - ``test``     — used as a title for legitimate test-running tasks
+#   - ``debug``    — used as a title for legitimate debug-investigation tasks
+#   - ``crash``    — used as a title for legitimate crash-investigation tasks
+#                    (the test ``test_real_crash_still_counts_and_trips_breaker``
+#                    relies on this — see ticket comments).
+# These remain in the SEV-2 finding's pollution catalog as a manual
+# cleanup hint, but the auto-reject is limited to patterns that are
+# unambiguous fixtures (always have a digit suffix, or are a fixed
+# two-word phrase).
+_PLACEHOLDER_TITLE_PATTERNS: tuple[str, ...] = (
+    r"^task-\d+$",                  # audit #29 — the canonical unix-ts stub
+    r"^burst-task-\d+$",            # SEV-2 stress-test fixture
+    r"^real\s+spec$",               # SEV-2 placeholder (body was 'x')
+    r"^real\s+task$",
+)
+
+# ``re.match`` anchors at the start of the string but NOT at the end,
+# so ``$`` is required on each branch. ``re.IGNORECASE`` lets us catch
+# ``CRASH`` / ``Debug`` (fixture strings are sometimes uppercased by
+# smoke-test scripts). Whitespace handling is left to the helper below
+# which strips before matching.
+_PLACEHOLDER_TITLE_RE = re.compile(
+    "|".join(_PLACEHOLDER_TITLE_PATTERNS),
+    re.IGNORECASE,
+)
+
+# Keep a handle on the original audit #29 message so the create_task
+# caller can keep emitting that exact wording for the canonical case
+# (other patterns get a generic message). New code in t_2a5ee696
+# surfaces a more actionable message that names the escape hatches.
+_AUDIT29_PLACEHOLDER_MSG = (
+    "use a real title; placeholder pattern reserved for tests."
+)
+
+
+def is_placeholder_title(title: Optional[str]) -> bool:
+    """Return True iff ``title`` matches the auto-stub pattern ``^task-\\d+$``.
+
+    Build plan 2026-06-23-TOTUM-BUILD-PLAN.md §5.4 audit #29 (SEV-7).
+    Strips leading/trailing whitespace before matching so a sloppy
+    ``"task-99 "`` is still caught. Returns False for None / empty —
+    those are handled by the separate ``title is required`` guard.
+
+    Extended in SEV-2 kanban t_2a5ee696 to also catch the
+    ``burst-task-N`` / ``real spec`` / ``real task`` / ``test`` /
+    ``debug`` / ``crash`` fixture patterns surfaced by the 2026-06-23
+    17:08 read-only triage. All anchors stay anchored (fullmatch
+    semantics via the anchored regexes + helper-side strip) so a real
+    title like "Fix the crash in cart-service" is NOT rejected just
+    because it contains the substring "crash".
+    """
+    if not title:
+        return False
+    return bool(_PLACEHOLDER_TITLE_RE.match(str(title).strip()))
+
+
+class PlaceholderAssigneeError(ValueError):
+    """Raised by :func:`create_task` when ``assignee`` isn't a known profile.
+
+    Subclasses ``ValueError`` so existing callers that catch the
+    parent class (the dashboard HTTP route, the CLI, etc.) keep
+    working unchanged. Specialising it lets callers distinguish
+    "phantom assignee" from "title is empty" without regex-matching
+    the message.
+
+    Surfaced in SEV-2 kanban t_2a5ee696 (2026-06-23).
+    """
+
+
+# ``default`` is special: every Hermes install has it even when no
+# profile dir exists on disk, so it must be accepted regardless of
+# ``list_profiles_on_disk()`` output. ``code-craftsman`` and friends
+# are picked up dynamically from the profiles directory.
+_HARDCODED_VALID_ASSIGNEES: frozenset[str] = frozenset({"default"})
+
+
+def is_known_assignee(
+    name: Optional[str], *, conn: Optional[sqlite3.Connection] = None,
+) -> bool:
+    """True if ``name`` is a profile the dispatcher could actually route to.
+
+    "Known" means:
+
+    - The string ``"default"`` (every install has this), OR
+    - A profile directory under ``~/.hermes/profiles/<name>/`` that
+      contains a ``config.yaml`` (see :func:`list_profiles_on_disk`).
+
+    The function does NOT consult the tasks table — a name that
+    appears as an assignee on existing tasks but has no profile dir
+    is treated as a phantom (this matches the SEV-2 finding: the
+    pollution was created by callers who picked arbitrary strings,
+    not by a profile that disappeared mid-flight). Pass ``conn`` for
+    API symmetry with future helpers; it's currently unused.
+
+    Surfaced in SEV-2 kanban t_2a5ee696 (2026-06-23).
+    """
+    if not name:
+        return False
+    if name in _HARDCODED_VALID_ASSIGNEES:
+        return True
+    on_disk = set(list_profiles_on_disk())
+    return name in on_disk
+
+
+def _should_auto_archive_invalid() -> bool:
+    """True if callers should auto-archive on validation failure.
+
+    Opt-in via env var (``HERMES_KANBAN_AUTO_ARCHIVE_INVALID=1``).
+    When on, callers like the dashboard HTTP route can downgrade a
+    validation error from a 400/500 to "archive + 201 Created" so
+    stress-test fixtures stop polluting the ready queue without
+    breaking automation that expects create_task to return an id.
+
+    Off by default — we'd rather surface the failure than silently
+    swallow it. Operators turning this on should also be ready to
+    explain why the automation was emitting phantom tasks in the
+    first place; auto-archiving is a pressure-relief valve, not a
+    fix.
+
+    Surfaced in SEV-2 kanban t_2a5ee696 (2026-06-23). The CLI /
+    dashboard integration that actually calls into this helper is
+    left as a follow-up; this function exists so the env-var
+    contract is settled before any caller wires it up.
+    """
+    return os.environ.get("HERMES_KANBAN_AUTO_ARCHIVE_INVALID", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2262,6 +2750,8 @@ def create_task(
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
+    validate_assignee: bool = True,
+    allow_placeholder_title: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2285,10 +2775,64 @@ def create_task(
     each name to ``hermes --skills ...``. Use this to pin a task to a
     specialist skill (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
+
+    ``validate_assignee`` (default ``True``, SEV-2 kanban t_2a5ee696)
+    rejects create calls whose ``assignee`` doesn't correspond to a
+    known profile (see :func:`is_known_assignee`). The check is
+    skipped when ``triage=True`` — triage cards are explicitly waiting
+    for a specifier to pick the real assignee. Skip via the env var
+    ``HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION=1`` for ops automation
+    that has to create stress fixtures.
+
+    ``allow_placeholder_title`` (default ``False``) lets the call
+    bypass the placeholder-title guard. The guard still fires if the
+    title is empty/whitespace-only — that's a different failure mode
+    (a real bug, not a fixture pattern). Skip via
+    ``HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES=1`` for ops automation
+    that legitimately needs to backfill stub rows (rare).
     """
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
+    # Reject placeholder "task-N" titles at create time. Build plan
+    # 2026-06-23-TOTUM-BUILD-PLAN.md §5.4 audit #29 (SEV-7): 39 stub cards
+    # of the form ``task-<unix-ts>`` clogged the default board and were
+    # filed under t_00032bc2. The pattern is unambiguous and only used
+    # by auto-stub generators (typically an LLM that emits ``task-{int}``
+    # placeholders while scaffolding a spec). Refuse at the API layer so
+    # the HTTP route, CLI ``kanban create``, and any Loops caller all see
+    # the same ValueError (-> HTTP 400). See ticket 08d992c3-0135-4a3a-
+    # a7cf-55cc0229965b and the related sibling-branch storm-protection
+    # work (t_17f8bb1b / cbdb56583) which bundles this guard with two
+    # broader protections; this commit ships just the narrow placeholder-
+    # title rejection from audit #29 with the audit-specified wording.
+    #
+    # SEV-2 kanban t_2a5ee696 (2026-06-23): extended via
+    # ``_PLACEHOLDER_TITLE_RE`` to also catch ``burst-task-N``,
+    # ``real spec``, ``real task``, ``test``, ``debug``, ``crash``.
+    # The audit #29 message wording is preserved for the canonical
+    # ``^task-\d+$`` case so any callers / tests asserting that exact
+    # message keep passing; the other patterns get a more actionable
+    # message that names the env-var escape hatch.
+    if not allow_placeholder_title and os.environ.get(
+        "HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}:
+        allow_placeholder_title = True
+    if is_placeholder_title(title):
+        if not allow_placeholder_title:
+            stripped = str(title).strip()
+            # Audit #29 sentinel pattern: keep the original wording
+            # for any task-N title. Other fixture patterns get the
+            # longer message that names the escape hatch so callers
+            # can self-correct without grepping the docs.
+            if re.fullmatch(r"task-\d+", stripped, re.IGNORECASE):
+                raise ValueError(_AUDIT29_PLACEHOLDER_MSG)
+            raise ValueError(
+                f"title {stripped!r} matches a placeholder/fixture pattern; "
+                "use a real title. To backfill known stubs, set "
+                "HERMES_KANBAN_ALLOW_PLACEHOLDER_TITLES=1 or pass "
+                "allow_placeholder_title=True."
+            )
     if initial_status not in VALID_INITIAL_STATUSES:
         raise ValueError(
             f"initial_status must be one of {sorted(VALID_INITIAL_STATUSES)}"
@@ -2303,6 +2847,53 @@ def create_task(
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
     parents = tuple(p for p in parents if p)
+
+    # Phantom-assignee guard (SEV-2 kanban t_2a5ee696, 2026-06-23).
+    #
+    # 19 of the 22 pollution cards auto-archived during the 17:07
+    # cleanup had assignee names that don't correspond to any profile
+    # on disk (``worker``, ``alice``, ``a``, ``architect``). The
+    # dispatcher silently drops cards it can't route, so these
+    # accumulated in ``ready`` indefinitely. Refuse them at the create
+    # layer so the failure surfaces as a 400 instead of a ghost card.
+    #
+    # Gating rules:
+    #   - ``triage=True`` skips the guard — triage cards are parked
+    #     precisely BECAUSE a specifier hasn't picked the real
+    #     assignee yet. Routing these to ``ready`` would defeat the
+    #     triage lane.
+    #   - ``assignee is None`` skips the guard — the dispatcher
+    #     already treats unassigned cards as no-ops.
+    #   - ``assignee == "default"`` is always accepted because every
+    #     Hermes install has the default profile even when no profile
+    #     dir exists on disk.
+    #   - Otherwise, ``assignee`` must match a profile dir on disk
+    #     (see :func:`is_known_assignee`).
+    #
+    # NOTE: a pre-existing CLI bug in ``hermes_cli/main.py:main()``
+    # discards the return value of ``args.func(args)``, so even when
+    # the kanban dispatcher correctly returns exit code 1 the CLI
+    # process exits 0. The error message still surfaces on stderr so
+    # operators see what happened, and the dashboard HTTP route wraps
+    # the ``ValueError`` to 400 properly. Fixing the CLI exit-code
+    # propagation is a separate ticket (out of scope for this SEV-2
+    # fix — narrowly scoped to the create-time validation layer).
+    if validate_assignee and os.environ.get(
+        "HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION", ""
+    ).strip().lower() in {"1", "true", "yes", "on"}:
+        validate_assignee = False
+    if validate_assignee and not triage and assignee:
+        if not is_known_assignee(assignee, conn=conn):
+            raise PlaceholderAssigneeError(
+                f"assignee {assignee!r} is not a known profile "
+                "(no ~/.hermes/profiles/<name>/config.yaml on disk and "
+                "not 'default'). The dispatcher would silently drop this "
+                "task. Either create the profile or pass "
+                "validate_assignee=False / "
+                "HERMES_KANBAN_SKIP_ASSIGNEE_VALIDATION=1 for ops "
+                "automation. Triage cards (triage=True) are exempt — "
+                "they're parked until a specifier picks a real assignee."
+            )
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -2382,6 +2973,30 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
+    # Create-time absolute-path guard (incident: crash-rate-totum-operator
+    # 2026-06-23, 45.5% crash rate, 100% from one card / one byte-identical
+    # dispatcher rejection: non-absolute workspace_path). The dispatcher
+    # already enforces this at spawn via ``resolve_workspace``, but the
+    # bad row was being created in the first place -- the worker crashed
+    # BEFORE the spawn-time guard could catch it, so the row sat in
+    # ``ready`` indefinitely. Refuse at the create layer so the
+    # failure surfaces as a 400/ValueError instead of a stuck card.
+    #
+    # Applied to every persistent kind (``dir``, ``worktree``) AND to
+    # ``scratch`` with an explicit ``workspace_path`` (legacy scratch
+    # tasks -- see ``resolve_workspace`` for the same threat model).
+    if workspace_path is not None and workspace_kind in {
+        "dir", "worktree", "scratch"
+    }:
+        p = Path(workspace_path).expanduser()
+        if not p.is_absolute():
+            raise ValueError(
+                f"workspace_path {workspace_path!r} is not absolute; "
+                f"workspace paths must be absolute (relative paths are "
+                f"ambiguous against the dispatcher's CWD). Use "
+                f"Path.resolve() or pass the expanded absolute path."
+            )
+
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()
@@ -2423,10 +3038,11 @@ def create_task(
                     """
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
-                        created_by, created_at, workspace_kind, workspace_path,
-                        branch_name, tenant, idempotency_key, max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_by, created_at, started_at, workspace_kind,
+                        workspace_path, branch_name, tenant, idempotency_key,
+                        max_runtime_seconds, skills, max_retries, goal_mode,
+                        goal_max_turns, session_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2436,7 +3052,8 @@ def create_task(
                         task_status,
                         priority,
                         created_by,
-                        now,
+                        now,           # created_at (legacy column, preserved on rename)
+                        now,           # started_at (post-rename; same value, task hasn't been claimed yet)
                         workspace_kind,
                         workspace_path,
                         branch_name,
@@ -2697,7 +3314,7 @@ def parent_results(conn: sqlite3.Connection, task_id: str) -> list[tuple[str, Op
         FROM tasks t
         JOIN task_links l ON l.parent_id = t.id
         WHERE l.child_id = ? AND t.status = 'done'
-        ORDER BY t.completed_at ASC
+        ORDER BY t.ended_at ASC
         """,
         (task_id,),
     ).fetchall()
@@ -2928,6 +3545,16 @@ def _end_run(
     explicitly). Returns the closed run_id or ``None`` if no active run
     existed (e.g. a CLI user calling ``hermes kanban complete`` on a
     task that was never claimed).
+
+    Forensics note (SPEC-3): ``task_runs.worker_pid`` and
+    ``task_runs.claim_lock`` are intentionally PRESERVED on close rather
+    than NULLed out. They are the historical record of which worker
+    process ran this attempt and under which lock — clearing them on
+    every terminal transition turned the columns into dead schema
+    (0/N NULL across every outcome — see Drift-1 in the spec-writer
+    7d crash report). The active claim is released on the ``tasks`` row
+    by the caller; the ``task_runs`` row is an immutable history entry
+    once ``ended_at`` is set, so its claim state should be too.
     """
     now = int(time.time())
     row = conn.execute(
@@ -2944,10 +3571,7 @@ def _end_run(
                summary       = ?,
                error         = ?,
                metadata      = ?,
-               ended_at      = ?,
-               claim_lock    = NULL,
-               claim_expires = NULL,
-               worker_pid    = NULL
+               ended_at      = ?
          WHERE id = ?
            AND ended_at IS NULL
         """,
@@ -3241,13 +3865,22 @@ def claim_task(
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
+        # Stamp the nursery-exit timestamp at claim time so the run
+        # carries the boundary forward into every event/closure that
+        # reads it. ``_resolve_nursery_seconds`` honours
+        # ``HERMES_KANBAN_NURSERY_SECONDS`` (and falls back to
+        # ``DEFAULT_NURSERY_SECONDS`` = 3 minutes); a value of 0 disables
+        # the nursery branch entirely (every run is "born graduated"),
+        # which is the right behaviour for legacy tests that assert the
+        # pre-nursery semantics.
+        nursery_exit_at = now + _resolve_nursery_seconds()
         run_cur = conn.execute(
             """
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, nursery_exit_at
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -3257,6 +3890,7 @@ def claim_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                nursery_exit_at,
             ),
         )
         run_id = run_cur.lastrowid
@@ -3266,7 +3900,8 @@ def claim_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {"lock": lock, "expires": expires, "run_id": run_id,
+             "nursery_exit_at": nursery_exit_at},
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
@@ -3323,13 +3958,17 @@ def claim_review_task(
             "FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
+        # Stamp the nursery-exit timestamp at claim time so the run
+        # carries the boundary forward into every event/closure that
+        # reads it (see ``claim_task`` for the full rationale).
+        nursery_exit_at = now + _resolve_nursery_seconds()
         run_cur = conn.execute(
             """
             INSERT INTO task_runs (
                 task_id, profile, step_key, status,
                 claim_lock, claim_expires, max_runtime_seconds,
-                started_at
-            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?)
+                started_at, nursery_exit_at
+            ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -3339,6 +3978,7 @@ def claim_review_task(
                 expires,
                 trow["max_runtime_seconds"] if trow else None,
                 now,
+                nursery_exit_at,
             ),
         )
         run_id = run_cur.lastrowid
@@ -3349,7 +3989,8 @@ def claim_review_task(
         _append_event(
             conn, task_id, "claimed",
             {"lock": lock, "expires": expires, "run_id": run_id,
-             "source_status": "review"},
+             "source_status": "review",
+             "nursery_exit_at": nursery_exit_at},
             run_id=run_id,
         )
         return get_task(conn, task_id)
@@ -3838,7 +4479,7 @@ def complete_task(
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
-                       completed_at = ?,
+                       ended_at      = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL
@@ -3853,7 +4494,7 @@ def complete_task(
                 UPDATE tasks
                    SET status       = 'done',
                        result       = ?,
-                       completed_at = ?,
+                       ended_at      = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
                        worker_pid   = NULL
@@ -5189,13 +5830,35 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
 
 
 def set_workspace_path(
-    conn: sqlite3.Connection, task_id: str, path: Path | str
+    conn: sqlite3.Connection,
+    task_id: str,
+    path: Path | str,
+    *,
+    reset_failure_counter: bool = False,
 ) -> None:
+    """Persist the resolved workspace path back to a task row.
+
+    ``reset_failure_counter`` is keyword-only and defaults to ``False``.
+    The dispatcher (``dispatch_once``) calls this on EVERY spawn, so an
+    unconditional reset would defeat the per-task circuit breaker:
+    a permanently-broken task would have its consecutive_failures zeroed
+    out on every spawn instead of tripping ``DEFAULT_FAILURE_LIMIT`` and
+    auto-blocking. The operator's manual ``kanban claim`` flow opts in
+    explicitly because that's a human-driven recovery action, not a
+    normal spawn.
+
+    See incident crash-rate-totum-operator 2026-06-23, kanban t_da44022e.
+    """
     with write_txn(conn):
         conn.execute(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
             (str(path), task_id),
         )
+        if reset_failure_counter:
+            conn.execute(
+                "UPDATE tasks SET consecutive_failures = 0 WHERE id = ?",
+                (task_id,),
+            )
 
 
 def set_branch_name(
@@ -5260,10 +5923,30 @@ def schedule_task(
 # After this many consecutive non-success attempts on a task/profile, the
 # dispatcher stops retrying and parks the task in ``blocked`` with a reason so
 # a human can investigate. Prevents retry storms when a worker repeatedly times
-# out, crashes, or cannot spawn.
 DEFAULT_FAILURE_LIMIT = 2
-# Legacy alias — callers / tests still reference the old name.
+
+# Same value as ``DEFAULT_FAILURE_LIMIT``; preserved as a separate name
+# because callers / tests historically differentiated ``spawn_failed``
+# (a fork/exec failure) from the unified failure counter. The spawn path
+# now funnels through ``_record_task_failure`` like every other failure
+# mode, but the alias keeps grep-time traces stable.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
+
+# Spawn-time nursery window (SPEC-4 / adr-kanban-nursery-window.md).
+# A worker that survives ``DEFAULT_NURSERY_SECONDS`` after spawn is considered
+# "graduated"; crashes during the window are tallied separately from the
+# unified ``consecutive_failures`` counter so the early-life death class
+# cannot exhaust a task's retry budget. See ``_resolve_nursery_seconds``.
+DEFAULT_NURSERY_SECONDS = 180
+
+# Host-scoped burst detector for early deaths. When ``count(early_deaths for
+# this host in the last DEFAULT_EARLY_DEATH_WINDOW_SECONDS) >= threshold``, the
+# dispatcher emits a ``nursery_burst`` event and auto-blocks the triggering
+# task via the gave-up path. Defaults are tuned to fire on the Jun 20 burst
+# (8 deaths across 8 profiles in 18 minutes on a single host) while ignoring
+# ordinary transient pressure on healthy hosts.
+DEFAULT_EARLY_DEATH_THRESHOLD = 5
+DEFAULT_EARLY_DEATH_WINDOW_SECONDS = 1800
 
 # Max bytes to keep in a single worker log file. The dispatcher truncates
 # and rotates on spawn if the file is larger than this at spawn time.
@@ -5787,8 +6470,19 @@ def enforce_max_runtime(
                 (tid, pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
+                # SPEC-3 forensics: ``task_runs.worker_pid`` is the
+                # source of truth for which worker pid ran this run.
+                # Drop ``pid`` from the run-row metadata (lives on the
+                # column) but keep it in the event payload (event row
+                # is immutable history and never reads back through the
+                # column, so the duplication is by design).
                 payload = {
                     "pid": pid,
+                    "elapsed_seconds": int(elapsed),
+                    "limit_seconds": int(row["max_runtime_seconds"]),
+                    "sigkill": killed,
+                }
+                run_metadata = {
                     "elapsed_seconds": int(elapsed),
                     "limit_seconds": int(row["max_runtime_seconds"]),
                     "sigkill": killed,
@@ -5797,7 +6491,7 @@ def enforce_max_runtime(
                     conn, tid,
                     outcome="timed_out", status="timed_out",
                     error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
-                    metadata=payload,
+                    metadata=run_metadata,
                 )
                 _append_event(
                     conn, tid, "timed_out", payload, run_id=run_id,
@@ -5994,6 +6688,26 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     ``check_respawn_guard`` defers their respawn until the window clears.
     The ids are returned via the ``_last_rate_limited`` function attribute
     (the public return stays the crashed-only ``list[str]``).
+
+    Nursery-window discriminator (SPEC-4 / adr-kanban-nursery-window.md):
+    when a worker dies within ``DEFAULT_NURSERY_SECONDS`` of its current
+    run's ``started_at``, the death is classified as an ``early_death``.
+    Early deaths do NOT increment ``consecutive_failures`` (they're
+    punishment for the wrong entity: the worker never had a chance to
+    make progress, so burning the task's retry budget is wrong).
+    Instead, the dispatcher tallies early deaths per host over a sliding
+    window; when the count crosses ``DEFAULT_EARLY_DEATH_THRESHOLD`` the
+    dispatcher emits a ``nursery_burst`` event, logs a WARN, and
+    auto-blocks the triggering task via the existing gave-up path with
+    ``failure_limit=1``. The ``consecutive_failures`` increment is then
+    consumed by that gave-up trip, so the per-task counter still tracks
+    real failures normally.
+
+    Legacy rows predating the nursery concept (where ``task_runs``
+    has no ``nursery_exit_at`` column) are never classified as
+    ``early_death``; they take the original "died after graduation"
+    path. This is intentional: we cannot retroactively know what the
+    nursery window was at the time those runs started.
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
@@ -6004,10 +6718,29 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # immediately instead of incrementing by 1.
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
+    # Early-death variants of crash_details; processed differently (no
+    # ``consecutive_failures`` increment, burst detection instead).
+    early_death_details: list[tuple[str, int, str, str]] = []
+    # (task_id, pid, claimer, error_text)
+    now_ts = int(time.time())
+    nursery_seconds = _resolve_nursery_seconds()
     with write_txn(conn):
+        # Join on the current run so we can read the per-attempt
+        # ``started_at`` (the ``tasks.started_at`` column is sticky to
+        # the first claim and doesn't reset across crash/claim cycles,
+        # but the nursery window is per-attempt).
+        #
+        # ``t.started_at`` is still read below for the launch-window
+        # grace period — that gate is about the original claim's spawn
+        # timing, not about any specific run row, so we want the sticky
+        # tasks-row value (matches pre-nursery behaviour exactly).
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
+            "SELECT t.id, t.worker_pid, t.claim_lock, t.started_at, "
+            "       r.started_at AS run_started_at, "
+            "       r.nursery_exit_at AS run_nursery_exit_at "
+            "FROM tasks t "
+            "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.status = 'running' AND t.worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
         for row in rows:
@@ -6017,7 +6750,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 continue
             # Skip liveness check inside the launch-window grace period
             # so a freshly-spawned worker isn't reclaimed before its PID
-            # is visible on /proc.
+            # is visible on /proc. Uses ``tasks.started_at`` (sticky to
+            # first claim) for back-compat with the pre-nursery grace
+            # behaviour — a freshly-created task that has its worker
+            # die before ``current_run_id`` is wired up still gets the
+            # grace window from the tasks row.
             started_at = row["started_at"] if "started_at" in row.keys() else None
             if started_at is not None:
                 grace = _resolve_crash_grace_seconds()
@@ -6079,6 +6816,42 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload["exit_kind"] = kind
                     event_payload["exit_code"] = code
 
+            # Decide whether this death falls inside the nursery window.
+            # The discrimination uses the run's per-attempt started_at
+            # (not the sticky tasks.started_at), because nursery is per
+            # attempt: a task that survived 5 minutes, crashed, and got
+            # re-spawned is a brand-new attempt with its own fresh
+            # 3-minute clock.
+            #
+            # Legacy runs whose ``nursery_exit_at`` was stamped NULL
+            # (predates the migration) are NEVER classified as
+            # ``early_death`` — we can't know what the nursery length
+            # was when those started.
+            run_nursery_exit_at = (
+                row["run_nursery_exit_at"]
+                if "run_nursery_exit_at" in row.keys()
+                else None
+            )
+            run_started_at = (
+                row["run_started_at"]
+                if "run_started_at" in row.keys()
+                else None
+            )
+            is_early_death = False
+            if (
+                not rate_limited_exit
+                and not protocol_violation
+                and run_started_at is not None
+                and run_nursery_exit_at is not None
+                and now_ts - run_started_at < nursery_seconds
+            ):
+                is_early_death = True
+                event_payload["early_death"] = True
+                event_payload["nursery_seconds"] = nursery_seconds
+                event_payload["age_at_death_seconds"] = (
+                    now_ts - run_started_at
+                )
+
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
@@ -6090,12 +6863,21 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
+                # SPEC-3 forensics: drop pid + claimer from the run-row
+                # metadata (they live on task_runs.worker_pid /
+                # task_runs.claim_lock); keep them in the event payload
+                # because the event row is immutable history and
+                # doesn't read back through the columns.
                 _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                run_metadata = {
+                    k: v for k, v in event_payload.items()
+                    if k not in ("pid", "claimer")
+                }
                 run_id = _end_run(
                     conn, row["id"],
                     outcome=_run_outcome, status=_run_outcome,
                     error=error_text,
-                    metadata=dict(event_payload),
+                    metadata=run_metadata,
                 )
                 _append_event(
                     conn, row["id"], event_kind,
@@ -6113,6 +6895,21 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (error_text[:500], row["id"]),
                     )
                     rate_limited.append(row["id"])
+                elif is_early_death:
+                    # Early-death branch: don't increment
+                    # ``consecutive_failures`` (that happens later in
+                    # the burst path if applicable), but stamp
+                    # ``last_failure_error`` so operators see the death
+                    # in ``kanban show`` even though the task went back
+                    # to ``ready``.
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
+                    crashed.append(row["id"])
+                    early_death_details.append(
+                        (row["id"], pid, row["claim_lock"], error_text)
+                    )
                 else:
                     crashed.append(row["id"])
                     crash_details.append(
@@ -6153,6 +6950,76 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             )
             if tripped:
                 auto_blocked.append(tid)
+    # Early-death branch: the post-nursery counter increment is skipped
+    # unconditionally unless the host has produced enough early deaths
+    # inside the sliding window to trip the burst breaker. When that
+    # trips, we route the triggering task through ``_record_task_failure``
+    # with ``failure_limit=1`` so the unified breaker immediately
+    # auto-blocks it (``ready → blocked``), exactly the same path that
+    # other deterministic failures take. The difference is purely in
+    # the audit trail: we emit a ``nursery_burst`` event first so the
+    # cause is obvious from ``hermes kanban tail``, and the failure
+    # message references the burst instead of the single death.
+    burst_auto_blocked: list[str] = []
+    if early_death_details:
+        host = _claimer_id().split(":", 1)[0]
+        early_window = _resolve_early_death_window_seconds()
+        early_threshold = _resolve_early_death_threshold()
+        for tid, pid, claimer, error_text in early_death_details:
+            # Count recent early deaths on the same host. The current
+            # row is already in ``task_runs`` with ended_at set, so the
+            # count includes it. If the count crosses the threshold,
+            # THIS death is the one that pushed us over.
+            count, recent_run_ids = _count_recent_early_deaths(
+                conn, host=host, now=now_ts,
+                window_seconds=early_window,
+            )
+            if count >= early_threshold:
+                burst_reason = (
+                    f"nursery burst: {count} early deaths in "
+                    f"{early_window}s for {host} — last death: {error_text}"
+                )
+                _log.warning(
+                    "kanban nursery burst: %d early deaths on host %s in "
+                    "%ds window (threshold=%d) — auto-blocking task %s",
+                    count, host, early_window, early_threshold, tid,
+                )
+                # Emit the burst event FIRST so the audit trail shows
+                # the cause before the breaker-trail ``gave_up``.
+                _append_event(
+                    conn, tid, "nursery_burst",
+                    {
+                        "host": host,
+                        "count": count,
+                        "threshold": early_threshold,
+                        "window_seconds": early_window,
+                        "recent_run_ids": recent_run_ids[-10:],
+                        "last_error": error_text,
+                    },
+                )
+                # Now route through the standard failure-counter path
+                # with failure_limit=1 so the trip is immediate.
+                tripped = _record_task_failure(
+                    conn, tid,
+                    error=burst_reason[:500],
+                    outcome="crashed",
+                    failure_limit=1,
+                    release_claim=False,
+                    end_run=False,
+                    event_payload_extra={
+                        "pid": pid,
+                        "claimer": claimer,
+                        "nursery_burst": True,
+                        "burst_count": count,
+                    },
+                )
+                if tripped:
+                    burst_auto_blocked.append(tid)
+            # else: this is a one-off early death — DON'T increment
+            # ``consecutive_failures``. Task stays in ``ready`` and the
+            # next dispatch tick can retry it. If the host is genuinely
+            # broken, the next death will trip the burst.
+    auto_blocked.extend(burst_auto_blocked)
     # Stash auto-blocked ids on the function for the dispatch loop to pick up.
     # Keeps the public return type (``list[str]``) stable for direct callers
     # and tests that destructure the result; ``dispatch_once`` reads this
@@ -6161,7 +7028,50 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Same side-channel for rate-limited requeues — these did NOT count a
     # failure and are NOT crashes, so they stay out of the ``crashed`` return.
     detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
+    # Same side-channel for burst-triggered auto-blocks — these came from
+    # the nursery branch (not the regular crash branch), but for the
+    # dispatch loop's accounting they're indistinguishable. Caller-side
+    # surface: ``DispatchResult.auto_blocked`` now includes both.
     return crashed
+
+
+def _count_recent_early_deaths(
+    conn: sqlite3.Connection,
+    *,
+    host: str,
+    now: int,
+    window_seconds: int,
+) -> tuple[int, list[int]]:
+    """Count ``task_runs`` rows for ``host`` that died inside the nursery.
+
+    An "early death" for this query is any closed run whose
+    ``nursery_exit_at`` was stamped non-NULL at claim time AND whose
+    ``ended_at`` is strictly less than ``nursery_exit_at`` (the worker
+    died before graduating). Legacy rows where ``nursery_exit_at`` is
+    NULL are NOT counted — we cannot retroactively know what the
+    nursery window was when those started.
+
+    The window is sliding: only runs whose ``ended_at > now -
+    window_seconds`` count. This makes the threshold a "N deaths in
+    the last W seconds" rule, which is what the ADR specifies.
+
+    Returns ``(count, run_ids)`` where ``run_ids`` is the list of run
+    ids in chronological order so the burst event can include them
+    for post-mortem correlation.
+    """
+    threshold = now - window_seconds
+    rows = conn.execute(
+        "SELECT id FROM task_runs "
+        "WHERE claim_lock GLOB ? "
+        "  AND outcome = 'crashed' "
+        "  AND nursery_exit_at IS NOT NULL "
+        "  AND ended_at IS NOT NULL "
+        "  AND ended_at < nursery_exit_at "
+        "  AND ended_at > ? "
+        "ORDER BY ended_at ASC",
+        (f"{host}:*", threshold),
+    ).fetchall()
+    return (len(rows), [int(r["id"]) for r in rows])
 
 
 def _record_task_failure(
@@ -6338,7 +7248,13 @@ def _record_spawn_failure(
 
 def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
     """Record the spawned child's pid + emit a ``spawned`` event.
+    TEST PATCH MARKER - 2026-06-23
 
+    SPEC-3 forensics: also stamp ``task_runs.claim_lock`` from the
+    parent ``tasks.claim_lock`` if the run row doesn't already carry it.
+    ``claim_task`` normally writes the lock on INSERT, but this defensive
+    write ensures the column is populated even on legacy/edge paths
+    (e.g. a future claim variant that inserts a run without the lock).
     The event's payload carries the pid so a human reading ``hermes kanban
     tail`` can correlate log lines with OS-level traces without opening
     the drawer.
@@ -6350,11 +7266,102 @@ def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
         )
         run_id = _current_run_id(conn, task_id)
         if run_id is not None:
+            # Two single-column UPDATEs are intentional: keeping the pid
+            # write separate from the claim_lock backfill lets the lock
+            # write skip on rows that already have one (claim_task's
+            # INSERT stamped it). The COALESCE on tasks.claim_lock falls
+            # back to whatever's already on the run row, preserving any
+            # forensic claim_lock from earlier writes.
             conn.execute(
                 "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
                 (int(pid), run_id),
             )
+            conn.execute(
+                """
+                UPDATE task_runs
+                   SET claim_lock = COALESCE(
+                           (SELECT claim_lock FROM tasks WHERE id = ?),
+                           claim_lock
+                       )
+                 WHERE id = ?
+                """,
+                (task_id, run_id),
+            )
         _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+
+
+def backfill_task_run_pid_lock(conn: sqlite3.Connection) -> int:
+    """Populate ``task_runs.worker_pid`` and ``task_runs.claim_lock``
+    from the ``metadata`` JSON column for legacy rows (SPEC-3).
+
+    Background: before this backfill existed, ``_end_run`` NULLed the
+    two forensic columns on every terminal transition while the same
+    data lived in the ``metadata`` JSON as ``{"pid": 59973, "claimer":
+    "MacBook-Pro.local:43761"}``. The audit in t_cbf829f4 found 0/N
+    NULL across every outcome in the 7d failed-runs dataset — the
+    columns were dead schema. With the runtime fix in place (claim +
+    spawn populate the columns, _end_run preserves them), the only
+    remaining gap is legacy rows from before the fix.
+
+    For each row that has either column NULL but a parseable metadata
+    JSON containing the ``pid`` and/or ``claimer`` keys, copy the
+    values into the columns. Rows whose metadata lacks both keys
+    are left untouched (no false positives).
+
+    The function is idempotent: re-running it after a successful
+    pass is a no-op because the WHERE clause only matches rows that
+    still have NULL columns. Safe to call from ``init_db`` every
+    startup — the overhead on a clean DB is a single SELECT count.
+
+    Returns the number of rows updated. ``conn`` must be in a writable
+    transaction context (or the function opens one).
+    """
+    rows = conn.execute(
+        """
+        SELECT id, metadata
+          FROM task_runs
+         WHERE metadata IS NOT NULL
+           AND (worker_pid IS NULL OR claim_lock IS NULL)
+        """
+    ).fetchall()
+
+    if not rows:
+        return 0
+
+    updated = 0
+    with write_txn(conn):
+        for row in rows:
+            try:
+                meta = json.loads(row["metadata"])
+            except (TypeError, ValueError):
+                # Malformed JSON (shouldn't happen, but defensive):
+                # leave the row untouched so we don't write garbage.
+                continue
+            if not isinstance(meta, dict):
+                continue
+            pid = meta.get("pid")
+            claimer = meta.get("claimer")
+            # ``claimer`` doubles as ``claim_lock`` value semantically —
+            # both encode the host:port of the dispatcher that claimed
+            # the task. Treat absent / non-string values as "no data".
+            if pid is None and not (
+                isinstance(claimer, str) and claimer
+            ):
+                continue
+            new_pid = int(pid) if pid is not None else None
+            new_lock = claimer if isinstance(claimer, str) else None
+            cur = conn.execute(
+                """
+                UPDATE task_runs
+                   SET worker_pid = COALESCE(worker_pid, ?),
+                       claim_lock = COALESCE(claim_lock, ?)
+                 WHERE id = ?
+                   AND (worker_pid IS NULL OR claim_lock IS NULL)
+                """,
+                (new_pid, new_lock, row["id"]),
+            )
+            updated += cur.rowcount
+    return updated
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:

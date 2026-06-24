@@ -612,10 +612,34 @@ def _read_config_model(profile_dir: Path) -> tuple:
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
-    """Check if a gateway is running for a given profile directory."""
+    """Check if a gateway is running for a given profile directory.
+
+    Primary signal is the profile's ``gateway.pid`` (verified against the
+    runtime lock).  That check fails closed whenever the lock isn't held by
+    *this* reader — which is exactly the case for a dashboard process that is
+    a separate s6 service from the gateway it's reporting on (Docker), or any
+    launch-service-managed gateway that left a fresh ``gateway_state.json`` but
+    no live PID file.  In those cases fall back to validating the PID recorded
+    in the profile's own ``gateway_state.json`` against the live process table,
+    mirroring the ``/api/status`` sidebar's liveness logic so the two surfaces
+    agree.  Parameterized by ``profile_dir`` so it never mutates ``HERMES_HOME``.
+    """
     try:
         from gateway.status import get_running_pid
-        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+        if (
+            get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False)
+            is not None
+        ):
+            return True
+    except Exception:
+        pass
+    try:
+        from gateway.status import (
+            get_runtime_status_running_pid,
+            read_runtime_status,
+        )
+        runtime = read_runtime_status(profile_dir / "gateway_state.json")
+        return get_runtime_status_running_pid(runtime) is not None
     except Exception:
         return False
 

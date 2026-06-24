@@ -660,9 +660,15 @@ def write_runtime_status(
     _write_json_file(path, payload)
 
 
-def read_runtime_status() -> Optional[dict[str, Any]]:
-    """Read the persisted gateway runtime health/status information."""
-    return _read_json_file(_get_runtime_status_path())
+def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]:
+    """Read the persisted gateway runtime health/status information.
+
+    ``path`` is optional so callers that need to inspect a *different*
+    profile's state file (e.g. the dashboard enumerating every profile)
+    can do so without mutating ``HERMES_HOME`` in-process.  Defaults to
+    the active profile's ``gateway_state.json``.
+    """
+    return _read_json_file(path or _get_runtime_status_path())
 
 
 def parse_active_agents(raw: Any) -> int:

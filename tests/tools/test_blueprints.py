@@ -186,3 +186,19 @@ class TestExportBlueprint:
         spec = parse_blueprint(export_blueprint(job, "body"))
         assert spec is not None
         assert spec.schedule == "every 2h"
+
+    def test_export_malformed_interval_schedule_falls_back(self):
+        job = {
+            "name": "poller",
+            "schedule": {"kind": "interval", "minutes": "soon"},
+            "skills": ["poller"],
+        }
+
+        spec = parse_blueprint(export_blueprint(job, "body"))
+        assert spec is not None
+        assert spec.schedule == "0 9 * * *"
+
+        job["schedule"] = {"kind": "interval", "seconds": "later"}
+        spec = parse_blueprint(export_blueprint(job, "body"))
+        assert spec is not None
+        assert spec.schedule == "0 9 * * *"

@@ -54,13 +54,17 @@ def _clear_cache():
 
     mod._copilot_context_cache = {}
     mod._copilot_context_cache_time = 0.0
+    mod._copilot_context_failed_time = 0.0
     mod._copilot_reasoning_catalog_cache = None
     mod._copilot_reasoning_catalog_cache_time = 0.0
+    mod._copilot_reasoning_catalog_failed_time = 0.0
     yield
     mod._copilot_context_cache = {}
     mod._copilot_context_cache_time = 0.0
+    mod._copilot_context_failed_time = 0.0
     mod._copilot_reasoning_catalog_cache = None
     mod._copilot_reasoning_catalog_cache_time = 0.0
+    mod._copilot_reasoning_catalog_failed_time = 0.0
 
 
 class TestGetCopilotModelContext:
@@ -105,6 +109,27 @@ class TestGetCopilotModelContext:
     @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
     def test_returns_none_when_catalog_unavailable(self, mock_fetch):
         assert get_copilot_model_context("gpt-4.1") is None
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+    def test_failed_fetch_does_not_tight_loop_refetch(self, mock_fetch):
+        # Sibling of the reasoning-efforts negative-cache fix: a failing catalog
+        # fetch leaves the (empty, falsy) positive cache untouched, so without a
+        # negative cache every lookup would re-attempt the slow HTTP fetch.
+        for _ in range(5):
+            assert get_copilot_model_context("gpt-4.1") is None
+        assert mock_fetch.call_count == 1
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+    def test_negative_cache_expires_then_retries(self, mock_fetch):
+        import hermes_cli.models as mod
+
+        get_copilot_model_context("gpt-4.1")
+        assert mock_fetch.call_count == 1
+        get_copilot_model_context("gpt-4.1")
+        assert mock_fetch.call_count == 1  # still backing off
+        mod._copilot_context_failed_time = time.time() - 120
+        get_copilot_model_context("gpt-4.1")
+        assert mock_fetch.call_count == 2
 
     @patch("hermes_cli.models.fetch_github_model_catalog", return_value=[])
     def test_returns_none_for_empty_catalog(self, mock_fetch):
@@ -217,3 +242,52 @@ class TestGetCopilotReasoningEfforts:
         assert get_copilot_reasoning_efforts("claude-opus-4.8") == []
         efforts = get_copilot_reasoning_efforts("gpt-5.4")
         assert isinstance(efforts, list)
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+    def test_failed_fetch_does_not_tight_loop_refetch(self, mock_fetch):
+        # Regression for the Copilot review note: when the catalog fetch fails
+        # (offline / auth), repeated calls within the negative-cache window must
+        # NOT re-attempt the slow HTTP fetch. The reasoning gates call this
+        # several times per turn, so one outage must collapse to one attempt.
+        for _ in range(5):
+            assert get_copilot_reasoning_efforts("claude-opus-4.8") == []
+        assert mock_fetch.call_count == 1
+
+    @patch("hermes_cli.models.fetch_github_model_catalog", return_value=None)
+    def test_negative_cache_expires_then_retries(self, mock_fetch):
+        import hermes_cli.models as mod
+
+        get_copilot_reasoning_efforts("claude-opus-4.8")
+        assert mock_fetch.call_count == 1
+        # Still backing off: no new fetch.
+        get_copilot_reasoning_efforts("claude-opus-4.8")
+        assert mock_fetch.call_count == 1
+        # Expire the negative window: a retry is allowed.
+        mod._copilot_reasoning_catalog_failed_time = time.time() - 120
+        get_copilot_reasoning_efforts("claude-opus-4.8")
+        assert mock_fetch.call_count == 2
+
+    @patch("hermes_cli.models.fetch_github_model_catalog")
+    def test_recovery_after_failed_fetch_clears_backoff(self, mock_fetch):
+        import hermes_cli.models as mod
+
+        # First fetch fails → backoff armed.
+        mock_fetch.return_value = None
+        assert get_copilot_reasoning_efforts("claude-opus-4.8") == []
+        assert mock_fetch.call_count == 1
+        # After the window expires the catalog comes back; a successful fetch
+        # must clear the negative-cache timestamp so later lookups serve from the
+        # positive cache without re-fetching.
+        mod._copilot_reasoning_catalog_failed_time = time.time() - 120
+        mock_fetch.return_value = _REASONING_CATALOG
+        assert get_copilot_reasoning_efforts("claude-opus-4.8") == [
+            "low",
+            "medium",
+            "high",
+            "max",
+        ]
+        assert mock_fetch.call_count == 2
+        assert mod._copilot_reasoning_catalog_failed_time == 0.0
+        # Subsequent lookups are served from the fresh positive cache.
+        get_copilot_reasoning_efforts("claude-sonnet-4.6")
+        assert mock_fetch.call_count == 2

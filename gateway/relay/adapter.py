@@ -355,6 +355,33 @@ class RelayAdapter(BasePlatformAdapter):
                     logger.debug("relay going_idle failed during drain", exc_info=True)
             await self._transport.disconnect()
 
+    async def go_dormant(self) -> bool:
+        """Quiesce the relay for a scale-to-zero suspend (D12 / Phase 0).
+
+        Unlike ``disconnect()`` (terminal teardown for shutdown/restart), this
+        keeps the adapter's reconnect path armed so the gateway re-dials and
+        drains its buffered backlog when the machine wakes. Delegates to the
+        transport's ``go_dormant()`` when available; a transport without it (the
+        stub) is a no-op that returns False, so callers degrade safely.
+
+        NOTE: deliberately does NOT stop the revocation monitor — going dormant
+        is not a teardown; the monitor stays live so a real opt-out/revocation
+        during dormancy is still surfaced on wake.
+        """
+        if self._transport is None:
+            return False
+        go_dormant = getattr(self._transport, "go_dormant", None)
+        if not callable(go_dormant):
+            return False
+        try:
+            result: Any = go_dormant()
+            if asyncio.iscoroutine(result):
+                return bool(await result)
+            return bool(result)
+        except Exception:  # noqa: BLE001 - dormancy is best-effort, never blocks the idle path
+            logger.debug("relay go_dormant failed", exc_info=True)
+            return False
+
     async def send(
         self,
         chat_id: str,

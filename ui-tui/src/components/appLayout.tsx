@@ -10,6 +10,7 @@ import { usePet } from '../app/usePet.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
+import { visibleBackgroundTaskCount } from '../domain/processes.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -195,6 +196,7 @@ const ComposerPane = memo(function ComposerPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'status'>) {
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
+  const backgroundCount = visibleBackgroundTaskCount(ui.bgTasks.size, ui.backgroundProcessCount)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
   const promptText = composerPromptText(ui.theme.brand.prompt, ui.info?.profile_name, sh, TERMUX_TUI_MODE, composer.cols)
   const promptWidth = composerPromptWidth(promptText)
@@ -256,9 +258,9 @@ const ComposerPane = memo(function ComposerPane({
         t={ui.theme}
       />
 
-      {ui.bgTasks.size > 0 && (
+      {backgroundCount > 0 && (
         <Text color={ui.theme.color.muted}>
-          {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
+          {backgroundCount} background {backgroundCount === 1 ? 'task' : 'tasks'} running
         </Text>
       )}
 
@@ -373,6 +375,7 @@ const StatusRulePane = memo(function StatusRulePane({
   status
 }: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top' }) {
   const ui = useStore($uiState)
+  const backgroundCount = visibleBackgroundTaskCount(ui.bgTasks.size, ui.backgroundProcessCount)
 
   if (ui.statusBar !== at) {
     return null
@@ -381,7 +384,7 @@ const StatusRulePane = memo(function StatusRulePane({
   return (
     <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
-        bgCount={ui.bgTasks.size}
+        bgCount={backgroundCount}
         busy={ui.busy}
         cols={composer.cols}
         cwdLabel={status.cwdLabel}

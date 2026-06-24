@@ -334,6 +334,14 @@ def make_tool_result_message(name: str, content: Any, tool_call_id: str) -> dict
     list structure stays valid for vision-capable adapters.
     """
     wrapped = _maybe_wrap_untrusted(name, content)
+    # Some providers (e.g. Ollama Cloud) reject dict-typed content in tool
+    # messages.  Stringify anything that is not already a string or a
+    # multimodal content list.
+    if not isinstance(wrapped, (str, list)):
+        try:
+            wrapped = json.dumps(wrapped, default=str)
+        except Exception:
+            wrapped = str(wrapped)
     return {
         "role": "tool",
         "name": name,

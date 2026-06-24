@@ -138,6 +138,18 @@ class TestMakeToolResultMessage:
             "tool_call_id": "call_1",
         }
 
+    def test_dict_content_stringified(self):
+        msg = make_tool_result_message("memory", {"name": "Alice"}, "call_4")
+        assert msg["role"] == "tool"
+        assert msg["name"] == "memory"
+        assert isinstance(msg["content"], str)
+        assert '"name": "Alice"' in msg["content"]
+
+    def test_list_content_preserved(self):
+        content = [{"type": "text", "text": "hello"}]
+        msg = make_tool_result_message("browser_snapshot", content, "call_5")
+        assert msg["content"] is content
+
     def test_high_risk_message_content_wrapped(self):
         msg = make_tool_result_message("web_extract", SAMPLE_LONG_TEXT, "call_2")
         assert msg["role"] == "tool"

@@ -22,20 +22,30 @@ function requireHiddenChildOptions(source, needle) {
   )
 }
 
+function requireHiddenChildOptionsNear(source, pattern, label) {
+  const match = source.match(pattern)
+  assert.ok(match && typeof match.index === 'number', `missing call site: ${label}`)
+  const snippet = source.slice(match.index, match.index + 900)
+  assert.match(
+    snippet,
+    /hiddenWindowsChildOptions\(/,
+    `expected ${label} to wrap child-process options with hiddenWindowsChildOptions`
+  )
+}
+
 test('desktop background child processes opt into hidden Windows consoles', () => {
   const source = readElectronFile('main.cjs')
 
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
 
   requireHiddenChildOptions(source, "execFileSync(\n          'reg'")
-  requireHiddenChildOptions(source, 'execFileSync(pyExe')
-  requireHiddenChildOptions(source, 'spawn(resolveGitBinary()')
+  requireHiddenChildOptionsNear(source, /execFileSync\(\s*pyExe/, 'execFileSync(pyExe')
+  requireHiddenChildOptionsNear(source, /spawn\(\s*resolveGitBinary\(\)/, 'spawn(resolveGitBinary()')
   requireHiddenChildOptions(source, "execFileSync('taskkill'")
-  requireHiddenChildOptions(source, 'spawn(command, args')
   requireHiddenChildOptions(source, "spawn('curl'")
-  requireHiddenChildOptions(source, 'spawn(backend.command, backend.args')
-  requireHiddenChildOptions(source, 'hermesProcess = spawn(backend.command, backend.args')
-  requireHiddenChildOptions(source, "spawn(py, ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary']")
+  requireHiddenChildOptionsNear(source, /const child = spawn\(\s*backend\.command,\s*backend\.args/, 'spawn(backend.command, backend.args')
+  requireHiddenChildOptionsNear(source, /hermesProcess = spawn\(\s*backend\.command,\s*backend\.args/, 'hermesProcess = spawn(backend.command, backend.args')
+  requireHiddenChildOptionsNear(source, /spawn\(\s*py,\s*\[\s*'-m',\s*'hermes_cli\.main',\s*'uninstall',\s*'--gui-summary'\s*\]/, "spawn(py, ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary']")
 })
 
 test('intentional or interactive desktop child processes stay documented', () => {

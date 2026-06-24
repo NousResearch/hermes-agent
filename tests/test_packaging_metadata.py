@@ -1,4 +1,6 @@
+import importlib.util
 from pathlib import Path
+import posixpath
 import re
 import tomllib
 
@@ -13,6 +15,28 @@ find_packages = pytest.importorskip("setuptools", exc_type=ImportError).find_pac
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _load_setup_module():
+    """Import the repo-root setup.py without triggering its setup() call.
+
+    The setup() invocation is guarded behind ``if __name__ == "__main__"``, so
+    loading the file under any other module name exposes
+    ``bundled_data_files()`` / ``_data_file_tree()`` for inspection without
+    running a build.
+    """
+    spec = importlib.util.spec_from_file_location(
+        "hermes_setup_py", REPO_ROOT / "setup.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _shipped_data_sources() -> set[str]:
+    """All POSIX source paths setup.py ships as wheel data-files."""
+    setup_mod = _load_setup_module()
+    return {src for _, sources in setup_mod.bundled_data_files() for src in sources}
 
 
 def _distribution_name(requirement: str) -> str:
@@ -243,17 +267,25 @@ def test_locked_starlette_is_not_vulnerable_to_cve_2026_48710():
 def test_locale_catalogs_ship_in_both_wheel_and_sdist():
     """Regression test for #27632 / #35374 / #23943.
 
-    locales/ is a bare data directory (no __init__.py), so it is invisible to
-    packages.find and to package-data (which attaches to a package). It must be
-    declared as setuptools data-files (wheel) AND grafted in MANIFEST.in
-    (sdist). Without both, sealed installs drop the catalogs and gateway/CLI
-    commands surface raw i18n keys like `gateway.reset.header_default`.
+    locales/ is a bare data directory (no __init__.py), so it reaches installs
+    only as setuptools data-files (wheel) AND a MANIFEST.in graft (sdist). The
+    wheel data-files are generated in ``setup.py:bundled_data_files()`` — NOT a
+    ``[tool.setuptools.data-files]`` table in pyproject.toml, which would shadow
+    setup.py and drop the skills tree (see
+    ``test_pyproject_does_not_shadow_setup_py_data_files``). Without both
+    channels, sealed installs drop the catalogs and gateway/CLI commands surface
+    raw i18n keys like ``gateway.reset.header_default``.
     """
-    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
-    data_files = data["tool"]["setuptools"].get("data-files", {})
-    assert data_files.get("locales") == ["locales/*.yaml"], (
-        "pyproject [tool.setuptools.data-files] must declare "
-        'locales = ["locales/*.yaml"] so the wheel ships i18n catalogs'
+    shipped = _shipped_data_sources()
+    on_disk = {
+        p.relative_to(REPO_ROOT).as_posix()
+        for p in (REPO_ROOT / "locales").glob("*.yaml")
+    }
+    assert on_disk, "expected locales/*.yaml catalogs on disk"
+    missing = sorted(on_disk - shipped)
+    assert not missing, (
+        f"locale catalogs dropped from wheel data-files: {missing} — "
+        "setup.py:bundled_data_files() must ship every locales/*.yaml"
     )
 
     manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
@@ -261,7 +293,97 @@ def test_locale_catalogs_ship_in_both_wheel_and_sdist():
         "MANIFEST.in must `graft locales` so the sdist ships i18n catalogs"
     )
 
-    # Every on-disk catalog has the .yaml extension the globs above match.
-    on_disk = list((REPO_ROOT / "locales").glob("*.yaml"))
-    assert on_disk, "expected locales/*.yaml catalogs on disk"
+
+def test_bundled_skills_ship_in_wheel_data_files():
+    """Regression test: the wheel must ship bundled skills/ and optional-skills/.
+
+    Both are bare data dirs (no __init__.py), so they reach the wheel only via
+    setuptools ``data_files``. setup.py generates that list dynamically, but a
+    ``[tool.setuptools.data-files]`` table in pyproject.toml silently OVERRIDES
+    setup.py's ``data_files`` — which shipped a wheel with ZERO bundled skills
+    for two releases. On a sealed/wheel install ``_get_bundled_dir()`` then
+    resolves an absent dir and ``sync_skills()`` returns ``total_bundled: 0``,
+    so nothing is seeded into ~/.hermes/skills/.
+
+    This drives setup.py's own generator and asserts:
+      - every on-disk SKILL.md is shipped (completeness),
+      - the nested category/skill layout is preserved (data_files flattens each
+        glob into one target dir, so a collapsed tree would corrupt seeding),
+      - runtime cruft (index-cache, __pycache__, *.pyc) is not shipped.
+    """
+    setup_mod = _load_setup_module()
+    entries = setup_mod.bundled_data_files()
+
+    shipped: set[str] = set()
+    for target, sources in entries:
+        for src in sources:
+            assert posixpath.dirname(src) == target, (
+                f"data_files flatten hazard: {src!r} is not directly under its "
+                f"declared target {target!r}; setuptools would collapse the tree"
+            )
+            shipped.add(src)
+
+    for root_name in ("skills", "optional-skills"):
+        on_disk = {
+            p.relative_to(REPO_ROOT).as_posix()
+            for p in (REPO_ROOT / root_name).rglob("SKILL.md")
+        }
+        assert on_disk, f"expected SKILL.md files under {root_name}/ on disk"
+        missing = sorted(on_disk - shipped)
+        assert not missing, (
+            f"{root_name}/ skills dropped from wheel data-files: {missing}"
+        )
+
+    cruft = sorted(
+        s
+        for s in shipped
+        if "index-cache" in s.split("/")
+        or "__pycache__" in s.split("/")
+        or s.endswith((".pyc", ".pyo"))
+    )
+    assert not cruft, f"runtime cruft leaked into wheel data-files: {cruft}"
+
+
+def test_optional_mcps_manifests_ship_in_wheel():
+    """Every optional-mcps/<name>/manifest.yaml must ship in the wheel and sdist.
+
+    The catalog reader (hermes_cli/mcp_catalog.py) lists whatever manifests are
+    present in the packaged optional-mcps dir, so a dropped entry silently
+    removes a server from ``hermes mcp catalog``. Generating data-files from the
+    tree (vs a hand-maintained pyproject list) keeps this from drifting — the
+    earlier static list shipped linear + n8n but missed unreal-engine.
+    """
+    shipped = _shipped_data_sources()
+    on_disk = {
+        p.relative_to(REPO_ROOT).as_posix()
+        for p in (REPO_ROOT / "optional-mcps").rglob("manifest.yaml")
+    }
+    assert on_disk, "expected optional-mcps/<name>/manifest.yaml on disk"
+    missing = sorted(on_disk - shipped)
+    assert not missing, (
+        f"optional-mcps manifests dropped from wheel data-files: {missing}"
+    )
+
+    manifest = (REPO_ROOT / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "graft optional-mcps" in manifest, (
+        "MANIFEST.in must `graft optional-mcps` so the sdist ships the catalog"
+    )
+
+
+def test_pyproject_does_not_shadow_setup_py_data_files():
+    """pyproject.toml must NOT declare ``[tool.setuptools.data-files]``.
+
+    Bundled data dirs are generated dynamically in
+    ``setup.py:bundled_data_files()`` because skills/ and optional-skills/ are
+    too deep to enumerate statically and data_files flattens nested globs.
+    setuptools resolves ``data_files`` from EITHER pyproject OR setup.py, never
+    both — a pyproject table wins and silently drops setup.py's list, which
+    shipped a wheel with zero bundled skills. Keep the table out of pyproject so
+    setup.py stays the single source of truth.
+    """
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert "data-files" not in data["tool"]["setuptools"], (
+        "Remove [tool.setuptools.data-files] from pyproject.toml — it shadows "
+        "setup.py:bundled_data_files() and drops skills/ from the wheel."
+    )
 

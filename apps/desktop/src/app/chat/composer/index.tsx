@@ -1144,8 +1144,8 @@ export function ChatBar({
         return
       }
 
-      // Empty Enter while busy is a no-op — interrupting is explicit (Stop/Esc),
-      // never a stray Enter after sending. With a payload, submitDraft queues it.
+      // Empty Enter while busy is a no-op — interrupting requires a payload
+      // or Esc/Stop. With a payload, submitDraft queues it and interrupts.
       // Gate on the live DOM payload (not the render-lagged composer state) so a
       // message typed fast / via IME while busy still reaches submitDraft() and
       // gets queued instead of being mistaken for an empty Enter.
@@ -1721,7 +1721,16 @@ export function ChatBar({
         clearDraft()
         dispatchSubmit(text)
       } else if (payloadPresent) {
+        // Queue the draft, then interrupt the running turn so the queued
+        // message drains immediately — instead of waiting for the current
+        // (potentially long) turn to finish while the user's correction
+        // sits ignored.  Mirrors sendQueuedNow's busy-path: queue → onCancel()
+        // → auto-drain on busy→false.  The CLI achieves the same via
+        // busy_input_mode: interrupt; the desktop app has no such knob, so
+        // we wire it directly here.
         queueCurrentDraft()
+        triggerHaptic('cancel')
+        void Promise.resolve(onCancel())
       } else {
         // Stop button (the only way to reach here while busy with an empty
         // composer — empty Enter is short-circuited in the keydown handler).

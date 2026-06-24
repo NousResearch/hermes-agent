@@ -19,7 +19,13 @@ import {
   ZapFilled
 } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
-import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
+import {
+  contextBarLabel,
+  LiveDuration,
+  profileScopedStatusLabel,
+  profileScopedStatusTitle,
+  usageContextLabel
+} from '@/lib/statusbar'
 import { cn } from '@/lib/utils'
 import { setGlobalYolo, setSessionYolo } from '@/lib/yolo-session'
 import { $desktopActionTasks } from '@/store/activity'
@@ -29,6 +35,8 @@ import {
   $busy,
   $connection,
   $currentUsage,
+  $selectedStoredSessionId,
+  $sessions,
   $sessionStartedAt,
   $turnStartedAt,
   $workingSessionIds,
@@ -86,6 +94,8 @@ export function useStatusbarItems({
   const { t } = useI18n()
   const copy = t.shell.statusbar
   const activeSessionId = useStore($activeSessionId)
+  const selectedStoredSessionId = useStore($selectedStoredSessionId)
+  const sessions = useStore($sessions)
   const terminalTakeover = useStore($terminalTakeover)
   const yoloActive = useStore($yoloActive)
   const busy = useStore($busy)
@@ -106,6 +116,14 @@ export function useStatusbarItems({
 
   const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
   const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+  const activeSessionProfile = useMemo(() => {
+    const activeStoredId = selectedStoredSessionId ?? activeSessionId
+    const session = activeStoredId
+      ? sessions.find(item => item.id === activeStoredId || item._lineage_root_id === activeStoredId)
+      : null
+
+    return session?.profile ?? connection?.profile ?? null
+  }, [activeSessionId, connection?.profile, selectedStoredSessionId, sessions])
 
   // Per-session approval bypass (same scope as the TUI's Shift+Tab). On a
   // new-chat draft (no runtime session yet) we arm locally; the session-create
@@ -379,8 +397,8 @@ export function useStatusbarItems({
         hidden: !busy || !turnStartedAt,
         icon: <Loader2 className="size-3 animate-spin" />,
         id: 'running-timer',
-        label: copy.turnRunning,
-        title: copy.currentTurnElapsed,
+        label: profileScopedStatusLabel(copy.turnRunning, activeSessionProfile),
+        title: profileScopedStatusTitle(copy.currentTurnElapsed, activeSessionProfile, workingSessionIds.length),
         variant: 'text'
       },
       {
@@ -430,11 +448,13 @@ export function useStatusbarItems({
       contextBar,
       contextUsage,
       copy,
+      activeSessionProfile,
       sessionStartedAt,
       showYoloToggle,
       terminalTakeover,
       toggleYolo,
       turnStartedAt,
+      workingSessionIds.length,
       clientVersionItem,
       backendVersionItem,
       yoloActive

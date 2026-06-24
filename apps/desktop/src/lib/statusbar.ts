@@ -72,6 +72,31 @@ export function contextBarLabel(usage: UsageStats): string {
   return `[${contextBar(usage.context_percent)}] ${pct}%`
 }
 
+export function profileScopedStatusLabel(base: string, profile: string | null | undefined): string {
+  const key = profile?.trim()
+
+  return key && key !== 'default' ? `${base} · ${key}` : base
+}
+
+export function profileScopedStatusTitle(
+  base: string,
+  profile: string | null | undefined,
+  workingSessions: number
+): string {
+  const parts = [base]
+  const key = profile?.trim()
+
+  if (key && key !== 'default') {
+    parts.push(`profile ${key}`)
+  }
+
+  if (workingSessions > 1) {
+    parts.push(`${workingSessions} sessions running`)
+  }
+
+  return parts.join(' · ')
+}
+
 export function LiveDuration({ since }: { since: number | null | undefined }) {
   const [now, setNow] = useState(() => Date.now())
 

@@ -156,6 +156,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
           'inline-flex h-full items-center gap-1 px-1.5 text-[0.6875rem] text-(--ui-text-tertiary)',
           item.className
         )}
+        title={item.title}
       >
         {content}
       </div>
@@ -164,7 +165,13 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
   if (item.href || item.variant === 'link') {
     return (
-      <a className={cn(STATUSBAR_ACTION_CLASS, item.className)} href={item.href} rel="noreferrer" target="_blank">
+      <a
+        className={cn(STATUSBAR_ACTION_CLASS, item.className)}
+        href={item.href}
+        rel="noreferrer"
+        target="_blank"
+        title={item.title}
+      >
         {content}
       </a>
     )
@@ -181,6 +188,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
 
         item.onSelect?.({ shiftKey: event.shiftKey })
       }}
+      title={item.title}
       type="button"
     >
       {content}

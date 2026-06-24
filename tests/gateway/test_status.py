@@ -359,6 +359,44 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid()
         assert payload["start_time"] == 2000
 
+    def test_runtime_status_running_pid_rejects_stale_record_for_supervisor_pid(self, monkeypatch):
+        """Regression: stale profile runtime state must not mark s6 supervisors live.
+
+        Docker per-profile supervision can leave a named profile with
+        ``gateway_state=running`` metadata while the real gateway process is gone
+        and the recorded PID now belongs to ``s6-supervise`` or ``s6-log``.  If
+        the live command line is readable, it wins over the stale record argv.
+        """
+        payload = {
+            "pid": 132,
+            "start_time": 123,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["/opt/hermes/.venv/bin/hermes", "gateway", "run", "--replace"],
+        }
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "s6-supervise gateway-coder")
+
+        assert status.get_runtime_status_running_pid(payload) is None
+
+    def test_runtime_status_running_pid_uses_record_when_cmdline_unreadable(self, monkeypatch):
+        """Keep the cross-platform fallback for hosts where cmdline is unavailable."""
+        payload = {
+            "pid": 132,
+            "start_time": 123,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["/opt/hermes/.venv/bin/hermes", "gateway", "run", "--replace"],
+        }
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_runtime_status_running_pid(payload) == 132
+
     def test_write_runtime_status_records_platform_failure(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

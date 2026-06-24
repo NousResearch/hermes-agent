@@ -76,6 +76,20 @@ class RelayAdapter(BasePlatformAdapter):
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property
+    def authorization_is_upstream(self) -> bool:
+        """Relay authorization is enforced by the connector, not locally.
+
+        The connector authenticates this gateway's WS (per-instance secret) and
+        performs owner-only author-binding resolution before delivering, so any
+        inbound relay event was already authorized as THIS instance's bound user
+        (``user_instance_binding``, keyed on the connector-observed author id).
+        The instance therefore must not default-deny relay users for lack of a
+        local ``RELAY_ALLOWED_USERS`` env allowlist. See
+        ``BasePlatformAdapter.authorization_is_upstream``.
+        """
+        return True
+
+    @property
     def message_len_fn(self) -> Callable[[str], int]:
         return _LEN_FNS.get(self.descriptor.len_unit, len)
 

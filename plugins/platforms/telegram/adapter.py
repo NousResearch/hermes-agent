@@ -2030,7 +2030,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 try:
                     with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+                        _yaml.dump(
+                            config,
+                            f,
+                            default_flow_style=False,
+                            sort_keys=False,
+                            allow_unicode=True,
+                        )
                         f.flush()
                         os.fsync(f.fileno())
                     atomic_replace(tmp_path, config_path)

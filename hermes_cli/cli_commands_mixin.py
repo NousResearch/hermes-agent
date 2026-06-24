@@ -1409,6 +1409,9 @@ class CLICommandsMixin:
             elif action == "resume":
                 print(f"(^_^)b Resumed job: {result['job']['name']} ({job_id})")
                 print(f"  Next run: {result['job'].get('next_run_at')}")
+                from hermes_cli.cron import _warn_if_gateway_not_running
+
+                _warn_if_gateway_not_running()
             elif action == "run":
                 print(f"(^_^)b Triggered job: {result['job']['name']} ({job_id})")
                 print("  It will run on the next scheduler tick.")

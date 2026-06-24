@@ -211,6 +211,29 @@ class TestGatewayNotRunningWarning:
         out = capsys.readouterr().out
         assert "Gateway is not running" in out
 
+    def test_resume_warns_when_gateway_absent(self, tmp_cron_dir, capsys, monkeypatch):
+        job = create_job(prompt="Daily report", schedule="0 11 * * *")
+        cron_command(Namespace(cron_command="pause", job_id=job["id"]))
+        capsys.readouterr()
+
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        cron_command(Namespace(cron_command="resume", job_id=job["id"]))
+
+        out = capsys.readouterr().out
+        assert "Resumed job" in out
+        assert "Gateway is not running" in out
+
+    def test_resume_silent_when_gateway_running(self, tmp_cron_dir, capsys, monkeypatch):
+        job = create_job(prompt="Daily report", schedule="0 11 * * *")
+        cron_command(Namespace(cron_command="pause", job_id=job["id"]))
+        capsys.readouterr()
+
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4242])
+        cron_command(Namespace(cron_command="resume", job_id=job["id"]))
+
+        out = capsys.readouterr().out
+        assert "Resumed job" in out
+        assert "Gateway is not running" not in out
 
 class TestExternalCronProviderStatus:
     """With an external cron provider (e.g. Chronos), jobs fire via a

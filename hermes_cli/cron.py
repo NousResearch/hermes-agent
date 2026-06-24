@@ -70,7 +70,7 @@ def _warn_if_gateway_not_running() -> None:
     gateway/run.py); there is no standalone cron daemon. Without a running
     gateway, ``next_run_at`` passes but jobs never fire and ``last_run_at``
     stays null — the most common cron support report (#51038). Surfacing this
-    at create/list time, when the user is right there, prevents it.
+    at create/list/resume time, when the user is right there, prevents it.
 
     An external provider (e.g. Chronos) fires jobs via a NAS-mediated webhook,
     NOT the in-process ticker, so a momentarily-absent gateway process does not
@@ -413,6 +413,8 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
             print(f"  {job['execution_skipped']}")
         else:
             print("  It will run on the next scheduler tick.")
+    if action == "resume":
+        _warn_if_gateway_not_running()
     return 0
 
 

@@ -3,7 +3,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { useEffect, useMemo, useState } from 'react'
 
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
-import { listSessions } from '@/hermes'
+import { listAllProfileSessions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { Check, MessageCircle } from '@/lib/icons'
@@ -35,7 +35,7 @@ export function SessionPickerDialog({
 
   const sessionsQuery = useQuery({
     enabled: open,
-    queryFn: () => listSessions(200, 1, 'exclude'),
+    queryFn: () => listAllProfileSessions(200, 1, 'exclude'),
     queryKey: ['session-picker', 'sessions']
   })
 

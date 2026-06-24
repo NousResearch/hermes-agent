@@ -445,6 +445,45 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     return repairs
 
 
+def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
+    """Run :func:`repair_message_sequence` and keep the SessionDB flush
+    cursor consistent with the compacted list (#44837).
+
+    ``repair_message_sequence`` merges/drops messages in place, shrinking
+    the list. ``_last_flushed_db_idx`` (the DB-write cursor) indexes into
+    that list, so after compaction it can point past the new end — the
+    turn-end flush would then skip the assistant/tool chain entirely — or
+    past unflushed messages shifted to lower indexes.
+
+    Repair preserves object identity for surviving messages, so counting
+    the survivors from the previously-flushed prefix gives the exact new
+    cursor even when messages are dropped/merged at indexes *before* the
+    cursor — a plain ``min()`` clamp would silently skip that many
+    unflushed rows. Falls back to the clamp when no prefix snapshot is
+    available.
+
+    Returns the number of repairs made (same as ``repair_message_sequence``).
+    """
+    pre_repair_flushed_ids = None
+    flush_cursor = getattr(agent, "_last_flushed_db_idx", None)
+    if isinstance(flush_cursor, int) and flush_cursor > 0:
+        pre_repair_flushed_ids = {id(m) for m in messages[:flush_cursor]}
+
+    repairs = repair_message_sequence(agent, messages)
+
+    if repairs > 0 and hasattr(agent, "_last_flushed_db_idx"):
+        if pre_repair_flushed_ids is not None:
+            agent._last_flushed_db_idx = sum(
+                1 for m in messages if id(m) in pre_repair_flushed_ids
+            )
+        else:
+            agent._last_flushed_db_idx = min(
+                agent._last_flushed_db_idx, len(messages)
+            )
+
+    return repairs
+
+
 
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.
@@ -579,12 +618,33 @@ def recover_with_credential_pool(
     current_provider = (getattr(agent, "provider", "") or "").strip().lower()
     pool_provider = (getattr(pool, "provider", "") or "").strip().lower()
     if current_provider and pool_provider and current_provider != pool_provider:
-        _ra().logger.warning(
-            "Credential pool provider mismatch: pool=%s, agent=%s — "
-            "skipping pool mutation to avoid cross-provider contamination",
-            pool_provider, current_provider,
-        )
-        return False, has_retried_429
+        # Custom endpoints use two naming conventions for the SAME provider:
+        # the agent carries the generic ``custom`` label while the pool is
+        # keyed ``custom:<name>`` (see CUSTOM_POOL_PREFIX). A literal string
+        # compare treats them as a mismatch and skips recovery for every
+        # custom-provider user — 401s/429s then burn the full retry cycle
+        # with no rotation or refresh. Accept the pair as matching only when
+        # the agent's CURRENT base_url actually resolves to this pool key,
+        # so a fallback provider (or a different custom endpoint) still
+        # triggers the guard.
+        _custom_match = False
+        if current_provider == "custom" and pool_provider.startswith("custom:"):
+            try:
+                from agent.credential_pool import get_custom_provider_pool_key
+                _agent_base = (getattr(agent, "base_url", "") or "").strip()
+                _custom_match = bool(_agent_base) and (
+                    (get_custom_provider_pool_key(_agent_base) or "").strip().lower()
+                    == pool_provider
+                )
+            except Exception:
+                _custom_match = False
+        if not _custom_match:
+            _ra().logger.warning(
+                "Credential pool provider mismatch: pool=%s, agent=%s — "
+                "skipping pool mutation to avoid cross-provider contamination",
+                pool_provider, current_provider,
+            )
+            return False, has_retried_429
 
     effective_reason = classified_reason
     if effective_reason is None:
@@ -821,6 +881,8 @@ def try_recover_primary_transport(
 
 def drop_thinking_only_and_merge_users(
     messages: List[Dict[str, Any]],
+    *,
+    drop_codex_reasoning_items: bool = True,
 ) -> List[Dict[str, Any]]:
     """Drop thinking-only assistant turns; merge any adjacent user messages left behind.
 
@@ -842,7 +904,13 @@ def drop_thinking_only_and_merge_users(
         return messages
 
     # Pass 1: drop thinking-only assistant turns.
-    kept = [m for m in messages if not _ra().AIAgent._is_thinking_only_assistant(m)]
+    kept = [
+        m for m in messages
+        if not _ra().AIAgent._is_thinking_only_assistant(
+            m,
+            drop_codex_reasoning_items=drop_codex_reasoning_items,
+        )
+    ]
     dropped = len(messages) - len(kept)
     if dropped == 0:
         return messages
@@ -981,6 +1049,11 @@ def restore_primary_runtime(agent) -> bool:
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
         agent._fallback_index = 0
+
+        # Undo the fallback's identity rewrite so the prompt is
+        # byte-identical to the stored copy again (prefix cache match).
+        from agent.chat_completion_helpers import rewrite_prompt_model_identity
+        rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
 
         logger.info(
             "Primary runtime restored for new turn: %s (%s)",
@@ -1149,12 +1222,23 @@ def dump_api_request_debug(
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         dump_file = agent.logs_dir / f"request_dump_{agent.session_id}_{timestamp}.json"
-        atomic_json_write(dump_file, dump_payload, default=str)
+
+        # Redact secrets before persisting/printing. This dump captures the
+        # full request body (system prompt, tool defs, context-embedded
+        # values), and this path fires unconditionally on API errors — so it
+        # otherwise lands any context-embedded secret in cleartext on disk.
+        # Run the serialized dump through the same scrubber used for logs/tool
+        # output, then hand the resulting payload back to the shared atomic
+        # JSON writer so request dumps keep the same write semantics as before.
+        from agent.redact import redact_sensitive_text
+        _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
+        _redacted_payload = json.loads(redact_sensitive_text(_serialized, force=True))
+        atomic_json_write(dump_file, _redacted_payload, default=str)
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
         if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
-            print(json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str))
+            print(json.dumps(_redacted_payload, ensure_ascii=False, indent=2, default=str))
 
         return dump_file
     except Exception as dump_error:
@@ -1289,22 +1373,6 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
         client = CopilotACPClient(**client_kwargs)
         _ra().logger.info(
             "Copilot ACP client created (%s, shared=%s) %s",
-            reason,
-            shared,
-            agent._client_log_context(),
-        )
-        return client
-    if agent.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
-        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
-
-        # Strip OpenAI-specific kwargs the Gemini client doesn't accept
-        safe_kwargs = {
-            k: v for k, v in client_kwargs.items()
-            if k in {"api_key", "base_url", "default_headers", "project_id", "timeout"}
-        }
-        client = GeminiCloudCodeClient(**safe_kwargs)
-        _ra().logger.info(
-            "Gemini Cloud Code Assist client created (%s, shared=%s) %s",
             reason,
             shared,
             agent._client_log_context(),
@@ -1760,28 +1828,28 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     elif function_name == "memory":
         def _execute(next_args: dict) -> Any:
             target = next_args.get("target", "memory")
+            operations = next_args.get("operations")
             from tools.memory_tool import memory_tool as _memory_tool
             result = _memory_tool(
                 action=next_args.get("action"),
                 target=target,
                 content=next_args.get("content"),
                 old_text=next_args.get("old_text"),
+                operations=operations,
                 store=agent._memory_store,
             )
-            # Bridge: notify external memory provider of built-in memory writes
-            if agent._memory_manager and next_args.get("action") in {"add", "replace"}:
-                try:
-                    agent._memory_manager.on_memory_write(
-                        next_args.get("action", ""),
-                        target,
-                        next_args.get("content", ""),
-                        metadata=agent._build_memory_write_metadata(
-                            task_id=effective_task_id,
-                            tool_call_id=tool_call_id,
-                        ),
-                    )
-                except Exception:
-                    pass
+            # Mirror successful built-in memory writes to external providers.
+            # All gating/op-expansion lives behind the manager interface
+            # (MemoryManager.notify_memory_tool_write).
+            if agent._memory_manager:
+                agent._memory_manager.notify_memory_tool_write(
+                    result,
+                    next_args,
+                    build_metadata=lambda: agent._build_memory_write_metadata(
+                        task_id=effective_task_id,
+                        tool_call_id=tool_call_id,
+                    ),
+                )
             return _finish_agent_tool(result, next_args)
     elif agent._memory_manager and agent._memory_manager.has_tool(function_name):
         def _execute(next_args: dict) -> Any:
@@ -2089,24 +2157,35 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     if source_msg.get("role") != "assistant":
         return
 
-    # 1. Explicit reasoning_content already set — preserve it verbatim
-    # (includes DeepSeek/Kimi's own space-placeholder written at creation
-    # time, and any valid reasoning content from the same provider).
+    needs_thinking_pad = agent._needs_thinking_reasoning_pad()
+
+    # 1. Explicit reasoning_content already set.
     #
-    # Exception: sessions persisted BEFORE #17341 have empty-string
-    # placeholders pinned at creation time. DeepSeek V4 Pro rejects
-    # those with HTTP 400. When the active provider enforces the
-    # thinking-mode echo, upgrade "" → " " on replay so stale history
-    # doesn't 400 the user on the next turn.
+    # When the active provider enforces the thinking-mode echo-back
+    # (DeepSeek / Kimi / MiMo), preserve it verbatim — that includes their
+    # own space-placeholder written at creation time and any valid reasoning
+    # from the same provider. Sessions persisted BEFORE #17341 have
+    # empty-string placeholders pinned at creation time; DeepSeek V4 Pro
+    # rejects those with HTTP 400, so upgrade "" → " " on replay.
+    #
+    # When the active provider does NOT enforce echo-back, strip the field
+    # entirely. Strict OpenAI-compatible providers (Mistral, Cerebras, Groq,
+    # SambaNova, …) reject ANY reasoning_content key in input messages with
+    # HTTP 400/422 ("Extra inputs are not permitted"), even an empty string
+    # or a single-space pad. This is the cross-provider fallback case: a
+    # reasoning primary (DeepSeek/Kimi/MiMo) pads history with " ", then a
+    # fallback to a strict provider replays that pad and 422s. Stripping
+    # here covers the rebuild path; reapply_reasoning_echo_for_provider()
+    # covers the already-built api_messages path. Refs #45655.
     existing = source_msg.get("reasoning_content")
     if isinstance(existing, str):
-        if existing == "" and agent._needs_thinking_reasoning_pad():
+        if not needs_thinking_pad:
+            api_msg.pop("reasoning_content", None)
+        elif existing == "":
             api_msg["reasoning_content"] = " "
         else:
             api_msg["reasoning_content"] = existing
         return
-
-    needs_thinking_pad = agent._needs_thinking_reasoning_pad()
 
     # 2. Cross-provider poisoned history (#15748): on DeepSeek/Kimi,
     # if the source turn has tool_calls AND a 'reasoning' field but no
@@ -2133,9 +2212,13 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     # for providers that use the internal 'reasoning' key.
     # This must happen before the unconditional empty-string fallback so
     # genuine reasoning content is not overwritten (#15812 regression in
-    # PR #15478).
+    # PR #15478). Only promote for providers that enforce echo-back —
+    # strict providers reject the field (refs #45655).
     if isinstance(normalized_reasoning, str) and normalized_reasoning:
-        api_msg["reasoning_content"] = normalized_reasoning
+        if needs_thinking_pad:
+            api_msg["reasoning_content"] = normalized_reasoning
+        else:
+            api_msg.pop("reasoning_content", None)
         return
 
     # 4. DeepSeek / Kimi thinking mode: all assistant messages need
@@ -2156,34 +2239,53 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
 
 
 def reapply_reasoning_echo_for_provider(agent, api_messages: list) -> int:
-    """Re-pad assistant turns with reasoning_content for the active provider.
+    """Re-pad (or strip) assistant turns' reasoning_content for the active provider.
 
     ``api_messages`` is built once, before the retry loop, while the *primary*
-    provider is active.  If a mid-conversation fallback then switches to a
-    require-side provider (DeepSeek / Kimi / MiMo thinking mode), assistant
-    turns that were built when the prior provider did NOT need the echo-back go
-    out without ``reasoning_content`` and the new provider rejects them with
-    HTTP 400 ("The reasoning_content in the thinking mode must be passed back").
+    provider is active.  A mid-conversation fallback can then switch providers,
+    so the reasoning fields baked into ``api_messages`` are shaped for the
+    *prior* provider and must be reconciled against the *current* one:
 
-    Calling this immediately before building the request kwargs re-applies the
-    pad against the *current* provider.  It is idempotent and a no-op unless
-    ``_needs_thinking_reasoning_pad()`` is True for the active provider, so it
-    is safe to call every iteration and covers every fallback path.
+    * Switching TO a require-side provider (DeepSeek / Kimi / MiMo thinking
+      mode): assistant turns built when the prior provider did NOT need the
+      echo-back go out without ``reasoning_content`` and the new provider
+      rejects them with HTTP 400 ("The reasoning_content in the thinking mode
+      must be passed back").  Re-apply the pad.
 
-    Returns the number of assistant turns that gained reasoning_content.
+    * Switching TO a strict provider that rejects the field (Mistral,
+      Cerebras, Groq, SambaNova, …): assistant turns built under a reasoning
+      primary carry a ``reasoning_content`` pad (often a single space ``" "``),
+      and the strict provider rejects it with HTTP 400/422 ("Extra inputs are
+      not permitted").  Strip the field.  This is the exact cross-provider
+      fallback bug from #45655 — a DeepSeek primary pads history with ``" "``,
+      the request falls back to Mistral, and Mistral 422s on the stale pad.
+
+    Calling this immediately before building the request kwargs reconciles the
+    fields against the *current* provider.  It is idempotent and safe to call
+    every iteration; it covers every fallback path.
+
+    Returns the number of assistant turns whose reasoning_content was added or
+    removed.
     """
-    if not agent._needs_thinking_reasoning_pad():
-        return 0
-    padded = 0
+    needs_pad = agent._needs_thinking_reasoning_pad()
+    changed = 0
     for api_msg in api_messages:
         if api_msg.get("role") != "assistant":
             continue
-        if api_msg.get("reasoning_content"):
-            continue
-        copy_reasoning_content_for_api(agent, api_msg, api_msg)
-        if api_msg.get("reasoning_content"):
-            padded += 1
-    return padded
+        if needs_pad:
+            if api_msg.get("reasoning_content"):
+                continue
+            copy_reasoning_content_for_api(agent, api_msg, api_msg)
+            if api_msg.get("reasoning_content"):
+                changed += 1
+        else:
+            # Strict provider — strip any stale reasoning_content pad left
+            # over from a reasoning primary so the fallback request doesn't
+            # 400/422 on it.
+            if "reasoning_content" in api_msg:
+                api_msg.pop("reasoning_content", None)
+                changed += 1
+    return changed
 
 
 def _iter_pool_sockets(client: Any):

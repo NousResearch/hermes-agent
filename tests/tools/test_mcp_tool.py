@@ -82,6 +82,56 @@ class TestLoadMCPConfig:
             assert result == {}
 
 
+class TestMCPStatus:
+    def test_status_distinguishes_configured_connecting_failed_and_disabled(
+        self, monkeypatch
+    ):
+        import tools.mcp_tool as mcp_tool
+
+        monkeypatch.setattr(
+            mcp_tool,
+            "_load_mcp_config",
+            lambda: {
+                "configured": {"command": "docker", "args": ["mcp", "gateway", "run"]},
+                "connecting": {"command": "slow-mcp"},
+                "failed": {"command": "bad-mcp"},
+                "disabled": {"command": "off-mcp", "enabled": False},
+            },
+        )
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            saved_connecting = set(mcp_tool._server_connecting)
+            saved_errors = dict(mcp_tool._server_connect_errors)
+            mcp_tool._servers.clear()
+            mcp_tool._server_connecting.clear()
+            mcp_tool._server_connect_errors.clear()
+            mcp_tool._server_connecting.add("connecting")
+            mcp_tool._server_connect_errors["failed"] = "Connection closed"
+
+        try:
+            statuses = {
+                entry["name"]: entry
+                for entry in mcp_tool.get_mcp_status()
+            }
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+                mcp_tool._server_connecting.clear()
+                mcp_tool._server_connecting.update(saved_connecting)
+                mcp_tool._server_connect_errors.clear()
+                mcp_tool._server_connect_errors.update(saved_errors)
+
+        assert statuses["configured"]["status"] == "configured"
+        assert statuses["configured"]["connected"] is False
+        assert statuses["configured"]["disabled"] is False
+        assert statuses["connecting"]["status"] == "connecting"
+        assert statuses["failed"]["status"] == "failed"
+        assert statuses["failed"]["error"] == "Connection closed"
+        assert statuses["disabled"]["status"] == "disabled"
+        assert statuses["disabled"]["disabled"] is True
+
+
 # ---------------------------------------------------------------------------
 # Schema conversion
 # ---------------------------------------------------------------------------
@@ -1378,6 +1428,33 @@ class TestBuildSafeEnv:
         assert "DATABASE_URL" not in result
         assert "API_SECRET" not in result
 
+    def test_windows_location_vars_passed_without_secrets(self):
+        """Windows launcher tools need location vars, but secrets stay filtered."""
+        from tools.mcp_tool import _build_safe_env
+
+        fake_env = {
+            "PATH": r"C:\Windows\System32",
+            "ProgramFiles": r"C:\Program Files",
+            "ProgramData": r"C:\ProgramData",
+            "ProgramW6432": r"C:\Program Files",
+            "LOCALAPPDATA": r"C:\Users\alice\AppData\Local",
+            "APPDATA": r"C:\Users\alice\AppData\Roaming",
+            "USERPROFILE": r"C:\Users\alice",
+            "GITHUB_TOKEN": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "OPENAI_API_KEY": "sk-proj-abc123",
+        }
+        with patch.dict("os.environ", fake_env, clear=True):
+            result = _build_safe_env(None)
+
+        assert result["ProgramFiles"] == r"C:\Program Files"
+        assert result["ProgramData"] == r"C:\ProgramData"
+        assert result["ProgramW6432"] == r"C:\Program Files"
+        assert result["LOCALAPPDATA"].endswith("Local")
+        assert result["APPDATA"].endswith("Roaming")
+        assert result["USERPROFILE"] == r"C:\Users\alice"
+        assert "GITHUB_TOKEN" not in result
+        assert "OPENAI_API_KEY" not in result
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_error
@@ -1807,7 +1884,7 @@ class TestConfigurableTimeouts:
 
         server = MCPServerTask("test_srv")
         assert server.tool_timeout == _DEFAULT_TOOL_TIMEOUT
-        assert server.tool_timeout == 120
+        assert server.tool_timeout == 300
 
     def test_custom_timeout(self):
         """Server with timeout=180 in config gets 180."""

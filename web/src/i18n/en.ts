@@ -107,6 +107,7 @@ export const en: Translations = {
     activeSessions: "Active Sessions",
     connected: "Connected",
     connectedPlatforms: "Connected Platforms",
+    disabled: "Disabled",
     disconnected: "Disconnected",
     error: "Error",
     failed: "Failed",
@@ -165,6 +166,7 @@ export const en: Translations = {
     selectedSessionsDeleted: "{count} sessions deleted",
     failedToDeleteSelected: "Failed to delete selected sessions",
     resumeInChat: "Resume in Chat",
+    newChat: "New chat",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {
@@ -297,7 +299,8 @@ export const en: Translations = {
     nameRule:
       "Lowercase letters, digits, _ and - only; must start with a letter or digit; up to 64 characters.",
     invalidName: "Invalid profile name",
-    cloneFromDefault: "Clone config from default profile",
+    cloneFrom: "Clone config from",
+    cloneFromNone: "None (blank)",
     allProfiles: "Profiles",
     noProfiles: "No profiles found.",
     defaultBadge: "default",

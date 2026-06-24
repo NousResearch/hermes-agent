@@ -25,14 +25,16 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import inspect
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
+from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -42,6 +44,66 @@ logger = logging.getLogger(__name__)
 # teardown indefinitely — the worker threads are daemon, so anything still
 # running past this window dies with the interpreter.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
+
+
+def memory_provider_tools_enabled(enabled_toolsets: Optional[List[str]]) -> bool:
+    """Return whether external memory-provider tools should be exposed."""
+    if enabled_toolsets is None:
+        return True
+    if not enabled_toolsets:
+        return False
+    if "memory" in enabled_toolsets:
+        return True
+
+    try:
+        from toolsets import resolve_toolset
+
+        return any("memory" in resolve_toolset(name) for name in enabled_toolsets)
+    except Exception:
+        logger.debug("Failed to resolve enabled toolsets for memory-provider tools", exc_info=True)
+        return False
+
+
+def inject_memory_provider_tools(agent: Any) -> int:
+    """Append external memory-provider tool schemas to an agent tool surface."""
+    memory_manager = getattr(agent, "_memory_manager", None)
+    tools = getattr(agent, "tools", None)
+    if not memory_manager or tools is None:
+        return 0
+
+    existing_tool_names = {
+        tool.get("function", {}).get("name")
+        for tool in tools
+        if isinstance(tool, dict)
+    }
+    if (
+        "memory" not in existing_tool_names
+        and not memory_provider_tools_enabled(getattr(agent, "enabled_toolsets", None))
+    ):
+        return 0
+
+    get_schemas = getattr(memory_manager, "get_all_tool_schemas", None)
+    if not callable(get_schemas):
+        return 0
+
+    valid_tool_names = getattr(agent, "valid_tool_names", None)
+    if valid_tool_names is None:
+        valid_tool_names = set()
+        agent.valid_tool_names = valid_tool_names
+
+    added = 0
+    for schema in get_schemas():
+        if not isinstance(schema, dict):
+            continue
+        tool_name = schema.get("name", "")
+        if not tool_name or tool_name in existing_tool_names:
+            continue
+        tools.append({"type": "function", "function": schema})
+        valid_tool_names.add(tool_name)
+        existing_tool_names.add(tool_name)
+        added += 1
+
+    return added
 
 
 # ---------------------------------------------------------------------------
@@ -370,16 +432,37 @@ class MemoryManager:
 
     # -- Prefetch / recall ---------------------------------------------------
 
+    @staticmethod
+    def _strip_skill_scaffolding(text: str) -> Optional[str]:
+        """Return memory-worthy user text, or None to skip the turn.
+
+        When a user invokes a /skill or /bundle, Hermes expands the turn into
+        a model-facing message that embeds the entire skill body. Feeding that
+        verbatim to memory providers pollutes their stores/embeddings with
+        prompt scaffolding instead of what the user actually asked. We recover
+        just the user's instruction here, once, for every provider — so this
+        is fixed for the whole provider fan-out, not per backend.
+
+        - Non-skill messages pass through unchanged.
+        - Skill turns with a user instruction return that instruction.
+        - Bare skill invocations (no instruction) return None → callers skip
+          the turn, since there is no user content worth remembering.
+        """
+        return extract_user_instruction_from_skill_message(text)
+
     def prefetch_all(self, query: str, *, session_id: str = "") -> str:
         """Collect prefetch context from all providers.
 
         Returns merged context text labeled by provider. Empty providers
         are skipped. Failures in one provider don't block others.
         """
+        clean_query = self._strip_skill_scaffolding(query)
+        if not clean_query:
+            return ""
         parts = []
         for provider in self._providers:
             try:
-                result = provider.prefetch(query, session_id=session_id)
+                result = provider.prefetch(clean_query, session_id=session_id)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
@@ -400,10 +483,14 @@ class MemoryManager:
         if not providers:
             return
 
+        clean_query = self._strip_skill_scaffolding(query)
+        if not clean_query:
+            return
+
         def _run() -> None:
             for provider in providers:
                 try:
-                    provider.queue_prefetch(query, session_id=session_id)
+                    provider.queue_prefetch(clean_query, session_id=session_id)
                 except Exception as e:
                     logger.debug(
                         "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
@@ -454,6 +541,11 @@ class MemoryManager:
         providers = list(self._providers)
         if not providers:
             return
+
+        clean_user_content = self._strip_skill_scaffolding(user_content)
+        if not clean_user_content:
+            return
+        user_content = clean_user_content
 
         def _run() -> None:
             for provider in providers:
@@ -630,9 +722,10 @@ class MemoryManager:
             try:
                 provider.on_session_end(messages)
             except Exception as e:
-                logger.debug(
+                logger.warning(
                     "Memory provider '%s' on_session_end failed: %s",
                     provider.name, e,
+                    exc_info=True,
                 )
 
     def on_session_switch(
@@ -757,6 +850,87 @@ class MemoryManager:
                     "Memory provider '%s' on_memory_write failed: %s",
                     provider.name, e,
                 )
+
+    # Actions the bridge mirrors to external providers. The built-in memory
+    # tool can also return non-mutating shapes (errors, staged-for-approval
+    # records); those are filtered out by ``notify_memory_tool_write`` before
+    # we ever reach a provider.
+    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+
+    @staticmethod
+    def _memory_tool_result_succeeded(result: Any) -> bool:
+        """True only when the built-in memory tool actually committed a write.
+
+        Fails closed: a string that isn't JSON, a non-dict result, a missing
+        ``success``, or a write staged for approval (``staged is True``) all
+        return False so external providers are never told about a write that
+        did not land.
+        """
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except Exception:
+                return False
+        if not isinstance(result, dict):
+            return False
+        return result.get("success") is True and result.get("staged") is not True
+
+    def notify_memory_tool_write(
+        self,
+        tool_result: Any,
+        tool_args: Dict[str, Any],
+        *,
+        build_metadata: Optional[Callable[[], Dict[str, Any]]] = None,
+    ) -> None:
+        """Mirror a built-in memory tool call to external providers.
+
+        This is the single entry point the agent loop calls after running the
+        built-in ``memory`` tool. All the decisions about *whether* and *what*
+        to mirror live here, behind the manager interface — the loop only hands
+        over the raw tool result and args:
+
+        * gate on a committed (non-staged, successful) write,
+        * expand the single-op and batched (``operations``) shapes,
+        * keep only mutating actions (add/replace/remove),
+        * build per-op provenance metadata and forward ``old_text``.
+
+        ``build_metadata`` is an optional agent-side callable (the loop knows
+        session/task/tool-call provenance the manager does not) invoked once per
+        mirrored op.
+        """
+        if not self._memory_tool_result_succeeded(tool_result):
+            return
+
+        target = str(tool_args.get("target") or "memory")
+        operations = tool_args.get("operations")
+        if isinstance(operations, list) and operations:
+            raw_operations = operations
+        else:
+            raw_operations = [{
+                "action": tool_args.get("action"),
+                "content": tool_args.get("content"),
+                "old_text": tool_args.get("old_text"),
+            }]
+
+        for op in raw_operations:
+            if not isinstance(op, dict):
+                continue
+            action = str(op.get("action") or "")
+            if action not in self._MIRRORED_MEMORY_ACTIONS:
+                continue
+            try:
+                metadata = dict(build_metadata() if build_metadata else {})
+                old_text = op.get("old_text")
+                if old_text:
+                    metadata["old_text"] = str(old_text)
+                self.on_memory_write(
+                    action,
+                    target,
+                    str(op.get("content") or ""),
+                    metadata=metadata,
+                )
+            except Exception as e:
+                logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
 
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:

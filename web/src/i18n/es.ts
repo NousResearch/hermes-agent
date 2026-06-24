@@ -158,6 +158,7 @@ export const es: Translations = {
     selectedSessionsDeleted: "{count} sesiones eliminadas",
     failedToDeleteSelected: "No se pudieron eliminar las sesiones seleccionadas",
     resumeInChat: "Reanudar en el chat",
+    newChat: "Nuevo chat",
     previousPage: "Página anterior",
     nextPage: "Página siguiente",
     roles: {
@@ -287,7 +288,8 @@ export const es: Translations = {
     nameRule:
       "Solo letras minúsculas, dígitos, _ y -; debe comenzar con una letra o dígito; hasta 64 caracteres.",
     invalidName: "Nombre de perfil no válido",
-    cloneFromDefault: "Clonar configuración del perfil predeterminado",
+    cloneFrom: "Clonar desde el perfil",
+    cloneFromNone: "Ninguno (vacío)",
     allProfiles: "Perfiles",
     noProfiles: "No se encontraron perfiles.",
     defaultBadge: "predeterminado",

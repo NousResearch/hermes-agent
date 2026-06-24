@@ -1,6 +1,7 @@
 """Tests for tools/file_operations.py — deny list, result dataclasses, helpers."""
 
 import os
+import re
 import pytest
 import subprocess
 from pathlib import Path
@@ -38,6 +39,11 @@ class TestIsWriteDenied:
         path = os.path.join(str(Path.home()), ".netrc")
         assert _is_write_denied(path) is True
 
+    @pytest.mark.parametrize("name", [".pgpass", ".npmrc", ".pypirc"])
+    def test_credential_config_files_denied(self, name):
+        path = os.path.join(str(Path.home()), name)
+        assert _is_write_denied(path) is True
+
     def test_aws_prefix_denied(self):
         path = os.path.join(str(Path.home()), ".aws", "credentials")
         assert _is_write_denied(path) is True
@@ -59,9 +65,6 @@ class TestIsWriteDenied:
     @pytest.mark.parametrize(
         "path",
         [
-            "auth.json",
-            "config.yaml",
-            "webhook_subscriptions.json",
             ".anthropic_oauth.json",
             "mcp-tokens/token1.json",
             "mcp-tokens/subdir/token2.json",
@@ -71,8 +74,8 @@ class TestIsWriteDenied:
             "pairing",
         ],
     )
-    def test_hermes_control_files_oauth_and_mcp_tokens_denied(self, path):
-        """Hermes control files, PKCE creds, mcp-tokens, and pairing entries must be write-denied."""
+    def test_oauth_mcp_tokens_and_pairing_denied(self, path):
+        """PKCE creds, mcp-tokens, and pairing entries must be write-denied."""
         from hermes_constants import get_hermes_home
         hermes_home = get_hermes_home()
         full_path = str(hermes_home / path)
@@ -80,15 +83,21 @@ class TestIsWriteDenied:
 
     @pytest.mark.parametrize(
         "path",
+        ["auth.json", "config.yaml", "webhook_subscriptions.json"],
+    )
+    def test_hermes_control_files_requested_writable(self, path):
+        from hermes_constants import get_hermes_home
+
+        assert _is_write_denied(str(get_hermes_home() / path)) is False
+
+    @pytest.mark.parametrize(
+        "path",
         [
-            "dummy/../config.yaml",
-            "./auth.json",
             "./.anthropic_oauth.json",
-            "mcp-tokens/../config.yaml",
         ],
     )
-    def test_hermes_control_files_and_oauth_traversal_denied(self, path):
-        """Path traversal attempts to protected Hermes files must be blocked."""
+    def test_oauth_traversal_denied(self, path):
+        """Path traversal attempts to protected OAuth files must be blocked."""
         from hermes_constants import get_hermes_home
         hermes_home = get_hermes_home()
         full_path = str(hermes_home / path)
@@ -106,30 +115,29 @@ class TestIsWriteDenied:
         """Unrelated paths must still be allowed."""
         assert _is_write_denied(path) is False
 
-    @pytest.mark.parametrize(
-        "name",
-        ["auth.json", "config.yaml", "webhook_subscriptions.json", ".anthropic_oauth.json"],
-    )
-    def test_control_files_and_oauth_protected_in_profile_mode(self, tmp_path, monkeypatch, name):
-        """Under a profile, BOTH <profile>/X and <root>/X must be denied (#15981 shape).
-
-        Without the root-level pass, a profile-mode session leaves the
-        global ~/.hermes/{auth.json,config.yaml,webhook_subscriptions.json,
-        .anthropic_oauth.json} writable — the same gap PR #15981 fixed
-        for .env.
-        """
-        # Simulate a profile-mode HERMES_HOME layout:
-        #   <root>/profiles/coder/{auth.json,config.yaml,...}
-        #   <root>/{auth.json,config.yaml,...}        ← must also be denied
+    @pytest.mark.parametrize("name", [".anthropic_oauth.json"])
+    def test_oauth_protected_in_profile_mode(self, tmp_path, monkeypatch, name):
+        """Under a profile, BOTH <profile>/X and <root>/X must be denied."""
         root = tmp_path / "hermes"
         profile = root / "profiles" / "coder"
         profile.mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(profile))
 
-        # Profile copy
         assert _is_write_denied(str(profile / name)) is True
-        # Root copy — the gap this widening closes
         assert _is_write_denied(str(root / name)) is True
+
+    @pytest.mark.parametrize(
+        "name",
+        ["auth.json", "config.yaml", "webhook_subscriptions.json"],
+    )
+    def test_control_files_requested_writable_in_profile_mode(self, tmp_path, monkeypatch, name):
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        assert _is_write_denied(str(profile / name)) is False
+        assert _is_write_denied(str(root / name)) is False
 
     def test_mcp_tokens_dir_protected_in_profile_mode(self, tmp_path, monkeypatch):
         """mcp-tokens/ under profile AND under root must both be denied."""
@@ -261,6 +269,144 @@ class TestSearchResult:
         r = SearchResult(total_count=100, truncated=True)
         d = r.to_dict()
         assert d["truncated"] is True
+
+
+class TestSearchResultDensify:
+    """Path-grouped densification of content-mode matches (lossless)."""
+
+    def _matches(self, n, paths=None):
+        # Real ripgrep output is path-ordered: all matches in a file are
+        # consecutive (verified against live search_files corpus). The fixture
+        # mirrors that — group by path, then enumerate lines within each.
+        paths = paths or ["a.py"]
+        out = []
+        per = max(1, n // len(paths))
+        ln = 0
+        for p in paths:
+            for _ in range(per):
+                ln += 1
+                out.append(SearchMatch(path=p, line_number=ln,
+                                       content=f"line content {ln}"))
+        # pad remainder onto the last path
+        while len(out) < n:
+            ln += 1
+            out.append(SearchMatch(path=paths[-1], line_number=ln,
+                                   content=f"line content {ln}"))
+        return out
+
+    def test_densify_off_by_default(self):
+        # The model-facing default must be unchanged for callers that don't
+        # opt in: verbose array, no matches_text key.
+        r = SearchResult(matches=self._matches(10), total_count=10)
+        d = r.to_dict()
+        assert "matches" in d
+        assert "matches_text" not in d
+
+    def test_densify_below_threshold_keeps_verbose(self):
+        # Too few matches: the grouping header would cost more than it saves,
+        # so we fall back to the verbose array even with densify=True.
+        r = SearchResult(matches=self._matches(4), total_count=4)
+        d = r.to_dict(densify=True)
+        assert "matches" in d
+        assert "matches_text" not in d
+
+    def test_densify_emits_path_grouped_text(self):
+        r = SearchResult(matches=self._matches(6, paths=["a.py", "b.py"]),
+                         total_count=6)
+        d = r.to_dict(densify=True)
+        assert "matches" not in d
+        assert "matches_text" in d
+        assert "matches_format" in d  # self-describing
+        text = d["matches_text"]
+        # Each path appears once as a group header, not repeated per match.
+        assert text.count("a.py") == 1
+        assert text.count("b.py") == 1
+
+    def test_densify_is_lossless(self):
+        # Every path, line number, and content byte must be recoverable from
+        # the dense form.
+        import re
+        matches = [
+            SearchMatch(path="src/x.py", line_number=12, content="    def foo():"),
+            SearchMatch(path="src/x.py", line_number=45, content="        return bar"),
+            SearchMatch(path="src/y.py", line_number=3, content="import os"),
+            SearchMatch(path="src/y.py", line_number=99, content="x = 1  # tail"),
+            SearchMatch(path="src/z.py", line_number=7, content="class Z:"),
+        ]
+        r = SearchResult(matches=matches, total_count=5)
+        text = r.to_dict(densify=True)["matches_text"]
+        # Reconstruct (path, line, content) triples from the grouped text.
+        recovered = []
+        cur = None
+        for ln in text.split("\n"):
+            row = re.match(r"^  (\d+): (.*)$", ln)
+            if row:
+                recovered.append((cur, int(row.group(1)), row.group(2)))
+            else:
+                cur = ln
+        assert len(recovered) == 5
+        for orig, rec in zip(matches, recovered):
+            assert rec[0] == orig.path
+            assert rec[1] == orig.line_number
+            # content is rstrip'd in the dense form; originals here have no
+            # trailing whitespace, so they must match exactly.
+            assert rec[2] == orig.content
+
+    def test_densify_smaller_than_verbose(self):
+        import json
+        matches = self._matches(40, paths=["pkg/module_one.py", "pkg/module_two.py"])
+        r = SearchResult(matches=matches, total_count=40)
+        verbose = json.dumps(r.to_dict(densify=False), ensure_ascii=False)
+        dense = json.dumps(r.to_dict(densify=True), ensure_ascii=False)
+        assert len(dense) < len(verbose)
+
+    @pytest.mark.parametrize("content", [
+        "x = {'k': 1, 'url': 'http://h:8080'}",   # colons in content
+        "        deeply.indented(call)",          # leading indentation preserved
+        "# \u65e5\u672c\u8a9e comment \U0001f525",  # unicode + emoji
+        "",                                        # empty content
+        "trailing spaces   ",                     # rstrip'd (see note below)
+        'mix "quotes" and , commas',              # punctuation that breaks naive CSV
+    ])
+    def test_densify_content_is_lossless(self, content):
+        # Every realistic single-line match content must round-trip exactly
+        # (trailing whitespace is the one documented transform — rstrip).
+        matches = [SearchMatch(path=f"f{i}.py", line_number=i + 1, content=content)
+                   for i in range(6)]
+        r = SearchResult(matches=matches, total_count=6)
+        text = r.to_dict(densify=True)["matches_text"]
+        recovered = []
+        cur = None
+        for ln in text.split("\n"):
+            row = re.match(r"^  (\d+): (.*)$", ln)
+            if row:
+                recovered.append(row.group(2))
+            else:
+                cur = ln
+        assert len(recovered) == 6
+        for got in recovered:
+            assert got == content.rstrip()
+
+    def test_densify_assumes_single_line_matches(self):
+        # The path-grouped format puts one match per line, so it relies on
+        # ripgrep's one-line-per-match contract (verified: 0/6775 real match
+        # contents contained a newline). This test documents that assumption:
+        # a (synthetic, never-produced-by-rg) multiline content would split
+        # across rows. If search ever emits multiline content, densify must
+        # escape newlines first.
+        matches = [SearchMatch(path="a.py", line_number=i + 1, content="single line")
+                   for i in range(6)]
+        text = SearchResult(matches=matches, total_count=6).to_dict(densify=True)["matches_text"]
+        # one header + six rows == 7 lines, no row spans multiple lines
+        body_rows = [ln for ln in text.split("\n") if re.match(r"^  \d+: ", ln)]
+        assert len(body_rows) == 6
+
+    def test_densify_paths_with_spaces(self):
+        matches = [SearchMatch(path="my dir/a b.py", line_number=i + 1, content=f"x{i}")
+                   for i in range(6)]
+        text = SearchResult(matches=matches, total_count=6).to_dict(densify=True)["matches_text"]
+        # path with spaces survives as a header line verbatim
+        assert "my dir/a b.py" in text.split("\n")[0]
 
 
 class TestLintResult:

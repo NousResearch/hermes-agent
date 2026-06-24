@@ -47,6 +47,11 @@ export interface OAuthProviderStatus {
 
 export interface OAuthProvider {
   cli_command: string
+  /** Shell command that clears an external provider's credentials, run in the
+   *  embedded terminal. Null when Hermes doesn't know how to remove it. */
+  disconnect_command?: null | string
+  disconnect_hint?: null | string
+  disconnectable?: boolean
   docs_url: string
   flow: 'device_code' | 'external' | 'loopback' | 'pkce'
   id: string
@@ -93,6 +98,13 @@ export interface OAuthPollResponse {
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
 }
 
+export interface MemoryProviderOAuthStatus {
+  auth: 'apikey' | 'oauth' | null
+  connected: boolean
+  detail: string
+  state: 'connected' | 'error' | 'idle' | 'pending'
+}
+
 export interface EnvVarInfo {
   advanced: boolean
   category: string
@@ -103,9 +115,40 @@ export interface EnvVarInfo {
   description: string
   is_password: boolean
   is_set: boolean
+  // Backend-derived provider grouping hints (from the unified provider catalog
+  // in hermes_cli/provider_catalog.py). When present, the Keys tab groups by
+  // this provider identity — the SAME one `hermes model` uses — instead of
+  // desktop-only env-var prefix guesses. Empty for non-provider env vars.
+  provider?: string
+  provider_label?: string
   redacted_value: null | string
   tools: string[]
   url: null | string
+}
+
+export type MemoryProviderFieldKind = 'secret' | 'select' | 'text'
+
+export interface MemoryProviderFieldOption {
+  description: string
+  label: string
+  value: string
+}
+
+export interface MemoryProviderField {
+  description: string
+  is_set: boolean
+  key: string
+  kind: MemoryProviderFieldKind
+  label: string
+  options: MemoryProviderFieldOption[]
+  placeholder: string
+  value: string
+}
+
+export interface MemoryProviderConfig {
+  fields: MemoryProviderField[]
+  label: string
+  name: string
 }
 
 export interface MessagingEnvVarInfo {
@@ -470,7 +513,7 @@ export interface CronJobUpdates {
 
 export interface ProfileCreatePayload {
   clone_all?: boolean
-  clone_from?: string
+  clone_from?: null | string
   clone_from_default?: boolean
   name: string
   no_skills?: boolean
@@ -541,6 +584,51 @@ export interface ToolsetConfig {
   providers: ToolProvider[]
   /** Name of the currently active provider, or null if none is configured. */
   active_provider: string | null
+}
+
+/** Shape of `GET /api/tools/computer-use/status`.
+ *
+ *  cua-driver runs on macOS, Windows, and Linux. `ready` is the single OS-aware
+ *  readiness signal: on macOS both TCC grants (Accessibility + Screen
+ *  Recording, which attach to cua-driver's own `com.trycua.driver` identity,
+ *  not Hermes); elsewhere, driver health from `cua-driver doctor`. `null`
+ *  means unknown (binary missing / probe failed). */
+export interface ComputerUsePermissionSource {
+  attribution?: string
+  executable?: string
+  note?: string
+  pid?: number
+  responsible_ppid?: number
+}
+
+export interface ComputerUseCheck {
+  label: string
+  status: string
+  message: string
+}
+
+export interface ComputerUseStatus {
+  /** `sys.platform`: "darwin" | "win32" | "linux" | ... */
+  platform: string
+  /** cua-driver has a runtime backend for this platform. */
+  platform_supported: boolean
+  /** cua-driver binary resolved on PATH. */
+  installed: boolean
+  /** e.g. "cua-driver 0.5.1", or null when unknown. */
+  version: string | null
+  /** Unified readiness — both TCC grants (macOS) or driver health (else). */
+  ready: boolean | null
+  /** Whether a permission grant flow exists (macOS-only TCC). */
+  can_grant: boolean
+  /** Cross-platform `cua-driver doctor` probes. */
+  checks: ComputerUseCheck[]
+  /** macOS TCC detail — `null` off macOS or when unknown. */
+  accessibility: boolean | null
+  screen_recording: boolean | null
+  screen_recording_capturable: boolean | null
+  source: ComputerUsePermissionSource | null
+  /** Populated when the status probe itself failed. */
+  error: string | null
 }
 
 export interface SessionSearchResult {
@@ -638,6 +726,10 @@ export interface AuxiliaryModelsResponse {
 }
 
 export interface ModelAssignmentRequest {
+  /** Optional API key for a custom/local endpoint. Persisted to model.api_key
+   *  (where the runtime reads it) for self-hosted endpoints that require auth.
+   *  Only honored for custom/local providers on the main slot. */
+  api_key?: string
   /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
    *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
   base_url?: string

@@ -3,7 +3,14 @@ import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
 const CLIPBOARD_MAX_BUFFER = 4 * 1024 * 1024
-const POWERSHELL_ARGS = ['-NoProfile', '-NonInteractive', '-Command', 'Get-Clipboard -Raw'] as const
+// PowerShell read: base64-encode the clipboard content to avoid ANSI codepage
+// corruption (same problem as the write path — see comment at line 94).
+const POWERSHELL_READ_ARGS = [
+  '-NoProfile',
+  '-NonInteractive',
+  '-Command',
+  '[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((Get-Clipboard -Raw)))'
+] as const
 
 type ClipboardRun = typeof execFileAsync
 
@@ -33,19 +40,19 @@ export function isUsableClipboardText(text: null | string): text is string {
 function readClipboardCommands(
   platform: NodeJS.Platform,
   env: NodeJS.ProcessEnv
-): Array<{ args: readonly string[]; cmd: string }> {
+): Array<{ args: readonly string[]; cmd: string; base64?: boolean }> {
   if (platform === 'darwin') {
     return [{ cmd: 'pbpaste', args: [] }]
   }
 
   if (platform === 'win32') {
-    return [{ cmd: 'powershell', args: POWERSHELL_ARGS }]
+    return [{ cmd: 'powershell', args: POWERSHELL_READ_ARGS, base64: true }]
   }
 
-  const attempts: Array<{ args: readonly string[]; cmd: string }> = []
+  const attempts: Array<{ args: readonly string[]; cmd: string; base64?: boolean }> = []
 
   if (env.WSL_INTEROP || env.WSL_DISTRO_NAME) {
-    attempts.push({ cmd: 'powershell.exe', args: POWERSHELL_ARGS })
+    attempts.push({ cmd: 'powershell.exe', args: POWERSHELL_READ_ARGS, base64: true })
   }
 
   if (env.WAYLAND_DISPLAY) {
@@ -81,6 +88,10 @@ export async function readClipboardText(
       })
 
       if (typeof result.stdout === 'string') {
+        if (attempt.base64) {
+          return Buffer.from(result.stdout.trim(), 'base64').toString('utf8')
+        }
+
         return result.stdout
       }
     } catch {
@@ -158,6 +169,7 @@ export async function writeClipboardText(
       const ok = await new Promise<boolean>(resolve => {
         if (cmdEntry.stdin) {
           const child = start(cmdEntry.cmd, [...cmdEntry.args], { stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
+          child.unref()
           child.once('error', () => resolve(false))
           child.once('close', (code: number | null) => resolve(code === 0))
           child.stdin?.end(text)
@@ -165,6 +177,7 @@ export async function writeClipboardText(
           const b64 = Buffer.from(text, 'utf8').toString('base64')
           const script = _powershellWriteScript(b64)
           const child = start(cmdEntry.cmd, [...cmdEntry.args, '-Command', script], { stdio: ['ignore', 'ignore', 'ignore'], windowsHide: true })
+          child.unref()
           child.once('error', () => resolve(false))
           child.once('close', (code: number | null) => resolve(code === 0))
         }

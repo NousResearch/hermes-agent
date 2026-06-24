@@ -20,13 +20,17 @@ import os
 import time
 from typing import Optional
 
+from hermes_constants import get_hermes_home
+
 _MAX_ENTRIES = 1000
 _MAX_TEXT_CHARS = 2000
 
 
 def _store_path() -> str:
-    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
-    return os.path.join(home, "state", "rich_sent_index.json")
+    # Route through the canonical resolver so the index follows the active
+    # profile (context-local override) and lands in the platform-native home
+    # (``%LOCALAPPDATA%\hermes`` on Windows), not a hand-rolled ``~/.hermes``.
+    return str(get_hermes_home() / "state" / "rich_sent_index.json")
 
 
 def _key(chat_id, message_id) -> str:

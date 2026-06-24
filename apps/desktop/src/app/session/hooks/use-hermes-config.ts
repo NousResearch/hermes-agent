@@ -28,6 +28,7 @@ interface HermesConfigOptions {
 export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: HermesConfigOptions) {
   const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState(DEFAULT_VOICE_SECONDS)
   const [sttEnabled, setSttEnabled] = useState(true)
+  const [terminalFontFamily, setTerminalFontFamily] = useState('')
 
   const refreshHermesConfig = useCallback(async () => {
     try {
@@ -65,10 +66,11 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
 
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)
+      setTerminalFontFamily(config.terminal?.font_family ?? '')
     } catch {
       // Config is nice-to-have; chat still works without it.
     }
   }, [activeSessionIdRef, refreshProjectBranch])
 
-  return { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds }
+  return { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds, terminalFontFamily }
 }

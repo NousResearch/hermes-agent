@@ -676,6 +676,10 @@ _lock = threading.Lock()
 _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
+# Sessions that have explicitly opted OUT of YOLO via /yolo.  This overrides
+# the per-platform default (approvals.yolo_platforms) so a user can turn YOLO
+# off for a single Discord session even when the platform defaults it on.
+_session_yolo_off: set[str] = set()
 _permanent_approved: set = set()
 
 # =========================================================================
@@ -779,14 +783,21 @@ def enable_session_yolo(session_key: str) -> None:
         return
     with _lock:
         _session_yolo.add(session_key)
+        _session_yolo_off.discard(session_key)
 
 
 def disable_session_yolo(session_key: str) -> None:
-    """Disable YOLO bypass for a single session key."""
+    """Disable YOLO bypass for a single session key.
+
+    Records an explicit opt-out so the per-platform default
+    (``approvals.yolo_platforms``) does not silently re-enable YOLO for this
+    session on the next message.
+    """
     if not session_key:
         return
     with _lock:
         _session_yolo.discard(session_key)
+        _session_yolo_off.add(session_key)
 
 
 def clear_session(session_key: str) -> None:
@@ -796,6 +807,7 @@ def clear_session(session_key: str) -> None:
     with _lock:
         _session_approved.pop(session_key, None)
         _session_yolo.discard(session_key)
+        _session_yolo_off.discard(session_key)
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
@@ -805,12 +817,56 @@ def clear_session(session_key: str) -> None:
         entry.event.set()
 
 
+def _platform_from_session_key(session_key: str) -> str:
+    """Extract the platform slug from a gateway session key.
+
+    Gateway keys have the fixed positional layout
+    ``agent:<ns>:<platform>:<chat_type>:...`` (see
+    ``gateway.session.build_session_key``), so ``parts[2]`` is the platform.
+    Returns "" for keys that don't match (e.g. the CLI's "default").
+    """
+    parts = session_key.split(":")
+    if len(parts) >= 3 and parts[0] == "agent":
+        return parts[2].strip().lower()
+    return ""
+
+
+def _yolo_default_platforms() -> frozenset[str]:
+    """Platforms where YOLO is on by default, from ``approvals.yolo_platforms``.
+
+    Accepts a YAML list or a comma-separated string of platform slugs
+    (e.g. ``[discord]`` or ``"discord, telegram"``).  Read live on each call
+    so a config edit takes effect mid-session, matching the rest of the
+    approvals policy.
+    """
+    raw = _get_approval_config().get("yolo_platforms", None)
+    if not raw:
+        return frozenset()
+    if isinstance(raw, str):
+        items = raw.split(",")
+    elif isinstance(raw, (list, tuple, set)):
+        items = raw
+    else:
+        return frozenset()
+    return frozenset(str(p).strip().lower() for p in items if str(p).strip())
+
+
 def is_session_yolo_enabled(session_key: str) -> bool:
-    """Return True when YOLO bypass is enabled for a specific session."""
+    """Return True when YOLO bypass is enabled for a specific session.
+
+    Precedence: an explicit ``/yolo`` enable wins; an explicit ``/yolo``
+    disable wins over the per-platform default; otherwise the session's
+    platform is consulted against ``approvals.yolo_platforms``.
+    """
     if not session_key:
         return False
     with _lock:
-        return session_key in _session_yolo
+        if session_key in _session_yolo:
+            return True
+        if session_key in _session_yolo_off:
+            return False
+    platform = _platform_from_session_key(session_key)
+    return bool(platform) and platform in _yolo_default_platforms()
 
 
 def is_current_session_yolo_enabled() -> bool:

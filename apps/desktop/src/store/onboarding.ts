@@ -526,6 +526,14 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
 
   const state = $desktopOnboarding.get()
   if (shouldPreserveConfiguredOnFallback(runtime, state)) {
+    // Gateway probes timed out but the user was already configured — don't
+    // downgrade to the blocking onboarding overlay. Surface a non-blocking
+    // notification so the user knows the backend wasn't verified.
+    notifyError(
+      'runtime-not-ready',
+      'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
+    )
+
     return false
   }
 

@@ -100,6 +100,37 @@ function installedAgentInstallScript(hermesHome) {
   }
 }
 
+// The install.sh / install.ps1 we ship INSIDE the packaged app via
+// electron-builder's extraResources (staged from scripts/install.sh by
+// scripts/stage-install-script.cjs -> process.resourcesPath/install.sh). This
+// is the primary installer source for a packaged ApexNodes build: it lets a
+// fresh, network-restricted (mainland-China) machine bootstrap without first
+// fetching install.sh from raw.githubusercontent.com (blocked there). Absent in
+// dev and in older builds that predate bundling, in which case resolution falls
+// through to the GitHub download.
+function bundledInstallScript(resourcesPath) {
+  if (!resourcesPath) return null
+  const candidate = path.join(resourcesPath, installScriptName())
+  try {
+    fs.accessSync(candidate, fs.constants.R_OK)
+    return candidate
+  } catch {
+    return null
+  }
+}
+
+// Build the extra environment handed to the install.sh spawn that activates its
+// CN mirror mode (see the "ApexNodes China mirror mode" block in install.sh).
+// Returns {} when CN mode is off so the spawn env is untouched. An explicit
+// HERMES_CN_MIRRORS / HERMES_RUNTIME_COS_BASE in the real environment always
+// wins over the passed defaults (tests, ops overrides, opting out).
+function cnInstallEnv({ cnMirrors = false, runtimeCosBase = '' } = {}) {
+  const flag = process.env.HERMES_CN_MIRRORS != null ? process.env.HERMES_CN_MIRRORS : cnMirrors ? '1' : '0'
+  if (flag !== '1') return {}
+  const base = process.env.HERMES_RUNTIME_COS_BASE != null ? process.env.HERMES_RUNTIME_COS_BASE : runtimeCosBase || ''
+  return { HERMES_CN_MIRRORS: '1', HERMES_RUNTIME_COS_BASE: base }
+}
+
 function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
@@ -179,7 +210,14 @@ function downloadInstallScript(commit, destPath) {
   })
 }
 
-async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, _download = downloadInstallScript }) {
+async function resolveInstallScript({
+  installStamp,
+  sourceRepoRoot,
+  resourcesPath,
+  hermesHome,
+  emit,
+  _download = downloadInstallScript
+}) {
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
   //    without pushing. SOURCE_REPO_ROOT comes from main.cjs (path.resolve
   //    of APP_ROOT/../..).
@@ -187,6 +225,16 @@ async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, 
   if (localScript) {
     emit({ type: 'log', line: `[bootstrap] using local ${installScriptName()} at ${localScript}` })
     return { path: localScript, source: 'local', kind: installScriptKind() }
+  }
+
+  // 1.5. Packaged primary: the install.sh we shipped inside the app. Used
+  //      directly for fresh installs so a network-restricted (mainland-China)
+  //      machine never has to reach raw.githubusercontent.com. Falls through to
+  //      the GitHub download only for older builds that predate bundling.
+  const bundled = bundledInstallScript(resourcesPath)
+  if (bundled) {
+    emit({ type: 'log', line: `[bootstrap] using bundled ${installScriptName()} at ${bundled}` })
+    return { path: bundled, source: 'bundled', kind: installScriptKind() }
   }
 
   // 2. Packaged path: download from GitHub at the pinned commit (1B's stamp).
@@ -366,13 +414,16 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
   })
 }
 
-function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome } = {}) {
+function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome, extraEnv } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn('bash', [scriptPath, ...args], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
-        HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
+        HERMES_HOME: hermesHome || process.env.HERMES_HOME || '',
+        // CN mirror mode + COS runtime source (empty {} when off). Spread last so
+        // an explicit value here overrides any inherited process.env entry.
+        ...(extraEnv || {})
       }
     })
 
@@ -466,7 +517,7 @@ function buildPosixPinArgs({ installStamp, activeRoot, hermesHome }) {
   return args
 }
 
-async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, activeRoot, installStamp }) {
+async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, activeRoot, installStamp, extraEnv }) {
   const isPosix = installerKind === 'posix'
   const args = isPosix
     ? ['--manifest', ...buildPosixPinArgs({ installStamp, activeRoot, hermesHome })]
@@ -474,7 +525,8 @@ async function fetchManifest({ scriptPath, installerKind, emit, hermesHome, acti
   const result = await (isPosix ? spawnBash : spawnPowerShell)(scriptPath, args, {
     emit,
     stageName: '__manifest__',
-    hermesHome
+    hermesHome,
+    extraEnv
   })
   if (result.code !== 0) {
     throw new Error(
@@ -518,7 +570,17 @@ function parseStageResult(stdout) {
   return null
 }
 
-async function runStage({ scriptPath, installerKind, stage, emit, hermesHome, activeRoot, abortSignal, installStamp }) {
+async function runStage({
+  scriptPath,
+  installerKind,
+  stage,
+  emit,
+  hermesHome,
+  activeRoot,
+  abortSignal,
+  installStamp,
+  extraEnv
+}) {
   const startedAt = Date.now()
   emit({ type: 'stage', name: stage.name, state: 'running' })
 
@@ -536,7 +598,8 @@ async function runStage({ scriptPath, installerKind, stage, emit, hermesHome, ac
     emit,
     stageName: stage.name,
     abortSignal,
-    hermesHome
+    hermesHome,
+    extraEnv
   })
 
   const durationMs = Date.now() - startedAt
@@ -605,12 +668,22 @@ async function runBootstrap(opts) {
     installStamp,
     activeRoot,
     sourceRepoRoot,
+    resourcesPath,
     hermesHome,
     logRoot,
     onEvent,
     abortSignal,
+    cnMirrors, // true -> activate install.sh CN mirror mode (packaged ApexNodes)
+    runtimeCosBase, // public-read COS base hosting the runtime tarball + uv
     writeMarker // callback to write the bootstrap-complete marker; main.cjs provides
   } = opts
+
+  // Where the bundled installer lives (process.resourcesPath in a packaged
+  // Electron app). Honor an explicit opt for testability; fall back to the
+  // ambient Electron value.
+  const resolvedResourcesPath = resourcesPath !== undefined ? resourcesPath : process.resourcesPath
+  // Extra spawn env that turns on install.sh's CN mirror mode. {} when off.
+  const extraEnv = cnInstallEnv({ cnMirrors, runtimeCosBase })
 
   // Bail before spawning anything if the user already cancelled — otherwise an
   // already-aborted signal would still fetch the manifest (a spawn) before the
@@ -650,12 +723,19 @@ async function runBootstrap(opts) {
       `[bootstrap] starting at ${new Date().toISOString()}; ` +
       `activeRoot=${activeRoot}; ` +
       `stamp=${installStamp ? installStamp.commit.slice(0, 12) : '<none>'}; ` +
+      `cn=${extraEnv.HERMES_CN_MIRRORS === '1' ? 'on' : 'off'}; ` +
       `runLog=${runLog.path}`
   })
 
   try {
     // 1. Resolve the platform installer.
-    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit })
+    const scriptInfo = await resolveInstallScript({
+      installStamp,
+      sourceRepoRoot,
+      resourcesPath: resolvedResourcesPath,
+      hermesHome,
+      emit
+    })
     const installerKind = scriptInfo.kind || 'powershell'
 
     // 2. Fetch manifest
@@ -665,7 +745,8 @@ async function runBootstrap(opts) {
       emit,
       hermesHome,
       activeRoot,
-      installStamp
+      installStamp,
+      extraEnv
     })
     emit({
       type: 'manifest',
@@ -690,7 +771,8 @@ async function runBootstrap(opts) {
         hermesHome,
         activeRoot,
         abortSignal,
-        installStamp
+        installStamp,
+        extraEnv
       })
       if (ev.state === 'failed') {
         emit({ type: 'failed', stage: stage.name, error: ev.error || 'stage failed' })
@@ -725,5 +807,7 @@ module.exports = {
   resolveLocalInstallScript,
   resolveInstallScript,
   installedAgentInstallScript,
+  bundledInstallScript,
+  cnInstallEnv,
   cachedScriptPath
 }

@@ -1538,6 +1538,109 @@ function Install-Repository {
     Write-Success "Repository ready"
 }
 
+function Test-PathStartsWith {
+    param(
+        [string]$Path,
+        [string]$BasePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($BasePath)) {
+        return $false
+    }
+
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($Path)
+        $fullBase = [System.IO.Path]::GetFullPath($BasePath).TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar
+        )
+        return $fullPath.StartsWith($fullBase + [System.IO.Path]::DirectorySeparatorChar, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $fullPath.Equals($fullBase, [System.StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
+    }
+}
+
+function Stop-WindowsHermesVenvProcesses {
+    param([string]$VenvPath)
+
+    if ($env:OS -ne "Windows_NT" -or -not (Test-Path -LiteralPath $VenvPath)) {
+        return
+    }
+
+    $venvFull = (Resolve-Path -LiteralPath $VenvPath).Path
+    $myPid = $PID
+
+    Write-Info "Stopping Hermes processes using the old venv before recreating it..."
+
+    # Keep the broad desktop kill: Electron's parent/renderer processes live
+    # outside venv\ but can own backend children that keep Python DLLs loaded.
+    & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
+
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
+    if ($processes.Count -eq 0) {
+        Start-Sleep -Milliseconds 800
+        return
+    }
+
+    $targetPids = @{}
+    foreach ($proc in $processes) {
+        if ([int]$proc.ProcessId -eq $myPid) { continue }
+        $exe = [string]$proc.ExecutablePath
+        $cmd = [string]$proc.CommandLine
+        if ((Test-PathStartsWith -Path $exe -BasePath $venvFull) -or $cmd.IndexOf($venvFull, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            $targetPids[[int]$proc.ProcessId] = $true
+        }
+    }
+
+    # Include descendants of venv processes. On Windows, console shims can
+    # launch a system python.exe/pythonw.exe child whose image path is outside
+    # venv\, while the child still imports from the old venv and holds .pyd
+    # files open.
+    $changed = $true
+    while ($changed) {
+        $changed = $false
+        foreach ($proc in $processes) {
+            $procPid = [int]$proc.ProcessId
+            $parentPid = [int]$proc.ParentProcessId
+            if ($procPid -eq $myPid -or $targetPids.ContainsKey($procPid)) { continue }
+            if ($targetPids.ContainsKey($parentPid)) {
+                $targetPids[$procPid] = $true
+                $changed = $true
+            }
+        }
+    }
+
+    $targets = @($targetPids.Keys | Sort-Object -Descending)
+    foreach ($targetPid in $targets) {
+        try {
+            Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue
+        } catch { }
+    }
+
+    Start-Sleep -Milliseconds 1200
+}
+
+function Move-WindowsVenvAside {
+    param([string]$VenvPath)
+
+    if ($env:OS -ne "Windows_NT") {
+        Remove-Item -Recurse -Force $VenvPath
+        return
+    }
+
+    Stop-WindowsHermesVenvProcesses -VenvPath $VenvPath
+
+    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    $destination = Join-Path $InstallDir "venv.pre-recreate-$stamp"
+    Write-Info "Moving old venv aside to $destination"
+    try {
+        Move-Item -LiteralPath $VenvPath -Destination $destination -Force -ErrorAction Stop
+    } catch {
+        throw "Failed to move old venv aside before recreation: $_"
+    }
+}
+
 function Install-Venv {
     if ($NoVenv) {
         Write-Info "Skipping virtual environment (-NoVenv)"
@@ -1562,16 +1665,11 @@ function Install-Venv {
     
     if (Test-Path "venv") {
         Write-Info "Virtual environment already exists, recreating..."
-        # On Windows, native Python extensions (e.g. _bcrypt.pyd) are loaded as
-        # DLLs by any running hermes process. Windows denies deletion of loaded
-        # DLLs, so kill any hermes.exe tree before removing the venv.
-        if ($env:OS -eq "Windows_NT") {
-            $myPid = $PID
-            Write-Info "Stopping any running hermes processes before recreating venv..."
-            & taskkill /F /T /IM hermes.exe /FI "PID ne $myPid" 2>$null | Out-Null
-            Start-Sleep -Milliseconds 800
-        }
-        Remove-Item -Recurse -Force "venv"
+        # On Windows, Python .exe/.pyd files are mandatory-locked while loaded.
+        # Move the old venv aside instead of recursively deleting it in place;
+        # this avoids failing halfway through when a just-stopped process or
+        # scanner still has a short-lived handle open.
+        Move-WindowsVenvAside -VenvPath "venv"
     }
     
     # uv creates the venv and pins the Python version in one step.  uv emits

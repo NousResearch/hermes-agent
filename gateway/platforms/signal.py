@@ -624,7 +624,24 @@ class SignalAdapter(BasePlatformAdapter):
                 m.get("number") == account_norm or m.get("uuid") == account_norm
                 for m in (data_message.get("mentions") or [])
             )
-            if not mentioned_in_text and not mentioned_in_metadata:
+            # Reply-to-bot counts as a mention (parity with Telegram/WhatsApp):
+            # treat a quote of a message the bot itself sent as "addressed to me".
+            _q = data_message.get("quote") or {}
+            _q_author = _q.get("author") or _q.get("authorNumber") or _q.get("authorUuid")
+            replied_to_bot = bool(_q_author) and _q_author in {
+                account_norm,
+                self.account,
+            }
+            # Slash-bypass: let "/cmd" run without an @mention (parity with
+            # Telegram/WhatsApp). Slash-access / group_user_allowed_commands still
+            # gates which commands a non-owner may actually run.
+            is_slash = (text or "").strip().startswith("/")
+            if not (
+                mentioned_in_text
+                or mentioned_in_metadata
+                or replied_to_bot
+                or is_slash
+            ):
                 logger.debug(
                     "Signal: ignoring group message (require_mention=true, bot not mentioned)"
                 )
@@ -708,6 +725,22 @@ class SignalAdapter(BasePlatformAdapter):
             user_id_alt=sender_uuid if sender_uuid else None,
             chat_id_alt=group_id if is_group else None,
         )
+
+        # Owner detection (Req 3 / signalfix.md Gate C). The owner is whoever is
+        # listed in SIGNAL_ALLOWED_USERS (self.dm_allow_from). In groups the sender
+        # is frequently a UUID, so resolve UUID->phone via the number<->uuid cache
+        # before matching. "*" is open-DM, never an owner. Surfaced to the model so
+        # only the owner receives owner-level persona treatment.
+        _owner_ids = {x for x in self.dm_allow_from if x and x != "*"}
+        if _owner_ids:
+            _sender_phone = sender if _looks_like_e164_number(sender) else (
+                self._recipient_number_by_uuid.get(sender_uuid or "", "")
+            )
+            source.is_owner = bool(
+                sender in _owner_ids
+                or (sender_uuid and sender_uuid in _owner_ids)
+                or (_sender_phone and _sender_phone in _owner_ids)
+            )
 
         # Determine message type from media
         msg_type = MessageType.TEXT

@@ -9145,13 +9145,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # concurrently preparing multimodal turns on the same runner.
         self._consume_pending_native_image_paths(session_key)
 
+        # Owner flag (Req 3 / signalfix.md Gate C). Adapters may set source.is_owner
+        # at intake (Signal resolves group UUID->phone); fall back to the generic
+        # allowlist check for any platform/path that didn't. Drives the **Owner:**
+        # context line (build_session_context_prompt) and the owner marker below.
+        if not getattr(source, "is_owner", False):
+            source.is_owner = self._is_owner(source)
+
         _is_shared_multi_user = is_shared_multi_user_session(
             source,
             group_sessions_per_user=_group_sessions_per_user,
             thread_sessions_per_user=_thread_sessions_per_user,
         )
         if _is_shared_multi_user and source.user_name:
+            # Upstream sender attribution (unchanged).
             message_text = f"[{source.user_name}] {message_text}"
+            # Owner marker (Req 3 / signalfix.md Gate C): in a cache-shared
+            # multi-user session the context prompt is sender-agnostic, so owner
+            # status can't ride there — it has to ride on the message. System-set
+            # (a guest can't spoof it via display name/body) and added ONLY for
+            # the owner, so guest lines stay byte-identical to upstream. Gated to
+            # the platforms that wire owner detection (their adapter sets
+            # source.is_owner); OTHER PLATFORMS CAN OPT IN by adding themselves to
+            # this set once their adapter implements owner detection.
+            if getattr(source, "is_owner", False) and source.platform in {
+                Platform.SIGNAL,
+            }:
+                message_text = f"[SYSTEM: sender {source.user_name} is the owner] {message_text}"
 
         # Prepend channel context from history backfill (if any).  This
         # happens after sender-prefix so the prefix only applies to the

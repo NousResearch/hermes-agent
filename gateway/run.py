@@ -3473,9 +3473,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.fatal_error_code or "unknown",
             adapter.fatal_error_message or "unknown error",
         )
+        # Phase 7 Unit 7d-B: a relay credential revoked by opt-out is not an
+        # error to retry — render it as a clean "disabled" state, not red
+        # "fatal"/"retrying". (The code is set non-retryable, so it also drops
+        # out of the reconnect queue below.)
+        if adapter.fatal_error_code == "relay_disabled":
+            platform_state = "disabled"
+        elif adapter.fatal_error_retryable:
+            platform_state = "retrying"
+        else:
+            platform_state = "fatal"
         self._update_platform_runtime_status(
             adapter.platform.value,
-            platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
+            platform_state=platform_state,
             error_code=adapter.fatal_error_code,
             error_message=adapter.fatal_error_message,
         )

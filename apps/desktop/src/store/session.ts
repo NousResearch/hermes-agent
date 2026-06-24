@@ -335,11 +335,13 @@ export const setSessionPickerOpen = (next: Updater<boolean>) => updateAtom($sess
 
 // Watchdog tracking — when does a "working" session count as stuck?
 // Long-running tool calls (LLM inference, long shell commands, web fetches)
-// can take a few minutes legitimately. We allow 8 minutes of complete
-// silence on the stream before clearing the working flag; in practice this
-// catches gateway hangs and dropped streams without false-positive-clearing
-// real long turns.
-const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
+// can take a few minutes legitimately. Keep this longer than Electron's
+// pooled-backend idle reaper (10 minutes): a silent-but-still-running
+// background profile must keep its secondary socket open long enough for the
+// renderer keepalive to spare the backend. Otherwise the watchdog drops the
+// working flag, pruning closes the socket, and Electron later SIGTERMs the
+// profile backend mid-turn.
+const SESSION_WATCHDOG_TIMEOUT_MS = 12 * 60 * 1000
 const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 function armSessionWatchdog(sessionId: string) {

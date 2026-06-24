@@ -1261,7 +1261,13 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        # Git Bash (MSYS) can mangle backslashes in arguments (e.g. strip them
+        # so "C:\\dir\\s.sh" becomes "C:dirs.sh"), so hand it the script path in
+        # POSIX form on Windows ("C:\\dir\\s.sh" -> "C:/dir/s.sh").  Both forms
+        # resolve to the same file for Git Bash, so this is a safe hardening;
+        # native bash on POSIX keeps the unchanged native path.
+        script_arg = path.as_posix() if sys.platform == "win32" else str(path)
+        argv = [_bash, script_arg]
     else:
         argv = [sys.executable, str(path)]
 

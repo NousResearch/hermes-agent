@@ -831,6 +831,86 @@ class TestFindBashSkipsWslLauncher:
 
 
 # ---------------------------------------------------------------------------
+# cron .sh scripts must be handed to Git Bash in POSIX-path form on Windows
+# ---------------------------------------------------------------------------
+
+
+class TestCronShellScriptPosixArg:
+    """Git Bash (MSYS) can mangle backslashes in argv, so cron must pass the
+    script path in POSIX form on Windows.  POSIX hosts keep the native path."""
+
+    def _reload_scheduler(self, home, monkeypatch):
+        import importlib
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        import hermes_constants
+        importlib.reload(hermes_constants)
+        import cron.jobs
+        importlib.reload(cron.jobs)
+        import cron.scheduler as sched
+        importlib.reload(sched)
+        return sched
+
+    def test_bash_arg_is_posix_on_windows(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        (home / "scripts").mkdir(parents=True)
+        (home / "cron").mkdir(parents=True)
+        sched = self._reload_scheduler(home, monkeypatch)
+
+        script = home / "scripts" / "w.sh"
+        script.write_text("echo hi\n")
+
+        captured = {}
+
+        class _CP:
+            returncode = 0
+            stdout = "hi\n"
+            stderr = ""
+
+        def fake_run(argv, **kw):
+            captured["argv"] = argv
+            return _CP()
+
+        monkeypatch.setattr(sched.subprocess, "run", fake_run)
+        monkeypatch.setattr(sched.sys, "platform", "win32")
+        monkeypatch.setattr("tools.environments.local._find_bash",
+                            lambda: r"C:\Program Files\Git\bin\bash.exe")
+
+        ok, _ = sched._run_job_script("w.sh")
+        assert ok is True
+        # First arg is bash; second is the script — must be POSIX form (no "\").
+        assert captured["argv"][1] == script.resolve().as_posix()
+        assert "\\" not in captured["argv"][1]
+
+    def test_bash_arg_is_native_on_posix(self, tmp_path, monkeypatch):
+        home = tmp_path / ".hermes"
+        (home / "scripts").mkdir(parents=True)
+        (home / "cron").mkdir(parents=True)
+        sched = self._reload_scheduler(home, monkeypatch)
+
+        script = home / "scripts" / "w.sh"
+        script.write_text("echo hi\n")
+
+        captured = {}
+
+        class _CP:
+            returncode = 0
+            stdout = "hi\n"
+            stderr = ""
+
+        def fake_run(argv, **kw):
+            captured["argv"] = argv
+            return _CP()
+
+        monkeypatch.setattr(sched.subprocess, "run", fake_run)
+        monkeypatch.setattr(sched.sys, "platform", "linux")
+        monkeypatch.setattr("tools.environments.local._find_bash", lambda: "/bin/bash")
+
+        ok, _ = sched._run_job_script("w.sh")
+        assert ok is True
+        assert captured["argv"][1] == str(script.resolve())
+
+
+# ---------------------------------------------------------------------------
 # Node-ecosystem launcher resolution (npm / npx / node)
 # ---------------------------------------------------------------------------
 

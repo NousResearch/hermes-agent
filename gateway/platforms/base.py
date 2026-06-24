@@ -3751,6 +3751,14 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
 
+        raw_response = getattr(result, "raw_response", None)
+        if isinstance(raw_response, dict) and raw_response.get("partial_delivery"):
+            # The adapter already put part of a multi-message response on the
+            # platform. Retrying the full payload would duplicate the visible
+            # prefix (Telegram "(1/N)" spam). Return the partial failure to the
+            # caller and let the next user turn recover context explicitly.
+            return result
+
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 

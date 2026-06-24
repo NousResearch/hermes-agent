@@ -84,7 +84,7 @@ async def test_edit_overflow_split_reports_partial_failure_when_continuation_fai
     )
 
     assert result.success is False
-    assert result.retryable is True
+    assert result.retryable is False
     assert result.error == "overflow_continuation_failed"
     assert result.message_id == "201"
     assert result.raw_response["partial_overflow"] is True
@@ -138,3 +138,21 @@ async def test_stream_consumer_fallback_sends_tail_after_partial_overflow():
     adapter.delete_message.assert_not_awaited()
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_does_not_resend_full_payload_after_partial_chunk_delivery(telegram_adapter):
+    """If Telegram accepts chunk 1 then rejects chunk 2, do not resend chunk 1."""
+    object.__setattr__(telegram_adapter, "MAX_MESSAGE_LENGTH", 80)
+    content = "word " * 80
+    telegram_adapter._bot.send_message = AsyncMock(
+        side_effect=[_message(301), RuntimeError("Flood control exceeded")]
+    )
+
+    result = await telegram_adapter._send_with_retry("12345", content)
+
+    assert result.success is False
+    assert result.retryable is False
+    assert result.raw_response["partial_delivery"] is True
+    assert result.raw_response["delivered_chunks"] == 1
+    assert telegram_adapter._bot.send_message.await_count == 2

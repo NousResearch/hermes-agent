@@ -2603,6 +2603,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
         
+        message_ids = []
+        chunks = []
         try:
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
             # sendRichMessage so tables/task lists/etc. render natively. Falls
@@ -2877,6 +2879,19 @@ class TelegramAdapter(BasePlatformAdapter):
             
         except Exception as e:
             logger.error("[%s] Failed to send Telegram message: %s", self.name, e, exc_info=True)
+            if message_ids:
+                return SendResult(
+                    success=False,
+                    message_id=message_ids[-1],
+                    error=str(e),
+                    retryable=False,
+                    raw_response={
+                        "partial_delivery": True,
+                        "message_ids": tuple(message_ids),
+                        "delivered_chunks": len(message_ids),
+                        "total_chunks": len(chunks) if chunks else len(message_ids),
+                    },
+                )
             err_str = str(e).lower()
             error_kind = classify_send_error(e)
             # Message too long — content exceeded 4096 chars. Return failure so
@@ -3299,7 +3314,12 @@ class TelegramAdapter(BasePlatformAdapter):
                     success=False,
                     message_id=prev_id,
                     error="overflow_continuation_failed",
-                    retryable=True,
+                    # Do NOT mark this retryable. Retrying the whole overflow
+                    # edit after chunk 1 was already delivered causes Telegram
+                    # users to see the first "(1/N)" chunk again and again
+                    # when continuation sends hit flood control. Better to
+                    # fail partial once than spam duplicates.
+                    retryable=False,
                     raw_response={
                         "partial_overflow": True,
                         "delivered_chunks": 1 + len(continuation_ids),

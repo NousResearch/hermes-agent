@@ -565,7 +565,7 @@ class TestLoadGatewayConfig:
         assert config.platforms[Platform.API_SERVER].enabled is False
         assert Platform.API_SERVER not in config.get_connected_platforms()
 
-    def test_bridges_zalo_status_filter_from_config_yaml(self, tmp_path, monkeypatch):
+    def test_dispatches_zalo_yaml_config_hook_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -573,6 +573,12 @@ class TestLoadGatewayConfig:
             "platforms:\n"
             "  zalo:\n"
             "    enabled: true\n"
+            "    allow_from:\n"
+            "      - \"u1\"\n"
+            "      - \"u2\"\n"
+            "    dm_only: true\n"
+            "    connection_mode: polling\n"
+            "    poll_timeout_seconds: 11\n"
             "    suppress_noisy_status: false\n"
             "    gateway_restart_notification: false\n",
             encoding="utf-8",
@@ -584,6 +590,10 @@ class TestLoadGatewayConfig:
 
         zalo = config.platforms[Platform("zalo")]
         assert zalo.enabled is True
+        assert zalo.extra["allowed_users"] == ["u1", "u2"]
+        assert zalo.extra["dm_only"] is True
+        assert zalo.extra["connection_mode"] == "polling"
+        assert zalo.extra["poll_timeout_seconds"] == 11
         assert zalo.extra["suppress_noisy_status"] is False
         assert zalo.gateway_restart_notification is False
 

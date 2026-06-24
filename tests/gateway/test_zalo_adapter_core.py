@@ -15,6 +15,7 @@ ZALO_API_BASE = _zalo.ZALO_API_BASE
 ZaloAdapter = _zalo.ZaloAdapter
 ZaloApiError = _zalo.ZaloApiError
 _env_enablement = _zalo._env_enablement
+_apply_yaml_config = _zalo._apply_yaml_config
 register = _zalo.register
 
 
@@ -78,6 +79,60 @@ class TestConfig:
             "delete_webhook_on_polling_start": True,
             "delete_webhook_on_disconnect": True,
         }
+
+    def test_apply_yaml_config_maps_non_secret_operator_settings(self):
+        seeded = _apply_yaml_config(
+            {},
+            {
+                "api_base": "https://zalo.example.test",
+                "allow_from": ["u1", "u2"],
+                "allowed_users": "u3, u4",
+                "allowed_chats": ["chat-1"],
+                "allow_all_users": False,
+                "dm_only": True,
+                "private_only": True,
+                "poll_timeout_seconds": 12,
+                "poll_interval_seconds": 0.5,
+                "connection_mode": "polling",
+                "parse_mode": "",
+                "suppress_noisy_status": False,
+                "webhook_url": "https://bot.example.test/zalo",
+                "webhook_path": "zalo-hook",
+                "webhook_host": "0.0.0.0",
+                "webhook_port": 18080,
+                "webhook_auto_register": True,
+                "delete_webhook_on_polling_start": True,
+                "delete_webhook_on_disconnect": False,
+                "url_intake_public_base": "https://intake.example.test",
+                "url_intake_pending_file": "/tmp/zalo-intake.json",
+                "bot_token": "ignored-token",
+                "webhook_secret": "ignored-secret",
+            },
+        )
+
+        assert seeded == {
+            "api_base": "https://zalo.example.test",
+            "allowed_users": ["chat-1", "u1", "u2", "u3", "u4"],
+            "allow_all_users": False,
+            "dm_only": True,
+            "private_only": True,
+            "poll_timeout_seconds": 12,
+            "poll_interval_seconds": 0.5,
+            "connection_mode": "polling",
+            "parse_mode": "",
+            "suppress_noisy_status": False,
+            "webhook_url": "https://bot.example.test/zalo",
+            "webhook_path": "zalo-hook",
+            "webhook_host": "0.0.0.0",
+            "webhook_port": 18080,
+            "webhook_auto_register": True,
+            "delete_webhook_on_polling_start": True,
+            "delete_webhook_on_disconnect": False,
+            "url_intake_public_base": "https://intake.example.test",
+            "url_intake_pending_file": "/tmp/zalo-intake.json",
+        }
+        assert "bot_token" not in seeded
+        assert "webhook_secret" not in seeded
 
     def test_adapter_defaults_to_official_api_base(self, monkeypatch):
         monkeypatch.delenv("ZALO_API_BASE", raising=False)

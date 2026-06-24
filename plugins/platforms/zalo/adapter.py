@@ -284,6 +284,17 @@ def _csv(value: str) -> set[str]:
     return {item.strip() for item in (value or "").split(",") if item.strip()}
 
 
+def _yaml_string_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return sorted(_csv(value))
+    if isinstance(value, (list, tuple, set)):
+        return sorted({str(item).strip() for item in value if str(item).strip()})
+    item = str(value).strip()
+    return [item] if item else []
+
+
 def _first(mapping: Dict[str, Any], *paths: str) -> Any:
     for path in paths:
         node: Any = mapping
@@ -1454,6 +1465,53 @@ def _env_enablement() -> Optional[Dict[str, Any]]:
     return seeded
 
 
+def _apply_yaml_config(yaml_cfg: dict, zalo_cfg: dict) -> dict | None:
+    """Translate non-secret Zalo config.yaml keys into PlatformConfig.extra.
+
+    Mirrors the plugin-owned YAML bridge used by Telegram and other platform
+    adapters. Credentials stay env-only: keep ZALO_BOT_TOKEN and
+    ZALO_WEBHOOK_SECRET out of config.yaml so profiles can be shared safely.
+    Environment variables still take precedence later in _apply_env_overrides.
+    """
+    extras: Dict[str, Any] = {}
+
+    passthrough_keys = (
+        "api_base",
+        "allow_all_users",
+        "dm_only",
+        "private_only",
+        "poll_timeout_seconds",
+        "poll_interval_seconds",
+        "connection_mode",
+        "parse_mode",
+        "suppress_noisy_status",
+        "webhook_url",
+        "webhook_public_url",
+        "webhook_path",
+        "webhook_host",
+        "webhook_port",
+        "webhook_auto_register",
+        "delete_webhook_on_polling_start",
+        "delete_webhook_on_disconnect",
+        "url_intake_public_base",
+        "url_intake_pending_file",
+    )
+    for key in passthrough_keys:
+        if key in zalo_cfg and zalo_cfg[key] is not None:
+            extras[key] = zalo_cfg[key]
+
+    allowed_users: set[str] = set()
+    for key in ("allowed_users", "allow_from", "allowed_chats"):
+        allowed_users.update(_yaml_string_list(zalo_cfg.get(key)))
+    if allowed_users:
+        extras["allowed_users"] = sorted(allowed_users)
+
+    # Intentionally do not bridge token/webhook_secret from YAML. The adapter
+    # still reads those from env through _env_enablement, and explicit secrets
+    # should not become part of profile config files by accident.
+    return extras or None
+
+
 async def _standalone_send(
     pconfig,
     chat_id: str,
@@ -1519,6 +1577,7 @@ def register(ctx) -> None:
         is_connected=is_connected,
         required_env=["ZALO_BOT_TOKEN"],
         env_enablement_fn=_env_enablement,
+        apply_yaml_config_fn=_apply_yaml_config,
         cron_deliver_env_var="ZALO_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,
         allowed_users_env="ZALO_ALLOWED_USERS",

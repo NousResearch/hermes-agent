@@ -39,53 +39,53 @@ Zalo treats long polling and webhooks as mutually exclusive. If a webhook was se
 cloudflared tunnel --url http://localhost:18787
 ```
 
-Set the public URL in Zalo Bot Manager if you are not using `ZALO_WEBHOOK_AUTO_REGISTER=true`.
+Set the public URL in Zalo Bot Manager if you are not using `webhook_auto_register: true`.
 
 ## Step 3: Configure Hermes
 
-Add to `~/.hermes/.env`:
+Add credentials to `~/.hermes/.env`:
 
 ```env
 ZALO_BOT_TOKEN=YOUR_ZALO_BOT_TOKEN
-
-# Access control. Prefer an allowlist for real deployments.
-ZALO_ALLOWED_USERS=USER_ID_1,USER_ID_2
-# ZALO_ALLOW_ALL_USERS=true
-ZALO_DM_ONLY=true
-
-# Long polling defaults
-ZALO_CONNECTION_MODE=auto
-ZALO_POLL_TIMEOUT_SECONDS=25
-ZALO_POLL_INTERVAL_SECONDS=1
-# Optional: clear a stale webhook before polling.
-# ZALO_DELETE_WEBHOOK_ON_POLLING_START=true
-
-# Optional webhook mode
-ZALO_WEBHOOK_URL=https://your-public-host.example.com/zalo/webhook
-# Alias accepted for compatibility with earlier Zalo adapter docs:
-# ZALO_WEBHOOK_PUBLIC_URL=https://your-public-host.example.com/zalo/webhook
+# Required only for webhook mode.
 ZALO_WEBHOOK_SECRET=generate-a-long-random-secret-8-to-256-chars
-ZALO_WEBHOOK_HOST=127.0.0.1
-ZALO_WEBHOOK_PORT=18787
-ZALO_WEBHOOK_PATH=/zalo/webhook
-# ZALO_WEBHOOK_AUTO_REGISTER=true
-# ZALO_DELETE_WEBHOOK_ON_DISCONNECT=false
-
-# Optional cron / notification target
-ZALO_HOME_CHANNEL=USER_OR_CHAT_ID
-ZALO_HOME_CHANNEL_NAME=Zalo Home
-
-# Optional: show transient compression/retry status notices in chat.
-# Default is true, which keeps Zalo conversations clean.
-# ZALO_SUPPRESS_NOISY_STATUS=false
 ```
 
-Then enable the platform in `~/.hermes/config.yaml`:
+Keep normal operator settings in `~/.hermes/config.yaml`:
 
 ```yaml
 platforms:
   zalo:
     enabled: true
+
+    # Access control. Prefer an allowlist for real deployments.
+    allow_from:
+      - USER_ID_1
+      - USER_ID_2
+    # allow_all_users: true
+    dm_only: true
+
+    # Long polling defaults.
+    connection_mode: auto
+    poll_timeout_seconds: 25
+    poll_interval_seconds: 1
+    # Optional: clear a stale webhook before polling.
+    # delete_webhook_on_polling_start: true
+
+    # Optional webhook mode.
+    webhook_url: https://your-public-host.example.com/zalo/webhook
+    webhook_host: 127.0.0.1
+    webhook_port: 18787
+    webhook_path: /zalo/webhook
+    # webhook_auto_register: true
+    # delete_webhook_on_disconnect: false
+
+    # Optional cron / notification target.
+    home_channel:
+      platform: zalo
+      chat_id: USER_OR_CHAT_ID
+      name: Zalo Home
+
     # Hide transient status chatter like preflight compression, compaction,
     # retry backoff, and auxiliary-model notices. Defaults to true.
     suppress_noisy_status: true
@@ -104,9 +104,11 @@ hermes gateway restart
 
 If your users often send Google Drive, Google Sheets, or other long links that Zalo converts into unreadable preview events, run a small intake page and point the adapter at its public base URL:
 
-```env
-ZALO_URL_INTAKE_PUBLIC_BASE=https://your-intake.example.com
-ZALO_URL_INTAKE_PENDING_FILE=/var/lib/hermes/zalo-url-intake/pending.json
+```yaml
+platforms:
+  zalo:
+    url_intake_public_base: https://your-intake.example.com
+    url_intake_pending_file: /var/lib/hermes/zalo-url-intake/pending.json
 ```
 
 When Zalo delivers an unsupported/no-content event, the adapter can include an instruction for the agent to send the user to the intake page. The next inbound Zalo message from the same chat includes the submitted URL in the session context.

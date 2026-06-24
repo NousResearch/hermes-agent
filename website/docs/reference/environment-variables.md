@@ -538,7 +538,7 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 
 ### Zalo Bot Platform
 
-Used by the bundled Zalo platform plugin (`plugins/platforms/zalo/`). See [Messaging Gateway → Zalo](/user-guide/messaging/zalo) for full setup.
+Used by the bundled Zalo platform plugin (`plugins/platforms/zalo/`). See [Messaging Gateway → Zalo](/user-guide/messaging/zalo) for full setup. Keep credentials in environment variables; most non-secret operator settings can also be set under `platforms.zalo` in `config.yaml`, with environment variables taking precedence.
 
 | Variable | Description |
 |----------|-------------|

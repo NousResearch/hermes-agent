@@ -359,8 +359,19 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
             dt = datetime.fromisoformat(schedule.replace('Z', '+00:00'))
             # Make naive timestamps timezone-aware at parse time so the stored
             # value doesn't depend on the system timezone matching at check time.
+            #
+            # Anchor to the CONFIGURED Hermes timezone, not the server's local
+            # timezone. The due-check (`get_due_jobs`) compares `next_run_at`
+            # against `hermes_time.now()`, which uses the configured zone. If a
+            # naive "20:07" were interpreted as server-local (e.g. UTC) while
+            # now() runs in Asia/Kolkata, the stored instant would land hours
+            # off from the user's wall-clock intent — far enough that one-shots
+            # never become due and recurring jobs fire at the wrong time. Using
+            # the configured zone makes "20:07" mean 20:07 on the same clock the
+            # scheduler checks against (#51021).
             if dt.tzinfo is None:
-                dt = dt.astimezone()  # Interpret as local timezone
+                hermes_tz = _hermes_now().tzinfo
+                dt = dt.replace(tzinfo=hermes_tz)
             return {
                 "kind": "once",
                 "run_at": dt.isoformat(),
@@ -1240,10 +1251,16 @@ def claim_job_for_fire(job_id: str, *, claim_ttl_seconds: int = 300) -> bool:
 def get_due_jobs() -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now.
 
-    For recurring jobs (cron/interval), if the scheduled time is stale
-    (more than one period in the past, e.g. because the gateway was down),
-    the job is fast-forwarded to the next future run instead of firing
-    immediately.  This prevents a burst of missed jobs on gateway restart.
+    For recurring jobs (cron/interval), if the scheduled time is stale (more
+    than one period in the past, e.g. because the gateway was down OR because a
+    long-running previous execution overran the interval), the accumulated
+    missed runs are collapsed — ``next_run_at`` is fast-forwarded to the next
+    future occurrence so a backlog does NOT burst-fire on restart — but the job
+    still fires ONCE now. This prevents the perpetual-defer loop (#33315) where
+    a job whose runtime exceeds ``interval + grace`` would be skipped forever.
+
+    Note: firing once on catch-up flows through ``mark_job_run``, so a job with
+    a ``repeat.times`` limit consumes one of its runs on that catch-up fire.
     """
     with _jobs_lock():
         return _get_due_jobs_locked()
@@ -1351,25 +1368,34 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
             if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
-                # Job is past its catch-up grace window — this is a stale missed run.
-                # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
+                # Job is past its catch-up grace window — skip accumulated
+                # missed runs but still execute once now to avoid deferring
+                # indefinitely (e.g. a long-running job just finished).
                 new_next = compute_next_run(schedule, now.isoformat())
                 if new_next:
                     logger.info(
                         "Job '%s' missed its scheduled time (%s, grace=%ds). "
-                        "Fast-forwarding to next run: %s",
+                        "Running now; next run provisionally set to: %s "
+                        "(re-anchored on completion)",
                         job.get("name", job["id"]),
                         next_run,
                         grace,
                         new_next,
                     )
-                    # Update the job in storage
+                    # Persist the fast-forward to storage now (skip accumulated
+                    # slots). In the built-in ticker path this is shortly
+                    # overwritten by advance_next_run + mark_job_run, but it is
+                    # NOT redundant: it (a) protects the crash window between
+                    # here and mark_job_run, and (b) covers the external
+                    # fire_due provider path, which does not call
+                    # advance_next_run. mark_job_run re-anchors next_run_at off
+                    # the actual completion time, so this value is provisional.
                     for rj in raw_jobs:
                         if rj["id"] == job["id"]:
                             rj["next_run_at"] = new_next
                             needs_save = True
                             break
-                    continue  # Skip this run
+                    # Fall through to due.append(job) — execute once now
 
             due.append(job)
 

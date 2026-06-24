@@ -40,6 +40,7 @@ Payment / credit exhaustion fallback:
   their OpenRouter balance but has Codex OAuth or another provider available.
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -102,9 +103,42 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 from agent.credential_pool import load_pool
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
+
+
+# ── Interrupt protection for atomic auxiliary tasks ──────────────────────
+# Some auxiliary tasks must NOT be aborted mid-flight by a gateway interrupt
+# (e.g. an incoming user message while the agent is busy). Context
+# compression is the prime case: if the summary LLM call is interrupted
+# part-way, compression falls back to a static "summary unavailable" marker
+# and the real handoff is lost (#23975). A thread-local flag lets such a
+# task mark its in-flight LLM call as interrupt-protected; the Codex
+# Responses stream's cancellation check honors it. TIMEOUTS still fire
+# (a hung call must die), and all OTHER aux tasks (vision, web_extract,
+# title_generation, …) remain freely interruptible.
+_aux_interrupt_protection = threading.local()
+
+
+def _aux_interrupt_protected() -> bool:
+    return bool(getattr(_aux_interrupt_protection, "active", False))
+
+
+@contextlib.contextmanager
+def aux_interrupt_protection(active: bool = True):
+    """Mark the current thread's auxiliary LLM call as interrupt-protected.
+
+    Used by atomic aux tasks (compression) so a mid-flight gateway interrupt
+    doesn't abort the call and trigger a degraded fallback. Re-entrant-safe:
+    restores the previous value on exit.
+    """
+    prev = getattr(_aux_interrupt_protection, "active", False)
+    _aux_interrupt_protection.active = active
+    try:
+        yield
+    finally:
+        _aux_interrupt_protection.active = prev
 
 
 def _safe_isinstance(obj: Any, maybe_type: Any) -> bool:
@@ -631,6 +665,13 @@ def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
     return str(url or "").strip().rstrip("/")
 
 
+def _nous_min_key_ttl_seconds() -> int:
+    try:
+        return max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
+    except (TypeError, ValueError):
+        return 1800
+
+
 # ── Codex Responses → chat.completions adapter ─────────────────────────────
 # All auxiliary consumers call client.chat.completions.create(**kwargs) and
 # read response.choices[0].message.content. This adapter translates those
@@ -805,7 +846,11 @@ class _CodexCompletionsAdapter:
                 raise TimeoutError(_timeout_message())
             try:
                 from tools.interrupt import is_interrupted
-                if is_interrupted():
+                # Honor interrupt protection for atomic aux tasks (compression):
+                # a mid-flight gateway interrupt must NOT abort the summary call
+                # and trigger a degraded fallback marker (#23975). Timeouts above
+                # still fire; other aux tasks remain interruptible.
+                if is_interrupted() and not _aux_interrupt_protected():
                     raise InterruptedError("Codex auxiliary Responses stream interrupted")
             except InterruptedError:
                 raise
@@ -1300,6 +1345,57 @@ def _nous_base_url() -> str:
     return os.getenv("NOUS_INFERENCE_BASE_URL", _NOUS_DEFAULT_BASE_URL)
 
 
+def _resolve_nous_pool_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[str, str]]:
+    """Resolve Nous auxiliary credentials from the selected pool entry."""
+    try:
+        from hermes_cli.auth import _agent_key_is_usable
+
+        pool = load_pool("nous")
+    except Exception as exc:
+        logger.debug("Auxiliary Nous pool credential resolution failed: %s", exc)
+        return None
+
+    if not pool or not pool.has_credentials():
+        return None
+
+    try:
+        entry = pool.select()
+    except Exception as exc:
+        logger.debug("Auxiliary Nous pool selection failed: %s", exc)
+        return None
+
+    if entry is None:
+        return None
+
+    state = {
+        "agent_key": getattr(entry, "agent_key", None),
+        "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
+        "scope": getattr(entry, "scope", None),
+    }
+    if force_refresh or not _agent_key_is_usable(state, _nous_min_key_ttl_seconds()):
+        try:
+            refreshed = pool.try_refresh_current()
+        except Exception as exc:
+            logger.debug("Auxiliary Nous pool refresh failed: %s", exc)
+            refreshed = None
+        if refreshed is None:
+            return None
+        entry = refreshed
+
+    provider = {
+        "agent_key": getattr(entry, "agent_key", None),
+        "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
+        "access_token": getattr(entry, "access_token", None),
+        "expires_at": getattr(entry, "expires_at", None),
+        "scope": getattr(entry, "scope", None),
+    }
+    api_key = _nous_api_key(provider)
+    base_url = _pool_runtime_base_url(entry, _NOUS_DEFAULT_BASE_URL)
+    if not api_key or not base_url:
+        return None
+    return api_key, base_url
+
+
 def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[str, str]]:
     """Return fresh Nous runtime credentials when available.
 
@@ -1308,11 +1404,15 @@ def _resolve_nous_runtime_api(*, force_refresh: bool = False) -> Optional[tuple[
     relying only on whatever raw tokens happen to be sitting in auth.json
     or the credential pool.
     """
+    pooled = _resolve_nous_pool_runtime_api(force_refresh=force_refresh)
+    if pooled is not None:
+        return pooled
+
     try:
         from hermes_cli.auth import resolve_nous_runtime_credentials
 
         creds = resolve_nous_runtime_credentials(
-            timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+            timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
             force_refresh=force_refresh,
         )
     except Exception as exc:
@@ -2905,7 +3005,7 @@ def _refresh_provider_credentials(provider: str) -> bool:
             from hermes_cli.auth import resolve_nous_runtime_credentials
 
             creds = resolve_nous_runtime_credentials(
-                timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
+                timeout_seconds=env_float("HERMES_NOUS_TIMEOUT_SECONDS", 15),
                 force_refresh=True,
             )
             if not str(creds.get("api_key", "") or "").strip():

@@ -104,6 +104,31 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[2]["tool_name"] == "execute_code"
 
+    def test_convert_messages_strips_timestamp(self, transport):
+        """Internal per-message ``timestamp`` metadata (stamped by
+        ``_apply_persist_user_message_override`` to preserve platform event
+        time without embedding it in content, and persisted to the SQLite
+        store) is not part of the OpenAI Chat Completions schema. Strict
+        providers like Mistral / Fireworks-backed endpoints reject it with
+        HTTP 422 'Extra inputs are not permitted, field: messages[N].timestamp'.
+        Regression test for #47868.
+        """
+        msgs = [
+            {"role": "user", "content": "hi", "timestamp": 1781976577.0},
+        ]
+        result = transport.convert_messages(msgs)
+        assert "timestamp" not in result[0]
+        assert result[0]["content"] == "hi"
+        assert result[0]["role"] == "user"
+        # Original list untouched (deepcopy-on-demand)
+        assert msgs[0]["timestamp"] == 1781976577.0
+
+    def test_convert_messages_no_copy_without_timestamp(self, transport):
+        """A timestamp-free message list needs no sanitize pass and is
+        returned by identity (preserves the deepcopy-on-demand contract)."""
+        msgs = [{"role": "user", "content": "hi"}]
+        assert transport.convert_messages(msgs) is msgs
+
     def test_convert_messages_strips_internal_scaffolding_markers(self, transport):
         """Hermes-internal ``_``-prefixed markers must never reach the wire.
 
@@ -378,20 +403,6 @@ class TestChatCompletionsBuildKwargs:
             reasoning_config={"enabled": True, "effort": "xhigh"},
         )
         assert kw["extra_body"]["extra_body"]["google"]["thinking_config"]["thinking_level"] == "high"
-
-    def test_google_gemini_cli_keeps_top_level_thinking_config(self, transport):
-        msgs = [{"role": "user", "content": "Hi"}]
-        kw = transport.build_kwargs(
-            model="gemini-3-flash-preview",
-            messages=msgs,
-            provider_name="google-gemini-cli",
-            reasoning_config={"enabled": True, "effort": "high"},
-        )
-        assert kw["extra_body"]["thinking_config"] == {
-            "includeThoughts": True,
-            "thinkingLevel": "high",
-        }
-        assert "google" not in kw["extra_body"]
 
     def test_gemini_flash_minimal_clamps_to_low(self, transport):
         # Gemini 3 Flash documents low/medium/high; "minimal" isn't accepted,

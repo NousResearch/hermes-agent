@@ -57,7 +57,7 @@ _ACCOUNTS_AUTH_TYPES: frozenset[str] = frozenset(
 class ProviderDescriptor:
     """One provider, as seen by every surface (CLI picker + both GUI tabs)."""
 
-    slug: str                      # canonical id, e.g. "google-gemini-cli"
+    slug: str                      # canonical id, e.g. "openai-codex"
     label: str                     # human display name
     description: str               # one-line description
     auth_type: str                 # api_key | oauth_* | external_process | copilot | aws_sdk

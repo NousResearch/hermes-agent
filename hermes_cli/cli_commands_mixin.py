@@ -947,52 +947,6 @@ class CLICommandsMixin:
         _cprint(f"  Original session: {parent_session_id}")
         _cprint(f"  Branch session:   {new_session_id}")
 
-    def _handle_gquota_command(self, cmd_original: str) -> None:
-        """Show Google Gemini Code Assist quota usage for the current OAuth account."""
-        try:
-            from agent.google_oauth import get_valid_access_token, GoogleOAuthError, load_credentials
-            from agent.google_code_assist import retrieve_user_quota, CodeAssistError
-        except ImportError as exc:
-            self._console_print(f"  [red]Gemini modules unavailable: {exc}[/]")
-            return
-
-        try:
-            access_token = get_valid_access_token()
-        except GoogleOAuthError as exc:
-            self._console_print(f"  [yellow]{exc}[/]")
-            self._console_print("  Run [bold]/model[/] and pick 'Google Gemini (OAuth)' to sign in.")
-            return
-
-        creds = load_credentials()
-        project_id = (creds.project_id if creds else "") or ""
-
-        try:
-            buckets = retrieve_user_quota(access_token, project_id=project_id)
-        except CodeAssistError as exc:
-            self._console_print(f"  [red]Quota lookup failed:[/] {exc}")
-            return
-
-        if not buckets:
-            self._console_print("  [dim]No quota buckets reported (account may be on legacy/unmetered tier).[/]")
-            return
-
-        # Sort for stable display, group by model
-        buckets.sort(key=lambda b: (b.model_id, b.token_type))
-        self._console_print()
-        self._console_print(f"  [bold]Gemini Code Assist quota[/]  (project: {project_id or '(auto / free-tier)'})")
-        self._console_print()
-        for b in buckets:
-            pct = max(0.0, min(1.0, b.remaining_fraction))
-            width = 20
-            filled = int(round(pct * width))
-            bar = "▓" * filled + "░" * (width - filled)
-            pct_str = f"{int(pct * 100):3d}%"
-            header = b.model_id
-            if b.token_type:
-                header += f" [{b.token_type}]"
-            self._console_print(f"    {header:40s}  {bar}  {pct_str}")
-        self._console_print()
-
     def _handle_personality_command(self, cmd: str):
         """Handle the /personality command to set predefined personalities."""
         from cli import save_config_value
@@ -1038,6 +992,64 @@ class CLICommandsMixin:
             print()
             print("  Usage: /personality <name>")
             print()
+
+    def _handle_pet_command(self, cmd: str):
+        """Toggle, browse, or adopt a petdex mascot.
+
+        ``/pet`` / ``/pet toggle`` → flip ``display.pet.enabled`` on/off
+        ``/pet list``            → browse the petdex gallery
+        ``/pet scale <n>``       → resize the pet everywhere (e.g. 0.5)
+        ``/pet <slug>``          → adopt (install if needed) + make active
+        ``/pet off``             → disable (alias for toggle-off)
+
+        Writes ``display.pet.*`` to config; the CLI/TUI/desktop pet surfaces
+        pick the change up on their next poll, so the pet appears shortly.
+        """
+        from agent.pet import store
+        from agent.pet.manifest import ManifestError
+        from hermes_cli.pets import _set_active, _set_enabled, print_pet_gallery, set_pet_scale, toggle_pet_display
+
+        parts = cmd.split(maxsplit=1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        low = arg.lower()
+
+        if not arg or low == "toggle":
+            enabled, name, err = toggle_pet_display()
+            if err:
+                print(f"(x_x) {err}")
+                return
+            if enabled:
+                print(f"(^_^)b {name} is out — it'll pop in shortly.")
+            else:
+                print(f"(-_-)zzZ {name} put away." if name else "(-_-)zzZ Pet put away.")
+            return
+
+        if low in ("list", "gallery", "browse", "all"):
+            print_pet_gallery()
+            return
+
+        if low == "scale" or low.startswith("scale "):
+            value = arg[len("scale"):].strip()
+            if not value:
+                print("(o_o) Usage: /pet scale <factor>  (e.g. /pet scale 0.5)")
+                return
+            scale, err = set_pet_scale(value)
+            print(f"(x_x) {err}" if err else f"(^_^) Pet scale → {scale:g}.")
+            return
+
+        if low == "off":
+            _set_enabled(False)
+            print("(-_-)zzZ Pet put away.")
+            return
+
+        print(f"(o_o) Fetching '{arg}' from petdex…")
+        try:
+            pet = store.install_pet(arg)
+        except (store.PetStoreError, ManifestError) as exc:
+            print(f"(x_x) Couldn't adopt '{arg}': {exc}")
+            return
+        _set_active(arg)
+        print(f"(^_^)b {pet.display_name} is out — it'll pop in shortly.")
 
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
@@ -1400,6 +1412,32 @@ class CLICommandsMixin:
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
 
+    def _handle_learn_command(self, cmd: str):
+        """Handle /learn — distill a reusable skill from anything the user describes.
+
+        Open-ended: the argument is free text describing the source(s) — a
+        directory, a URL, "what we just did", pasted notes. We build a
+        standards-guided prompt and inject it onto the agent's input queue; the
+        live agent gathers the material with the tools it already has and
+        authors the skill via ``skill_manage``. No engine, no model-tool
+        footprint, works on any terminal backend.
+        """
+        from agent.learn_prompt import build_learn_prompt
+
+        # Everything after the command word is the open-ended request.
+        parts = cmd.strip().split(None, 1)
+        user_request = parts[1].strip() if len(parts) > 1 else ""
+
+        msg = build_learn_prompt(user_request)
+        if user_request:
+            print("\n⚡ Learning a skill from what you described...")
+        else:
+            print("\n⚡ Learning a skill from this conversation...")
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+        else:  # pragma: no cover - defensive (no live input loop)
+            print("  /learn needs an active chat session to run.")
+
     def _handle_memory_command(self, cmd: str):
         """Handle /memory slash command — pending review + approval-gate toggle."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
@@ -1407,6 +1445,17 @@ class CLICommandsMixin:
         parts = cmd.strip().split()
         args = parts[1:] if len(parts) > 1 else []
         store = getattr(self.agent, "_memory_store", None) if getattr(self, "agent", None) else None
+        if store is None:
+            # No live agent store (e.g. /memory approve invoked from the Desktop
+            # GUI, or any context without an active agent). Apply against a freshly
+            # loaded on-disk store, mirroring the gateway path
+            # (gateway/slash_commands.py): it persists to the same MEMORY/USER.md
+            # and creates MEMORY.md on the first approved write. Without this the
+            # shared handler returns "memory store unavailable". See #46783.
+            # load_on_disk_store() honors the user's configured char limits, so
+            # an approval here enforces the same caps as the live agent would.
+            from tools.memory_tool import load_on_disk_store
+            store = load_on_disk_store()
         out = handle_pending_subcommand(
             wa.MEMORY, args,
             memory_store=store,
@@ -1821,7 +1870,7 @@ class CLICommandsMixin:
             print()
 
     def _handle_goal_command(self, cmd: str) -> None:
-        """Dispatch /goal subcommands: set / status / pause / resume / clear."""
+        """Dispatch /goal subcommands: set / draft / show / status / pause / resume / clear."""
         from cli import _DIM, _RST, _cprint
         parts = (cmd or "").strip().split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1836,6 +1885,25 @@ class CLICommandsMixin:
         # Bare /goal or /goal status → show current state
         if not arg or lower == "status":
             _cprint(f"  {mgr.status_line()}")
+            return
+
+        # /goal show → print the active goal's completion contract
+        if lower == "show":
+            _cprint(f"  {mgr.status_line()}")
+            _cprint(f"  {mgr.render_contract()}")
+            return
+
+        # /goal draft <objective> → expand plain text into a structured
+        # completion contract (outcome / verification / constraints /
+        # boundaries / stop_when) and set it as the active goal. Adapted
+        # from Codex's "let the agent draft the goal" guidance: the contract
+        # makes "done" evidence-based instead of a loose vibe check.
+        if lower.startswith("draft"):
+            objective = arg[len("draft"):].strip()
+            if not objective:
+                _cprint("  Usage: /goal draft <objective in plain language>")
+                return
+            self._handle_goal_draft(objective)
             return
 
         if lower == "pause":
@@ -1867,21 +1935,111 @@ class CLICommandsMixin:
                 _cprint(f"  {_DIM}No active goal.{_RST}")
             return
 
-        # Otherwise treat the arg as the goal text.
+        # /goal wait <pid> [reason] — park the loop on a background process so
+        # it stops re-poking the agent every turn while it waits on CI / a
+        # build / a long job. The barrier auto-clears when the PID exits.
+        if lower == "wait" or lower.startswith("wait "):
+            wait_arg = arg[len("wait"):].strip()
+            if not wait_arg:
+                _cprint("  Usage: /goal wait <pid> [reason]")
+                return
+            wtokens = wait_arg.split(None, 1)
+            try:
+                pid = int(wtokens[0])
+            except ValueError:
+                _cprint("  /goal wait: <pid> must be an integer process id.")
+                return
+            reason = wtokens[1].strip() if len(wtokens) > 1 else ""
+            try:
+                mgr.wait_on(pid, reason=reason)
+            except (RuntimeError, ValueError) as exc:
+                _cprint(f"  /goal wait: {exc}")
+                return
+            rtxt = f" ({reason})" if reason else ""
+            _cprint(f"  ⏳ Goal parked on pid {pid}{rtxt}. Loop pauses until it exits.")
+            return
+
+        # /goal unwait — drop the wait barrier and resume normal looping.
+        if lower == "unwait":
+            if mgr.stop_waiting():
+                _cprint("  ▶ Wait barrier cleared — goal loop resumes.")
+            else:
+                _cprint(f"  {_DIM}No wait barrier set.{_RST}")
+            return
+
+        # Otherwise treat the arg as the goal text. Inline `field: value`
+        # lines (verify:, constraints:, boundaries:, stop when:) are parsed
+        # into a completion contract; the remaining prose is the headline.
+        # A plain free-form goal with no such lines behaves exactly as before.
+        from hermes_cli.goals import parse_contract
+
+        headline, contract = parse_contract(arg)
+        goal_text = headline or arg
         try:
-            state = mgr.set(arg)
+            state = mgr.set(goal_text, contract=contract if not contract.is_empty() else None)
         except ValueError as exc:
             _cprint(f"  Invalid goal: {exc}")
             return
 
         _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
+        if state.has_contract():
+            _cprint(f"  {_DIM}Completion contract:{_RST}")
+            for line in state.contract.render_block().splitlines():
+                _cprint(f"    {line}")
         _cprint(
-            f"  {_DIM}After each turn, a judge model will check if the goal is done. "
+            f"  {_DIM}After each turn, a judge model checks if the goal is done"
+            f"{' against the contract above' if state.has_contract() else ''}. "
             f"Hermes keeps working until it is, you pause/clear it, or the budget is "
-            f"exhausted. Use /goal status, /goal pause, /goal resume, /goal clear.{_RST}"
+            f"exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.{_RST}"
         )
         # Kick the loop off immediately so the user doesn't have to send a
         # separate message after setting the goal.
+        try:
+            self._pending_input.put(state.goal)
+        except Exception:
+            pass
+
+    def _handle_goal_draft(self, objective: str) -> None:
+        """Draft a structured completion contract from a plain objective and
+        set it as the active goal. Falls back to a bare goal if the aux model
+        can't produce a contract."""
+        from cli import _DIM, _RST, _cprint
+        from hermes_cli.goals import draft_contract
+
+        mgr = self._get_goal_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Goals unavailable (no active session).{_RST}")
+            return
+
+        _cprint(f"  {_DIM}Drafting completion contract…{_RST}")
+        try:
+            contract = draft_contract(objective)
+        except Exception as exc:
+            import logging as _logging
+            _logging.getLogger(__name__).debug("goal draft failed: %s", exc)
+            contract = None
+
+        try:
+            state = mgr.set(objective, contract=contract)
+        except ValueError as exc:
+            _cprint(f"  Invalid goal: {exc}")
+            return
+
+        _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
+        if state.has_contract():
+            _cprint(f"  {_DIM}Drafted completion contract:{_RST}")
+            for line in state.contract.render_block().splitlines():
+                _cprint(f"    {line}")
+            _cprint(
+                f"  {_DIM}Tighten any field by re-setting the goal with inline "
+                f"lines (e.g. verify: <command>), then /goal resume. "
+                f"Use /goal show to review.{_RST}"
+            )
+        else:
+            _cprint(
+                f"  {_DIM}Couldn't draft a contract (aux model unavailable) — "
+                f"running as a free-form goal. The per-turn judge still applies.{_RST}"
+            )
         try:
             self._pending_input.put(state.goal)
         except Exception:
@@ -2006,6 +2164,79 @@ class CLICommandsMixin:
         if self._apply_tui_skin_style():
             print("  Prompt + TUI colors updated.")
 
+    def _compose_in_editor(self, initial_text: str = "") -> str:
+        """Open ``$VISUAL``/``$EDITOR`` on a temp markdown file and return the
+        saved buffer (comment lines starting with ``#!`` stripped).
+
+        Returns the composed prompt text, or an empty string if the editor
+        could not be launched or the buffer was left empty. Factored out so
+        the read-back/strip logic is unit-testable without spawning an editor.
+        """
+        import os
+        import shlex
+        import subprocess
+        import tempfile
+
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+        if not editor:
+            editor = "notepad" if os.name == "nt" else "nano"
+
+        header = (
+            "#! Compose your prompt below. Lines starting with '#!' are ignored.\n"
+            "#! Save and quit to send; leave empty to cancel.\n\n"
+        )
+        fd, path = tempfile.mkstemp(suffix=".md", prefix="hermes_prompt_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(header)
+                if initial_text:
+                    fh.write(initial_text)
+            try:
+                subprocess.call([*shlex.split(editor), path])
+            except Exception:
+                # Fall back to a bare invocation (editor value may not be a
+                # simple argv-splittable string on some platforms).
+                subprocess.call(f"{editor} {shlex.quote(path)}", shell=True)
+            with open(path, "r", encoding="utf-8") as fh:
+                raw = fh.read()
+        finally:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+
+        lines = [ln for ln in raw.splitlines() if not ln.startswith("#!")]
+        return "\n".join(lines).strip()
+
+    def _handle_prompt_compose_command(self, cmd_original: str) -> None:
+        """Handle /prompt — compose the next prompt in $EDITOR and send it.
+
+        Opens the user's editor on a temporary markdown file (optionally
+        seeded with text passed after the command), then queues the saved
+        buffer as the next agent turn via the one-shot ``_pending_agent_seed``
+        the interactive loop already consumes (same path as /blueprint).
+        """
+        from cli import _DIM, _RST, _cprint
+
+        initial = ""
+        parts = (cmd_original or "").strip().split(None, 1)
+        if len(parts) > 1:
+            initial = parts[1]
+
+        try:
+            composed = self._compose_in_editor(initial)
+        except Exception as exc:
+            _cprint(f"  {_DIM}(>_<) Could not open editor: {exc}{_RST}")
+            return
+
+        if not composed:
+            _cprint(f"  {_DIM}(._.) Empty prompt — nothing sent.{_RST}")
+            return
+
+        # One-shot seed: the interactive loop runs this as the next agent turn
+        # right after process_command() returns (see cli.py main loop).
+        self._pending_agent_seed = composed
+
     def _handle_footer_command(self, cmd_original: str) -> None:
         """Toggle or inspect ``display.runtime_footer.enabled`` from the CLI.
 
@@ -2059,6 +2290,56 @@ class CLICommandsMixin:
         else:
             _cprint("  Failed to save runtime_footer setting to config.yaml")
 
+    def _handle_timestamps_command(self, cmd_original: str) -> None:
+        """Toggle or inspect ``display.timestamps`` from the CLI.
+
+        When on, submitted and streamed message labels carry an ``[HH:MM]``
+        suffix and ``/history`` prefixes each turn with its time (for turns
+        that carry a stored timestamp).
+
+        Usage:
+            /timestamps           → toggle
+            /timestamps on|off    → explicit
+            /timestamps status    → show current state
+        """
+        from cli import _cprint, save_config_value
+        from hermes_cli.colors import Colors as _Colors
+
+        arg = ""
+        try:
+            parts = (cmd_original or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        current = bool(getattr(self, "show_timestamps", False))
+
+        if arg in {"status", "?"}:
+            state = "ON" if current else "OFF"
+            _cprint(f"  {_Colors.BOLD}Message timestamps:{_Colors.RESET} {state}")
+            return
+
+        if arg in {"on", "enable", "true", "1"}:
+            new_state = True
+        elif arg in {"off", "disable", "false", "0"}:
+            new_state = False
+        elif arg == "":
+            new_state = not current
+        else:
+            _cprint("  Usage: /timestamps [on|off|status]")
+            return
+
+        self.show_timestamps = new_state
+        if save_config_value("display.timestamps", new_state):
+            state = (
+                f"{_Colors.GREEN}ON{_Colors.RESET}" if new_state
+                else f"{_Colors.DIM}OFF{_Colors.RESET}"
+            )
+            _cprint(f"  Message timestamps: {state}")
+        else:
+            _cprint("  Failed to save timestamps setting to config.yaml")
+
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.
 
@@ -2067,6 +2348,8 @@ class CLICommandsMixin:
             /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
+            /reasoning full         Show complete thinking (no 10-line clamp)
+            /reasoning clamp        Collapse long thinking to the first 10 lines
         """
         from cli import _ACCENT, _DIM, _RST, _cprint, _parse_reasoning_config, save_config_value
         parts = cmd.strip().split(maxsplit=1)
@@ -2081,9 +2364,10 @@ class CLICommandsMixin:
             else:
                 level = rc.get("effort", "medium")
             display_state = "on ✓" if self.show_reasoning else "off"
+            full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
-            _cprint(f"  {_ACCENT}Reasoning display: {display_state}{_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide>{_RST}")
+            _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide|full|clamp>{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -2103,6 +2387,21 @@ class CLICommandsMixin:
                 self.agent.reasoning_callback = self._current_reasoning_callback()
             save_config_value("display.show_reasoning", False)
             _cprint(f"  {_ACCENT}✓ Reasoning display: OFF (saved){_RST}")
+            return
+
+        # Full / clamped recap toggle
+        if arg in {"full", "all"}:
+            self.reasoning_full = True
+            save_config_value("display.reasoning_full", True)
+            _cprint(f"  {_ACCENT}✓ Reasoning display: FULL (saved){_RST}")
+            _cprint(f"  {_DIM}  The post-response recap box will print complete thinking.{_RST}")
+            if not self.show_reasoning:
+                _cprint(f"  {_DIM}  Note: reasoning display is OFF — run /reasoning show to see it.{_RST}")
+            return
+        if arg in {"clamp", "collapse", "short"}:
+            self.reasoning_full = False
+            save_config_value("display.reasoning_full", False)
+            _cprint(f"  {_ACCENT}✓ Reasoning display: CLAMPED to 10 lines (saved){_RST}")
             return
 
         # Effort level change

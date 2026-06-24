@@ -290,13 +290,41 @@ def find_hermes_node_executable(command: str) -> str | None:
     return None
 
 
+def find_node_executable_on_path(command: str) -> str | None:
+    """Return a Node/npm executable from PATH with Windows shim ordering.
+
+    ``shutil.which("npm")`` can resolve an extensionless npm shim before the
+    ``.cmd`` shim on Windows. Python's CreateProcess cannot execute that shim
+    directly, so prefer the launchable variants explicitly for Hermes-owned
+    subprocesses.
+    """
+    if sys.platform != "win32":
+        return shutil.which(command)
+
+    command_str = str(command)
+    has_path_separator = any(
+        sep and sep in command_str for sep in (os.sep, os.altsep, "/", "\\")
+    )
+    if has_path_separator:
+        return command_str if Path(command_str).is_file() else None
+
+    for name in _candidate_node_command_names(command_str):
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            if not directory:
+                continue
+            candidate = Path(directory) / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
 def find_node_executable(command: str) -> str | None:
     """Resolve a Node.js command, preferring Hermes-managed installs.
 
     This is for Hermes-owned subprocesses that should not be broken by a bad,
     missing, or elevation-triggering system Node/npm on PATH.
     """
-    return find_hermes_node_executable(command) or shutil.which(command)
+    return find_hermes_node_executable(command) or find_node_executable_on_path(command)
 
 
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:

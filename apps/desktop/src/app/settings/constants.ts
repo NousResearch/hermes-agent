@@ -37,180 +37,187 @@ interface ProviderPrefix {
 export const EMPTY_SELECT_VALUE = '__hermes_empty__'
 export const CONTROL_TEXT = 'text-xs'
 
+// ApexNodes (China-first) ordering: mainland-stable domestic providers get the
+// low priorities (1–9) so they float to the top of Settings → Keys, matching the
+// onboarding API-key picker's domestic-first layout. International providers
+// (need a VPN / overseas payment) sink to 10+. Priority drives sort only —
+// membership is still longest-prefix match (providerGroup in helpers.ts).
 export const PROVIDER_GROUPS: ProviderPrefix[] = [
-  {
-    prefix: 'NOUS_',
-    name: 'Nous Portal',
-    description: 'Hosted Hermes & Nous-trained models',
-    docsUrl: 'https://portal.nousresearch.com',
-    priority: 0
-  },
-  {
-    prefix: 'OPENROUTER_',
-    name: 'OpenRouter',
-    description: 'Aggregator for hundreds of frontier models',
-    docsUrl: 'https://openrouter.ai/keys',
-    priority: 1
-  },
-  {
-    prefix: 'ANTHROPIC_',
-    name: 'Anthropic',
-    description: 'Claude API access (Sonnet, Opus, Haiku)',
-    docsUrl: 'https://console.anthropic.com/settings/keys',
-    priority: 2
-  },
-  {
-    prefix: 'XAI_',
-    name: 'xAI',
-    description: 'Grok models (use OAuth for SuperGrok / Premium+)',
-    docsUrl: 'https://console.x.ai/',
-    priority: 3
-  },
-  {
-    prefix: 'GOOGLE_',
-    name: 'Gemini',
-    description: 'Google AI Studio (Gemini 1.5 / 2.0 / 2.5)',
-    docsUrl: 'https://aistudio.google.com/app/apikey',
-    priority: 4
-  },
-  { prefix: 'GEMINI_', name: 'Gemini', priority: 4 },
-  { prefix: 'HERMES_GEMINI_', name: 'Gemini', priority: 4 },
+  // ── Domestic — mainland-China stable, no VPN (1–9) ────────────────────────
   {
     prefix: 'DEEPSEEK_',
     name: 'DeepSeek',
     description: 'Direct DeepSeek API (V3.x, R1)',
     docsUrl: 'https://platform.deepseek.com/api_keys',
-    priority: 5
+    priority: 1
   },
   {
     prefix: 'DASHSCOPE_',
     name: 'DashScope (Qwen)',
     description: 'Alibaba Cloud DashScope — Qwen and multi-vendor models',
     docsUrl: 'https://modelstudio.console.alibabacloud.com/',
-    priority: 6
+    priority: 2
   },
-  { prefix: 'HERMES_QWEN_', name: 'DashScope (Qwen)', priority: 6 },
+  { prefix: 'HERMES_QWEN_', name: 'DashScope (Qwen)', priority: 2 },
   {
     prefix: 'GLM_',
     name: 'GLM / Z.AI',
     description: 'Zhipu GLM-4.6 and Z.AI hosted endpoints',
     docsUrl: 'https://z.ai/',
-    priority: 7
+    priority: 3
   },
-  { prefix: 'ZAI_', name: 'GLM / Z.AI', priority: 7 },
-  { prefix: 'Z_AI_', name: 'GLM / Z.AI', priority: 7 },
+  { prefix: 'ZAI_', name: 'GLM / Z.AI', priority: 3 },
+  { prefix: 'Z_AI_', name: 'GLM / Z.AI', priority: 3 },
   {
     prefix: 'KIMI_',
     name: 'Kimi / Moonshot',
     description: 'Moonshot Kimi K2 / coding endpoints',
     docsUrl: 'https://platform.moonshot.cn/',
-    priority: 8
+    priority: 4
   },
   {
     prefix: 'KIMI_CN_',
     name: 'Kimi (China)',
     description: 'Moonshot China endpoint',
     docsUrl: 'https://platform.moonshot.cn/',
-    priority: 9
+    priority: 5
   },
   {
     prefix: 'MINIMAX_',
     name: 'MiniMax',
     description: 'MiniMax-M2 and Hailuo international endpoints',
     docsUrl: 'https://www.minimax.io/',
-    priority: 10
+    priority: 6
   },
   {
     prefix: 'MINIMAX_CN_',
     name: 'MiniMax (China)',
     description: 'MiniMax mainland China endpoint',
     docsUrl: 'https://www.minimaxi.com/',
-    priority: 11
-  },
-  {
-    prefix: 'HF_',
-    name: 'Hugging Face',
-    description: 'Inference Providers — 20+ open models via router.huggingface.co',
-    docsUrl: 'https://huggingface.co/settings/tokens',
-    priority: 12
-  },
-  {
-    prefix: 'OPENCODE_ZEN_',
-    name: 'OpenCode Zen',
-    description: 'Pay-as-you-go access to curated coding models',
-    docsUrl: 'https://opencode.ai/auth',
-    priority: 13
-  },
-  {
-    prefix: 'OPENCODE_GO_',
-    name: 'OpenCode Go',
-    description: '$10/month subscription for open coding models',
-    docsUrl: 'https://opencode.ai/auth',
-    priority: 14
-  },
-  {
-    prefix: 'NVIDIA_',
-    name: 'NVIDIA NIM',
-    description: 'build.nvidia.com or your own local NIM endpoint',
-    docsUrl: 'https://build.nvidia.com/',
-    priority: 15
-  },
-  {
-    prefix: 'OLLAMA_',
-    name: 'Ollama Cloud',
-    description: 'Cloud-hosted open models from ollama.com',
-    docsUrl: 'https://ollama.com/settings',
-    priority: 16
-  },
-  {
-    prefix: 'LM_',
-    name: 'LM Studio',
-    description: 'Local LM Studio server (OpenAI-compatible)',
-    docsUrl: 'https://lmstudio.ai/docs/local-server',
-    priority: 17
+    priority: 7
   },
   {
     prefix: 'STEPFUN_',
     name: 'StepFun',
     description: 'StepFun Step Plan coding models',
     docsUrl: 'https://platform.stepfun.com/',
-    priority: 18
+    priority: 8
   },
   {
     prefix: 'XIAOMI_',
     name: 'Xiaomi MiMo',
     description: 'MiMo-V2.5 and Xiaomi proprietary models',
     docsUrl: 'https://platform.xiaomimimo.com',
+    priority: 9
+  },
+  // ── International — need VPN / overseas payment, backup only (10+) ─────────
+  {
+    prefix: 'NOUS_',
+    name: 'Nous Portal',
+    description: 'Hosted Hermes & Nous-trained models',
+    docsUrl: 'https://portal.nousresearch.com',
+    priority: 10
+  },
+  {
+    prefix: 'OPENROUTER_',
+    name: 'OpenRouter',
+    description: 'Aggregator for hundreds of frontier models',
+    docsUrl: 'https://openrouter.ai/keys',
+    priority: 11
+  },
+  {
+    prefix: 'ANTHROPIC_',
+    name: 'Anthropic',
+    description: 'Claude API access (Sonnet, Opus, Haiku)',
+    docsUrl: 'https://console.anthropic.com/settings/keys',
+    priority: 12
+  },
+  {
+    prefix: 'XAI_',
+    name: 'xAI',
+    description: 'Grok models (use OAuth for SuperGrok / Premium+)',
+    docsUrl: 'https://console.x.ai/',
+    priority: 13
+  },
+  {
+    prefix: 'GOOGLE_',
+    name: 'Gemini',
+    description: 'Google AI Studio (Gemini 1.5 / 2.0 / 2.5)',
+    docsUrl: 'https://aistudio.google.com/app/apikey',
+    priority: 14
+  },
+  { prefix: 'GEMINI_', name: 'Gemini', priority: 14 },
+  { prefix: 'HERMES_GEMINI_', name: 'Gemini', priority: 14 },
+  {
+    prefix: 'HF_',
+    name: 'Hugging Face',
+    description: 'Inference Providers — 20+ open models via router.huggingface.co',
+    docsUrl: 'https://huggingface.co/settings/tokens',
+    priority: 15
+  },
+  {
+    prefix: 'OPENCODE_ZEN_',
+    name: 'OpenCode Zen',
+    description: 'Pay-as-you-go access to curated coding models',
+    docsUrl: 'https://opencode.ai/auth',
+    priority: 16
+  },
+  {
+    prefix: 'OPENCODE_GO_',
+    name: 'OpenCode Go',
+    description: '$10/month subscription for open coding models',
+    docsUrl: 'https://opencode.ai/auth',
+    priority: 17
+  },
+  {
+    prefix: 'NVIDIA_',
+    name: 'NVIDIA NIM',
+    description: 'build.nvidia.com or your own local NIM endpoint',
+    docsUrl: 'https://build.nvidia.com/',
+    priority: 18
+  },
+  {
+    prefix: 'OLLAMA_',
+    name: 'Ollama Cloud',
+    description: 'Cloud-hosted open models from ollama.com',
+    docsUrl: 'https://ollama.com/settings',
     priority: 19
+  },
+  {
+    prefix: 'LM_',
+    name: 'LM Studio',
+    description: 'Local LM Studio server (OpenAI-compatible)',
+    docsUrl: 'https://lmstudio.ai/docs/local-server',
+    priority: 20
   },
   {
     prefix: 'ARCEEAI_',
     name: 'Arcee AI',
     description: 'Arcee-hosted small + medium models',
     docsUrl: 'https://chat.arcee.ai/',
-    priority: 20
+    priority: 21
   },
-  { prefix: 'ARCEE_', name: 'Arcee AI', priority: 20 },
+  { prefix: 'ARCEE_', name: 'Arcee AI', priority: 21 },
   {
     prefix: 'GMI_',
     name: 'GMI Cloud',
     description: 'GMI Cloud GPU + model serving',
     docsUrl: 'https://www.gmicloud.ai/',
-    priority: 21
+    priority: 22
   },
   {
     prefix: 'AZURE_FOUNDRY_',
     name: 'Azure Foundry',
     description: 'Azure AI Foundry custom endpoints (OpenAI / Anthropic-compatible)',
     docsUrl: 'https://ai.azure.com/',
-    priority: 22
+    priority: 23
   },
   {
     prefix: 'AWS_',
     name: 'AWS Bedrock',
     description: 'Authenticate via AWS profile + region',
     docsUrl: 'https://docs.aws.amazon.com/bedrock/latest/userguide/bedrock-regions.html',
-    priority: 23
+    priority: 24
   }
 ]
 

@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { providerGroup, providerPriority } from '@/app/settings/helpers'
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -64,7 +65,45 @@ export interface ApiKeyOption {
   short?: string
 }
 
+// ApexNodes (China-first) curated order: mainland-stable domestic providers lead
+// (DeepSeek default), then the local / custom endpoint, then the international
+// providers that need a VPN — which the key form collapses behind a "More"
+// disclosure. Ordering is enforced by apiKeyOptionPriority below (kept in sync
+// with PROVIDER_GROUPS), not by array position, so backend-derived providers
+// interleave correctly. We only re-order existing providers here — the domestic
+// catalog already exists in the backend.
 const API_KEY_OPTIONS: ApiKeyOption[] = [
+  {
+    id: 'deepseek',
+    name: 'DeepSeek',
+    envKey: 'DEEPSEEK_API_KEY',
+    docsUrl: 'https://platform.deepseek.com/api_keys'
+  },
+  {
+    id: 'dashscope',
+    name: 'DashScope (Qwen)',
+    envKey: 'DASHSCOPE_API_KEY',
+    docsUrl: 'https://modelstudio.console.alibabacloud.com/'
+  },
+  {
+    id: 'glm',
+    name: 'GLM / Z.AI',
+    envKey: 'GLM_API_KEY',
+    docsUrl: 'https://z.ai/'
+  },
+  {
+    id: 'moonshot',
+    name: 'Kimi / Moonshot',
+    envKey: 'KIMI_API_KEY',
+    docsUrl: 'https://platform.moonshot.cn/'
+  },
+  {
+    id: 'local',
+    name: 'Local / custom endpoint',
+    envKey: 'OPENAI_BASE_URL',
+    docsUrl: 'https://github.com/NousResearch/hermes-agent#bring-your-own-endpoint',
+    placeholder: 'http://127.0.0.1:8000/v1'
+  },
   {
     id: 'openrouter',
     name: 'OpenRouter',
@@ -88,15 +127,29 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
     name: 'xAI Grok',
     envKey: 'XAI_API_KEY',
     docsUrl: 'https://console.x.ai/'
-  },
-  {
-    id: 'local',
-    name: 'Local / custom endpoint',
-    envKey: 'OPENAI_BASE_URL',
-    docsUrl: 'https://github.com/NousResearch/hermes-agent#bring-your-own-endpoint',
-    placeholder: 'http://127.0.0.1:8000/v1'
   }
 ]
+
+// Below this priority a provider is "domestic" (mainland-China stable, no VPN)
+// and shown up front; at or above it the provider is international and collapsed
+// behind the "More (needs VPN)" disclosure. Mirrors PROVIDER_GROUPS in
+// settings/constants.ts (domestic 1–9, international 10+).
+const FOREIGN_PRIORITY_FLOOR = 10
+// The local / custom endpoint isn't a PROVIDER_GROUPS prefix (so providerGroup
+// returns "Other" → 99). It needs no VPN, so pin it to the end of the domestic
+// block instead of the long tail.
+const LOCAL_ENDPOINT_PRIORITY = 9
+
+function apiKeyOptionPriority(envKey: string): number {
+  if (envKey === 'OPENAI_BASE_URL') {
+    return LOCAL_ENDPOINT_PRIORITY
+  }
+
+  return providerPriority(providerGroup(envKey))
+}
+
+const isDomesticApiKeyOption = (option: ApiKeyOption) =>
+  apiKeyOptionPriority(option.envKey) < FOREIGN_PRIORITY_FLOOR
 
 // Build the FULL API-key provider catalog from the backend model options so the
 // onboarding / Providers key form lists every `api_key` provider `hermes model`
@@ -131,9 +184,19 @@ function useApiKeyCatalog(): ApiKeyOption[] {
   }, [])
 
   return useMemo(() => {
-    const curatedByEnv = new Map(API_KEY_OPTIONS.map(o => [o.envKey, o]))
-    const derived: ApiKeyOption[] = []
-    const seenEnv = new Set<string>(API_KEY_OPTIONS.map(o => o.envKey))
+    const seenEnv = new Set<string>()
+    const merged: ApiKeyOption[] = []
+
+    // Curated entries first so their richer copy + placeholders win the dedup
+    // over a backend-derived row for the same env key.
+    for (const option of API_KEY_OPTIONS) {
+      if (seenEnv.has(option.envKey)) {
+        continue
+      }
+
+      seenEnv.add(option.envKey)
+      merged.push(option)
+    }
 
     for (const row of rows) {
       // Only api_key providers can be activated with a pasted key. Skip OAuth /
@@ -149,7 +212,7 @@ function useApiKeyCatalog(): ApiKeyOption[] {
       }
 
       seenEnv.add(envKey)
-      derived.push({
+      merged.push({
         id: row.slug,
         name: row.name,
         envKey,
@@ -158,11 +221,12 @@ function useApiKeyCatalog(): ApiKeyOption[] {
       })
     }
 
-    // Curated first (recommended order), then the rest alphabetically so the
-    // long tail is scannable.
-    derived.sort((a, b) => a.name.localeCompare(b.name))
-
-    return [...API_KEY_OPTIONS.filter(o => curatedByEnv.has(o.envKey)), ...derived]
+    // Domestic-first (by provider priority), then alphabetical within a tier —
+    // so mainland-stable providers lead (DeepSeek first) and the long tail stays
+    // scannable, regardless of curated vs backend-derived origin.
+    return merged.sort(
+      (a, b) => apiKeyOptionPriority(a.envKey) - apiKeyOptionPriority(b.envKey) || a.name.localeCompare(b.name)
+    )
   }, [rows])
 }
 
@@ -430,7 +494,7 @@ const persistShowAll = (value: boolean) => {
 
 export function Picker({ ctx }: { ctx: OnboardingContext }) {
   const { t } = useI18n()
-  const { localEndpoint, manual, mode, providers } = useStore($desktopOnboarding)
+  const { localEndpoint, manual, mode, needsCredential, providers } = useStore($desktopOnboarding)
   const [showAll, setShowAll] = useState(readShowAll)
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
@@ -440,11 +504,19 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   // provider refresh may flip back to 'oauth'); it preselects the local option
   // and hides the "back to sign in" link since the user came specifically to
   // configure a custom endpoint.
-  if (localEndpoint || mode === 'apikey' || !hasOauth) {
+  if (localEndpoint || mode === 'apikey' || needsCredential || !hasOauth) {
     return (
       <div className="grid gap-3">
+        {/* DeepSeek-seed happy path: a provider is already selected, it just
+            needs a key. Show a clean prompt instead of the raw runtime error. */}
+        {needsCredential && !localEndpoint ? (
+          <div className="rounded-2xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary)/40 px-4 py-3 text-sm text-muted-foreground">
+            {t.onboarding.addKeyToStart}
+          </div>
+        ) : null}
         <ApiKeyForm
           canGoBack={hasOauth && !localEndpoint}
+          groupRecommended={!localEndpoint}
           initialEnvKey={localEndpoint ? 'OPENAI_BASE_URL' : undefined}
           onBack={() => setOnboardingMode('oauth')}
           onSave={(envKey, value, name, apiKey) => saveOnboardingApiKey(envKey, value, name, ctx, apiKey)}
@@ -635,6 +707,7 @@ export function ProviderRow({
 // surfaces render the identical form.
 export function ApiKeyForm({
   canGoBack,
+  groupRecommended = false,
   initialEnvKey,
   isSet,
   onBack,
@@ -644,6 +717,10 @@ export function ApiKeyForm({
   redactedValue
 }: {
   canGoBack: boolean
+  /** When true, split options into domestic (shown) + international (collapsed
+   *  behind a "More — needs VPN" disclosure). Used by onboarding so a China-first
+   *  install leads with DeepSeek; the Settings/manage surface passes false. */
+  groupRecommended?: boolean
   /** Preselect a specific option by env key (e.g. 'OPENAI_BASE_URL' to land on
    *  the local / custom endpoint form). Falls back to the first option. */
   initialEnvKey?: string
@@ -671,6 +748,19 @@ export function ApiKeyForm({
   const [localKey, setLocalKey] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
+
+  // International providers collapse behind a disclosure when grouping is on;
+  // start expanded if the preselected option is itself an international one.
+  const [showMore, setShowMore] = useState(() => {
+    if (!groupRecommended) {
+      return false
+    }
+
+    const initial = options.find(o => o.envKey === initialEnvKey) ?? options[0]
+
+    return initial ? !isDomesticApiKeyOption(initial) : false
+  })
+
   // `options` can change at runtime when callers filter the catalog (e.g. the
   // Providers page wiring its search into this grid). Keep the selection valid
   // by snapping back to the first remaining option when the current one drops.
@@ -728,6 +818,32 @@ export function ApiKeyForm({
     setSaving(false)
   }
 
+  // Split domestic (always shown) vs international (collapsed) when grouping is
+  // on. With it off (Settings / manage surface) every option stays in one grid.
+  const primaryOptions = groupRecommended ? options.filter(isDomesticApiKeyOption) : options
+  const moreOptions = groupRecommended ? options.filter(o => !isDomesticApiKeyOption(o)) : []
+  const hasMore = moreOptions.length > 0
+
+  const renderOptionButton = (o: ApiKeyOption) => (
+    <button
+      className={cn(
+        'rounded-2xl border bg-background/60 p-3 text-left transition hover:bg-accent/50',
+        option.envKey === o.envKey ? 'border-primary ring-2 ring-primary/20' : 'border-transparent'
+      )}
+      key={o.envKey}
+      onClick={() => pick(o)}
+      type="button"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-sm font-medium">{o.name}</span>
+        {isSet?.(o.envKey) ? <Check className="size-3.5 text-muted-foreground" /> : null}
+      </div>
+      {(t.onboarding.apiKeyOptions[o.id]?.short ?? o.short) ? (
+        <p className="mt-1 text-xs text-muted-foreground">{t.onboarding.apiKeyOptions[o.id]?.short ?? o.short}</p>
+      ) : null}
+    </button>
+  )
+
   return (
     <div className="grid gap-4">
       {canGoBack ? (
@@ -744,26 +860,28 @@ export function ApiKeyForm({
       ) : null}
 
       <div className="grid max-h-[42dvh] gap-2 overflow-y-auto p-1 sm:grid-cols-2">
-        {options.map(o => (
-          <button
-            className={cn(
-              'rounded-2xl border bg-background/60 p-3 text-left transition hover:bg-accent/50',
-              option.envKey === o.envKey ? 'border-primary ring-2 ring-primary/20' : 'border-transparent'
-            )}
-            key={o.envKey}
-            onClick={() => pick(o)}
-            type="button"
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-sm font-medium">{o.name}</span>
-              {isSet?.(o.envKey) ? <Check className="size-3.5 text-muted-foreground" /> : null}
-            </div>
-            {(t.onboarding.apiKeyOptions[o.id]?.short ?? o.short) ? (
-              <p className="mt-1 text-xs text-muted-foreground">{t.onboarding.apiKeyOptions[o.id]?.short ?? o.short}</p>
-            ) : null}
-          </button>
-        ))}
+        {primaryOptions.map(renderOptionButton)}
       </div>
+
+      {groupRecommended && hasMore ? (
+        <div className="grid gap-2">
+          <Button
+            className="self-center font-medium"
+            onClick={() => setShowMore(v => !v)}
+            size="xs"
+            type="button"
+            variant="text"
+          >
+            {showMore ? t.onboarding.collapse : t.onboarding.moreProvidersVpn}
+            <ChevronDown className={cn('size-3.5 transition', showMore && 'rotate-180')} />
+          </Button>
+          {showMore ? (
+            <div className="grid max-h-[42dvh] gap-2 overflow-y-auto p-1 sm:grid-cols-2">
+              {moreOptions.map(renderOptionButton)}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="grid scroll-mt-4 gap-2" ref={entryRef}>
         <div className="flex items-center justify-between gap-3">

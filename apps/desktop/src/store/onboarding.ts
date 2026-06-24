@@ -59,6 +59,11 @@ export interface DesktopOnboardingState {
   mode: OnboardingMode
   providers: null | OAuthProvider[]
   reason: null | string
+  /** True when a provider is already selected (e.g. our DeepSeek seed) but its
+   *  credential is missing/unusable — setup.status reports configured while the
+   *  runtime check fails. Onboarding then lands on the API-key form with a clean
+   *  "add your key" prompt instead of surfacing the raw runtime error. */
+  needsCredential: boolean
   requested: boolean
   /** True when the user explicitly chose "I'll choose a provider later" on the
    *  first-run picker. Persisted to localStorage so the blocking overlay never
@@ -153,6 +158,7 @@ const INITIAL: DesktopOnboardingState = {
   mode: 'oauth',
   providers: null,
   reason: null,
+  needsCredential: false,
   requested: false,
   firstRunSkipped: readCachedSkipped(),
   manual: false,
@@ -399,6 +405,7 @@ export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONB
     manual: true,
     requested: true,
     localEndpoint: false,
+    needsCredential: false,
     // `null` opts out of the prompt banner entirely (e.g. when the user already
     // picked a specific provider and we auto-start its sign-in).
     reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
@@ -419,6 +426,7 @@ export function startManualLocalEndpoint(reason: null | string = null) {
     manual: true,
     requested: true,
     localEndpoint: true,
+    needsCredential: false,
     mode: 'apikey',
     reason: reason ? reason.trim() || DEFAULT_ONBOARDING_REASON : null,
     flow: { status: 'idle' }
@@ -456,7 +464,7 @@ export function clearPendingProviderOAuth() {
 export function closeManualOnboarding() {
   pendingProviderOAuthId = null
 
-  patch({ manual: false, requested: false, localEndpoint: false, flow: { status: 'idle' } })
+  patch({ manual: false, requested: false, localEndpoint: false, needsCredential: false, flow: { status: 'idle' } })
 }
 
 export function completeDesktopOnboarding() {
@@ -471,6 +479,7 @@ export function completeDesktopOnboarding() {
     mode: 'oauth',
     providers: null,
     reason: null,
+    needsCredential: false,
     requested: false,
     firstRunSkipped: false,
     manual: false,
@@ -487,7 +496,14 @@ export function completeDesktopOnboarding() {
 export function dismissFirstRunOnboarding() {
   clearPoll()
   writeCachedSkipped(true)
-  patch({ firstRunSkipped: true, requested: false, manual: false, localEndpoint: false, flow: { status: 'idle' } })
+  patch({
+    firstRunSkipped: true,
+    requested: false,
+    manual: false,
+    localEndpoint: false,
+    needsCredential: false,
+    flow: { status: 'idle' }
+  })
 }
 
 export function setOnboardingMode(mode: OnboardingMode) {
@@ -515,16 +531,29 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   }
 
   const state = $desktopOnboarding.get()
-  const reason = runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
+
+  // checksDisagree (setup.status says configured, runtime check says not) means a
+  // provider is already selected but its credential is missing/unusable — exactly
+  // the DeepSeek seed with no key yet. Treat it as "just add your key", not as a
+  // failure: land on the API-key form (mode='apikey') and suppress the raw
+  // "No usable credentials … runtime resolution still failed" reason banner.
+  const needsCredential = runtime.checksDisagree
+  const reason = needsCredential ? null : runtime.reason || state.reason || DEFAULT_ONBOARDING_REASON
 
   writeCachedConfigured(false)
-  patch({ configured: false, reason })
+  patch({ configured: false, reason, needsCredential, ...(needsCredential ? { mode: 'apikey' as const } : {}) })
 
   if (state.providers !== null && !state.requested) {
     return false
   }
 
   await refreshProviders()
+
+  // refreshProviders sets mode from the OAuth provider list; re-assert the
+  // key-form landing for the seed-needs-key case so it isn't flipped to 'oauth'.
+  if (needsCredential) {
+    patch({ mode: 'apikey' })
+  }
 
   return false
 }

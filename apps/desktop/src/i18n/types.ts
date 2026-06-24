@@ -1095,10 +1095,15 @@ export interface Translations {
   onboarding: {
     headerTitle: string
     headerDesc: string
+    /** Clean prompt shown when a provider is seeded (DeepSeek) but its key is
+     *  missing — replaces the raw "no usable credentials" runtime error. */
+    addKeyToStart: string
     preparingInstall: string
     starting: string
     lookingUpProviders: string
     collapse: string
+    /** "More — needs VPN" disclosure label hiding the international providers. */
+    moreProvidersVpn: string
     otherProviders: string
     haveApiKey: string
     chooseLater: string

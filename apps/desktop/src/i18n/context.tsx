@@ -108,7 +108,12 @@ export function I18nProvider({ children, configClient = defaultConfigClient, ini
       .getConfig()
       .then(config => {
         if (!cancelled) {
-          setLocaleState(normalizeLocale(getConfigDisplayLanguage(config)))
+          const configured = getConfigDisplayLanguage(config)
+          // No language saved yet (fresh install): fall back to the shell's
+          // preferred default (initialLocale — "zh" for ApexNodes) instead of the
+          // universal en DEFAULT_LOCALE, so a first-run China install opens in
+          // Chinese. A saved (or unsupported) value still normalizes as before.
+          setLocaleState(configured == null ? normalizeLocale(initialLocale) : normalizeLocale(configured))
         }
       })
       .catch(error => {

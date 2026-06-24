@@ -24,6 +24,7 @@ function setProviders(providers: OAuthProvider[]) {
     mode: 'oauth',
     providers,
     reason: null,
+    needsCredential: false,
     requested: false,
     firstRunSkipped: false,
     manual: false,
@@ -48,6 +49,7 @@ afterEach(() => {
     mode: 'oauth',
     providers: null,
     reason: null,
+    needsCredential: false,
     requested: false,
     firstRunSkipped: false,
     manual: false,
@@ -98,5 +100,34 @@ describe('onboarding Picker', () => {
     render(<Picker ctx={ctx} />)
 
     expect(screen.queryByRole('button', { name: "I'll choose a provider later" })).toBeNull()
+  })
+
+  it('leads the API-key form with DeepSeek and collapses international providers', () => {
+    // No OAuth providers → the API-key form renders directly. The backend model
+    // catalog is unavailable in tests, so it falls back to the curated options.
+    setProviders([])
+    render(<Picker ctx={ctx} />)
+
+    // Domestic providers shown up front (DeepSeek default + the rest).
+    expect(screen.getByText('DeepSeek')).toBeTruthy()
+    expect(screen.getByText('DashScope (Qwen)')).toBeTruthy()
+    // International providers stay hidden until the disclosure is opened.
+    expect(screen.queryByText('OpenRouter')).toBeNull()
+    expect(screen.queryByText('OpenAI')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'More (needs a VPN)' }))
+
+    expect(screen.getByText('OpenRouter')).toBeTruthy()
+    expect(screen.getByText('OpenAI')).toBeTruthy()
+  })
+
+  it('shows a clean add-key prompt when a provider is seeded without a key', () => {
+    // The DeepSeek-seed happy path: needsCredential → land on the key form with a
+    // friendly prompt instead of the raw runtime error.
+    $desktopOnboarding.set({ ...$desktopOnboarding.get(), configured: false, mode: 'apikey', needsCredential: true })
+    render(<Picker ctx={ctx} />)
+
+    expect(screen.getByText('Your provider is selected — just add its API key to start chatting.')).toBeTruthy()
+    expect(screen.getByText('DeepSeek')).toBeTruthy()
   })
 })

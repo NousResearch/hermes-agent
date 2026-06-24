@@ -43,14 +43,14 @@ export const zh: Translations = {
   },
 
   boot: {
-    ready: 'Hermes 桌面版已就绪',
+    ready: 'ApexNodes 桌面版已就绪',
     desktopBootFailedWithMessage: message => `桌面启动失败：${message}`,
     steps: {
       connectingGateway: '正在连接桌面网关',
-      loadingSettings: '正在加载 Hermes 设置',
+      loadingSettings: '正在加载 ApexNodes 设置',
       loadingSessions: '正在加载最近会话',
       startingDesktopConnection: '正在启动桌面连接',
-      startingHermesDesktop: '正在启动 Hermes 桌面版…'
+      startingHermesDesktop: '正在启动 ApexNodes 桌面版…'
     },
     errors: {
       backgroundExited: 'Hermes 后台进程已退出。',
@@ -1595,7 +1595,7 @@ export const zh: Translations = {
     installTo: '将安装到',
     retryAfterRun: '我已运行 -- 重试',
     failedTitle: '安装失败',
-    settingUpTitle: '正在设置 Hermes Agent',
+    settingUpTitle: '正在设置 ApexNodes',
     finishingTitle: '正在收尾',
     failedDesc:
       '某个安装步骤失败。在 Windows 上，如果另一个 Hermes CLI 或桌面实例正在运行，可能会出现这种情况。请停止正在运行的 Hermes 实例后重试。可查看下面的详情或 desktop 日志中的完整记录。',
@@ -1617,27 +1617,33 @@ export const zh: Translations = {
   },
 
   onboarding: {
-    headerTitle: '开始设置 Hermes Agent',
+    headerTitle: '开始设置 ApexNodes',
     headerDesc: '连接模型提供方即可开始对话。大多数选项只需一次点击。',
-    preparingInstall: 'Hermes 正在完成安装。首次运行通常不到一分钟。',
-    starting: '正在启动 Hermes…',
+    addKeyToStart: '已选好提供方 — 填入它的 API Key 即可开始对话。',
+    preparingInstall: 'ApexNodes 正在完成安装。首次运行通常不到一分钟。',
+    starting: '正在启动 ApexNodes…',
     lookingUpProviders: '正在查找提供方...',
     collapse: '收起',
+    moreProvidersVpn: '更多（需科学上网）',
     otherProviders: '其他提供方',
     haveApiKey: '我有 API 密钥',
     chooseLater: '稍后再选择提供方',
     recommended: '推荐',
     connected: '已连接',
-    featuredPitch: '一个订阅，300+ 前沿模型 — 运行 Hermes 的推荐方式',
+    featuredPitch: '一个订阅，300+ 前沿模型 — 运行 ApexNodes 的推荐方式',
     openRouterPitch: '一个密钥，数百个模型 — 稳妥的默认选择',
     apiKeyOptions: {
+      deepseek: { short: '国内推荐', description: '直连 DeepSeek API（V3.x、R1）— 快速、便宜，ApexNodes 默认。' },
+      dashscope: { short: '阿里通义千问', description: '阿里云百炼 DashScope — 通义千问及多家模型。' },
+      glm: { short: '智谱 GLM / Z.AI', description: '智谱 GLM-4.6 与 Z.AI 托管端点。' },
+      moonshot: { short: '月之暗面 Kimi', description: '月之暗面 Kimi K2 与编码端点。' },
       openrouter: { short: '一个密钥，多个模型', description: '用一个密钥访问数百个模型。适合新安装的默认选择。' },
       openai: { short: 'GPT 级模型', description: '直接访问 OpenAI 模型。' },
       gemini: { short: 'Gemini 模型', description: '直接访问 Google Gemini 模型。' },
       xai: { short: 'Grok 模型', description: '直接访问 xAI Grok 模型。' },
       local: {
         short: '自托管',
-        description: '将 Hermes 指向本地或自托管的 OpenAI 兼容端点 (vLLM、llama.cpp、Ollama 等)。'
+        description: '将 ApexNodes 指向本地或自托管的 OpenAI 兼容端点 (vLLM、llama.cpp、Ollama 等)。'
       }
     },
     backToSignIn: '返回登录',

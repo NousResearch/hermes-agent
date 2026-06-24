@@ -1,5 +1,9 @@
 import type { Locale } from './types'
 
+// Universal safe fallback (also the test/type baseline). The ApexNodes shell
+// opens China-first in Simplified Chinese via I18nProvider's initialLocale="zh"
+// + the config-absent fallback in context.tsx — not by changing this constant,
+// so unrelated unit tests keep their stable English baseline.
 export const DEFAULT_LOCALE: Locale = 'en'
 
 export const LOCALE_OPTIONS = [

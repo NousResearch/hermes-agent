@@ -30,6 +30,7 @@ function baseState(overrides: Partial<DesktopOnboardingState> = {}): DesktopOnbo
     mode: 'oauth',
     providers: null,
     reason: null,
+    needsCredential: false,
     requested: false,
     firstRunSkipped: false,
     manual: false,
@@ -93,8 +94,13 @@ describe('refreshOnboarding', () => {
     expect(ready).toBe(false)
     expect(api).toHaveBeenCalledTimes(1)
     expect($desktopOnboarding.get().providers?.map(p => p.id)).toEqual(['fresh'])
-    expect($desktopOnboarding.get().reason).toContain('Selected runtime is not available.')
-    expect($desktopOnboarding.get().reason).toContain('setup.status reports configured credentials')
+    // checksDisagree (setup configured, runtime not) means a provider is selected
+    // but its credential is unusable — the seed-needs-key case. We now suppress
+    // the raw "…runtime resolution still failed" reason and land on the API-key
+    // form (needsCredential + mode='apikey') with a clean prompt instead.
+    expect($desktopOnboarding.get().reason).toBeNull()
+    expect($desktopOnboarding.get().needsCredential).toBe(true)
+    expect($desktopOnboarding.get().mode).toBe('apikey')
   })
 
   it('keeps cached providers when onboarding was not re-requested', async () => {

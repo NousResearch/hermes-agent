@@ -39,6 +39,7 @@ function resetStores() {
     mode: 'oauth',
     providers: null,
     reason: null,
+    needsCredential: false,
     requested: false,
     firstRunSkipped: false,
     manual: false,

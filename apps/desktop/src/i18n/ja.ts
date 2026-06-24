@@ -43,14 +43,14 @@ export const ja = defineLocale({
   },
 
   boot: {
-    ready: 'Hermes Desktop の準備ができました',
+    ready: 'ApexNodes Desktop の準備ができました',
     desktopBootFailedWithMessage: message => `デスクトップの起動に失敗しました: ${message}`,
     steps: {
       connectingGateway: 'ライブデスクトップゲートウェイに接続中',
-      loadingSettings: 'Hermes の設定を読み込み中',
+      loadingSettings: 'ApexNodes の設定を読み込み中',
       loadingSessions: '最近のセッションを読み込み中',
       startingDesktopConnection: 'デスクトップ接続を開始中',
-      startingHermesDesktop: 'Hermes Desktop を起動中…'
+      startingHermesDesktop: 'ApexNodes Desktop を起動中…'
     },
     errors: {
       backgroundExited: 'Hermes バックグラウンドプロセスが終了しました。',
@@ -1539,7 +1539,7 @@ export const ja = defineLocale({
     installTo: 'インストール先',
     retryAfterRun: '実行しました — 再試行',
     failedTitle: 'インストールに失敗しました',
-    settingUpTitle: 'Hermes Agent を設定中',
+    settingUpTitle: 'ApexNodes を設定中',
     finishingTitle: '仕上げ中',
     failedDesc:
       'インストール手順のいずれかが失敗しました。Windows では、別の Hermes CLI またはデスクトップインスタンスが実行中の場合に発生することがあります。実行中の Hermes インスタンスをすべて停止してから再試行してください。詳細は以下またはデスクトップログで確認できます。',
@@ -1562,20 +1562,32 @@ export const ja = defineLocale({
   },
 
   onboarding: {
-    headerTitle: 'Hermes Agent のセットアップをしましょう',
+    headerTitle: 'ApexNodes のセットアップをしましょう',
     headerDesc: 'チャットを始めるにはモデルプロバイダーを接続してください。ほとんどのオプションはワンクリックです。',
-    preparingInstall: 'Hermes はインストールを完了中です。初回実行では通常 1 分以内に完了します。',
-    starting: 'Hermes を起動中…',
+    addKeyToStart: 'プロバイダーは選択済みです — API キーを入力すればチャットを始められます。',
+    preparingInstall: 'ApexNodes はインストールを完了中です。初回実行では通常 1 分以内に完了します。',
+    starting: 'ApexNodes を起動中…',
     lookingUpProviders: 'プロバイダーを検索中...',
     collapse: '折りたたむ',
+    moreProvidersVpn: 'その他（VPN が必要）',
     otherProviders: 'その他のプロバイダー',
     haveApiKey: 'API キーをお持ちです',
     chooseLater: '後でプロバイダーを選択します',
     recommended: '推奨',
     connected: '接続済み',
-    featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — Hermes を実行するための推奨方法',
+    featuredPitch: '1 つのサブスクリプションで 300 以上の最先端モデル — ApexNodes を実行するための推奨方法',
     openRouterPitch: '1 つのキーで数百のモデル — 堅実なデフォルト',
     apiKeyOptions: {
+      deepseek: {
+        short: '中国で推奨',
+        description: 'DeepSeek API（V3.x、R1）へ直接アクセス — 高速・低価格で、ApexNodes のデフォルト。'
+      },
+      dashscope: {
+        short: 'Alibaba Qwen',
+        description: 'Alibaba Cloud DashScope — Qwen やマルチベンダーのモデル。'
+      },
+      glm: { short: 'Zhipu GLM / Z.AI', description: 'Zhipu GLM-4.6 と Z.AI ホスト型エンドポイント。' },
+      moonshot: { short: 'Moonshot Kimi', description: 'Moonshot Kimi K2 とコーディング向けエンドポイント。' },
       openrouter: {
         short: '1 つのキーで多くのモデル',
         description: '1 つのキーで数百のモデルをホスト。新規インストールのデフォルトとして最適。'
@@ -1586,7 +1598,7 @@ export const ja = defineLocale({
       local: {
         short: 'セルフホスト',
         description:
-          'ローカルまたはセルフホストの OpenAI 互換エンドポイント（vLLM、llama.cpp、Ollama など）に Hermes を接続。'
+          'ローカルまたはセルフホストの OpenAI 互換エンドポイント（vLLM、llama.cpp、Ollama など）に ApexNodes を接続。'
       }
     },
     backToSignIn: 'サインインに戻る',

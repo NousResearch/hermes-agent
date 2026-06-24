@@ -43,14 +43,14 @@ export const en: Translations = {
   },
 
   boot: {
-    ready: 'Hermes Desktop is ready',
+    ready: 'ApexNodes Desktop is ready',
     desktopBootFailedWithMessage: message => `Desktop boot failed: ${message}`,
     steps: {
       connectingGateway: 'Connecting live desktop gateway',
-      loadingSettings: 'Loading Hermes settings',
+      loadingSettings: 'Loading ApexNodes settings',
       loadingSessions: 'Loading recent sessions',
       startingDesktopConnection: 'Starting desktop connection',
-      startingHermesDesktop: 'Starting Hermes Desktop…'
+      startingHermesDesktop: 'Starting ApexNodes Desktop…'
     },
     errors: {
       backgroundExited: 'Hermes background process exited.',
@@ -1409,7 +1409,7 @@ export const en: Translations = {
     installTo: 'Will install to',
     retryAfterRun: 'I’ve run it -- retry',
     failedTitle: 'Installation failed',
-    settingUpTitle: 'Setting up Hermes Agent',
+    settingUpTitle: 'Setting up ApexNodes',
     finishingTitle: 'Finishing up',
     failedDesc:
       'One of the install steps failed. On Windows, this can happen if another Hermes CLI or desktop instance is running. Stop any running Hermes instances, then retry. Check the details below or the desktop log for the full transcript.',
@@ -1432,20 +1432,32 @@ export const en: Translations = {
   },
 
   onboarding: {
-    headerTitle: "Let's get you setup with Hermes Agent",
+    headerTitle: "Let's get you set up with ApexNodes",
     headerDesc: 'Connect a model provider to start chatting. Most options take one click.',
-    preparingInstall: 'Hermes is finishing install. This usually takes under a minute on first run.',
-    starting: 'Starting Hermes…',
+    addKeyToStart: 'Your provider is selected — just add its API key to start chatting.',
+    preparingInstall: 'ApexNodes is finishing install. This usually takes under a minute on first run.',
+    starting: 'Starting ApexNodes…',
     lookingUpProviders: 'Looking up providers...',
     collapse: 'Collapse',
+    moreProvidersVpn: 'More (needs a VPN)',
     otherProviders: 'Other providers',
     haveApiKey: 'I have an API key',
     chooseLater: "I'll choose a provider later",
     recommended: 'Recommended',
     connected: 'Connected',
-    featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run Hermes',
+    featuredPitch: 'One subscription, 300+ frontier models — the recommended way to run ApexNodes',
     openRouterPitch: 'One key, hundreds of models — a solid default',
     apiKeyOptions: {
+      deepseek: {
+        short: 'recommended in China',
+        description: 'Direct DeepSeek API (V3.x, R1) — fast, inexpensive, and the ApexNodes default.'
+      },
+      dashscope: {
+        short: 'Alibaba Qwen',
+        description: 'Alibaba Cloud DashScope — Qwen and multi-vendor models.'
+      },
+      glm: { short: 'Zhipu GLM / Z.AI', description: 'Zhipu GLM-4.6 and Z.AI hosted endpoints.' },
+      moonshot: { short: 'Moonshot Kimi', description: 'Moonshot Kimi K2 and coding endpoints.' },
       openrouter: {
         short: 'one key, many models',
         description: 'Hosts hundreds of models behind a single key. Good default for new installs.'
@@ -1455,7 +1467,7 @@ export const en: Translations = {
       xai: { short: 'Grok models', description: 'Direct access to xAI Grok models.' },
       local: {
         short: 'self-hosted',
-        description: 'Point Hermes at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).'
+        description: 'Point ApexNodes at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).'
       }
     },
     backToSignIn: 'Back to sign in',

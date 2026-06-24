@@ -30,7 +30,9 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary label="root">
       <QueryClientProvider client={queryClient}>
-        <I18nProvider>
+        {/* China-first: open in Simplified Chinese until the user picks a
+            language (persisted to config.display.language, which then wins). */}
+        <I18nProvider initialLocale="zh">
           <ThemeProvider>
             <HapticsProvider>
               <HashRouter>

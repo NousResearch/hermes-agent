@@ -9,6 +9,7 @@ from agent.display import (
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
+    redact_tool_args_for_display,
     set_tool_preview_max_len,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
@@ -49,6 +50,21 @@ class TestBuildToolPreview:
         result = build_tool_preview("read_file", {"path": "/tmp/test.py", "offset": 1})
         assert result is not None
         assert "/tmp/test.py" in result
+
+    def test_browser_type_preview_never_echoes_typed_text(self):
+        typed_text = "my_secret_password_123"
+        result = build_tool_preview("browser_type", {"ref": "@e3", "text": typed_text})
+        assert result is not None
+        assert typed_text not in result
+        assert "redacted typed text" in result
+
+    def test_browser_type_display_args_never_echo_typed_text(self):
+        typed_text = "normal-looking-but-sensitive"
+        safe_args = redact_tool_args_for_display(
+            "browser_type", {"ref": "@e3", "text": typed_text}
+        )
+        assert safe_args == {"ref": "@e3", "text": "[redacted typed text]"}
+        assert typed_text not in str(safe_args)
 
     def test_unknown_tool_with_fallback_key(self):
         """Unknown tool but with a recognized fallback key should still preview."""
@@ -204,6 +220,18 @@ class TestCuteToolMessagePreviewLength:
             1.2,
         )
         assert "2x: Review PR A | Review PR B" in line
+
+    def test_browser_type_cute_message_never_echoes_typed_text(self):
+        typed_text = "my_secret_password_123"
+        line = get_cute_tool_message(
+            "browser_type",
+            {"ref": "@password", "text": typed_text},
+            0.1,
+            result='{"success": true, "typed": "[redacted typed text]"}',
+        )
+
+        assert typed_text not in line
+        assert "redacted typed text" in line
 
 
 class TestEditDiffPreview:

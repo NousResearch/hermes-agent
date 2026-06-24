@@ -177,6 +177,55 @@ def _truncate_preview(text: str, max_len: int | None) -> str:
     return text
 
 
+def _redacted_browser_type_marker(value: Any) -> str:
+    """Return a non-reversible display marker for browser typed text."""
+    return "[redacted typed text]"
+
+
+def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
+    """Remove raw browser_type text from display-facing payloads.
+
+    Backends sometimes include the attempted input in error strings or fallback
+    metadata.  Replace the exact typed value recursively before a browser_type
+    result is returned to logs, callbacks, the model, or chat history.
+    """
+    if typed_text is None:
+        return value
+    needle = str(typed_text)
+    if needle == "":
+        return value
+    marker = _redacted_browser_type_marker(typed_text)
+    if isinstance(value, str):
+        return value.replace(needle, marker)
+    if isinstance(value, dict):
+        return {
+            key: redact_browser_typed_text_for_display(item, typed_text)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [redact_browser_typed_text_for_display(item, typed_text) for item in value]
+    if isinstance(value, tuple):
+        return tuple(redact_browser_typed_text_for_display(item, typed_text) for item in value)
+    return value
+
+
+def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | None:
+    """Return a copy of tool args safe for logs/progress UI.
+
+    Some tools legitimately receive secrets as their primary input.  For
+    ``browser_type`` the whole ``text`` argument must be treated as sensitive:
+    the UI cannot know whether the target field is a password box, token input,
+    or a normal search field, and leaking a password once is worse than losing
+    an exact progress preview.
+    """
+    if not isinstance(args, dict):
+        return args
+    safe_args = dict(args)
+    if tool_name == "browser_type" and "text" in safe_args:
+        safe_args["text"] = _redacted_browser_type_marker(safe_args.get("text"))
+    return safe_args
+
+
 def _delegate_task_goal_parts(tasks: Any, *, per_goal_len: int) -> tuple[int, list[str]]:
     if not isinstance(tasks, list):
         return 0, []
@@ -200,6 +249,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         max_len = _tool_preview_max_len
     if not args:
         return None
+    args = redact_tool_args_for_display(tool_name, args) or args
     primary_args = {
         "terminal": "command", "web_search": "query", "web_extract": "urls",
         "read_file": "path", "write_file": "path", "patch": "path",
@@ -906,6 +956,7 @@ def get_cute_tool_message(
     When *result* is provided the line is checked for failure indicators.
     Failed tool calls get a red prefix and an informational suffix.
     """
+    args = redact_tool_args_for_display(tool_name, args) or args
     dur = f"{duration:.1f}s"
     is_failure, failure_suffix = _detect_tool_failure(tool_name, result)
     skin_prefix = get_skin_tool_prefix()

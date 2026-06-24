@@ -3662,10 +3662,12 @@ class MatrixAdapter(BasePlatformAdapter):
         *,
         force_refresh: bool = False,
     ) -> MatrixRoomIdentity:
-        """Resolve Matrix room identity without member-count DM heuristics.
+        """Resolve Matrix room identity.
 
-        Matrix ``m.direct`` account data is the authoritative DM signal, but
-        explicitly named rooms win over stale/conflicting DM account data.
+        ``m.direct`` account data is the authoritative DM signal, matching how
+        matrix-js-sdk and Element classify (their ``DMRoomMap`` is built from
+        ``m.direct``). An explicit room name does not demote a DM, and member
+        count does not promote a non-DM room.
         """
         cached = self._room_identities.get(room_id)
         cached_at = self._room_identity_cached_at.get(room_id, 0.0)
@@ -3682,23 +3684,18 @@ class MatrixAdapter(BasePlatformAdapter):
         member_count = await self._get_room_member_count(room_id)
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
-        # member_count is the primary DM signal: <=2 members means this is
-        # necessarily a 1:1 conversation (or self-DM), regardless of m.direct
-        # or room name. Most Matrix clients auto-name DM rooms (e.g.
-        # "Alice & Bot"), so the old `not has_explicit_name` check
-        # misclassified virtually all client-created DMs as rooms. Falls back
-        # to the m.direct + name heuristic when the count is unavailable (e.g.
-        # state_store and API query both fail). A room that grew to 3+ members
-        # but is still in stale m.direct is correctly classified as a room.
-        is_likely_dm = (member_count is not None and member_count <= 2) or (
-            is_direct and not has_explicit_name
-        )
-        conflict = bool(
-            is_direct
-            and has_explicit_name
-            and (member_count is None or member_count > 2)
-        )
-        chat_type = "dm" if is_likely_dm else "room"
+        # m.direct is the authoritative DM signal, matching matrix-js-sdk and
+        # Element: Element's DMRoomMap is built from m.direct account data, with
+        # the invite `is_direct` flag as the only fallback (both fold into
+        # `_dm_rooms`). Member count never promotes a room to a DM — a joined
+        # room with <=2 members is not a DM unless m.direct says so — and an
+        # explicit room name never demotes one, since clients routinely
+        # auto-name DMs (e.g. "Alice & Bot").
+        chat_type = "dm" if is_direct else "room"
+        # A room still in m.direct but grown past two members is most likely a
+        # group left behind by a stale m.direct entry; surface that for
+        # diagnostics without overriding the m.direct classification.
+        conflict = bool(is_direct and member_count is not None and member_count > 2)
         display_name = room_name or canonical_alias or room_id
 
         identity = MatrixRoomIdentity(

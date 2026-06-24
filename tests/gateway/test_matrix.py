@@ -502,9 +502,13 @@ class TestMatrixDmDetection:
         assert await self.adapter._is_dm_room("!dm_room:ex.org") is True
 
     @pytest.mark.asyncio
-    async def test_named_two_member_room_is_dm_by_member_count(self):
-        """A named two-member room NOT in m.direct is treated as a DM because
-        <=2 members means it's necessarily a 1:1 conversation."""
+    async def test_two_member_room_not_in_m_direct_is_room(self):
+        """A two-member room NOT in m.direct is a room, not a DM.
+
+        Member count never promotes a room to a DM: matrix-js-sdk and Element
+        classify purely from m.direct (their DMRoomMap is built from it), so a
+        small room the user never marked direct stays a room.
+        """
         self.adapter._joined_rooms = {"!project:ex.org"}
         self.adapter._dm_rooms = {}
         self.adapter._client = MagicMock()
@@ -520,10 +524,11 @@ class TestMatrixDmDetection:
 
         identity = await self.adapter._resolve_room_identity("!project:ex.org")
 
-        assert identity.chat_type == "dm"
+        assert identity.chat_type == "room"
+        assert identity.conflict is False
         assert identity.display_name == "Project Room"
         assert identity.joined_member_count == 2
-        assert await self.adapter._is_dm_room("!project:ex.org") is True
+        assert await self.adapter._is_dm_room("!project:ex.org") is False
 
     @pytest.mark.asyncio
     async def test_named_two_member_dm_is_dm(self):
@@ -553,10 +558,15 @@ class TestMatrixDmDetection:
         assert await self.adapter._is_dm_room("!named_dm:ex.org") is True
 
     @pytest.mark.asyncio
-    async def test_named_room_overrides_stale_dm_cache(self):
-        """Explicit room names defeat stale/conflicting m.direct data when 3+ members."""
-        self.adapter._joined_rooms = {"!stale:ex.org"}
-        self.adapter._dm_rooms = {"!stale:ex.org": True}
+    async def test_m_direct_room_grown_past_two_stays_dm_flags_conflict(self):
+        """m.direct stays authoritative even once a DM grows past two members.
+
+        Element keeps a room mapped as a DM until m.direct itself is updated,
+        so we do too. The grown-past-two case is surfaced via `conflict` for
+        diagnostics rather than silently reclassified.
+        """
+        self.adapter._joined_rooms = {"!grown:ex.org"}
+        self.adapter._dm_rooms = {"!grown:ex.org": True}
         self.adapter._client = MagicMock()
         self.adapter._client.get_state_event = AsyncMock(
             side_effect=lambda room_id, event_type: {"content": {"name": "Ops Room"}}
@@ -568,12 +578,12 @@ class TestMatrixDmDetection:
             return_value=["@bot:ex.org", "@alice:ex.org", "@bob:ex.org"]
         )
 
-        identity = await self.adapter._resolve_room_identity("!stale:ex.org")
+        identity = await self.adapter._resolve_room_identity("!grown:ex.org")
 
-        assert identity.chat_type == "room"
+        assert identity.chat_type == "dm"
         assert identity.conflict is True
         assert identity.joined_member_count == 3
-        assert await self.adapter._is_dm_room("!stale:ex.org") is False
+        assert await self.adapter._is_dm_room("!grown:ex.org") is True
 
     @pytest.mark.asyncio
     async def test_canonical_alias_used_when_name_missing(self):
@@ -2088,7 +2098,9 @@ class TestMatrixSyncLoop:
         fake_client.join_room.assert_awaited_once()
         assert "!room:example.org" in adapter._joined_rooms
         assert len(captured) == 1
-        assert captured[0].source.chat_type == "dm"
+        # The invite carries no is_direct flag and the room is not in m.direct,
+        # so it is a group; the @mention is what gets the message dispatched.
+        assert captured[0].source.chat_type == "group"
 
     @pytest.mark.asyncio
     async def test_seconds_timestamp_is_not_treated_as_milliseconds(self):

@@ -186,6 +186,56 @@ tenant**. Tenant is resolved from the event's own discriminator (Discord
 token/socket/process delivered it. This keeps one shared bot able to front many
 tenants (Phase 6) without overloading an existing field.
 
+### Author-first resolution + the account-link (DM) path (Phase 7)
+
+Phase 7 adds **self-serve, per-user onboarding to a shared bot**, which changes
+*which* discriminator resolves the instance for a routed inbound message — and
+adds a management path for users to bind their own account.
+
+**Author-first resolution (the multi-tenant-guild rule, D-7.2).** A single
+Discord guild may hold **many** tenants — different members each linked to their
+own agent. So for delivery the connector resolves the destination instance from
+the **authenticated author binding** (`user_instance_binding`, keyed by
+`(tenant, platform, platform_user_id)` via `resolveByUser`), **NOT** by a
+guild→instance route. Concretely:
+
+- A routed message authored by a **linked** user reaches **only that user's**
+  instance — even when a second linked user in the **same guild** is served by a
+  different instance (each reaches only their own).
+- A message authored by an **unlinked** user resolves to **no** instance and is
+  dropped (**fail-closed** — never broadcast to the guild's other tenants).
+- The author id used is the **authentic `user_id` off the observed event**, the
+  same `SessionSource.user_id` documented above — never a value asserted by a
+  gateway or carried in a management frame.
+
+This is the per-`user_id` owner-only routing the connector enforces in
+`WsGatewayDelivery` (the gateway-side multi-tenant-guild E2E driver
+`gateway_multitenant_guild_driver.py` is the cross-repo oracle).
+
+**The account-link (DM) path.** A user binds their account to an instance with a
+one-time code, redeemed by DMing the shared bot:
+
+1. The owner triggers a link from the Portal (or a self-hosted CLI). The
+   connector mints a short-lived **link code** for the **authenticated**
+   instance (`POST /manage/link`; instanceId comes from the caller's principal —
+   a NAS-signed `aud=agent:{instanceId}` token or the instance's own per-gateway
+   secret — **never** the request body).
+2. The user sends `/link <code>` as a **direct message** to the shared bot from
+   the account they want to bind.
+3. The connector's inbound observer **consumes** that DM (it is not routed to any
+   agent) and writes the `user_instance_binding` using the **authentic
+   `user_id`** off the observed DM event. From then on, author-first resolution
+   routes that user's messages to the bound instance.
+
+**Opt-out is connector-authoritative.** Deprovisioning an instance
+(`POST /manage/deprovision`) drops its author bindings (so its users stop
+resolving to it) **and** revokes its per-gateway secret (so its socket can no
+longer authenticate — the next WS upgrade is closed **4401**). A gateway that
+sees a **4401 close after a previously-successful handshake** treats it as a
+terminal revocation: it stops reconnecting and reports the relay platform as
+**disabled** (not a retryable error). A 4401 *before* any successful handshake
+stays retryable (a cold-start / not-yet-provisioned race, not a revocation).
+
 ### 3.2 Going-idle / buffered-flip primitive (§5.3)
 
 A scale-to-zero PRIMITIVE (not the behaviour — nothing here decides to sleep or

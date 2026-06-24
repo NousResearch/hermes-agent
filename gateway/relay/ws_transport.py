@@ -54,6 +54,13 @@ WEBSOCKETS_AVAILABLE = websockets is not None
 _HANDSHAKE_TIMEOUT_S = 30.0
 _OUTBOUND_TIMEOUT_S = 30.0
 
+# Phase 7 Unit 7d-B: the application close code the connector sends when it
+# rejects/revokes a gateway's WS upgrade auth (mirrors the connector's
+# `4401` "unauthorized" close — a private-use code, not a standard WS code).
+# A 4401 received AFTER a successful handshake means the per-gateway secret was
+# revoked (opt-out / deprovision), which the transport treats as terminal.
+_RELAY_UNAUTHORIZED_CLOSE_CODE = 4401
+
 
 def _ws_dial_url(url: str) -> str:
     """Normalize a connector URL to the ``ws(s)://…/relay`` dial target.
@@ -236,6 +243,17 @@ class WebSocketRelayTransport:
         # Phase 5 §5.3: future awaiting the connector's going_idle_ack.
         self._going_idle_ack: asyncio.Future[None] | None = None
         self._closing = False
+        # Phase 7 Unit 7d-B: a 4401 (unauthorized) close AFTER we have already
+        # handshaked successfully at least once means the connector REVOKED this
+        # gateway's per-gateway secret — i.e. the operator opted this instance
+        # OUT of the relay (Unit 7b deprovision). That is TERMINAL: the secret is
+        # gone, so re-dialing just spins against a dead credential forever
+        # (the "retrying 4401" the dashboard showed). We stop reconnecting and
+        # surface it as a clean, non-retryable "disabled" state. A 4401 BEFORE
+        # any successful handshake stays retryable — that's a cold-start /
+        # not-yet-provisioned race, not a revocation.
+        self._handshake_succeeded = False
+        self._auth_revoked = False
 
     # ── lifecycle ────────────────────────────────────────────────────────
     async def connect(self) -> bool:
@@ -312,6 +330,14 @@ class WebSocketRelayTransport:
         if self._descriptor_ready is None:
             raise RuntimeError("handshake() called before connect()")
         return await asyncio.wait_for(self._descriptor_ready, timeout=self._connect_timeout_s)
+
+    @property
+    def auth_revoked(self) -> bool:
+        """True once the connector closed the socket with 4401 AFTER a prior
+        successful handshake — i.e. the per-gateway secret was revoked (the
+        operator opted this instance out of the relay). Terminal: the transport
+        stops reconnecting, and the adapter surfaces a clean "disabled" state."""
+        return self._auth_revoked
 
     def set_inbound_handler(self, handler: InboundHandler) -> None:
         self._inbound = handler
@@ -412,17 +438,51 @@ class WebSocketRelayTransport:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - log + let the task end; reconnection handled below
-            if not self._closing:
+            # Phase 7 Unit 7d-B: detect a 4401 (unauthorized) close. After a prior
+            # successful handshake this is a REVOCATION (opt-out / deprovision) —
+            # the per-gateway secret is gone, so reconnecting is futile. Latch a
+            # terminal "auth revoked" state and DON'T re-dial. Before any
+            # successful handshake a 4401 stays retryable (cold-start race).
+            if self._close_code_of(exc) == _RELAY_UNAUTHORIZED_CLOSE_CODE and self._handshake_succeeded:
+                self._auth_revoked = True
+                if not self._closing:
+                    logger.warning(
+                        "relay ws closed 4401 (unauthorized) after a successful handshake — "
+                        "treating as a revoked relay credential (opt-out); not reconnecting"
+                    )
+            elif not self._closing:
                 logger.warning("relay ws read loop ended: %s", exc)
         # Phase 5 §5.3: the socket closed. If reconnect is enabled and this was
         # NOT a deliberate disconnect(), kick the reconnect supervisor so the
         # gateway re-dials + re-handshakes (which triggers the connector's
         # buffered-flip drain on the new handshake). Self-scheduling: the reader
         # ends here, the supervisor re-dials and starts a fresh reader.
-        if self._reconnect and not self._closing and (self._supervisor is None or self._supervisor.done()):
+        # Phase 7 Unit 7d-B: a revoked credential (terminal 4401) is the one case
+        # we deliberately do NOT reconnect — the secret is dead until the
+        # instance is recreated, so spinning would just reproduce the failure.
+        if (
+            self._reconnect
+            and not self._closing
+            and not self._auth_revoked
+            and (self._supervisor is None or self._supervisor.done())
+        ):
             self._supervisor = asyncio.create_task(
                 self._reconnect_loop(), name="relay-ws-reconnect"
             )
+
+    @staticmethod
+    def _close_code_of(exc: BaseException) -> Optional[int]:
+        """Best-effort extraction of a WebSocket close code from a raised
+        exception. websockets' ConnectionClosed* expose the peer's Close frame
+        via `.rcvd`/`.sent` (preferred; `.code` is deprecated in websockets 13+).
+        Returns None when unknown."""
+        for attr in ("rcvd", "sent"):
+            frame = getattr(exc, attr, None)
+            fcode = getattr(frame, "code", None)
+            if isinstance(fcode, int):
+                return fcode
+        code = getattr(exc, "code", None)
+        return code if isinstance(code, int) else None
 
     async def _reconnect_loop(self) -> None:
         """Re-dial the connector with capped exponential backoff until reconnected
@@ -458,6 +518,11 @@ class WebSocketRelayTransport:
         if ftype == "descriptor":
             descriptor = CapabilityDescriptor.from_json(json.dumps(frame.get("descriptor", {})))
             self._descriptor = descriptor
+            # Phase 7 Unit 7d-B: a received descriptor means the WS upgrade auth
+            # passed and the connector accepted us — record that we've handshaked
+            # at least once, so a LATER 4401 close is read as a revocation
+            # (opt-out), not a cold-start race.
+            self._handshake_succeeded = True
             if self._descriptor_ready is not None and not self._descriptor_ready.done():
                 self._descriptor_ready.set_result(descriptor)
         elif ftype == "inbound":

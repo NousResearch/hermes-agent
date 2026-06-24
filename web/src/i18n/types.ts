@@ -124,6 +124,7 @@ export interface Translations {
     agent: string;
     connected: string;
     connectedPlatforms: string;
+    disabled?: string;
     disconnected: string;
     error: string;
     failed: string;

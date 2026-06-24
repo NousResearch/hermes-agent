@@ -114,8 +114,8 @@ dependencies = [
   # Transitive CVE fixes: cryptography 46.0.7 has GHSA-537c-gmf6-5ccf
   # (OpenSSL vuln); tornado 6.5.5 has CVE-2026-49853 (gzip bomb). Pin
   # minimums so container images and locked envs pick up patched versions.
-  "cryptography>=48.0.1",
-  "tornado>=6.5.6",
+  "cryptography>=48.0.1,<49",
+  "tornado>=6.5.6,<7",
   "ptyprocess>=0.7.0,<1; sys_platform != 'win32'",
   "pywinpty>=2.0.0,<3; sys_platform == 'win32'",
   # Image resize recovery for the vision tools. Pillow shrinks oversized images

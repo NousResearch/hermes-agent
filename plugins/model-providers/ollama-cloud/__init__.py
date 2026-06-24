@@ -1,6 +1,3 @@
-<<<<<<< HEAD
-"""Ollama Cloud provider profile."""
-=======
 """Ollama Cloud provider profile.
 
 Ollama Cloud's OpenAI-compatible ``/v1/chat/completions`` endpoint
@@ -21,14 +18,9 @@ model runs in non-thinking mode.
 from __future__ import annotations
 
 from typing import Any
->>>>>>> origin/main
 
 from providers import register_provider
 from providers.base import ProviderProfile
-
-<<<<<<< HEAD
-ollama_cloud = ProviderProfile(
-=======
 
 class OllamaCloudProfile(ProviderProfile):
     """Ollama Cloud — maps xhigh→max via top-level reasoning_effort."""
@@ -70,7 +62,6 @@ class OllamaCloudProfile(ProviderProfile):
 
 
 ollama_cloud = OllamaCloudProfile(
->>>>>>> origin/main
     name="ollama-cloud",
     aliases=("ollama_cloud",),
     default_aux_model="nemotron-3-nano:30b",

@@ -948,7 +948,7 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
                         "expiresAt": oauth_data.get("expiresAt", 0),
                         "source": "claude_code_credentials_file",
                     }
-        except (json.JSONDecodeError, OSError, IOError) as e:
+        except (json.JSONDecodeError, OSError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
 
     return None
@@ -1118,7 +1118,7 @@ def _write_claude_code_credentials(
             except OSError:
                 pass
             raise
-    except (OSError, IOError) as e:
+    except OSError as e:
         logger.debug("Failed to write refreshed credentials: %s", e)
 
 
@@ -1434,7 +1434,7 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
             data = json.loads(_HERMES_OAUTH_FILE.read_text(encoding="utf-8"))
             if data.get("accessToken"):
                 return data
-        except (json.JSONDecodeError, OSError, IOError) as e:
+        except (json.JSONDecodeError, OSError) as e:
             logger.debug("Failed to read Hermes OAuth credentials: %s", e)
     return None
 

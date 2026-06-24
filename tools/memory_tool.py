@@ -231,13 +231,13 @@ class MemoryStore:
             if fcntl:
                 try:
                     fcntl.flock(fd, fcntl.LOCK_UN)
-                except (OSError, IOError):
+                except OSError:
                     pass
             elif msvcrt:
                 try:
                     fd.seek(0)
                     msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
-                except (OSError, IOError):
+                except OSError:
                     pass
             fd.close()
 
@@ -633,7 +633,7 @@ class MemoryStore:
             return []
         try:
             raw = path.read_text(encoding="utf-8")
-        except (OSError, IOError):
+        except OSError:
             return []
 
         if not raw.strip():
@@ -673,7 +673,7 @@ class MemoryStore:
             return None
         try:
             raw = path.read_text(encoding="utf-8")
-        except (OSError, IOError):
+        except OSError:
             return None
         if not raw.strip():
             return None
@@ -695,7 +695,7 @@ class MemoryStore:
         bak_path = path.with_suffix(path.suffix + f".bak.{ts}")
         try:
             bak_path.write_text(raw, encoding="utf-8")
-        except (OSError, IOError):
+        except OSError:
             return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
         return str(bak_path)
 
@@ -727,7 +727,7 @@ class MemoryStore:
                 except OSError:
                     pass
                 raise
-        except (OSError, IOError) as e:
+        except OSError as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 

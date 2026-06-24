@@ -122,7 +122,7 @@ def _jobs_lock():
                     fcntl.flock(lock_fd, fcntl.LOCK_EX)
                 elif msvcrt is not None:
                     getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
-            except (OSError, IOError) as e:
+            except OSError as e:
                 # Never let a locking failure take down cron writes — fall back to
                 # in-process-only protection (still held via _jobs_file_lock).
                 logger.warning("jobs.json cross-process lock unavailable (%s); "
@@ -136,7 +136,7 @@ def _jobs_lock():
                             fcntl.flock(lock_fd, fcntl.LOCK_UN)
                         elif msvcrt is not None:
                             getattr(msvcrt, "locking")(lock_fd.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
-                    except (OSError, IOError):
+                    except OSError:
                         pass
                     finally:
                         lock_fd.close()
@@ -646,8 +646,8 @@ def load_jobs() -> List[Dict[str, Any]]:
         except Exception as e:
             logger.error("Failed to auto-repair jobs.json: %s", e)
             raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
-    except IOError as e:
-        logger.error("IOError reading jobs.json: %s", e)
+    except OSError as e:
+        logger.error("OSError reading jobs.json: %s", e)
         raise RuntimeError(f"Failed to read cron database: {e}") from e
 
     # Validate the top-level JSON shape: accept a dict (expected) or a bare

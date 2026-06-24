@@ -436,7 +436,7 @@ def _try_acquire_file_lock(handle) -> bool:
         else:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         return True
-    except (BlockingIOError, OSError):
+    except OSError:
         return False
 
 

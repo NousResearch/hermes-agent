@@ -686,7 +686,7 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
         finally:
             try:
                 fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
-            except (OSError, IOError):
+            except OSError:
                 pass
 
 

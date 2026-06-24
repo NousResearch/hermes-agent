@@ -123,6 +123,61 @@ class TestChatCompletionsBasic:
         # Original list untouched (deepcopy-on-demand)
         assert msgs[0]["timestamp"] == 1781976577.0
 
+    def test_convert_messages_strips_timestamp_in_content_parts(self, transport):
+        """``timestamp`` (and other internal-only keys) nested inside a
+        multimodal ``content`` list part must also be stripped — not just the
+        top-level message key. A user turn whose ``content`` is a list of
+        parts can inherit a per-part ``timestamp`` from the transcript store;
+        the shallow top-level strip leaves it on the wire and strict providers
+        (Mistral, Fireworks) still reject the whole request with HTTP 422
+        ``Extra inputs are not permitted, loc: [...,messages,N,user,timestamp]``,
+        collapsing the TDM fallback chain into a 502.
+
+        Regression for the 2026-06-23 TDM 502 / timestamp incident (whole
+        bug class around #47868 — nested content-part variant).
+        """
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "hi", "timestamp": 1782267431.528704},
+                ],
+                "timestamp": 1782267431.528704,
+            },
+        ]
+        result = transport.convert_messages(msgs, model="mistral-large")
+        # No ``timestamp`` anywhere in the serialized payload — top-level or
+        # nested inside any content part.
+        import json
+        serialized = json.dumps(result)
+        assert "timestamp" not in serialized, serialized
+        assert "timestamp" not in result[0]
+        assert "timestamp" not in result[0]["content"][0]
+        # Real content survives untouched.
+        assert result[0]["content"][0]["text"] == "hi"
+        assert result[0]["content"][0]["type"] == "text"
+        assert result[0]["role"] == "user"
+        # Original list untouched (deepcopy-on-demand).
+        assert msgs[0]["content"][0]["timestamp"] == 1782267431.528704
+
+    def test_convert_messages_strips_internal_markers_in_content_parts(self, transport):
+        """Hermes-internal ``_``-prefixed scaffolding keys nested inside a
+        content-list part must also never reach the wire."""
+        msgs = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "run", "_thinking_prefill": True},
+                ],
+            },
+        ]
+        result = transport.convert_messages(msgs)
+        assert not any(
+            isinstance(k, str) and k.startswith("_")
+            for k in result[0]["content"][0]
+        ), result[0]["content"][0]
+        assert result[0]["content"][0]["text"] == "run"
+
     def test_convert_messages_no_copy_without_timestamp(self, transport):
         """A timestamp-free message list needs no sanitize pass and is
         returned by identity (preserves the deepcopy-on-demand contract)."""

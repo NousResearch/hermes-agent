@@ -69,10 +69,33 @@ def _budget_for_agent(agent) -> BudgetConfig:
 _MAX_TOOL_WORKERS = 8
 
 
+def _flush_session_db_after_tool_progress(
+    agent,
+    messages: list,
+    *,
+    stage: str,
+) -> None:
+    """Best-effort incremental SessionDB flush for tool-call progress.
+
+    Tool execution can perform side effects that terminate or restart the
+    current Hermes process before the normal turn-end persistence path runs.
+    Flush the already-appended assistant/tool messages immediately so the
+    transcript survives destructive-but-valid tool calls.
+    """
+    try:
+        agent._flush_messages_to_session_db(messages)
+    except Exception as exc:
+        logger.warning("Incremental tool-call persistence failed after %s: %s", stage, exc)
+
+
 def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
     import run_agent
     return run_agent
+
+
+def _is_interpreter_shutdown_submit_error(exc: RuntimeError) -> bool:
+    return "cannot schedule new futures after interpreter shutdown" in str(exc)
 
 
 def _emit_terminal_post_tool_call(
@@ -279,6 +302,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 f"[Tool execution cancelled — {tc.function.name} was skipped due to user interrupt]",
                 tc.id,
             ))
+            _flush_session_db_after_tool_progress(
+                agent,
+                messages,
+                stage=f"cancelled tool result {tc.function.name}",
+            )
         return
 
     # ── Parse args + pre-execution bookkeeping ───────────────────────
@@ -585,13 +613,40 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if runnable_calls:
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                for i, tc, name, args in runnable_calls:
+                for submit_index, (i, tc, name, args) in enumerate(runnable_calls):
                     # Propagate the agent turn's ContextVars (e.g.
                     # _approval_session_key) AND thread-local approval/sudo
                     # callbacks into the worker thread; clears callbacks on exit.
-                    f = executor.submit(
-                        propagate_context_to_thread(_run_tool), i, tc, name, args, parsed_calls[i][3]
-                    )
+                    try:
+                        f = executor.submit(
+                            propagate_context_to_thread(_run_tool), i, tc, name, args, parsed_calls[i][3]
+                        )
+                    except RuntimeError as submit_error:
+                        if not _is_interpreter_shutdown_submit_error(submit_error):
+                            raise
+                        skipped_calls = runnable_calls[submit_index:]
+                        logger.warning(
+                            "interpreter shutdown while scheduling concurrent tools; "
+                            "skipping %d unsubmitted tool(s)",
+                            len(skipped_calls),
+                        )
+                        for skipped_i, _tc, skipped_name, skipped_args in skipped_calls:
+                            if results[skipped_i] is None:
+                                middleware_trace = parsed_calls[skipped_i][3]
+                                result = (
+                                    f"Error executing tool '{skipped_name}': "
+                                    "Python interpreter is shutting down; tool was not started"
+                                )
+                                results[skipped_i] = (
+                                    skipped_name,
+                                    skipped_args,
+                                    result,
+                                    0.0,
+                                    True,
+                                    False,
+                                    middleware_trace,
+                                )
+                        break
                     futures.append(f)
 
                 # Wait for all to complete with periodic heartbeats so the
@@ -779,6 +834,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_msg["ended_at"] = tool_ended_at
             tool_msg["duration_ms"] = int(max(0.0, tool_ended_at - tool_started_at) * 1000)
         messages.append(tool_msg)
+        _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"tool result {name}",
+        )
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
@@ -814,13 +874,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
                 skipped_name = skipped_tc.function.name
-                skip_msg = {
-                    "role": "tool",
-                    "name": skipped_name,
-                    "content": f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
-                    "tool_call_id": skipped_tc.id,
-                }
-                messages.append(skip_msg)
+                messages.append(make_tool_result_message(
+                    skipped_name,
+                    f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
+                    skipped_tc.id,
+                ))
+                _flush_session_db_after_tool_progress(
+                    agent,
+                    messages,
+                    stage=f"cancelled tool result {skipped_name}",
+                )
             break
 
         function_name = tool_call.function.name
@@ -1429,6 +1492,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_msg["ended_at"] = tool_ended_at
             tool_msg["duration_ms"] = int(max(0.0, tool_ended_at - tool_start_time) * 1000)
         messages.append(tool_msg)
+        _flush_session_db_after_tool_progress(
+            agent,
+            messages,
+            stage=f"tool result {function_name}",
+        )
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the
@@ -1455,6 +1523,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
                     skipped_tc.id,
                 ))
+                _flush_session_db_after_tool_progress(
+                    agent,
+                    messages,
+                    stage=f"skipped tool result {skipped_name}",
+                )
             break
 
         if agent.tool_delay > 0 and i < len(assistant_message.tool_calls):

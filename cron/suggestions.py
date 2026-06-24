@@ -36,13 +36,13 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_constants import get_default_hermes_root
+from hermes_constants import get_hermes_home
 from hermes_time import now as _hermes_now
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
-CRON_DIR = get_default_hermes_root().resolve() / "cron"
+CRON_DIR = get_hermes_home().resolve() / "cron"
 SUGGESTIONS_FILE = CRON_DIR / "suggestions.json"
 
 # In-process lock protecting load->modify->save cycles (the background review

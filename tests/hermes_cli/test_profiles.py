@@ -1446,6 +1446,71 @@ class TestEdgeCases:
             cleanup_stale=False,
         )
 
+    def test_gateway_running_check_falls_back_to_runtime_state(self, profile_env):
+        """A live gateway whose PID-file/lock check fails closed (separate-process
+        reader, e.g. the dashboard s6 service in Docker) is still detected via the
+        profile's gateway_state.json validated against the live process table.
+
+        Regression: the Profiles view used to show "Gateway stopped" while the
+        sidebar (which already has this fallback) showed "Gateway running" for the
+        same live gateway. See get_running_pid() short-circuiting on an
+        unheld runtime lock before it inspects the PID record.
+        """
+        import os
+        import gateway.status as gw_status
+        from hermes_cli.profiles import _check_gateway_running
+
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir(parents=True, exist_ok=True)
+
+        # Write a realistic gateway_state.json pointing at THIS live process with
+        # a gateway-shaped argv, so get_runtime_status_running_pid validates it.
+        live_pid = os.getpid()
+        (default_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": live_pid,
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "start_time": gw_status._get_process_start_time(live_pid),
+                    "gateway_state": "running",
+                    "active_agents": 0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        # Primary pid-file/lock check returns None (no lock held by this reader),
+        # exactly as it does for a separate-process dashboard. The fallback must
+        # then read the state file and confirm the gateway is alive.
+        with patch("gateway.status.get_running_pid", return_value=None):
+            assert _check_gateway_running(default_home) is True
+
+    def test_gateway_running_check_runtime_state_stopped(self, profile_env):
+        """A gateway_state.json with state 'stopped' must NOT be reported running,
+        even when the recorded PID happens to be alive."""
+        import os
+        from hermes_cli.profiles import _check_gateway_running
+
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir(parents=True, exist_ok=True)
+        (default_home / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "kind": "hermes-gateway",
+                    "argv": ["hermes", "gateway", "run"],
+                    "gateway_state": "stopped",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch("gateway.status.get_running_pid", return_value=None):
+            assert _check_gateway_running(default_home) is False
+
     def test_profile_name_boundary_single_char(self):
         """Single alphanumeric character is valid."""
         validate_profile_name("a")

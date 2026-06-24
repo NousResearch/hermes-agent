@@ -31,6 +31,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { AutomationBlueprints } from "@/components/AutomationBlueprints";
+import { CronTimeline, type TimelineStrings } from "@/components/CronTimeline";
 import { cn, themedBody } from "@/lib/utils";
 
 function formatTime(iso?: string | null): string {
@@ -178,7 +179,7 @@ export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("all");
-  const [view, setView] = useState<"jobs" | "blueprints">("jobs");
+  const [view, setView] = useState<"jobs" | "timeline" | "blueprints">("jobs");
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t, locale } = useI18n();
@@ -197,6 +198,34 @@ export default function CronPage() {
     ...t.cron.scheduleDescribe,
     weekdaysShort: t.cron.scheduleModes.weekdaysShort,
     ordinal: locale === "en" ? englishOrdinal : (n: number) => String(n),
+  };
+
+  // Localised strings for the timeline view. Built with English fallbacks
+  // so the feature renders before every locale file carries the new keys.
+  const tl = t.cron.timeline;
+  const timelineStrings: TimelineStrings = {
+    windows: {
+      d1: tl?.windows?.d1 ?? "24h",
+      d2: tl?.windows?.d2 ?? "48h",
+      d7: tl?.windows?.d7 ?? "7d",
+    },
+    now: tl?.now ?? "Now",
+    recenter: tl?.recenter ?? "Recenter",
+    legendPast: tl?.legendPast ?? "Past",
+    legendNext: tl?.legendNext ?? "Next",
+    legendFuture: tl?.legendFuture ?? "Upcoming",
+    legendPaused: tl?.legendPaused ?? "Paused",
+    empty: tl?.empty ?? t.cron.noJobs,
+    noOccurrences: tl?.noOccurrences ?? "No run in this window",
+    schedule: tl?.schedule ?? t.cron.schedule,
+    last: t.cron.last,
+    next: t.cron.next,
+    triggerNow: t.cron.triggerNow,
+    pause: t.cron.pause,
+    resume: t.cron.resume,
+    edit: tl?.edit ?? "Edit",
+    close: tl?.close ?? "Close",
+    dense: tl?.dense ?? "Fires very frequently",
   };
 
   // New job modal state
@@ -512,9 +541,10 @@ export default function CronPage() {
 
       <Segmented
         value={view}
-        onChange={(v) => setView(v as "jobs" | "blueprints")}
+        onChange={(v) => setView(v as "jobs" | "timeline" | "blueprints")}
         options={[
           { value: "jobs", label: "Jobs" },
+          { value: "timeline", label: t.cron.timeline?.tab ?? "Timeline" },
           { value: "blueprints", label: "Blueprints" },
         ]}
       />
@@ -524,6 +554,45 @@ export default function CronPage() {
           profile={selectedProfile === "all" ? "default" : selectedProfile}
           onCreated={loadJobs}
         />
+      )}
+
+      {view === "timeline" && (
+        <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <H2
+              variant="sm"
+              className="flex items-center gap-2 text-muted-foreground"
+            >
+              <Clock className="h-4 w-4" />
+              {t.cron.scheduledJobs} ({jobs.length})
+            </H2>
+
+            <div className="grid gap-1 min-w-[220px]">
+              <Label htmlFor="cron-timeline-profile-filter">Profile</Label>
+              <Select
+                id="cron-timeline-profile-filter"
+                value={selectedProfile}
+                onValueChange={(v) => setSelectedProfile(v)}
+              >
+                <SelectOption value="all">All profiles</SelectOption>
+                {profiles.map((profile) => (
+                  <SelectOption key={profile.name} value={profile.name}>
+                    {profileLabel(profile.name)}
+                  </SelectOption>
+                ))}
+              </Select>
+            </div>
+          </div>
+
+          <CronTimeline
+            jobs={jobs}
+            scheduleDescribeStrings={scheduleDescribeStrings}
+            strings={timelineStrings}
+            onTrigger={handleTrigger}
+            onPauseResume={handlePauseResume}
+            onEdit={openEditModal}
+          />
+        </div>
       )}
 
 

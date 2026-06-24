@@ -31,6 +31,28 @@ from gateway.whatsapp_identity import (
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
+    def _adapter_authorization_is_upstream(self, platform: Optional[Platform]) -> bool:
+        """Whether the adapter for *platform* delegates authz to a trusted upstream.
+
+        Mirrors ``BasePlatformAdapter.authorization_is_upstream``. The relay
+        adapter sets this True: the Team Gateway connector authenticates the
+        gateway's WS and resolves owner-only author bindings before delivering,
+        so an inbound relay event is already authorized as this instance's bound
+        user. Unlike ``_adapter_enforces_own_access_policy`` (a LOCAL config
+        policy the gateway mirrors only when it's an allowlist), this is an
+        UPSTREAM decision the gateway honors directly. Defaults to ``False`` when
+        the adapter is unknown or doesn't expose the flag.
+        """
+        if not platform:
+            return False
+        adapters = getattr(self, "adapters", None)
+        if not adapters:
+            return False
+        adapter = adapters.get(platform)
+        if adapter is None:
+            return False
+        return bool(getattr(adapter, "authorization_is_upstream", False))
+
     def _adapter_enforces_own_access_policy(self, platform: Optional[Platform]) -> bool:
         """Whether the adapter for *platform* gates access at intake itself.
 
@@ -191,6 +213,21 @@ class GatewayAuthorizationMixin:
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
+            return True
+
+        # Relay (and any adapter whose authorization is enforced by a trusted
+        # authenticated upstream): the Team Gateway connector authenticates this
+        # gateway's WS with a per-instance secret and resolves owner-only author
+        # bindings BEFORE delivering, so an inbound relay event was already
+        # authorized as this instance's bound user (the author id is the one the
+        # connector observed, never gateway-asserted). There is no local
+        # RELAY_ALLOWED_USERS env allowlist to consult, and default-denying for
+        # its absence is the bug this branch fixes. This is delegation to a
+        # trusted upstream, NOT a fail-open: it fires only for an adapter that
+        # explicitly sets authorization_is_upstream=True; every direct
+        # network-exposed adapter leaves it False and the env-allowlist
+        # default-deny below still applies unchanged.
+        if self._adapter_authorization_is_upstream(source.platform):
             return True
 
         user_id = source.user_id

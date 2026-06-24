@@ -143,6 +143,18 @@ def _cancelled_tool_result(reason: str = "user interrupt") -> str:
     )
 
 
+def _parse_tool_call_arguments(raw_arguments: Any) -> dict:
+    if isinstance(raw_arguments, dict):
+        return dict(raw_arguments)
+    if raw_arguments in (None, ""):
+        return {}
+    try:
+        parsed = json.loads(raw_arguments)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 def _emit_cancelled_terminal_post_tool_call(
     agent,
     *,
@@ -320,12 +332,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         elif function_name == "skill_manage":
             agent._iters_since_skill = 0
 
-        try:
-            function_args = json.loads(tool_call.function.arguments)
-        except json.JSONDecodeError:
-            function_args = {}
-        if not isinstance(function_args, dict):
-            function_args = {}
+        function_args = _parse_tool_call_arguments(tool_call.function.arguments)
 
         # ── Tool Search unwrap ────────────────────────────────────────
         # When the model invokes the tool_call bridge, peel it open so
@@ -877,13 +884,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         function_name = tool_call.function.name
 
-        try:
-            function_args = json.loads(tool_call.function.arguments)
-        except json.JSONDecodeError as e:
-            logger.warning(f"Unexpected JSON error after validation: {e}")
-            function_args = {}
-        if not isinstance(function_args, dict):
-            function_args = {}
+        function_args = _parse_tool_call_arguments(tool_call.function.arguments)
 
         # Tool Search unwrap — see execute_tool_calls_concurrent for full
         # rationale, including the scope gate (the unwrap dispatches the

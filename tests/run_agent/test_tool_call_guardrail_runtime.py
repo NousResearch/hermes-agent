@@ -112,6 +112,44 @@ def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_e
     assert agent._tool_guardrail_halt_decision is None
 
 
+def test_sequential_tool_call_null_arguments_runs_with_empty_args():
+    agent = _make_agent("terminal")
+    tc = _mock_tool_call("terminal", None, "c-null")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=json.dumps({"ok": True})) as mock_hfc:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    mock_hfc.assert_called_once()
+    assert mock_hfc.call_args.args[:3] == ("terminal", {}, "task-1")
+    assert messages[0]["tool_call_id"] == "c-null"
+    assert json.loads(messages[0]["content"]) == {"ok": True}
+
+
+def test_concurrent_tool_call_null_arguments_runs_with_empty_args():
+    agent = _make_agent("terminal")
+    calls = [
+        _mock_tool_call("terminal", None, "c-null"),
+        _mock_tool_call("terminal", json.dumps({"command": "pwd"}), "c-ok"),
+    ]
+    msg = SimpleNamespace(content="", tool_calls=calls)
+    messages = []
+
+    def fake_handle(name, args, task_id, **kwargs):
+        return json.dumps({"args": args, "id": kwargs["tool_call_id"]})
+
+    with patch("run_agent.handle_function_call", side_effect=fake_handle):
+        agent._execute_tool_calls_concurrent(msg, messages, "task-1")
+
+    assert [m["tool_call_id"] for m in messages] == ["c-null", "c-ok"]
+    assert json.loads(messages[0]["content"]) == {"args": {}, "id": "c-null"}
+    assert json.loads(messages[1]["content"]) == {
+        "args": {"command": "pwd"},
+        "id": "c-ok",
+    }
+
+
 def test_config_enabled_hard_stop_blocks_repeated_exact_failure_before_execution():
     agent = _make_agent("web_search", config=_hard_stop_config())
     args = {"query": "same"}

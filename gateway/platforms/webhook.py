@@ -533,6 +533,11 @@ class WebhookAdapter(BasePlatformAdapter):
                     route_config.get("deliver_extra", {}), payload
                 ),
                 "payload": payload,
+                # HMAC materials forwarded for defence-in-depth re-validation
+                # in session_orchestration/ingest.py::process_z_harness_alert.
+                "raw_body": raw_body,
+                "signature_header": request.headers.get("X-Z-Harness-Signature", ""),
+                "hmac_secret": secret,
             }
             logger.info(
                 "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
@@ -676,6 +681,14 @@ class WebhookAdapter(BasePlatformAdapter):
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
             return hmac.compare_digest(gh_sig, expected)
+
+        # z-harness: X-Z-Harness-Signature = sha256=<hex>
+        zh_sig = request.headers.get("X-Z-Harness-Signature", "")
+        if zh_sig:
+            expected = "sha256=" + hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(zh_sig, expected)
 
         # GitLab: X-Gitlab-Token = <plain secret>
         gl_token = request.headers.get("X-Gitlab-Token", "")
@@ -828,6 +841,9 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
+        if deliver_type == "session_orchestration_ingest":
+            return await self._deliver_session_orchestration_ingest(delivery)
+
         # Fall through to the cross-platform dispatcher, which validates the
         # target name and routes via the gateway runner.
         return await self._deliver_cross_platform(
@@ -887,6 +903,46 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] github_comment delivery error: %s", e)
             return SendResult(success=False, error=str(e))
+
+    async def _deliver_session_orchestration_ingest(
+        self, delivery: dict
+    ) -> SendResult:
+        """Route a z-harness alert payload to the session-orchestration ingest handler.
+
+        Called when a ``deliver_only`` route has ``deliver: session_orchestration_ingest``.
+        The raw payload dict is passed to :func:`session_orchestration.ingest.process_z_harness_alert`.
+        """
+        try:
+            from session_orchestration.ingest import (
+                _is_enabled,
+                process_z_harness_alert,
+            )
+        except ImportError as exc:
+            logger.error("[webhook] session_orchestration import failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
+        # Early-gate: skip all work when session_orchestration is disabled.
+        if not _is_enabled():
+            logger.debug("[webhook] session_orchestration disabled; skipping ingest")
+            return SendResult(success=True)
+
+        payload = delivery.get("payload", {})
+        raw_body: bytes | None = delivery.get("raw_body")
+        signature_header: str = delivery.get("signature_header", "")
+        hmac_secret: str = delivery.get("hmac_secret", "")
+        try:
+            result = await process_z_harness_alert(
+                payload,
+                raw_body=raw_body if raw_body is not None else None,
+                signature_header=signature_header or None,
+                hmac_secret=hmac_secret or None,
+                gateway_runner=self.gateway_runner,
+            )
+            logger.info("[webhook] session_orchestration_ingest result: %s", result)
+            return SendResult(success=True)
+        except Exception as exc:
+            logger.error("[webhook] session_orchestration_ingest failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
 
     async def _deliver_cross_platform(
         self, platform_name: str, content: str, delivery: dict

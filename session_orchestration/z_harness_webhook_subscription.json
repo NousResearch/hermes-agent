@@ -1,0 +1,18 @@
+{
+  "z-harness-alert": {
+    "description": "Receives watchdog alerts from z-harness runs (HMAC-signed, platform-neutral)",
+    "events": [],
+    "secret": "__REPLACE_WITH_notify.hermes_webhook_secret__",
+    "prompt": "",
+    "skills": [],
+    "deliver": "session_orchestration_ingest",
+    "deliver_only": true,
+    "created_at": "2026-06-24T00:00:00Z",
+    "_setup_notes": [
+      "1. Copy the secret from your z-harness config: python3 scripts/config.py get notify.hermes_webhook_secret",
+      "2. Set notify.hermes_webhook_url = http://<hermes-host>:8644/webhooks/z-harness-alert in z-harness config",
+      "3. Merge this object into ~/.hermes/webhook_subscriptions.json (or run: hermes webhook subscribe z-harness-alert --secret <SECRET> --deliver session_orchestration_ingest)",
+      "4. Ensure session_orchestration.enabled = true and session_orchestration.feed_channel_id in ~/.hermes/config.yaml"
+    ]
+  }
+}

@@ -2437,6 +2437,40 @@ DEFAULT_CONFIG = {
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 28,
+
+    # ---------------------------------------------------------------------------
+    # Session-orchestration — managed external agent session layer.
+    #
+    # All session-orchestration behaviour is gated behind ``enabled``.
+    # Disabled (the default) ⇒ byte-identical prior behaviour: no watcher cron
+    # runs, no ingest route processes, no /so-* commands surface in the gateway.
+    #
+    # See session_orchestration/config.py for the typed accessor.
+    # ---------------------------------------------------------------------------
+    "session_orchestration": {
+        # Master gate.  Must be explicitly set to true to enable any
+        # session-orchestration behaviour.
+        "enabled": False,
+
+        # Discord channel id for the unified session feed.  All state
+        # transitions and watchdog alerts are posted here with deep-links
+        # to the per-project thread.  No feed pushes when empty.
+        "feed_channel_id": "",
+
+        # Discord channel id for runs adopted from external sources
+        # (z-harness webhook alerts whose run_id/repo is unknown).
+        # Defaults to feed_channel_id when empty.
+        "external_runs_channel_id": "",
+
+        # Static stale threshold (seconds).  A session in RUNNING state
+        # whose last_output_ts is older than this AND whose pane hash has
+        # not changed for ``hang_idle_ticks`` ticks is declared hung.
+        "hang_stale_seconds": 300,
+
+        # N pane-hash-unchanged ticks before a RUNNING session is
+        # declared hung.  Each tick is ~1–2 min depending on cron cadence.
+        "hang_idle_ticks": 3,
+    },
 }
 
 # =============================================================================
@@ -4027,7 +4061,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions", "streaming", "updates",
+    "sessions", "streaming", "updates", "session_orchestration",
 }
 
 # Valid fields inside a custom_providers list entry

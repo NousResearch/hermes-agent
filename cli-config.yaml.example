@@ -1200,3 +1200,36 @@ updates:
 #   # default — works on Fly.io out of the box).
 #   #
 #   #   public_url: "https://example.com/hermes"
+
+
+# =============================================================================
+# Session Orchestration (opt-in, disabled by default)
+# =============================================================================
+# Managed external coding-agent session layer.  Hermes can spawn claude-code
+# and omp sessions in tmux, drive them on your behalf, watch for state changes,
+# and surface everything in a single unified Discord feed.
+#
+# All behaviour is gated behind `enabled: true`.  With enabled: false (the
+# default), nothing changes — no watcher cron runs, no ingest route processes,
+# no /so-* commands surface in the gateway.
+#
+# session_orchestration:
+#   enabled: false
+#
+#   # Discord channel id for the unified session feed.
+#   # All state transitions and watchdog alerts are posted here.
+#   # feed_channel_id: "1234567890123456789"
+#
+#   # Discord channel id for runs adopted from external sources
+#   # (z-harness webhook alerts whose run_id/repo is unknown).
+#   # Defaults to feed_channel_id routing when empty.
+#   # external_runs_channel_id: "9876543210987654321"
+#
+#   # Static stale threshold (seconds).  A RUNNING session whose pane
+#   # output hasn't changed for hang_idle_ticks ticks AND whose
+#   # last_output_ts is older than this is declared hung.
+#   # hang_stale_seconds: 300
+#
+#   # Number of consecutive pane-hash-unchanged ticks before a RUNNING
+#   # session is declared hung.  Each tick is roughly 1-2 minutes.
+#   # hang_idle_ticks: 3

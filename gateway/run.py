@@ -7923,6 +7923,15 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
 
+            # /control-status is read-only; bypass the running-agent guard.
+            if _cmd_def_inner and _cmd_def_inner.name == "control-status":
+                return await self._handle_control_status_command(event)
+
+            # /so-spawn spawns a managed coding-agent session; bypass the
+            # running-agent guard (it doesn't touch the Hermes agent session).
+            if _cmd_def_inner and _cmd_def_inner.name == "so-spawn":
+                return await self._handle_so_spawn_command(event)
+
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
             # /btw is an alias of /background and resolves to the same canonical
@@ -8385,6 +8394,9 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "control-status":
+            return await self._handle_control_status_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -8552,6 +8564,38 @@ class GatewayRunner:
         # Pending exec approvals are handled by /approve and /deny commands above.
         # No bare text matching — "yes" in normal conversation must not trigger
         # execution of a dangerous command.
+
+        # ── Managed-thread drive loop ─────────────────────────────────
+        # If the message arrives in a Discord thread that is managed by
+        # session_orchestration (i.e. its thread_id is recorded on a
+        # registry row), route the text to the relay instead of starting a
+        # normal Hermes agent turn.  Slash commands already returned above;
+        # anything reaching here is plain user text in the thread.
+        #
+        # Gate on session_orchestration.enabled so unrelated deployments
+        # don't pay even the import cost.
+        _thread_id_for_drive = str(getattr(source, "thread_id", None) or "")
+        if _thread_id_for_drive:
+            _so_enabled_drive = False
+            try:
+                from hermes_cli.config import cfg_get as _cfg_get_drive
+                _cfg_drive = self.config if isinstance(self.config, dict) else (
+                    self.config.__dict__ if hasattr(self.config, "__dict__") else {}
+                )
+                _so_enabled_drive = bool(
+                    _cfg_get_drive(_cfg_drive, "session_orchestration", "enabled", default=False)
+                )
+            except Exception:
+                pass
+
+            if _so_enabled_drive:
+                _drive_result = await self._handle_managed_thread_reply(
+                    event, _thread_id_for_drive
+                )
+                if _drive_result is not None:
+                    # Matched a managed thread — return result (empty string on
+                    # success; error text on failure).  Do NOT fall through.
+                    return _drive_result or None
 
         if self._is_telegram_topic_root_lobby(source):
             # Debounce the lobby reminder so a user who forgets about
@@ -10691,6 +10735,158 @@ class GatewayRunner:
             lines.append(t("gateway.agents.none"))
 
         return "\n".join(lines)
+
+    async def _handle_control_status_command(self, event: MessageEvent) -> str:
+        """Handle /control-status — read-only snapshot of all active session-orchestration tasks."""
+        try:
+            from session_orchestration.registry import SessionOrchestrationRegistry
+            from session_orchestration.status import build_snapshot
+        except ImportError as exc:
+            return f"Session orchestration is not available: {exc}"
+
+        try:
+            registry = SessionOrchestrationRegistry()
+            rows = registry.list()
+        except Exception as exc:
+            logger.warning("control-status: registry read failed: %s", exc)
+            return f"Could not read session-orchestration registry: {exc}"
+
+        return build_snapshot(rows)
+
+    async def _handle_so_spawn_command(self, event: MessageEvent) -> str:
+        """Handle /so-spawn — spawn a managed coding-agent session from Discord."""
+        try:
+            from session_orchestration.spawn import handle_spawn_command
+        except ImportError as exc:
+            return f"Session orchestration is not available: {exc}"
+
+        # Extract args text (everything after /so-spawn)
+        raw_text = getattr(event, "text", "") or ""
+        # Strip the command prefix (/so-spawn or /spawn-session)
+        for prefix in ("/so-spawn", "/spawn-session"):
+            if raw_text.lower().startswith(prefix):
+                args_text = raw_text[len(prefix):].strip()
+                break
+        else:
+            args_text = raw_text.strip()
+
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", None)
+        platform_adapter = self.adapters.get(platform) if platform else None
+
+        return await handle_spawn_command(
+            event,
+            args_text,
+            config=self.config if isinstance(self.config, dict) else (
+                self.config.__dict__ if hasattr(self.config, "__dict__") else {}
+            ),
+            platform_adapter=platform_adapter,
+        )
+
+    async def _handle_managed_thread_reply(
+        self, event, thread_id: str
+    ) -> Optional[str]:
+        """Route a reply in a managed Discord thread to the correct relay drive.
+
+        Looks up the registry row whose ``discord_thread_id`` matches *thread_id*,
+        reconstructs the ``SessionHandle`` from the stored row, and calls
+        ``SessionRelay.send_message`` with the reply text.
+
+        Returns a short acknowledgement string on success, or ``None`` if no
+        matching managed thread is found (caller should fall through to normal
+        dispatch).
+
+        Errors from the relay (lock conflict, tmux timeout) are caught and
+        returned as error strings so the Discord user gets feedback.
+        """
+        try:
+            from session_orchestration.adapters.base import AgentAdapter
+            from session_orchestration.registry import SessionOrchestrationRegistry
+            from session_orchestration.relay import LockConflictError, SessionRelay
+            from session_orchestration.spawn import get_adapter
+            from session_orchestration.types import SessionHandle
+        except ImportError as exc:
+            logger.debug("_handle_managed_thread_reply: session_orchestration not available: %s", exc)
+            return None
+
+        try:
+            registry = SessionOrchestrationRegistry()
+            rows = registry.list()
+        except Exception as exc:
+            logger.warning("_handle_managed_thread_reply: registry read failed: %s", exc)
+            return None
+
+        # Find the row whose discord_thread_id matches the incoming thread.
+        matched_row = None
+        for row in rows:
+            if str(row.get("discord_thread_id") or "") == str(thread_id):
+                matched_row = row
+                break
+
+        if matched_row is None:
+            return None  # Not a managed thread — fall through to normal dispatch.
+
+        task_id = matched_row["task_id"]
+        message_text = (getattr(event, "text", "") or "").strip()
+        if not message_text:
+            logger.debug(
+                "_handle_managed_thread_reply: empty message for task_id=%s — ignoring",
+                task_id,
+            )
+            return None
+
+        # Reconstruct the SessionHandle from the registry row.  The pane is
+        # derived from tmux_session (same convention as adapter.launch()).
+        tmux_session = matched_row.get("tmux_session") or ""
+        pane = matched_row.get("pane") or (f"{tmux_session}:0.0" if tmux_session else "")
+        from datetime import datetime, timezone as _tz
+        handle = SessionHandle(
+            session_id=task_id,
+            tmux_session=tmux_session,
+            pane=pane,
+            launch_ts=datetime.now(tz=_tz.utc),
+        )
+
+        # Build the relay.  The adapter is needed for detect()/drive()/resume();
+        # fall back to a stub-safe default if the stored agent name is unknown.
+        agent_name = matched_row.get("agent") or "claude-code"
+        try:
+            adapter = get_adapter(agent_name)
+        except Exception as exc:
+            logger.warning(
+                "_handle_managed_thread_reply: unknown agent %r for task_id=%s: %s",
+                agent_name, task_id, exc,
+            )
+            return f"Cannot drive session: unknown agent `{agent_name}`."
+
+        relay = SessionRelay(registry, adapter)
+
+        logger.info(
+            "drive_loop: routing thread reply to task_id=%s agent=%s len=%d",
+            task_id, agent_name, len(message_text),
+        )
+
+        try:
+            await asyncio.to_thread(
+                relay.send_message, task_id, handle, message_text
+            )
+        except LockConflictError as exc:
+            logger.warning(
+                "drive_loop: lock conflict for task_id=%s: %s", task_id, exc
+            )
+            return "Session is busy — try again in a moment."
+        except TimeoutError as exc:
+            logger.warning(
+                "drive_loop: pane-readiness timeout for task_id=%s: %s", task_id, exc
+            )
+            return "Session pane did not become ready in time — it may be busy."
+        except Exception as exc:
+            logger.exception(
+                "drive_loop: unexpected error for task_id=%s", task_id
+            )
+            return f"Drive error: {exc}"
+
+        return ""  # Empty string = success; adapter/watcher will emit the agent reply.
 
     def _sibling_thread_run_keys(self, source: SessionSource, own_key: str) -> list:
         """Find running-agent keys for OTHER participants in the same thread.

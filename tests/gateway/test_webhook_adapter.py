@@ -311,6 +311,39 @@ class TestValidateSignature:
         )
         assert adapter._validate_signature(req, body, secret) is True
 
+    # ------------------------------------------------------------------
+    # z-harness: X-Z-Harness-Signature: sha256=<hex>
+    # ------------------------------------------------------------------
+
+    def test_validate_z_harness_signature_valid(self):
+        """Valid X-Z-Harness-Signature: sha256=<hex> (as sent by notify-watchdog.sh) is accepted."""
+        adapter = _make_adapter()
+        body = b'{"event":"watchdog_stall","source":"z-harness"}'
+        secret = "zharness-hmac-secret"
+        sig = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+        req = _mock_request(headers={"X-Z-Harness-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_validate_z_harness_signature_tampered_body_rejects(self):
+        """X-Z-Harness-Signature computed over original body is rejected when body is tampered."""
+        adapter = _make_adapter()
+        original_body = b'{"event":"watchdog_stall","source":"z-harness"}'
+        tampered_body = b'{"event":"tampered","source":"z-harness"}'
+        secret = "zharness-hmac-secret"
+        sig = "sha256=" + hmac.new(secret.encode(), original_body, hashlib.sha256).hexdigest()
+        req = _mock_request(headers={"X-Z-Harness-Signature": sig})
+        assert adapter._validate_signature(req, tampered_body, secret) is False
+
+    def test_validate_z_harness_signature_wrong_secret_rejects(self):
+        """X-Z-Harness-Signature signed with the wrong secret is rejected."""
+        adapter = _make_adapter()
+        body = b'{"event":"watchdog_stall","source":"z-harness"}'
+        correct_secret = "zharness-hmac-secret"
+        wrong_secret = "totally-different-secret"
+        sig = "sha256=" + hmac.new(wrong_secret.encode(), body, hashlib.sha256).hexdigest()
+        req = _mock_request(headers={"X-Z-Harness-Signature": sig})
+        assert adapter._validate_signature(req, body, correct_secret) is False
+
 
 # ===================================================================
 # Prompt rendering

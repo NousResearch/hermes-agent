@@ -1,19 +1,21 @@
 ---
 name: claude-code
-description: "Delegate coding to Claude Code CLI (features, PRs)."
-version: 2.2.0
+description: "Delegate coding to Claude Code CLI (features, PRs) — via managed session-orchestration or direct PTY."
+version: 2.3.0
 author: Hermes Agent + Teknium
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [Coding-Agent, Claude, Anthropic, Code-Review, Refactoring, PTY, Automation]
-    related_skills: [codex, hermes-agent, opencode]
+    tags: [Coding-Agent, Claude, Anthropic, Code-Review, Refactoring, PTY, Automation, session-orchestration]
+    related_skills: [codex, hermes-agent, opencode, omp, session-orchestration]
 ---
 
 # Claude Code — Hermes Orchestration Guide
 
 Delegate coding tasks to [Claude Code](https://code.claude.com/docs/en/cli-reference) (Anthropic's autonomous coding agent CLI) via the Hermes terminal. Claude Code v2.x can read files, write code, run shell commands, spawn subagents, and manage git workflows autonomously.
+
+> **Managed mode (preferred for long-running tasks):** When `session_orchestration.enabled` is on in Hermes config, use `/so-spawn agent:claude prompt:"…"` to create a managed session — the adapter handles tmux launch, dialog handling, liveness tracking, and feed push automatically. See the `session-orchestration` skill for the full model.
 
 ## Prerequisites
 
@@ -47,40 +49,75 @@ terminal(command="claude -p 'Add error handling to all API calls in src/' --allo
 
 **Print mode skips ALL interactive dialogs** — no workspace trust prompt, no permission confirmations. This makes it ideal for automation.
 
-### Mode 2: Interactive PTY via tmux — Multi-Turn Sessions
+### Mode 2: Managed Interactive Session (PREFERRED for multi-turn work)
 
-Interactive mode gives you a full conversational REPL where you can send follow-up prompts, use slash commands, and watch Claude work in real time. **Requires tmux orchestration.**
+When `session_orchestration.enabled` is on, the `ClaudeCodeAdapter` manages the full session lifecycle. You do NOT call `tmux send-keys` directly for driving — the adapter uses `load-buffer` / `paste-buffer` which handles multi-line prompts and shell metacharacters safely.
+
+**Via Discord (recommended):**
+```
+/so-spawn agent:claude prompt:"Refactor the auth module to use JWT tokens" workdir:"/path/to/project"
+```
+This spawns a managed tmux session, handles both startup dialogs automatically, registers the session, and seeds the first prompt. Hermes drives follow-up replies via the Discord thread for this task.
+
+**Programmatically (within Hermes):**
+```python
+from session_orchestration.adapters.claude_code import ClaudeCodeAdapter
+from session_orchestration.relay import SessionRelay
+
+adapter = ClaudeCodeAdapter()
+handle = adapter.launch(workdir="/path/to/project", prompt="Refactor the auth module")
+# Follow-up via relay (acquires per-session lock before driving):
+relay = SessionRelay(registry=reg, adapter=adapter)
+relay.send_message(task_id, handle, "Now add unit tests for the new JWT code")
+```
+
+**What the adapter does for you:**
+1. `tmux new-session -d -s hermes-cc-<uid> -x 200 -y 50`
+2. Runs `claude --dangerously-skip-permissions` in the pane
+3. Polls for startup dialogs (trust dialog → Enter; bypass-permissions dialog → Down + Enter)
+4. Waits for the `❯` prompt before injecting any text
+5. For each `drive()` call: checks `❯` is visible → `load-buffer` → `paste-buffer -d` → Enter
+
+**Why load-buffer/paste-buffer instead of send-keys:**
+`send-keys` expands shell metacharacters (`$`, backticks, pipes) and requires `\n` escaping per newline. `load-buffer` + `paste-buffer -d` delivers the content verbatim — multi-line prompts survive intact.
+
+### Mode 2b: Manual PTY via tmux (legacy / ad-hoc)
+
+For ad-hoc sessions outside managed orchestration, the raw tmux pattern still works:
 
 ```
 # Start a tmux session
-terminal(command="tmux new-session -d -s claude-work -x 140 -y 40")
+terminal(command="tmux new-session -d -s claude-work -x 200 -y 50")
 
 # Launch Claude Code inside it
-terminal(command="tmux send-keys -t claude-work 'cd /path/to/project && claude' Enter")
+terminal(command="tmux send-keys -t claude-work 'cd /path/to/project && claude --dangerously-skip-permissions' Enter")
 
-# Wait for startup, then send your task
-# (after ~3-5 seconds for the welcome screen)
-terminal(command="sleep 5 && tmux send-keys -t claude-work 'Refactor the auth module to use JWT tokens' Enter")
+# Handle trust dialog (Enter for default "Yes, trust")
+terminal(command="sleep 4 && tmux send-keys -t claude-work Enter")
 
-# Monitor progress by capturing the pane
+# Handle bypass-permissions dialog (Down then Enter for "Yes, I accept")
+terminal(command="sleep 2 && tmux send-keys -t claude-work Down && sleep 0.3 && tmux send-keys -t claude-work Enter")
+
+# Wait for ❯ prompt, then send your task via load-buffer (NOT send-keys for multi-line)
+terminal(command="sleep 5 && printf 'Refactor the auth module to use JWT tokens' | tmux load-buffer -b my-buf - && tmux paste-buffer -d -b my-buf -t claude-work && tmux send-keys -t claude-work Enter")
+
+# Monitor progress
 terminal(command="sleep 15 && tmux capture-pane -t claude-work -p -S -50")
-
-# Send follow-up tasks
-terminal(command="tmux send-keys -t claude-work 'Now add unit tests for the new JWT code' Enter")
 
 # Exit when done
 terminal(command="tmux send-keys -t claude-work '/exit' Enter")
 ```
 
-**When to use interactive mode:**
-- Multi-turn iterative work (refactor → review → fix → test cycle)
-- Tasks requiring human-in-the-loop decisions
-- Exploratory coding sessions
-- When you need to use Claude's slash commands (`/compact`, `/review`, `/model`)
+**When to use manual mode:**
+- Ad-hoc one-off sessions not requiring persistent tracking
+- Exploratory coding sessions outside the registry
+- When you need to use Claude's slash commands (`/compact`, `/review`, `/model`) interactively
 
-## PTY Dialog Handling (CRITICAL for Interactive Mode)
+## PTY Dialog Handling
 
-Claude Code presents up to two confirmation dialogs on first launch. You MUST handle these via tmux send-keys:
+> **Managed mode:** `ClaudeCodeAdapter.launch()` handles both dialogs automatically. You do not need to handle them manually.
+
+Claude Code presents up to two confirmation dialogs on first launch. In **manual** tmux sessions, you MUST handle these:
 
 ### Dialog 1: Workspace Trust (first visit to a directory)
 ```
@@ -670,6 +707,22 @@ Reference MCP resources in chat: `@github:issue://123`
 - **Output tokens:** `export MAX_MCP_OUTPUT_TOKENS=50000` — cap output from MCP servers to prevent context flooding
 - **Transports:** `stdio` (local process), `http` (remote), `sse` (server-sent events)
 
+## Handoff Checkpoints (Managed Sessions)
+
+When Claude Code reaches a natural stopping point and the session is managed, it should emit the exact string:
+
+```
+HERMES_HANDOFF
+```
+
+This is the sentinel that `ClaudeCodeAdapter.detect()` scans for in the pane output (via `HANDOFF_MARKER = "HERMES_HANDOFF"` in `session_orchestration/adapters/claude_code.py`). When this string appears, `detect()` returns `PAUSED_HANDOFF` and the relay calls `resume()` — which sends `/clear` + re-injects the next prompt.
+
+**Instruction to Claude Code** (include in your system prompt or initial prompt when using managed sessions):
+
+> When you have completed a phase of work and are ready for the next instruction, output the literal string `HERMES_HANDOFF` on a line by itself. This signals Hermes that you are at a handoff checkpoint. Do not output this string for any other reason.
+
+**Why `/clear` is safe here:** The relay issues `/clear` ONLY on a confirmed `PAUSED_HANDOFF` detection (deterministic, not LLM-decided). This compacts the context before starting the next sub-task, preventing context-window degradation on long-running sessions.
+
 ## Monitoring Interactive Sessions
 
 ### Reading the TUI Status
@@ -733,13 +786,14 @@ Use `/context` in interactive mode to see a colored grid of context usage. Key t
 
 ## Rules for Hermes Agents
 
-1. **Prefer print mode (`-p`) for single tasks** — cleaner, no dialog handling, structured output
-2. **Use tmux for multi-turn interactive work** — the only reliable way to orchestrate the TUI
-3. **Always set `workdir`** — keep Claude focused on the right project directory
-4. **Set `--max-turns` in print mode** — prevents infinite loops and runaway costs
-5. **Monitor tmux sessions** — use `tmux capture-pane -t <session> -p -S -50` to check progress
-6. **Look for the `❯` prompt** — indicates Claude is waiting for input (done or asking a question)
-7. **Clean up tmux sessions** — kill them when done to avoid resource leaks
-8. **Report results to user** — after completion, summarize what Claude did and what changed
-9. **Don't kill slow sessions** — Claude may be doing multi-step work; check progress instead
+1. **Use managed sessions for multi-turn work** — `/so-spawn agent:claude` handles launch, dialogs, liveness, and routing automatically (requires `session_orchestration.enabled`)
+2. **Prefer print mode (`-p`) for single-shot tasks** — cleaner, no dialog handling, structured output
+3. **Never use `send-keys` to drive a managed session** — the adapter uses `load-buffer`/`paste-buffer` for safety; bypassing it can interleave with the watcher
+4. **Always set `workdir`** — keep Claude focused on the right project directory
+5. **Set `--max-turns` in print mode** — prevents infinite loops and runaway costs
+6. **Monitor via the feed channel** — in managed mode, state transitions are pushed to the unified feed; no need to capture panes manually
+7. **For ad-hoc monitoring** — use `tmux capture-pane -t <session> -p -S -50` and look for `❯` (waiting) or `●` (active)
+8. **Clean up unmanaged tmux sessions** — kill them when done; managed sessions are cleaned up by the watcher on `DONE`/`ERROR`
+9. **Don't kill slow sessions** — Claude may be doing multi-step work; check progress via `/control-status` instead
 10. **Use `--allowedTools`** — restrict capabilities to what the task actually needs
+11. **Emit `HERMES_HANDOFF` at checkpoints** — in managed sessions, Claude should output this exact string when handing off between phases

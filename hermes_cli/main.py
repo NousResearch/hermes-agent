@@ -4249,6 +4249,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_eval_lab(args):
+    """Local deterministic eval lab."""
+    from hermes_cli.eval_lab import cmd_eval_lab
+
+    return cmd_eval_lab(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -12279,6 +12286,36 @@ def main():
     kanban_parser.set_defaults(func=cmd_kanban)
 
     # =========================================================================
+    # eval-lab command — local deterministic trajectory evals
+    # =========================================================================
+    eval_lab_parser = subparsers.add_parser(
+        "eval-lab",
+        help="Run local deterministic trajectory eval labs",
+        description="Run local eval scenarios and write redacted JSONL/markdown artifacts.",
+    )
+    eval_lab_subparsers = eval_lab_parser.add_subparsers(dest="eval_lab_command")
+    eval_lab_run = eval_lab_subparsers.add_parser("run", help="Run eval scenarios locally")
+    eval_lab_run.add_argument(
+        "--scenario",
+        "--scenarios",
+        dest="scenarios",
+        default="eval_scenarios/smoke.yaml",
+        help="Scenario YAML path",
+    )
+    eval_lab_run.add_argument("--attempts", type=int, default=1, help="Attempts per scenario")
+    eval_lab_run.add_argument("--run-id", default="local-smoke", help="Run id for output directory")
+    eval_lab_run.add_argument(
+        "--output",
+        "--output-dir",
+        dest="output_dir",
+        default=None,
+        help="Base output directory; defaults to HERMES_HOME/eval_lab/runs",
+    )
+    eval_lab_run.add_argument("--local", action="store_true", help="Use local deterministic backend")
+    eval_lab_parser.set_defaults(func=cmd_eval_lab, eval_lab_command="run")
+    eval_lab_run.set_defaults(func=cmd_eval_lab, eval_lab_command="run")
+
+    # =========================================================================
     # hooks command — shell-hook inspection and management
     # =========================================================================
     # hooks command  (parser built in hermes_cli/subcommands/hooks.py)
@@ -13090,6 +13127,13 @@ def main():
     # prompt-size command  (parser built in hermes_cli/subcommands/prompt_size.py)
     # =========================================================================
     build_prompt_size_parser(subparsers, cmd_prompt_size=cmd_prompt_size)
+
+    # =========================================================================
+    # agents-os command — local Doni/Hermes operating layer
+    # =========================================================================
+    from hermes_cli.agents_os import register_subparser as register_agents_os_subparser
+
+    register_agents_os_subparser(subparsers)
 
     # =========================================================================
     # Parse and execute

@@ -603,6 +603,11 @@ class GatewayConfig:
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
+    # Optional user-visible transcript echo before the agent reply. Defaults off
+    # because many profiles already quote voice transcripts in the final answer;
+    # enabling both paths shows duplicate transcript text to the user.
+    stt_send_transcription: bool = False
+    stt_send_transcription_header: str = ""
 
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
@@ -726,6 +731,8 @@ class GatewayConfig:
             "always_log_local": self.always_log_local,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
+            "stt_send_transcription": self.stt_send_transcription,
+            "stt_send_transcription_header": self.stt_send_transcription_header,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
@@ -769,9 +776,17 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        raw_stt_cfg = data.get("stt")
+        stt_cfg: Dict[str, Any] = raw_stt_cfg if isinstance(raw_stt_cfg, dict) else {}
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
-            stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
+            stt_enabled = stt_cfg.get("enabled")
+        stt_send_transcription = data.get("stt_send_transcription")
+        if stt_send_transcription is None:
+            stt_send_transcription = stt_cfg.get("send_transcription")
+        stt_send_transcription_header = data.get("stt_send_transcription_header")
+        if stt_send_transcription_header is None:
+            stt_send_transcription_header = stt_cfg.get("send_transcription_header")
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
@@ -815,6 +830,8 @@ class GatewayConfig:
                 data.get("filter_silence_narration"), True
             ),
             stt_enabled=_coerce_bool(stt_enabled, True),
+            stt_send_transcription=_coerce_bool(stt_send_transcription, False),
+            stt_send_transcription_header=str(stt_send_transcription_header or ""),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),

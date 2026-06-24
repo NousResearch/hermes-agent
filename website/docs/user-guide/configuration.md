@@ -1543,7 +1543,10 @@ Hashes are deterministic — the same user always maps to the same hash, so the 
 
 ```yaml
 stt:
+  enabled: true
   provider: "local"            # "local" | "groq" | "openai" | "mistral"
+  send_transcription: false     # Optional separate transcript echo before the agent reply
+  send_transcription_header: "" # Optional prefix for that separate echo
   local:
     model: "base"              # tiny, base, small, medium, large-v3
   openai:
@@ -1556,6 +1559,8 @@ Provider behavior:
 - `local` uses `faster-whisper` running on your machine. Install it separately with `pip install faster-whisper`.
 - `groq` uses Groq's Whisper-compatible endpoint and reads `GROQ_API_KEY`.
 - `openai` uses the OpenAI speech API and reads `VOICE_TOOLS_OPENAI_KEY`.
+
+`send_transcription` is off by default. Leave it off when your assistant persona already quotes voice input in the final answer; enable it only if you want a separate immediate transcript-audit message before the agent replies.
 
 If the requested provider is unavailable, Hermes falls back automatically in this order: `local` → `groq` → `openai`.
 

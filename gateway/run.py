@@ -10290,6 +10290,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             pass
 
+    def _should_send_stt_transcription_echo(self) -> bool:
+        """Whether to send a separate user-visible STT transcript echo.
+
+        Defaults to False so voice transcripts appear only through the normal
+        assistant reply. Many deployments instruct the LLM to quote voice input
+        at the top of the reply; an unconditional gateway echo plus that reply
+        produces duplicate transcript text.
+        """
+        return bool(getattr(self.config, "stt_send_transcription", False))
+
+    def _format_stt_transcription_echo(self, transcripts: List[str]) -> str:
+        quote_text = "\n".join(f"> 🎙 {transcript}" for transcript in transcripts)
+        header = str(getattr(self.config, "stt_send_transcription_header", "") or "")
+        return f"{header}{quote_text}" if header else quote_text
+
     async def _prepare_inbound_message_text(
         self,
         *,
@@ -10400,15 +10415,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     audio_paths,
                     return_transcripts=True,
                 )
-                # Echo successful transcripts back before the agent loop so the
-                # user can verify STT quality. Keep Telegram's quote-style
-                # format used by Sasha's voice workflow.
-                if _successful_transcripts:
+                # Optionally echo successful transcripts back before the agent loop so
+                # users can verify STT quality. This is opt-in because many
+                # profiles already quote voice transcripts in the final reply.
+                if _successful_transcripts and self._should_send_stt_transcription_echo():
                     _echo_adapter = self.adapters.get(source.platform)
                     _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _echo_adapter:
                         try:
-                            _quote_text = "\n".join(f"> 🎙 {transcript}" for transcript in _successful_transcripts)
+                            _quote_text = self._format_stt_transcription_echo(_successful_transcripts)
                             await _echo_adapter.send(
                                 source.chat_id,
                                 _quote_text,
@@ -14991,14 +15006,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
                 text, audio_paths,
             )
-            # Echo raw transcripts back to the user so voice interrupts
-            # feel identical to fresh voice messages.
-            if successful_transcripts:
+            # Echo raw transcripts back to the user only when explicitly enabled.
+            # Otherwise deployments that quote voice input in the final answer
+            # show the same transcript twice.
+            if successful_transcripts and self._should_send_stt_transcription_echo():
                 echo_adapter = self.adapters.get(source.platform)
                 echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
                 if echo_adapter:
                     try:
-                        quote_text = "\n".join(f"> 🎙 {tx}" for tx in successful_transcripts)
+                        quote_text = self._format_stt_transcription_echo(successful_transcripts)
                         await echo_adapter.send(
                             source.chat_id,
                             quote_text,

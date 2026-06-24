@@ -6,6 +6,7 @@ import os
 import subprocess
 import tarfile
 import time
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -24,10 +25,14 @@ def _reset_resolved_path():
     _tirith_mod._resolved_path = "tirith"
     _tirith_mod._install_thread = None
     _tirith_mod._install_failure_reason = ""
+    with _tirith_mod._install_tmpdirs_lock:
+        _tirith_mod._install_tmpdirs.clear()
     yield
     _tirith_mod._resolved_path = None
     _tirith_mod._install_thread = None
     _tirith_mod._install_failure_reason = ""
+    with _tirith_mod._install_tmpdirs_lock:
+        _tirith_mod._install_tmpdirs.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -675,11 +680,10 @@ class TestCosignVerification:
                                                               mock_checksum, mock_tarfile):
         """_install_tirith proceeds with SHA-256 when .sig/.pem downloads fail."""
         from tools.tirith_security import _install_tirith
-        import urllib.request
 
         def _dl_side_effect(url, dest, timeout=10):
             if url.endswith(".sig") or url.endswith(".pem"):
-                raise urllib.request.URLError("404 Not Found")
+                raise urllib.error.URLError("404 Not Found")
 
         mock_dl.side_effect = _dl_side_effect
         mock_tar = MagicMock()
@@ -771,6 +775,7 @@ class TestInstallArchiveMemberValidation:
 
         assert reason == ""
         assert path == str(hermes_home / "bin" / "tirith")
+        assert path is not None
         assert os.path.isfile(path)
         assert not os.path.islink(path)
         with open(path, "rb") as f:
@@ -799,6 +804,54 @@ class TestInstallArchiveMemberValidation:
         assert path is None
         assert reason == "binary_not_regular_file"
         assert not os.path.lexists(hermes_home / "bin" / "tirith")
+
+
+class TestInstallTempDirCleanup:
+    def test_install_tmpdir_untracked_after_normal_cleanup(self, tmp_path):
+        """Normal install failure removes the tempdir from the atexit cleanup set."""
+        from tools.tirith_security import _install_tirith
+
+        install_tmpdir = tmp_path / "tirith-install-active"
+
+        def _mkdtemp(prefix):
+            assert prefix == "tirith-install-"
+            install_tmpdir.mkdir()
+            return str(install_tmpdir)
+
+        with patch("tools.tirith_security._detect_target", return_value="aarch64-apple-darwin"), \
+             patch("tools.tirith_security.tempfile.mkdtemp", side_effect=_mkdtemp), \
+             patch("tools.tirith_security._download_file", side_effect=OSError("network down")):
+            path, reason = _install_tirith(log_failures=False)
+
+        assert path is None
+        assert reason == "download_failed"
+        assert not install_tmpdir.exists()
+        assert str(install_tmpdir) not in _tirith_mod._install_tmpdirs
+
+    def test_registered_install_tmpdirs_cleaned_on_process_exit(self, tmp_path):
+        """A daemon-thread tempdir is deleted by the atexit cleanup hook."""
+        install_tmpdir = tmp_path / "tirith-install-orphan"
+        install_tmpdir.mkdir()
+        (install_tmpdir / "archive.tar.gz").write_text("partial", encoding="utf-8")
+
+        _tirith_mod._remember_install_tmpdir(str(install_tmpdir))
+        _tirith_mod._cleanup_install_tmpdirs()
+
+        assert not install_tmpdir.exists()
+        assert not _tirith_mod._install_tmpdirs
+
+    def test_background_install_marks_operational_os_errors(self):
+        """Unexpected OSError in the background installer should not retry forever."""
+        _tirith_mod._resolved_path = None
+
+        with patch("tools.tirith_security.shutil.which", return_value=None), \
+             patch("tools.tirith_security._hermes_bin_dir", side_effect=OSError("No space left on device")), \
+             patch("tools.tirith_security._mark_install_failed") as mock_mark:
+            _tirith_mod._background_install(log_failures=False)
+
+        assert _tirith_mod._resolved_path is _tirith_mod._INSTALL_FAILED
+        assert _tirith_mod._install_failure_reason == "install_os_error"
+        mock_mark.assert_called_once_with("install_os_error")
 
 
 # ---------------------------------------------------------------------------

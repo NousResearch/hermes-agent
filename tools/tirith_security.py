@@ -20,6 +20,7 @@ chain provenance proof.  Installation runs in a background thread so startup
 never blocks.
 """
 
+import atexit
 import hashlib
 import json
 import logging
@@ -33,6 +34,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from typing import Literal
 
 from hermes_constants import get_hermes_home
 
@@ -93,13 +95,15 @@ def _load_security_config() -> dict:
 
 # Cached path after first resolution (avoids repeated shutil.which per command).
 # _INSTALL_FAILED means "we tried and failed" — prevents retry on every command.
-_resolved_path: str | None | bool = None
-_INSTALL_FAILED = False  # sentinel: distinct from "not yet tried"
+_INSTALL_FAILED: Literal[False] = False  # sentinel: distinct from "not yet tried"
+_resolved_path: str | None | Literal[False] = None
 _install_failure_reason: str = ""  # reason tag when _resolved_path is _INSTALL_FAILED
 
 # Background install thread coordination
 _install_lock = threading.Lock()
 _install_thread: threading.Thread | None = None
+_install_tmpdirs: set[str] = set()
+_install_tmpdirs_lock = threading.Lock()
 
 # Warning de-duplication. The spawn/path warnings live in the hot path —
 # without this dedupe set, a Windows install where ``tirith`` isn't on PATH
@@ -108,6 +112,31 @@ _install_thread: threading.Thread | None = None
 # easily filling errors.log with hundreds of identical lines.
 _warned_messages: set[str] = set()
 _warned_lock = threading.Lock()
+
+
+def _remember_install_tmpdir(path: str) -> None:
+    """Track an install tempdir so daemon-thread shutdown can still clean it."""
+    with _install_tmpdirs_lock:
+        _install_tmpdirs.add(path)
+
+
+def _forget_install_tmpdir(path: str) -> None:
+    """Stop tracking an install tempdir after normal cleanup."""
+    with _install_tmpdirs_lock:
+        _install_tmpdirs.discard(path)
+
+
+def _cleanup_install_tmpdirs() -> None:
+    """Best-effort cleanup for install tempdirs if a daemon thread is interrupted."""
+    with _install_tmpdirs_lock:
+        paths = tuple(_install_tmpdirs)
+        _install_tmpdirs.clear()
+
+    for path in paths:
+        shutil.rmtree(path, ignore_errors=True)
+
+
+atexit.register(_cleanup_install_tmpdirs)
 
 
 def _warn_once(key: str, message: str, *args) -> None:
@@ -353,6 +382,18 @@ def _extract_tirith_binary(tar: tarfile.TarFile, dest_dir: str, log) -> tuple[st
     return None, "binary_not_in_archive"
 
 
+def _make_install_tmpdir(log) -> tuple[str | None, str]:
+    """Create and register the tirith install tempdir."""
+    try:
+        tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
+    except OSError as exc:
+        log("tirith install failed: cannot create temp dir: %s", exc)
+        return None, "no_space"
+
+    _remember_install_tmpdir(tmpdir)
+    return tmpdir, ""
+
+
 def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
     """Download and install tirith to $HERMES_HOME/bin/tirith.
 
@@ -372,11 +413,10 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
     archive_name = f"tirith-{target}.tar.gz"
     base_url = f"https://github.com/{_REPO}/releases/latest/download"
 
-    try:
-        tmpdir = tempfile.mkdtemp(prefix="tirith-install-")
-    except OSError as exc:
-        log("tirith install failed: cannot create temp dir: %s", exc)
-        return None, "no_space"
+    tmpdir, reason = _make_install_tmpdir(log)
+    if tmpdir is None:
+        return None, reason
+
     try:
         archive_path = os.path.join(tmpdir, archive_name)
         checksums_path = os.path.join(tmpdir, "checksums.txt")
@@ -452,6 +492,7 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
         return dest, ""
 
     finally:
+        _forget_install_tmpdir(tmpdir)
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
@@ -583,13 +624,19 @@ def _background_install(*, log_failures: bool = True):
             _install_failure_reason = ""
             return
 
-        hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
-        if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
-            _resolved_path = hermes_bin
-            _install_failure_reason = ""
-            return
+        try:
+            hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
+            if os.path.isfile(hermes_bin) and os.access(hermes_bin, os.X_OK):
+                _resolved_path = hermes_bin
+                _install_failure_reason = ""
+                return
 
-        installed, reason = _install_tirith(log_failures=log_failures)
+            installed, reason = _install_tirith(log_failures=log_failures)
+        except OSError as exc:
+            log = logger.warning if log_failures else logger.debug
+            log("tirith auto-install failed: %s", exc)
+            installed, reason = None, "install_os_error"
+
         if installed:
             _resolved_path = installed
             _install_failure_reason = ""

@@ -504,8 +504,11 @@ def stop_continuous(force_transcribe: bool = False) -> None:
                                 if text and not is_whisper_hallucination(text):
                                     transcript = text
                         finally:
-                            if os.path.isfile(wav_path):
-                                os.unlink(wav_path)
+                            try:
+                                if os.path.isfile(wav_path):
+                                    os.unlink(wav_path)
+                            except OSError:
+                                pass
                 except Exception as e:
                     logger.warning("failed to stop/transcribe recorder: %s", e)
                 finally:

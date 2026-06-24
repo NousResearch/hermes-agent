@@ -922,7 +922,7 @@ class SimplexAdapter(BasePlatformAdapter):
                         "data:image/jpg;base64," + base64.b64encode(f.read()).decode()
                     )
                 os.remove(tmp_path)
-            except (FileNotFoundError, subprocess.SubprocessError) as exc:
+            except (OSError, subprocess.SubprocessError) as exc:
                 logger.warning("SimpleX: image conversion unavailable: %s", exc)
 
         return png_path, thumb_uri

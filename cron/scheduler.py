@@ -1379,7 +1379,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             context_from = [context_from]
         for source_job_id in context_from:
             # Guard against path traversal — valid job IDs are 12-char hex strings
-            if not source_job_id or not all(c in "0123456789abcdef" for c in source_job_id):
+            # OR named IDs composed of [a-zA-Z0-9_-] (e.g. "vm_upstream_monitor").
+            _valid_chars = set("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_-")
+            if not source_job_id or not all(c in _valid_chars for c in source_job_id):
                 logger.warning(
                     "context_from: skipping invalid job_id %r for job_id=%r name=%r%s",
                     source_job_id,

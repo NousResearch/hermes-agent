@@ -334,10 +334,12 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     """
     if len(content) > MAX_SKILL_CONTENT_CHARS:
         return (
-            f"{label} content is {len(content):,} characters "
+            f"REFUSED: {label} content is {len(content):,} characters "
             f"(limit: {MAX_SKILL_CONTENT_CHARS:,}). "
-            f"Consider splitting into a smaller SKILL.md with supporting files "
-            f"in references/ or templates/."
+            f"DO NOT retry by submitting marginally smaller content. "
+            f"Structurally split the skill instead: keep SKILL.md concise and "
+            f"move supporting material into references/, templates/, scripts/, "
+            f"or assets/."
         )
     return None
 

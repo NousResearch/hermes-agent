@@ -51,8 +51,15 @@ class TestValidateContentSize:
     def test_over_limit(self):
         err = _validate_content_size("a" * (MAX_SKILL_CONTENT_CHARS + 1))
         assert err is not None
+        assert "REFUSED" in err
         assert "100,001" in err
         assert "100,000" in err
+        assert "DO NOT retry" in err
+        assert "references/" in err
+        assert "templates/" in err
+        assert "scripts/" in err
+        assert "assets/" in err
+        assert "Consider splitting" not in err
 
     def test_custom_label(self):
         err = _validate_content_size("a" * (MAX_SKILL_CONTENT_CHARS + 1), label="references/api.md")

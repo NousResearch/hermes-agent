@@ -615,7 +615,25 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     """Check if a gateway is running for a given profile directory."""
     try:
         from gateway.status import get_running_pid
-        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+        if (
+            get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False)
+            is not None
+        ):
+            return True
+    except Exception:
+        pass
+    try:
+        from hermes_cli.gateway import get_gateway_runtime_snapshot
+        previous_home = os.environ.get("HERMES_HOME")
+        os.environ["HERMES_HOME"] = str(profile_dir)
+        try:
+            snapshot = get_gateway_runtime_snapshot()
+            return bool(getattr(snapshot, "service_running", False))
+        finally:
+            if previous_home is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = previous_home
     except Exception:
         return False
 

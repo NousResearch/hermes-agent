@@ -1414,7 +1414,9 @@ class TestEdgeCases:
         assert result == expected
 
     def test_list_profiles_default_info_fields(self, profile_env):
-        profiles = list_profiles()
+        with patch("hermes_cli.gateway.get_gateway_runtime_snapshot") as mock_snapshot:
+            mock_snapshot.return_value.service_running = False
+            profiles = list_profiles()
         default = [p for p in profiles if p.name == "default"][0]
         assert default.is_default is True
         assert default.gateway_running is False
@@ -1439,12 +1441,49 @@ class TestEdgeCases:
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
 
-        with patch("gateway.status.get_running_pid", return_value=None) as mock_get_running_pid:
+        with (
+            patch(
+                "gateway.status.get_running_pid",
+                return_value=None,
+            ) as mock_get_running_pid,
+            patch("hermes_cli.gateway.get_gateway_runtime_snapshot") as mock_snapshot,
+        ):
+            mock_snapshot.return_value.service_running = False
             assert _check_gateway_running(default_home) is False
         mock_get_running_pid.assert_called_once_with(
             default_home / "gateway.pid",
             cleanup_stale=False,
         )
+        mock_snapshot.assert_called_once_with()
+
+    def test_gateway_running_check_uses_runtime_snapshot_fallback(
+        self, profile_env, monkeypatch
+    ):
+        """Profile status should detect service-managed gateways without a pid file."""
+        from hermes_cli.profiles import _check_gateway_running
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        previous_home = str(tmp_path / ".hermes" / "profiles" / "coder")
+        monkeypatch.setenv("HERMES_HOME", previous_home)
+        captured_home = {}
+
+        def _snapshot():
+            captured_home["value"] = os.environ.get("HERMES_HOME")
+            snap = MagicMock()
+            snap.service_running = True
+            return snap
+
+        with (
+            patch("gateway.status.get_running_pid", return_value=None),
+            patch(
+                "hermes_cli.gateway.get_gateway_runtime_snapshot",
+                side_effect=_snapshot,
+            ),
+        ):
+            assert _check_gateway_running(default_home) is True
+
+        assert captured_home["value"] == str(default_home)
+        assert os.environ["HERMES_HOME"] == previous_home
 
     def test_profile_name_boundary_single_char(self):
         """Single alphanumeric character is valid."""

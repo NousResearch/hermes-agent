@@ -8,18 +8,28 @@ gateway entrypoint.
 
 from __future__ import annotations
 
+import os
 import sys
 
-from .managed import apply_managed_startup_env, load_managed_runtime_config
+from .managed import (
+    apply_managed_startup_env,
+    load_managed_runtime_config,
+    prepare_managed_runtime_filesystem,
+)
+
+
+def _run_gateway_main() -> None:
+    from gateway.run import main as gateway_main
+
+    gateway_main()
 
 
 def main() -> None:
     cfg = load_managed_runtime_config()
+    prepare_managed_runtime_filesystem(cfg)
     apply_managed_startup_env(cfg)
-
-    from gateway.run import main as gateway_main
-
-    gateway_main()
+    os.chdir(cfg.workspace_path)
+    _run_gateway_main()
 
 
 if __name__ == "__main__":

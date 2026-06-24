@@ -17,8 +17,22 @@
 
 set -eu
 
-HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
+HERMES_HOME="${HERMES_HOME:-/opt/data}"
+
+# KarinAI managed containers use product-owned runtime state/workspace paths
+# instead of the generic /opt/data Docker home. Apply this before any
+# HERMES_HOME bootstrap work so cont-init ownership and seeding target the same
+# state directory that the managed gateway process will later use.
+KARINAI_DOCKER_MANAGED_RUNTIME=false
+if [ -f "$INSTALL_DIR/karinai/docker/managed-env.sh" ]; then
+    # shellcheck disable=SC1091
+    . "$INSTALL_DIR/karinai/docker/managed-env.sh"
+    karinai_apply_managed_bootstrap_env
+    if karinai_managed_runtime_enabled; then
+        KARINAI_DOCKER_MANAGED_RUNTIME=true
+    fi
+fi
 
 # Drop to hermes via s6-setuidgid, but skip it when already non-root.
 as_hermes() { [ "$(id -u)" = 0 ] || { "$@"; return; }; s6-setuidgid hermes "$@"; }
@@ -290,6 +304,16 @@ as_hermes mkdir -p \
     "$HERMES_HOME/home" \
     "$HERMES_HOME/pairing" \
     "$HERMES_HOME/platforms/pairing"
+
+if [ "$KARINAI_DOCKER_MANAGED_RUNTIME" = true ]; then
+    if [ -n "${KARINAI_WORKSPACE_DIR:-}" ]; then
+        mkdir -p "$KARINAI_WORKSPACE_DIR"
+        chown hermes:hermes "$KARINAI_WORKSPACE_DIR" 2>/dev/null || true
+    fi
+    if [ -n "${HOME:-}" ]; then
+        as_hermes mkdir -p "$HOME"
+    fi
+fi
 
 # --- Install-method stamp ---
 # The 'docker' stamp is baked into the immutable install tree at

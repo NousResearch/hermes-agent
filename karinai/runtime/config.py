@@ -49,6 +49,11 @@ def _require_non_empty(name: str, value: str, errors: list[str]) -> None:
         errors.append(f"{name} is required in KarinAI managed runtime mode")
 
 
+def _require_absolute_path(name: str, value: str, errors: list[str]) -> None:
+    if value and not Path(value).is_absolute():
+        errors.append(f"{name} must be an absolute path in KarinAI managed runtime mode")
+
+
 @dataclass(frozen=True)
 class ManagedRuntimeConfig:
     """Trusted runtime-manager handoff for one KarinAI agent container."""
@@ -73,6 +78,7 @@ class ManagedRuntimeConfig:
     disabled_toolsets: tuple[str, ...] = BETA_DISABLED_TOOLSETS
     local_cron_enabled: bool = False
     plugin_install_enabled: bool = False
+    dashboard_enabled: bool = False
 
     @classmethod
     def from_env(
@@ -121,6 +127,9 @@ class ManagedRuntimeConfig:
             plugin_install_enabled=parse_bool(
                 source.get("KARINAI_PLUGIN_INSTALL_ENABLED"), default=False
             ),
+            dashboard_enabled=parse_bool(
+                source.get("KARINAI_DASHBOARD_ENABLED"), default=False
+            ),
         )
         cfg.validate()
         return cfg
@@ -133,6 +142,8 @@ class ManagedRuntimeConfig:
         _require_non_empty("KARINAI_WORKSPACE_ID", self.workspace_id, errors)
         _require_non_empty("KARINAI_WORKSPACE_DIR", self.workspace_dir, errors)
         _require_non_empty("KARINAI_RUNTIME_STATE_DIR", self.runtime_state_dir, errors)
+        _require_absolute_path("KARINAI_WORKSPACE_DIR", self.workspace_dir, errors)
+        _require_absolute_path("KARINAI_RUNTIME_STATE_DIR", self.runtime_state_dir, errors)
         _require_non_empty("API_SERVER_KEY", self.api_server_key, errors)
         if self.api_server_port <= 0 or self.api_server_port > 65535:
             errors.append("API_SERVER_PORT must be between 1 and 65535")
@@ -142,6 +153,8 @@ class ManagedRuntimeConfig:
             errors.append("KARINAI_LOCAL_CRON_ENABLED must be false; backend owns schedules")
         if self.plugin_install_enabled:
             errors.append("KARINAI_PLUGIN_INSTALL_ENABLED must be false by default")
+        if self.dashboard_enabled:
+            errors.append("KARINAI_DASHBOARD_ENABLED must be false in beta managed runtime")
         try:
             validate_beta_tool_policy(self.enabled_toolsets, self.disabled_toolsets)
         except ValueError as exc:
@@ -183,6 +196,9 @@ class ManagedRuntimeConfig:
             "API_SERVER_PORT": str(self.api_server_port),
             "API_SERVER_MODEL_NAME": self.runtime_name,
             "HERMES_HOME": self.runtime_state_dir,
+            "HOME": str(self.runtime_state_path / "home"),
+            "HERMES_WRITE_SAFE_ROOT": self.workspace_dir,
+            "HERMES_DASHBOARD": "false",
             "TERMINAL_CWD": self.workspace_dir,
         }
 

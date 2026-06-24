@@ -52,8 +52,15 @@ fi
 # HOME comes through with-contenv as /root (the /init context). Override
 # to the hermes user's home before dropping privileges so libraries that
 # resolve paths via $HOME (e.g. discord lockfile under XDG_STATE_HOME)
-# don't try to write to /root.
+# don't try to write to /root. KarinAI managed mode may override this to
+# the product runtime-state home below before the gateway imports anything.
 export HOME=/opt/data
+
+if [ -f /opt/hermes/karinai/docker/managed-env.sh ]; then
+    # shellcheck disable=SC1091
+    . /opt/hermes/karinai/docker/managed-env.sh
+    karinai_apply_managed_bootstrap_env
+fi
 
 # Save the Docker -w (or default) working directory before init
 # scripts cd to /opt/data, so the container starts in the
@@ -70,7 +77,15 @@ cd /opt/data
 cd "$_hermes_orig_cwd"
 
 if [ $# -eq 0 ]; then
+    if command -v karinai_managed_runtime_enabled >/dev/null 2>&1 && karinai_managed_runtime_enabled; then
+        drop python -m karinai.runtime.start_managed
+    fi
     drop hermes
+fi
+
+if [ "$1" = "karinai-managed-runtime" ]; then
+    shift
+    drop python -m karinai.runtime.start_managed "$@"
 fi
 
 if command -v "$1" >/dev/null 2>&1; then

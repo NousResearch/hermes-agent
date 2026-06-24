@@ -86,6 +86,8 @@ KARINAI_WORKSPACE_ID=<backend workspace id>
 KARINAI_WORKSPACE_DIR=/workspace
 KARINAI_RUNTIME_STATE_DIR=/workspace/.hermes
 HERMES_HOME=/workspace/.hermes
+HOME=/workspace/.hermes/home
+HERMES_WRITE_SAFE_ROOT=/workspace
 API_SERVER_ENABLED=true
 API_SERVER_HOST=<private bind>
 API_SERVER_PORT=<private port>
@@ -96,6 +98,7 @@ KARINAI_TOOL_GATEWAY_URL=<trusted internal gateway>
 KARINAI_RUNTIME_TOKEN=<scoped runtime token>
 KARINAI_LOCAL_CRON_ENABLED=false
 KARINAI_PLUGIN_INSTALL_ENABLED=false
+KARINAI_DASHBOARD_ENABLED=false
 ```
 
 Implementation detail: non-secret behavior should eventually be represented in rendered runtime config files where that fits upstream Hermes conventions. Environment variables are acceptable for container identity, injected secrets/tokens, and bootstrap handoff from runtime-manager.

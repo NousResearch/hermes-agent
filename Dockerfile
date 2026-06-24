@@ -331,9 +331,13 @@ VOLUME [ "/opt/data" ]
 # wrapper is prepended to user-supplied args automatically:
 #
 #   docker run <image>                  → /init main-wrapper.sh   (CMD default)
+#                                       → hermes normally; KarinAI managed
+#                                         runtime when KARINAI_MANAGED_RUNTIME=true
 #   docker run <image> chat -q "hi"     → /init main-wrapper.sh chat -q hi
 #   docker run <image> sleep infinity   → /init main-wrapper.sh sleep infinity
 #   docker run <image> --tui            → /init main-wrapper.sh --tui
+#   docker run <image> karinai-managed-runtime
+#                                      → python -m karinai.runtime.start_managed
 #
 # main-wrapper.sh handles arg routing (bare-exec vs. hermes
 # subcommand vs. no-args), drops to the hermes user via s6-setuidgid,

@@ -31,7 +31,9 @@ Initial fork setup and managed-runtime scaffolding:
 - Added `karinai/prompts/system.base.md.j2`.
 - Added `karinai/config/managed-runtime.env.example` and `karinai/config/tool-policy.beta.yaml`.
 - Added `karinai/scripts/` prompt rendering and branding audit helpers.
+- Added `karinai/docker/managed-env.sh` for Docker/s6 managed-mode env mapping.
 - Added `tests/karinai/test_managed_runtime.py`.
+- Added `tests/karinai/test_managed_container_startup.py`.
 
 ## Core upstream file patches
 
@@ -57,6 +59,56 @@ Behavior:
 
 - In managed mode, use `karinai.runtime.managed_agent_toolsets()` for `AIAgent.enabled_toolsets` and `AIAgent.disabled_toolsets`.
 - Outside managed mode, keep the existing `platform_toolsets.api_server`/`hermes-api-server` resolution.
+
+### `docker/stage2-hook.sh`
+
+Status: permanent product-specific Docker bootstrap behavior unless upstream later exposes a generic managed-container bootstrap hook.
+
+Reason: KarinAI managed containers use runtime-manager-provided state/workspace paths instead of the generic `/opt/data` Docker home. The s6 cont-init hook must apply those paths before it creates, owns, seeds, and migrates `$HERMES_HOME`; otherwise the gateway process and bootstrapping step would disagree about runtime state.
+
+Behavior:
+
+- When `KARINAI_MANAGED_RUNTIME` is truthy, source `karinai/docker/managed-env.sh` before `$HERMES_HOME` setup.
+- Map `KARINAI_RUNTIME_STATE_DIR` to `HERMES_HOME` and `HOME` for all s6-supervised processes.
+- Map `KARINAI_WORKSPACE_DIR` to `TERMINAL_CWD` and `HERMES_WRITE_SAFE_ROOT`.
+- Disable the dashboard in managed beta containers through `HERMES_DASHBOARD=false`.
+- Create the managed workspace and runtime home directories with hermes-user ownership where possible.
+
+### `docker/main-wrapper.sh`
+
+Status: permanent product-specific Docker command routing unless upstream later supports product-managed default command hooks.
+
+Reason: runtime-manager should be able to start a KarinAI agent container with the normal image entrypoint and managed env contract, without passing a fragile long command. Normal upstream Docker behavior must remain unchanged outside managed mode.
+
+Behavior:
+
+- Source `karinai/docker/managed-env.sh` before command routing.
+- With no Docker CMD and `KARINAI_MANAGED_RUNTIME=true`, run `python -m karinai.runtime.start_managed` instead of the default `hermes` CLI.
+- Add an explicit `karinai-managed-runtime` command alias for orchestrators/tests.
+- Preserve existing generic Hermes routing when managed mode is disabled.
+
+### `Dockerfile`
+
+Status: product-specific documentation-only patch.
+
+Reason: the image still uses the upstream s6 entrypoint, but its command-routing comments need to document the managed KarinAI branch so runtime-manager operators know the supported startup path.
+
+Behavior:
+
+- Documents the `KARINAI_MANAGED_RUNTIME=true` no-args startup path.
+- Documents the explicit `karinai-managed-runtime` command alias.
+
+### `pyproject.toml`
+
+Status: product-specific packaging patch.
+
+Reason: the managed runtime must work from installed/editable environments, not only from a source checkout used by tests. Product prompt/config/docker helper files also need to be included in package metadata.
+
+Behavior:
+
+- Adds the `karinai` package namespace to setuptools package discovery.
+- Ships KarinAI prompt templates, config examples, and Docker helper shell scripts as package data.
+- Adds `karinai-agent-managed` as a console-script entrypoint for non-Docker or explicit startup paths.
 
 ## Upstream sync checklist
 

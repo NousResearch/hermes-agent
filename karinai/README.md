@@ -18,6 +18,7 @@ karinai/
   runtime/      # managed runtime startup/config rendering
   prompts/      # product-facing prompt templates
   config/       # beta tool policy and managed runtime examples
+  docker/       # Docker/s6 bootstrap helpers for managed containers
   scripts/      # prompt/branding audit and rendering helpers
   tools/        # backend-mediated capabilities such as schedule intent (future)
 ```

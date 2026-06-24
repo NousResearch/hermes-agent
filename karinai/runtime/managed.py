@@ -69,3 +69,18 @@ def apply_managed_startup_env(
     for key, value in applied.items():
         target[key] = value
     return applied
+
+
+def prepare_managed_runtime_filesystem(
+    config: ManagedRuntimeConfig | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> None:
+    """Create the managed workspace/state directories before gateway import."""
+    cfg = config or load_managed_runtime_config(env)
+    for path in (
+        cfg.workspace_path,
+        cfg.runtime_state_path,
+        cfg.runtime_state_path / "home",
+    ):
+        path.mkdir(parents=True, exist_ok=True)

@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+import tomllib
 
 import pytest
 
 from agent.system_prompt import build_system_prompt_parts
 from karinai.runtime.config import ManagedRuntimeConfig, ManagedRuntimeConfigError
-from karinai.runtime.managed import compose_ephemeral_system_prompt
+from karinai.runtime.managed import compose_ephemeral_system_prompt, prepare_managed_runtime_filesystem
 from karinai.runtime.prompts import TemplateRenderError, render_template_text
 from karinai.runtime.tool_policy import (
     BETA_DISABLED_TOOLSETS,
@@ -76,11 +78,73 @@ def test_managed_config_requires_internal_api_key():
         ManagedRuntimeConfig.from_env(env)
 
 
-def test_managed_config_rejects_local_cron_and_plugin_install():
+def test_managed_config_rejects_local_cron_plugin_install_and_dashboard():
     with pytest.raises(ManagedRuntimeConfigError, match="LOCAL_CRON"):
         ManagedRuntimeConfig.from_env(managed_env(KARINAI_LOCAL_CRON_ENABLED="true"))
     with pytest.raises(ManagedRuntimeConfigError, match="PLUGIN_INSTALL"):
         ManagedRuntimeConfig.from_env(managed_env(KARINAI_PLUGIN_INSTALL_ENABLED="true"))
+    with pytest.raises(ManagedRuntimeConfigError, match="DASHBOARD"):
+        ManagedRuntimeConfig.from_env(managed_env(KARINAI_DASHBOARD_ENABLED="true"))
+
+
+def test_managed_config_requires_absolute_workspace_and_state_paths():
+    with pytest.raises(ManagedRuntimeConfigError, match="KARINAI_WORKSPACE_DIR"):
+        ManagedRuntimeConfig.from_env(managed_env(KARINAI_WORKSPACE_DIR="workspace"))
+    with pytest.raises(ManagedRuntimeConfigError, match="KARINAI_RUNTIME_STATE_DIR"):
+        ManagedRuntimeConfig.from_env(managed_env(KARINAI_RUNTIME_STATE_DIR="hermes"))
+
+
+def test_managed_gateway_env_scopes_runtime_state_and_workspace_writes():
+    cfg = ManagedRuntimeConfig.from_env(managed_env())
+    gateway_env = cfg.gateway_env()
+    assert gateway_env["API_SERVER_ENABLED"] == "true"
+    assert gateway_env["HERMES_HOME"] == "/hermes"
+    assert gateway_env["HOME"] == "/hermes/home"
+    assert gateway_env["TERMINAL_CWD"] == "/workspace"
+    assert gateway_env["HERMES_WRITE_SAFE_ROOT"] == "/workspace"
+    assert gateway_env["HERMES_DASHBOARD"] == "false"
+
+
+def test_prepare_managed_runtime_filesystem_creates_workspace_state_and_home(tmp_path):
+    workspace = tmp_path / "workspace"
+    state = tmp_path / "state"
+    cfg = ManagedRuntimeConfig.from_env(
+        managed_env(
+            KARINAI_WORKSPACE_DIR=str(workspace),
+            KARINAI_RUNTIME_STATE_DIR=str(state),
+        )
+    )
+    prepare_managed_runtime_filesystem(cfg)
+    assert workspace.is_dir()
+    assert state.is_dir()
+    assert (state / "home").is_dir()
+
+
+def test_start_managed_prepares_env_chdirs_and_runs_gateway(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    state = tmp_path / "state"
+    for key, value in managed_env(
+        KARINAI_WORKSPACE_DIR=str(workspace),
+        KARINAI_RUNTIME_STATE_DIR=str(state),
+    ).items():
+        monkeypatch.setenv(key, value)
+    start_cwd = Path.cwd()
+    fake_gateway_main = MagicMock()
+
+    from karinai.runtime import start_managed
+
+    monkeypatch.setattr(start_managed, "_run_gateway_main", fake_gateway_main)
+    try:
+        start_managed.main()
+        assert Path.cwd() == workspace
+        assert os.environ["HERMES_HOME"] == str(state)
+        assert os.environ["HOME"] == str(state / "home")
+        assert os.environ["TERMINAL_CWD"] == str(workspace)
+        assert os.environ["HERMES_WRITE_SAFE_ROOT"] == str(workspace)
+        assert os.environ["HERMES_DASHBOARD"] == "false"
+        fake_gateway_main.assert_called_once_with()
+    finally:
+        os.chdir(start_cwd)
 
 
 def test_beta_tool_policy_exposes_only_sandbox_basics():
@@ -167,3 +231,16 @@ def test_tool_policy_yaml_matches_runtime_constants():
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     assert tuple(data["enabled_toolsets"]) == BETA_ENABLED_TOOLSETS
     assert tuple(data["disabled_toolsets"]) == BETA_DISABLED_TOOLSETS
+
+
+def test_karinai_runtime_is_packaged_for_installed_entrypoint():
+    pyproject_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
+    data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+    assert data["project"]["scripts"]["karinai-agent-managed"] == "karinai.runtime.start_managed:main"
+    assert "karinai" in data["tool"]["setuptools"]["packages"]["find"]["include"]
+    assert "karinai.*" in data["tool"]["setuptools"]["packages"]["find"]["include"]
+    package_data = data["tool"]["setuptools"]["package-data"]["karinai"]
+    assert "prompts/*.j2" in package_data
+    assert "config/*.yaml" in package_data
+    assert "config/*.example" in package_data
+    assert "docker/*.sh" in package_data

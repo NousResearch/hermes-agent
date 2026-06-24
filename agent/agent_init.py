@@ -377,6 +377,17 @@ def init_agent(
     # Exception: Azure OpenAI serves gpt-5.x on /chat/completions and
     # does NOT support the Responses API — skip the upgrade for Azure
     # (openai.azure.com), even though it looks OpenAI-compatible.
+    #
+    # The bare "host is api.openai.com ⇒ Responses API" auto-upgrade
+    # was a regression for non-GPT-5 models served through api.openai.com
+    # (e.g. gpt-4o-mini, gpt-4.1, gpt-4-turbo): those don't accept the
+    # `include` / `reasoning.encrypted_content` payload the Responses
+    # transport attaches and return HTTP 400 "Encrypted content is not
+    # supported with this model" (#52023). The URL heuristic is still
+    # useful as a model-family amplification — every model that goes
+    # through api.openai.com is also Reasonings-API-eligible by name —
+    # so the upgrade key stays on the model-family check, and the URL
+    # signal just makes it apply for whatever the family prefix allows.
     if (
         api_mode is None
         and agent.api_mode == "chat_completions"
@@ -384,12 +395,9 @@ def init_agent(
         and not str(agent.base_url or "").lower().startswith("acp://copilot")
         and not str(agent.base_url or "").lower().startswith("acp+tcp://")
         and not agent._is_azure_openai_url()
-        and (
-            agent._is_direct_openai_url()
-            or agent._provider_model_requires_responses_api(
-                agent.model,
-                provider=agent.provider,
-            )
+        and agent._provider_model_requires_responses_api(
+            agent.model,
+            provider=agent.provider,
         )
     ):
         agent.api_mode = "codex_responses"

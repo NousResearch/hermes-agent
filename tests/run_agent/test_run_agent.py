@@ -5306,11 +5306,8 @@ class TestGpt5ApiModeRouting:
         if (
             agent.api_mode == "chat_completions"
             and not agent._is_azure_openai_url()
-            and (
-                agent._is_direct_openai_url()
-                or agent._provider_model_requires_responses_api(
-                    agent.model, provider=agent.provider,
-                )
+            and agent._provider_model_requires_responses_api(
+                agent.model, provider=agent.provider,
             )
         ):
             agent.api_mode = "codex_responses"
@@ -5324,11 +5321,8 @@ class TestGpt5ApiModeRouting:
         if (
             agent.api_mode == "chat_completions"
             and not agent._is_azure_openai_url()
-            and (
-                agent._is_direct_openai_url()
-                or agent._provider_model_requires_responses_api(
-                    agent.model, provider=agent.provider,
-                )
+            and agent._provider_model_requires_responses_api(
+                agent.model, provider=agent.provider,
             )
         ):
             agent.api_mode = "codex_responses"
@@ -5343,11 +5337,47 @@ class TestGpt5ApiModeRouting:
         if (
             agent.api_mode == "chat_completions"
             and not agent._is_azure_openai_url()
-            and (
-                agent._is_direct_openai_url()
-                or agent._provider_model_requires_responses_api(
-                    agent.model, provider=agent.provider,
-                )
+            and agent._provider_model_requires_responses_api(
+                agent.model, provider=agent.provider,
+            )
+        ):
+            agent.api_mode = "codex_responses"
+        assert agent.api_mode == "chat_completions"
+
+    def test_gpt4o_mini_on_openai_direct_stays_on_chat_completions(self, agent):
+        """Regression for #52023: gpt-4o-mini on api.openai.com must NOT upgrade
+        to the codex_responses transport — only the model-family check decides
+        which api_mode to use; the bare URL heuristic can't make that call
+        because OpenAI's Responses transport attaches `include` /
+        `reasoning.encrypted_content` which non-GPT-5 models reject with
+        HTTP 400 "Encrypted content is not supported with this model".
+        """
+        agent.base_url = "https://api.openai.com/v1"
+        agent.api_mode = "chat_completions"
+        agent.model = "gpt-4o-mini"
+        if (
+            agent.api_mode == "chat_completions"
+            and not agent._is_azure_openai_url()
+            and agent._provider_model_requires_responses_api(
+                agent.model, provider=agent.provider,
+            )
+        ):
+            agent.api_mode = "codex_responses"
+        # gpt-4o-mini is NOT a Responses-API-only model — keep chat completions.
+        assert agent.api_mode == "chat_completions"
+
+    def test_gpt4_1_on_openai_direct_stays_on_chat_completions(self, agent):
+        """Same #52023 regression as gpt-4o-mini — gpt-4.1 family must
+        stay on /v1/chat/completions against api.openai.com.
+        """
+        agent.base_url = "https://api.openai.com/v1"
+        agent.api_mode = "chat_completions"
+        agent.model = "gpt-4.1"
+        if (
+            agent.api_mode == "chat_completions"
+            and not agent._is_azure_openai_url()
+            and agent._provider_model_requires_responses_api(
+                agent.model, provider=agent.provider,
             )
         ):
             agent.api_mode = "codex_responses"

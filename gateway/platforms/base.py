@@ -260,7 +260,11 @@ def _split_host_port(value: str) -> tuple[str, int | None]:
         return "", None
     if "://" in raw:
         parsed = urlsplit(raw)
-        return (parsed.hostname or "").lower().rstrip("."), parsed.port
+        try:
+            port = parsed.port
+        except ValueError:
+            port = None
+        return (parsed.hostname or "").lower().rstrip("."), port
     if raw.startswith("[") and "]" in raw:
         host, _, rest = raw[1:].partition("]")
         port = None

@@ -148,6 +148,24 @@ class TestResolveProxyUrl:
 
         assert resolve_proxy_url(target_hosts="api.telegram.org") is None
 
+    def test_no_proxy_invalid_port_does_not_crash(self, monkeypatch):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "http://api.telegram.org:bad")
+
+        assert resolve_proxy_url(target_hosts="api.telegram.org") is None
+
+    def test_target_host_invalid_port_does_not_crash(self, monkeypatch):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "api.telegram.org")
+
+        assert resolve_proxy_url(target_hosts="https://api.telegram.org:bad") is None
+
     def test_no_proxy_bypasses_cidr_target(self, monkeypatch):
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                     "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):

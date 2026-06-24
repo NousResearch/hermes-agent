@@ -7692,12 +7692,21 @@ async def list_cron_jobs(profile: str = "all"):
         return _call_cron_for_profile(requested, "list_jobs", True)
 
     jobs: List[Dict[str, Any]] = []
+    seen_ids: set = set()
     for item in _cron_profile_dicts():
         name = str(item.get("name") or "")
         if not name:
             continue
         try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+            for job in _call_cron_for_profile(name, "list_jobs", True):
+                if not isinstance(job, dict):
+                    continue
+                jid = job.get("id") or job.get("job_id")
+                if jid and jid in seen_ids:
+                    continue
+                if jid:
+                    seen_ids.add(jid)
+                jobs.append(job)
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
     return jobs

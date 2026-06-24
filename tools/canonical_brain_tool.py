@@ -98,6 +98,24 @@ def _normalize_secret_key(key: Any) -> str:
     return str(key or "").strip().casefold().replace("-", "_")
 
 
+def _has_structured_secret_value(value: Any) -> bool:
+    """Return True when a secret-keyed field actually carries content.
+
+    Operational safety metadata often uses boolean flags such as
+    ``{"secret": False}`` or ``{"payment_credential": False}`` to state that
+    no sensitive value is present. Treating the key alone as a secret caused
+    harmless Canonical Brain appends to fail closed. Still block non-empty
+    values under credential-shaped keys before any helper/connect.
+    """
+    if value is None or value is False:
+        return False
+    if isinstance(value, str) and not value.strip():
+        return False
+    if isinstance(value, (list, tuple, set, dict)) and not value:
+        return False
+    return True
+
+
 def _contains_secret_like(value: Any) -> bool:
     """Return True for secret-looking values or structured secret keys.
 
@@ -108,7 +126,10 @@ def _contains_secret_like(value: Any) -> bool:
     """
     if isinstance(value, dict):
         for key, nested in value.items():
-            if _normalize_secret_key(key) in SECRET_KEY_NAMES:
+            if (
+                _normalize_secret_key(key) in SECRET_KEY_NAMES
+                and _has_structured_secret_value(nested)
+            ):
                 return True
             if _contains_secret_like(nested):
                 return True

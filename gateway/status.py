@@ -320,6 +320,7 @@ def _build_runtime_status_record() -> dict[str, Any]:
         "exit_reason": None,
         "restart_requested": False,
         "active_agents": 0,
+        "active_session_keys": [],
         "platforms": {},
         "updated_at": _utc_now_iso(),
     })
@@ -615,6 +616,7 @@ def write_runtime_status(
     exit_reason: Any = _UNSET,
     restart_requested: Any = _UNSET,
     active_agents: Any = _UNSET,
+    active_session_keys: Any = _UNSET,
     platform: Any = _UNSET,
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
@@ -640,6 +642,8 @@ def write_runtime_status(
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:
         payload["active_agents"] = parse_active_agents(active_agents)
+    if active_session_keys is not _UNSET:
+        payload["active_session_keys"] = parse_active_session_keys(active_session_keys)
     if served_profiles is not _UNSET:
         # Profiles this gateway multiplexes (multi-profile mode). Absent/empty
         # for a single-profile gateway. Lets `hermes status` show per-profile
@@ -684,6 +688,28 @@ def parse_active_agents(raw: Any) -> int:
         return max(0, int(raw))
     except (TypeError, ValueError):
         return 0
+
+
+def parse_active_session_keys(raw: Any) -> list[str]:
+    """Return sanitized active gateway session keys.
+
+    These keys contain routing/session identifiers, not message bodies or
+    secrets. They are persisted so crash recovery can resume the exact
+    in-flight sessions instead of guessing from a stale ``updated_at`` window.
+    """
+    if raw is None or not isinstance(raw, (list, tuple, set)):
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        key = item.strip()
+        if not key or len(key) > 512 or key in seen:
+            continue
+        result.append(key)
+        seen.add(key)
+    return result
 
 
 # States in which the gateway is alive and could be asked to drain.  Anything

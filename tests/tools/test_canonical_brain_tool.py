@@ -223,6 +223,48 @@ def test_append_uses_helper_and_returns_readback(monkeypatch):
     assert any("INSERT INTO canonical_event_log" in q for q in fake.queries)
 
 
+def test_append_allows_negative_secret_safety_flags(monkeypatch):
+    """Boolean safety flags should not be mistaken for recorded secret values."""
+    fake = _FakeHelper()
+    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+
+    out = cbt.canonical_event_append_tool(
+        event_type="case.note",
+        case_id="case:test",
+        summary="safe operational note",
+        source_refs={"platform": "discord", "message_id": "m1"},
+        safety={"secret": False, "payment_credential": False},
+        idempotency_key="idem-negative-safety-flags",
+    )
+    data = json.loads(out)
+
+    assert data["success"] is True
+    sql = "\n".join(fake.queries)
+    assert '"secret":false' in sql
+    assert '"payment_credential":false' in sql
+
+
+def test_append_still_blocks_positive_secret_safety_field_before_helper(monkeypatch):
+    called = {"helper": False}
+
+    def boom():
+        called["helper"] = True
+        raise AssertionError("helper must not be loaded after structured secret input")
+
+    monkeypatch.setattr(cbt, "_load_helper", boom)
+    out = cbt.canonical_event_append_tool(
+        event_type="case.note",
+        case_id="case:test",
+        summary="safe operational note",
+        source_refs={"platform": "discord", "message_id": "m1"},
+        safety={"secret": "abc"},
+    )
+    data = json.loads(out)
+
+    assert "secret_like_content_blocked:safety" in data["error"]
+    assert called["helper"] is False
+
+
 def test_append_fills_missing_source_refs_from_session_context(monkeypatch):
     fake = _FakeHelper()
     monkeypatch.setattr(cbt, "_load_helper", lambda: fake)

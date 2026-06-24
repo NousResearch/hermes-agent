@@ -1255,6 +1255,43 @@ class TestActiveAgentsTurnBoundaryWrite:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         status.write_runtime_status(gateway_state="running", active_agents=-5)
         assert status.read_runtime_status()["active_agents"] == 0
+
+    def test_active_session_keys_only_write_preserves_gateway_state(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(gateway_state="running", active_agents=1)
+        status.write_runtime_status(
+            active_agents=1,
+            active_session_keys=[
+                "agent:main:discord:thread:1518942653633532104:1518942653633532104",
+                "agent:main:discord:thread:1518942653633532104:1518942653633532104",
+                "",
+                123,
+            ],
+        )
+
+        rec = status.read_runtime_status()
+        assert rec["gateway_state"] == "running"
+        assert rec["active_agents"] == 1
+        assert rec["active_session_keys"] == [
+            "agent:main:discord:thread:1518942653633532104:1518942653633532104"
+        ]
+
+    def test_active_session_keys_clear_on_empty_list(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            gateway_state="running",
+            active_agents=1,
+            active_session_keys=["agent:main:telegram:dm:1"],
+        )
+        status.write_runtime_status(active_agents=0, active_session_keys=[])
+
+        rec = status.read_runtime_status()
+        assert rec["active_agents"] == 0
+        assert rec["active_session_keys"] == []
+
+
 class TestGatewayBusyDerivation:
     """Pure contract for derive_gateway_busy / derive_gateway_drainable — the
     single shared definition both /api/status and /health/detailed consume."""

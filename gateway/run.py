@@ -3703,31 +3703,78 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exit_reason=exit_reason,
                 restart_requested=self._restart_requested,
                 active_agents=self._running_agent_count(),
+                active_session_keys=self._active_session_keys_for_status(),
             )
         except Exception:
             pass
+
+    def _active_session_keys_for_status(self) -> list[str]:
+        """Return active gateway session keys for crash recovery metadata."""
+        keys: list[str] = []
+        for session_key in getattr(self, "_running_agents", {}):
+            if isinstance(session_key, str) and session_key:
+                keys.append(session_key)
+        return sorted(keys)
 
     def _persist_active_agents(self) -> None:
         """Persist the live in-flight agent count to ``gateway_state.json``.
 
         Called at every turn boundary (a running-agent slot is claimed or
         released) so the dashboard ``/api/status`` readout reflects in-flight
-        gateway turns in near-real-time.  Without this the file is only
-        rewritten on lifecycle transitions, so any ``active_agents`` read
-        between transitions is stale (a turn could start and finish without the
-        file ever moving).
+        gateway turns in near-real-time.  It also persists the exact active
+        session keys so crash recovery can resume long-running turns even when
+        the session entry's ``updated_at`` is older than the generic freshness
+        window.
 
-        Deliberately passes ONLY ``active_agents`` — ``gateway_state`` and the
-        other fields stay ``_UNSET`` so ``write_runtime_status``'s
+        Deliberately passes only turn-boundary metadata
+        (``active_agents`` + exact session keys) — ``gateway_state`` and the
+        lifecycle fields stay ``_UNSET`` so ``write_runtime_status``'s
         read-merge-write preserves the current lifecycle state (``running`` /
-        ``draining`` / …).  Passing ``gateway_state=None`` here would clobber it.
+        ``draining`` / …). Passing ``gateway_state=None`` here would clobber it.
         Best-effort: a failed status write must never disrupt a turn.
         """
         try:
             from gateway.status import write_runtime_status
-            write_runtime_status(active_agents=self._running_agent_count())
+            write_runtime_status(
+                active_agents=self._running_agent_count(),
+                active_session_keys=self._active_session_keys_for_status(),
+            )
         except Exception:
             pass
+
+    def _mark_runtime_status_active_sessions_resume_pending(
+        self,
+        reason: str = "restart_interrupted",
+    ) -> int:
+        """Mark exact sessions that were active in the previous runtime.
+
+        Unexpected exits can interrupt turns that have been running longer than
+        ``SessionStore.suspend_recently_active``'s broad timestamp window.  The
+        gateway status file carries the exact in-flight session keys at every
+        turn boundary, so use that first and keep the older timestamp heuristic
+        only as a fallback for legacy status files.
+        """
+        try:
+            from gateway.status import parse_active_session_keys, read_runtime_status
+
+            status = read_runtime_status() or {}
+            session_keys = parse_active_session_keys(status.get("active_session_keys"))
+        except Exception as exc:
+            logger.debug("Runtime active-session recovery metadata unavailable: %s", exc)
+            return 0
+
+        marked = 0
+        for session_key in session_keys:
+            try:
+                if self.session_store.mark_resume_pending(session_key, reason):
+                    marked += 1
+            except Exception as exc:
+                logger.debug(
+                    "Runtime active-session resume mark failed for %s: %s",
+                    session_key,
+                    exc,
+                )
+        return marked
 
     def _update_platform_runtime_status(
         self,
@@ -5605,9 +5652,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         else:
             try:
-                suspended = self.session_store.suspend_recently_active()
-                if suspended:
-                    logger.info("Marked %d in-flight session(s) as resumable from previous run", suspended)
+                exact_marked = self._mark_runtime_status_active_sessions_resume_pending()
+                heuristic_marked = self.session_store.suspend_recently_active()
+                total_marked = exact_marked + heuristic_marked
+                if total_marked:
+                    logger.info(
+                        "Marked %d in-flight session(s) as resumable from previous run "
+                        "(exact=%d, heuristic=%d)",
+                        total_marked,
+                        exact_marked,
+                        heuristic_marked,
+                    )
             except Exception as e:
                 logger.warning("Session suspension on startup failed: %s", e)
 

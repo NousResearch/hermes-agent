@@ -18,12 +18,13 @@ concurrency:
 
 jobs:
   generate:
+    name: "Generate slices"
     runs-on: ubuntu-latest
     outputs:
       slices: ${{ steps.matrix.outputs.slices }}
       slice_count: ${{ steps.matrix.outputs.slice_count }}
     steps:
-      - name: Generate slice matrix
+      - name: Generate test slices
         id: matrix
         run: |
           COUNT="${{ inputs.slice_count }}"
@@ -32,6 +33,7 @@ jobs:
           echo "slice_count=$COUNT" >> "$GITHUB_OUTPUT"
 
   test:
+    name: Run tests slice
     needs: generate
     runs-on: ubuntu-latest
     timeout-minutes: 30

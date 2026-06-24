@@ -1776,6 +1776,19 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             )
 
     elif provider == "copilot":
+        # Only auto-discover copilot credentials when the user has
+        # explicitly configured copilot as their provider.  Without this
+        # gate, a GitHub CLI login (extremely common, unrelated to Copilot
+        # as an LLM provider) silently injects a copilot credential that
+        # contaminates routing for unrelated providers via credential-pool
+        # rotation.  See #51652.
+        try:
+            from hermes_cli.auth import is_provider_explicitly_configured
+            if not is_provider_explicitly_configured("copilot"):
+                return changed, active_sources
+        except ImportError:
+            pass
+
         # Copilot tokens are resolved dynamically via `gh auth token` or
         # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
         # the auth store or credential pool, so we resolve them here.

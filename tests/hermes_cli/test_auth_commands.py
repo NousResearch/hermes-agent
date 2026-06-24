@@ -1685,6 +1685,66 @@ def test_seed_from_singletons_respects_copilot_suppression(tmp_path, monkeypatch
     assert active == set()
 
 
+def test_seed_from_singletons_copilot_consent_gate_blocks_unconfigured(tmp_path, monkeypatch):
+    """copilot credential must NOT be auto-seeded when the user has not
+    explicitly configured copilot as their provider.  A GitHub CLI login
+    alone should not inject a copilot credential into the pool.  #51652."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # auth.json: active provider is nous, copilot NOT configured
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "nous",
+        "providers": {},
+    }))
+
+    # Stub resolve_copilot_token to return a valid token (as if gh auth login)
+    import hermes_cli.copilot_auth as ca
+    monkeypatch.setattr(ca, "resolve_copilot_token", lambda: ("ghp_fake", "gh auth token"))
+    monkeypatch.setattr(ca, "get_copilot_api_token", lambda t: "copilot_api_fake")
+
+    from agent.credential_pool import _seed_from_singletons
+    entries = []
+    changed, active = _seed_from_singletons("copilot", entries)
+
+    # Consent gate should block — no copilot entry created
+    assert changed is False
+    assert entries == []
+    assert active == set()
+
+
+def test_seed_from_singletons_copilot_consent_gate_allows_configured(tmp_path, monkeypatch):
+    """copilot credential MUST be seeded when the user has explicitly
+    configured copilot as their active provider.  #51652."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    # auth.json: active provider IS copilot
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "copilot",
+        "providers": {},
+    }))
+
+    # Stub resolve_copilot_token to return a valid token
+    import hermes_cli.copilot_auth as ca
+    monkeypatch.setattr(ca, "resolve_copilot_token", lambda: ("ghp_fake", "gh auth token"))
+    monkeypatch.setattr(ca, "get_copilot_api_token", lambda t: "copilot_api_fake")
+
+    from agent.credential_pool import _seed_from_singletons
+    entries = []
+    changed, active = _seed_from_singletons("copilot", entries)
+
+    # Consent gate passes — copilot entry should be created
+    assert changed is True
+    assert len(entries) == 1
+    assert entries[0].provider == "copilot"
+    assert "gh_cli" in active
+
+
 def test_seed_from_singletons_respects_qwen_suppression(tmp_path, monkeypatch):
     """qwen-oauth qwen-cli must not re-seed from ~/.qwen/oauth_creds.json when suppressed."""
     hermes_home = tmp_path / "hermes"
@@ -1846,6 +1906,7 @@ def test_auth_remove_copilot_suppresses_all_variants(tmp_path, monkeypatch):
         tmp_path,
         {
             "version": 1,
+            "active_provider": "copilot",
             "credential_pool": {"copilot": []},
         },
     )

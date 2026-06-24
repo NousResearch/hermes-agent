@@ -2275,9 +2275,10 @@ def test_load_pool_does_not_seed_claude_code_when_anthropic_not_configured(tmp_p
 
 
 def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
-    """Copilot credentials from `gh auth token` should be seeded into the pool."""
+    """Copilot credentials from `gh auth token` should be seeded into the pool
+    when copilot is the explicitly configured provider.  #51652."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
-    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+    _write_auth_store(tmp_path, {"version": 1, "active_provider": "copilot", "credential_pool": {}})
 
     monkeypatch.setattr(
         "hermes_cli.copilot_auth.resolve_copilot_token",

@@ -15845,6 +15845,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 inject_timestamps=_message_timestamps_enabled(_load_gateway_config()),
             )
             
+            # FTS write corruption guard (bug #50502):
+            # When the persisted history is stale/empty (FTS write failed between
+            # turns) but the cached agent still holds the live in-memory transcript,
+            # prefer the longer transcript to prevent same-session amnesia.
+            if agent is not None and hasattr(agent, '_session_messages'):
+                live_msgs = agent._session_messages
+                if live_msgs and len(live_msgs) > len(agent_history):
+                    logger.info(
+                        "Session %s: live in-memory transcript (%d msgs) is longer "
+                        "than persisted transcript (%d msgs) - preferring live copy "
+                        "(possible FTS write corruption)",
+                        session_key, len(live_msgs), len(agent_history),
+                    )
+                    agent_history = list(live_msgs)
+
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
             # even if the message list shrinks, we know which paths are old.

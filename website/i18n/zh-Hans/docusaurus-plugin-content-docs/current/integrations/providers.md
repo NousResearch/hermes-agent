@@ -243,7 +243,7 @@ hermes chat --provider arcee --model trinity-large-thinking
 
 # GMI Cloud
 # 使用 GMI /v1/models 端点返回的精确模型 ID。
-hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
+hermes chat --provider gmi --model zai-org/GLM-5.2-FP8
 # 需要：~/.hermes/.env 中的 GMI_API_KEY
 ```
 
@@ -251,7 +251,7 @@ hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 ```yaml
 model:
   provider: "gmi"
-  default: "zai-org/GLM-5.1-FP8"
+  default: "zai-org/GLM-5.2-FP8"
 ```
 
 基础 URL 可通过 `NOVITA_BASE_URL`、`GLM_BASE_URL`、`KIMI_BASE_URL`、`MINIMAX_BASE_URL`、`MINIMAX_CN_BASE_URL`、`DASHSCOPE_BASE_URL`、`XIAOMI_BASE_URL`、`GMI_BASE_URL` 或 `TOKENHUB_BASE_URL` 环境变量覆盖。

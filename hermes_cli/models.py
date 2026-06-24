@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -371,6 +372,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "trinity-mini",
     ],
     "gmi": [
+        "zai-org/GLM-5.2-FP8",
         "zai-org/GLM-5.1-FP8",
         "deepseek-ai/DeepSeek-V3.2",
         "moonshotai/Kimi-K2.5",
@@ -2422,6 +2424,16 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                                 merged_lower.add(m.lower())
                         return merged
                     return live
+                # We had credentials but the live fetch came back empty.
+                # Re-probe once for a diagnostic reason (SSL / network /
+                # auth). If the endpoint actually recovered, use it; else
+                # tell the user *why* — instead of silently degrading to a
+                # stale fallback list that reads as "new models missing".
+                diag = probe_api_models(api_key, base_url or _p.base_url)
+                diag_models = diag.get("models")
+                if diag_models:
+                    return diag_models
+                _warn_live_model_fetch_failed(normalized, diag.get("error"))
             # Use profile's fallback_models if defined
             if _p.fallback_models:
                 return list(_p.fallback_models)
@@ -3441,6 +3453,7 @@ def probe_api_models(
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
 
+    last_error: Optional[str] = None
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
@@ -3454,8 +3467,13 @@ def probe_api_models(
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
                     "used_fallback": is_fallback,
+                    "error": None,
                 }
-        except Exception:
+        except Exception as exc:
+            # Keep the reason so callers can tell the user *why* the live
+            # list was unavailable (SSL cert, network, auth) instead of
+            # silently degrading to the static fallback list.
+            last_error = f"{type(exc).__name__}: {exc}"
             continue
 
     return {
@@ -3464,6 +3482,7 @@ def probe_api_models(
         "resolved_base_url": normalized,
         "suggested_base_url": alternate_base if alternate_base != normalized else None,
         "used_fallback": False,
+        "error": last_error,
     }
 
 
@@ -3479,6 +3498,45 @@ def fetch_api_models(
     be reached (network error, timeout, auth failure, etc.).
     """
     return probe_api_models(api_key, base_url, timeout=timeout, api_mode=api_mode).get("models")
+
+
+# Providers we've already warned about, so a persistently-broken endpoint
+# doesn't spam the picker on every refresh. Process-lifetime only.
+_LIVE_FETCH_WARNED: set[str] = set()
+
+
+def _warn_live_model_fetch_failed(provider: str, reason: Optional[str] = None) -> None:
+    """Emit a one-time stderr warning when a *credentialed* live model fetch fails.
+
+    Without this, a failed ``/models`` probe (e.g. an SSL certificate error on
+    a machine whose Python has no CA bundle) silently degrades to the static
+    fallback list — which looks to users like "this provider only supports a
+    handful of old models" (see GLM-5.2-on-GMI report). Surfacing the failure,
+    with the common macOS cert fix, turns a confusing report into a self-serve
+    fix. Best-effort: never let diagnostics break model resolution.
+    """
+    try:
+        if not provider or provider in _LIVE_FETCH_WARNED:
+            return
+        # Endpoint responded but has no catalog (or the method isn't
+        # allowed) — that's a provider that simply doesn't list models, not
+        # a silent degradation worth warning about.
+        if reason and any(code in reason for code in (" 404", " 405", " 501")):
+            return
+        _LIVE_FETCH_WARNED.add(provider)
+        detail = f" ({reason})" if reason else ""
+        sys.stderr.write(
+            f"⚠️  {provider}: could not fetch the live model list{detail}; "
+            "showing the built-in fallback list instead.\n"
+        )
+        if reason and ("CERTIFICATE" in reason.upper() or "SSL" in reason.upper()):
+            sys.stderr.write(
+                "   Looks like a TLS certificate problem (Python has no CA bundle). Fix with:\n"
+                "     export SSL_CERT_FILE=\"$(python3 -m certifi)\"\n"
+                "   (or run the 'Install Certificates.command' shipped with python.org Python).\n"
+            )
+    except Exception:
+        pass
 
 
 # ---------------------------------------------------------------------------

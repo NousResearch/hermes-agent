@@ -4087,6 +4087,12 @@ def cmd_config(args):
     from hermes_cli.config import config_command
 
     config_command(args)
+    # Same teardown issue as the oneshot path: the config subcommands finish
+    # their work, but the aiohttp/websockets event loop is still open and the
+    # process hangs (or aborts) during interpreter finalization. Exit cleanly.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
 
 
 def cmd_backup(args):

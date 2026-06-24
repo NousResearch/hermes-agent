@@ -41,7 +41,7 @@ The rest of this page is the manual reference.
 1. **A Meta Business account**.  Create one at [business.facebook.com](https://business.facebook.com/).
 2. **A Meta app with WhatsApp enabled**.  See "Creating the Meta app" below.
 3. **A way to expose a local port to the public internet** with HTTPS.  Cloudflare Tunnel (`cloudflared`) is recommended — free, no port forwarding, no domain required.  ngrok, your own domain with a reverse proxy + TLS, or a VPS with the gateway directly bound to a public IP all work too.
-4. **Optional but recommended**: ffmpeg on `PATH` so outbound voice messages render as native WhatsApp voice-note bubbles (green waveform) instead of MP3 audio attachments. Hermes degrades gracefully if absent.
+4. **Optional for MP3/WAV providers**: ffmpeg on `PATH` lets Hermes convert non-Opus TTS output into native WhatsApp voice-note bubbles (green waveform). Command providers that emit Ogg/Opus directly do not need ffmpeg for outbound voice messages.
 
 ---
 
@@ -230,6 +230,10 @@ All settings live in `~/.hermes/.env`.  Required values are in **bold**.
 | `WHATSAPP_CLOUD_WEBHOOK_PATH` | `/whatsapp/webhook` | URL path Meta posts to. |
 | `WHATSAPP_CLOUD_API_VERSION` | `v20.0` | Meta Graph API version. Only override if a newer version is recommended in Meta's docs. |
 | `WHATSAPP_CLOUD_HOME_CHANNEL` | — | wa_id to use as the bot's home channel (for cron jobs etc). |
+| `WHATSAPP_CLOUD_CALLING_SIDECAR_URL` | — | Optional loopback URL for an experimental WhatsApp Calling / WebRTC sidecar. |
+| `WHATSAPP_CLOUD_CALLING_SIDECAR_TIMEOUT` | `10.0` | HTTP timeout in seconds for sidecar control-plane requests. |
+| `WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND` | — | Optional command that writes raw `pcm_s16le` TTS audio to stdout for live calls. |
+| `WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT` | `180.0` | Timeout in seconds for the live-call TTS stream command. |
 
 You can have **both** the Baileys (`whatsapp`) and Cloud (`whatsapp_cloud`) adapters enabled simultaneously, targeting different phone numbers.
 
@@ -250,7 +254,7 @@ You can have **both** the Baileys (`whatsapp`) and Cloud (`whatsapp_cloud`) adap
 
 - **Text** — markdown is auto-converted to WhatsApp's flavored syntax (`**bold**` → `*bold*`, `~~strike~~` → `~strike~`, headers → bold, `[link](url)` → `link (url)`). Long messages split at 4096 chars per chunk.
 - **Images** — agent-generated images and local image files both supported, delivered as native photo attachments.
-- **Voice messages** — text-to-speech output is converted via ffmpeg into the native WhatsApp voice-note bubble (green waveform). Without ffmpeg installed, falls back to an MP3 audio attachment. See "Voice messages" below.
+- **Voice messages** — text-to-speech output can be sent directly as Ogg/Opus for native WhatsApp voice-note bubbles (green waveform). MP3/WAV output uses ffmpeg conversion when available and otherwise falls back to a regular audio attachment. See "Voice messages" below.
 - **Video / documents** — both supported, sent as native attachments.
 
 ### Interactive UX
@@ -277,13 +281,96 @@ This makes it obvious when the bot has seen your message versus when it's still 
 
 WhatsApp distinguishes between a "voice note" (the green waveform bubble) and a generic audio file attachment. The difference is purely codec: voice notes need to be `audio/ogg` with `opus` encoding.
 
-Hermes TTS produces MP3. Two paths:
+Hermes can use either direct Ogg/Opus output or a conversion fallback:
 
-- **With ffmpeg on PATH** (recommended) — outbound TTS is converted and arrives as a proper voice note. Install:
-  - Windows: `winget install Gyan.FFmpeg`
-  - macOS: `brew install ffmpeg`
-  - Linux: package manager
-- **Without ffmpeg** — outbound TTS arrives as an MP3 audio attachment. Plays fine, just doesn't look like a voice note. A one-time warning fires in the gateway log so you know.
+- **Direct Ogg/Opus** (preferred) — command TTS providers can produce WhatsApp-ready `.ogg` output directly. Set `output_format: ogg` and `voice_compatible: true`; Hermes uploads the file as `audio/ogg; codecs=opus` without ffmpeg conversion.
+- **With ffmpeg on PATH** — MP3/WAV outputs are converted and arrive as proper voice notes.
+- **Without ffmpeg** — MP3/WAV outputs arrive as generic audio attachments. They play fine, but do not render as voice-note bubbles. A one-time warning fires in the gateway log so you know.
+
+For a local `voice` / Kokoro command provider:
+
+```yaml
+tts:
+  provider: kokoro
+  providers:
+    kokoro:
+      type: command
+      command: /home/you/.local/bin/voice say --format ogg-opus --input-file {input_path} --output {output_path} --voice {voice} --speed {speed}
+      output_format: ogg
+      voice_compatible: true
+      voice: af_heart
+      speed: 1.0
+      timeout: 180
+```
+
+Validate a live Hermes home before restarting the gateway:
+
+```bash
+scripts/verify_voice_command_tts.py --use-existing-config --hermes-home ~/.hermes
+```
+
+A passing run proves the configured provider returns a `[[audio_as_voice]]`
+media tag and real mono 48 kHz Ogg/Opus audio suitable for WhatsApp voice-note
+delivery.
+
+For a single local preflight that uses an isolated Hermes home and leaves the
+live gateway untouched, run:
+
+```bash
+scripts/verify_voice_local_stack.py \
+  --voice-bin /path/to/voice \
+  --voice-repo /path/to/voice
+```
+
+That aggregate check starts the local Hermes CLI, verifies command-provider
+Ogg/Opus output, runs the `voice` checkout's own WhatsApp contract verifier,
+verifies that the local Baileys bridge keeps `.ogg` / `.opus` audio as a
+native `audio/ogg; codecs=opus` voice note, verifies that the Cloud API adapter
+uploads direct and converted Ogg/Opus with that same MIME while falling back to
+MP3 only when conversion is unavailable, verifies the raw `voice stream` PCM
+contract, and then runs the WhatsApp Calling control-plane smoke plus the
+full-duplex sidecar smoke from the `voice` checkout. The voice contract step
+proves `voice stream-contract`, direct Ogg/Opus voice-note output, extension
+inference, misleading-extension rejection, raw PCM daemon streaming, and
+streamed Ogg/Opus agree before Hermes adds its own routing. The control-plane
+smoke is synthetic and local: it feeds Hermes a representative Meta `calls`
+webhook and verifies the sidecar offer, Graph `pre_accept`, Graph `accept`,
+drain startup, and terminate cleanup without contacting Meta. Pass
+`--skip-whatsapp-bridge-media`, `--skip-whatsapp-cloud-voice`,
+`--skip-calling-control-plane`, or `--skip-full-duplex` when you only want part
+of the preflight.
+
+After installing a local gateway service, verify the running process is using
+the expected voice-native checkout:
+
+```bash
+scripts/verify_voice_live_gateway.py \
+  --live-hermes-root /path/to/hermes-agent \
+  --python-bin ~/.hermes/hermes-agent/venv/bin/python \
+  --hermes-home ~/.hermes \
+  --voice-bin /path/to/voice \
+  --voice-repo /path/to/voice \
+  --calling-sidecar-url http://127.0.0.1:8787 \
+  --sidecar-service voice-webrtc-sidecar.service \
+  --skip-bridge-health \
+  --run-tts-smoke
+```
+
+When `--voice-bin` is passed with `--calling-sidecar-url`, the live verifier
+also compares the running sidecar `/contract` with `voice stream-contract` so
+PCM shape, endpoint paths, payload definitions, and advertised `voice`
+surfaces cannot drift silently. When `--sidecar-service` is included, it also
+checks the sidecar systemd user unit is active and points at the expected
+`VOICE_BIN`, `WorkingDirectory`, `examples/webrtc-sidecar/sidecar.py`, and
+sidecar URL host/port.
+
+That live check inspects the systemd user service, verifies the running process
+environment, confirms imports resolve from the expected checkout, validates the
+configured Calling sidecar `/contract` and `/health`, and can run one
+live-config TTS smoke that must produce mono 48 kHz Ogg/Opus. Omit
+`--skip-bridge-health` when the Baileys WhatsApp bridge is also enabled and you
+want the verifier to require the local bridge `/health` endpoint to be
+connected.
 
 You can check whether the gateway found ffmpeg via the health endpoint:
 
@@ -291,6 +378,187 @@ You can check whether the gateway found ffmpeg via the health endpoint:
 curl http://localhost:8090/health
 # look for "ffmpeg_present": true
 ```
+
+### WhatsApp Calling / WebRTC sidecar (experimental)
+
+The Cloud API's live calling surface is a WebRTC media path, not a file-upload path. Hermes keeps that boundary separate from the normal Graph API adapter:
+
+1. Meta sends a `calls` webhook with an SDP offer.
+2. Hermes forwards the offer to a local sidecar at `WHATSAPP_CLOUD_CALLING_SIDECAR_URL`.
+3. The sidecar returns an SDP answer and exposes a fixed PCM contract.
+4. Hermes sends `pre_accept` and `accept` to Graph with that SDP answer.
+5. The sidecar bridges WebRTC RTP audio to local 48 kHz, mono, 20 ms `pcm_s16le` frames.
+6. Hermes drains inbound PCM from the sidecar, writes utterance WAV segments for the existing STT path, and sends outbound TTS frames back to the sidecar.
+
+The sidecar contract is identified as `voice.webrtc_sidecar`. Hermes fetches `GET /contract` when available and uses its endpoint paths and audio fields; older sidecars can omit `/contract` and use the legacy `/offer`, `/calls/{call_id}/audio`, and `/calls/{call_id}/close` paths. When a newer sidecar advertises `clear_audio`, Hermes calls that endpoint at the start of a detected inbound speech segment so barge-in can discard stale queued outbound TTS without closing the call.
+
+Minimal config:
+
+```bash
+WHATSAPP_CLOUD_CALLING_SIDECAR_URL=http://127.0.0.1:8787
+```
+
+For low-latency outbound speech, add a command that writes headerless `pcm_s16le` to stdout. With the `voice` daemon running, this uses `voice stream` directly instead of generating a file and decoding it with ffmpeg:
+
+```bash
+WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND='voice stream --quiet --sample-rate {sample_rate} --frame-ms {frame_ms} --raw-output - --input-file {input_path}'
+WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT=180
+```
+
+Hermes posts that stdout PCM to the sidecar on the negotiated `frame_ms`
+cadence, so a fast TTS process does not build a large outbound playback queue.
+
+For a local Linux user-service deployment, let Hermes generate the sidecar unit
+and gateway drop-in first. The default is a dry run that prints the files and
+config it would write:
+
+```bash
+scripts/install_voice_local_stack.py \
+  --live-hermes-root /path/to/hermes-agent \
+  --voice-repo /path/to/voice \
+  --voice-bin /path/to/voice/target/release/voice \
+  --webrtc-python-bin /tmp/voice-webrtc-venv/bin/python \
+  --configure-tts \
+  --configure-stt
+```
+
+When the JSON plan looks right, apply it and restart the gateway:
+
+```bash
+scripts/install_voice_local_stack.py \
+  --apply \
+  --configure-tts \
+  --configure-stt \
+  --restart-hermes \
+  --live-hermes-root /path/to/hermes-agent \
+  --voice-repo /path/to/voice \
+  --voice-bin /path/to/voice/target/release/voice \
+  --webrtc-python-bin /tmp/voice-webrtc-venv/bin/python
+```
+
+That writes `~/.config/systemd/user/voice-webrtc-sidecar.service`, writes
+`~/.config/systemd/user/hermes-gateway.service.d/voice-stack.conf`, updates
+`~/.hermes/config.yaml` so the Kokoro command provider emits Ogg/Opus through
+`voice say --format ogg-opus`, reloads systemd, starts the sidecar, and restarts
+`hermes-gateway.service`. With `--configure-stt`, it also sets
+`stt.provider: voice` with a command provider that runs
+`voice stream-transcribe --quiet {input_path}` for inbound voice messages and
+live-call WAV segments.
+
+The JSON plan also includes `verify_commands.local_stack`,
+`verify_commands.live_gateway`, `verify_commands.live_gateway_cloud_only`, and
+`verify_commands.live_gateway_cloud_ready`. Run the emitted `local_stack`
+command before changing the live service; it includes an isolated Cloud webhook
+smoke that starts the adapter locally, checks `/health`, verifies the
+subscription challenge, accepts a signed status-only POST, and accepts a signed
+synthetic audio webhook that caches an Opus/Ogg voice note for downstream STT
+dispatch without contacting Meta. Then run `live_gateway` after restart. Use
+the `cloud_only` variant when this host does not run the local Baileys bridge.
+Use the `cloud_ready` variant before routing real Meta webhooks to the host; it
+checks WhatsApp Cloud credential shape and recipient authorization, then probes
+the running local Cloud `/health` endpoint and local Meta subscription challenge
+handshake. It also sends a signed synthetic delivery-receipt POST to prove
+inbound HMAC verification accepts Meta-shaped webhook delivery without
+dispatching an agent message or printing secret values. If setup is incomplete,
+it reports every missing or malformed Cloud setting it can detect in one
+redacted failure.
+
+The generated service files should look like this:
+
+```ini
+# ~/.config/systemd/user/voice-webrtc-sidecar.service
+[Unit]
+Description=Voice WebRTC Sidecar
+After=network.target voice-daemon.service
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/voice
+Environment="VOICE_BIN=/path/to/voice/target/release/voice"
+ExecStart=/tmp/voice-webrtc-venv/bin/python /path/to/voice/examples/webrtc-sidecar/sidecar.py --host 127.0.0.1 --port 8787 --rx-pcm /home/you/.hermes/voice-webrtc-sidecar/inbound.s16le --log-level INFO
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target
+```
+
+```ini
+# ~/.config/systemd/user/hermes-gateway.service.d/voice-stack.conf
+[Service]
+Environment="PYTHONPATH=/path/to/hermes-agent"
+Environment="WHATSAPP_CLOUD_CALLING_SIDECAR_URL=http://127.0.0.1:8787"
+Environment="WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND=/path/to/voice/target/release/voice stream --quiet --sample-rate {sample_rate} --frame-ms {frame_ms} --raw-output - --input-file {input_path} --voice af_heart --speed 1.0"
+Environment="WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT=180"
+```
+
+Validate the installed command shape before a live call:
+
+```bash
+scripts/verify_voice_stream_tts.py --voice-bin /path/to/voice
+```
+
+The verifier reads `/path/to/voice stream-contract`, validates the advertised
+`streamed_voice_note`, `raw_outbound_pcm`, and `raw_inbound_pcm`
+`voice_surfaces`, then runs the rendered stream command and checks stdout for
+non-silent 48 kHz mono 20 ms `pcm_s16le` frames. It also runs
+`voice stream --output ... --format ogg-opus` and verifies the streamed file is
+real mono 48 kHz Ogg/Opus, so the low-latency daemon frame path and completed
+voice-note path are both covered without a WAV intermediate.
+
+Then validate the local WebRTC media bridge from a `voice` checkout before
+involving Meta's Graph API:
+
+```bash
+cd /path/to/voice
+python3 -m venv /tmp/voice-webrtc-venv
+/tmp/voice-webrtc-venv/bin/pip install -r examples/webrtc-sidecar/requirements.txt pytest
+
+cd /path/to/hermes-agent
+VOICE_REPO=/path/to/voice \
+VOICE_WEBRTC_PYTHON=/tmp/voice-webrtc-venv/bin/python \
+  scripts/verify_voice_full_duplex_sidecar.py --voice-bin /path/to/voice
+```
+
+That wrapper runs `examples/webrtc-sidecar/full_duplex_loopback_smoke.py` from
+the `voice` checkout. The full-duplex smoke keeps everything local: it sends
+one `voice stream` utterance through a local WebRTC peer into the sidecar,
+drains the decoded PCM through `voice stream-transcribe`, and simultaneously
+queues outbound `voice stream` PCM back to the same peer. A passing run proves
+the sidecar, PCM contract, inbound STT bridge, and outbound TTS bridge agree
+before a real WhatsApp call is attempted. It also enforces a default one-second
+outbound sidecar queue budget; adjust it with `--max-queued-tx-ms` on the
+wrapper or `--full-duplex-max-queued-tx-ms` on the aggregate verifier. Current
+sidecars report queue depth as both bytes and whole milliseconds
+(`queued_tx_bytes`/`queued_tx_ms`, `queued_rx_bytes`/`queued_rx_ms`) so Hermes
+can enforce latency budgets without duplicating PCM duration math. Hermes
+accepts older sidecars that omit those fields, but rejects malformed telemetry
+when a sidecar does report it.
+
+To validate just the Cloud Calling control plane without sidecar media
+dependencies, run:
+
+```bash
+scripts/verify_voice_whatsapp_calling_control_plane.py
+```
+
+That synthetic smoke proves Hermes turns a representative call offer into a
+sidecar SDP request, Graph `pre_accept`, Graph `accept`, and local sidecar close
+on termination. It does not contact Meta and does not prove RTP media flow; use
+the full-duplex sidecar smoke above for the media path.
+
+Supported stream-command placeholders:
+
+| Placeholder | Meaning |
+|---|---|
+| `{input_path}` / `{text_path}` | Temp UTF-8 file containing the reply text |
+| `{text}` | Reply text itself, shell-quoted for the command context |
+| `{sample_rate}` | Sidecar PCM sample rate, currently `48000` |
+| `{channels}` | Sidecar PCM channels, currently `1` |
+| `{frame_ms}` | Sidecar frame duration, currently `20` |
+| `{encoding}` | Sidecar PCM encoding, currently `pcm_s16le` |
+
+The health endpoint reports `calling_sidecar_configured`, `calling_sidecar_contract_loaded`, and `calling_sidecar_tts_stream_configured` booleans so you can confirm the live-call path is wired.
 
 ---
 
@@ -401,7 +669,7 @@ This uses your Nous Portal access token instead of needing a separate OpenAI key
 | Outbound | Local bridge → Baileys | HTTPS to graph.facebook.com |
 | Groups | Full support | DMs only (v1) |
 | 24h window | No restriction | Hard rule — templates required after |
-| Voice notes (out) | Native | Native with ffmpeg, MP3 fallback otherwise |
+| Voice notes (out) | Native with Ogg/Opus, ffmpeg fallback for MP3/WAV | Native with Ogg/Opus, ffmpeg fallback for MP3/WAV |
 | Read receipts | No | Yes (blue double-checkmarks) |
 | Typing indicator | No | Yes (auto-dismisses on response) |
 | Interactive buttons | Text fallback only | Native (clarify, approval, slash-confirm) |

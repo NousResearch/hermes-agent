@@ -56,6 +56,20 @@ class TestDotenvFallbackPerProvider:
 
             mock_import.return_value.assert_called_once_with(api_key="el-dotenv-key")
 
+    def test_elevenlabs_opus_extension_requests_opus_format(self, tmp_path):
+        from tools import tts_tool
+
+        with patch.object(tts_tool, "get_env_value", return_value="el-dotenv-key"), \
+             patch.object(tts_tool, "_import_elevenlabs") as mock_import:
+            mock_client = MagicMock()
+            mock_client.text_to_speech.convert.return_value = iter([b"audio"])
+            mock_import.return_value = MagicMock(return_value=mock_client)
+
+            tts_tool._generate_elevenlabs("hi", str(tmp_path / "out.opus"), {})
+
+        kwargs = mock_client.text_to_speech.convert.call_args[1]
+        assert kwargs["output_format"] == "opus_48000_64"
+
     def test_xai_reads_dotenv_key(self, tmp_path):
         """xAI TTS now resolves credentials through ``tools.xai_http``; the
         dotenv fallback contract from #17140 is preserved by patching the

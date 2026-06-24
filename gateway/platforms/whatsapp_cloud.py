@@ -19,9 +19,9 @@ Phase scope (this file evolves across phases):
             + wamid replay protection + dispatch via handle_message. Phase 3
             adapter is end-to-end usable for text DMs.
 - Phase 4 — media upload + send (image/video/audio/document), inbound
-            media download via the Graph media endpoint, voice-note opus
-            conversion via ffmpeg with graceful MP3 fallback when ffmpeg
-            isn't on PATH. Document text injection for readable types.
+            media download via the Graph media endpoint, voice-note Ogg/Opus
+            pass-through with ffmpeg conversion fallback when needed.
+            Document text injection for readable types.
 - Phase 5 — 24-hour conversation window + template fallback.
 
 Required env vars to enable the adapter:
@@ -37,11 +37,19 @@ Optional / Phase-3+:
 - WHATSAPP_CLOUD_WEBHOOK_PORT     (default 8090)
 - WHATSAPP_CLOUD_WEBHOOK_PATH     (default /whatsapp/webhook)
 - WHATSAPP_CLOUD_API_VERSION      (default v20.0)
+- WHATSAPP_CLOUD_CALLING_SIDECAR_URL      (optional WebRTC SDP bridge)
+- WHATSAPP_CLOUD_CALLING_SIDECAR_TIMEOUT  (default 10.0 seconds)
+- WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND
+                                     (optional raw pcm_s16le TTS command)
+- WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT
+                                     (default 180.0 seconds)
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import hashlib
 import hmac
 import logging
@@ -49,10 +57,15 @@ import mimetypes
 import os
 import re
 import shutil
+import struct
+import tempfile
+import wave
 import uuid
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 try:
     from aiohttp import web
@@ -79,6 +92,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from gateway.platforms.whatsapp_common import WhatsAppBehaviorMixin
+from gateway.session import SessionSource
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
@@ -88,6 +102,59 @@ DEFAULT_API_VERSION = "v20.0"
 DEFAULT_WEBHOOK_HOST = "0.0.0.0"
 DEFAULT_WEBHOOK_PORT = 8090
 DEFAULT_WEBHOOK_PATH = "/whatsapp/webhook"
+DEFAULT_CALLING_SIDECAR_TIMEOUT = 10.0
+DEFAULT_CALLING_SIDECAR_TTS_STREAM_TIMEOUT = 180.0
+CALLING_PCM_SAMPLE_RATE = 48_000
+CALLING_PCM_CHANNELS = 1
+CALLING_PCM_FRAME_MS = 20
+CALLING_PCM_BYTES_PER_SAMPLE = 2
+CALLING_PCM_FRAME_BYTES = (
+    CALLING_PCM_SAMPLE_RATE
+    * CALLING_PCM_CHANNELS
+    * CALLING_PCM_BYTES_PER_SAMPLE
+    * CALLING_PCM_FRAME_MS
+    // 1_000
+)
+CALLING_PCM_DEFAULT_DRAIN_BYTES = (
+    CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE
+)
+CALLING_PCM_DRAIN_WAIT_MS = 500
+CALLING_PCM_MAX_DRAIN_WAIT_MS = 5_000
+CALLING_PCM_MAX_OUTBOUND_QUEUE_BYTES = (
+    CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE * 10
+)
+CALLING_PCM_MAX_INBOUND_QUEUE_BYTES = (
+    CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE * 10
+)
+CALLING_PCM_ENCODING = "pcm_s16le"
+CALLING_PCM_SPEECH_PEAK_THRESHOLD = 384
+CALLING_PCM_MAX_SEGMENT_BYTES = (
+    CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE * 5
+)
+CALLING_PCM_MIN_DISPATCH_BYTES = (
+    CALLING_PCM_SAMPLE_RATE * CALLING_PCM_CHANNELS * CALLING_PCM_BYTES_PER_SAMPLE // 4
+)
+CALLING_PCM_TRAILING_SILENCE_POLLS = 2
+CALLING_SIDECAR_EMPTY_DRAIN_BACKOFF_SECONDS = 0.05
+CALLING_AUDIO_CONTRACT = {
+    "sample_rate": CALLING_PCM_SAMPLE_RATE,
+    "channels": CALLING_PCM_CHANNELS,
+    "frame_ms": CALLING_PCM_FRAME_MS,
+    "encoding": CALLING_PCM_ENCODING,
+    "bytes_per_sample": CALLING_PCM_BYTES_PER_SAMPLE,
+    "samples_per_frame": CALLING_PCM_SAMPLE_RATE * CALLING_PCM_FRAME_MS // 1_000,
+    "frame_bytes": CALLING_PCM_FRAME_BYTES,
+    "default_drain_bytes": CALLING_PCM_DEFAULT_DRAIN_BYTES,
+    "max_drain_wait_ms": CALLING_PCM_MAX_DRAIN_WAIT_MS,
+    "max_outbound_queue_bytes": CALLING_PCM_MAX_OUTBOUND_QUEUE_BYTES,
+    "max_inbound_queue_bytes": CALLING_PCM_MAX_INBOUND_QUEUE_BYTES,
+}
+CALLING_SIDECAR_TX_QUEUE_FIELDS = (
+    "queued_tx_bytes",
+    "queued_tx_ms",
+    "max_tx_queue_bytes",
+    "max_tx_queue_ms",
+)
 GRAPH_API_BASE = "https://graph.facebook.com"
 # Meta retries failed webhooks for up to 7 days. We don't need to remember
 # every wamid for the full retry window — the practical risk is duplicate
@@ -119,9 +186,12 @@ _DEFAULT_MIME = {
     "sticker": "image/webp",
 }
 
+_WHATSAPP_OPUS_MIME = "audio/ogg; codecs=opus"
+_WHATSAPP_OPUS_EXTENSIONS = (".ogg", ".opus")
+
 # ffmpeg location at import time. ``shutil.which`` honours PATHEXT on
-# Windows so a user's ``ffmpeg.exe`` is picked up. None means MP3 voice
-# falls back to "audio file attachment" rendering in WhatsApp.
+# Windows so a user's ``ffmpeg.exe`` is picked up. None means non-Opus
+# voice output falls back to "audio file attachment" rendering in WhatsApp.
 _FFMPEG_PATH = shutil.which("ffmpeg")
 
 # Python's mimetypes module returns RFC-correct but real-world-uncommon
@@ -160,9 +230,75 @@ def _ext_for_mime(mime: str) -> Optional[str]:
     return mimetypes.guess_extension(primary) or None
 
 
+def _matches_calling_audio_contract(audio: Any) -> bool:
+    """Return whether a sidecar audio object matches Hermes' PCM frame shape."""
+    if not isinstance(audio, dict):
+        return False
+    try:
+        sample_rate = int(audio.get("sample_rate"))
+        channels = int(audio.get("channels"))
+        frame_ms = int(audio.get("frame_ms"))
+    except (TypeError, ValueError):
+        return False
+    encoding = str(audio.get("encoding") or "").strip().lower()
+    return (
+        sample_rate == CALLING_PCM_SAMPLE_RATE
+        and channels == CALLING_PCM_CHANNELS
+        and frame_ms == CALLING_PCM_FRAME_MS
+        and encoding == CALLING_PCM_ENCODING
+    )
+
+
+def _normalize_calling_audio_contract(audio: Dict[str, Any]) -> Dict[str, Any]:
+    """Fill optional sidecar contract fields with Hermes' local defaults."""
+    normalized = dict(audio)
+    normalized.setdefault("bytes_per_sample", CALLING_PCM_BYTES_PER_SAMPLE)
+    normalized.setdefault(
+        "samples_per_frame",
+        CALLING_PCM_SAMPLE_RATE * CALLING_PCM_FRAME_MS // 1_000,
+    )
+    normalized.setdefault("frame_bytes", CALLING_PCM_FRAME_BYTES)
+    normalized.setdefault("default_drain_bytes", CALLING_PCM_DEFAULT_DRAIN_BYTES)
+    normalized.setdefault("max_drain_wait_ms", CALLING_PCM_MAX_DRAIN_WAIT_MS)
+    normalized.setdefault(
+        "max_outbound_queue_bytes",
+        CALLING_PCM_MAX_OUTBOUND_QUEUE_BYTES,
+    )
+    normalized.setdefault(
+        "max_inbound_queue_bytes",
+        CALLING_PCM_MAX_INBOUND_QUEUE_BYTES,
+    )
+    return normalized
+
+
 # Inbound media cache lives under the user's hermes dir so it survives
 # restarts and gateway reloads — same convention the Baileys bridge uses.
 _INBOUND_MEDIA_CACHE = Path(get_hermes_dir("platforms/whatsapp_cloud/media", "whatsapp_cloud/media"))
+
+
+@dataclass(frozen=True)
+class CallingSidecarAnswer:
+    """Validated SDP answer returned by the local WhatsApp Calling sidecar."""
+
+    call_id: str
+    sdp: str
+    audio: Dict[str, Any]
+    state: Dict[str, Any]
+
+
+@dataclass(frozen=True)
+class CallingSidecarAudio:
+    """Decoded inbound PCM drained from the local WhatsApp Calling sidecar."""
+
+    call_id: str
+    pcm_s16le: bytes
+    returned_bytes: int
+    queued_rx_bytes: int
+    audio: Dict[str, Any]
+    returned_ms: Optional[int] = None
+    queued_rx_ms: Optional[int] = None
+    max_rx_queue_bytes: Optional[int] = None
+    max_rx_queue_ms: Optional[int] = None
 
 
 def check_whatsapp_cloud_requirements() -> bool:
@@ -216,13 +352,39 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Graph API
         self._api_version: str = str(extra.get("api_version", DEFAULT_API_VERSION))
 
+        # Optional WhatsApp Calling/WebRTC sidecar. This is intentionally
+        # separate from Graph API calls: the sidecar owns SDP/media bridging
+        # while the Cloud adapter remains the webhook/session boundary.
+        self._calling_sidecar_url: str = str(
+            extra.get("calling_sidecar_url")
+            or extra.get("callingSidecarUrl")
+            or os.getenv("WHATSAPP_CLOUD_CALLING_SIDECAR_URL")
+            or ""
+        ).strip().rstrip("/")
+        self._calling_sidecar_timeout: float = self._coerce_positive_float(
+            extra.get("calling_sidecar_timeout")
+            or extra.get("callingSidecarTimeout")
+            or os.getenv("WHATSAPP_CLOUD_CALLING_SIDECAR_TIMEOUT"),
+            DEFAULT_CALLING_SIDECAR_TIMEOUT,
+        )
+        self._calling_sidecar_tts_stream_command: str = str(
+            extra.get("calling_sidecar_tts_stream_command")
+            or extra.get("callingSidecarTtsStreamCommand")
+            or os.getenv("WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_COMMAND")
+            or ""
+        ).strip()
+        self._calling_sidecar_tts_stream_timeout: float = self._coerce_positive_float(
+            extra.get("calling_sidecar_tts_stream_timeout")
+            or extra.get("callingSidecarTtsStreamTimeout")
+            or os.getenv("WHATSAPP_CLOUD_CALLING_SIDECAR_TTS_STREAM_TIMEOUT"),
+            DEFAULT_CALLING_SIDECAR_TTS_STREAM_TIMEOUT,
+        )
+
         # Behavior-mixin contract: these names are read by the mixin's
         # gating methods. WHATSAPP_CLOUD_* env vars take precedence so the
         # two adapters can run in parallel with independent policies; the
         # shared WHATSAPP_* names remain as fallback for single-adapter
         # setups.
-        import os
-
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         self._dm_policy: str = str(
             extra.get("dm_policy")
@@ -292,6 +454,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # Runtime
         self._runner = None
         self._http_client: Optional["httpx.AsyncClient"] = None
+        self._calling_sidecar_contract: Optional[Dict[str, Any]] = None
+        self._calling_sidecar_contract_checked: bool = False
+        self._calling_sidecar_call_ids: set[str] = set()
+        self._calling_sidecar_tasks: Dict[str, asyncio.Task] = {}
+        self._calling_sidecar_auto_tts_chats: Dict[str, str] = {}
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -304,6 +471,1375 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if path.startswith("/"):
             path = path[1:]
         return f"{GRAPH_API_BASE}/{self._api_version}/{self._phone_number_id}/{path}"
+
+    @staticmethod
+    def _coerce_positive_float(value: Any, default: float) -> float:
+        if value is None:
+            return default
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            return default
+        return parsed if parsed > 0 else default
+
+    def _calling_sidecar_enabled(self) -> bool:
+        return bool(self._calling_sidecar_url)
+
+    def _calling_sidecar_audio_contract(self) -> Dict[str, Any]:
+        """Return the cached sidecar audio shape or Hermes' legacy default."""
+        contract = getattr(self, "_calling_sidecar_contract", None)
+        if isinstance(contract, dict):
+            audio = contract.get("audio")
+            if isinstance(audio, dict) and _matches_calling_audio_contract(audio):
+                return _normalize_calling_audio_contract(audio)
+        return dict(CALLING_AUDIO_CONTRACT)
+
+    def _calling_sidecar_endpoint_url(
+        self,
+        endpoint: str,
+        default_path: str,
+        *,
+        call_id: Optional[str] = None,
+    ) -> str:
+        """Build a sidecar URL from the cached contract with legacy fallback."""
+        path = default_path
+        contract = getattr(self, "_calling_sidecar_contract", None)
+        endpoints = contract.get("endpoints") if isinstance(contract, dict) else None
+        if isinstance(endpoints, dict):
+            spec = endpoints.get(endpoint)
+            if isinstance(spec, dict):
+                candidate = str(spec.get("path") or "").strip()
+                if candidate:
+                    path = candidate
+
+        if call_id is not None:
+            path = path.replace("{call_id}", quote(call_id, safe=""))
+        if not path.startswith("/"):
+            path = f"/{path}"
+        return f"{self._calling_sidecar_url}{path}"
+
+    def _calling_sidecar_has_endpoint(self, endpoint: str) -> bool:
+        """Return whether the loaded sidecar contract advertises an endpoint."""
+        contract = getattr(self, "_calling_sidecar_contract", None)
+        endpoints = contract.get("endpoints") if isinstance(contract, dict) else None
+        if not isinstance(endpoints, dict):
+            return False
+        spec = endpoints.get(endpoint)
+        return isinstance(spec, dict) and bool(str(spec.get("path") or "").strip())
+
+    @staticmethod
+    def _calling_sidecar_optional_nonnegative_int(
+        data: Dict[str, Any],
+        key: str,
+    ) -> Optional[int]:
+        if key not in data or data.get(key) is None:
+            return None
+        try:
+            value = int(data[key])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{key} must be an integer") from exc
+        if value < 0:
+            raise ValueError(f"{key} must be non-negative")
+        return value
+
+    @classmethod
+    def _normalize_calling_sidecar_telemetry(
+        cls,
+        body: Any,
+        fields: tuple[str, ...],
+    ) -> tuple[Any, Optional[str]]:
+        if not isinstance(body, dict):
+            return body, None
+        normalized = dict(body)
+        for field in fields:
+            try:
+                value = cls._calling_sidecar_optional_nonnegative_int(
+                    normalized,
+                    field,
+                )
+            except ValueError as exc:
+                return body, str(exc)
+            if value is not None:
+                normalized[field] = value
+        return normalized, None
+
+    @staticmethod
+    def _attach_calling_sidecar_tx_summary(
+        summary: Dict[str, Any],
+        raw_response: Any,
+    ) -> Dict[str, Any]:
+        if not isinstance(raw_response, dict):
+            return summary
+        summary["last_sidecar_response"] = raw_response
+        for field in CALLING_SIDECAR_TX_QUEUE_FIELDS:
+            if field in raw_response:
+                summary[field] = raw_response[field]
+        return summary
+
+    async def _ensure_calling_sidecar_contract(self) -> Optional[Dict[str, Any]]:
+        """Fetch the optional sidecar contract once per adapter lifetime."""
+        if getattr(self, "_calling_sidecar_contract_checked", False):
+            return getattr(self, "_calling_sidecar_contract", None)
+        self._calling_sidecar_contract_checked = True
+        self._calling_sidecar_contract = await self._request_calling_sidecar_contract()
+        return self._calling_sidecar_contract
+
+    async def _request_calling_sidecar_contract(self) -> Optional[Dict[str, Any]]:
+        """Fetch and validate the local sidecar's optional machine contract."""
+        if not self._calling_sidecar_enabled():
+            return None
+        if self._http_client is None:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar configured but HTTP client "
+                "is unavailable"
+            )
+            return None
+
+        url = f"{self._calling_sidecar_url}/contract"
+        try:
+            resp = await self._http_client.get(
+                url,
+                timeout=self._calling_sidecar_timeout,
+            )
+        except Exception:
+            logger.exception("[whatsapp_cloud] calling sidecar contract request failed")
+            return None
+
+        if resp.status_code == 404:
+            logger.debug(
+                "[whatsapp_cloud] calling sidecar does not expose /contract yet"
+            )
+            return None
+        if resp.status_code != 200:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar contract request failed "
+                "(status=%d): %s",
+                resp.status_code,
+                str(getattr(resp, "text", ""))[:500],
+            )
+            return None
+
+        try:
+            data = resp.json()
+        except Exception:
+            logger.warning("[whatsapp_cloud] calling sidecar contract returned invalid JSON")
+            return None
+        if not isinstance(data, dict):
+            logger.warning("[whatsapp_cloud] calling sidecar contract is not an object")
+            return None
+        if data.get("contract") != "voice.webrtc_sidecar":
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar contract id was %r",
+                data.get("contract"),
+            )
+            return None
+        try:
+            version = int(data.get("version") or 0)
+        except (TypeError, ValueError):
+            version = 0
+        if version < 1:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar contract version is invalid: %r",
+                data.get("version"),
+            )
+            return None
+        if not _matches_calling_audio_contract(data.get("audio")):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio contract does not match "
+                "Hermes PCM settings"
+            )
+            return None
+        data = dict(data)
+        data["audio"] = _normalize_calling_audio_contract(data["audio"])
+        return data
+
+    async def _request_calling_sidecar_answer(
+        self,
+        call_id: str,
+        remote_sdp: str,
+    ) -> Optional[CallingSidecarAnswer]:
+        """Ask the configured local WebRTC sidecar for an SDP answer.
+
+        The sidecar contract mirrors the voice repo's prototype:
+        POST /offer with {"call_id", "type": "offer", "sdp"} and expect
+        {"type": "answer", "sdp": "...", "audio": {...}, "state": {...}}.
+        Full Meta Calling webhook handling can call this once it has extracted
+        the inbound offer. The connect handler requires state.ready_for_accept
+        before sending Graph pre_accept/accept actions.
+        """
+        if not self._calling_sidecar_enabled():
+            return None
+        if self._http_client is None:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar configured but HTTP client "
+                "is unavailable"
+            )
+            return None
+
+        normalized_call_id = str(call_id or "").strip()
+        remote_sdp_text = str(remote_sdp or "")
+        if not normalized_call_id or not remote_sdp_text.strip():
+            logger.warning(
+                "[whatsapp_cloud] refusing calling sidecar request with empty "
+                "call_id or sdp"
+            )
+            return None
+
+        url = self._calling_sidecar_endpoint_url("offer", "/offer")
+        payload = {
+            "call_id": normalized_call_id,
+            "type": "offer",
+            "sdp": remote_sdp_text,
+        }
+        try:
+            resp = await self._http_client.post(
+                url,
+                json=payload,
+                timeout=self._calling_sidecar_timeout,
+            )
+        except Exception:
+            logger.exception("[whatsapp_cloud] calling sidecar offer request failed")
+            return None
+
+        if resp.status_code != 200:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar rejected offer "
+                "(status=%d): %s",
+                resp.status_code,
+                str(getattr(resp, "text", ""))[:500],
+            )
+            return None
+
+        try:
+            data = resp.json()
+        except Exception:
+            logger.warning("[whatsapp_cloud] calling sidecar returned invalid JSON")
+            return None
+
+        if not isinstance(data, dict):
+            logger.warning("[whatsapp_cloud] calling sidecar response is not an object")
+            return None
+        if data.get("type") != "answer":
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar response type was %r, not 'answer'",
+                data.get("type"),
+            )
+            return None
+
+        sdp = str(data.get("sdp") or "")
+        if not sdp.strip():
+            logger.warning("[whatsapp_cloud] calling sidecar answer missing sdp")
+            return None
+
+        audio = data.get("audio")
+        if not _matches_calling_audio_contract(audio):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar answer audio contract does not "
+                "match Hermes PCM settings"
+            )
+            return None
+
+        answer_call_id = str(data.get("call_id") or "").strip()
+        if answer_call_id and answer_call_id != normalized_call_id:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar answer call_id mismatch "
+                "(expected=%s, got=%s)",
+                normalized_call_id,
+                answer_call_id,
+            )
+            return None
+
+        state = data.get("state")
+        if not isinstance(state, dict):
+            state = {}
+        return CallingSidecarAnswer(
+            call_id=normalized_call_id,
+            sdp=sdp,
+            audio=audio,
+            state=dict(state),
+        )
+
+    @staticmethod
+    def _calling_sidecar_accept_readiness_error(state: Any) -> Optional[str]:
+        """Return a human-readable readiness error, or None when accept is safe."""
+        if not isinstance(state, dict):
+            return "sidecar answer missing call state"
+        if state.get("ready_for_accept") is True:
+            return None
+
+        readiness = state.get("readiness")
+        if isinstance(readiness, dict):
+            failed = sorted(str(key) for key, value in readiness.items() if value is not True)
+            if failed:
+                return "sidecar not ready for accept; failed checks: " + ", ".join(failed)
+        return (
+            "sidecar not ready for accept; ready_for_accept="
+            f"{state.get('ready_for_accept')!r}"
+        )
+
+    async def _send_calling_sidecar_audio(
+        self,
+        call_id: str,
+        pcm_s16le: bytes,
+        *,
+        sequence: Optional[int] = None,
+    ) -> SendResult:
+        """Queue outbound 48 kHz 20 ms PCM for a local WebRTC sidecar call."""
+        if not self._calling_sidecar_enabled():
+            return SendResult(success=False, error="Calling sidecar not configured")
+        if self._http_client is None:
+            return SendResult(success=False, error="Not connected")
+
+        normalized_call_id = str(call_id or "").strip()
+        if not normalized_call_id:
+            return SendResult(success=False, error="Missing call_id")
+        if not isinstance(pcm_s16le, (bytes, bytearray, memoryview)):
+            return SendResult(success=False, error="PCM payload must be bytes")
+
+        pcm_bytes = bytes(pcm_s16le)
+        if not pcm_bytes:
+            return SendResult(success=False, error="PCM payload is empty")
+        if len(pcm_bytes) % 2:
+            return SendResult(
+                success=False,
+                error="PCM payload must contain whole s16le samples",
+            )
+
+        audio = self._calling_sidecar_audio_contract()
+        url = self._calling_sidecar_endpoint_url(
+            "send_audio",
+            "/calls/{call_id}/audio",
+            call_id=normalized_call_id,
+        )
+        payload: Dict[str, Any] = {
+            "sample_rate": int(audio["sample_rate"]),
+            "channels": int(audio["channels"]),
+            "frame_ms": int(audio["frame_ms"]),
+            "encoding": str(audio["encoding"]),
+            "pcm_s16le_base64": base64.b64encode(pcm_bytes).decode("ascii"),
+        }
+        if sequence is not None:
+            payload["sequence"] = sequence
+
+        try:
+            resp = await self._http_client.post(
+                url,
+                json=payload,
+                timeout=self._calling_sidecar_timeout,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[whatsapp_cloud] calling sidecar audio request failed for %s",
+                normalized_call_id,
+            )
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"raw": str(getattr(resp, "text", ""))[:500]}
+
+        if resp.status_code != 200:
+            error_msg = ""
+            if isinstance(body, dict):
+                error_msg = str(body.get("error") or "")
+            if not error_msg:
+                if resp.status_code == 429:
+                    error_msg = "calling sidecar audio backpressure"
+                else:
+                    error_msg = (
+                        f"calling sidecar audio failed with HTTP {resp.status_code}"
+                    )
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio rejected "
+                "(status=%d): %s",
+                resp.status_code,
+                error_msg,
+            )
+            return SendResult(
+                success=False,
+                error=error_msg,
+                raw_response=body,
+                retryable=resp.status_code == 429,
+            )
+
+        body, telemetry_error = self._normalize_calling_sidecar_telemetry(
+            body,
+            (
+                "accepted_bytes",
+                "accepted_ms",
+                "queued_tx_bytes",
+                "queued_tx_ms",
+                "max_tx_queue_bytes",
+                "max_tx_queue_ms",
+            ),
+        )
+        if telemetry_error:
+            return SendResult(
+                success=False,
+                error=f"calling sidecar audio telemetry invalid: {telemetry_error}",
+                raw_response=body,
+            )
+
+        return SendResult(success=True, raw_response=body)
+
+    async def _clear_calling_sidecar_audio(self, call_id: str) -> SendResult:
+        """Drop queued outbound PCM for a sidecar call when barge-in starts."""
+        if not self._calling_sidecar_enabled():
+            return SendResult(success=False, error="Calling sidecar not configured")
+        if self._http_client is None:
+            return SendResult(success=False, error="Not connected")
+
+        normalized_call_id = str(call_id or "").strip()
+        if not normalized_call_id:
+            return SendResult(success=False, error="Missing call_id")
+
+        if not self._calling_sidecar_has_endpoint("clear_audio"):
+            return SendResult(
+                success=True,
+                raw_response={"skipped": "clear_audio endpoint not advertised"},
+            )
+
+        url = self._calling_sidecar_endpoint_url(
+            "clear_audio",
+            "/calls/{call_id}/audio/clear",
+            call_id=normalized_call_id,
+        )
+        try:
+            resp = await self._http_client.post(
+                url,
+                timeout=self._calling_sidecar_timeout,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[whatsapp_cloud] calling sidecar audio clear request failed for %s",
+                normalized_call_id,
+            )
+            return SendResult(success=False, error=str(exc), retryable=True)
+
+        try:
+            body = resp.json()
+        except Exception:
+            body = {"raw": str(getattr(resp, "text", ""))[:500]}
+
+        if resp.status_code != 200:
+            error_msg = ""
+            if isinstance(body, dict):
+                error_msg = str(body.get("error") or "")
+            if not error_msg:
+                error_msg = f"calling sidecar audio clear failed with HTTP {resp.status_code}"
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio clear rejected "
+                "(status=%d): %s",
+                resp.status_code,
+                error_msg,
+            )
+            return SendResult(
+                success=False,
+                error=error_msg,
+                raw_response=body,
+                retryable=resp.status_code == 429,
+            )
+
+        body, telemetry_error = self._normalize_calling_sidecar_telemetry(
+            body,
+            (
+                "dropped_tx_bytes",
+                "dropped_tx_ms",
+                "queued_tx_bytes",
+                "queued_tx_ms",
+                "max_tx_queue_bytes",
+                "max_tx_queue_ms",
+            ),
+        )
+        if telemetry_error:
+            return SendResult(
+                success=False,
+                error=(
+                    "calling sidecar audio clear telemetry invalid: "
+                    f"{telemetry_error}"
+                ),
+                raw_response=body,
+            )
+
+        return SendResult(success=True, raw_response=body)
+
+    def _calling_sidecar_call_id_from_metadata(
+        self,
+        metadata: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Return an active sidecar call id carried by delivery metadata."""
+        if not isinstance(metadata, dict):
+            return None
+        for key in ("whatsapp_call_id", "call_id", "thread_id"):
+            candidate = str(metadata.get(key) or "").strip()
+            if candidate and candidate in self._calling_sidecar_call_ids:
+                return candidate
+        return None
+
+    async def _decode_call_audio_file_to_pcm(
+        self,
+        audio_path: str,
+    ) -> tuple[Optional[bytes], Optional[str]]:
+        """Decode a local audio file into the sidecar's fixed PCM shape."""
+        if not audio_path or audio_path.startswith(("http://", "https://")):
+            return None, "Calling sidecar audio requires a local file"
+        if not os.path.isfile(audio_path):
+            return None, f"Audio file not found: {audio_path}"
+        if not _FFMPEG_PATH:
+            return None, "ffmpeg is required to decode TTS audio for live calls"
+
+        audio = self._calling_sidecar_audio_contract()
+        proc = await asyncio.create_subprocess_exec(
+            _FFMPEG_PATH,
+            "-v",
+            "error",
+            "-i",
+            audio_path,
+            "-f",
+            "s16le",
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            str(int(audio["sample_rate"])),
+            "-ac",
+            str(int(audio["channels"])),
+            "pipe:1",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=max(self._calling_sidecar_timeout, 30.0),
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.communicate()
+            return None, "ffmpeg timed out while decoding TTS audio for live call"
+
+        if proc.returncode != 0:
+            detail = (stderr or b"").decode("utf-8", errors="replace").strip()
+            return None, (
+                "ffmpeg failed to decode TTS audio for live call"
+                + (f": {detail[:500]}" if detail else "")
+            )
+        if not stdout:
+            return None, "ffmpeg produced no PCM for live call audio"
+        if len(stdout) % CALLING_PCM_BYTES_PER_SAMPLE:
+            return None, "ffmpeg produced partial s16le samples for live call audio"
+        return stdout, None
+
+    async def _send_calling_sidecar_audio_file(
+        self,
+        call_id: str,
+        audio_path: str,
+    ) -> SendResult:
+        """Decode a TTS file and pace it into the live sidecar call."""
+        pcm, error = await self._decode_call_audio_file_to_pcm(audio_path)
+        if error:
+            return SendResult(success=False, error=error)
+        if not pcm:
+            return SendResult(success=False, error="No PCM decoded from TTS audio")
+
+        audio = self._calling_sidecar_audio_contract()
+        frame_bytes = int(audio["frame_bytes"])
+        frame_ms = int(audio["frame_ms"])
+        sequence = 0
+        last_sidecar_response: Any = None
+        for offset in range(0, len(pcm), frame_bytes):
+            frame = pcm[offset : offset + frame_bytes]
+            if len(frame) < frame_bytes:
+                frame += b"\x00" * (frame_bytes - len(frame))
+
+            result = await self._send_calling_sidecar_audio(
+                call_id,
+                frame,
+                sequence=sequence,
+            )
+            if not result.success and result.retryable:
+                await asyncio.sleep(frame_ms / 1_000)
+                result = await self._send_calling_sidecar_audio(
+                    call_id,
+                    frame,
+                    sequence=sequence,
+                )
+            if not result.success:
+                return result
+
+            last_sidecar_response = result.raw_response
+            sequence += 1
+            if offset + frame_bytes < len(pcm):
+                await asyncio.sleep(frame_ms / 1_000)
+
+        raw_response = self._attach_calling_sidecar_tx_summary(
+            {
+                "call_id": call_id,
+                "queued_pcm_bytes": len(pcm),
+                "frames": sequence,
+                "audio": audio,
+            },
+            last_sidecar_response,
+        )
+        return SendResult(
+            success=True,
+            raw_response=raw_response,
+        )
+
+    async def _send_calling_sidecar_tts_stream_command(
+        self,
+        call_id: str,
+        text: str,
+    ) -> SendResult:
+        """Run a raw-PCM TTS stream command and post frames to the sidecar."""
+        command_template = str(
+            getattr(self, "_calling_sidecar_tts_stream_command", "") or ""
+        ).strip()
+        if not command_template:
+            return SendResult(
+                success=False,
+                error="Calling sidecar TTS stream command not configured",
+            )
+
+        normalized_call_id = str(call_id or "").strip()
+        text = str(text or "").strip()
+        if not normalized_call_id or not text:
+            return SendResult(success=False, error="Missing call_id or TTS text")
+
+        audio = self._calling_sidecar_audio_contract()
+        frame_bytes = int(audio["frame_bytes"])
+        frame_ms = int(audio["frame_ms"])
+        timeout = float(
+            getattr(
+                self,
+                "_calling_sidecar_tts_stream_timeout",
+                DEFAULT_CALLING_SIDECAR_TTS_STREAM_TIMEOUT,
+            )
+        )
+
+        async def terminate_process(proc: Any) -> None:
+            if getattr(proc, "returncode", None) is not None:
+                return
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                return
+            except Exception:
+                logger.debug(
+                    "[whatsapp_cloud] failed to kill TTS stream command",
+                    exc_info=True,
+                )
+                return
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2.0)
+            except Exception:
+                pass
+
+        async def send_frame(frame: bytes, sequence: int) -> SendResult:
+            result = await self._send_calling_sidecar_audio(
+                normalized_call_id,
+                frame,
+                sequence=sequence,
+            )
+            if not result.success and result.retryable:
+                await asyncio.sleep(frame_ms / 1_000)
+                result = await self._send_calling_sidecar_audio(
+                    normalized_call_id,
+                    frame,
+                    sequence=sequence,
+                )
+            return result
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            text_path = Path(tmpdir) / "input.txt"
+            text_path.write_text(text, encoding="utf-8")
+
+            try:
+                from tools.tts_tool import _render_command_tts_template
+
+                command = _render_command_tts_template(
+                    command_template,
+                    {
+                        "input_path": str(text_path),
+                        "text_path": str(text_path),
+                        "text": text,
+                        "sample_rate": str(int(audio["sample_rate"])),
+                        "channels": str(int(audio["channels"])),
+                        "frame_ms": str(frame_ms),
+                        "encoding": str(audio["encoding"]),
+                        "voice": "",
+                        "speed": "",
+                    },
+                )
+            except Exception as exc:
+                return SendResult(
+                    success=False,
+                    error=f"Failed to render TTS stream command: {exc}",
+                )
+
+            try:
+                proc = await asyncio.create_subprocess_shell(
+                    command,
+                    stdin=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except Exception as exc:
+                logger.exception("[whatsapp_cloud] failed to start TTS stream command")
+                return SendResult(success=False, error=str(exc), retryable=True)
+
+            if proc.stdout is None:
+                await terminate_process(proc)
+                return SendResult(
+                    success=False,
+                    error="TTS stream command did not expose stdout",
+                )
+
+            stderr_task = (
+                asyncio.create_task(proc.stderr.read())
+                if proc.stderr is not None
+                else None
+            )
+
+            async def cancel_stderr_task() -> None:
+                if stderr_task is None or stderr_task.done():
+                    return
+                stderr_task.cancel()
+                try:
+                    await stderr_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
+
+            pending = bytearray()
+            sequence = 0
+            accepted_bytes = 0
+            next_frame_at: Optional[float] = None
+            last_sidecar_response: Any = None
+
+            async def pace_frame() -> None:
+                """Keep sidecar outbound audio close to WebRTC playback time."""
+                nonlocal next_frame_at
+                loop = asyncio.get_running_loop()
+                now = loop.time()
+                frame_interval = frame_ms / 1_000
+                if next_frame_at is None:
+                    next_frame_at = now + frame_interval
+                    return
+                if now < next_frame_at:
+                    await asyncio.sleep(next_frame_at - now)
+                    now = loop.time()
+                next_frame_at = max(next_frame_at, now) + frame_interval
+
+            try:
+                while True:
+                    chunk = await asyncio.wait_for(
+                        proc.stdout.read(frame_bytes * 8),
+                        timeout=timeout,
+                    )
+                    if not chunk:
+                        break
+                    pending.extend(chunk)
+                    while len(pending) >= frame_bytes:
+                        frame = bytes(pending[:frame_bytes])
+                        del pending[:frame_bytes]
+                        await pace_frame()
+                        result = await send_frame(frame, sequence)
+                        if not result.success:
+                            await terminate_process(proc)
+                            await cancel_stderr_task()
+                            return result
+                        last_sidecar_response = result.raw_response
+                        sequence += 1
+                        accepted_bytes += len(frame)
+
+                if pending:
+                    frame = bytes(pending)
+                    frame += b"\x00" * (frame_bytes - len(frame))
+                    await pace_frame()
+                    result = await send_frame(frame, sequence)
+                    if not result.success:
+                        await terminate_process(proc)
+                        await cancel_stderr_task()
+                        return result
+                    last_sidecar_response = result.raw_response
+                    sequence += 1
+                    accepted_bytes += len(pending)
+
+                returncode = await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                await terminate_process(proc)
+                await cancel_stderr_task()
+                return SendResult(
+                    success=False,
+                    error=f"TTS stream command timed out after {timeout:g}s",
+                    retryable=True,
+                )
+
+            stderr = b""
+            if stderr_task is not None:
+                try:
+                    stderr = await stderr_task
+                except Exception:
+                    stderr = b""
+
+            if returncode != 0:
+                detail = stderr.decode("utf-8", errors="replace").strip()
+                return SendResult(
+                    success=False,
+                    error=(
+                        f"TTS stream command exited with code {returncode}"
+                        + (f": {detail[:500]}" if detail else "")
+                    ),
+                )
+            if sequence == 0:
+                return SendResult(
+                    success=False,
+                    error="TTS stream command produced no PCM frames",
+                )
+
+        raw_response = self._attach_calling_sidecar_tx_summary(
+            {
+                "call_id": normalized_call_id,
+                "queued_pcm_bytes": accepted_bytes,
+                "frames": sequence,
+                "audio": audio,
+            },
+            last_sidecar_response,
+        )
+        return SendResult(
+            success=True,
+            raw_response=raw_response,
+        )
+
+    async def play_tts_text(
+        self,
+        chat_id: str,
+        text: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Stream synthesized reply text directly into an active sidecar call."""
+        call_id = self._calling_sidecar_call_id_from_metadata(metadata)
+        if not call_id:
+            return SendResult(
+                success=False,
+                error="No active calling sidecar call for TTS text",
+            )
+        return await self._send_calling_sidecar_tts_stream_command(call_id, text)
+
+    async def _receive_calling_sidecar_audio(
+        self,
+        call_id: str,
+        *,
+        max_bytes: Optional[int] = None,
+        wait_ms: Optional[int] = None,
+    ) -> Optional[CallingSidecarAudio]:
+        """Drain decoded inbound 48 kHz PCM from a local WebRTC sidecar call."""
+        if not self._calling_sidecar_enabled():
+            return None
+        if self._http_client is None:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar configured but HTTP client "
+                "is unavailable"
+            )
+            return None
+
+        normalized_call_id = str(call_id or "").strip()
+        if not normalized_call_id:
+            return None
+        audio_contract = self._calling_sidecar_audio_contract()
+        if max_bytes is None:
+            max_bytes = int(audio_contract["default_drain_bytes"])
+        if wait_ms is None:
+            wait_ms = min(
+                CALLING_PCM_DRAIN_WAIT_MS,
+                int(audio_contract["max_drain_wait_ms"]),
+            )
+        if not isinstance(max_bytes, int) or max_bytes <= 0:
+            logger.warning(
+                "[whatsapp_cloud] invalid sidecar audio max_bytes=%r",
+                max_bytes,
+            )
+            return None
+        if max_bytes % CALLING_PCM_BYTES_PER_SAMPLE:
+            logger.warning(
+                "[whatsapp_cloud] sidecar audio max_bytes must preserve s16le samples"
+            )
+            return None
+        if not isinstance(wait_ms, int) or wait_ms < 0:
+            logger.warning("[whatsapp_cloud] invalid sidecar audio wait_ms=%r", wait_ms)
+            return None
+
+        url = self._calling_sidecar_endpoint_url(
+            "receive_audio",
+            "/calls/{call_id}/audio",
+            call_id=normalized_call_id,
+        )
+        try:
+            resp = await self._http_client.get(
+                url,
+                params={"max_bytes": max_bytes, "wait_ms": wait_ms},
+                timeout=self._calling_sidecar_timeout,
+            )
+        except Exception:
+            logger.exception(
+                "[whatsapp_cloud] calling sidecar audio drain failed for %s",
+                normalized_call_id,
+            )
+            return None
+
+        if resp.status_code != 200:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain rejected "
+                "(status=%d): %s",
+                resp.status_code,
+                str(getattr(resp, "text", ""))[:500],
+            )
+            return None
+
+        try:
+            data = resp.json()
+        except Exception:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain returned invalid JSON"
+            )
+            return None
+        if not isinstance(data, dict):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain response is not an object"
+            )
+            return None
+
+        try:
+            pcm = base64.b64decode(
+                str(data.get("pcm_s16le_base64") or ""),
+                validate=True,
+            )
+        except (binascii.Error, ValueError):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain had invalid base64"
+            )
+            return None
+
+        try:
+            returned_bytes = int(data.get("returned_bytes") or 0)
+            queued_rx_bytes = int(data.get("queued_rx_bytes") or 0)
+        except (TypeError, ValueError):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain had invalid byte counts"
+            )
+            return None
+        try:
+            returned_ms = self._calling_sidecar_optional_nonnegative_int(
+                data,
+                "returned_ms",
+            )
+            queued_rx_ms = self._calling_sidecar_optional_nonnegative_int(
+                data,
+                "queued_rx_ms",
+            )
+            max_rx_queue_bytes = self._calling_sidecar_optional_nonnegative_int(
+                data,
+                "max_rx_queue_bytes",
+            )
+            max_rx_queue_ms = self._calling_sidecar_optional_nonnegative_int(
+                data,
+                "max_rx_queue_ms",
+            )
+        except ValueError as exc:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain had invalid telemetry: %s",
+                exc,
+            )
+            return None
+        if returned_bytes != len(pcm):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain byte count mismatch "
+                "(reported=%d, decoded=%d)",
+                returned_bytes,
+                len(pcm),
+            )
+            return None
+        if len(pcm) % CALLING_PCM_BYTES_PER_SAMPLE:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain returned partial s16le sample"
+            )
+            return None
+
+        audio = data.get("audio")
+        if not _matches_calling_audio_contract(audio):
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain contract does not "
+                "match Hermes PCM settings"
+            )
+            return None
+
+        answer_call_id = str(data.get("call_id") or "").strip()
+        if answer_call_id and answer_call_id != normalized_call_id:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar audio drain call_id mismatch "
+                "(expected=%s, got=%s)",
+                normalized_call_id,
+                answer_call_id,
+            )
+            return None
+        return CallingSidecarAudio(
+            call_id=normalized_call_id,
+            pcm_s16le=pcm,
+            returned_bytes=returned_bytes,
+            queued_rx_bytes=queued_rx_bytes,
+            audio=audio,
+            returned_ms=returned_ms,
+            queued_rx_ms=queued_rx_ms,
+            max_rx_queue_bytes=max_rx_queue_bytes,
+            max_rx_queue_ms=max_rx_queue_ms,
+        )
+
+    def _write_calling_sidecar_pcm_wav(self, call_id: str, pcm_s16le: bytes) -> str:
+        """Persist decoded sidecar PCM as a WAV file for Hermes STT."""
+        if not pcm_s16le:
+            raise ValueError("pcm_s16le must not be empty")
+        if len(pcm_s16le) % CALLING_PCM_BYTES_PER_SAMPLE:
+            raise ValueError("pcm_s16le must contain whole s16le samples")
+
+        safe_call_id = re.sub(r"[^A-Za-z0-9._-]+", "_", call_id).strip("_")
+        if not safe_call_id:
+            safe_call_id = "call"
+        out_dir = _INBOUND_MEDIA_CACHE / "calls"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / f"call_{safe_call_id}_{uuid.uuid4().hex[:12]}.wav"
+
+        audio = self._calling_sidecar_audio_contract()
+        with wave.open(str(out_path), "wb") as wav:
+            wav.setnchannels(int(audio["channels"]))
+            wav.setsampwidth(int(audio["bytes_per_sample"]))
+            wav.setframerate(int(audio["sample_rate"]))
+            wav.writeframes(pcm_s16le)
+        return str(out_path)
+
+    @staticmethod
+    def _calling_sidecar_pcm_peak(pcm_s16le: bytes) -> int:
+        """Return the absolute peak amplitude of signed 16-bit PCM."""
+        if not pcm_s16le or len(pcm_s16le) % CALLING_PCM_BYTES_PER_SAMPLE:
+            return 0
+        peak = 0
+        for (sample,) in struct.iter_unpack("<h", pcm_s16le):
+            magnitude = abs(sample)
+            if magnitude > peak:
+                peak = magnitude
+        return peak
+
+    @staticmethod
+    def _calling_sidecar_pcm_has_speech(pcm_s16le: bytes) -> bool:
+        """Cheap silence gate for decoded call audio before STT dispatch."""
+        return (
+            WhatsAppCloudAdapter._calling_sidecar_pcm_peak(pcm_s16le)
+            >= CALLING_PCM_SPEECH_PEAK_THRESHOLD
+        )
+
+    async def _dispatch_calling_sidecar_pcm(
+        self,
+        call_id: str,
+        chat_id: str,
+        sender_name: str,
+        pcm_s16le: bytes,
+    ) -> None:
+        """Dispatch one decoded call-audio segment through Hermes STT."""
+        normalized_call_id = str(call_id or "").strip()
+        normalized_chat_id = str(chat_id or "").strip()
+        if not normalized_call_id or not normalized_chat_id or not pcm_s16le:
+            return
+
+        try:
+            wav_path = self._write_calling_sidecar_pcm_wav(
+                normalized_call_id,
+                pcm_s16le,
+            )
+        except Exception:
+            logger.exception(
+                "[whatsapp_cloud] failed to write call audio segment for %s",
+                normalized_call_id,
+            )
+            return
+
+        source = SessionSource(
+            platform=self.platform,
+            chat_id=normalized_chat_id,
+            user_id=normalized_chat_id,
+            user_name=sender_name or normalized_chat_id,
+            chat_type="dm",
+            thread_id=normalized_call_id,
+        )
+        event = MessageEvent(
+            source=source,
+            text="(The user sent a message with no text content)",
+            message_type=MessageType.VOICE,
+            raw_message={
+                "type": "whatsapp_call_audio",
+                "call_id": normalized_call_id,
+            },
+            message_id=f"{normalized_call_id}:{uuid.uuid4().hex[:12]}",
+            media_urls=[wav_path],
+            media_types=["audio/wav"],
+        )
+        await self.handle_message(event)
+
+    def _enable_calling_sidecar_auto_tts(self, call_id: str, chat_id: str) -> None:
+        """Temporarily force voice replies while a live call is active."""
+        if not chat_id:
+            return
+        enabled = getattr(self, "_auto_tts_enabled_chats", None)
+        if not isinstance(enabled, set):
+            return
+        if chat_id not in enabled:
+            enabled.add(chat_id)
+            self._calling_sidecar_auto_tts_chats[call_id] = chat_id
+
+    def _disable_calling_sidecar_auto_tts(self, call_id: str) -> None:
+        chat_id = self._calling_sidecar_auto_tts_chats.pop(call_id, None)
+        if not chat_id:
+            return
+        enabled = getattr(self, "_auto_tts_enabled_chats", None)
+        if isinstance(enabled, set):
+            enabled.discard(chat_id)
+
+    def _start_calling_sidecar_drain(
+        self,
+        call_id: str,
+        chat_id: str,
+        sender_name: str = "",
+    ) -> None:
+        """Start draining decoded inbound sidecar PCM into Hermes turns."""
+        normalized_call_id = str(call_id or "").strip()
+        normalized_chat_id = str(chat_id or "").strip()
+        if not normalized_call_id or not normalized_chat_id:
+            return
+        if self._message_handler is None:
+            return
+
+        self._enable_calling_sidecar_auto_tts(normalized_call_id, normalized_chat_id)
+        existing = self._calling_sidecar_tasks.get(normalized_call_id)
+        if existing is not None and not existing.done():
+            existing.cancel()
+
+        task = asyncio.create_task(
+            self._run_calling_sidecar_audio_loop(
+                normalized_call_id,
+                normalized_chat_id,
+                sender_name,
+            )
+        )
+        self._calling_sidecar_tasks[normalized_call_id] = task
+        task.add_done_callback(
+            lambda _task, _call_id=normalized_call_id: self._calling_sidecar_tasks.pop(
+                _call_id,
+                None,
+            )
+        )
+
+    async def _run_calling_sidecar_audio_loop(
+        self,
+        call_id: str,
+        chat_id: str,
+        sender_name: str,
+    ) -> None:
+        """Long-poll sidecar PCM and dispatch speech-ish chunks to Hermes."""
+        buffer = bytearray()
+        silent_polls = 0
+        cleared_outbound_for_segment = False
+
+        try:
+            while call_id in self._calling_sidecar_call_ids:
+                audio = await self._receive_calling_sidecar_audio(call_id)
+                if audio is not None and audio.pcm_s16le:
+                    pcm = audio.pcm_s16le
+                    if self._calling_sidecar_pcm_has_speech(pcm):
+                        if not buffer and not cleared_outbound_for_segment:
+                            clear_result = await self._clear_calling_sidecar_audio(
+                                call_id
+                            )
+                            if not clear_result.success:
+                                logger.debug(
+                                    "[whatsapp_cloud] sidecar audio clear failed "
+                                    "for %s: %s",
+                                    call_id,
+                                    clear_result.error,
+                                )
+                            cleared_outbound_for_segment = True
+                        buffer.extend(pcm)
+                        silent_polls = 0
+                        if len(buffer) >= CALLING_PCM_MAX_SEGMENT_BYTES:
+                            await self._dispatch_calling_sidecar_pcm(
+                                call_id,
+                                chat_id,
+                                sender_name,
+                                bytes(buffer),
+                            )
+                            buffer.clear()
+                        continue
+
+                    if buffer:
+                        silent_polls += 1
+                        if silent_polls == 1:
+                            buffer.extend(pcm)
+                        if silent_polls >= CALLING_PCM_TRAILING_SILENCE_POLLS:
+                            if len(buffer) >= CALLING_PCM_MIN_DISPATCH_BYTES:
+                                await self._dispatch_calling_sidecar_pcm(
+                                    call_id,
+                                    chat_id,
+                                    sender_name,
+                                    bytes(buffer),
+                                )
+                            buffer.clear()
+                            silent_polls = 0
+                            cleared_outbound_for_segment = False
+                    continue
+
+                if buffer:
+                    silent_polls += 1
+                    if silent_polls >= CALLING_PCM_TRAILING_SILENCE_POLLS:
+                        await self._dispatch_calling_sidecar_pcm(
+                            call_id,
+                            chat_id,
+                            sender_name,
+                            bytes(buffer),
+                        )
+                        buffer.clear()
+                        silent_polls = 0
+                        cleared_outbound_for_segment = False
+                await asyncio.sleep(CALLING_SIDECAR_EMPTY_DRAIN_BACKOFF_SECONDS)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "[whatsapp_cloud] calling sidecar audio loop failed for %s",
+                call_id,
+            )
+
+    async def _send_call_action(
+        self,
+        call_id: str,
+        action: str,
+        *,
+        sdp: Optional[str] = None,
+    ) -> SendResult:
+        """Send a WhatsApp Calling action to Graph API.
+
+        ``pre_accept`` and ``accept`` require an SDP answer session; ``reject``
+        and ``terminate`` do not.
+        """
+        if self._http_client is None:
+            return SendResult(success=False, error="Not connected")
+
+        normalized_call_id = str(call_id or "").strip()
+        normalized_action = str(action or "").strip()
+        if not normalized_call_id or not normalized_action:
+            return SendResult(success=False, error="Missing call_id or action")
+
+        payload: Dict[str, Any] = {
+            "messaging_product": "whatsapp",
+            "call_id": normalized_call_id,
+            "action": normalized_action,
+        }
+        if sdp is not None:
+            sdp_text = str(sdp)
+            if not sdp_text.strip():
+                return SendResult(success=False, error="Missing SDP answer")
+            payload["session"] = {
+                "sdp_type": "answer",
+                "sdp": sdp_text,
+            }
+
+        url = self._graph_url("calls")
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+        try:
+            resp = await self._http_client.post(url, headers=headers, json=payload)
+        except Exception as exc:
+            logger.exception("[whatsapp_cloud] call action %s failed", normalized_action)
+            return SendResult(success=False, error=str(exc))
+
+        if resp.status_code != 200:
+            try:
+                body = resp.json()
+            except Exception:
+                body = {"raw": resp.text[:500]}
+            error_msg = self._format_graph_error(body, resp.status_code)
+            logger.warning(
+                "[whatsapp_cloud] call action %s rejected (status=%d): %s",
+                normalized_action,
+                resp.status_code,
+                error_msg,
+            )
+            return SendResult(success=False, error=error_msg)
+
+        return SendResult(success=True)
+
+    async def _close_calling_sidecar_session(self, call_id: str) -> bool:
+        """Best-effort close for a local WebRTC sidecar call session."""
+        normalized_call_id = str(call_id or "").strip()
+        if not normalized_call_id:
+            return False
+
+        task = self._calling_sidecar_tasks.pop(normalized_call_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+        self._disable_calling_sidecar_auto_tts(normalized_call_id)
+        self._calling_sidecar_call_ids.discard(normalized_call_id)
+
+        if not self._calling_sidecar_enabled():
+            return False
+        if self._http_client is None:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar configured but HTTP client "
+                "is unavailable"
+            )
+            return False
+
+        url = self._calling_sidecar_endpoint_url(
+            "close_call",
+            "/calls/{call_id}/close",
+            call_id=normalized_call_id,
+        )
+        try:
+            resp = await self._http_client.post(
+                url,
+                timeout=self._calling_sidecar_timeout,
+            )
+        except Exception:
+            logger.exception(
+                "[whatsapp_cloud] calling sidecar close request failed for %s",
+                normalized_call_id,
+            )
+            return False
+
+        if resp.status_code == 404:
+            logger.debug(
+                "[whatsapp_cloud] sidecar had no session for terminated call %s",
+                normalized_call_id,
+            )
+            self._calling_sidecar_call_ids.discard(normalized_call_id)
+            return True
+        if resp.status_code != 200:
+            logger.warning(
+                "[whatsapp_cloud] calling sidecar close rejected "
+                "(status=%d): %s",
+                resp.status_code,
+                str(getattr(resp, "text", ""))[:500],
+            )
+            return False
+        self._calling_sidecar_call_ids.discard(normalized_call_id)
+        return True
+
+    async def _close_all_calling_sidecar_sessions(self) -> None:
+        """Best-effort close for every local sidecar session Hermes created."""
+        for call_id in sorted(self._calling_sidecar_call_ids):
+            await self._close_calling_sidecar_session(call_id)
 
     @staticmethod
     def _bounded_put(cache: "OrderedDict[str, str]", key: str, value: str) -> None:
@@ -413,6 +1949,8 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             except Exception:
                 logger.exception("[whatsapp_cloud] webhook server cleanup failed")
             self._runner = None
+        if self._calling_sidecar_call_ids:
+            await self._close_all_calling_sidecar_sessions()
         if self._http_client is not None:
             try:
                 await self._http_client.aclose()
@@ -1095,45 +2633,51 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         audio_path: str,
         caption: Optional[str] = None,
         reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
         """Send an audio file as a WhatsApp voice message.
 
         WhatsApp renders ``audio/ogg; codecs=opus`` as the green
         voice-note bubble; other audio types (MP3, AAC, etc.) appear as
-        a generic audio attachment. Hermes TTS produces MP3, so we try
-        ffmpeg conversion to opus first and fall back to sending the
-        MP3 as-is when ffmpeg is unavailable.
+        a generic audio attachment. Existing Ogg/Opus files are uploaded
+        directly with the WhatsApp voice MIME; other local audio is
+        converted to Ogg/Opus with ffmpeg when available.
         """
+        call_id = self._calling_sidecar_call_id_from_metadata(metadata)
+        if call_id:
+            return await self._send_calling_sidecar_audio_file(call_id, audio_path)
+
         source = audio_path
         mime_type: Optional[str] = None
 
-        is_local_mp3 = (
-            not audio_path.startswith(("http://", "https://"))
-            and audio_path.lower().endswith(".mp3")
-            and os.path.exists(audio_path)
-        )
-        if is_local_mp3:
+        is_remote = audio_path.startswith(("http://", "https://"))
+        is_local_existing = not is_remote and os.path.exists(audio_path)
+        lower_path = audio_path.lower()
+
+        if is_local_existing and lower_path.endswith(_WHATSAPP_OPUS_EXTENSIONS):
+            mime_type = _WHATSAPP_OPUS_MIME
+        elif is_local_existing:
             opus_path = await self._convert_to_opus(audio_path)
             if opus_path:
                 try:
                     result = await self._send_media_from_path_or_link(
                         chat_id, opus_path, "audio",
                         caption=caption, reply_to=reply_to,
-                        mime_type="audio/ogg; codecs=opus",
+                        mime_type=_WHATSAPP_OPUS_MIME,
                     )
                 finally:
-                    # The .ogg is a transient conversion artifact next to
-                    # the source MP3 — clean it up after upload so voice
-                    # sends don't leak a file per message.
+                    # The .ogg is a transient conversion artifact; clean
+                    # it up after upload so voice sends don't leak files.
                     try:
                         os.unlink(opus_path)
                     except OSError:
                         pass
                 return result
-            # Will deliver as MP3 attachment, not voice bubble.
+            # Will deliver as an audio attachment, not a voice bubble.
             # Warn-once is logged inside _convert_to_opus.
-            mime_type = "audio/mpeg"
+            if lower_path.endswith(".mp3"):
+                mime_type = "audio/mpeg"
 
         return await self._send_media_from_path_or_link(
             chat_id, source, "audio",
@@ -1158,12 +2702,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         )
 
     # ------------------------------------------------------------------ opus conversion
-    async def _convert_to_opus(self, mp3_path: str) -> Optional[str]:
-        """Convert an MP3 to ``audio/ogg; codecs=opus`` for voice bubbles.
+    async def _convert_to_opus(self, audio_path: str) -> Optional[str]:
+        """Convert audio to ``audio/ogg; codecs=opus`` for voice bubbles.
 
         Returns the path to the converted file, or None if ffmpeg is
         missing / conversion fails (caller falls back to sending the
-        original MP3 as an audio file).
+        original audio as an attachment).
 
         ``-application voip`` tunes the opus encoder for speech.
         ``-b:a 32k -vbr on`` matches the bitrate WhatsApp produces for
@@ -1173,10 +2717,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             self._warn_once_no_ffmpeg()
             return None
 
-        out_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
+        out_file = tempfile.NamedTemporaryFile(
+            prefix="hermes_whatsapp_voice_",
+            suffix=".ogg",
+            delete=False,
+        )
+        out_path = out_file.name
+        out_file.close()
         try:
             proc = await asyncio.create_subprocess_exec(
-                _FFMPEG_PATH, "-y", "-i", mp3_path,
+                _FFMPEG_PATH, "-y", "-i", audio_path,
+                "-ac", "1", "-ar", "48000",
                 "-c:a", "libopus", "-b:a", "32k", "-vbr", "on",
                 "-application", "voip", out_path,
                 stdout=asyncio.subprocess.DEVNULL,
@@ -1190,10 +2741,18 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     proc.returncode,
                     (stderr or b"").decode("utf-8", errors="replace")[:500],
                 )
+                try:
+                    os.unlink(out_path)
+                except OSError:
+                    pass
                 return None
             return out_path
         except Exception:
             logger.exception("[whatsapp_cloud] ffmpeg subprocess raised")
+            try:
+                os.unlink(out_path)
+            except OSError:
+                pass
             return None
 
     def _warn_once_no_ffmpeg(self) -> None:
@@ -1202,7 +2761,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._warned_no_ffmpeg = True
         logger.warning(
             "[whatsapp_cloud] ffmpeg not found on PATH — voice messages will "
-            "be delivered as MP3 audio attachments instead of native voice "
+            "be delivered as audio attachments instead of native voice "
             "notes (green waveform bubble). Install ffmpeg to enable: "
             "Windows `winget install Gyan.FFmpeg`, macOS `brew install ffmpeg`, "
             "Linux package manager."
@@ -1314,6 +2873,14 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "webhook_path": self._webhook_path,
                 "verify_token_configured": bool(self._verify_token),
                 "app_secret_configured": bool(self._app_secret),
+                "calling_sidecar_configured": self._calling_sidecar_enabled(),
+                "calling_sidecar_contract_loaded": isinstance(
+                    getattr(self, "_calling_sidecar_contract", None),
+                    dict,
+                ),
+                "calling_sidecar_tts_stream_configured": bool(
+                    getattr(self, "_calling_sidecar_tts_stream_command", ""),
+                ),
                 "ffmpeg_present": _FFMPEG_PATH is not None,
                 "accepted": self._accepted_count,
                 "duplicates": self._duplicate_count,
@@ -1460,16 +3027,19 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return True
 
     async def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
-        """Walk a verified Meta webhook payload and dispatch each message.
+        """Walk a verified Meta webhook payload and dispatch each message/call.
 
         Payload shape (truncated):
           {object, entry: [{id, changes: [{value: {messages, contacts,
-          statuses, metadata}, field: "messages"}]}]}
+          statuses, metadata}, field: "messages"|"calls"}]}]}
 
         We surface ``messages`` events as MessageEvents; ``statuses``
         events (sent/delivered/read/failed) are logged but not dispatched
         — the agent doesn't currently consume delivery receipts and
         forwarding them would create noisy synthetic events.
+
+        ``calls`` connect events are routed to the optional local WebRTC
+        sidecar when configured.
         """
         if payload.get("object") != "whatsapp_business_account":
             logger.debug(
@@ -1483,12 +3053,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             for change in entry.get("changes") or []:
                 if not isinstance(change, dict):
                     continue
-                if change.get("field") != "messages":
+                field = change.get("field")
+                value = change.get("value") or {}
+                if field == "calls":
+                    await self._dispatch_call_events(value)
+                    continue
+                if field != "messages":
                     # Other fields (account_alerts, template_status_update,
                     # etc.) are subscription-dependent and not message
                     # ingress. Silent skip.
                     continue
-                value = change.get("value") or {}
                 contacts = value.get("contacts") or []
                 metadata = value.get("metadata") or {}
                 # Build a wa_id → profile-name index for the messages we're
@@ -1550,6 +3124,139 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             status.get("status"),
                             status.get("id"),
                         )
+
+    async def _dispatch_call_events(self, value: Dict[str, Any]) -> None:
+        """Handle WhatsApp Calling webhook events from a verified payload."""
+        contacts_by_waid: Dict[str, str] = {}
+        for contact in value.get("contacts") or []:
+            if not isinstance(contact, dict):
+                continue
+            wa_id = str(contact.get("wa_id") or "").strip()
+            profile = contact.get("profile") or {}
+            name = str(profile.get("name") or "").strip()
+            if wa_id:
+                contacts_by_waid[wa_id] = name
+
+        for raw_call in value.get("calls") or []:
+            if not isinstance(raw_call, dict):
+                continue
+            event = str(raw_call.get("event") or "").strip().lower()
+            call_id = str(raw_call.get("id") or "").strip()
+            if event == "connect":
+                await self._handle_call_connect(raw_call, contacts_by_waid)
+            elif event == "terminate":
+                if call_id:
+                    await self._close_calling_sidecar_session(call_id)
+                logger.info(
+                    "[whatsapp_cloud] call terminated (call_id=%s, status=%s)",
+                    call_id,
+                    raw_call.get("status"),
+                )
+            else:
+                logger.debug(
+                    "[whatsapp_cloud] ignoring call event %r for %s",
+                    raw_call.get("event"),
+                    call_id,
+                )
+
+    async def _handle_call_connect(
+        self,
+        raw_call: Dict[str, Any],
+        contacts_by_waid: Optional[Dict[str, str]] = None,
+    ) -> None:
+        """Handle an inbound WhatsApp Calling connect offer."""
+        call_id = str(raw_call.get("id") or "").strip()
+        session = raw_call.get("session") or {}
+        if not isinstance(session, dict):
+            logger.warning(
+                "[whatsapp_cloud] call connect %s had non-object session",
+                call_id or "<missing>",
+            )
+            return
+
+        sdp_type = str(session.get("sdp_type") or "").strip().lower()
+        remote_sdp = str(session.get("sdp") or "")
+        if not call_id or sdp_type != "offer" or not remote_sdp.strip():
+            logger.warning(
+                "[whatsapp_cloud] ignoring malformed call connect "
+                "(call_id=%s, sdp_type=%s)",
+                call_id or "<missing>",
+                sdp_type or "<missing>",
+            )
+            return
+
+        if not self._calling_sidecar_enabled():
+            logger.info(
+                "[whatsapp_cloud] received call connect %s but no calling "
+                "sidecar is configured",
+                call_id,
+            )
+            return
+
+        await self._ensure_calling_sidecar_contract()
+        answer = await self._request_calling_sidecar_answer(call_id, remote_sdp)
+        if answer is None:
+            logger.warning(
+                "[whatsapp_cloud] sidecar did not produce an SDP answer for %s",
+                call_id,
+            )
+            reject = await self._send_call_action(call_id, "reject")
+            if not reject.success:
+                logger.warning(
+                    "[whatsapp_cloud] reject failed for %s after sidecar answer "
+                    "failure: %s",
+                    call_id,
+                    reject.error,
+                )
+            return
+        self._calling_sidecar_call_ids.add(call_id)
+
+        readiness_error = self._calling_sidecar_accept_readiness_error(answer.state)
+        if readiness_error is not None:
+            logger.warning(
+                "[whatsapp_cloud] sidecar answer for %s is not ready for accept: %s",
+                call_id,
+                readiness_error,
+            )
+            await self._close_calling_sidecar_session(call_id)
+            reject = await self._send_call_action(call_id, "reject")
+            if not reject.success:
+                logger.warning(
+                    "[whatsapp_cloud] reject failed for %s after sidecar readiness "
+                    "failure: %s",
+                    call_id,
+                    reject.error,
+                )
+            return
+
+        pre_accept = await self._send_call_action(
+            call_id,
+            "pre_accept",
+            sdp=answer.sdp,
+        )
+        if not pre_accept.success:
+            logger.warning(
+                "[whatsapp_cloud] pre_accept failed for %s: %s",
+                call_id,
+                pre_accept.error,
+            )
+            await self._close_calling_sidecar_session(call_id)
+            return
+
+        accept = await self._send_call_action(call_id, "accept", sdp=answer.sdp)
+        if not accept.success:
+            logger.warning(
+                "[whatsapp_cloud] accept failed for %s: %s",
+                call_id,
+                accept.error,
+            )
+            await self._close_calling_sidecar_session(call_id)
+            return
+
+        logger.info("[whatsapp_cloud] accepted call %s via calling sidecar", call_id)
+        chat_id = str(raw_call.get("from") or "").strip()
+        sender_name = (contacts_by_waid or {}).get(chat_id, "")
+        self._start_calling_sidecar_drain(call_id, chat_id, sender_name)
 
     async def _dispatch_interactive_reply(
         self,

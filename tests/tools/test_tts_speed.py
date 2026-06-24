@@ -69,7 +69,7 @@ class TestEdgeTtsSpeed:
 # ---------------------------------------------------------------------------
 
 class TestOpenaiTtsSpeed:
-    def _run(self, tts_config, tmp_path, monkeypatch):
+    def _run(self, tts_config, tmp_path, monkeypatch, output_name="out.mp3"):
         monkeypatch.setenv("OPENAI_API_KEY", "test-key")
         mock_response = MagicMock()
         mock_client = MagicMock()
@@ -80,7 +80,7 @@ class TestOpenaiTtsSpeed:
              patch("tools.tts_tool._resolve_openai_audio_client_config",
                    return_value=("test-key", None)):
             from tools.tts_tool import _generate_openai_tts
-            _generate_openai_tts("Hello", str(tmp_path / "out.mp3"), tts_config)
+            _generate_openai_tts("Hello", str(tmp_path / output_name), tts_config)
         return mock_client.audio.speech.create
 
     def test_default_no_speed_kwarg(self, tmp_path, monkeypatch):
@@ -112,6 +112,11 @@ class TestOpenaiTtsSpeed:
         create = self._run({"speed": 10.0}, tmp_path, monkeypatch)
         kwargs = create.call_args[1]
         assert kwargs["speed"] == 4.0
+
+    def test_opus_extension_requests_opus_response_format(self, tmp_path, monkeypatch):
+        create = self._run({}, tmp_path, monkeypatch, output_name="out.opus")
+        kwargs = create.call_args[1]
+        assert kwargs["response_format"] == "opus"
 
 
 # ---------------------------------------------------------------------------

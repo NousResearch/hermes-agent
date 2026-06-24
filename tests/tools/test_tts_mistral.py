@@ -54,7 +54,13 @@ class TestGenerateMistralTts:
 
     @pytest.mark.parametrize(
         "extension, expected_format",
-        [(".ogg", "opus"), (".wav", "wav"), (".flac", "flac"), (".mp3", "mp3")],
+        [
+            (".ogg", "opus"),
+            (".opus", "opus"),
+            (".wav", "wav"),
+            (".flac", "flac"),
+            (".mp3", "mp3"),
+        ],
     )
     def test_response_format_from_extension(
         self, tmp_path, mock_mistral_module, monkeypatch, extension, expected_format

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -11,7 +12,27 @@ def _normalized_base_url(value: Any) -> str:
     return value.strip().rstrip("/")
 
 
+def _coerce_json_string(raw: Any) -> Any:
+    """Parse a JSON string into its underlying object.
+
+    ``hermes config set fallback_providers '[{...}, ...]'`` stores the value
+    as a JSON-encoded string in ``config.yaml`` (it round-trips through
+    ``json.dumps``/``yaml.safe_load``). Without this coercion, the entry
+    would be silently dropped by ``_iter_fallback_entries`` and the entire
+    fallback chain would appear empty at runtime.
+    """
+    if isinstance(raw, str):
+        stripped = raw.strip()
+        if stripped and stripped[0] in ("[", "{"):
+            try:
+                return json.loads(stripped)
+            except (ValueError, TypeError):
+                return raw
+    return raw
+
+
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
+    raw = _coerce_json_string(raw)
     if isinstance(raw, dict):
         candidates = [raw]
     elif isinstance(raw, list):

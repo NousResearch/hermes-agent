@@ -102,6 +102,20 @@ def test_select_clears_expired_exhaustion(tmp_path, monkeypatch):
     assert entry.last_status == "ok"
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Rate limit exceeded. Please retry in 6.19s.", 6.19),
+        ("Rate limit exceeded. Please retry after 30 seconds.", 30.0),
+        ("Rate limit exceeded. retry 120s", 120.0),
+    ],
+)
+def test_extract_retry_delay_accepts_retry_seconds_messages(message, expected):
+    from agent.credential_pool import _extract_retry_delay_seconds
+
+    assert _extract_retry_delay_seconds(message) == expected
+
+
 def test_round_robin_strategy_rotates_priorities(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

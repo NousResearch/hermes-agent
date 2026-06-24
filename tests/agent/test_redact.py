@@ -549,3 +549,17 @@ class TestCodeFileParameter:
         result = redact_sensitive_text(key_block, code_file=True)
         assert "MIIEowIBAAKCAQEA" not in result
         assert "[REDACTED PRIVATE KEY]" in result
+
+    def test_code_file_preserves_db_fstring_template(self):
+        # F-string DSN templates have no live credentials — reading back a config
+        # file with such templates should not produce phantom corruption.
+        text = 'return f"postgresql://{user}:{pass}@{host}:{port}/{database}"'
+        assert redact_sensitive_text(text, code_file=True) == text
+        text2 = 'return f"postgresql://{user}:{self.db_pass}@{host}:{port}/{db}"'
+        assert redact_sensitive_text(text2, code_file=True) == text2
+
+    def test_code_file_still_redacts_literal_db_connstr(self):
+        # A real connection string with a literal password must still be masked.
+        text = "postgresql://admin:realpassword@db.internal:5432/app"
+        result = redact_sensitive_text(text, code_file=True)
+        assert "realpassword" not in result

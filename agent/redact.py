@@ -355,8 +355,9 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
 
     Set code_file=True to skip the ENV-assignment and JSON-field regex
     patterns when the text is known to be source code (e.g. MAX_TOKENS=***
-    constants, "apiKey": "test" fixtures). Prefix patterns, auth headers,
-    private keys, DB connstrings, JWTs, and URL secrets are still redacted.
+    constants, "apiKey": "test" fixtures). DB connstring f-string templates
+    (e.g. f"postgresql://{user}:{pass}@{host}") are also preserved; literal
+    connstrings, auth headers, private keys, and JWTs are still redacted.
 
     Performance: each regex pattern is gated behind a cheap substring
     pre-check (e.g. ``"=" in text`` for ENV assignments, ``"://" in text``
@@ -419,9 +420,18 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
     if "BEGIN" in text and "-----" in text:
         text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
 
-    # Database connection string passwords
+    # Database connection string passwords — f-string templates (e.g.
+    # f"postgresql://{user}:{pass}@{host}") are preserved when code_file=True.
     if "://" in text:
-        text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
+        if code_file:
+            text = _DB_CONNSTR_RE.sub(
+                lambda m: m.group(0)
+                if (m.group(2).startswith("{") and m.group(2).endswith("}"))
+                else f"{m.group(1)}***{m.group(3)}",
+                text,
+            )
+        else:
+            text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)
 
     # JWT tokens (eyJ... — base64-encoded JSON headers)
     if "eyJ" in text:

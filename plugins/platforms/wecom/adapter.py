@@ -764,6 +764,10 @@ class WeComAdapter(BasePlatformAdapter):
                     logger.warning("[%s] Rejected non-image bytes: %s", self.name, exc)
                     return None
 
+            cached_image = self._try_cache_image_bytes(raw)
+            if cached_image:
+                return cached_image
+
             filename = str(media.get("filename") or media.get("name") or "wecom_file")
             return cache_document_from_bytes(raw, filename), mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
@@ -794,6 +798,10 @@ class WeComAdapter(BasePlatformAdapter):
                 logger.warning("[%s] Rejected non-image bytes from %s: %s", self.name, url, exc)
                 return None
 
+        cached_image = self._try_cache_image_bytes(raw)
+        if cached_image:
+            return cached_image
+
         filename = self._guess_filename(url, headers.get("content-disposition"), content_type)
         return cache_document_from_bytes(raw, filename), content_type
 
@@ -817,6 +825,14 @@ class WeComAdapter(BasePlatformAdapter):
     @staticmethod
     def _mime_for_ext(ext: str, fallback: str = "application/octet-stream") -> str:
         return mimetypes.types_map.get(ext.lower(), fallback)
+
+    def _try_cache_image_bytes(self, data: bytes) -> Optional[Tuple[str, str]]:
+        """Cache bytes as an image when WeCom wrapped image content as a file."""
+        ext = self._detect_image_ext(data)
+        try:
+            return cache_image_from_bytes(data, ext), self._mime_for_ext(ext, fallback="image/jpeg")
+        except ValueError:
+            return None
 
     @staticmethod
     def _guess_extension(url: str, content_type: str, fallback: str) -> str:
@@ -1030,11 +1046,28 @@ class WeComAdapter(BasePlatformAdapter):
         errmsg = str(response.get("errmsg") or "unknown error")
         return f"WeCom errcode {errcode}: {errmsg}"
 
+    @staticmethod
+    def _is_lost_subscription_error(error: str) -> bool:
+        lowered = str(error or "").lower()
+        return "846609" in lowered or "not subscribed" in lowered
+
     @classmethod
     def _raise_for_wecom_error(cls, response: Dict[str, Any], operation: str) -> None:
         error = cls._response_error(response)
         if error:
             raise RuntimeError(f"{operation} failed: {error}")
+
+    async def _recover_lost_subscription(self, reason: str) -> bool:
+        logger.warning(
+            "[%s] WeCom send lost websocket subscription; reconnecting: %s",
+            self.name,
+            reason,
+        )
+        try:
+            await self.disconnect()
+        except Exception as exc:
+            logger.debug("[%s] Error while disconnecting stale WeCom websocket: %s", self.name, exc)
+        return await self.connect()
 
     @staticmethod
     def _decrypt_file_bytes(encrypted_data: bytes, aes_key: str) -> bytes:
@@ -1372,31 +1405,63 @@ class WeComAdapter(BasePlatformAdapter):
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
 
-        try:
+        async def _send_once() -> Dict[str, Any]:
             reply_req_id = self._reply_req_id_for_message(reply_to)
 
             if not reply_req_id and chat_id in self._last_chat_req_ids:
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
             if reply_req_id:
-                response = await self._send_reply_markdown(reply_req_id, content)
-            else:
-                response = await self._send_request(
-                    APP_CMD_SEND,
-                    {
-                        "chatid": chat_id,
-                        "msgtype": "markdown",
-                        "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
-                    },
-                )
+                return await self._send_reply_markdown(reply_req_id, content)
+
+            return await self._send_request(
+                APP_CMD_SEND,
+                {
+                    "chatid": chat_id,
+                    "msgtype": "markdown",
+                    "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
+                },
+            )
+
+        try:
+            response = await _send_once()
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
-            logger.error("[%s] Send failed: %s", self.name, exc)
-            return SendResult(success=False, error=str(exc))
+            if self._is_lost_subscription_error(str(exc)):
+                try:
+                    if not await self._recover_lost_subscription(str(exc)):
+                        return SendResult(
+                            success=False,
+                            error=f"WeCom reconnect failed after send error: {exc}",
+                        )
+                    response = await _send_once()
+                except asyncio.TimeoutError:
+                    return SendResult(success=False, error="Timeout sending message to WeCom")
+                except Exception as retry_exc:
+                    logger.error("[%s] Send retry failed: %s", self.name, retry_exc)
+                    return SendResult(success=False, error=str(retry_exc))
+            else:
+                logger.error("[%s] Send failed: %s", self.name, exc)
+                return SendResult(success=False, error=str(exc))
 
         error = self._response_error(response)
+        if error and self._is_lost_subscription_error(error):
+            try:
+                if not await self._recover_lost_subscription(error):
+                    return SendResult(
+                        success=False,
+                        error=f"WeCom reconnect failed after send error: {error}",
+                    )
+                response = await _send_once()
+            except asyncio.TimeoutError:
+                return SendResult(success=False, error="Timeout sending message to WeCom")
+            except Exception as exc:
+                logger.error("[%s] Send retry failed: %s", self.name, exc)
+                return SendResult(success=False, error=str(exc))
+            error = self._response_error(response)
         if error:
+            logger.error("[%s] Send failed: %s", self.name, error)
             return SendResult(success=False, error=error)
 
         return SendResult(

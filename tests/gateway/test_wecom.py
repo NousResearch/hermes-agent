@@ -503,6 +503,51 @@ class TestMediaUpload:
         assert Path(cached_path).read_bytes() == plaintext
         assert content_type == "application/octet-stream"
 
+    @pytest.mark.asyncio
+    async def test_cache_media_treats_base64_file_image_bytes_as_image(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+        cached = await adapter._cache_media(
+            "file",
+            {
+                "base64": base64.b64encode(png_bytes).decode("ascii"),
+                "filename": "quote.bin",
+            },
+        )
+
+        assert cached is not None
+        cached_path, content_type = cached
+        assert Path(cached_path).suffix == ".png"
+        assert Path(cached_path).read_bytes() == png_bytes
+        assert content_type == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_cache_media_treats_downloaded_file_image_bytes_as_image(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        png_bytes = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+        adapter._download_remote_bytes = AsyncMock(
+            return_value=(
+                png_bytes,
+                {
+                    "content-type": "application/octet-stream",
+                    "content-disposition": 'attachment; filename="quote.bin"',
+                },
+            )
+        )
+
+        cached = await adapter._cache_media("file", {"url": "https://example.com/quote.bin"})
+
+        assert cached is not None
+        cached_path, content_type = cached
+        assert Path(cached_path).suffix == ".png"
+        assert Path(cached_path).read_bytes() == png_bytes
+        assert content_type == "image/png"
+
 
 class TestSend:
     @pytest.mark.asyncio
@@ -535,6 +580,60 @@ class TestSend:
 
         assert result.success is False
         assert "40001" in (result.error or "")
+
+    @pytest.mark.asyncio
+    async def test_send_reconnects_and_retries_lost_subscription_response(self):
+        from plugins.platforms.wecom.adapter import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter.disconnect = AsyncMock()
+        adapter.connect = AsyncMock(return_value=True)
+        calls = []
+
+        async def fake_send_request(cmd, body):
+            calls.append((cmd, body))
+            if len(calls) == 1:
+                return {
+                    "errcode": 846609,
+                    "errmsg": "aibot websocket not subscribed",
+                }
+            return {"headers": {"req_id": "req-2"}, "errcode": 0}
+
+        adapter._send_request = fake_send_request
+
+        result = await adapter.send("chat-123", "Hello WeCom")
+
+        assert result.success is True
+        assert result.message_id == "req-2"
+        adapter.disconnect.assert_awaited_once()
+        adapter.connect.assert_awaited_once()
+        assert [cmd for cmd, _body in calls] == [APP_CMD_SEND, APP_CMD_SEND]
+
+    @pytest.mark.asyncio
+    async def test_send_reconnects_and_retries_lost_subscription_exception(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter.disconnect = AsyncMock()
+        adapter.connect = AsyncMock(return_value=True)
+        adapter._send_reply_markdown = AsyncMock(
+            side_effect=[
+                RuntimeError(
+                    "send reply markdown failed: WeCom errcode 846609: "
+                    "aibot websocket not subscribed"
+                ),
+                {"headers": {"req_id": "req-2"}, "errcode": 0},
+            ]
+        )
+
+        result = await adapter.send("chat-123", "Hello WeCom", reply_to="msg-1")
+
+        assert result.success is True
+        assert result.message_id == "req-2"
+        adapter.disconnect.assert_awaited_once()
+        adapter.connect.assert_awaited_once()
+        assert adapter._send_reply_markdown.await_count == 2
 
     @pytest.mark.asyncio
     async def test_send_image_falls_back_to_text_for_remote_url(self):

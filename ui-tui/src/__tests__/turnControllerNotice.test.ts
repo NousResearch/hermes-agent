@@ -35,7 +35,7 @@ describe('turnController.startMessage — flash-and-yield notices clear on next 
 
   it('leaves a sticky credits.depleted notice across a new turn', () => {
     patchUiState({
-      notice: { key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ Credit access paused · run /usage for balance' }
+      notice: { key: 'credits.depleted', kind: 'sticky', level: 'error', text: '✕ Credit access paused · run /credits to top up' }
     })
     turnController.startMessage()
     expect(getUiState().notice?.key).toBe('credits.depleted')

@@ -1,11 +1,23 @@
 import { atom, computed } from 'nanostores'
 
-import { $rightRailActiveTabId, RIGHT_RAIL_PREVIEW_TAB_ID, type RightRailTabId, selectRightRailTab } from './layout'
+import {
+  $rightRailActiveTabId,
+  PREVIEW_PANE_ID,
+  RIGHT_RAIL_PREVIEW_TAB_ID,
+  type RightRailTabId,
+  selectRightRailTab
+} from './layout'
+import { setPaneOpen } from './panes'
 import { $activeSessionId, $selectedStoredSessionId } from './session'
 
 export interface PreviewTarget {
   binary?: boolean
   byteSize?: number
+  /** Inline image bytes (a `data:` URL) when the renderer already holds them —
+   * e.g. a pasted/dropped screenshot whose only on-disk copy is a transient
+   * path the preview can't reliably re-read. Rendered directly and NOT
+   * persisted to the session-preview registry (it would bloat localStorage). */
+  dataUrl?: string
   kind: 'file' | 'url'
   label: string
   large?: boolean
@@ -83,10 +95,15 @@ function isSamePreviewTarget(a: PreviewTarget | null, b: PreviewTarget | null): 
   )
 }
 
+function showLivePreviewTab() {
+  setPaneOpen(PREVIEW_PANE_ID, true)
+  selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
+}
+
 export function setPreviewTarget(target: PreviewTarget | null) {
   if (isSamePreviewTarget($previewTarget.get(), target)) {
     if (target) {
-      selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
+      showLivePreviewTab()
     }
 
     return
@@ -95,7 +112,7 @@ export function setPreviewTarget(target: PreviewTarget | null) {
   $previewTarget.set(target)
 
   if (target) {
-    selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
+    showLivePreviewTab()
   }
 }
 
@@ -110,6 +127,7 @@ function openFilePreviewTarget(target: PreviewTarget) {
   const tab: FilePreviewTab = { id, target }
 
   $filePreviewTabs.set(index === -1 ? [...current, tab] : current.map((item, i) => (i === index ? tab : item)))
+  setPaneOpen(PREVIEW_PANE_ID, true)
   selectRightRailTab(id)
 }
 
@@ -214,7 +232,11 @@ function persistSessionPreviewRegistry(registry: SessionPreviewRegistry) {
   }
 
   try {
-    window.localStorage.setItem(REGISTRY_STORAGE_KEY, JSON.stringify(pruneRegistry(registry)))
+    // Drop the inline image bytes before persisting — a screenshot data URL is
+    // megabytes and would blow the localStorage quota. On reload the record
+    // falls back to reading its `path`/`url`.
+    const lean = JSON.stringify(pruneRegistry(registry), (key, value) => (key === 'dataUrl' ? undefined : value))
+    window.localStorage.setItem(REGISTRY_STORAGE_KEY, lean)
   } catch {
     // Session previews are a desktop convenience; storage failures are nonfatal.
   }
@@ -363,6 +385,8 @@ export function dismissPreviewTarget() {
   if ($rightRailActiveTabId.get() === RIGHT_RAIL_PREVIEW_TAB_ID) {
     selectRightRailTab($filePreviewTabs.get()[0]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
   }
+
+  setPaneOpen(PREVIEW_PANE_ID, $filePreviewTabs.get().length > 0)
 }
 
 function closeFilePreviewTab(tabId: RightRailTabId) {
@@ -383,6 +407,10 @@ function closeFilePreviewTab(tabId: RightRailTabId) {
 
   if ($rightRailActiveTabId.get() === tabId) {
     selectRightRailTab(next[Math.min(index, next.length - 1)]?.id ?? RIGHT_RAIL_PREVIEW_TAB_ID)
+  }
+
+  if (next.length === 0 && !$previewTarget.get()) {
+    setPaneOpen(PREVIEW_PANE_ID, false)
   }
 }
 
@@ -407,12 +435,14 @@ export function closeRightRail() {
   }
 
   $filePreviewTabs.set([])
+  setPaneOpen(PREVIEW_PANE_ID, false)
 }
 
 export function clearSessionPreviewRegistry() {
   $sessionPreviewRegistry.set({})
   setPreviewTarget(null)
   $filePreviewTabs.set([])
+  setPaneOpen(PREVIEW_PANE_ID, false)
   selectRightRailTab(RIGHT_RAIL_PREVIEW_TAB_ID)
 }
 

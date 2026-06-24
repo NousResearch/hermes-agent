@@ -34,9 +34,10 @@ import logging
 from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
-# Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool
-# so they don't clutter the user's session history.
-_HIDDEN_SESSION_SOURCES = ("tool",)
+# Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool;
+# delegate subagent runs are tagged "subagent" — neither belongs in the
+# user's session history.
+_HIDDEN_SESSION_SOURCES = ("subagent", "tool")
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -630,6 +631,17 @@ SESSION_SEARCH_SCHEMA = {
         "Search past sessions stored in the local session DB, or scroll inside one. "
         "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
         "shape returns actual messages from the DB.\n\n"
+        "SOURCE-FIRST LIMIT\n\n"
+        "  This tool searches Hermes conversation history only. It is not evidence "
+        "about the current contents of external sources. If the user provided a "
+        "direct source such as a URL, phone number/contact, app/thread, file path, "
+        "account, website, or live system, inspect that original source before or "
+        "instead of session_search when accessible. Use session_search as secondary "
+        "context for what was previously said, not as primary proof of what the "
+        "source currently contains. If the original source is inaccessible, say so "
+        "and why before falling back to session history. Do not conclude 'not found' "
+        "or 'no prior correspondence' from session_search alone when a direct source "
+        "was provided.\n\n"
         "FOUR CALLING SHAPES\n\n"
         "  1) DISCOVERY — pass `query`:\n"
         "     session_search(query=\"auth refactor\", limit=3)\n"
@@ -672,10 +684,12 @@ SESSION_SEARCH_SCHEMA = {
         "(`\"docker networking\"`), boolean (`python NOT java`), or prefix wildcards "
         "(`deploy*`).\n\n"
         "WHEN TO USE\n\n"
-        "  Reach for this on any \"what did we do about X\" / \"where did we leave Y\" / "
-        "\"find the session where Z\" question — before gh, web search, or filesystem "
-        "inspection. The session DB carries what was said when; external tools show "
-        "current world state."
+        "  Reach for this on questions about Hermes conversation history itself, such "
+        "as \"what did we do about X\", \"where did we leave Y\", or \"find the "
+        "session where Z\". If the user provided a direct source identifier, inspect "
+        "that source first when accessible; session_search can then supply historical "
+        "context. The session DB carries what was said when; external tools show "
+        "current source/world state."
     ),
     "parameters": {
         "type": "object",

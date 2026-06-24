@@ -21,6 +21,7 @@ from hermes_cli.config import (
     save_env_value,
     save_env_value_secure,
     sanitize_env_file,
+    write_platform_config_field,
     _sanitize_env_lines,
 )
 
@@ -255,6 +256,24 @@ class TestSaveAndLoadRoundtrip:
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
 
+    def test_write_platform_config_field_coerces_nested_platform_maps(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model: test/custom-model\nplatforms: not-a-map\n",
+                encoding="utf-8",
+            )
+
+            write_platform_config_field(
+                "email",
+                "unauthorized_dm_behavior",
+                "pair",
+                raw=True,
+            )
+
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+            assert saved["model"] == "test/custom-model"
+            assert saved["platforms"]["email"]["unauthorized_dm_behavior"] == "pair"
+
 
 class TestSaveEnvValueSecure:
     def test_save_env_value_writes_without_stdout(self, tmp_path, capsys):
@@ -291,6 +310,25 @@ class TestSaveEnvValueSecure:
             save_env_value("TENOR_API_KEY", "sk-test-secret")
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
+
+    def test_save_env_value_preserves_existing_file_mode_on_posix(self, tmp_path):
+        """Regression for #31518: pre-existing .env mode (e.g. 0640 for a
+        Docker bind-mount that the operator chose) survives subsequent
+        writes. Previously _secure_file ran unconditionally after the
+        mode-restore branch and re-tightened to 0600.
+        """
+        if os.name == "nt":
+            return
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("EXISTING=value\n")
+        os.chmod(env_path, 0o640)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("TENOR_API_KEY", "sk-test-secret")
+
+        env_mode = env_path.stat().st_mode & 0o777
+        assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
 
 
 class TestRemoveEnvValue:
@@ -334,6 +372,28 @@ class TestRemoveEnvValue:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "ORPHAN_KEY": "orphan"}):
             remove_env_value("ORPHAN_KEY")
             assert "ORPHAN_KEY" not in os.environ
+
+    def test_remove_env_value_preserves_existing_file_mode_on_posix(self, tmp_path):
+        """Regression: pre-existing .env mode (e.g. 0640 for a Docker
+        bind-mount the operator chose) survives a remove just as it does a
+        save. Previously _secure_file ran unconditionally after the
+        mode-restore branch and re-tightened to 0600 — the same bug fixed
+        in save_env_value (#33699), in the sibling remove path.
+        """
+        if os.name == "nt":
+            return
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("KEEP=value\nDROP=gone\n")
+        os.chmod(env_path, 0o640)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path), "DROP": "gone"}):
+            removed = remove_env_value("DROP")
+
+        assert removed is True
+        assert "DROP" not in env_path.read_text()
+        env_mode = env_path.stat().st_mode & 0o777
+        assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
 
 
 class TestSaveConfigAtomicity:
@@ -914,6 +974,17 @@ class TestInterimAssistantMessageConfig:
         assert raw["display"]["interim_assistant_messages"] is True
 
 
+class TestCliRefreshIntervalConfig:
+    """Test the CLI refresh_interval config default (#45592 / #48309)."""
+
+    def test_default_config_enables_cli_refresh_interval(self):
+        """cli_refresh_interval defaults to 1.0 so the idle status-bar
+        clock keeps ticking and the bottom chrome stays alive during
+        idle (#45592). Users on emulators where the periodic redraw
+        fights auto-scroll can set it to 0 (#48309)."""
+        assert DEFAULT_CONFIG["display"]["cli_refresh_interval"] == 1.0
+
+
 class TestDiscordChannelPromptsConfig:
     def test_default_config_includes_discord_channel_prompts(self):
         assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
@@ -1004,7 +1075,6 @@ class TestEnvWriteDenylist:
     @pytest.mark.parametrize(
         "allowed_key",
         [
-            "HERMES_GEMINI_CLIENT_ID",
             "HERMES_LANGFUSE_PUBLIC_KEY",
             "HERMES_SPOTIFY_CLIENT_ID",
             "HERMES_QWEN_BASE_URL",
@@ -1056,3 +1126,50 @@ class TestEnvWriteDenylist:
         # But the write path still refuses to update it
         with pytest.raises(ValueError, match="denylist"):
             save_env_value("LD_PRELOAD", "/tmp/evil.so")
+
+
+class TestWriteApprovalMigration:
+    """Version 28→29 renames memory/skills write_mode → write_approval (bool).
+
+    Only an explicit ``approve`` carried gating intent and maps to ``True``;
+    ``on``/``off``/unset map to ``False`` (gate off). The old ``write_mode`` key
+    is removed. Only a persisted key is rewritten — never invented.
+    """
+
+    def _write(self, tmp_path, body: str):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_approve_maps_to_true(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path,
+                        "_config_version: 28\nmemory:\n  write_mode: approve\n"
+                        "skills:\n  write_mode: approve\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["memory"]["write_approval"] is True
+            assert raw["skills"]["write_approval"] is True
+            assert "write_mode" not in raw["memory"]
+            assert "write_mode" not in raw["skills"]
+
+    def test_on_and_off_map_to_false(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            # YAML 1.1 parses bare on/off as bools — write_mode could be either
+            # the string or the bool; both legacy "not gating" values → False.
+            self._write(tmp_path,
+                        "_config_version: 28\nmemory:\n  write_mode: 'on'\n"
+                        "skills:\n  write_mode: 'off'\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["memory"]["write_approval"] is False
+            assert raw["skills"]["write_approval"] is False
+
+    def test_unset_key_defaults_to_false(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 28\nmemory:\n  memory_enabled: true\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            # No write_mode was persisted, so the rename is a no-op; the missing-
+            # field pass then seeds the default (False = gate off). Either way the
+            # gate ends up off and there's no leftover write_mode key.
+            assert raw["memory"].get("write_approval", False) is False
+            assert "write_mode" not in raw.get("memory", {})

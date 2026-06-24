@@ -152,6 +152,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # defusedxml only; aiohttp/httpx are core dependencies of every messaging
     # adapter and ship via `platform.discord` / `platform.slack` / etc.
     "platform.wecom_callback": ("defusedxml==0.7.1",),
+    # Microsoft Teams adapter — microsoft-teams-apps pulls a heavy tree
+    # (microsoft-teams-api/cards/common, dependency-injector, msal). Lazy-
+    # installed on demand like every other messaging platform; also exposed
+    # as the `teams` extra in pyproject for packagers / explicit installs.
+    "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
@@ -173,6 +178,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
         "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
+        "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
     ),
     # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
     # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback
@@ -180,6 +186,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # call site uses prompt=False so it can never raise a blocking input()
     # prompt mid-session (#40490).
     "tool.vision": ("Pillow==12.2.0",),
+    # Computer Use (cua-driver) — the MCP client SDK used to spawn and talk
+    # to the cua-driver process over stdio. Matches the `mcp` / `computer-use`
+    # extras in pyproject.toml. The one-liner installer pulls this in via
+    # `[all]`; lazy-installing here covers lean / partial / broken-extra
+    # installs so computer_use never dead-ends on `No module named 'mcp'`.
+    "tool.computer_use": (
+        "mcp==1.26.0",
+        "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
+    ),
 }
 
 
@@ -365,6 +380,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             r = subprocess.run(
                 [uv_bin, "pip", "install", *specs],
                 capture_output=True, text=True, timeout=timeout, env=uv_env,
+                stdin=subprocess.DEVNULL,
             )
             if r.returncode == 0:
                 return _InstallResult(True, r.stdout or "", r.stderr or "")
@@ -378,6 +394,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         probe = subprocess.run(
             pip_cmd + ["--version"],
             capture_output=True, text=True, timeout=15,
+            stdin=subprocess.DEVNULL,
         )
         if probe.returncode != 0:
             raise FileNotFoundError("pip not in venv")
@@ -386,6 +403,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             subprocess.run(
                 [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
                 capture_output=True, text=True, timeout=120, check=True,
+                stdin=subprocess.DEVNULL,
             )
         except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
             return _InstallResult(False, "",
@@ -395,6 +413,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         r = subprocess.run(
             pip_cmd + ["install", *specs],
             capture_output=True, text=True, timeout=timeout,
+            stdin=subprocess.DEVNULL,
         )
         return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")
     except subprocess.TimeoutExpired as e:

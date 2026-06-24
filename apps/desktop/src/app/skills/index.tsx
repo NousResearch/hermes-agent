@@ -17,6 +17,7 @@ import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
+import { ComputerUsePanel } from '../settings/computer-use-panel'
 import { asText, includesQuery, prettyName, toolNames, toolsetDisplayLabel } from '../settings/helpers'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
@@ -333,6 +334,9 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
                             </span>
                           ))}
                         </div>
+                      )}
+                      {expanded && toolset.name === 'computer_use' && (
+                        <ComputerUsePanel onConfiguredChange={refreshToolsets} />
                       )}
                       {expanded && <ToolsetConfigPanel onConfiguredChange={refreshToolsets} toolset={toolset.name} />}
                     </div>

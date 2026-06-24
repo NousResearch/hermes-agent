@@ -130,7 +130,7 @@ def _pkce() -> tuple[str, str]:
     """Return (verifier, S256 challenge) for an authorization-code request."""
     verifier = secrets.token_urlsafe(64)
     challenge = (
-        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest())
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode(), usedforsecurity=False).digest())
         .rstrip(b"=")
         .decode()
     )

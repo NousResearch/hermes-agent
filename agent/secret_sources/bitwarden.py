@@ -375,7 +375,7 @@ def _expected_sha256(checksum_file: Path, asset_name: str) -> str:
 
 
 def _sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
+    h = hashlib.sha256(usedforsecurity=False)
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)
@@ -433,7 +433,7 @@ def _safe_extract_member(
 
 def _token_fingerprint(token: str) -> str:
     """SHA-256 prefix used as a cache key — never logged, never displayed."""
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(token.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
 
 def fetch_bitwarden_secrets(

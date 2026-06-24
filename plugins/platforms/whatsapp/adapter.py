@@ -279,7 +279,7 @@ def _file_content_hash(path: Path) -> str:
     """
     import hashlib
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+        return hashlib.sha256(path.read_bytes(), usedforsecurity=False).hexdigest()[:16]
     except OSError:
         return ""
 

@@ -774,7 +774,7 @@ def content_hash(skill_path: Path) -> str:
     one on an in-memory bundle), so any change to the hash shape MUST
     land in both places at once.
     """
-    h = hashlib.sha256()
+    h = hashlib.sha256(usedforsecurity=False)
     if skill_path.is_dir():
         for f in sorted(skill_path.rglob("*")):
             if f.is_file():

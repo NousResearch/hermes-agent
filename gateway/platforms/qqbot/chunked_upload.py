@@ -559,7 +559,7 @@ def _read_file_chunk(file_path: str, offset: int, length: int) -> bytes:
 def _compute_file_hashes(file_path: str, file_size: int) -> Dict[str, str]:
     """Compute md5, sha1, and md5_10m in a single pass."""
     md5 = hashlib.md5()
-    sha1 = hashlib.sha1()
+    sha1 = hashlib.sha1(usedforsecurity=False)
     md5_10m = hashlib.md5()
 
     need_10m = file_size > _MD5_10M_SIZE

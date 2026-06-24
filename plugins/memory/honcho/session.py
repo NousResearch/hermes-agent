@@ -320,7 +320,7 @@ class HonchoSessionManager:
             sanitized_peer_id != raw_peer_id
             or sanitized_peer_id in explicit_ids
         ):
-            digest = hashlib.sha256(raw_peer_id.encode("utf-8")).hexdigest()
+            digest = hashlib.sha256(raw_peer_id.encode("utf-8"), usedforsecurity=False).hexdigest()
             for hash_len in _PEER_ID_HASH_ESCALATION_LENGTHS:
                 candidate = f"{sanitized_peer_id}-{digest[:hash_len]}"
                 if candidate not in explicit_ids:

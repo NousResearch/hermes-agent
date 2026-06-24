@@ -1244,7 +1244,7 @@ class DiscordAdapter(BasePlatformAdapter):
             ]
         desired.sort(key=lambda item: (item.get("type", 1), item.get("name", "")))
         payload = json.dumps(desired, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        return hashlib.sha256(payload.encode("utf-8"), usedforsecurity=False).hexdigest()
 
     def _command_sync_skip_reason(self, app_id: Any, fingerprint: str) -> Optional[str]:
         entry = self._read_command_sync_state().get(self._command_sync_state_key(app_id))

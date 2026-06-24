@@ -291,7 +291,7 @@ _EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
 def _token_fingerprint(raw_token: str) -> str:
     """Short fingerprint of a raw token for cache keying (avoids storing full token)."""
     import hashlib
-    return hashlib.sha256(raw_token.encode()).hexdigest()[:16]
+    return hashlib.sha256(raw_token.encode(), usedforsecurity=False).hexdigest()[:16]
 
 
 def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[str, float]:

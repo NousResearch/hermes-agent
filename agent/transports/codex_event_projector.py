@@ -43,7 +43,7 @@ def _deterministic_call_id(item_type: str, item_id: str) -> str:
     tool call history)."""
     if item_id:
         return f"codex_{item_type}_{item_id}"
-    digest = hashlib.sha256(f"{item_type}".encode()).hexdigest()[:16]
+    digest = hashlib.sha256(f"{item_type}".encode(), usedforsecurity=False).hexdigest()[:16]
     return f"codex_{item_type}_{digest}"
 
 

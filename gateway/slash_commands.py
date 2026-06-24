@@ -600,7 +600,7 @@ class GatewaySlashCommandsMixin:
     def _redact_matrix_session_key(session_key: str) -> str:
         """Return a stable Matrix session-key fingerprint for shared room status."""
         text = str(session_key or "")
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        digest = hashlib.sha256(text.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
         return f"sha256:{digest}"
 
     def _gateway_session_origin_for_id(self, session_id: str) -> Optional[SessionSource]:

@@ -308,7 +308,7 @@ def _cos_sign(
     ])
 
     # Step 3: StringToSign = sha1 hash of HttpString
-    sha1_of_http = hashlib.sha1(http_string.encode("utf-8")).hexdigest()
+    sha1_of_http = hashlib.sha1(http_string.encode("utf-8"), usedforsecurity=False).hexdigest()
     string_to_sign = "\n".join([
         "sha1",
         q_sign_time,

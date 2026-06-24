@@ -1496,7 +1496,7 @@ def _profile_suffix() -> str:
     except ValueError:
         pass
     # Fallback: short hash for arbitrary HERMES_HOME paths
-    return hashlib.sha256(str(home).encode()).hexdigest()[:8]
+    return hashlib.sha256(str(home).encode(), usedforsecurity=False).hexdigest()[:8]
 
 
 def _profile_arg(hermes_home: str | None = None, default_root: str | Path | None = None) -> str:

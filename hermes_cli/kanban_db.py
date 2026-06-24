@@ -1485,7 +1485,7 @@ def _backup_corrupt_db(path: Path) -> Optional[Path]:
     resolved = path.resolve()
     parent = resolved.parent
     base_name = resolved.name  # basename only
-    digest = hashlib.sha256()
+    digest = hashlib.sha256(usedforsecurity=False)
     try:
         with resolved.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):

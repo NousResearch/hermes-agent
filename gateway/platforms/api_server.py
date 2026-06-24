@@ -690,7 +690,7 @@ def _derive_chat_session_id(
     directory) across turns.
     """
     seed = f"{system_prompt or ''}\n{first_user_message}"
-    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha256(seed.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
     return f"api-{digest}"
 
 

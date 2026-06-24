@@ -126,7 +126,7 @@ def _fingerprint_value(value: Any) -> str | None:
     text = str(value)
     if not text:
         return None
-    digest = hashlib.sha256(text.encode("utf-8", errors="surrogatepass")).hexdigest()
+    digest = hashlib.sha256(text.encode("utf-8", errors="surrogatepass"), usedforsecurity=False).hexdigest()
     return f"sha256:{digest[:16]}"
 
 

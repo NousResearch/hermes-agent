@@ -4955,7 +4955,7 @@ def _compute_desktop_content_hash(project_root: Path) -> str:
     skip ``node_modules/``, ``dist/``, ``*.pyc``, etc. without maintaining
     a hardcoded skip-list.
     """
-    h = hashlib.sha256()
+    h = hashlib.sha256(usedforsecurity=False)
 
     def _hash_file(path: Path) -> None:
         rel = str(path.relative_to(project_root))

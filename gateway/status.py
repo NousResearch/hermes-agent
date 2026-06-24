@@ -102,7 +102,7 @@ def terminate_pid(pid: int, *, force: bool = False) -> None:
 
 
 def _scope_hash(identity: str) -> str:
-    return hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(identity.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
 
 
 def _get_scope_lock_path(scope: str, identity: str) -> Path:

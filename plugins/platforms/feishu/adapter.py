@@ -3441,7 +3441,7 @@ class FeishuAdapter(BasePlatformAdapter):
         try:
             body_str = body_bytes.decode("utf-8", errors="replace")
             content = f"{timestamp}{nonce}{self._encrypt_key}{body_str}"
-            computed = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            computed = hashlib.sha256(content.encode("utf-8"), usedforsecurity=False).hexdigest()
             return hmac.compare_digest(computed, signature)
         except Exception:
             logger.debug("[Feishu] Signature verification raised an exception", exc_info=True)

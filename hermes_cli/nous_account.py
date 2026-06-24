@@ -741,7 +741,7 @@ def _portal_base_url(state: dict[str, Any]) -> Optional[str]:
 
 
 def _cache_key(access_token: str, portal_base_url: Optional[str]) -> str:
-    digest = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(access_token.encode("utf-8"), usedforsecurity=False).hexdigest()
     return f"{portal_base_url or ''}:{digest}"
 
 

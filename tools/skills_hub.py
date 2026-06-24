@@ -3439,7 +3439,7 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
 
 def bundle_content_hash(bundle: SkillBundle) -> str:
     """Compute a deterministic hash for an in-memory skill bundle."""
-    h = hashlib.sha256()
+    h = hashlib.sha256(usedforsecurity=False)
     for rel_path in sorted(bundle.files):
         # Include the path so swapping file contents between two paths
         # changes the hash (avoids filename-swap evading update detection).

@@ -93,7 +93,7 @@ def unique_parent_dirs(files: list[tuple[str, str]]) -> list[str]:
 
 def _sha256_file(path: str) -> str:
     """Return hex SHA-256 digest of a file."""
-    h = hashlib.sha256()
+    h = hashlib.sha256(usedforsecurity=False)
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(65536), b""):
             h.update(chunk)

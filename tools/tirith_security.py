@@ -316,7 +316,7 @@ def _verify_checksum(archive_path: str, checksums_path: str, archive_name: str) 
         logger.warning("No checksum entry for %s", archive_name)
         return False
 
-    sha = hashlib.sha256()
+    sha = hashlib.sha256(usedforsecurity=False)
     with open(archive_path, "rb") as f:
         for chunk in iter(lambda: f.read(8192), b""):
             sha.update(chunk)

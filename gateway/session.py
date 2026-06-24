@@ -33,7 +33,7 @@ def _now() -> datetime:
 
 def _hash_id(value: str) -> str:
     """Deterministic 12-char hex hash of an identifier."""
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+    return hashlib.sha256(value.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
 
 
 def _hash_sender_id(value: str) -> str:

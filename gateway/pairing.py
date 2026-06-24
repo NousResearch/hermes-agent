@@ -199,7 +199,7 @@ class PairingStore:
     @staticmethod
     def _hash_code(code: str, salt: bytes) -> str:
         """Hash a pairing code with the given salt using SHA-256."""
-        return hashlib.sha256(salt + code.encode("utf-8")).hexdigest()
+        return hashlib.sha256(salt + code.encode("utf-8"), usedforsecurity=False).hexdigest()
 
     def generate_code(
         self, platform: str, user_id: str, user_name: str = ""

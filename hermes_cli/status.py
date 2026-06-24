@@ -14,6 +14,7 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 from hermes_cli.auth import AuthError, resolve_provider
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import get_env_path, get_env_value, get_hermes_home, load_config
+from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.models import provider_label
 from hermes_cli.nous_account import (
     format_nous_portal_entitlement_message,
@@ -102,13 +103,25 @@ def show_status(args):
     # =========================================================================
     # Environment
     # =========================================================================
+    # Load project .env so status checks reflect the same environment as doctor
+    load_hermes_dotenv(hermes_home=get_hermes_home(), project_env=PROJECT_ROOT / ".env")
+
     print()
     print(color("◆ Environment", Colors.CYAN, Colors.BOLD))
     print(f"  Project:      {PROJECT_ROOT}")
     print(f"  Python:       {sys.version.split()[0]}")
 
     env_path = get_env_path()
-    print(f"  .env file:    {check_mark(env_path.exists())} {'exists' if env_path.exists() else 'not found'}")
+    project_env = PROJECT_ROOT / ".env"
+    has_env = env_path.exists() or project_env.exists()
+    env_location = ""
+    if env_path.exists() and project_env.exists():
+        env_location = f" (hermes home + project)"
+    elif env_path.exists():
+        env_location = f" (hermes home)"
+    elif project_env.exists():
+        env_location = f" (project)"
+    print(f"  .env file:    {check_mark(has_env)} {'exists' if has_env else 'not found'}{env_location}")
 
     try:
         config = load_config()
@@ -531,15 +544,52 @@ def show_status(args):
     print()
     print(color("◆ Sessions", Colors.CYAN, Colors.BOLD))
 
+    # Check both JSON sessions file and SQLite state.db
     sessions_file = get_hermes_home() / "sessions" / "sessions.json"
+    state_db = get_hermes_home() / "state.db"
+    
+    json_count = 0
+    db_count = 0
+    
+    json_error = None
     if sessions_file.exists():
         import json
         try:
             with open(sessions_file, encoding="utf-8") as f:
                 data = json.load(f)
-                print(f"  Active:       {len(data)} session(s)")
-        except Exception:
-            print("  Active:       (error reading sessions file)")
+                json_count = len(data)
+        except Exception as e:
+            json_error = str(e)
+    
+    db_error = None
+    if state_db.exists():
+        try:
+            import sqlite3
+            conn = sqlite3.connect(str(state_db))
+            cursor = conn.execute("SELECT COUNT(*) FROM sessions")
+            db_count = cursor.fetchone()[0]
+            conn.close()
+        except Exception as e:
+            db_error = str(e)
+    
+    total_count = max(json_count, db_count)
+    if total_count > 0:
+        sources = []
+        if json_count > 0:
+            sources.append("json")
+        if db_count > 0:
+            sources.append("db")
+        source_info = f" ({', '.join(sources)})" if len(sources) > 1 else ""
+        print(f"  Active:       {total_count} session(s){source_info}")
+    elif json_error or db_error:
+        # At least one source exists but is unreadable — surface the error
+        # so the user knows data is present but corrupted/inaccessible.
+        errors = []
+        if json_error:
+            errors.append(f"sessions.json: {json_error}")
+        if db_error:
+            errors.append(f"state.db: {db_error}")
+        print(f"  Active:       {color('(error)', Colors.YELLOW)} {'; '.join(errors)}")
     else:
         print("  Active:       0")
 

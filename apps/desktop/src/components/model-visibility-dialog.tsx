@@ -2,9 +2,9 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 
-import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Switch } from '@/components/ui/switch'
 import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions } from '@/hermes'
@@ -14,10 +14,9 @@ import {
   $visibleModels,
   collapseModelFamilies,
   effectiveVisibleKeys,
-  emptyProviderSentinelKey,
-  isProviderSentinel,
   modelVisibilityKey,
-  setVisibleModels
+  setVisibleModels,
+  toggleModelVisibility
 } from '@/store/model-visibility'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
@@ -61,27 +60,7 @@ export function ModelVisibilityDialog({
   const visible = effectiveVisibleKeys(stored, providers)
 
   const toggle = (provider: ModelOptionProvider, model: string) => {
-    const next = new Set(effectiveVisibleKeys($visibleModels.get(), providers))
-    const key = modelVisibilityKey(provider.slug, model)
-    const sentinel = emptyProviderSentinelKey(provider.slug)
-
-    if (next.has(key)) {
-      next.delete(key)
-
-      // Check if this was the last real model for this provider.
-      const remainingForProvider = [...next].some(
-        k => k.startsWith(`${provider.slug}::`) && !isProviderSentinel(k)
-      )
-
-      if (!remainingForProvider) {
-        next.add(sentinel)
-      }
-    } else {
-      next.delete(sentinel)
-      next.add(key)
-    }
-
-    setVisibleModels(next)
+    setVisibleModels(toggleModelVisibility($visibleModels.get(), providers, provider.slug, model))
   }
 
   const q = search.trim().toLowerCase()
@@ -110,7 +89,7 @@ export function ModelVisibilityDialog({
         <div className="max-h-[55vh] overflow-y-auto pb-1">
           {providers.length === 0 ? (
             <div className="px-3 py-5 text-center text-xs text-muted-foreground">
-              {modelOptions.isPending ? <BrailleSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
+              {modelOptions.isPending ? <GlyphSpinner className="mx-auto text-sm" /> : copy.noAuthenticatedProviders}
             </div>
           ) : (
             providers.map(provider => {

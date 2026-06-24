@@ -46,6 +46,12 @@ export interface SlashExecResponse {
   warning?: string
 }
 
+export interface BrowserManageResponse {
+  connected?: boolean
+  url?: string
+  messages?: string[]
+}
+
 export interface SessionSteerResponse {
   // 'queued' == accepted into the live turn's steer slot (injected at the next
   // tool-result boundary); 'rejected' == no live tool window, caller queues.
@@ -100,6 +106,13 @@ export interface SkillCommandDispatchResponse {
 export interface SendCommandDispatchResponse {
   type: 'send'
   message: string
+  notice?: string
+}
+
+export interface PrefillCommandDispatchResponse {
+  type: 'prefill'
+  message: string
+  notice?: string
 }
 
 export type CommandDispatchResponse =
@@ -107,6 +120,7 @@ export type CommandDispatchResponse =
   | AliasCommandDispatchResponse
   | SkillCommandDispatchResponse
   | SendCommandDispatchResponse
+  | PrefillCommandDispatchResponse
 
 export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
 

@@ -119,6 +119,7 @@ class GatewayStreamConsumer:
         config: Optional[StreamConsumerConfig] = None,
         metadata: Optional[dict] = None,
         on_new_message: Optional[callable] = None,
+        on_before_finalize: Optional[Callable[[], Any]] = None,
         initial_reply_to_id: Optional[str] = None,
     ):
         self.adapter = adapter
@@ -133,6 +134,10 @@ class GatewayStreamConsumer:
         # the content, not edit the old bubble above it.
         # Called with no arguments. Exceptions are swallowed.
         self._on_new_message = on_new_message
+        # Fired once when the stream transitions into its finalization path.
+        # Gateway callers use this to pause typing refreshes before a slow
+        # final rich-text edit (Telegram MarkdownV2 finalize, etc.).
+        self._on_before_finalize = on_before_finalize
         self._initial_reply_to_id = initial_reply_to_id
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
@@ -143,6 +148,13 @@ class GatewayStreamConsumer:
         # timestamps would be stale by completion time.  Ported from
         # openclaw/openclaw#72038.
         self._message_created_ts: Optional[float] = None
+        # Every real preview message id the consumer has put on screen during
+        # this response (first send + any continuation messages from oversized
+        # edits/sends).  The fresh-final path deletes all of them when it
+        # re-delivers the completed answer as a single (rich) message, so a
+        # reply that was split across the platform's edit limit while streaming
+        # doesn't leave stale fragments above the final message.
+        self._preview_message_ids: "set[str]" = set()
         self._already_sent = False
         self._edit_supported = True  # Disabled when progressive edits are no longer usable
         self._last_edit_time = 0.0
@@ -189,6 +201,31 @@ class GatewayStreamConsumer:
         # first failure we permanently disable drafts for the remainder of
         # this response and route through edit-based for graceful degradation.
         self._draft_failures = 0
+        self._before_finalize_notified = False
+
+    def _metadata_for_send(
+        self,
+        *,
+        final: bool = False,
+        expect_edits: bool = False,
+    ) -> dict | None:
+        """Return per-send metadata for stream-created messages.
+
+        Mattermost treats notify-worthy sends as user-visible final content
+        when deciding whether a broken thread root may fall back flat.  Preview
+        and progress sends keep their original metadata and remain thread-strict.
+
+        ``expect_edits`` preserves the upstream Telegram streaming contract:
+        preview messages that may be edited later must stay on the editable
+        legacy send path, while fresh/fallback final sends can still use richer
+        final-message delivery.
+        """
+        meta = dict(self.metadata) if self.metadata else {}
+        if expect_edits:
+            meta["expect_edits"] = True
+        if final:
+            meta["notify"] = True
+        return meta or None
 
     @property
     def already_sent(self) -> bool:
@@ -210,6 +247,20 @@ class GatewayStreamConsumer:
         """True when the final response content reached the user, even if
         the subsequent cosmetic edit (cursor removal) failed."""
         return self._final_content_delivered
+
+    async def _notify_before_finalize(self) -> None:
+        """Run the pre-finalize hook exactly once, swallowing hook errors."""
+        if self._before_finalize_notified:
+            return
+        self._before_finalize_notified = True
+        if self._on_before_finalize is None:
+            return
+        try:
+            result = self._on_before_finalize()
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            pass
 
     async def _edit_message(
         self,
@@ -420,7 +471,10 @@ class GatewayStreamConsumer:
             if isinstance(self.adapter, _BasePlatformAdapter)
             else len
         )
-        _raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
+        # Rich-capable adapters (Telegram rich messages) raise this above the
+        # legacy per-message limit so a reply that fits one rich send/draft
+        # isn't fragmented at 4096 while streaming.  See _raw_message_limit.
+        _raw_limit = self._raw_message_limit()
         _safe_limit = max(500, _raw_limit - _len_fn(self.cfg.cursor) - 100)
 
         # Resolve native draft streaming once per run.  When enabled the
@@ -503,7 +557,11 @@ class GatewayStreamConsumer:
                         chunks_delivered = False
                         reply_to = self._message_id or self._initial_reply_to_id
                         for chunk in chunks:
-                            new_id = await self._send_new_chunk(chunk, reply_to)
+                            new_id = await self._send_new_chunk(
+                                chunk,
+                                reply_to,
+                                final=got_done,
+                            )
                             if new_id is not None and new_id != reply_to:
                                 chunks_delivered = True
                         self._accumulated = ""
@@ -582,6 +640,8 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
+                    if self._accumulated or self._message_id is not None or self._already_sent:
+                        await self._notify_before_finalize()
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
@@ -589,9 +649,20 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
-                        elif current_update_visible and (
-                            not self._adapter_requires_finalize
-                            or self._last_edit_overflowed
+                        elif self._final_response_sent:
+                            # A finalize=True tick above already delivered the
+                            # final answer via the adapter's fresh-final path
+                            # (_try_fresh_final sent a fresh rich message and
+                            # deleted the preview).  Running a second finalize
+                            # edit here would duplicate the message / re-delete,
+                            # so just record delivery and stop.
+                            self._final_content_delivered = True
+                        elif (
+                            current_update_visible
+                            and (
+                                not self._adapter_requires_finalize
+                                or self._last_edit_overflowed
+                            )
                         ):
                             # Mid-stream edit above already delivered the
                             # final accumulated content.  Skip the redundant
@@ -614,6 +685,15 @@ class GatewayStreamConsumer:
                             )
                             if self._final_response_sent:
                                 self._final_content_delivered = True
+                            elif self._fallback_final_send:
+                                # The final edit attempt itself may be the one
+                                # that exhausts flood-control strikes and
+                                # promotes the consumer into fallback mode.  Do
+                                # not return to the gateway with a full-response
+                                # fallback still pending; send only the unsent
+                                # tail here so the normal gateway send path does
+                                # not duplicate the visible prefix.
+                                await self._send_fallback_final(self._accumulated)
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                             if self._final_response_sent:
@@ -719,7 +799,13 @@ class GatewayStreamConsumer:
         # Strip trailing whitespace/newlines but preserve leading content
         return cleaned.rstrip()
 
-    async def _send_new_chunk(self, text: str, reply_to_id: Optional[str]) -> Optional[str]:
+    async def _send_new_chunk(
+        self,
+        text: str,
+        reply_to_id: Optional[str],
+        *,
+        final: bool = False,
+    ) -> Optional[str]:
         """Send a new message chunk, optionally threaded to a previous message.
 
         Returns the message_id so callers can thread subsequent chunks.
@@ -728,15 +814,15 @@ class GatewayStreamConsumer:
         if not text.strip():
             return reply_to_id
         try:
-            meta = dict(self.metadata) if self.metadata else {}
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
                 reply_to=reply_to_id,
-                metadata=meta,
+                metadata=self._metadata_for_send(final=final, expect_edits=True),
             )
             if result.success and result.message_id:
                 self._message_id = str(result.message_id)
+                self._track_preview_ids_from_result(result)
                 self._already_sent = True
                 self._last_sent_text = text
                 # Fresh content bubble — close off any stale tool bubble
@@ -851,7 +937,7 @@ class GatewayStreamConsumer:
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=chunk,
-                    metadata=self.metadata,
+                    metadata=self._metadata_for_send(final=True),
                 )
                 if result.success:
                     break
@@ -1114,6 +1200,76 @@ class GatewayStreamConsumer:
         age = time.monotonic() - self._message_created_ts
         return age >= threshold
 
+    def _raw_message_limit(self) -> int:
+        """Per-message length budget (in the adapter's ``message_len_fn`` units)
+        before the consumer splits an overflowing reply.
+
+        Adapters with a richer send/draft path (e.g. Telegram rich messages)
+        can raise this above ``MAX_MESSAGE_LENGTH`` via
+        ``streaming_overflow_limit`` so a reply that fits one rich message isn't
+        fragmented at the legacy edit limit.  Falls back to
+        ``MAX_MESSAGE_LENGTH`` (4096 default) for everyone else.
+        """
+        base = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
+        # isinstance gate: MagicMock adapters return mock objects (truthy, not
+        # ints) for arbitrary attribute access — keep them on the base limit.
+        if isinstance(self.adapter, _BasePlatformAdapter):
+            try:
+                cap = self.adapter.streaming_overflow_limit()
+            except Exception as e:
+                logger.debug("streaming_overflow_limit check failed: %s", e)
+                cap = None
+            if isinstance(cap, int) and cap > base:
+                return cap
+        return base
+
+    def _track_preview_id(self, message_id: Optional[str]) -> None:
+        """Record a real preview message id for fresh-final cleanup."""
+        if message_id and message_id != "__no_edit__":
+            self._preview_message_ids.add(str(message_id))
+
+    def _track_preview_ids_from_result(self, result: Any) -> None:
+        """Record every message id a send/edit result exposes: the primary id
+        plus any continuation ids from an oversized split
+        (``continuation_message_ids`` or ``raw_response['message_ids']``)."""
+        self._track_preview_id(getattr(result, "message_id", None))
+        for mid in (getattr(result, "continuation_message_ids", None) or ()):
+            self._track_preview_id(mid)
+        raw = getattr(result, "raw_response", None) or {}
+        if isinstance(raw, dict):
+            for mid in (raw.get("message_ids") or ()):
+                self._track_preview_id(mid)
+
+    def _adapter_prefers_fresh_final(self, text: str) -> bool:
+        """Return True when the adapter would rather finalize a streamed reply
+        by sending a fresh message and deleting the preview than by editing the
+        preview in place — e.g. Telegram, whose ``sendRichMessage`` send path
+        currently renders richer markdown than Hermes' MarkdownV2 edit path.
+
+        Returns False when there is no real preview to replace (no message id,
+        or the ``__no_edit__`` sentinel), when the adapter doesn't expose the
+        hook, or on any error (the consumer then keeps the edit-in-place path).
+        """
+        if not self._message_id or self._message_id == "__no_edit__":
+            return False
+        fn = getattr(self.adapter, "prefers_fresh_final_streaming", None)
+        if fn is None:
+            return False
+        try:
+            try:
+                result = fn(text, metadata=self.metadata)
+            except TypeError:
+                # Adapter / test double whose hook doesn't accept the metadata
+                # keyword — fall back to the positional-only form.
+                result = fn(text)
+        except Exception as e:
+            logger.debug("prefers_fresh_final_streaming check failed: %s", e)
+            return False
+        # ``is True`` (not ``bool(...)``) so a MagicMock adapter's auto-child
+        # method — truthy by default in tests — does not wrongly enable the
+        # fresh-final path.  Mirrors the REQUIRES_EDIT_FINALIZE gate in __init__.
+        return result is True
+
     async def _try_fresh_final(self, text: str, *, is_turn_final: bool = True) -> bool:
         """Send ``text`` as a brand-new message (best-effort delete the old
         preview) so the platform's visible timestamp reflects completion
@@ -1127,37 +1283,47 @@ class GatewayStreamConsumer:
 
         Ported from openclaw/openclaw#72038.
         """
-        old_message_id = self._message_id
+        # Every preview message the user has seen for this response: the
+        # current one plus any continuation fragments tracked while streaming
+        # (an oversized reply split across the platform's edit limit).  All of
+        # them are replaced by the single fresh message below.
+        stale_ids = set(self._preview_message_ids)
+        if self._message_id and self._message_id != "__no_edit__":
+            stale_ids.add(self._message_id)
         try:
             result = await self.adapter.send(
                 chat_id=self.chat_id,
                 content=text,
-                metadata=self.metadata,
+                metadata=self._metadata_for_send(final=True),
             )
         except Exception as e:
             logger.debug("Fresh-final send failed, falling back to edit: %s", e)
             return False
         if not getattr(result, "success", False):
             return False
-        # Successful fresh send — try to delete the stale preview so the
-        # user doesn't see the old edit-stuck message underneath.  Cleanup
-        # is best-effort; platforms that don't implement ``delete_message``
-        # just leave the preview behind (still an acceptable outcome —
-        # the visible final timestamp is the important part).
-        if old_message_id and old_message_id != "__no_edit__":
-            delete_fn = getattr(self.adapter, "delete_message", None)
-            if delete_fn is not None:
-                try:
-                    await delete_fn(self.chat_id, old_message_id)
-                except Exception as e:
-                    logger.debug(
-                        "Fresh-final preview cleanup failed (%s): %s",
-                        old_message_id, e,
-                    )
         # Adopt the new message id as the current message so subsequent
         # callers (e.g. overflow split loops, finalize retries) see a
         # consistent state.
         new_message_id = getattr(result, "message_id", None)
+        # Successful fresh send — try to delete the stale preview(s) so the
+        # user doesn't see the old edit-stuck message(s) underneath.  Cleanup
+        # is best-effort; platforms that don't implement ``delete_message``
+        # just leave the preview behind (still an acceptable outcome — the
+        # visible final timestamp is the important part).  Never delete the
+        # message we just sent.
+        delete_fn = getattr(self.adapter, "delete_message", None)
+        if delete_fn is not None:
+            for stale_id in stale_ids:
+                if not stale_id or stale_id == "__no_edit__" or stale_id == new_message_id:
+                    continue
+                try:
+                    await delete_fn(self.chat_id, stale_id)
+                except Exception as e:
+                    logger.debug(
+                        "Fresh-final preview cleanup failed (%s): %s",
+                        stale_id, e,
+                    )
+        self._preview_message_ids = set()
         if new_message_id:
             self._message_id = new_message_id
             self._message_created_ts = time.monotonic()
@@ -1267,9 +1433,45 @@ class GatewayStreamConsumer:
                     # old preview follows.  Ported from
                     # openclaw/openclaw#72038.  Gated by config so the
                     # legacy edit-in-place path stays the default.
+                    #
+                    # Adapters can also opt in regardless of the time threshold
+                    # via prefers_fresh_final_streaming (e.g. Telegram, whose
+                    # send path renders richer markdown than its edit path):
+                    # finalizing through edit would visibly downgrade a rich
+                    # preview, so re-deliver as a fresh message + delete the
+                    # preview instead.
+                    #
+                    # When the adapter exposes prefers_fresh_final_streaming
+                    # and explicitly returns False, the time-based threshold
+                    # must NOT override that decision.  On Telegram the
+                    # fresh-final path sends a Rich Message (sendRichMessage)
+                    # that overlaps with the legacy MarkdownV2 preview already
+                    # visible from streaming — both remain on screen because
+                    # the old message is only best-effort deleted.  Adapters
+                    # without the hook still get the time-based fresh-final.
+                    # (#47048)
+                    # Check the *class* for the hook so MagicMock adapters
+                    # (which auto-create attributes on access) are not
+                    # falsely detected as having it.  Also check instance
+                    # __dict__ for test doubles that explicitly assign the
+                    # attribute (e.g. adapter.prefers_fresh_final_streaming
+                    # = MagicMock(return_value=False)).
+                    _has_prefers_hook = (
+                        hasattr(type(self.adapter),
+                                "prefers_fresh_final_streaming")
+                        or "prefers_fresh_final_streaming"
+                            in getattr(self.adapter, "__dict__", {})
+                    )
+                    _prefers_fresh = self._adapter_prefers_fresh_final(text)
                     if (
                         finalize
-                        and self._should_send_fresh_final()
+                        and (
+                            _prefers_fresh
+                            or (
+                                not _has_prefers_hook
+                                and self._should_send_fresh_final()
+                            )
+                        )
                         and await self._try_fresh_final(
                             text, is_turn_final=is_turn_final,
                         )
@@ -1283,6 +1485,9 @@ class GatewayStreamConsumer:
                     )
                     if result.success:
                         self._already_sent = True
+                        # Record any continuation fragments an oversized edit
+                        # split off, so fresh-final can clean them all up.
+                        self._track_preview_ids_from_result(result)
                         # Adapter may have split-and-delivered an oversized
                         # edit across the original message + N continuations.
                         # When that happens, ``message_id`` is the LAST visible
@@ -1311,6 +1516,22 @@ class GatewayStreamConsumer:
                         self._flood_strikes = 0
                         return True
                     else:
+                        if (
+                            finalize
+                            and is_turn_final
+                            and self.cfg.cursor
+                            and self._last_sent_text.endswith(self.cfg.cursor)
+                            and self._visible_prefix() == text
+                        ):
+                            # The final clean-up edit failed, but the complete
+                            # answer is already visible from the last streaming
+                            # frame (usually with only the cursor still stuck on
+                            # screen).  Mark the content delivered so the
+                            # gateway suppresses its normal full final send;
+                            # otherwise users see the same long answer twice
+                            # when Telegram/Discord rate-limit this cosmetic
+                            # final edit (#36965, #25349).
+                            self._final_content_delivered = True
                         raw_response = getattr(result, "raw_response", None)
                         if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
                             # Telegram edited/sent one or more overflow chunks,
@@ -1389,7 +1610,10 @@ class GatewayStreamConsumer:
                     chat_id=self.chat_id,
                     content=text,
                     reply_to=self._initial_reply_to_id,
-                    metadata=self.metadata,
+                    metadata=self._metadata_for_send(
+                        final=finalize,
+                        expect_edits=True,
+                    ),
                 )
                 if result.success:
                     if result.message_id:
@@ -1398,6 +1622,9 @@ class GatewayStreamConsumer:
                         # the user so fresh-final logic can detect stale
                         # preview timestamps on long-running responses.
                         self._message_created_ts = time.monotonic()
+                        # Record this (and any continuation fragments from an
+                        # oversized first send) for fresh-final cleanup.
+                        self._track_preview_ids_from_result(result)
                     else:
                         self._edit_supported = False
                     self._already_sent = True

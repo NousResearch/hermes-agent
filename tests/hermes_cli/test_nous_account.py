@@ -14,6 +14,7 @@ from hermes_cli.nous_account import (
     NousPortalAccountInfo,
     format_nous_portal_entitlement_message,
     get_nous_portal_account_info,
+    nous_portal_topup_url,
     reset_nous_portal_account_info_cache,
 )
 
@@ -545,3 +546,89 @@ def test_entitlement_message_for_account_missing():
 
     assert message is not None
     assert "could not find a Nous Portal account or organisation" in message
+
+
+# ── org slug/name parsing + top-up URL builder ──────────────────────────────
+
+
+def test_account_payload_parses_org_slug_and_name(monkeypatch):
+    token = _jwt({"sub": "user_123", "org_id": "org_123", "exp": int(time.time()) + 900})
+    payload = {
+        "user": {"email": "alice@example.test"},
+        "organisation": {"id": "org_123", "slug": "acme", "name": "Acme Inc"},
+        "paid_service_access": {"allowed": True, "paid_access": True},
+    }
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
+    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+
+    info = get_nous_portal_account_info(force_fresh=True)
+
+    assert info.source == "account_api"
+    assert info.org_slug == "acme"
+    assert info.org_name == "Acme Inc"
+
+
+def test_account_payload_org_without_slug_leaves_fields_none(monkeypatch):
+    # Mirrors current main: organisation: { id } only (slug nullable on the portal).
+    token = _jwt({"sub": "user_123", "org_id": "org_123", "exp": int(time.time()) + 900})
+    payload = {
+        "user": {"email": "alice@example.test"},
+        "organisation": {"id": "org_123"},
+        "paid_service_access": {"allowed": True, "paid_access": True},
+    }
+    monkeypatch.setattr("hermes_cli.auth.get_provider_auth_state", lambda provider: _state(token))
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_access_token", lambda: "fresh-token")
+    monkeypatch.setattr("hermes_cli.nous_account._fetch_nous_account_info", lambda *a, **kw: payload)
+
+    info = get_nous_portal_account_info(force_fresh=True)
+
+    assert info.org_id == "org_123"
+    assert info.org_slug is None
+    assert info.org_name is None
+
+
+def test_topup_url_is_org_pinned_when_slug_present():
+    info = NousPortalAccountInfo(
+        logged_in=True,
+        source="account_api",
+        fresh=True,
+        portal_base_url="https://portal.example.test",
+        org_slug="acme",
+    )
+    assert (
+        nous_portal_topup_url(info)
+        == "https://portal.example.test/orgs/acme/billing?topup=open"
+    )
+
+
+def test_topup_url_falls_back_to_legacy_when_slug_null():
+    info = NousPortalAccountInfo(
+        logged_in=True,
+        source="account_api",
+        fresh=True,
+        portal_base_url="https://portal.example.test",
+        org_slug=None,
+    )
+    url = nous_portal_topup_url(info)
+    assert url == "https://portal.example.test/billing?topup=open"
+    assert "/orgs/" not in url
+
+
+def test_topup_url_strips_trailing_slash_and_encodes_slug():
+    info = NousPortalAccountInfo(
+        logged_in=True,
+        source="account_api",
+        fresh=True,
+        portal_base_url="https://portal.example.test/",
+        org_slug="a/b team",
+    )
+    assert (
+        nous_portal_topup_url(info)
+        == "https://portal.example.test/orgs/a%2Fb%20team/billing?topup=open"
+    )
+
+
+def test_topup_url_defaults_to_production_portal_for_none():
+    url = nous_portal_topup_url(None)
+    assert url == "https://portal.nousresearch.com/billing?topup=open"

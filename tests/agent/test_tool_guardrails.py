@@ -41,7 +41,9 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
     assert cfg.exact_failure_warn_after == 2
     assert cfg.exact_failure_selfcheck_after == 3
     assert cfg.same_tool_failure_warn_after == 3
+    assert cfg.same_tool_failure_selfcheck_after == 3
     assert cfg.no_progress_warn_after == 2
+    assert cfg.no_progress_selfcheck_after == 3
     assert cfg.exact_failure_block_after == 5
     assert cfg.same_tool_failure_halt_after == 8
     assert cfg.no_progress_block_after == 5
@@ -153,8 +155,10 @@ def test_file_mutation_lint_error_result_is_not_a_tool_failure():
 
 
 def test_same_tool_varying_args_warns_by_default_without_halting():
+    """same_tool_failure warns at count=2 (warn_after=2), self-checks at count=3 (default selfcheck_after=3)."""
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(same_tool_failure_warn_after=2, same_tool_failure_halt_after=3)
+        ToolCallGuardrailConfig(same_tool_failure_warn_after=2, same_tool_failure_halt_after=5,
+                                same_tool_failure_selfcheck_after=5)
     )
 
     first = controller.after_call("terminal", {"command": "cmd-1"}, '{"exit_code":1}', failed=True)
@@ -195,7 +199,8 @@ def test_hard_stop_enabled_halts_same_tool_varying_args_failure_streak():
 
 def test_idempotent_no_progress_repeated_result_warns_without_blocking_by_default():
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2)
+        ToolCallGuardrailConfig(no_progress_warn_after=2, no_progress_block_after=2,
+                                no_progress_selfcheck_after=5)
     )
     args = {"path": "/tmp/same.txt"}
     result = "same file contents"
@@ -651,3 +656,156 @@ def test_selfcheck_guidance_includes_required_steps():
     assert any("unchanged" in step for step in required)
 
     assert "materially different" in parsed["required_next_step"]
+
+
+def test_same_tool_varying_args_triggers_selfcheck():
+    """same_tool_failure with varying args triggers self-check at count >= same_tool_failure_selfcheck_after."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController, append_toolguard_guidance
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            same_tool_failure_selfcheck_after=3,
+        )
+    )
+
+    # Three different commands, all failing — same tool, different args
+    d1 = controller.after_call("terminal", {"command": "python3 server.py"}, '{"exit_code":124}', failed=True)
+    d2 = controller.after_call("terminal", {"command": "exec python3 server.py"}, '{"exit_code":124}', failed=True)
+    d3 = controller.after_call("terminal", {"command": "curl http://localhost:8189/health"}, '{"exit_code":7}', failed=True)
+
+    # d1: count=1, allow
+    assert d1.action == "allow"
+    # d2: same_count=2, exact_count=1 — allow (below selfcheck_after=3)
+    assert d2.action == "allow"
+    # d3: same_count=3 — self-check!
+    assert d3.action == "warn"
+    assert d3.code == "tool_call_self_check_required"
+    assert d3.failure_scope == "same_tool"
+    assert d3.count == 3
+    assert d3.recent_failures is not None
+    assert len(d3.recent_failures) == 3  # all 3 failures aggregated by tool name
+    # Check that failures include different exit codes
+    exit_codes = [f.get("exit_code") for f in d3.recent_failures if "exit_code" in f]
+    assert 124 in exit_codes
+    assert 7 in exit_codes
+
+
+def test_no_progress_triggers_selfcheck():
+    """no_progress with repeated identical result triggers self-check at count >= no_progress_selfcheck_after."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            no_progress_selfcheck_after=3,
+            no_progress_warn_after=2,
+        )
+    )
+    args = {"path": "/tmp/same.txt"}
+    result = "same file contents"
+
+    d1 = controller.after_call("read_file", args, result, failed=False)
+    d2 = controller.after_call("read_file", args, result, failed=False)
+    d3 = controller.after_call("read_file", args, result, failed=False)
+
+    assert d1.action == "allow"
+    assert d2.action == "warn"
+    assert d2.code == "no_progress_warning"
+    # d3: repeat_count=3, self-check kicks in
+    assert d3.action == "warn"
+    assert d3.code == "tool_call_self_check_required"
+    assert d3.failure_scope == "no_progress"
+    assert d3.count == 3
+
+
+def test_background_true_is_materially_different_args():
+    """Adding background=True to terminal args should be a different signature, not blocked by exact failure."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=5,
+        )
+    )
+
+    # Foreground call fails 5 times
+    fg_args = {"command": "python3 server.py", "notify_on_complete": False}
+    for i in range(5):
+        d = controller.after_call("terminal", fg_args, '{"exit_code":124}', failed=True)
+
+    # Foreground should be blocked now
+    fg_decision = controller.before_call("terminal", fg_args)
+    assert fg_decision.action == "block"
+    assert fg_decision.code == "repeated_exact_failure_block"
+
+    # Background call with same command should NOT be blocked — different signature
+    bg_args = {"command": "python3 server.py", "background": True, "notify_on_complete": True}
+    bg_decision = controller.before_call("terminal", bg_args)
+    assert bg_decision.action == "allow"
+    assert bg_decision.code != "repeated_exact_failure_block"
+
+
+def test_selfcheck_json_includes_failure_scope():
+    """Self-check JSON output includes failure_scope field."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController, append_toolguard_guidance
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            exact_failure_selfcheck_after=3,
+        )
+    )
+    args = {"command": "python3 server.py"}
+
+    d = None
+    for i in range(3):
+        d = controller.after_call("terminal", args, '{"exit_code":124}', failed=True)
+
+    assert d is not None
+    assert d.code == "tool_call_self_check_required"
+    assert d.failure_scope == "exact_signature"
+
+    guided = append_toolguard_guidance('{"exit_code":124}', d)
+    import json
+    parsed = json.loads(guided.split("\n\n")[1])
+    assert parsed["guardrail"]["failure_scope"] == "exact_signature"
+
+
+def test_exit_code_7_triggers_selfcheck():
+    """Self-check triggers for non-timeout exit codes (e.g., exit_code=7 connection refused)."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(exact_failure_selfcheck_after=3)
+    )
+    args = {"command": "curl http://localhost:8189/health"}
+
+    d1 = controller.after_call("terminal", args, '{"exit_code":7}', failed=True)
+    d2 = controller.after_call("terminal", args, '{"exit_code":7}', failed=True)
+    d3 = controller.after_call("terminal", args, '{"exit_code":7}', failed=True)
+
+    assert d1.action == "allow"
+    assert d2.code == "repeated_exact_failure_warning"
+    assert d3.code == "tool_call_self_check_required"
+    assert d3.failure_scope == "exact_signature"
+    # Check that exit_code_meaning is captured
+    assert any(f.get("exit_code") == 7 for f in d3.recent_failures)
+    assert any(f.get("exit_code_meaning") == "Failed to connect to host" for f in d3.recent_failures)
+
+
+def test_exit_code_1_triggers_selfcheck():
+    """Self-check triggers for general error exit codes (e.g., exit_code=1)."""
+    from agent.tool_guardrails import ToolCallGuardrailConfig, ToolCallGuardrailController
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(exact_failure_selfcheck_after=3)
+    )
+    args = {"command": "python3 script.py"}
+
+    d1 = controller.after_call("terminal", args, '{"exit_code":1}', failed=True)
+    d2 = controller.after_call("terminal", args, '{"exit_code":1}', failed=True)
+    d3 = controller.after_call("terminal", args, '{"exit_code":1}', failed=True)
+
+    assert d3.code == "tool_call_self_check_required"
+    assert d3.failure_scope == "exact_signature"
+    assert any(f.get("exit_code") == 1 for f in d3.recent_failures)
+    assert any(f.get("exit_code_meaning") == "General error" for f in d3.recent_failures)

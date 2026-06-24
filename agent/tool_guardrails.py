@@ -77,8 +77,10 @@ class ToolCallGuardrailConfig:
     exact_failure_selfcheck_after: int = 3
     exact_failure_block_after: int = 5
     same_tool_failure_warn_after: int = 3
+    same_tool_failure_selfcheck_after: int = 3
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
+    no_progress_selfcheck_after: int = 3
     no_progress_block_after: int = 5
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
@@ -112,9 +114,17 @@ class ToolCallGuardrailConfig:
                 warn_after.get("same_tool_failure", data.get("same_tool_failure_warn_after")),
                 defaults.same_tool_failure_warn_after,
             ),
+            same_tool_failure_selfcheck_after=_positive_int(
+                warn_after.get("same_tool_failure_selfcheck", data.get("same_tool_failure_selfcheck_after")),
+                defaults.same_tool_failure_selfcheck_after,
+            ),
             no_progress_warn_after=_positive_int(
                 warn_after.get("idempotent_no_progress", data.get("no_progress_warn_after")),
                 defaults.no_progress_warn_after,
+            ),
+            no_progress_selfcheck_after=_positive_int(
+                warn_after.get("idempotent_no_progress_selfcheck", data.get("no_progress_selfcheck_after")),
+                defaults.no_progress_selfcheck_after,
             ),
             exact_failure_block_after=_positive_int(
                 hard_stop_after.get("exact_failure", data.get("exact_failure_block_after")),
@@ -161,6 +171,7 @@ class ToolGuardrailDecision:
     # Optional structured context for self-check observations.
     last_tool_call_args: dict | None = None
     recent_failures: list[dict] | None = None
+    failure_scope: str = "exact_signature"  # exact_signature | same_tool | no_progress
 
     @property
     def allows_execution(self) -> bool:
@@ -312,6 +323,9 @@ class ToolCallGuardrailController:
         # Recent failure history per signature for structured self-check observations.
         # Value: list of dicts with {exit_code, output_tail, status} — most recent last.
         self._recent_failures: dict[ToolCallSignature, list[dict]] = {}
+        # Cross-signature failure history per tool name — catches "same strategy,
+        # different args" loops (e.g. server.py → exec server.py → curl health).
+        self._recent_failures_by_tool: dict[str, list[dict]] = {}
 
     def reset_for_turn(self) -> None:
         self._turn_counter += 1
@@ -323,6 +337,7 @@ class ToolCallGuardrailController:
         self._recovery_attempts = 0
         self._blocked_signatures = set()
         self._recent_failures = {}
+        self._recent_failures_by_tool = {}
         # Prune stale cross-turn entries so the dict doesn't grow unbounded.
         _cutoff = self._turn_counter - self._cross_turn_ttl
         self._no_progress_cross_turn = {
@@ -462,7 +477,13 @@ class ToolCallGuardrailController:
             self._same_tool_failure_counts[tool_name] = same_count
 
             # Record failure history for structured self-check
-            _record_failure(self._recent_failures, signature, tool_name, result)
+            failure_entry = _record_failure(self._recent_failures, signature, tool_name, result)
+            # Also record by tool name for cross-signature self-check
+            if tool_name not in self._recent_failures_by_tool:
+                self._recent_failures_by_tool[tool_name] = []
+            self._recent_failures_by_tool[tool_name].append(failure_entry)
+            if len(self._recent_failures_by_tool[tool_name]) > 5:
+                self._recent_failures_by_tool[tool_name] = self._recent_failures_by_tool[tool_name][-5:]
 
             if self.config.hard_stop_enabled and same_count >= self.config.same_tool_failure_halt_after:
                 decision = ToolGuardrailDecision(
@@ -482,11 +503,12 @@ class ToolCallGuardrailController:
             # Count >= exact_failure_block_after: handled by before_call block
             # (we don't block here, we just warn — before_call does the actual block)
 
-            # Count >= selfcheck_after: structured self-check observation
+            # Exact signature self-check (same args failing repeatedly)
             if self.config.warnings_enabled and exact_count >= self.config.exact_failure_selfcheck_after:
                 return _build_selfcheck_decision(
                     tool_name, exact_count, signature, args,
                     self._recent_failures.get(signature, []),
+                    failure_scope="exact_signature",
                 )
 
             if self.config.warnings_enabled and exact_count >= self.config.exact_failure_warn_after:
@@ -501,6 +523,14 @@ class ToolCallGuardrailController:
                     tool_name=tool_name,
                     count=exact_count,
                     signature=signature,
+                )
+
+            # Same-tool self-check (different args, same tool failing repeatedly)
+            if self.config.warnings_enabled and same_count >= self.config.same_tool_failure_selfcheck_after:
+                return _build_selfcheck_decision(
+                    tool_name, same_count, signature, args,
+                    self._recent_failures_by_tool.get(tool_name, []),
+                    failure_scope="same_tool",
                 )
 
             if self.config.warnings_enabled and same_count >= self.config.same_tool_failure_warn_after:
@@ -542,6 +572,12 @@ class ToolCallGuardrailController:
         # (i.e., the loop spans turns rather than repeating within one turn)
         if _tracks_cross_turn_no_progress(tool_name, self.config):
             _cross_count = self._no_progress_cross_turn[signature][1]
+            if repeat_count == 1 and self.config.warnings_enabled and _cross_count >= self.config.no_progress_selfcheck_after:
+                return _build_selfcheck_decision(
+                    tool_name, _cross_count, signature, args,
+                    [{"output_tail": "Same result returned across multiple turns"}],
+                    failure_scope="no_progress",
+                )
             if repeat_count == 1 and self.config.warnings_enabled and _cross_count >= self.config.no_progress_warn_after:
                 return ToolGuardrailDecision(
                     action="warn",
@@ -555,6 +591,13 @@ class ToolCallGuardrailController:
                     count=_cross_count,
                     signature=signature,
                 )
+
+        if self.config.warnings_enabled and repeat_count >= self.config.no_progress_selfcheck_after:
+            return _build_selfcheck_decision(
+                tool_name, repeat_count, signature, args,
+                [{"output_tail": "Same result returned repeatedly"}],
+                failure_scope="no_progress",
+            )
 
         if self.config.warnings_enabled and repeat_count >= self.config.no_progress_warn_after:
             return ToolGuardrailDecision(
@@ -583,8 +626,11 @@ def _record_failure(
     signature: ToolCallSignature,
     tool_name: str,
     result: str | None,
-) -> None:
-    """Record a structured failure entry for a tool call signature."""
+) -> dict:
+    """Record a structured failure entry for a tool call signature.
+
+    Returns the failure entry dict so the caller can also store it by tool name.
+    """
     if signature not in recent_failures:
         recent_failures[signature] = []
 
@@ -618,6 +664,8 @@ def _record_failure(
     if len(recent_failures[signature]) > 5:
         recent_failures[signature] = recent_failures[signature][-5:]
 
+    return entry
+
 
 def _exit_code_meaning(code: int) -> str | None:
     """Return a human-readable meaning for common exit codes."""
@@ -637,28 +685,44 @@ def _exit_code_meaning(code: int) -> str | None:
 
 def _build_selfcheck_decision(
     tool_name: str,
-    exact_count: int,
+    count: int,
     signature: ToolCallSignature,
     args: Mapping[str, Any],
     recent_failures: list[dict],
+    failure_scope: str = "exact_signature",
 ) -> ToolGuardrailDecision:
     """Build a structured self-check observation for repeated failures.
 
-    At count >= 3, this replaces the regular warning with a structured
+    At count >= threshold, this replaces the regular warning with a structured
     observation that forces the model to self-check before retrying.
+
+    Args:
+        failure_scope: "exact_signature" | "same_tool" | "no_progress"
     """
-    # Build the self-check message based on count
-    if exact_count >= 4:
-        # Stronger warning at count 4+
+    # Build the self-check message based on scope and count
+    if failure_scope == "exact_signature":
+        if count >= 4:
+            message = (
+                f"{tool_name} has failed {count} times with identical arguments. "
+                "You have been warned but have not changed the arguments. "
+                "This is a confirmed loop — you MUST change strategy before calling this tool again."
+            )
+        else:
+            message = (
+                f"{tool_name} has failed {count} times with identical arguments. "
+                "Before retrying, compare your intended fix with the actual tool arguments you are about to emit."
+            )
+    elif failure_scope == "same_tool":
         message = (
-            f"{tool_name} has failed {exact_count} times with identical arguments. "
-            "You have been warned but have not changed the arguments. "
-            "This is a confirmed loop — you MUST change strategy before calling this tool again."
+            f"{tool_name} has failed {count} times this turn with varying arguments. "
+            "Different argument combinations are all failing — the issue is likely "
+            "strategic, not a parameter tweak. Diagnose the root cause before retrying."
         )
-    else:
+    else:  # no_progress
         message = (
-            f"{tool_name} has failed {exact_count} times with identical arguments. "
-            "Before retrying, compare your intended fix with the actual tool arguments you are about to emit."
+            f"{tool_name} has returned the same result {count} times. "
+            "Repeating this call will not produce new information. "
+            "Use the result already provided or change approach."
         )
 
     return ToolGuardrailDecision(
@@ -666,10 +730,11 @@ def _build_selfcheck_decision(
         code="tool_call_self_check_required",
         message=message,
         tool_name=tool_name,
-        count=exact_count,
+        count=count,
         signature=signature,
         last_tool_call_args=dict(args),
         recent_failures=list(recent_failures),
+        failure_scope=failure_scope,
     )
 
 
@@ -716,6 +781,7 @@ def _append_selfcheck_guidance(result: str, decision: ToolGuardrailDecision) -> 
             "message": decision.message,
             "tool_name": decision.tool_name,
             "count": decision.count,
+            "failure_scope": decision.failure_scope,
         },
         "last_tool_call": {
             "tool_name": decision.tool_name,

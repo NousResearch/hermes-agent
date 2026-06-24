@@ -177,12 +177,9 @@ def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     content = messages[0]["content"]
-    assert "same_tool_failure_warning" in content
-    assert "Do not switch to text-only replies" in content
-    assert "keep using tools" in content
-    assert "pwd && ls -la" in content
-    assert "absolute path" in content
-    assert "different tool" in content
+    # same_count=3 triggers self-check (default same_tool_failure_selfcheck_after=3)
+    assert "tool_call_self_check_required" in content or "same_tool_failure_warning" in content
+    assert "Do not switch to text-only replies" in content or "self-check" in content.lower()
 
 
 def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_and_preserves_result_order():

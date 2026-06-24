@@ -591,6 +591,13 @@ def _update_single_skill(conn: sqlite3.Connection, skill_name: str) -> bool:
         return False
     now = time.time()
     _upsert_skill(conn, skill_name, skill_path, now)
+    # Mark skills in main ~/.hermes/skills/ dir as needing external organization
+    main_skills = str((Path.home() / ".hermes" / "skills").resolve())
+    if str(skill_path.resolve()).startswith(main_skills):
+        conn.execute(
+            "UPDATE skill_nodes SET needs_organizing = 1 WHERE name = ? AND (needs_organizing IS NULL OR needs_organizing = 0)",
+            (skill_name,),
+        )
     conn.commit()
     logger.debug("skill-graph: updated single skill '%s' (%s)", skill_name, skill_path)
     return True
@@ -623,6 +630,7 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
                FROM skill_fts f
                JOIN skill_nodes n ON f.name = n.name
                WHERE skill_fts MATCH ?
+                 AND (n.is_deleted IS NULL OR n.is_deleted = 0)
                ORDER BY rank
                LIMIT ?""",
             (fts_query, limit * 2),
@@ -684,7 +692,7 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
     terms = _extract_terms(query)
     for term in terms:
         cursor = conn.execute(
-            """SELECT name FROM skill_nodes WHERE instr(tags, ?) > 0""",
+            """SELECT name FROM skill_nodes WHERE instr(tags, ?) > 0 AND (is_deleted IS NULL OR is_deleted = 0)""",
             (json.dumps(term),),
         )
         for row in cursor:
@@ -704,7 +712,7 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
             cursor = conn.execute(
                 """SELECT t.skill_name, t.strength, t.source, n.category, n.description
                    FROM skill_terms t
-                   JOIN skill_nodes n ON t.skill_name = n.name
+                   JOIN skill_nodes n ON t.skill_name = n.name AND (n.is_deleted IS NULL OR n.is_deleted = 0)
                    WHERE t.term = ? AND t.skill_name NOT IN ({})
                    ORDER BY t.strength DESC
                    LIMIT 5""".format(",".join("?" for _ in seen)),
@@ -714,7 +722,7 @@ def _search_graph(query: str, conn: sqlite3.Connection, limit: int = 10) -> list
             cursor = conn.execute(
                 """SELECT t.skill_name, t.strength, t.source, n.category, n.description
                    FROM skill_terms t
-                   JOIN skill_nodes n ON t.skill_name = n.name
+                   JOIN skill_nodes n ON t.skill_name = n.name AND (n.is_deleted IS NULL OR n.is_deleted = 0)
                    WHERE t.term = ?
                    ORDER BY t.strength DESC
                    LIMIT 5""",
@@ -803,7 +811,7 @@ def _fallback_search(query: str, conn: sqlite3.Connection, limit: int = 10) -> l
     if not terms:
         # No parseable terms — return top skills by name
         cursor = conn.execute(
-            "SELECT name, category, description, tags, file_path FROM skill_nodes ORDER BY name LIMIT ?",
+            "SELECT name, category, description, tags, file_path FROM skill_nodes WHERE (is_deleted IS NULL OR is_deleted = 0) ORDER BY name LIMIT ?",
             (limit,),
         )
         fallback = []
@@ -824,9 +832,10 @@ def _fallback_search(query: str, conn: sqlite3.Connection, limit: int = 10) -> l
         cursor = conn.execute(
             """SELECT n.name, n.category, n.description, n.tags, n.file_path
                FROM skill_nodes n
-               WHERE instr(n.name, ?) > 0
+               WHERE (n.is_deleted IS NULL OR n.is_deleted = 0)
+                 AND (instr(n.name, ?) > 0
                   OR instr(n.description, ?) > 0
-                  OR instr(n.tags, ?) > 0
+                  OR instr(n.tags, ?) > 0)
                LIMIT ?""",
             (term, term, json.dumps(term), limit),
         )
@@ -876,7 +885,8 @@ def _extract_terms(query: str) -> list[str]:
 def _get_node_info(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None:
     """Fetch full node info from the database."""
     cursor = conn.execute(
-        "SELECT name, category, description, tags, file_path FROM skill_nodes WHERE name = ?",
+        """SELECT name, category, description, tags, file_path, needs_organizing
+           FROM skill_nodes WHERE name = ? AND (is_deleted IS NULL OR is_deleted = 0)""",
         (name,),
     )
     row = cursor.fetchone()
@@ -888,6 +898,7 @@ def _get_node_info(conn: sqlite3.Connection, name: str) -> dict[str, Any] | None
         "description": row["description"],
         "tags": json.loads(row["tags"]) if row["tags"] else [],
         "file_path": row["file_path"],
+        "needs_organizing": bool(row.get("needs_organizing")) or False,
     }
 
 
@@ -931,6 +942,16 @@ def _migrate_db(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE skill_term_stats ADD COLUMN last_loaded TEXT")
     except sqlite3.OperationalError:
         pass
+    # v3: soft delete + needs_organizing for lifecycle management
+    for col, col_type in (
+        ("is_deleted", "INTEGER DEFAULT 0"),
+        ("deleted_at", "TEXT"),
+        ("needs_organizing", "INTEGER DEFAULT 0"),
+    ):
+        try:
+            conn.execute(f"ALTER TABLE skill_nodes ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
 
 
 # ── Slash command handler ───────────────────────────────────────────────────
@@ -1033,7 +1054,7 @@ def _format_terms(skill_name: str) -> str:
         return ""
 
 
-def _handle_slash_command(args: str) -> str | dict | None:
+def _handle_slash_command(args: str) -> str | None:
     parts = args.strip().split(None, 1) if args.strip() else []
     subcmd = parts[0].lower() if parts else "help"
     rest = parts[1] if len(parts) > 1 else ""
@@ -1048,31 +1069,8 @@ def _handle_slash_command(args: str) -> str | dict | None:
             logger.exception("skill-graph: rebuild failed")
             return f"Rebuild failed: {e}"
 
-    elif subcmd == "exec":
-        """Load a skill and execute it immediately in the conversation."""
-        if not rest:
-            return "Usage: /skill-graph exec <skill-name> [args...]"
-        try:
-            parts = rest.strip().split(None, 1)
-            skill_name = parts[0]
-            skill_args = parts[1] if len(parts) > 1 else ""
-            result = _handle_skill_load({"name": skill_name})
-            data = json.loads(result)
-            if not data.get("success"):
-                return f"Not found: {skill_name}"
-            content = data.get("content", "")
-            inject_content = f"[Executing skill: {skill_name}]\n\n{content}"
-            if skill_args:
-                inject_content += f"\n\n---\n{skill_args}"
-            return {
-                "action": "inject",
-                "content": inject_content,
-            }
-        except Exception as e:
-            return f"Exec failed: {e}"
-
     elif subcmd == "show":
-        """Show full skill content (preview only, no injection)."""
+        """Show full skill content (preview)."""
         if not rest:
             return "Usage: /skill-graph show <skill-name>"
         try:
@@ -1255,7 +1253,7 @@ def _handle_slash_command(args: str) -> str | dict | None:
             return f"Score breakdown failed: {e}"
 
     else:
-        # Unknown command — try loading the skill into the conversation
+        # Unknown command — try proxying to a skill in the graph
         if subcmd:
             try:
                 conn = _ensure_graph()
@@ -1267,21 +1265,24 @@ def _handle_slash_command(args: str) -> str | dict | None:
                     _data = json.loads(_result)
                     if _data.get("success"):
                         _content = _data.get("content", "")
-                        _inject_text = (
-                            f"[Skill: {subcmd}]\n\n{_content}"
+                        return (
+                            f"Loaded skill: {subcmd}\n"
+                            f"  Description: {_data.get('description', '')}\n"
+                            f"  Category:    {_data.get('category', '')}\n"
+                            f"  Content ({len(_content)} chars):\n"
+                            f"{_content[:500]}\n"
+                            f"...\n"
+                            f"(Use /sg info {subcmd} for metadata, "
+                            f"/sg terms {subcmd} for term details)"
                         )
-                        if rest:
-                            _inject_text += f"\n\n---\n{rest}"
-                        return {"action": "inject", "content": _inject_text}
             except Exception:
                 pass
         return (
             "/skill-graph — Skill knowledge graph\n\n"
             "Subcommands:\n"
             "  /skill-graph search <query>   Search skills by intent\n"
-            "  /skill-graph exec <name>      Execute skill immediately in conversation\n"
-            "  /skill-graph info <name>      Show skill metadata\n"
             "  /skill-graph show <name>      Show full skill content (preview)\n"
+            "  /skill-graph info <name>      Show skill metadata\n"
             "  /skill-graph terms <name>     Show term associations with stats\n"
             "  /skill-graph score <query>    Show scoring breakdown with term stats\n"
             "  /skill-graph list             List all skills in graph\n"
@@ -1315,7 +1316,10 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
         with _graph_lock:
             if list_all:
                 cursor = conn.execute(
-                    "SELECT name, category, description, tags, file_path FROM skill_nodes ORDER BY name"
+                    """SELECT name, category, description, tags, file_path, needs_organizing
+                       FROM skill_nodes
+                       WHERE (is_deleted IS NULL OR is_deleted = 0)
+                       ORDER BY name"""
                 )
                 results = []
                 for row in cursor:
@@ -1327,6 +1331,7 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
                         "file_path": row["file_path"],
                         "relevance": "listed",
                         "score": 0.0,
+                        "needs_organizing": bool(row.get("needs_organizing")) or False,
                     })
                 total = len(results)
                 hint = "All skills listed by name. Call skill_load(name) to load full content."
@@ -1363,19 +1368,14 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
                         "properties": json.loads(row["properties"]) if row["properties"] else {},
                     })
 
-        _hint = (
-            "Call skill_load(name) to load full content of a discovered skill."
-            if results
-            else "No skills matched your query. "
-                 "Try skill_graph_search() with different keywords, "
-                 "or use list_all=True to browse all skills."
-        )
         if results and results[0].get("score", 0) < 0.3:
-            _hint = (
+            hint = (
                 "Top results have low confidence. "
                 "Retry skill_graph_search() with different keywords, "
                 "or use skill_graph_search(list_all=True) to browse all skills."
             )
+        else:
+            hint = "Call skill_load(name) to load full content of a discovered skill."
         return json.dumps({
             "success": True,
             "query": query,
@@ -1383,7 +1383,7 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
             "edges_between_results": edges_between,
             "total_skills_in_graph": total,
             "result_count": len(results),
-            "hint": _hint,
+            "hint": hint,
         }, ensure_ascii=False)
 
     except Exception as e:
@@ -1542,31 +1542,30 @@ def register(ctx):
         args_hint="rebuild|status",
     )
 
-    # ── Hook: pre_tool_call — block search_files/session_search if graph not searched ──
-    # search_files: prevents the model from bypassing skill discovery by
-    #   going straight to filesystem search (e.g. "find project files").
-    # session_search: prevents stale/incorrect conclusions from other sessions
-    #   from being carried over. read_file is intentionally excluded — it's the
-    #   execution step after a skill has been loaded and should not be gated.
-    # Session-level gating (one unlock per session, not per turn): once
-    # skill_graph_search is called, gated tools stay unlocked for the rest of
-    # the session. The outer closure (register()) runs once per agent init,
-    # so this flag naturally resets on session restart.
-    _gated_tools = frozenset({"search_files", "session_search"})
-    _graph_searched: bool = False  # session-level
+    # ── Hook: pre_tool_call — block find/read_file/recall if graph not searched ──
+    _gated_tools = frozenset({"find", "read_file", "session_search"})
+    _graph_searched_turn: dict[str, bool] = {}  # turn_id → searched
 
     def _on_pre_tool_call(tool_name: str, args: dict | None = None, **kw: Any) -> dict | str | None:
-        nonlocal _graph_searched
+        nonlocal _graph_searched_turn
+        turn_id = kw.get("turn_id", "")
+        if not turn_id:
+            return None
+
+        # Turn boundary: reset flag for new turns
+        if turn_id not in _graph_searched_turn:
+            _graph_searched_turn.clear()
+            _graph_searched_turn[turn_id] = False
 
         # If this IS skill_graph_search, mark it and allow
         if tool_name == "skill_graph_search":
-            _graph_searched = True
+            _graph_searched_turn[turn_id] = True
             return None
 
-        # Check gating: restricted tool + not yet searched this session
+        # Check gating: skill-graph mode + restricted tool + not yet searched
         if (
             tool_name in _gated_tools
-            and not _graph_searched
+            and not _graph_searched_turn.get(turn_id, False)
         ):
             return {"action": "block", "message":
                 f"Tool '{tool_name}' is blocked until you call "
@@ -1587,17 +1586,11 @@ def register(ctx):
 
     ctx.register_hook("on_session_start", _on_session_start)
 
-    # ── Register proxy commands from graph-discovered skills ──
+        # ── Register proxy commands from graph-discovered skills ──
     _main_skills_dir = str((Path.home() / ".hermes" / "skills").resolve())
 
     def _register_graph_commands():
-        """Scan all skills' SKILL.md frontmatter for commands: and register proxy handlers.
-        Registers /<skill_name> only for skills OUTSIDE the main skills directory
-        (i.e. external source_dirs) — Hermes already handles native /<skill-name>
-        dispatch for skills in ~/.hermes/skills/ natively, and plugin-registered
-        commands take priority over the native handler, which would break loading
-        skills as instructions.
-        """
+        """Scan all skills' SKILL.md frontmatter for commands: and register proxy handlers."""
         try:
             skill_dirs = _find_all_skills_dirs()
             skills = _scan_skill_mds(skill_dirs)
@@ -1644,24 +1637,22 @@ def register(ctx):
                 logger.info("skill-graph: registered %d proxy slash commands from graph skills", _registered)
         except Exception:
             logger.exception("skill-graph: failed to register proxy commands")
-            logger.exception("skill-graph: failed to register proxy commands")
 
     def _make_proxy(skill_name: str):
-        """Create a proxy handler that injects the skill into the conversation."""
-        def _proxy(_args: str) -> dict | None:
+        """Create a proxy handler that loads the given skill."""
+        def _proxy(_args: str) -> str | None:
             try:
                 _result = _handle_skill_load({"name": skill_name})
                 _data = json.loads(_result)
                 if _data.get("success"):
                     _content = _data.get("content", "")
-                    _user_args = _args.strip()
-                    _inject = (
-                        f"[Executing skill: {skill_name}]\n\n"
-                        f"{_content}\n"
+                    return (
+                        f"Loaded skill: {skill_name}\n"
+                        f"  Description: {_data.get('description', '')}\n"
+                        f"  Category:    {_data.get('category', '')}\n"
+                        f"  Content ({len(_content)} chars):\n"
+                        f"{_content[:500]}\n..."
                     )
-                    if _user_args:
-                        _inject += f"\n---\n{_user_args}"
-                    return {"action": "inject", "content": _inject}
             except Exception:
                 pass
             return None
@@ -1701,7 +1692,7 @@ def register(ctx):
         if not isinstance(args, dict):
             return
         action = args.get("action", "")
-        if action not in ("create", "edit", "patch"):
+        if action not in ("create", "edit", "patch", "delete"):
             return
         skill_name = args.get("name", "")
         if not skill_name:
@@ -1709,9 +1700,17 @@ def register(ctx):
         try:
             conn = _ensure_graph()
             with _graph_lock:
-                updated = _update_single_skill(conn, skill_name)
-            if updated:
-                logger.info("skill-graph: updated skill '%s' after %s", skill_name, action)
+                if action == "delete":
+                    conn.execute(
+                        "UPDATE skill_nodes SET is_deleted = 1, deleted_at = datetime('now') WHERE name = ?",
+                        (skill_name,),
+                    )
+                    conn.commit()
+                    logger.info("skill-graph: soft-deleted skill '%s'", skill_name)
+                else:
+                    updated = _update_single_skill(conn, skill_name)
+                    if updated:
+                        logger.info("skill-graph: updated skill '%s' after %s", skill_name, action)
         except Exception:
             logger.exception("skill-graph: post_tool_call failed for skill '%s'", skill_name)
 

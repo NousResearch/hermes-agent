@@ -228,7 +228,12 @@ SKILL_GRAPH_GUIDANCE = (
     "discovery. Do NOT use skills_list() — the flat index is intentionally "
     "empty. Instead, call skill_graph_search(query) to find the right skill "
     "by describing what you need in natural language, then load it with "
-    "skill_load(name). Load the skill-graph companion first for task classification "
+    "skill_load(name). "
+    "Before calling skill_manage(action='create') to create a new skill, "
+    "always verify with skill_graph_search(list_all=True) or a broader query "
+    "that no existing skill can be updated to meet the need. "
+    "Only create after confirming a genuine gap. "
+    "Load the skill-graph companion first for task classification "
     "and routing. After completing the main work, call skill_load(\"quality-gate\") "
     "for final validation."
 )
@@ -247,14 +252,13 @@ SKILL_GRAPH_IDENTITY = (
     "2. From the loaded content, read the Phase 1 classification table\n"
     "   and classify the user's intent.\n"
     "3. Read the Phase 4 routing table and find the matching entry.\n"
-    "4. Call skill_graph_search() with the query from that entry\n"
-    "   (describe the intent, not the literal user query).\n"
+    "4. Call skill_graph_search() with the query from step 3.\n"
     "5. skill_load(\"returned-skill-name\") for full instructions.\n"
     "6. Follow its instructions to complete the task.\n"
     "7. Call skill_load(\"quality-gate\") for final validation.\n"
     "\n"
     "Never use skills_list(), search_files, ls, or cat before step 4.\n"
-    "Never plan from scratch — the graph has the skills you need."
+    "Never plan from scratch — the graph has the skills you need.\n"
 )
 
 KANBAN_GUIDANCE = (

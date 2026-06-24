@@ -1906,13 +1906,13 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             import nacl  # noqa: F401 — presence check only
         except ImportError:
-            logger.warning(
-                "Discord voice channel join failed: PyNaCl is not installed. "
-                "The `voice` extra no longer ships PyNaCl (vulnerable pin). "
-                "Install it manually (`pip install PyNaCl>=1.6.2`) to use "
-                "Discord voice channels."
-            )
-            return False
+            # Raise so GatewayRunner._handle_voice_channel_join can surface the
+            # PyNaCl-specific install guidance (return False falls through to the
+            # generic "Check bot permissions" message — Codex PR #25).
+            raise RuntimeError(
+                "PyNaCl is not installed. The voice extra no longer ships PyNaCl "
+                "(vulnerable pin). Install manually: pip install PyNaCl>=1.6.2"
+            ) from None
 
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
             # Already connected in this guild?

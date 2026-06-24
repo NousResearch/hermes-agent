@@ -63,7 +63,7 @@ async def test_concurrent_joins_do_not_double_connect():
     from plugins.platforms.discord import adapter as discord_mod
     # Ensure the PyNaCl guard inside join_voice_channel is a no-op for this
     # test (the test venv may not have nacl). Use patch.dict so the mock
-    # doesn't leak into other test files in the same pytest session.
+    # does not leak into other test files in the same pytest session.
     with patch.dict("sys.modules", {"nacl": MagicMock()}):
         with patch.object(discord_mod, "VoiceReceiver",
                           MagicMock(return_value=MagicMock(start=lambda: None))):
@@ -88,11 +88,11 @@ async def test_concurrent_joins_do_not_double_connect():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_join_voice_returns_false_when_pynacl_missing():
-    """When PyNaCl is not installed, join_voice_channel must fail fast with
-    a logged warning instead of crashing inside channel.connect() with an
-    opaque missing-module error. The `voice` extra no longer ships PyNaCl
-    (vulnerable pin), so this guard is the user-facing safety net."""
+async def test_join_voice_raises_when_pynacl_missing():
+    """When PyNaCl is not installed, join_voice_channel must raise RuntimeError
+    so GatewayRunner._handle_voice_channel_join can surface the PyNaCl-specific
+    install guidance. Returning False would fall through to the generic
+    "Check bot permissions" message instead."""
     import builtins
 
     adapter = _make_adapter()
@@ -108,9 +108,9 @@ async def test_join_voice_returns_false_when_pynacl_missing():
     channel.guild.id = 123
 
     with patch("builtins.__import__", side_effect=_block_nacl):
-        result = await adapter.join_voice_channel(channel)
+        with pytest.raises(RuntimeError, match="PyNaCl is not installed"):
+            await adapter.join_voice_channel(channel)
 
-    assert result is False
     # channel.connect() must NOT have been called — the guard fires before it.
     channel.connect.assert_not_called()
 

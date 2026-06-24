@@ -538,7 +538,12 @@ def active_features() -> list[str]:
     """
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        # Check only the first spec (the primary/unique package for this feature).
+        # Checking any spec would cause false activations when a transitive package
+        # (e.g. aiohttp, cbor2, starlette) is installed by a different feature —
+        # see Codex review on PR #25. By convention the first tuple element must be
+        # a package installed exclusively by this feature.
+        if _is_present(specs[0]):
             active.append(feature)
     return active
 

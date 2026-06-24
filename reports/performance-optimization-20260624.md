@@ -31,24 +31,24 @@ High-confidence baseline from `performance-baseline.md`:
 - `gateway.run` import median: `0.956991s`
 - importtime hot spots included disabled/unused platform and account usage import paths.
 
-Current verified measurement after lazy-loading heavy account usage / platform-related paths:
+Current verified measurement after rebasing onto `origin/main` (`6e88f7b6f`):
 
 ```text
-import gateway.run median 0.0182s, min 0.0181s, max 0.0188s, n=5
+import gateway.run median 0.1616s, min 0.1605s, max 0.1682s, n=5
 ```
 
-Improvement:
+Improvement against the original baseline:
 
-- Absolute delta: `0.938791s`
-- Relative speedup: ~`98.1%` lower import latency
-- This exceeds the ≥50% target for the gateway import/startup hot path.
+- Absolute delta: `0.795391s`
+- Relative speedup: ~`83.1%` lower import latency
+- This still exceeds the ≥50% target for the gateway import/startup hot path after upstream integration.
 
 ### 2. Telegram short-message ingress latency
 
 Telegram adaptive text batch defaults changed for normal short messages:
 
-- Fast tier: `0.18s` → `0.025s` (~86.1% lower)
-- Short tier: `0.24s` → `0.045s` (~81.25% lower)
+- Fast tier: `0.18s` → `0.015s` (~91.7% lower)
+- Short tier: `0.24s` → `0.020s` (~91.7% lower)
 
 This targets perceived Telegram response latency without changing long split-message delay semantics.
 
@@ -65,10 +65,10 @@ venv/bin/python -X importtime -c 'import gateway.run'
 
 Results:
 
-- Runtime benchmark after pass: `/Users/shinchen-mac/.hermes/hermes-workspace/reports/hermes-runtime-benchmark/20260624-001928/REPORT.md`
-- Focused tests: `20 passed in 0.31s`
-- Platform adapter tests: `494 passed in 7.98s` with existing warnings
-- `gateway.run` importtime tail: total `144941µs` in importtime trace; repeated subprocess median showed `0.0182s` wall-clock import under warm filesystem/cache conditions.
+- Runtime benchmark after integration: `/Users/shinchen-mac/.hermes/hermes-workspace/reports/hermes-runtime-benchmark/20260624-091157/REPORT.md`
+- Focused tests after integration: `21 passed in 0.43s`
+- Platform adapter tests after integration: `494 passed in 9.87s` with existing warnings
+- Repeated subprocess import check after integration: `gateway.run` median `0.1616s`.
 
 ## Runtime Benchmark Snapshot
 
@@ -76,11 +76,11 @@ After-change benchmark:
 
 | Command | Result | Time |
 |---|---:|---:|
-| `hermes --version` | ok | 266.8ms |
-| `hermes status` | ok | 1028.2ms |
-| `hermes doctor` | ok | 7120.5ms |
-| `hermes mcp test project-fs` | ok | 1526.8ms |
-| `hermes curator status` | ok | 320.7ms |
+| `hermes --version` | ok | 1220.4ms |
+| `hermes status` | ok | 1050.9ms |
+| `hermes doctor` | ok | 8952.5ms |
+| `hermes mcp test project-fs` | ok | 1713.5ms |
+| `hermes curator status` | ok | 358.1ms |
 
 ## Boundaries
 

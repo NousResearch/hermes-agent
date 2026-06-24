@@ -444,9 +444,9 @@ class TelegramAdapter(BasePlatformAdapter):
     # Always clamped to ``_text_batch_delay_seconds`` so an operator can lower
     # the cap further via env var.
     _TEXT_BATCH_FAST_LEN = 320
-    _TEXT_BATCH_FAST_DELAY_S = 0.025
+    _TEXT_BATCH_FAST_DELAY_S = 0.015
     _TEXT_BATCH_SHORT_LEN = 1024
-    _TEXT_BATCH_SHORT_DELAY_S = 0.045
+    _TEXT_BATCH_SHORT_DELAY_S = 0.020
 
     @staticmethod
     def _env_float_clamped(
@@ -517,7 +517,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # (0.3s / 1.0s instead of 0.6s / 2.0s) let short replies stream
         # without a noticeable wait — combined with the adaptive fast-path
         # in ``_flush_text_batch`` below, ≤320-codepoint replies settle in
-        # about 25ms.  All bounds are conservative for Telegram's
+        # about 15ms.  All bounds are conservative for Telegram's
         # ~1 edit/s flood envelope.
         self._text_batch_delay_seconds = self._env_float_clamped(
             "HERMES_TELEGRAM_TEXT_BATCH_DELAY_SECONDS",

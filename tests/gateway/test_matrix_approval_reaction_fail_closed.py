@@ -153,3 +153,27 @@ class TestApprovalReactionFailClosed:
         adapter = _make_adapter(allowed_user_ids=["@alice:matrix.org"])
         event = _make_event("@mallory:matrix.org", "$prompt-event-1")
         assert _run(adapter, event) is False
+
+    def test_pairing_approved_user_permits(self, monkeypatch):
+        """User approved via ``hermes pairing approve`` → allow."""
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter(allowed_user_ids=None)
+        event = _make_event("@paired:matrix.org", "$prompt-event-1")
+
+        mock_store = SimpleNamespace(
+            is_approved=lambda platform, uid: platform == "matrix" and uid == "@paired:matrix.org",
+        )
+        with patch("gateway.pairing.PairingStore", return_value=mock_store):
+            assert _run(adapter, event) is True
+
+    def test_pairing_unapproved_user_denies(self, monkeypatch):
+        """User NOT in pairing store and no allowlist → deny."""
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        adapter = _make_adapter(allowed_user_ids=None)
+        event = _make_event("@stranger:matrix.org", "$prompt-event-1")
+
+        mock_store = SimpleNamespace(
+            is_approved=lambda platform, uid: False,
+        )
+        with patch("gateway.pairing.PairingStore", return_value=mock_store):
+            assert _run(adapter, event) is False

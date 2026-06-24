@@ -3155,16 +3155,30 @@ class MatrixAdapter(BasePlatformAdapter):
         if not allow_all and not (
             self._allowed_user_ids and sender in self._allowed_user_ids
         ):
-            logger.info(
-                "Matrix: ignoring %s reaction from unauthorized user %s on %s",
-                prompt_label, sender, target_event_id,
-            )
-            await self._send_invalid_reaction_feedback(
-                room_id,
-                target_event_id,
-                "Only an authorized Matrix user can use these controls.",
-            )
-            return False
+            # Check pairing store — mirrors authz_mixin._check_authorization
+            # so users approved via ``hermes pairing approve`` can interact
+            # with reaction-based controls (exec approval, model picker) even
+            # without MATRIX_ALLOWED_USERS set.
+            paired = False
+            if sender:
+                try:
+                    from gateway.pairing import PairingStore
+                    store = PairingStore()
+                    if store.is_approved("matrix", sender):
+                        paired = True
+                except Exception:
+                    pass
+            if not paired:
+                logger.info(
+                    "Matrix: ignoring %s reaction from unauthorized user %s on %s",
+                    prompt_label, sender, target_event_id,
+                )
+                await self._send_invalid_reaction_feedback(
+                    room_id,
+                    target_event_id,
+                    "Only an authorized Matrix user can use these controls.",
+                )
+                return False
 
         requester = getattr(prompt, "requester_user_id", None)
         approval_require_sender = getattr(self, "_approval_require_sender", True)

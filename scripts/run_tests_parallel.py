@@ -80,6 +80,18 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at com
 _DURATIONS_FILE = "test_durations.json"
 
 
+def _make_console_output_best_effort() -> None:
+    """Avoid progress-output crashes on legacy console encodings."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
 def _count_tests(
     files: List[Path], repo_root: Path, pytest_passthrough: List[str]
 ) -> dict[Path, int]:
@@ -594,6 +606,8 @@ def _slice_files(
 
 
 def main() -> int:
+    _make_console_output_best_effort()
+
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,

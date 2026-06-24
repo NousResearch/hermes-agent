@@ -63,6 +63,43 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def test_progress_output_tolerates_legacy_stdout_encoding(tmp_path: Path) -> None:
+    """Progress glyphs must not crash the runner on non-UTF-8 consoles."""
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    probe = probe_dir / "test_probe_smoke.py"
+    probe.write_text("def test_smoke():\n    assert True\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "cp1252:strict"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--paths",
+            str(probe_dir),
+            "-j",
+            "1",
+            "--file-timeout",
+            "30",
+        ],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert "UnicodeEncodeError" not in proc.stdout
+    assert "1 tests passed" in proc.stdout
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only probe")
 @pytest.mark.live_system_guard_bypass
 def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:

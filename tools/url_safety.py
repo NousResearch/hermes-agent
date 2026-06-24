@@ -122,6 +122,13 @@ _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
 # VPNs, and some cloud internal networks.
 _CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
 
+# 64:ff9b::/96 (NAT64 Well-Known Prefix, RFC 6052) is flagged by
+# ipaddress.is_reserved, but it carries an embedded IPv4 target in its low
+# 32 bits. We allow it ONLY after re-checking that embedded IPv4 against the
+# IPv4 SSRF policy (so public targets pass while private/metadata/loopback
+# embedded addresses stay blocked).
+_NAT64_NETWORK = ipaddress.ip_network("64:ff9b::/96")
+
 # ---------------------------------------------------------------------------
 # Global toggle: allow private/internal IP resolution
 # ---------------------------------------------------------------------------
@@ -188,16 +195,32 @@ def _reset_allow_private_cache() -> None:
     _cached_allow_private = False
 
 
+def _embedded_ipv4_is_blocked(embedded_ip: ipaddress.IPv4Address) -> bool:
+    """Apply the IPv4 SSRF policy to an IPv4 address embedded in IPv6."""
+    return (embedded_ip.is_private or embedded_ip.is_loopback or
+            embedded_ip.is_link_local or embedded_ip.is_reserved or
+            embedded_ip.is_multicast or embedded_ip.is_unspecified or
+            embedded_ip in _CGNAT_NETWORK)
+
+
 def _is_blocked_ip(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     """Return True if the IP should be blocked for SSRF protection."""
     # IPv4-mapped IPv6 addresses (``::ffff:x.x.x.x``) should be checked
     # by their embedded IPv4 address, not as IPv6
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        embedded_ip = ip.ipv4_mapped
-        return (embedded_ip.is_private or embedded_ip.is_loopback or
-                embedded_ip.is_link_local or embedded_ip.is_reserved or
-                embedded_ip.is_multicast or embedded_ip.is_unspecified or
-                embedded_ip in _CGNAT_NETWORK)
+        return _embedded_ipv4_is_blocked(ip.ipv4_mapped)
+
+    # NAT64 Well-Known Prefix (``64:ff9b::/96``, RFC 6052) synthesizes an
+    # IPv6 representation of a target IPv4 service reachable via an upstream
+    # NAT64 translator (common on dual-stack-lite consumer ISPs). The whole
+    # prefix is flagged by ``is_reserved``, which would be a false-positive
+    # SSRF block for public IPv4 targets. But we must NOT blanket-allow it:
+    # the low 32 bits are an attacker-controllable IPv4 address, so
+    # ``64:ff9b::169.254.169.254`` (cloud metadata) or ``64:ff9b::10.0.0.1``
+    # must still be blocked. Decide on the EMBEDDED IPv4 address.
+    if isinstance(ip, ipaddress.IPv6Address) and ip in _NAT64_NETWORK:
+        embedded_ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
+        return _embedded_ipv4_is_blocked(embedded_ip)
 
     # Standard IPv4/IPv6 address checking
     if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:

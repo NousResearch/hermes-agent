@@ -275,6 +275,16 @@ class TestIsBlockedIp:
         "100.64.0.1", "100.100.100.100", "100.127.255.254", "198.18.0.23",
         "::1", "fe80::1", "fc00::1", "fd12::1", "ff02::1",
         "::ffff:127.0.0.1", "::ffff:169.254.169.254",
+        # NAT64 Well-Known Prefix (RFC 6052) embedding a PRIVATE/RESERVED
+        # IPv4 target must STILL be blocked — the embedded low-32-bits are
+        # attacker-controllable, so allowing the whole prefix would be a
+        # fail-open SSRF bypass (cloud metadata, RFC1918, loopback, CGNAT).
+        "64:ff9b::169.254.169.254",  # cloud metadata via NAT64
+        "64:ff9b::10.0.0.1",         # RFC1918 via NAT64
+        "64:ff9b::127.0.0.1",        # loopback via NAT64
+        "64:ff9b::192.168.1.1",      # RFC1918 via NAT64
+        "64:ff9b::100.64.0.1",       # CGNAT via NAT64
+        "64:ff9b::0.0.0.0",          # unspecified via NAT64
     ])
     def test_blocked_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
@@ -283,10 +293,42 @@ class TestIsBlockedIp:
     @pytest.mark.parametrize("ip_str", [
         "8.8.8.8", "93.184.216.34", "1.1.1.1", "100.0.0.1",
         "2606:4700::1", "2001:4860:4860::8888",
+        # NAT64 Well-Known Prefix (RFC 6052, 64:ff9b::/96) embedding a PUBLIC
+        # IPv4 target. ipaddress.is_reserved flags the whole prefix, but the
+        # embedded IPv4 is public and reachable via an upstream NAT64
+        # translator (common on dual-stack-lite consumer ISPs). Must allow.
+        "64:ff9b::2.19.248.139",  # blogs.nvidia.com
+        "64:ff9b::8.8.8.8",       # Google DNS
+        "64:ff9b::1.1.1.1",       # Cloudflare DNS
     ])
     def test_allowed_ips(self, ip_str):
         ip = ipaddress.ip_address(ip_str)
         assert _is_blocked_ip(ip) is False, f"{ip_str} should be allowed"
+
+    def test_nat64_url_allowed_end_to_end(self):
+        """is_safe_url accepts a host that resolves to a NAT64 synthesized
+        IPv6 alongside a public IPv4 (typical dual-stack-lite DNS result)."""
+        with patch("socket.getaddrinfo", return_value=[
+            (2,  1, 6, "", ("2.19.248.139", 0)),
+            (10, 1, 6, "", ("64:ff9b::2.19.248.139", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://blogs.nvidia.com/") is True
+
+    def test_nat64_only_resolution_allowed(self):
+        """IPv6-only host on a DS-Lite network gets ONLY NAT64 addresses
+        back; must pass because the embedded IPv4 target is public."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::8.8.8.8", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://dns.google/") is True
+
+    def test_nat64_embedding_metadata_blocked_end_to_end(self):
+        """A host resolving to a NAT64 address that embeds the cloud-metadata
+        IPv4 (169.254.169.254) must be blocked — fail-open SSRF guard."""
+        with patch("socket.getaddrinfo", return_value=[
+            (10, 1, 6, "", ("64:ff9b::169.254.169.254", 0, 0, 0)),
+        ]):
+            assert is_safe_url("https://evil.example/") is False
 
 
 class TestGlobalAllowPrivateUrls:

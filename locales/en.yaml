@@ -268,6 +268,15 @@ gateway:
     header:                "📊 **Hermes Gateway Status**"
     session_id:            "**Session ID:** `{session_id}`"
     title:                 "**Title:** {title}"
+    # Backtick-quoted: model identifiers often contain forward slashes or
+    # colons (e.g. "anthropic/claude-opus-4.6", "ollama/qwen3:14b") that
+    # are clearer in monospace; mirrors the formatting /agents already uses.
+    model:                 "**Model:** `{model}`"
+    # Only emitted when a /model session override is active and differs
+    # from the profile default — keeps the common case (no override) free
+    # of noise while making active overrides obvious.
+    model_session_override: "**Model (this session):** `{model}`"
+    provider:              "**Provider:** {provider}"
     created:               "**Created:** {timestamp}"
     last_activity:         "**Last Activity:** {timestamp}"
     tokens:                "**Cumulative API tokens (re-sent each call):** {tokens}"

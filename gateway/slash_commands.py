@@ -419,6 +419,60 @@ class GatewaySlashCommandsMixin:
             except Exception:
                 db_total_tokens = 0
 
+        # Resolve the active model + provider for the /status reply.
+        #
+        # /status's documented description in ``hermes_cli/tips.py:418`` says
+        # it "shows session info at a glance: ID, title, model, token usage,
+        # and elapsed time" — yet the reply has historically omitted model
+        # and provider, so platform users on Matrix/Telegram/etc. can't tell
+        # what's actually behind the agent without running /model or reading
+        # the profile file.  The sibling ``/agents`` handler in this same
+        # module already surfaces model per running agent, so the data is on
+        # hand; /status just wasn't using it.
+        #
+        # Resolution strategy:
+        #   - Always read the profile-resolved model + provider via
+        #     ``_load_gateway_config`` + ``_resolve_gateway_model``.  These
+        #     are the same helpers used by ``/model`` and ``/profile`` so the
+        #     displayed values match what those commands report.
+        #   - Provider can live either at the YAML top level
+        #     (``provider: custom``) or nested inside the ``model:`` block
+        #     (``model.provider: custom``) — the profile shape varies across
+        #     Hermes versions.  Check both.
+        #   - If a turn is currently in flight, also include the live agent's
+        #     model when it differs from the profile default — this surfaces
+        #     active ``/model`` session overrides so the user can tell when
+        #     this turn is on a non-default model.
+        #
+        # /status must never crash the message: any exception in the resolver
+        # block is swallowed and the lines simply omit, falling back to the
+        # pre-patch behaviour rather than producing a broken reply.
+        status_model = ""
+        status_provider = ""
+        status_session_override = ""
+        try:
+            from gateway.run import _load_gateway_config, _resolve_gateway_model
+            _user_cfg = _load_gateway_config()
+            status_model = _resolve_gateway_model(_user_cfg) or ""
+            if isinstance(_user_cfg, dict):
+                # Top-level provider first; fall back to model.provider for
+                # the nested-style profile shape that newer Hermes versions
+                # use (e.g. ``model: {default: foo, provider: custom}``).
+                _cfg_provider = _user_cfg.get("provider")
+                if not _cfg_provider:
+                    _model_block = _user_cfg.get("model")
+                    if isinstance(_model_block, dict):
+                        _cfg_provider = _model_block.get("provider")
+                status_provider = str(_cfg_provider or "")
+        except Exception:
+            pass
+        # Active session override — surface only when it differs from profile
+        running_agent = self._running_agents.get(session_key) if is_running else None
+        if running_agent is not None:
+            _live_model = str(getattr(running_agent, "model", "") or "")
+            if _live_model and _live_model != status_model:
+                status_session_override = _live_model
+
         lines = [
             t("gateway.status.header"),
             "",
@@ -426,6 +480,18 @@ class GatewaySlashCommandsMixin:
         ]
         if title:
             lines.append(t("gateway.status.title", title=title))
+        # Render model + provider between title and created so they appear
+        # high in the reply (most likely first lines a Matrix client will
+        # show in a preview / collapsed view).  Each line is independently
+        # gated so we don't emit an empty placeholder when the value didn't
+        # resolve — see comment above the resolver block for the rationale.
+        if status_model:
+            lines.append(t("gateway.status.model", model=status_model))
+        if status_session_override:
+            lines.append(t("gateway.status.model_session_override",
+                           model=status_session_override))
+        if status_provider:
+            lines.append(t("gateway.status.provider", provider=status_provider))
         lines.extend([
             t("gateway.status.created", timestamp=session_entry.created_at.strftime('%Y-%m-%d %H:%M')),
             t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime('%Y-%m-%d %H:%M')),

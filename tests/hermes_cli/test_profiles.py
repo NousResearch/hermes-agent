@@ -7,6 +7,7 @@ and shell completion generation.
 
 import json
 import io
+import os
 import tarfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -214,6 +215,27 @@ class TestCreateProfile:
         assert cloned_config["model"] == "test"
         assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+
+    def test_clone_config_copies_auth_json(self, profile_env):
+        # auth.json holds the credential pool (incl. OAuth tokens that never
+        # land in .env). Selective --clone must carry it so a profile cloned
+        # from an OAuth-authenticated source keeps the same credentials,
+        # matching --clone-all and .env semantics.
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "auth.json").write_text(
+            '{"credential_pool": {"anthropic": [{"access_token": "tok"}]}}'
+        )
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+
+        cloned_auth = profile_dir / "auth.json"
+        assert cloned_auth.exists()
+        cloned = json.loads(cloned_auth.read_text())
+        assert cloned["credential_pool"]["anthropic"][0]["access_token"] == "tok"
+        # Credential file must be tightened to owner-only, like .env.
+        if os.name == "posix":
+            assert (cloned_auth.stat().st_mode & 0o777) == 0o600
 
     def test_clone_config_migrates_legacy_config_version(self, profile_env):
         tmp_path = profile_env

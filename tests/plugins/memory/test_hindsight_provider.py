@@ -1460,6 +1460,34 @@ class TestSystemPrompt:
         assert "tools mode" in block
         assert "hindsight_recall" in block
 
+    def test_context_mode_auto_recall_disabled(self, provider_with_config):
+        p = provider_with_config(memory_mode="context", auto_recall=False)
+        block = p.system_prompt_block()
+        assert "context mode" in block
+        assert "automatically injected" not in block
+        assert "Auto-injection is disabled" in block
+        assert "hindsight_recall" in block
+
+    def test_hybrid_mode_auto_recall_disabled(self, provider_with_config):
+        p = provider_with_config(memory_mode="hybrid", auto_recall=False)
+        block = p.system_prompt_block()
+        assert "automatically injected" not in block
+        assert "Auto-injection is disabled" in block
+        assert "hindsight_recall" in block
+
+    def test_context_mode_auto_recall_enabled(self, provider_with_config):
+        p = provider_with_config(memory_mode="context", auto_recall=True)
+        block = p.system_prompt_block()
+        assert "automatically injected" in block
+        assert "hindsight_recall" not in block
+
+    def test_tools_mode_ignores_auto_recall(self, provider_with_config):
+        """tools mode never claims auto-injection regardless of auto_recall."""
+        p = provider_with_config(memory_mode="tools", auto_recall=True)
+        block = p.system_prompt_block()
+        assert "automatically injected" not in block
+        assert "hindsight_recall" in block
+
 
 # ---------------------------------------------------------------------------
 # Config schema tests

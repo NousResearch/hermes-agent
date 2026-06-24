@@ -4159,6 +4159,26 @@ def resolve_provider_client(
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = os.getenv(custom_key_env, "").strip()
+            # Fallback to credential pool when api_key is not in config.yaml
+            # or env vars. Users typically configure custom providers like
+            # bothub/openrouter via `hermes auth add`, which stores the key
+            # in auth.json (credential pool). Without this fallback, the
+            # provider falls through to "no-key-required" and every auxiliary
+            # call fails with 401 — breaking LCM compression, title generation,
+            # vision, and other auxiliary tasks. Also pulls base_url from the
+            # pool if it's missing from config.yaml.
+            if not custom_key:
+                pool_name = f"custom:{custom_entry.get('name') or provider}"
+                cp = load_pool(pool_name)
+                if cp and cp.has_credentials():
+                    cp_entry = cp.select()
+                    cp_key = getattr(cp_entry, 'runtime_api_key', '') or ''
+                    if cp_key:
+                        custom_key = cp_key.strip()
+                    if not custom_base:
+                        cp_base = getattr(cp_entry, 'base_url', '') or ''
+                        if cp_base:
+                            custom_base = cp_base.strip()
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(

@@ -4216,6 +4216,190 @@ class TestAnthropicExplicitApiKey:
         )
 
 
+# ── Credential pool fallback for named custom providers (PR #46703) ──────
+
+
+class TestNamedCustomProviderCredentialPool:
+    """When a custom provider (bothub, OpenRouter, etc.) is configured via
+    ``hermes auth add`` but has no ``api_key`` in ``config.yaml`` or env,
+    ``resolve_provider_client()`` must fall back to the credential pool.
+
+    Without this fallback the provider falls through to "no-key-required"
+    and every auxiliary call fails with 401 — breaking LCM compression,
+    title generation, vision, and other auxiliary tasks.
+    """
+
+    def test_credential_pool_resolves_api_key_for_named_custom(self, monkeypatch):
+        """Named custom provider without api_key in config/env falls back to pool."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        class _Entry:
+            runtime_api_key = "sk-from-pool"
+            base_url = "https://openai.bothub.ru/v1/"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+            def select(self):
+                return _Entry()
+
+        mock_entry = {"name": "bothub", "base_url": "https://openai.bothub.ru/v1/"}
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock()
+
+        with (
+            patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value=mock_entry),
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client.OpenAI", mock_openai),
+        ):
+            client, model = resolve_provider_client("custom:bothub", model="gemma-4-31b-it:free")
+
+        assert client is not None
+        call_kwargs = mock_openai.call_args[1]
+        assert call_kwargs["api_key"] == "sk-from-pool", \
+            "API key from credential pool must be passed to OpenAI client"
+
+    def test_credential_pool_resolves_missing_base_url(self, monkeypatch):
+        """When base_url is absent from config.yaml but present in the pool."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        class _Entry:
+            runtime_api_key = "sk-from-pool"
+            base_url = "https://openai.bothub.ru/v1/"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+            def select(self):
+                return _Entry()
+
+        mock_entry = {"name": "bothub", "base_url": ""}  # no base_url in config
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock()
+
+        with (
+            patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value=mock_entry),
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client.OpenAI", mock_openai),
+        ):
+            client, model = resolve_provider_client("custom:bothub", model="gemma-4-31b-it:free")
+
+        assert client is not None
+        call_kwargs = mock_openai.call_args[1]
+        assert call_kwargs["api_key"] == "sk-from-pool"
+        assert "bothub.ru" in call_kwargs["base_url"], \
+            "base_url from pool must be used when config has none"
+
+    def test_key_env_still_takes_priority_over_pool(self, monkeypatch):
+        """key_env/api_key_env in config.yaml must take priority over pool."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        monkeypatch.setenv("MY_BOTHUB_KEY", "sk-from-env")
+
+        mock_entry = {
+            "name": "bothub",
+            "base_url": "https://openai.bothub.ru/v1/",
+            "key_env": "MY_BOTHUB_KEY",
+        }
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock()
+
+        with (
+            patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value=mock_entry),
+            patch("agent.auxiliary_client.load_pool") as mock_load_pool,
+            patch("agent.auxiliary_client.OpenAI", mock_openai),
+        ):
+            client, model = resolve_provider_client("custom:bothub", model="gemma-4-31b-it:free")
+
+        assert client is not None
+        call_kwargs = mock_openai.call_args[1]
+        assert call_kwargs["api_key"] == "sk-from-env", \
+            "env var key must take priority over credential pool"
+        # credential pool should not even be consulted
+        mock_load_pool.assert_not_called()
+
+    def test_no_warning_when_pool_resolves_key(self, monkeypatch, caplog):
+        """No warning about 'no-key-required' when pool provides the key."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        class _Entry:
+            runtime_api_key = "sk-from-pool"
+            base_url = "https://openai.bothub.ru/v1/"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+            def select(self):
+                return _Entry()
+
+        mock_entry = {"name": "bothub", "base_url": "https://openai.bothub.ru/v1/"}
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock()
+
+        with (
+            patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value=mock_entry),
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client.OpenAI", mock_openai),
+            caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"),
+        ):
+            resolve_provider_client("custom:bothub", model="gemma-4-31b-it:free")
+
+        assert not any("no-key-required" in rec.message for rec in caplog.records), \
+            "Must NOT warn about missing key when pool resolves it"
+
+    def test_warning_emitted_when_pool_also_empty(self, monkeypatch, caplog):
+        """Warning about 'no-key-required' must still fire when pool is empty."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        class _Pool:
+            def has_credentials(self):
+                return False
+            def select(self):
+                return None
+
+        mock_entry = {"name": "bothub", "base_url": "https://openai.bothub.ru/v1/"}
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock()
+
+        with (
+            patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value=mock_entry),
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client.OpenAI", mock_openai),
+            caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"),
+        ):
+            resolve_provider_client("custom:bothub", model="gemma-4-31b-it:free")
+
+        assert any("no-key-required" in rec.message for rec in caplog.records), \
+            "Must warn about missing key when pool is also empty"
+
+    def test_credential_pool_empty_pool_does_not_break(self, monkeypatch):
+        """Empty pool must not cause errors — provider falls through to no-key-required."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        class _Pool:
+            def has_credentials(self):
+                return False
+            def select(self):
+                return None
+
+        mock_entry = {"name": "bothub", "base_url": "https://openai.bothub.ru/v1/"}
+        mock_openai = MagicMock()
+        mock_openai.return_value = MagicMock()
+
+        with (
+            patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value=mock_entry),
+            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
+            patch("agent.auxiliary_client.OpenAI", mock_openai),
+        ):
+            # Must not raise; falls through to no-key-required as before
+            client, model = resolve_provider_client("custom:bothub", model="gemma-4-31b-it:free")
+
+        assert client is not None
+        call_kwargs = mock_openai.call_args[1]
+        assert call_kwargs["api_key"] == "no-key-required", \
+            "Must fall through to no-key-required when pool is empty"
+
+
 # ── Auxiliary unhealthy-provider TTL cache (issue #23570) ────────────────
 
 

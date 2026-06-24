@@ -788,6 +788,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    script_args: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -862,6 +863,14 @@ def create_job(
     normalized_base_url = normalized_base_url or None
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
+    if script_args is None:
+        normalized_script_args: List[str] = []
+    elif isinstance(script_args, list):
+        normalized_script_args = [str(a) for a in script_args]
+    else:
+        raise TypeError(
+            f"script_args must be a list of strings, got {type(script_args).__name__}"
+        )
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
@@ -942,6 +951,7 @@ def create_job(
         "model_snapshot": model_snapshot,
         "base_url": normalized_base_url,
         "script": normalized_script,
+        "script_args": normalized_script_args,
         "no_agent": normalized_no_agent,
         "context_from": context_from,
         "schedule": parsed_schedule,

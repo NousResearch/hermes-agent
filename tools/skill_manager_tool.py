@@ -814,7 +814,10 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if unsafe:
         return {"success": False, "error": unsafe}
 
-    shutil.rmtree(skill_dir)
+    try:
+        shutil.rmtree(skill_dir)
+    except OSError as exc:
+        return {"success": False, "error": f"Failed to delete skill directory: {exc}"}
 
     # Clean up empty category directories (don't remove the skills root itself)
     parent = skill_dir.parent

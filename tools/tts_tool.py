@@ -1871,8 +1871,17 @@ def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) ->
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
-            os.remove(wav_path)
+            try:
+                subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError(
+                    f"ffmpeg conversion failed (exit {exc.returncode}): {exc.stderr or 'no stderr'}"
+                ) from exc
+            finally:
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
         else:
             # No ffmpeg — just rename the WAV to the expected path
             os.rename(wav_path, output_path)
@@ -2050,11 +2059,17 @@ def _generate_piper_tts(text: str, output_path: str, tts_config: Dict[str, Any])
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
             try:
-                os.remove(wav_path)
-            except OSError:
-                pass
+                subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError(
+                    f"ffmpeg conversion failed (exit {exc.returncode}): {exc.stderr or 'no stderr'}"
+                ) from exc
+            finally:
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
         else:
             # No ffmpeg — keep WAV and return that path
             os.rename(wav_path, output_path)
@@ -2116,8 +2131,17 @@ def _generate_kittentts(text: str, output_path: str, tts_config: Dict[str, Any])
         ffmpeg = shutil.which("ffmpeg")
         if ffmpeg:
             conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
-            os.remove(wav_path)
+            try:
+                subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL)
+            except subprocess.CalledProcessError as exc:
+                raise RuntimeError(
+                    f"ffmpeg conversion failed (exit {exc.returncode}): {exc.stderr or 'no stderr'}"
+                ) from exc
+            finally:
+                try:
+                    os.remove(wav_path)
+                except OSError:
+                    pass
         else:
             # No ffmpeg — rename the WAV to the expected path
             os.rename(wav_path, output_path)

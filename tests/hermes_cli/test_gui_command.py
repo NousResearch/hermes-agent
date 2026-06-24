@@ -162,8 +162,8 @@ def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
     sandbox.chmod(0o755)
     ok = subprocess.CompletedProcess([], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
-         patch("hermes_cli.main.subprocess.run", return_value=ok) as mock_run, \
+    with patch("hermes_cli.desktop_linux.shutil.which", return_value="/usr/bin/sudo"), \
+         patch("hermes_cli.desktop_linux.subprocess.run", return_value=ok) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
 
@@ -183,8 +183,8 @@ def test_gui_linux_rejects_symlink_sandbox(tmp_path, monkeypatch):
     sandbox = packaged_exe.parent / "chrome-sandbox"
     sandbox.symlink_to(target)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
-         patch("hermes_cli.main.subprocess.run") as mock_run, \
+    with patch("hermes_cli.desktop_linux.shutil.which", return_value="/usr/bin/sudo"), \
+         patch("hermes_cli.desktop_linux.subprocess.run") as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
 
@@ -211,7 +211,7 @@ def test_gui_linux_skips_fixup_when_already_configured(tmp_path, monkeypatch):
 
     launch_ok = subprocess.CompletedProcess([str(packaged_exe)], 0)
 
-    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/sudo"), \
+    with patch("hermes_cli.desktop_linux.shutil.which", return_value="/usr/bin/sudo"), \
          patch("hermes_cli.main.subprocess.run", return_value=launch_ok) as mock_run, \
          pytest.raises(SystemExit) as exc:
         cli_main.cmd_gui(_ns(skip_build=True))
@@ -482,7 +482,8 @@ def test_gui_retries_pack_once_after_purging_build_cache(tmp_path, monkeypatch):
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
-         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._finalize_packaged_linux_desktop"), \
+         patch("hermes_cli.desktop_linux.ensure_electron_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._purge_electron_build_cache", return_value=[Path("/c/electron.zip")]) as mock_purge, \
          patch("hermes_cli.main._electron_dist_ok", return_value=False), \
@@ -588,7 +589,8 @@ def test_gui_install_failure_self_heals_electron_and_continues(tmp_path, monkeyp
 
     with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
          patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_fail), \
-         patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         patch("hermes_cli.main._finalize_packaged_linux_desktop"), \
+         patch("hermes_cli.desktop_linux.ensure_electron_sandbox_fixup", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._electron_dist_ok", return_value=False), \
          patch("hermes_cli.main._try_redownload_electron_dist", return_value=True) as mock_dl, \

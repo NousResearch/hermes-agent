@@ -328,6 +328,7 @@ class TestSlackConnectCleanup:
         )
 
         second_handler = MagicMock()
+        second_handler.close_async = AsyncMock(return_value=None)
         # _start_socket_mode_handler awaits the result of start_async via
         # asyncio.create_task — so the stub must return a real coroutine, not a
         # bare MagicMock.
@@ -349,6 +350,62 @@ class TestSlackConnectCleanup:
         assert result is True
         first_handler.close_async.assert_awaited_once_with()
         assert adapter._handler is second_handler
+
+        with patch("gateway.status.release_scoped_lock"):
+            await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_disconnect_closes_workspace_clients_and_clears_runtime_state(self):
+        """Regression for #51465: shutdown must close Slack WebClients.
+
+        ``hermes gateway run --replace`` takes the old process through the
+        normal adapter.disconnect() path. If Slack leaves AsyncWebClient
+        instances open there, aiohttp logs ``Unclosed client session`` while
+        the old gateway exits after SIGTERM.
+        """
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        socket_task = asyncio.create_task(_pending_for_fake_task())
+        handler = MagicMock()
+        handler.close_async = AsyncMock(return_value=None)
+
+        primary_client = MagicMock()
+        primary_client.close = AsyncMock(return_value=None)
+        team_client = MagicMock()
+        team_client.close = AsyncMock(return_value=None)
+
+        adapter._running = True
+        adapter._handler = handler
+        adapter._socket_mode_task = socket_task
+        adapter._app = MagicMock()
+        adapter._app.client = primary_client
+        adapter._team_clients = {"T_FAKE": team_client}
+        adapter._team_bot_user_ids = {"T_FAKE": "U_BOT"}
+        adapter._channel_team = {"C_FAKE": "T_FAKE"}
+        adapter._platform_lock_scope = "slack-app-token"
+        adapter._platform_lock_identity = "xapp-fake"
+        adapter._app_token = "xapp-fake"
+        adapter._proxy_url = "http://proxy.example.com:3128"
+        adapter._bot_user_id = "U_BOT"
+
+        with patch("gateway.status.release_scoped_lock") as mock_release:
+            await adapter.disconnect()
+
+        handler.close_async.assert_awaited_once_with()
+        primary_client.close.assert_awaited_once_with()
+        team_client.close.assert_awaited_once_with()
+        assert socket_task.cancelled()
+        assert adapter._app is None
+        assert adapter._handler is None
+        assert adapter._socket_mode_task is None
+        assert adapter._team_clients == {}
+        assert adapter._team_bot_user_ids == {}
+        assert adapter._channel_team == {}
+        assert adapter._bot_user_id is None
+        assert adapter._app_token is None
+        assert adapter._proxy_url is None
+        mock_release.assert_called_once_with("slack-app-token", "xapp-fake")
 
 
 # ---------------------------------------------------------------------------

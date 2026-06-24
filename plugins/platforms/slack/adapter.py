@@ -10,6 +10,7 @@ Uses slack-bolt (Python) with Socket Mode for:
 
 import asyncio
 import contextvars
+import inspect
 import json
 import logging
 import os
@@ -474,6 +475,31 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
 
+    async def _close_workspace_clients(self) -> None:
+        """Close any Slack SDK clients that may own aiohttp sessions."""
+        clients: List[Any] = []
+        if self._app is not None:
+            primary_client = getattr(self._app, "client", None)
+            if primary_client is not None:
+                clients.append(primary_client)
+        clients.extend(self._team_clients.values())
+
+        seen_ids: set[int] = set()
+        for client in clients:
+            ident = id(client)
+            if ident in seen_ids:
+                continue
+            seen_ids.add(ident)
+
+            for method_name in ("close", "aclose"):
+                closer = getattr(client, method_name, None)
+                if not callable(closer):
+                    continue
+                result = closer()
+                if inspect.isawaitable(result):
+                    await result
+                break
+
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
         if not self._app or not self._app_token:
@@ -914,6 +940,7 @@ class SlackAdapter(BasePlatformAdapter):
             # receive every Slack event and dispatch it twice, producing double
             # responses — the same bug that affected DiscordAdapter (#18187).
             await self._stop_socket_mode_handler()
+            await self._close_workspace_clients()
             self._app = None
             self._app_token = app_token
             self._proxy_url = proxy_url
@@ -1208,9 +1235,14 @@ class SlackAdapter(BasePlatformAdapter):
                 )
 
         await self._stop_socket_mode_handler()
+        await self._close_workspace_clients()
         self._app = None
         self._app_token = None
         self._proxy_url = None
+        self._bot_user_id = None
+        self._team_clients = {}
+        self._team_bot_user_ids = {}
+        self._channel_team = {}
 
         self._release_platform_lock()
 

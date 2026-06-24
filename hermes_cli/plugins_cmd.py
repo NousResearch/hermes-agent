@@ -135,6 +135,20 @@ def _sanitize_plugin_name(
     return target
 
 
+_GITHUB_BROWSER_SEGMENTS = {
+    "actions",
+    "blob",
+    "commit",
+    "commits",
+    "issues",
+    "pull",
+    "pulls",
+    "releases",
+    "tree",
+    "wiki",
+}
+
+
 def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
     """Turn an identifier into a cloneable Git URL and optional subdirectory.
 
@@ -146,6 +160,8 @@ def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
     - Full URL: https://github.com/owner/repo.git
     - Full URL: git@github.com:owner/repo.git
     - Full URL: ssh://git@github.com/owner/repo.git
+    - Browser URL: https://github.com/owner/repo/tree/main/path
+      →  (https://github.com/owner/repo.git, "path")
     - Shorthand: owner/repo  →  https://github.com/owner/repo.git
     - Shorthand w/ subdir: owner/repo/path/to/plugin
       →  (https://github.com/owner/repo.git, "path/to/plugin")
@@ -161,6 +177,17 @@ def _resolve_git_url(identifier: str) -> tuple[str, Optional[str]]:
     """
     # Already a URL.
     if identifier.startswith(("https://", "http://", "git@", "ssh://", "file://")):
+        if identifier.startswith("https://github.com/"):
+            path = identifier[len("https://github.com/") :]
+            path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
+            parts = path.split("/")
+            if len(parts) >= 3 and all(parts[:2]) and parts[2] in _GITHUB_BROWSER_SEGMENTS:
+                repo = parts[1].removesuffix(".git")
+                subdir = None
+                if parts[2] == "tree" and len(parts) >= 5:
+                    subdir = "/".join(p for p in parts[4:] if p).strip("/") or None
+                return f"https://github.com/{parts[0]}/{repo}.git", subdir
+
         # Explicit ``#subdir`` fragment — unambiguous for any scheme.
         if "#" in identifier:
             git_url, _, frag = identifier.partition("#")

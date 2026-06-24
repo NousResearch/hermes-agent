@@ -5,6 +5,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import { Kbd, KbdCombo } from '@/components/ui/kbd'
 import { useI18n } from '@/i18n'
 import {
   KEYBIND_ACTIONS,
@@ -166,15 +167,11 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
         type="button"
       >
         {capturing ? (
-          <span className="kbd-cap kbd-capturing">{k.pressKey}</span>
+          <Kbd variant="capturing">{k.pressKey}</Kbd>
         ) : combos.length > 0 ? (
-          combos.map(combo => (
-            <span className="kbd-cap" key={combo}>
-              {formatCombo(combo)}
-            </span>
-          ))
+          combos.map(combo => <KbdCombo combo={combo} key={combo} />)
         ) : (
-          <span className="kbd-cap kbd-cap--ghost">{k.set}</span>
+          <Kbd variant="ghost">{k.set}</Kbd>
         )}
       </button>
 
@@ -209,9 +206,7 @@ function ReadonlyRow({ shortcut }: { shortcut: KeybindReadonly }) {
       <span className="min-w-0 flex-1 truncate text-[0.82rem] text-foreground/75">{label}</span>
       <div className="flex shrink-0 items-center gap-1">
         {shortcut.keys.map(key => (
-          <span className="kbd-cap" key={key}>
-            {formatCombo(key)}
-          </span>
+          <KbdCombo combo={key} key={key} />
         ))}
       </div>
       <span aria-hidden className="size-6 shrink-0" />

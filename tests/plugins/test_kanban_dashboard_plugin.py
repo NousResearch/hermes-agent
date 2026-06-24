@@ -247,6 +247,19 @@ def test_dashboard_initial_board_uses_backend_current_when_unpinned():
     assert 'readSelectedBoard() || "default"' not in js
 
 
+def test_dashboard_markdown_html_is_sanitized_before_render():
+    """Markdown rendering must sanitize HTML before dangerouslySetInnerHTML."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function sanitizeMarkdownHtml(html)" in js
+    assert "MARKDOWN_ALLOWED_TAGS" in js
+    assert "sanitizeMarkdownHtml(renderMarkdown(props.source || \"\"))" in js
+    assert "dangerouslySetInnerHTML: { __html: renderMarkdown(props.source || \"\") }" not in js
+
+
 # ---------------------------------------------------------------------------
 # GET /tasks/:id returns body + comments + events + links
 # ---------------------------------------------------------------------------

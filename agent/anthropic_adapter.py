@@ -372,7 +372,7 @@ def _detect_claude_code_version() -> str:
 
 
 _CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
-_MCP_TOOL_PREFIX = "mcp_"
+_MCP_TOOL_PREFIX = "mcp__"
 
 
 def _get_claude_code_version() -> str:
@@ -751,6 +751,9 @@ def build_anthropic_client(
     from httpx import Timeout
 
     normalized_base_url = _normalize_base_url_text(base_url)
+    if normalized_base_url:
+        import re as _re
+        normalized_base_url = _re.sub(r"/v1/?$", "", normalized_base_url.rstrip("/"))
     _read_timeout = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     kwargs = {
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
@@ -1156,6 +1159,46 @@ def _prefer_refreshable_claude_code_token(env_token: str, creds: Optional[Dict[s
     return None
 
 
+def _resolve_anthropic_pool_token() -> Optional[str]:
+    """Return the first available Anthropic OAuth token from credential_pool.
+
+    Read-only: enumerates with ``clear_expired=False, refresh=False`` so a bare
+    token *resolve* (which runs from diagnostic/read-only call sites such as
+    ``account_usage`` and ``hermes models``) never mutates ``~/.hermes/auth.json``
+    or makes a network refresh call. Refresh-on-expiry is owned by the API call
+    path's pool recovery, not the resolver.
+    """
+    try:
+        from agent.credential_pool import AUTH_TYPE_OAUTH, load_pool
+    except Exception:
+        return None
+
+    try:
+        pool = load_pool("anthropic")
+        # Enumerate read-only (clear_expired=False, refresh=False): never persist
+        # to auth.json or trigger a network refresh from a bare resolve. select()
+        # is deliberately NOT used — it runs clear_expired=True, refresh=True,
+        # which would violate this read-only contract.
+        entries = pool._available_entries(clear_expired=False, refresh=False)
+    except Exception:
+        logger.debug("Failed to read Anthropic credential_pool", exc_info=True)
+        return None
+
+    for entry in entries:
+        if getattr(entry, "auth_type", None) != AUTH_TYPE_OAUTH:
+            continue
+        # access_token is a declared field but a persisted entry can carry an
+        # explicit null (or a partially-written OAuth entry), so coerce before
+        # strip — a bare None.strip() here would escape the try/excepts above
+        # and crash the whole resolver, taking down the source #5 fallback too.
+        # Matches the aux-client analog (auxiliary_client.py: str(key or "")).
+        token = (getattr(entry, "access_token", None) or "").strip()
+        if token:
+            return token
+
+    return None
+
+
 def resolve_anthropic_token() -> Optional[str]:
     """Resolve an Anthropic token from all available sources.
 
@@ -1164,7 +1207,8 @@ def resolve_anthropic_token() -> Optional[str]:
       2. CLAUDE_CODE_OAUTH_TOKEN env var
       3. Claude Code credentials (~/.claude.json or ~/.claude/.credentials.json)
          — with automatic refresh if expired and a refresh token is available
-      4. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
+      4. Anthropic credential_pool OAuth entry (~/.hermes/auth.json)
+      5. ANTHROPIC_API_KEY env var (regular API key, or legacy fallback)
 
     Returns the token string or None.
     """
@@ -1191,7 +1235,12 @@ def resolve_anthropic_token() -> Optional[str]:
     if resolved_claude_token:
         return resolved_claude_token
 
-    # 4. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
+    # 4. Hermes credential_pool OAuth entry.
+    resolved_pool_token = _resolve_anthropic_pool_token()
+    if resolved_pool_token:
+        return resolved_pool_token
+
+    # 5. Regular API key, or a legacy OAuth token saved in ANTHROPIC_API_KEY.
     # This remains as a compatibility fallback for pre-migration Hermes configs.
     api_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
     if api_key:
@@ -1571,6 +1620,15 @@ def _convert_content_part_to_anthropic(part: Any) -> Optional[Dict[str, Any]]:
 
     if ptype == "input_text":
         block: Dict[str, Any] = {"type": "text", "text": part.get("text", "")}
+    elif ptype == "text":
+        # A stored Anthropic text block. Rebuild from whitelisted fields only —
+        # SDK response text blocks carry output-only siblings (parsed_output,
+        # citations=None) that the Messages INPUT schema rejects with HTTP 400
+        # "Extra inputs are not permitted". Do NOT dict(part) it verbatim.
+        block = {"type": "text", "text": part.get("text", "")}
+        cits = part.get("citations")
+        if isinstance(cits, list) and cits:
+            block["citations"] = cits
     elif ptype in {"image_url", "input_image"}:
         image_value = part.get("image_url", {})
         url = image_value.get("url", "") if isinstance(image_value, dict) else str(image_value or "")
@@ -1685,6 +1743,58 @@ def _content_parts_to_anthropic_blocks(parts: Any) -> List[Dict[str, Any]]:
     return out
 
 
+def _sanitize_replay_block(b: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Strip output-only fields from a stored Anthropic content block so it is
+    valid as REQUEST input on replay.
+
+    The SDK response objects carry output-only attributes that the Messages
+    *input* schema forbids ("Extra inputs are not permitted"): text blocks get
+    ``parsed_output``/``citations`` (when null), tool_use blocks get ``caller``,
+    etc. ``normalize_response`` captured blocks verbatim via ``_to_plain_data``,
+    so these leak back as input on the next turn → HTTP 400.
+
+    Whitelist per type (NOT a blacklist) so future SDK output-only fields can't
+    reintroduce the bug. Returns a clean block, or None to drop it.
+    """
+    if not isinstance(b, dict):
+        return None
+    btype = b.get("type")
+    if btype == "text":
+        out: Dict[str, Any] = {"type": "text", "text": b.get("text", "")}
+        # citations is input-valid ONLY when it's a non-empty list; the SDK
+        # emits citations=None on responses, which the input schema rejects.
+        cits = b.get("citations")
+        if isinstance(cits, list) and cits:
+            out["citations"] = cits
+        if isinstance(b.get("cache_control"), dict):
+            out["cache_control"] = b["cache_control"]
+        return out
+    if btype == "thinking":
+        out = {"type": "thinking", "thinking": b.get("thinking", "")}
+        if b.get("signature"):
+            out["signature"] = b["signature"]
+        return out
+    if btype == "redacted_thinking":
+        # Only valid with its data payload; drop if missing.
+        return {"type": "redacted_thinking", "data": b["data"]} if b.get("data") else None
+    if btype == "tool_use":
+        out = {
+            "type": "tool_use",
+            "id": _sanitize_tool_id(b.get("id", "")),
+            "name": b.get("name", ""),
+            "input": b.get("input", {}),
+        }
+        if isinstance(b.get("cache_control"), dict):
+            out["cache_control"] = b["cache_control"]
+        return out
+    if btype == "image":
+        src = b.get("source")
+        return {"type": "image", "source": src} if isinstance(src, dict) else None
+    # Unknown/unsupported block type on the input path — drop rather than risk
+    # another "Extra inputs are not permitted".
+    return None
+
+
 def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     """Convert an assistant message to Anthropic content blocks.
 
@@ -1692,6 +1802,55 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
     reasoning_content injection for Kimi/DeepSeek endpoints.
     """
     content = m.get("content", "")
+    # Anthropic interleaved-thinking fast path: when this turn carries a
+    # verbatim, order-preserving block list (set by normalize_response only
+    # for turns that interleave SIGNED thinking with tool_use), replay it.
+    # Each block is run through _sanitize_replay_block to strip output-only
+    # SDK fields (parsed_output, caller, citations=None, …) that the Messages
+    # INPUT schema forbids — replaying them verbatim caused HTTP 400 "Extra
+    # inputs are not permitted" (text.parsed_output). Block ORDER is preserved
+    # (the reason this channel exists); only forbidden sibling fields are
+    # dropped, leaving thinking signatures and tool_use id/name/input intact.
+    ordered_blocks = m.get("anthropic_content_blocks")
+    if isinstance(ordered_blocks, list) and ordered_blocks:
+        # Re-source each tool_use input from the stored tool_calls map rather
+        # than the captured block. The ordered-blocks list captures tool_use
+        # input from the RAW API response (normalize_response), which is NOT
+        # credential-redacted; tool_calls[].function.arguments IS redacted at
+        # storage time (build_assistant_message, #19798). Replaying the raw
+        # block input would resurrect a secret the model inlined into a tool
+        # call (e.g. terminal(command="curl -H 'Authorization: Bearer sk-...'")
+        # onto the wire, even though the same value is redacted everywhere else
+        # in history. Keying by sanitized tool id preserves interleave order
+        # (the reason this channel exists) while swapping in the redacted
+        # input. Adapted from #36071 (replay-time tool-input re-sourcing).
+        redacted_input_by_id: Dict[str, Any] = {}
+        for tc in m.get("tool_calls", []) or []:
+            if not isinstance(tc, dict):
+                continue
+            fn = tc.get("function", {}) or {}
+            raw_args = fn.get("arguments", "{}")
+            try:
+                parsed_args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+            except (json.JSONDecodeError, ValueError):
+                parsed_args = {}
+            redacted_input_by_id[_sanitize_tool_id(tc.get("id", ""))] = parsed_args
+        replayed: List[Dict[str, Any]] = []
+        for b in ordered_blocks:
+            clean = _sanitize_replay_block(b)
+            if clean is None:
+                continue
+            if clean.get("type") == "tool_use":
+                # Override raw (un-redacted) input with the redacted copy when
+                # we have one for this id; fall back to the sanitized block
+                # input only if the tool_call is missing (shape mismatch).
+                redacted = redacted_input_by_id.get(clean.get("id", ""))
+                if redacted is not None:
+                    clean["input"] = redacted
+            replayed.append(clean)
+        if replayed:
+            return {"role": "assistant", "content": replayed}
+
     blocks = _extract_preserved_thinking_blocks(m)
     if content:
         if isinstance(content, list):
@@ -2236,25 +2395,46 @@ def build_anthropic_kwargs(
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
-        # 3. Prefix tool names with mcp_ (Claude Code convention)
-        #    Skip names that already begin with the marker — native MCP server
-        #    tools (from mcp_servers: in config.yaml) are registered under their
-        #    full mcp_<server>_<tool> name and would double-prefix otherwise,
-        #    breaking round-trip registry lookup in normalize_response. GH-25255.
+        # 3. Normalize tool names so NOTHING goes on the OAuth wire with a
+        #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth
+        #    billing classifier treats a single-underscore ``mcp_`` tool name as
+        #    a third-party-app fingerprint and rejects the request with HTTP 400
+        #    "Third-party apps now draw from extra usage, not plan limits"
+        #    (verified empirically: a single ``mcp_foo`` tool flips a request
+        #    from plan-billing to the extra-usage lane; ``mcp__foo`` is accepted).
+        #
+        #    Two cases, both must land on the double-underscore ``mcp__`` form:
+        #      a) bare Hermes-native tools (``read_file``)  -> ``mcp__read_file``
+        #      b) native MCP server tools registered under their full
+        #         single-underscore ``mcp_<server>_<tool>`` name
+        #         (``mcp_linear_get_issue``) -> ``mcp__linear_get_issue``
+        #    Case (b) is the gap that the bare ``mcp_``->``mcp__`` constant swap
+        #    left open: those tools were *skipped* and stayed single-underscore,
+        #    so any session with an MCP server configured still tripped the
+        #    classifier. normalize_response reverses both forms via registry
+        #    lookup so the dispatcher still sees the original name. GH-25255.
+        def _to_oauth_wire_name(name: str) -> str:
+            if name.startswith("mcp__"):
+                return name  # already correct, don't double-prefix
+            if name.startswith("mcp_"):
+                # single-underscore native MCP tool -> promote to double
+                return "mcp__" + name[len("mcp_"):]
+            return _MCP_TOOL_PREFIX + name  # bare name -> mcp__<name>
+
         if anthropic_tools:
             for tool in anthropic_tools:
-                if "name" in tool and not tool["name"].startswith(_MCP_TOOL_PREFIX):
-                    tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
+                if "name" in tool:
+                    tool["name"] = _to_oauth_wire_name(tool["name"])
 
-        # 4. Prefix tool names in message history (tool_use and tool_result blocks)
+        # 4. Apply the same normalization to tool names in message history
+        #    (tool_use blocks) so replayed turns match the wire names above.
         for msg in anthropic_messages:
             content = msg.get("content")
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict):
                         if block.get("type") == "tool_use" and "name" in block:
-                            if not block["name"].startswith(_MCP_TOOL_PREFIX):
-                                block["name"] = _MCP_TOOL_PREFIX + block["name"]
+                            block["name"] = _to_oauth_wire_name(block["name"])
                         elif block.get("type") == "tool_result" and "tool_use_id" in block:
                             pass  # tool_result uses ID, not name
 
@@ -2401,3 +2581,56 @@ def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
             sorted(leaked),
         )
     return api_kwargs
+
+
+def _is_stream_unavailable_error(exc: Exception) -> bool:
+    """Return True when an Anthropic stream call should fall back to create()."""
+    err_lower = str(exc).lower()
+    if "stream" in err_lower and "not supported" in err_lower:
+        return True
+    if "invokemodelwithresponsestream" in err_lower:
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+
+        return is_streaming_access_denied_error(exc)
+    return False
+
+
+def create_anthropic_message(
+    client: Any,
+    api_kwargs: dict,
+    *,
+    log_prefix: str = "",
+    prefer_stream: bool = True,
+) -> Any:
+    """Create an Anthropic message, aggregating via stream when available.
+
+    Some Anthropic-compatible gateways are SSE-only: they ignore non-streaming
+    requests and return ``text/event-stream`` even for ``messages.create()``.
+    The SDK can surface that as raw text, so callers that expect a Message then
+    crash on ``.content``.  Prefer ``messages.stream().get_final_message()`` to
+    match the main turn path, falling back to ``create()`` only for providers
+    that explicitly do not support streaming, such as restricted Bedrock roles.
+    """
+    sanitize_anthropic_kwargs(api_kwargs, log_prefix=log_prefix)
+
+    messages_api = getattr(client, "messages", None)
+    stream_fn = getattr(messages_api, "stream", None)
+    if prefer_stream and callable(stream_fn):
+        stream_kwargs = dict(api_kwargs)
+        stream_kwargs.pop("stream", None)
+        try:
+            with stream_fn(**stream_kwargs) as stream:
+                return stream.get_final_message()
+        except Exception as exc:
+            if not _is_stream_unavailable_error(exc):
+                raise
+            logger.debug(
+                "%sAnthropic Messages stream unavailable; falling back to "
+                "messages.create(): %s",
+                log_prefix,
+                exc,
+            )
+
+    create_kwargs = dict(api_kwargs)
+    create_kwargs.pop("stream", None)
+    return messages_api.create(**create_kwargs)

@@ -143,6 +143,25 @@ export interface Translations {
       tryRecordingAgain: string
       unavailable: string
     }
+    // Native OS notification copy (titles + generic fallback bodies). Dynamic
+    // bodies (the agent's reply, a command, an error) are passed through raw.
+    native: {
+      approvalTitle: string
+      approveAction: string
+      rejectAction: string
+      inputTitle: string
+      inputBody: string
+      turnDoneTitle: string
+      turnDoneBody: string
+      turnErrorTitle: string
+      backgroundDoneTitle: string
+      backgroundFailedTitle: string
+    }
+  }
+
+  remoteDisplayBanner: {
+    message: (reason: string) => string
+    dismiss: string
   }
 
   titlebar: {
@@ -202,6 +221,26 @@ export interface Translations {
       mcp: string
       archivedChats: string
       about: string
+      notifications: string
+    }
+    notifications: {
+      title: string
+      intro: string
+      enableAll: string
+      enableAllDesc: string
+      focusedHint: string
+      kinds: Record<
+        'approval' | 'backgroundDone' | 'input' | 'turnDone' | 'turnError',
+        { label: string; description: string }
+      >
+      test: string
+      testTitle: string
+      testBody: string
+      testSent: string
+      testUnsupported: string
+      completionSoundTitle: string
+      completionSoundDesc: string
+      completionSoundPreview: string
     }
     sections: Record<string, string>
     searchPlaceholder: Record<'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'sessions', string>
@@ -213,6 +252,8 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
+      translucencyTitle: string
+      translucencyDesc: string
       product: string
       productDesc: string
       technical: string
@@ -229,6 +270,29 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      pet: {
+        title: string
+        intro: string
+        restartHint: string
+        on: string
+        off: string
+        scaleTitle: string
+        scaleDesc: string
+        chooseTitle: string
+        chooseDesc: string
+        searchPlaceholder: string
+        unreachable: string
+        noMatch: (query: string) => string
+        installedTag: string
+        countCapped: (cap: number, total: number) => string
+        count: (n: number) => string
+        uninstall: (name: string) => string
+        adoptFailed: (slug: string) => string
+        uninstallFailed: (slug: string) => string
+        noneAvailable: string
+        turnOnFailed: string
+        turnOffFailed: string
+      }
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
@@ -240,6 +304,7 @@ export interface Translations {
       checkNow: string
       checking: string
       seeWhatsNew: string
+      updateNow: string
       releaseNotes: string
       onLatest: string
       installing: string
@@ -394,6 +459,10 @@ export interface Translations {
       provider: string
       model: string
       applying: string
+      defaultsLabel: string
+      reasoning: string
+      reasoningOff: string
+      defaultsFailed: string
       auxiliaryTitle: string
       resetAllToMain: string
       auxiliaryDesc: string
@@ -411,7 +480,19 @@ export interface Translations {
       collapse: string
       connectAnother: string
       otherProviders: string
+      disconnect: string
+      disconnectInTerminal: string
+      removeConfirm: (provider: string) => string
+      removeExternalGeneric: (provider: string) => string
+      removeKeyManaged: (provider: string) => string
+      removeTerminalConfirm: (provider: string, command: string) => string
+      removeTerminalRunning: (provider: string) => string
+      removedTitle: string
+      removedMessage: (provider: string) => string
+      failedRemove: (provider: string) => string
       noProviderKeys: string
+      searchKeys: string
+      noKeysMatch: string
       loading: string
     }
     sessions: {
@@ -538,11 +619,26 @@ export interface Translations {
     back: string
     searchPlaceholder: string
     goTo: string
+    goToSession: string
     commandCenter: string
     appearance: string
     settings: string
     changeTheme: string
     changeColorMode: string
+    pets: {
+      title: string
+      placeholder: string
+      loading: string
+      error: string
+      staleBackend: string
+      empty: string
+      turnOff: string
+      turnOn: string
+      installed: string
+      adoptFailed: string
+      toggleFailed: string
+      noneAvailable: string
+    }
     installTheme: {
       title: string
       placeholder: string
@@ -574,7 +670,8 @@ export interface Translations {
     gatewayRunning: string
     gatewayStopped: string
     hermesActiveSessions: (version: string, count: number) => string
-    restartMessaging: string
+    restartGateway: string
+    gatewayRestartFailed: string
     updateHermes: string
     actionRunning: string
     actionDone: string
@@ -692,6 +789,9 @@ export interface Translations {
     deleting: string
     createDesc: string
     nameLabel: string
+    cloneFrom: string
+    cloneFromNone: string
+    cloneFromDesc: string
     cloneFromDefault: string
     cloneFromDefaultDesc: string
     invalidName: (hint: string) => string
@@ -919,10 +1019,12 @@ export interface Translations {
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string
-    editQueued: string
-    sendQueuedNext: string
-    sendQueuedNow: string
-    deleteQueued: string
+    queueEdit: string
+    queueSendNext: string
+    queueSend: string
+    queueDelete: string
+    queueStuckTitle: string
+    queueStuckBody: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
@@ -951,6 +1053,17 @@ export interface Translations {
     dropSession: string
   }
 
+  statusStack: {
+    agents: string
+    background: (count: number) => string
+    subagents: (count: number) => string
+    todos: (done: number, total: number) => string
+    running: string
+    stop: string
+    dismiss: string
+    exit: (code: number) => string
+  }
+
   updates: {
     stages: Record<string, string>
     checking: string
@@ -973,6 +1086,10 @@ export interface Translations {
     manualTitle: string
     manualBody: string
     manualPickedUp: string
+    /** GUI/backend skew (#45205): backend updated but the running desktop app
+     *  package (AppImage/.deb/.rpm) was not changed and must be reinstalled. */
+    guiSkewTitle: string
+    guiSkewBody: string
     copy: string
     copied: string
     done: string
@@ -1041,6 +1158,7 @@ export interface Translations {
     getKey: string
     replaceCurrent: string
     pasteApiKey: string
+    localApiKeyPlaceholder: string
     couldNotSave: string
     connecting: string
     update: string
@@ -1081,8 +1199,6 @@ export interface Translations {
     unknown: string
     search: string
     noModels: string
-    persistGlobalSession: string
-    persistGlobal: string
     addProvider: string
     loadFailed: string
     noAuthenticatedProviders: string
@@ -1108,6 +1224,7 @@ export interface Translations {
       search: string
       noModels: string
       editModels: string
+      refreshModels: string
       fast: string
       medium: string
     }
@@ -1162,6 +1279,7 @@ export interface Translations {
       gatewayChecking: string
       gatewayConnecting: string
       gatewayOffline: string
+      gatewayRestarting: string
       gatewayTitle: string
       agents: string
       closeAgents: string
@@ -1194,6 +1312,9 @@ export interface Translations {
     terminal: string
     noFolderSelected: string
     changeCwdTitle: string
+    remotePickerTitle: string
+    remotePickerDescription: string
+    remotePickerSelect: string
     folderTip: (cwd: string) => string
     openFolder: string
     refreshTree: string
@@ -1224,6 +1345,7 @@ export interface Translations {
     opening: string
     hide: string
     openPreview: string
+    openInBrowser: string
     sourceLineTitle: string
     source: string
     renderedPreview: string
@@ -1295,6 +1417,7 @@ export interface Translations {
   assistant: {
     thread: {
       loadingSession: string
+      showEarlier: string
       loadingResponse: string
       thinking: string
       today: (time: string) => string
@@ -1303,15 +1426,20 @@ export interface Translations {
       refresh: string
       moreActions: string
       branchNewChat: string
+      dismissError: string
       readAloudFailed: string
       preparingAudio: string
       stopReading: string
       readAloud: string
       editMessage: string
+      scrollToBottom: string
       stop: string
-      editableCheckpoint: string
       restorePrevious: string
       restoreCheckpoint: string
+      restoreFromHere: string
+      restoreTitle: string
+      restoreBody: string
+      restoreConfirm: string
       restoreNext: string
       goForward: string
       sendEdited: string
@@ -1321,9 +1449,11 @@ export interface Translations {
       gatewayDisconnected: string
       sendFailed: string
       run: string
+      command: string
       moreOptions: string
       allowSession: string
       alwaysAllowMenu: string
+      jumpToApproval: string
       reject: string
       alwaysTitle: string
       alwaysDescription: (pattern: string) => string
@@ -1336,7 +1466,7 @@ export interface Translations {
       loadingQuestion: string
       other: string
       placeholder: string
-      shortcut: string
+      shortcutSuffix: string
       back: string
       skip: string
       send: string
@@ -1404,6 +1534,9 @@ export interface Translations {
     regenerateFailed: string
     editFailed: string
     resumeFailed: string
+    resumeStrandedTitle: string
+    resumeStrandedBody: string
+    resumeRetry: string
     nothingToBranch: string
     branchNeedsChat: string
     sessionBusy: string
@@ -1437,6 +1570,13 @@ export interface Translations {
     noClipboardImage: string
     clipboardPasteFailed: string
     dropFiles: string
+    handoff: {
+      pickPlatform: string
+      success: (platform: string) => string
+      systemNote: (platform: string) => string
+      failed: (error: string) => string
+      timedOut: string
+    }
   }
 
   errors: {

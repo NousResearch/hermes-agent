@@ -24,7 +24,7 @@ from hermes_constants import (
     set_hermes_home_override,
 )
 from hermes_cli.env_loader import load_hermes_dotenv
-from utils import is_truthy_value
+from utils import is_truthy_value, atomic_json_write
 from tui_gateway.transport import (
     StdioTransport,
     Transport,
@@ -6692,7 +6692,7 @@ def _(rid, params: dict) -> dict:
             "label": label,
             "subagents": subagents,
         }
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        atomic_json_write(path, payload)
     except OSError as exc:
         return _err(rid, 5000, f"spawn_tree.save failed: {exc}")
 

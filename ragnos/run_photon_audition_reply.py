@@ -74,7 +74,9 @@ async def _run() -> int:
     if not await adapter.connect():
         log.error("adapter.connect() failed (missing creds or sidecar). See logs above.")
         return 1
-    log.info("connected; audition-reply inbound active (allowlist=%d). Ctrl-C to stop.", len(allow))
+    cos_enabled = os.environ.get("KEEZ_TEXT_COS_ENABLED", "").strip().lower()
+    mode = "full CoS" if cos_enabled in {"1", "true", "yes", "on"} else "audition-reply"
+    log.info("connected; %s inbound active (allowlist=%d). Ctrl-C to stop.", mode, len(allow))
     try:
         while True:
             await asyncio.sleep(3600)

@@ -372,7 +372,6 @@ def _popen_kwargs(cwd: Path) -> dict[str, Any]:
         "cwd": str(cwd),
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
-        "stdin": subprocess.DEVNULL,
     }
     if _is_windows():
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
@@ -567,7 +566,7 @@ def start_dev(
         }
 
     try:
-        proc = subprocess.Popen(command, **_popen_kwargs(root))
+        proc = subprocess.Popen(command, stdin=subprocess.DEVNULL, **_popen_kwargs(root))
     except OSError as exc:
         return {"success": False, "error": str(exc), "command": command}
 

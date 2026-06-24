@@ -1022,6 +1022,37 @@ class TestClassifyApiError:
         assert result.retryable is False
         assert result.should_compress is False
 
+    def test_400_max_tokens_above_provider_limit_not_context_overflow(self):
+        """A provider-side max_tokens value limit is request validation."""
+        msg = (
+            "The parameter max_tokens specified in the request are not valid: "
+            "integer above maximum value, expected a value <= 32768, but got "
+            "65536 instead."
+        )
+        e = MockAPIError(
+            msg,
+            status_code=400,
+            body={
+                "error": {
+                    "message": msg,
+                    "code": "InvalidParameter",
+                    "param": "max_tokens",
+                    "type": "BadRequest",
+                }
+            },
+        )
+        result = classify_api_error(
+            e,
+            provider="custom",
+            model="ep-20250610112940-c9wgb",
+            approx_tokens=1000,
+            context_length=200000,
+        )
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is False
+        assert result.should_fallback is True
+
     def test_400_unknown_parameter_not_context_overflow(self):
         """'Unknown parameter' 400s are deterministic request-validation
         failures, not overflows."""

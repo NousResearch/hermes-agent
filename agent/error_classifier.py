@@ -270,6 +270,14 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unsupported_parameter",
 ]
 
+_MAX_TOKENS_VALUE_VALIDATION_PATTERNS = [
+    "integer above maximum value",
+    "above maximum value",
+    "expected a value <=",
+    "less than or equal to",
+    "must be less than or equal",
+]
+
 # OpenRouter aggregator policy-block patterns.
 #
 # When a user's OpenRouter account privacy setting (or a per-request
@@ -984,6 +992,13 @@ def _classify_400(
             should_fallback=False,
         )
 
+    if _is_max_tokens_value_validation_error(error_msg, error_code_lower, body):
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
+
     # Request-validation errors (unsupported / unknown parameter) MUST be
     # checked BEFORE context_overflow.  A GPT-5 model rejecting max_tokens
     # returns:
@@ -1347,6 +1362,47 @@ def _extract_error_code(body: dict) -> str:
         if text and text != "400":
             return text
     return ""
+
+
+def _extract_error_param(body: dict) -> str:
+    """Extract the provider-reported parameter name from an error body."""
+    if not body:
+        return ""
+
+    error_obj = body.get("error", {})
+    if isinstance(error_obj, dict):
+        param = error_obj.get("param") or ""
+        if isinstance(param, str) and param.strip():
+            return param.strip()
+
+    param = body.get("param") or ""
+    if isinstance(param, str):
+        return param.strip()
+    return ""
+
+
+def _is_max_tokens_value_validation_error(
+    error_msg: str,
+    error_code_lower: str,
+    body: dict,
+) -> bool:
+    """Detect output-token cap validation, not context-window overflow."""
+    if not any(p in error_msg for p in _MAX_TOKENS_VALUE_VALIDATION_PATTERNS):
+        return False
+
+    error_param = _extract_error_param(body).lower()
+    if error_param == "max_tokens":
+        return True
+
+    if "max_tokens" not in error_msg:
+        return False
+
+    return error_code_lower in {
+        "invalidparameter",
+        "invalid_parameter",
+        "badrequest",
+        "bad_request",
+    }
 
 
 def _extract_message(error: Exception, body: dict) -> str:

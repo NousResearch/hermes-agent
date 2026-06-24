@@ -213,6 +213,22 @@ def build_gateway_parser(
     # gateway setup
     gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
 
+    # gateway troubleshoot
+    gateway_troubleshoot = gateway_subparsers.add_parser(
+        "troubleshoot",
+        help="Diagnose gateway platform setup and runtime health",
+    )
+    gateway_troubleshoot.add_argument(
+        "platform",
+        nargs="?",
+        help="Optional platform name to inspect (e.g. telegram, slack)",
+    )
+    gateway_troubleshoot.add_argument(
+        "--json",
+        action="store_true",
+        help="Print a machine-readable troubleshooting report",
+    )
+
     # gateway migrate-legacy
     gateway_migrate_legacy = gateway_subparsers.add_parser(
         "migrate-legacy",

@@ -87,6 +87,11 @@ def build_dashboard_parser(
         action="store_true",
         help="List running hermes dashboard processes and exit",
     )
+    dashboard_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON with --status",
+    )
     # Backward-compat shim: older Hermes desktop app shells (<= 0.15.x) spawn the
     # backend as `hermes dashboard --no-open --tui --host ... --port ...`. The
     # `--tui` flag was removed from this subcommand in cae6b5486 (embedded chat is

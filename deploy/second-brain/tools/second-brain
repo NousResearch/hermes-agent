@@ -1,0 +1,312 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import sys
+import textwrap
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+DEFAULT_BASE_URL = "__PUBLIC_BASE_URL__"
+PLACEHOLDER_BASE_URL = "__PUBLIC" "_BASE_URL__"
+if DEFAULT_BASE_URL == PLACEHOLDER_BASE_URL:
+    DEFAULT_BASE_URL = "http://localhost:8000"
+CONFIG_DIR = Path.home() / ".second-brain"
+CONFIG_PATH = CONFIG_DIR / "config.json"
+
+
+def load_config() -> dict:
+    config = {}
+    if CONFIG_PATH.exists():
+        config = json.loads(CONFIG_PATH.read_text())
+    config["base_url"] = os.environ.get("SECOND_BRAIN_BASE_URL", config.get("base_url", DEFAULT_BASE_URL)).rstrip("/")
+    config["admin_key"] = os.environ.get("SECOND_BRAIN_ADMIN_KEY", config.get("admin_key", ""))
+    config["token"] = os.environ.get("SECOND_BRAIN_TOKEN", config.get("token", ""))
+    return config
+
+
+def save_config(config: dict) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_PATH.write_text(json.dumps(config, indent=2) + "\n")
+    CONFIG_PATH.chmod(0o600)
+
+
+def request_json(method: str, url: str, *, headers: dict | None = None, body: dict | None = None, timeout: int = 300) -> dict:
+    data = None
+    req_headers = {"User-Agent": "second-brain-cli/0.1", **(headers or {})}
+    if body is not None:
+        data = json.dumps(body).encode()
+        req_headers = {"Content-Type": "application/json", **req_headers}
+    req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            payload = response.read().decode()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode()
+        raise SystemExit(f"HTTP {exc.code}: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise SystemExit(f"Connection error: {exc}") from exc
+    return json.loads(payload) if payload else {}
+
+
+def print_json(data: dict) -> None:
+    print(json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def auth_headers(config: dict, *, admin: bool = False) -> dict:
+    if admin:
+        if not config.get("admin_key"):
+            raise SystemExit("Missing admin key. Run `second-brain config --admin-key ...` or set SECOND_BRAIN_ADMIN_KEY.")
+        return {"X-API-Key": config["admin_key"]}
+    if not config.get("token"):
+        raise SystemExit("Missing user token. Run `second-brain config --token ...` or set SECOND_BRAIN_TOKEN.")
+    return {"Authorization": f"Bearer {config['token']}"}
+
+
+def cmd_config(args: argparse.Namespace) -> None:
+    config = load_config()
+    if args.base_url:
+        config["base_url"] = args.base_url.rstrip("/")
+    if args.admin_key:
+        config["admin_key"] = args.admin_key
+    if args.token:
+        config["token"] = args.token
+    save_config(config)
+    redacted = {
+        "base_url": config.get("base_url"),
+        "admin_key": "set" if config.get("admin_key") else "",
+        "token": "set" if config.get("token") else "",
+        "path": str(CONFIG_PATH),
+    }
+    print_json(redacted)
+
+
+def install_hermes_skill() -> str:
+    script_path = Path(__file__).resolve()
+    candidates = [
+        script_path.parents[3] / "skills" / "productivity" / "company-second-brain" / "SKILL.md",
+        Path.cwd() / "skills" / "productivity" / "company-second-brain" / "SKILL.md",
+    ]
+    source = next((path for path in candidates if path.exists()), None)
+    if not source:
+        return "Hermes skill source not found; CLI config was saved only."
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    dest_dir = hermes_home / "skills" / "productivity" / "company-second-brain"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest_dir / "SKILL.md")
+    return f"Installed Hermes skill to {dest_dir / 'SKILL.md'}"
+
+
+def cmd_connect(args: argparse.Namespace) -> None:
+    config = load_config()
+    if args.base_url:
+        config["base_url"] = args.base_url.rstrip("/")
+    if args.token:
+        config["token"] = args.token
+    if not config.get("token"):
+        raise SystemExit("Missing token. Run `second-brain connect --token USER_TOKEN`.")
+    save_config(config)
+    skill_status = "Skipped Hermes skill install."
+    if not args.no_hermes_skill:
+        skill_status = install_hermes_skill()
+    identity = request_json("GET", f"{config['base_url']}/api/me", headers=auth_headers(config), timeout=30)
+    print_json({
+        "status": "connected",
+        "config": str(CONFIG_PATH),
+        "identity": identity,
+        "hermes_skill": skill_status,
+        "try": "second-brain query \"What documents can I access?\"",
+    })
+
+
+def cmd_admin_token_create(args: argparse.Namespace) -> None:
+    config = load_config()
+    body = {
+        "email": args.email,
+        "name": args.name or args.email,
+        "groups": args.group or [],
+        "expires_days": args.expires_days,
+    }
+    if args.admin:
+        body["role"] = "admin"
+        if "role_admin" not in body["groups"]:
+            body["groups"].append("role_admin")
+    data = request_json(
+        "POST",
+        f"{config['base_url']}/api/admin/tokens",
+        headers=auth_headers(config, admin=True),
+        body=body,
+    )
+    if args.save_user_token:
+        config["token"] = data["token"]
+        save_config(config)
+    print_json(data)
+
+
+def cmd_me(args: argparse.Namespace) -> None:
+    config = load_config()
+    data = request_json("GET", f"{config['base_url']}/api/me", headers=auth_headers(config))
+    print_json(data)
+
+
+def cmd_workspaces(args: argparse.Namespace) -> None:
+    config = load_config()
+    data = request_json("GET", f"{config['base_url']}/api/workspaces", headers=auth_headers(config))
+    print_json(data)
+
+
+def cmd_query(args: argparse.Namespace) -> None:
+    config = load_config()
+    query = args.query or sys.stdin.read().strip()
+    if not query:
+        raise SystemExit("Missing query. Pass it as an argument or stdin.")
+    body = {
+        "query": query,
+        "mode": args.mode,
+        "include_references": not args.no_references,
+    }
+    data = request_json(
+        "POST",
+        f"{config['base_url']}/api/query",
+        headers=auth_headers(config),
+        body=body,
+    )
+    if args.raw:
+        print_json(data)
+        return
+    print(f"Query: {data.get('query', query)}")
+    print(f"Allowed workspaces: {', '.join(data.get('allowed_workspaces', []))}")
+    print()
+    for answer in data.get("answers", []):
+        workspace = answer.get("workspace")
+        result = answer.get("result") or {}
+        error = answer.get("error")
+        print(f"## {workspace}")
+        if error:
+            print(f"ERROR: {error}")
+            continue
+        print(result.get("response", ""))
+        refs = result.get("references") or []
+        if refs:
+            print()
+            print("References:")
+            for ref in refs:
+                print(f"- [{ref.get('reference_id')}] {ref.get('file_path')}")
+        print()
+
+
+def cmd_ingest_text(args: argparse.Namespace) -> None:
+    config = load_config()
+    if args.file:
+        text = Path(args.file).read_text()
+        title = args.title or Path(args.file).name
+    else:
+        text = sys.stdin.read()
+        title = args.title
+    if not title:
+        raise SystemExit("Missing title. Pass --title or use --file.")
+    if not text.strip():
+        raise SystemExit("Missing text. Pass --file or pipe text on stdin.")
+    body = {
+        "title": title,
+        "department": args.department,
+        "visibility": args.visibility,
+        "classification": args.classification,
+        "text": text,
+    }
+    data = request_json(
+        "POST",
+        f"{config['base_url']}/api/documents/text",
+        headers=auth_headers(config),
+        body=body,
+    )
+    print_json(data)
+
+
+def cmd_snippet(args: argparse.Namespace) -> None:
+    config = load_config()
+    token = args.token or config.get("token") or "USER_TOKEN"
+    print(textwrap.dedent(f"""\
+    # Company Second Brain
+
+    Use this API for company RAG / second-brain lookup.
+
+    Base URL: {config["base_url"]}
+
+    Auth:
+    Authorization: Bearer {token}
+
+    Query:
+    curl -X POST {config["base_url"]}/api/query \\
+      -H "Authorization: Bearer {token}" \\
+      -H "Content-Type: application/json" \\
+      -d '{{"query":"YOUR QUESTION","mode":"mix","include_references":true}}'
+    """))
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="second-brain")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("config", help="Save local CLI config")
+    p.add_argument("--base-url")
+    p.add_argument("--admin-key")
+    p.add_argument("--token")
+    p.set_defaults(func=cmd_config)
+
+    p = sub.add_parser("connect", help="Save token, install Hermes skill, and verify access")
+    p.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    p.add_argument("--token")
+    p.add_argument("--no-hermes-skill", action="store_true")
+    p.set_defaults(func=cmd_connect)
+
+    admin = sub.add_parser("admin-token-create", help="Admin: create a user/agent/IDE token")
+    admin.add_argument("--email", required=True)
+    admin.add_argument("--name")
+    admin.add_argument("--group", action="append", default=[])
+    admin.add_argument("--expires-days", type=int, default=30)
+    admin.add_argument("--admin", action="store_true")
+    admin.add_argument("--save-user-token", action="store_true")
+    admin.set_defaults(func=cmd_admin_token_create)
+
+    p = sub.add_parser("me", help="Show current token identity")
+    p.set_defaults(func=cmd_me)
+
+    p = sub.add_parser("workspaces", help="List accessible workspaces")
+    p.set_defaults(func=cmd_workspaces)
+
+    p = sub.add_parser("query", help="Query RAG")
+    p.add_argument("query", nargs="?")
+    p.add_argument("--mode", default="mix")
+    p.add_argument("--no-references", action="store_true")
+    p.add_argument("--raw", action="store_true")
+    p.set_defaults(func=cmd_query)
+
+    p = sub.add_parser("ingest-text", help="Admin token only: ingest text into RAG")
+    p.add_argument("--title")
+    p.add_argument("--file")
+    p.add_argument("--department", required=True, choices=["marketing", "financial", "hr", "engineering", "c_level"])
+    p.add_argument("--visibility", default="department", choices=["company", "department"])
+    p.add_argument("--classification", default="internal", choices=["public", "internal", "confidential", "restricted"])
+    p.set_defaults(func=cmd_ingest_text)
+
+    p = sub.add_parser("codex-snippet", help="Print an AGENTS.md/Codex setup snippet")
+    p.add_argument("--token")
+    p.set_defaults(func=cmd_snippet)
+
+    return parser
+
+
+def main() -> None:
+    parser = build_parser()
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

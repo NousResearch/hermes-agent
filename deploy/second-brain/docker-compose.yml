@@ -1,0 +1,241 @@
+services:
+  ollama-embed:
+    image: ollama/ollama:latest
+    container_name: second-brain-ollama-embed
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - second-brain
+
+  lightrag-company-public: &lightrag-service
+    image: ghcr.io/hkuds/lightrag:latest
+    container_name: second-brain-lightrag-company-public
+    restart: unless-stopped
+    env_file: .env
+    environment: &lightrag-env
+      HOST: 0.0.0.0
+      PORT: 9621
+      WORKSPACE: company_public
+      INPUT_DIR: /data/workspaces/company_public/inputs
+      WORKING_DIR: /data/workspaces/company_public/rag_storage
+      WEBUI_TITLE: Company Public
+      WEBUI_DESCRIPTION: Company second brain workspace
+      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY}
+      WHITELIST_PATHS: /health
+      SUMMARY_LANGUAGE: English
+      ENTITY_EXTRACTION_USE_JSON: "true"
+      LIGHTRAG_PARSER: "*:native-teP;*:legacy-R"
+      VLM_PROCESS_ENABLE: "false"
+      LLM_BINDING: openai
+      LLM_BINDING_HOST: ${OLLAMA_CLOUD_BASE_URL}
+      LLM_BINDING_API_KEY: ${OLLAMA_CLOUD_API_KEY}
+      LLM_MODEL: ${LLM_MODEL}
+      KEYWORD_LLM_MODEL: ${LLM_MODEL}
+      QUERY_LLM_MODEL: ${LLM_MODEL}
+      MAX_ASYNC_LLM: 2
+      EMBEDDING_BINDING: ollama
+      EMBEDDING_BINDING_HOST: http://ollama-embed:11434
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      EMBEDDING_DIM: ${EMBEDDING_DIM}
+      EMBEDDING_TOKEN_LIMIT: 8192
+      OLLAMA_EMBEDDING_NUM_CTX: 8192
+      LIGHTRAG_KV_STORAGE: JsonKVStorage
+      LIGHTRAG_DOC_STATUS_STORAGE: JsonDocStatusStorage
+      LIGHTRAG_GRAPH_STORAGE: NetworkXStorage
+      LIGHTRAG_VECTOR_STORAGE: NanoVectorDBStorage
+    depends_on:
+      - ollama-embed
+    volumes:
+      - lightrag-data:/data
+    networks:
+      - second-brain
+
+  lightrag-company-internal:
+    <<: *lightrag-service
+    container_name: second-brain-lightrag-company-internal
+    environment:
+      <<: *lightrag-env
+      WORKSPACE: company_internal
+      INPUT_DIR: /data/workspaces/company_internal/inputs
+      WORKING_DIR: /data/workspaces/company_internal/rag_storage
+      WEBUI_TITLE: Company Internal
+
+  lightrag-marketing:
+    <<: *lightrag-service
+    container_name: second-brain-lightrag-marketing
+    environment:
+      <<: *lightrag-env
+      WORKSPACE: department_marketing
+      INPUT_DIR: /data/workspaces/department_marketing/inputs
+      WORKING_DIR: /data/workspaces/department_marketing/rag_storage
+      WEBUI_TITLE: Marketing
+
+  lightrag-financial:
+    <<: *lightrag-service
+    container_name: second-brain-lightrag-financial
+    environment:
+      <<: *lightrag-env
+      WORKSPACE: department_financial
+      INPUT_DIR: /data/workspaces/department_financial/inputs
+      WORKING_DIR: /data/workspaces/department_financial/rag_storage
+      WEBUI_TITLE: Financial
+
+  lightrag-hr:
+    <<: *lightrag-service
+    container_name: second-brain-lightrag-hr
+    environment:
+      <<: *lightrag-env
+      WORKSPACE: department_hr
+      INPUT_DIR: /data/workspaces/department_hr/inputs
+      WORKING_DIR: /data/workspaces/department_hr/rag_storage
+      WEBUI_TITLE: HR
+
+  lightrag-engineering:
+    <<: *lightrag-service
+    container_name: second-brain-lightrag-engineering
+    environment:
+      <<: *lightrag-env
+      WORKSPACE: department_engineering
+      INPUT_DIR: /data/workspaces/department_engineering/inputs
+      WORKING_DIR: /data/workspaces/department_engineering/rag_storage
+      WEBUI_TITLE: Engineering
+
+  lightrag-c-level:
+    <<: *lightrag-service
+    container_name: second-brain-lightrag-c-level
+    environment:
+      <<: *lightrag-env
+      WORKSPACE: department_c_level
+      INPUT_DIR: /data/workspaces/department_c_level/inputs
+      WORKING_DIR: /data/workspaces/department_c_level/rag_storage
+      WEBUI_TITLE: C Level
+
+  company-ai-gateway:
+    build: ./services/company-ai-gateway
+    container_name: second-brain-gateway
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      KNOWLEDGE_API_URL: http://knowledge-api:8010
+    depends_on:
+      - knowledge-api
+    networks:
+      - second-brain
+      - coolify
+    labels:
+      traefik.enable: "true"
+      traefik.docker.network: "coolify"
+      traefik.http.middlewares.second-brain-gzip.compress: "true"
+      traefik.http.middlewares.second-brain-redirect.redirectscheme.scheme: "https"
+      traefik.http.routers.second-brain-http.entryPoints: "http"
+      traefik.http.routers.second-brain-http.middlewares: "second-brain-redirect"
+      traefik.http.routers.second-brain-http.rule: "Host(`${SECOND_BRAIN_DOMAIN}`) && PathPrefix(`/`)"
+      traefik.http.routers.second-brain-http.service: "second-brain-http"
+      traefik.http.routers.second-brain-https.entryPoints: "https"
+      traefik.http.routers.second-brain-https.middlewares: "second-brain-gzip"
+      traefik.http.routers.second-brain-https.rule: "Host(`${SECOND_BRAIN_DOMAIN}`) && PathPrefix(`/`)"
+      traefik.http.routers.second-brain-https.service: "second-brain-https"
+      traefik.http.routers.second-brain-https.tls: "true"
+      traefik.http.routers.second-brain-https.tls.certresolver: "letsencrypt"
+      traefik.http.services.second-brain-http.loadbalancer.server.port: "8000"
+      traefik.http.services.second-brain-https.loadbalancer.server.port: "8000"
+
+  knowledge-api:
+    build: ./services/knowledge-api
+    container_name: second-brain-knowledge-api
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      LIGHTRAG_ROOT: /data/lightrag
+      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY}
+      LIGHTRAG_COMPANY_PUBLIC_URL: http://lightrag-company-public:9621
+      LIGHTRAG_COMPANY_INTERNAL_URL: http://lightrag-company-internal:9621
+      LIGHTRAG_DEPARTMENT_MARKETING_URL: http://lightrag-marketing:9621
+      LIGHTRAG_DEPARTMENT_FINANCIAL_URL: http://lightrag-financial:9621
+      LIGHTRAG_DEPARTMENT_HR_URL: http://lightrag-hr:9621
+      LIGHTRAG_DEPARTMENT_ENGINEERING_URL: http://lightrag-engineering:9621
+      LIGHTRAG_DEPARTMENT_C_LEVEL_URL: http://lightrag-c-level:9621
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      lightrag-company-public:
+        condition: service_started
+      lightrag-company-internal:
+        condition: service_started
+      lightrag-marketing:
+        condition: service_started
+      lightrag-financial:
+        condition: service_started
+      lightrag-hr:
+        condition: service_started
+      lightrag-engineering:
+        condition: service_started
+      lightrag-c-level:
+        condition: service_started
+    volumes:
+      - lightrag-data:/data/lightrag
+    networks:
+      - second-brain
+
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: second-brain-postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    networks:
+      - second-brain
+
+  redis:
+    image: redis:7-alpine
+    container_name: second-brain-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - second-brain
+
+  minio:
+    image: minio/minio:latest
+    container_name: second-brain-minio
+    restart: unless-stopped
+    env_file: .env
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - minio-data:/data
+    networks:
+      - second-brain
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  lightrag-data:
+  ollama-data:
+
+networks:
+  second-brain:
+    name: second-brain
+  coolify:
+    external: true

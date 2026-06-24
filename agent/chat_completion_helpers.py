@@ -2609,8 +2609,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pass
             # Rebuild the primary client too — its connection pool
             # may hold dead sockets from the same provider outage.
+            # Dispatch on the active API mode the same way the interrupt
+            # and non-streaming stale paths do: the OpenAI rebuild needs an
+            # api_key and fails for native/OAuth Anthropic providers (#51844).
             try:
-                agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+                if agent.api_mode == "anthropic_messages":
+                    agent._rebuild_anthropic_client()
+                else:
+                    agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
             except Exception:
                 pass
             # Reset the timer so we don't kill repeatedly while

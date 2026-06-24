@@ -1244,6 +1244,13 @@ class TestToolUseEnforcementConfig:
         prompt = agent._build_system_prompt()
         assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
 
+    def test_auto_injects_for_minimax(self):
+        """MiniMax-M3 needs the same action-over-description tool-use steer."""
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="MiniMax-M3", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
     def test_auto_injects_execution_guidance_for_grok(self):
         """Grok also gets OPENAI_MODEL_EXECUTION_GUIDANCE (verification,
         mandatory_tool_use, act_dont_ask). Same failure modes as GPT in

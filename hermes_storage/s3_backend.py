@@ -204,8 +204,32 @@ class S3Backend:
         S3BackendError
             If the listing fails.
         """
+        return list(self.iter_keys(sub_prefix=sub_prefix))
+
+    def iter_keys(self, sub_prefix: str = "") -> Iterator[str]:
+        """Yield logical keys under an optional *sub_prefix* lazily.
+
+        Unlike :meth:`list_keys`, this method is a generator that yields keys
+        one at a time as pages are retrieved from S3, avoiding the need to
+        hold all keys in memory simultaneously.
+
+        Parameters
+        ----------
+        sub_prefix:
+            Additional prefix to filter keys.  Combined with the backend's
+            own prefix.
+
+        Yields
+        ------
+        str
+            Logical keys (with the backend prefix stripped).
+
+        Raises
+        ------
+        S3BackendError
+            If the listing fails.
+        """
         search_prefix = f"{self._prefix}{sub_prefix}"
-        keys: List[str] = []
         try:
             paginator = self._client.get_paginator("list_objects_v2")
             for page in paginator.paginate(Bucket=self._bucket, Prefix=search_prefix):
@@ -213,12 +237,57 @@ class S3Backend:
                     full_key: str = obj["Key"]
                     # Strip the backend prefix so callers get logical keys.
                     logical_key = full_key[len(self._prefix):]
-                    keys.append(logical_key)
+                    yield logical_key
+        except S3BackendError:
+            raise
         except Exception as exc:
             raise S3BackendError(
                 f"Failed to list objects in s3://{self._bucket}/{search_prefix}: {exc}"
             ) from exc
-        return keys
+
+    def copy(self, src_key: str, dst_key: str) -> None:
+        """Copy an object within the same bucket from *src_key* to *dst_key*.
+
+        Both keys are resolved relative to the backend's configured prefix.
+
+        Parameters
+        ----------
+        src_key:
+            Logical source key (relative to the configured prefix).
+        dst_key:
+            Logical destination key (relative to the configured prefix).
+
+        Raises
+        ------
+        KeyError
+            If *src_key* does not exist in the bucket.
+        S3BackendError
+            If the copy fails for any other reason.
+        """
+        full_src = self._full_key(src_key)
+        full_dst = self._full_key(dst_key)
+        copy_source = {"Bucket": self._bucket, "Key": full_src}
+        try:
+            self._client.copy_object(
+                CopySource=copy_source,
+                Bucket=self._bucket,
+                Key=full_dst,
+            )
+            logger.debug(
+                "copy s3://%s/%s -> s3://%s/%s",
+                self._bucket,
+                full_src,
+                self._bucket,
+                full_dst,
+            )
+        except Exception as exc:
+            error_code = getattr(exc, "response", {}).get("Error", {}).get("Code", "")
+            if error_code in ("NoSuchKey", "404"):
+                raise KeyError(src_key) from exc
+            raise S3BackendError(
+                f"Failed to copy s3://{self._bucket}/{full_src} -> "
+                f"s3://{self._bucket}/{full_dst}: {exc}"
+            ) from exc
 
     def put_text(self, key: str, text: str, encoding: str = "utf-8") -> None:
         """Convenience wrapper: encode *text* and call :meth:`put`."""

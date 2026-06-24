@@ -71,6 +71,20 @@ def _make_client(objects: dict | None = None):
 
     client.head_object.side_effect = _head_object
 
+    # ---- copy_object ------------------------------------------------------
+    class _CopyNoSuchKey(Exception):
+        def __init__(self):
+            self.response = {"Error": {"Code": "NoSuchKey"}}
+
+    def _copy_object(CopySource, Bucket, Key):
+        src_key = CopySource["Key"]
+        if src_key not in store:
+            raise _CopyNoSuchKey()
+        store[Key] = store[src_key]
+        return {}
+
+    client.copy_object.side_effect = _copy_object
+
     # ---- list_objects_v2 (via paginator) ----------------------------------
     def _paginate(Bucket, Prefix=""):
         matching = [{"Key": k} for k in store if k.startswith(Prefix)]
@@ -293,6 +307,126 @@ class TestListKeys:
             Bucket="test-bucket", Prefix="hermes/sub/"
         )
 
+    def test_list_keys_returns_list_not_iterator(self, backend, client):
+        """list_keys must return a concrete list, not a lazy iterator."""
+        client._store["hermes/x"] = b""
+        result = backend.list_keys()
+        assert isinstance(result, list)
+
+
+# ---------------------------------------------------------------------------
+# iter_keys
+# ---------------------------------------------------------------------------
+
+
+class TestIterKeys:
+    def test_iter_keys_yields_logical_keys(self, backend, client):
+        client._store["hermes/a"] = b""
+        client._store["hermes/b"] = b""
+        keys = list(backend.iter_keys())
+        assert sorted(keys) == ["a", "b"]
+
+    def test_iter_keys_with_sub_prefix(self, backend, client):
+        client._store["hermes/logs/2024-01"] = b""
+        client._store["hermes/logs/2024-02"] = b""
+        client._store["hermes/other"] = b""
+        keys = list(backend.iter_keys(sub_prefix="logs/"))
+        assert sorted(keys) == ["logs/2024-01", "logs/2024-02"]
+
+    def test_iter_keys_empty_bucket(self, backend):
+        assert list(backend.iter_keys()) == []
+
+    def test_iter_keys_returns_iterator(self, backend, client):
+        """iter_keys must return a lazy iterator, not a list."""
+        client._store["hermes/x"] = b""
+        result = backend.iter_keys()
+        # Should be an iterator (has __next__), not a list
+        assert hasattr(result, "__next__")
+
+    def test_iter_keys_propagates_client_error(self, backend, client):
+        client.get_paginator.side_effect = RuntimeError("paginator error")
+        with pytest.raises(S3BackendError, match="paginator error"):
+            list(backend.iter_keys())
+
+    def test_iter_keys_uses_full_prefix_for_search(self, backend, client):
+        """Ensure the paginator is called with the combined prefix."""
+        client._store["hermes/sub/item"] = b""
+        list(backend.iter_keys(sub_prefix="sub/"))
+        paginator = client.get_paginator.return_value
+        paginator.paginate.assert_called_once_with(
+            Bucket="test-bucket", Prefix="hermes/sub/"
+        )
+
+    def test_iter_keys_no_prefix_backend(self, client):
+        """Backend with no prefix should yield keys as-is."""
+        b = S3Backend(bucket="test-bucket", prefix="", client=client)
+        client._store["raw-key"] = b""
+        keys = list(b.iter_keys())
+        assert "raw-key" in keys
+
+    def test_list_keys_delegates_to_iter_keys(self, backend, client):
+        """list_keys should produce the same results as list(iter_keys())."""
+        client._store["hermes/p"] = b""
+        client._store["hermes/q"] = b""
+        assert sorted(backend.list_keys()) == sorted(list(backend.iter_keys()))
+
+
+# ---------------------------------------------------------------------------
+# copy
+# ---------------------------------------------------------------------------
+
+
+class TestCopy:
+    def test_copy_duplicates_object(self, backend, client):
+        client._store["hermes/src"] = b"payload"
+        backend.copy("src", "dst")
+        assert client._store["hermes/dst"] == b"payload"
+
+    def test_copy_does_not_remove_source(self, backend, client):
+        client._store["hermes/src"] = b"payload"
+        backend.copy("src", "dst")
+        assert client._store["hermes/src"] == b"payload"
+
+    def test_copy_missing_src_raises_key_error(self, backend):
+        with pytest.raises(KeyError):
+            backend.copy("nonexistent", "dst")
+
+    def test_copy_overwrites_existing_dst(self, backend, client):
+        client._store["hermes/src"] = b"new"
+        client._store["hermes/dst"] = b"old"
+        backend.copy("src", "dst")
+        assert client._store["hermes/dst"] == b"new"
+
+    def test_copy_empty_src_key_raises_value_error(self, backend):
+        with pytest.raises(ValueError, match="key"):
+            backend.copy("", "dst")
+
+    def test_copy_empty_dst_key_raises_value_error(self, backend):
+        with pytest.raises(ValueError, match="key"):
+            backend.copy("src", "")
+
+    def test_copy_calls_copy_object_with_correct_args(self, backend, client):
+        client._store["hermes/src"] = b"data"
+        backend.copy("src", "dst")
+        client.copy_object.assert_called_once_with(
+            CopySource={"Bucket": "test-bucket", "Key": "hermes/src"},
+            Bucket="test-bucket",
+            Key="hermes/dst",
+        )
+
+    def test_copy_propagates_unexpected_client_error(self, backend, client):
+        client._store["hermes/src"] = b"data"
+        client.copy_object.side_effect = RuntimeError("network failure")
+        with pytest.raises(S3BackendError, match="network failure"):
+            backend.copy("src", "dst")
+
+    def test_copy_respects_prefix(self, client):
+        """copy uses the backend prefix for both src and dst keys."""
+        b = S3Backend(bucket="test-bucket", prefix="ns/", client=client)
+        client._store["ns/orig"] = b"val"
+        b.copy("orig", "clone")
+        assert client._store["ns/clone"] == b"val"
+
 
 # ---------------------------------------------------------------------------
 # Prefix isolation
@@ -320,3 +454,17 @@ class TestPrefixIsolation:
 
         assert b1.list_keys() == ["shared-name"]
         assert sorted(b2.list_keys()) == ["extra", "shared-name"]
+
+    def test_copy_does_not_bleed_across_prefixes(self, client):
+        b1 = S3Backend(bucket="test-bucket", prefix="ns1/", client=client)
+        b2 = S3Backend(bucket="test-bucket", prefix="ns2/", client=client)
+
+        b1.put("item", b"b1-data")
+        b2.put("item", b"b2-data")
+
+        b1.copy("item", "item-copy")
+
+        # b1's copy should exist under ns1/
+        assert b1.get("item-copy") == b"b1-data"
+        # b2 should be unaffected
+        assert b2.list_keys() == ["item"]

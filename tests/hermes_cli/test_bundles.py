@@ -90,3 +90,21 @@ class TestBundlesCli:
         bundles_command(_parse(["reload"]))
         out = capsys.readouterr().out
         assert "No changes" in out or "0" in out
+
+    def test_reload_reports_newly_added_bundle(self, bundles_env, capsys):
+        # Establish cache state = {alpha}.
+        bundles_command(_parse(["create", "alpha", "--skill", "s1", "-d", "first"]))
+        bundles_command(_parse(["reload"]))
+        capsys.readouterr()  # clear
+        # A second bundle appears on disk after the cache was populated.
+        (bundles_env / "beta.yaml").write_text(
+            "skills:\n  - s2\ndescription: second\n",
+            encoding="utf-8",
+        )
+        bundles_command(_parse(["reload"]))
+        out = capsys.readouterr().out
+        # Before the fix: register_cli's eager scan_bundles() front-runs the
+        # diff, so reload snapshots a cache that already contains beta and
+        # prints "No changes". After the fix: the cache still holds only alpha
+        # at snapshot time, so beta is reported as added.
+        assert "beta" in out

@@ -27,7 +27,6 @@ from agent.skill_bundles import (
     list_bundles,
     reload_bundles,
     save_bundle,
-    scan_bundles,
 )
 
 
@@ -214,9 +213,6 @@ def register_cli(subparser) -> None:
         "reload", help="Re-scan the bundles directory and report changes"
     )
     p_reload.set_defaults(_bundles_handler=_cmd_reload)
-
-    # Ensure a fresh scan when any bundles subcommand runs.
-    scan_bundles()
 
 
 def bundles_command(args) -> None:

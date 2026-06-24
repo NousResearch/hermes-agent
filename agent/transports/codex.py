@@ -5,10 +5,28 @@ This transport owns format conversion and normalization — NOT client lifecycle
 streaming, or the _run_codex_stream() call path.
 """
 
+import hashlib
 from typing import Any, Dict, List, Optional
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
+
+# OpenAI / xAI reject a prompt_cache_key longer than 64 chars with HTTP 400.
+_PROMPT_CACHE_KEY_MAX = 64
+
+
+def _clamp_prompt_cache_key(session_id: str) -> str:
+    """Return a cache key <= 64 chars, stable for a given session id.
+
+    Long Hermes session ids (e.g. ``cron_<name>-<uuid>_<timestamp>``)
+    overflow the provider's 64-char limit, so collapse anything over the
+    limit to its sha256 hex digest (exactly 64 chars). The digest is
+    deterministic, so cross-turn cache hits for the same session are
+    preserved.
+    """
+    if len(session_id) <= _PROMPT_CACHE_KEY_MAX:
+        return session_id
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest()
 
 
 class ResponsesApiTransport(ProviderTransport):
@@ -215,7 +233,7 @@ class ResponsesApiTransport(ProviderTransport):
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
         if not is_github_responses and not is_xai_responses and session_id:
-            kwargs["prompt_cache_key"] = session_id
+            kwargs["prompt_cache_key"] = _clamp_prompt_cache_key(str(session_id))
 
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
@@ -326,7 +344,9 @@ class ResponsesApiTransport(ProviderTransport):
             merged_extra_body: Dict[str, Any] = {}
             if isinstance(existing_extra_body, dict):
                 merged_extra_body.update(existing_extra_body)
-            merged_extra_body.setdefault("prompt_cache_key", session_id)
+            merged_extra_body.setdefault(
+                "prompt_cache_key", _clamp_prompt_cache_key(str(session_id))
+            )
             kwargs["extra_body"] = merged_extra_body
 
         return kwargs

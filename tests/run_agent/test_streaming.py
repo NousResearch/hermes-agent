@@ -986,9 +986,10 @@ class TestAnthropicStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == len(events)
 
+    @patch("run_agent.AIAgent._rebuild_anthropic_client")
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_stream_parser_valueerror_retries_before_delivery(
-        self, mock_replace, monkeypatch,
+        self, mock_replace, mock_rebuild, monkeypatch,
     ):
         """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None."""
         from run_agent import AIAgent
@@ -1035,7 +1036,10 @@ class TestAnthropicStreamCallbacks:
 
         assert response is final_message
         assert agent._anthropic_client.messages.stream.call_count == 2
-        assert mock_replace.call_count == 1
+        # After the PR: anthropic_messages mode dispatches to
+        # _rebuild_anthropic_client, not _replace_primary_openai_client.
+        assert mock_rebuild.call_count == 1
+        assert mock_replace.call_count == 0
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(

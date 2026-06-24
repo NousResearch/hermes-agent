@@ -279,6 +279,13 @@ export function registerSessionPreview(
   const now = Date.now()
   const records = current[id] ?? []
   const existing = records.find(record => record.normalized.url === target.url)
+
+  // If the user already dismissed this preview, respect that dismissal.
+  // Subsequent tool events for the same file should not resurrect it.
+  if (existing?.dismissedAt) {
+    return existing
+  }
+
   const normalized = previewTargetForSource(target, source)
 
   const nextRecord: SessionPreviewRecord = {
@@ -313,7 +320,11 @@ export function setSessionPreviewTarget(
 
   const record = registerSessionPreview(sessionId, target, source, rawTarget)
 
-  setPreviewTarget(record?.normalized ?? previewTargetForSource(target, source))
+  // Don't resurrect a dismissed preview — only set the active target when
+  // the record is genuinely new or was never dismissed.
+  if (record && !record.dismissedAt) {
+    setPreviewTarget(record.normalized)
+  }
 
   return record
 }

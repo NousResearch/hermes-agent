@@ -83,7 +83,10 @@ describe('preview store', () => {
 
     setCurrentSessionPreviewTarget(target, 'tool-result')
 
-    expect(getSessionPreviewRecord('session-1')?.dismissedAt).toBeUndefined()
+    // After dismissal, re-registering the same target should preserve the
+    // dismissed state — the preview must not resurrect from tool events.
+    expect(getSessionPreviewRecord('session-1')).toBeNull()
+    expect($sessionPreviewRegistry.get()['session-1']?.[0]?.dismissedAt).toEqual(expect.any(Number))
   })
 
   it('replaces the session preview instead of keeping a back stack', () => {
@@ -134,5 +137,31 @@ describe('preview store', () => {
     expect($filePreviewTarget.get()).toBeNull()
     expect($rightRailActiveTabId.get()).toBe(RIGHT_RAIL_PREVIEW_TAB_ID)
     expect($previewTarget.get()).toEqual(withRenderMode(live, 'preview'))
+  })
+
+  it('does not resurrect a dismissed preview on re-registration (#51687)', () => {
+    const target = previewTarget('/work/demo.html')
+
+    // Open preview via tool result
+    setCurrentSessionPreviewTarget(target, 'tool-result')
+    expect($previewTarget.get()).toEqual(withRenderMode(target, 'preview'))
+
+    // User dismisses the preview
+    dismissPreviewTarget()
+    expect($previewTarget.get()).toBeNull()
+    expect(getSessionPreviewRecord('session-1')).toBeNull()
+
+    // Simulate a tool event re-registering the same target (e.g. streaming
+    // update). The dismissed state must be preserved.
+    setCurrentSessionPreviewTarget(target, 'tool-result')
+    expect($previewTarget.get()).toBeNull()
+    expect(getSessionPreviewRecord('session-1')).toBeNull()
+    expect($sessionPreviewRegistry.get()['session-1']?.[0]?.dismissedAt).toEqual(expect.any(Number))
+
+    // A *different* target should still work normally
+    const other = previewTarget('/work/other.html')
+    setCurrentSessionPreviewTarget(other, 'tool-result')
+    expect($previewTarget.get()).toEqual(withRenderMode(other, 'preview'))
+    expect(getSessionPreviewRecord('session-1')?.normalized).toEqual(withRenderMode(other, 'preview'))
   })
 })

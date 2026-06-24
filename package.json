@@ -38,7 +38,9 @@
   "overrides": {
     "lodash": "4.18.1",
     "@assistant-ui/store": "0.2.13",
-    "yauzl": "^3.3.1"
+    "yauzl": "^3.3.1",
+    "@electron/rebuild": "3.7.2",
+    "node-abi": "3.91.0"
   },
   "engines": {
     "node": ">=20.0.0"

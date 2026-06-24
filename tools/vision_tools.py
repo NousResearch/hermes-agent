@@ -117,8 +117,13 @@ def _detect_image_mime_type(image_path: Path) -> Optional[str]:
         return "image/jpeg"
     if header.startswith((b"GIF87a", b"GIF89a")):
         return "image/gif"
+    # The native multimodal path sends this MIME directly to model APIs.
+    # OpenAI/Codex currently accepts jpeg/png/gif/webp only; returning BMP
+    # here wedges sessions with HTTP 400 once the tool output is embedded.
+    # Treat BMP as unsupported unless/until we add conversion to a supported
+    # format before constructing the data URL.
     if header.startswith(b"BM"):
-        return "image/bmp"
+        return None
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
     if image_path.suffix.lower() == ".svg":

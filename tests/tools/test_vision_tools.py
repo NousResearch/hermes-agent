@@ -13,6 +13,7 @@ from tools.vision_tools import (
     _validate_image_url,
     _handle_vision_analyze,
     _determine_mime_type,
+    _detect_image_mime_type,
     _image_to_base64_data_url,
     _resize_image_for_vision,
     _image_exceeds_dimension,
@@ -141,6 +142,19 @@ class TestDetermineMimeType:
 
     def test_unknown_extension_defaults_to_jpeg(self):
         assert _determine_mime_type(Path("file.xyz")) == "image/jpeg"
+
+
+# ---------------------------------------------------------------------------
+# _detect_image_mime_type
+# ---------------------------------------------------------------------------
+
+
+class TestDetectImageMimeType:
+    def test_bmp_header_is_unsupported_for_native_embedding(self, tmp_path):
+        img = tmp_path / "sample.bmp"
+        img.write_bytes(b"BM" + b"\x00" * 62)
+
+        assert _detect_image_mime_type(img) is None
 
 
 # ---------------------------------------------------------------------------

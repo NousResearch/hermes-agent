@@ -4741,6 +4741,63 @@ def _nixos_build_env() -> dict[str, str] | None:
         pass  # nix-shell not available — caller will get None
 
     return None
+
+
+def _nixos_electron_path() -> str | None:
+    """Resolve a patchelf'd electron binary from nixpkgs.
+
+    On NixOS, the npm-installed electron binary has unpatched ELF headers
+    that expect /usr/lib/*.so (libglib, libgtk, libnss3, etc.) which don't
+    exist outside a nix-shell.  nixpkgs' electron package has correct RPATHs
+    pointing into the nix store.
+
+    Returns the absolute path to the nixpkgs electron binary, or None when
+    not on NixOS or electron can't be resolved.
+    """
+    import re
+
+    try:
+        os_release = Path("/etc/os-release").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not re.search(r"^ID=nixos$", os_release, re.M):
+        return None
+
+    # Tier 1: electron already on PATH (installed as a system package)
+    electron_on_path = shutil.which("electron")
+    if electron_on_path:
+        return electron_on_path
+
+    # Tier 2: resolve via nix-build (channel-based NixOS)
+    try:
+        result = subprocess.run(
+            ["nix-build", "<nixpkgs>", "-A", "electron", "--no-out-link"],
+            capture_output=True, text=True, check=False, timeout=120,
+        )
+        if result.returncode == 0:
+            store_path = result.stdout.strip()
+            electron_bin = Path(store_path) / "bin" / "electron"
+            if electron_bin.exists():
+                return str(electron_bin)
+    except Exception:
+        pass
+
+    # Tier 3: resolve via nix build (flake-based, no channel required)
+    try:
+        result = subprocess.run(
+            ["nix", "build", "nixpkgs#electron", "--no-link", "--print-out-paths"],
+            capture_output=True, text=True, check=False, timeout=120,
+        )
+        if result.returncode == 0:
+            store_path = result.stdout.strip().splitlines()[-1].strip()
+            electron_bin = Path(store_path) / "bin" / "electron"
+            if electron_bin.exists():
+                return str(electron_bin)
+    except Exception:
+        pass
+
+    return None
+
 def _run_npm_install_deterministic(
     npm: str,
     cwd: Path,
@@ -5613,8 +5670,16 @@ def cmd_gui(args: argparse.Namespace):
         return
 
     if source_mode:
-        print("→ Launching Hermes Desktop from source build...")
-        launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
+        # On NixOS, the npm-installed electron binary has unpatched ELF
+        # headers that can't find system libraries (libglib, libgtk, etc).
+        # Use nixpkgs' patchelf'd electron instead.
+        nixos_electron = _nixos_electron_path()
+        if nixos_electron:
+            print(f"→ Launching Hermes Desktop from source build (nixpkgs electron)...")
+            launch_result = subprocess.run([nixos_electron, "."], cwd=desktop_dir, env=env, check=False)
+        else:
+            print("→ Launching Hermes Desktop from source build...")
+            launch_result = subprocess.run([npm, "exec", "--", "electron", "."], cwd=desktop_dir, env=env, check=False)
         sys.exit(launch_result.returncode)
 
     if packaged_executable is None:

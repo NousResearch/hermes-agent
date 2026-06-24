@@ -281,6 +281,42 @@ function childrenToText(children: unknown): string {
   return ''
 }
 
+function isLocalFilePath(href: string): boolean {
+  if (!href) return false
+  // Absolute Unix paths: /path/to/file
+  // Relative paths: ./path, ../path
+  // Windows paths: C:\path, C:/path
+  // Scheme-based: file:///path
+  return /^(?:\/|\.\.?[/\\]|[a-zA-Z]:[/\\])/.test(href) || /^file:/i.test(href)
+}
+
+function localFileToPreviewTarget(href: string): PreviewTarget {
+  let path = href
+  // Handle file:// scheme
+  if (/^file:/i.test(href)) {
+    try {
+      path = decodeURIComponent(new URL(href).pathname)
+    } catch {
+      path = href.replace(/^file:\/\//, '')
+    }
+  }
+  // Decode any URL-encoded characters
+  path = decodeURIComponent(path)
+
+  const ext = path.split('.').pop()?.toLowerCase() || ''
+  const language = ext || 'text'
+
+  return {
+    kind: 'file' as const,
+    label: path,
+    path,
+    url: `file://${path}`,
+    source: 'explicit-link',
+    previewKind: 'text',
+    language,
+  }
+}
+
 function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a'>) {
   const mediaPath = mediaPathFromMarkdownHref(href)
 
@@ -292,6 +328,29 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
 
   if (previewTarget) {
     return <PreviewAttachment source="explicit-link" target={previewTarget} />
+  }
+
+  // Handle local file paths
+  if (href && isLocalFilePath(href)) {
+    const fileTarget = localFileToPreviewTarget(href)
+    const text = childrenToText(children)
+
+    return (
+      <a
+        className={cn(
+          'font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere',
+          className
+        )}
+        href="#"
+        onClick={event => {
+          event.preventDefault()
+          setCurrentSessionPreviewTarget(fileTarget, 'explicit-link')
+        }}
+        {...props}
+      >
+        {text || href}
+      </a>
+    )
   }
 
   const target = href ? normalizeExternalUrl(href) : href

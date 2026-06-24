@@ -167,7 +167,6 @@ export interface SessionInfo {
 }
 
 export interface Usage {
-  active_subagents?: number
   calls: number
   compressions?: number
   context_max?: number

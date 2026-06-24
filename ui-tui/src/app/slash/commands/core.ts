@@ -428,24 +428,6 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['compose'],
-    help: 'compose your next prompt in $EDITOR (same as Ctrl+G)',
-    name: 'prompt',
-    run: (arg, ctx) => {
-      if (arg) {
-        // The TUI editor opens with the current composer draft; there is no
-        // separate seed arg. Drop any inline text into the composer first so
-        // it carries into the editor, matching the CLI's /prompt <text>.
-        ctx.composer.setInput(arg)
-      }
-
-      void ctx.composer.openEditor().catch((err: unknown) => {
-        ctx.transcript.sys(`editor failed: ${String(err)}`)
-      })
-    }
-  },
-
-  {
     help: 'configure IDE terminal keybindings for multiline + undo/redo',
     name: 'terminal-setup',
     run: (arg, ctx) => {
@@ -676,6 +658,43 @@ export const coreCommands: SlashCommand[] = [
           ctx.transcript.send(last)
         })
       )
+    }
+  },
+
+  {
+    help: 'open local file in preview panel',
+    name: 'file',
+    run: async (arg, ctx) => {
+      const { transcript, sys } = ctx
+      const filePath = arg.trim()
+
+      if (!filePath) {
+        return transcript.sys('Please provide a file path')
+      }
+
+      try {
+        const content = await sys.fs.readFile(filePath, 'utf8')
+        const lines = content.split('\n')
+        const previewContent = lines.slice(0, 150).join('\n')
+        const isTruncated = lines.length > 150
+        
+        await sys.panels.setActive('preview')
+        await sys.panels.updatePreview({
+          type: 'file',
+          title: `Preview: ${filePath}`,
+          content: previewContent,
+          metadata: { 
+            filePath,
+            isTruncated,
+            lineCount: lines.length,
+            size: Buffer.byteLength(content, 'utf8')
+          }
+        })
+        
+        return transcript.sys(`Previewing ${filePath}${isTruncated ? ' (truncated to 150 lines)' : ''}`)
+      } catch (error) {
+        return transcript.sys(`Error reading file: ${error.message}`)
+      }
     }
   }
 ]

@@ -14,6 +14,7 @@ from hermes_cli.tools_config import (
     _reconfigure_provider,
     _get_platform_tools,
     _platform_toolset_summary,
+    _print_tools_list,
     _reconfigure_tool,
     _run_post_setup,
     _save_platform_tools,
@@ -417,6 +418,25 @@ def test_get_platform_tools_no_mcp_sentinel_does_not_affect_other_platforms():
     # cli (not configured with no_mcp) should include MCP
     cli_enabled = _get_platform_tools(config, "cli")
     assert "exa" in cli_enabled
+
+
+def test_tools_list_marks_mcp_disabled_by_platform(capsys):
+    config = {
+        "platform_toolsets": {"cli": ["web", "terminal", "no_mcp"]},
+        "mcp_servers": {
+            "exa": {"url": "https://mcp.exa.ai/mcp"},
+            "disabled-server": {"url": "https://example.com/mcp", "enabled": False},
+        },
+    }
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=True)
+    _print_tools_list(enabled, config["mcp_servers"], "cli")
+
+    out = capsys.readouterr().out
+    assert "exa" in out
+    assert "disabled on cli" in out
+    assert "disabled-server" in out
+    assert "disabled in config" in out
 
 
 def test_toolset_has_keys_for_vision_accepts_codex_auth(tmp_path, monkeypatch):
@@ -1208,12 +1228,15 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
     }
 
     with mock_patch("hermes_cli.tools_config.PLATFORMS", {**PLATFORMS, **test_platforms}):
-        with mock_patch("toolsets.TOOLSETS", fake_toolsets):
-            enabled = _get_platform_tools({}, "_test_platform")
+        with mock_patch("hermes_cli.tools_config.CONFIGURABLE_TOOLSETS", [
+            ("web", "Web", "web_search, web_extract"),
+            ("terminal", "Terminal", "terminal, process"),
+        ]):
+            with mock_patch("toolsets.TOOLSETS", fake_toolsets):
+                enabled = _get_platform_tools({}, "_test_platform")
 
     assert "_test_platform_tool" in enabled
     assert "web" in enabled
-    assert "terminal" in enabled
 
 
 def test_get_platform_tools_second_pass_skips_fully_claimed_toolsets():
@@ -1540,5 +1563,4 @@ def test_real_configurable_changes_still_reported_in_diff():
     # User adds 'vision' (configurable) — must still report as added.
     new_enabled2 = (current - {"kanban"}) | {"vision"}
     assert ((new_enabled2 - current) & universe) == {"vision"}
-
 

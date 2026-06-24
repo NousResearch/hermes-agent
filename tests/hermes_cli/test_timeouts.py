@@ -3,8 +3,12 @@ from __future__ import annotations
 import textwrap
 
 from hermes_cli.timeouts import (
+    get_provider_disable_streaming,
+    get_provider_max_tokens,
     get_provider_request_timeout,
     get_provider_stale_timeout,
+    get_provider_system_prompt_char_limit,
+    get_provider_tool_allowlist,
 )
 
 
@@ -72,6 +76,100 @@ def test_provider_stale_timeout_used_when_no_model_override(monkeypatch, tmp_pat
     )
 
     assert get_provider_stale_timeout("openai-codex", "gpt-5.4") == 900.0
+
+
+def test_model_disable_streaming_override_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          custom:cliproxy:
+            disable_streaming: false
+            models:
+              kimi-k2.7-code-free:
+                disable_streaming: true
+        """,
+    )
+
+    assert get_provider_disable_streaming(
+        "custom:cliproxy", "kimi-k2.7-code-free"
+    ) is True
+    assert get_provider_disable_streaming("custom:cliproxy", "other-model") is False
+
+
+def test_model_max_tokens_override_wins(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          custom:cliproxy:
+            max_tokens: 16384
+            models:
+              kimi-k2.7-code-free:
+                max_tokens: 4096
+        """,
+    )
+
+    assert get_provider_max_tokens("custom:cliproxy", "kimi-k2.7-code-free") == 4096
+    assert get_provider_max_tokens("custom:cliproxy", "other-model") == 16384
+
+
+def test_model_payload_thinning_overrides(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          custom:cliproxy:
+            system_prompt_char_limit: 20000
+            tool_allowlist: terminal,web_search
+            models:
+              kimi-k2.7-code-free:
+                system_prompt_char_limit: 10000
+                tool_allowlist:
+                  - terminal
+        """,
+    )
+
+    assert (
+        get_provider_system_prompt_char_limit(
+            "custom:cliproxy", "kimi-k2.7-code-free"
+        )
+        == 10000
+    )
+    assert get_provider_tool_allowlist(
+        "custom:cliproxy", "kimi-k2.7-code-free"
+    ) == ["terminal"]
+    assert get_provider_system_prompt_char_limit("custom:cliproxy", "other") == 20000
+    assert get_provider_tool_allowlist("custom:cliproxy", "other") == [
+        "terminal",
+        "web_search",
+    ]
+
+
+def test_empty_model_tool_allowlist_disables_provider_tools(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _write_config(
+        tmp_path,
+        """\
+        providers:
+          custom:cliproxy:
+            tool_allowlist: terminal,web_search
+            models:
+              kimi-k2.7-code-free:
+                tool_allowlist: []
+        """,
+    )
+
+    assert get_provider_tool_allowlist(
+        "custom:cliproxy", "kimi-k2.7-code-free"
+    ) == []
+    assert get_provider_tool_allowlist("custom:cliproxy", "other") == [
+        "terminal",
+        "web_search",
+    ]
 
 
 def test_missing_timeout_returns_none(monkeypatch, tmp_path):

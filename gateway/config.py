@@ -1138,6 +1138,29 @@ def load_gateway_config() -> GatewayConfig:
 
     config = GatewayConfig.from_dict(gw_data)
 
+    # Bridge structured email IMAP/SMTP config to extra dict so the adapter
+    # can read imap_encryption, imap_port, etc.  The YAML block
+    # ``platforms.email.imap.encryption: start-tls`` ends up in
+    # gw_data["platforms"]["email"]["imap"] but PlatformConfig.from_dict()
+    # only reads data["extra"], so we bridge the nested keys here.
+    try:
+        _email_plat = gw_data.get("platforms", {}).get("email", {})
+        if isinstance(_email_plat, dict):
+            _imap_block = _email_plat.get("imap", {})
+            if isinstance(_imap_block, dict) and Platform.EMAIL in config.platforms:
+                _email_extra = config.platforms[Platform.EMAIL].extra
+                if "encryption" in _imap_block and "imap_encryption" not in _email_extra:
+                    _email_extra["imap_encryption"] = _imap_block["encryption"]
+                if "port" in _imap_block and "imap_port" not in _email_extra:
+                    _email_extra["imap_port"] = _imap_block["port"]
+            _smtp_block = _email_plat.get("smtp", {})
+            if isinstance(_smtp_block, dict) and Platform.EMAIL in config.platforms:
+                _email_extra = config.platforms[Platform.EMAIL].extra
+                if "encryption" in _smtp_block and "smtp_encryption" not in _email_extra:
+                    _email_extra["smtp_encryption"] = _smtp_block["encryption"]
+    except Exception as e:
+        logger.debug("Email IMAP/SMTP config bridge skipped: %s", e)
+
     # Override with environment variables
     _apply_env_overrides(config)
     

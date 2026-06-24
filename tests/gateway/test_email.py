@@ -1482,5 +1482,81 @@ class TestConnectionConfigResolution(unittest.TestCase):
             self.assertTrue(check_email_requirements())
 
 
+class TestIMAPEncryptionMode(unittest.TestCase):
+    """Test IMAP connection mode selection based on encryption config (#51263)."""
+
+    def _make_adapter(self, **env_overrides):
+        """Create an EmailAdapter with mocked env vars."""
+        from gateway.config import PlatformConfig
+        base_env = {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }
+        base_env.update(env_overrides)
+        with patch.dict(os.environ, base_env):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_default_port_993_uses_tls(self):
+        """Default port 993 should use implicit TLS (IMAP4_SSL)."""
+        adapter = self._make_adapter()
+        self.assertEqual(adapter._imap_encryption, "tls")
+
+    def test_port_143_auto_detects_starttls(self):
+        """Port 143 without explicit encryption should auto-detect STARTTLS."""
+        adapter = self._make_adapter(EMAIL_IMAP_PORT="143")
+        self.assertEqual(adapter._imap_encryption, "starttls")
+
+    def test_explicit_starttls_env_var(self):
+        """EMAIL_IMAP_ENCRYPTION=starttls should force STARTTLS mode."""
+        adapter = self._make_adapter(EMAIL_IMAP_ENCRYPTION="starttls")
+        self.assertEqual(adapter._imap_encryption, "starttls")
+
+    def test_explicit_tls_env_var(self):
+        """EMAIL_IMAP_ENCRYPTION=tls should force implicit TLS mode."""
+        adapter = self._make_adapter(EMAIL_IMAP_PORT="143", EMAIL_IMAP_ENCRYPTION="tls")
+        self.assertEqual(adapter._imap_encryption, "tls")
+
+    def test_starttls_from_extra_dict(self):
+        """imap_encryption in extra dict should be respected."""
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            config = PlatformConfig(enabled=True, extra={"imap_encryption": "start-tls"})
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(config)
+        self.assertEqual(adapter._imap_encryption, "starttls")
+
+    def test_connect_imap_starttls(self):
+        """_connect_imap should use IMAP4 + starttls for STARTTLS mode."""
+        adapter = self._make_adapter(EMAIL_IMAP_PORT="143")
+        with patch("plugins.platforms.email.adapter.imaplib.IMAP4") as mock_imap4,              patch("plugins.platforms.email.adapter.ssl.create_default_context") as mock_ctx:
+            mock_ctx.return_value = "fake_ctx"
+            mock_instance = mock_imap4.return_value
+            result = adapter._connect_imap()
+            mock_imap4.assert_called_once_with("imap.test.com", 143, timeout=30)
+            mock_instance.starttls.assert_called_once_with(ssl_context="fake_ctx")
+            self.assertIs(result, mock_instance)
+
+    def test_connect_imap_implicit_tls(self):
+        """_connect_imap should use IMAP4_SSL for implicit TLS mode."""
+        adapter = self._make_adapter()
+        with patch("plugins.platforms.email.adapter.imaplib.IMAP4_SSL") as mock_imap4ssl,              patch("plugins.platforms.email.adapter.ssl.create_default_context") as mock_ctx:
+            mock_ctx.return_value = "fake_ctx"
+            mock_instance = mock_imap4ssl.return_value
+            result = adapter._connect_imap()
+            mock_imap4ssl.assert_called_once_with(
+                "imap.test.com", 993, timeout=30, ssl_context="fake_ctx",
+            )
+            self.assertIs(result, mock_instance)
+
+
 if __name__ == "__main__":
     unittest.main()

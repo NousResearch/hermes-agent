@@ -2697,6 +2697,11 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 usage=None,
                 _dropped_tool_names=_partial_names or None,
             )
+        if isinstance(result["error"], ConnectionError):
+            logger.warning(
+                "Stream connection lost before any deltas arrived; "
+                "propagating to fallback: %s", result["error"],
+            )
         raise result["error"]
     return result["response"]
 

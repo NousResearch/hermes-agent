@@ -1302,3 +1302,65 @@ class TestGatewayBusyDerivation:
             assert status.derive_gateway_drainable(
                 gateway_running=True, gateway_state=state
             ) is False, state
+
+
+class TestRespawnStormBreaker:
+    def test_no_storm_under_threshold(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        results = [
+            status.record_start_and_check_storm(max_starts=5, window_s=120.0)
+            for _ in range(5)
+        ]
+        assert all(r is None for r in results), results
+
+    def test_storm_detected_over_threshold(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        results = [
+            status.record_start_and_check_storm(max_starts=5, window_s=120.0)
+            for _ in range(7)
+        ]
+        last = results[-1]
+        assert last is not None
+        assert last.count >= 6
+        assert last.backoff_s > 0
+        assert last.window_s == 120.0
+
+    def test_old_starts_pruned_outside_window(self, tmp_path, monkeypatch):
+        import time
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        log_path = tmp_path / "gateway-starts.log"
+        old = time.time() - 10000
+        log_path.write_text(
+            "\n".join(f"{old:.6f}" for _ in range(10)) + "\n", encoding="utf-8"
+        )
+        # The 10 seeded starts are all outside the window, so a single fresh
+        # start cannot constitute a storm.
+        assert status.record_start_and_check_storm(max_starts=5, window_s=120.0) is None
+
+    def test_starts_log_written_atomically(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for _ in range(6):
+            status.record_start_and_check_storm(max_starts=5, window_s=120.0)
+
+        # No leftover temp files from the atomic write.
+        leftovers = list(tmp_path.glob("*.tmp"))
+        assert leftovers == [], leftovers
+
+        log_path = tmp_path / "gateway-starts.log"
+        assert log_path.exists()
+        for line in log_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if line:
+                float(line)  # raises if any line is not a valid float
+
+
+class TestLaunchdPlistRespawnGovernance:
+    def test_plist_has_throttle_interval(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from hermes_cli.gateway import generate_launchd_plist
+
+        plist = generate_launchd_plist()
+        assert "<key>ThrottleInterval</key>" in plist
+        assert "<key>ExitTimeOut</key>" in plist
+        assert "<key>KeepAlive</key>" in plist

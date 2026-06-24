@@ -21,7 +21,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 from utils import atomic_json_write
 
 if sys.platform == "win32":
@@ -40,6 +40,89 @@ _gateway_lock_handle = None
 # past the JSON payload so runtime status / PID readers can still read the file
 # while another process holds the mutual-exclusion lock.
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
+
+
+class StormInfo(NamedTuple):
+    """Summary of a detected respawn storm.
+
+    count: number of starts observed inside the window
+    window_s: the rolling window (seconds) the count was measured over
+    backoff_s: how long the caller should sleep to break the storm
+    """
+
+    count: int
+    window_s: float
+    backoff_s: float
+
+
+def _get_starts_log_path() -> Path:
+    """Return the path to the gateway start-timestamps log, respecting HERMES_HOME."""
+    return get_hermes_home() / "gateway-starts.log"
+
+
+def record_start_and_check_storm(
+    max_starts: int = 5,
+    window_s: float = 120.0,
+    *,
+    backoff_cap_s: float = 300.0,
+) -> Optional[StormInfo]:
+    """Record this gateway start and detect a respawn storm.
+
+    Appends the current UTC timestamp to the starts-log, prunes entries older
+    than ``window_s``, and returns a :class:`StormInfo` when more than
+    ``max_starts`` starts have occurred inside the window (else ``None``).
+
+    The log is ring-buffered (kept to the last ``max(max_starts * 4, 40)``
+    lines) and written atomically (temp file + ``os.replace``) so a crash
+    mid-write can never corrupt it.
+
+    Portable: relies only on a timestamp file under HERMES_HOME, so it works
+    identically under launchd, systemd, or a bare-foreground run — independent
+    of any supervisor's own respawn governance.
+
+    Hardened to never raise: any unexpected error returns ``None`` so a
+    diagnostic-only feature can never block gateway startup.
+    """
+    try:
+        path = _get_starts_log_path()
+        now = datetime.now(timezone.utc).timestamp()
+
+        existing: list[float] = []
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            raw = ""
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                existing.append(float(line))
+            except ValueError:
+                continue
+
+        existing.append(now)
+        cutoff = now - window_s
+        recent = [ts for ts in existing if ts >= cutoff]
+
+        # Ring-buffer the persisted log so it can't grow without bound.
+        keep = max(max_starts * 4, 40)
+        to_write = recent[-keep:] if len(recent) > keep else recent
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(
+            "\n".join(f"{ts:.6f}" for ts in to_write) + "\n", encoding="utf-8"
+        )
+        os.replace(tmp, path)
+
+        if len(recent) > max_starts:
+            exponent = min(len(recent) - max_starts, 6)
+            backoff_s = min(backoff_cap_s, 5.0 * (2 ** exponent))
+            return StormInfo(count=len(recent), window_s=window_s, backoff_s=backoff_s)
+        return None
+    except Exception:
+        return None
 
 
 def _get_pid_path() -> Path:

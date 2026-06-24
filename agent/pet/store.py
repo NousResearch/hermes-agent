@@ -84,9 +84,25 @@ def _resolve_spritesheet(directory: Path, meta: dict) -> Path:
     return directory / "spritesheet.webp"
 
 
+def _safe_slug(slug: str) -> str:
+    """Normalize a slug to a single bare path segment.
+
+    Pet slugs index into ``pets_dir()/<slug>/`` for load/remove, so a value
+    carrying path separators (``../``, absolute paths) could escape the pets
+    directory. Strip every separator and reject ``.``/``..`` so callers can
+    only ever name a direct child of the pets directory.
+    """
+    segment = Path(str(slug).strip()).name
+    if segment in ("", ".", ".."):
+        return ""
+    return segment
+
+
 def load_pet(slug: str) -> InstalledPet | None:
     """Return the :class:`InstalledPet` for *slug*, or ``None`` if absent."""
-    slug = slug.strip()
+    slug = _safe_slug(slug)
+    if not slug:
+        return None
     directory = pets_dir() / slug
     if not directory.is_dir():
         return None
@@ -135,7 +151,9 @@ def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TI
     """
     from agent.pet.manifest import find_entry
 
-    slug = slug.strip()
+    slug = _safe_slug(slug)
+    if not slug:
+        raise PetStoreError("invalid pet slug")
     existing = load_pet(slug)
     if existing and existing.exists and not force:
         return existing
@@ -143,6 +161,12 @@ def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TI
     entry = find_entry(slug, timeout=timeout)
     if entry is None:
         raise PetStoreError(f"pet '{slug}' is not in the petdex manifest")
+
+    # Host-pin every asset URL to petdex. The manifest is trusted (HTTPS from
+    # petdex.dev), but pin the asset hosts too so a compromised/spoofed manifest
+    # can't redirect the download at an arbitrary host. Matches thumbnail_png.
+    if not _is_petdex_host(entry.spritesheet_url):
+        raise PetStoreError(f"refusing non-petdex spritesheet host for '{slug}'")
 
     directory = pets_dir() / slug
     directory.mkdir(parents=True, exist_ok=True)
@@ -155,7 +179,7 @@ def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TI
     # Fetch the upstream pet.json if present; otherwise synthesize a minimal
     # one so the local layout is self-describing.
     meta: dict = {}
-    if entry.pet_json_url:
+    if entry.pet_json_url and _is_petdex_host(entry.pet_json_url):
         try:
             meta = _download_json(entry.pet_json_url, timeout=timeout)
         except Exception as exc:  # noqa: BLE001 - non-fatal, fall back below
@@ -274,7 +298,10 @@ def remove_pet(slug: str) -> bool:
     """Delete an installed pet directory.  Returns True if anything was removed."""
     import shutil
 
-    directory = pets_dir() / slug.strip()
+    slug = _safe_slug(slug)
+    if not slug:
+        return False
+    directory = pets_dir() / slug
     if not directory.is_dir():
         return False
     shutil.rmtree(directory, ignore_errors=True)

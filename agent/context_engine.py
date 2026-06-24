@@ -289,6 +289,16 @@ class ContextEngine(ABC):
         ``task_id``, ``api_call_count``, ``interrupted``, ``failed``, and
         ``turn_exit_reason``.
 
+        ``usage`` carries the completed turn's canonical token usage (the same
+        dict shape passed to ``update_from_response`` — ``prompt_tokens`` /
+        ``completion_tokens`` / ``total_tokens`` plus the canonical
+        ``input_tokens`` / ``output_tokens`` / ``cache_read_tokens`` /
+        ``cache_write_tokens`` / ``reasoning_tokens`` buckets) so an engine can
+        weigh how large/expensive the selected context actually was when
+        deciding the next ``select_context()``. It is ``None`` on turns that
+        never reached a provider response (early failure / interrupt); engines
+        must treat it as optional.
+
         Default is a no-op.
         """
         return None

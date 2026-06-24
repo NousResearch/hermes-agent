@@ -1692,7 +1692,22 @@ class PluginManager:
 
         for ep in group_eps:
             if ep.name == manifest.name:
-                return ep.load()
+                obj = ep.load()
+                # Entry-point may target a module (``pkg``) or a callable
+                # (``module:function``).  The latter returns the function object
+                # directly, so we wrap it in a synthetic module so
+                # ``_load_plugin`` can discover ``register`` via getattr.
+                if isinstance(obj, types.ModuleType):
+                    return obj
+                if callable(obj):
+                    module = types.ModuleType(ep.module)
+                    setattr(module, "register", obj)
+                    sys.modules[ep.module] = module
+                    return module
+                raise ImportError(
+                    f"Entry point '{manifest.name}' resolved to unexpected type "
+                    f"{type(obj).__name__!r}; expected a module or callable"
+                )
 
         raise ImportError(
             f"Entry point '{manifest.name}' not found in group '{ENTRY_POINTS_GROUP}'"

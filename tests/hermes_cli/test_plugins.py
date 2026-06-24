@@ -428,7 +428,7 @@ class TestPluginDiscovery:
         fake_ep.group = ENTRY_POINTS_GROUP
         fake_ep.load.return_value = fake_module
 
-        def fake_entry_points():
+        def fake_entry_points(*args, **kwargs):
             result = MagicMock()
             result.select = MagicMock(return_value=[fake_ep])
             return result
@@ -438,6 +438,69 @@ class TestPluginDiscovery:
             mgr.discover_and_load()
 
         assert "ep_plugin" in mgr._plugins
+
+    def test_entry_point_callable_wrapped(self, tmp_path, monkeypatch):
+        """Callable entry points (module:function pattern) are wrapped in a synthetic module."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        # Enable the plugin in config so it attempts to load
+        cfg_path = tmp_path / "hermes_test" / "config.yaml"
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text("plugins:\n  enabled:\n    - callable_plugin\n")
+
+        fake_register = lambda ctx: None  # type: ignore[attr-defined]
+
+        fake_ep = MagicMock()
+        fake_ep.name = "callable_plugin"
+        fake_ep.value = "some_pkg:register"
+        fake_ep.module = "some_pkg"
+        fake_ep.group = ENTRY_POINTS_GROUP
+        fake_ep.load.return_value = fake_register
+
+        def fake_entry_points(*args, **kwargs):
+            result = MagicMock()
+            result.select = MagicMock(return_value=[fake_ep])
+            return result
+
+        with patch("importlib.metadata.entry_points", fake_entry_points):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert "callable_plugin" in mgr._plugins
+        # The plugin should have loaded via the synthetic module wrapper
+        plugin = mgr._plugins["callable_plugin"]
+        assert plugin.manifest.name == "callable_plugin"
+        assert plugin.manifest.source == "entrypoint"
+
+    def test_entry_point_unexpected_type_recorded(self, tmp_path, monkeypatch):
+        """Entry points resolving to neither module nor callable are recorded as failed."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        # Enable the plugin in config so it attempts to load
+        cfg_path = tmp_path / "hermes_test" / "config.yaml"
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text("plugins:\n  enabled:\n    - bad_plugin\n")
+
+        fake_ep = MagicMock()
+        fake_ep.name = "bad_plugin"
+        fake_ep.value = "some_pkg:bad"
+        fake_ep.module = "some_pkg"
+        fake_ep.group = ENTRY_POINTS_GROUP
+        fake_ep.load.return_value = 12345  # unexpected type
+
+        def fake_entry_points(*args, **kwargs):
+            result = MagicMock()
+            result.select = MagicMock(return_value=[fake_ep])
+            return result
+
+        with patch("importlib.metadata.entry_points", fake_entry_points):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        # Plugin is registered but flagged as failed
+        assert "bad_plugin" in mgr._plugins
+        assert mgr._plugins["bad_plugin"].error is not None
+        assert "unexpected type" in mgr._plugins["bad_plugin"].error
 
     def test_force_rediscover_clears_all_plugin_registries(self, monkeypatch):
         """force=True must clear every plugin-populated registry.

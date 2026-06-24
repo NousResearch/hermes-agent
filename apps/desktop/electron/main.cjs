@@ -151,6 +151,7 @@ function hiddenWindowsChildOptions(options = {}) {
 // switches only apply pre-launch. Override with HERMES_DESKTOP_DISABLE_GPU
 // (1/true → always disable, 0/false → keep GPU on).
 const REMOTE_DISPLAY_REASON = detectRemoteDisplay()
+let GPU_DISABLE_REASON = REMOTE_DISPLAY_REASON
 if (REMOTE_DISPLAY_REASON) {
   app.disableHardwareAcceleration()
   // Belt-and-suspenders for X11/VNC, where the Viz compositor can still glitch
@@ -161,7 +162,28 @@ if (REMOTE_DISPLAY_REASON) {
   )
 }
 
-ipcMain.handle('hermes:get-remote-display-reason', () => REMOTE_DISPLAY_REASON)
+// WSLg Wayland: CHROMIUM's DRM device probe fails in WSL when no native GPU
+// passthrough is available (common in VMs, older hardware, or certain WSLg
+// configurations). Without a DRM node the GPU process silently fails to
+// initialize, the renderer process never starts, and the window never appears.
+// Software rendering is stable on WSLg and the CPU cost is negligible.
+// User can override with HERMES_DESKTOP_DISABLE_GPU=0 to force GPU on.
+if (!REMOTE_DISPLAY_REASON && IS_WSL) {
+  // Check if HERMES_DESKTOP_DISABLE_GPU explicitly wants GPU on
+  const override = (process.env.HERMES_DESKTOP_DISABLE_GPU || '').trim().toLowerCase()
+  const gpuOverrideOn = new Set(['1', 'true', 'yes', 'on'])
+  const gpuOverrideOff = new Set(['0', 'false', 'no', 'off'])
+  if (!gpuOverrideOff.has(override)) {
+    GPU_DISABLE_REASON = 'wslg (no DRM node available)'
+    app.disableHardwareAcceleration()
+    app.commandLine.appendSwitch('disable-gpu-compositing')
+    console.log(
+      '[hermes] WSL environment detected; disabling GPU hardware acceleration to prevent Wayland/DRM renderer crash'
+    )
+  }
+}
+
+ipcMain.handle('hermes:get-remote-display-reason', () => GPU_DISABLE_REASON)
 
 // Keep the renderer running at full speed while the window is in the background
 // or occluded. The chat transcript streams to screen through a

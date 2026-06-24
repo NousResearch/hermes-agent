@@ -11763,6 +11763,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         # triggered by input events — on macOS this causes
                         # the CLI to appear frozen until the user types. (#1624)
                         self._invalidate(min_interval=0.15)
+                        # Process pending asyncio callbacks so cross-thread
+                        # _cprint messages (retry status, error lines) render
+                        # immediately instead of accumulating until the agent
+                        # thread exits.  _cprint uses call_soon_threadsafe to
+                        # schedule run_in_terminal on the app's event loop,
+                        # and without a periodic callback pump those callbacks
+                        # queue behind the synchronous polling loop. (#1624)
+                        try:
+                            import asyncio as _aio
+                            _loop = _aio.get_event_loop()
+                            if _loop.is_running() and hasattr(_loop, '_run_once'):
+                                _loop._run_once()
+                        except Exception:
+                            pass
                 else:
                     # Fallback for non-interactive mode (e.g., single-query)
                     agent_thread.join(0.1)

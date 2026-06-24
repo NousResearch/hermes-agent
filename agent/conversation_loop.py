@@ -1355,11 +1355,11 @@ def run_conversation(
                     else:
                         _failure_hint = f"response time {api_duration:.1f}s"
 
-                    agent._buffer_vprint(f"⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}")
-                    agent._buffer_vprint(f"   🏢 Provider: {provider_name}")
+                    agent._vprint(f"{agent.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}", force=True)
+                    agent._vprint(f"{agent.log_prefix}   🏢 Provider: {provider_name}", force=True)
                     cleaned_provider_error = agent._clean_error_message(error_msg)
-                    agent._buffer_vprint(f"   📝 Provider message: {cleaned_provider_error}")
-                    agent._buffer_vprint(f"   ⏱️  {_failure_hint}")
+                    agent._vprint(f"{agent.log_prefix}   📝 Provider message: {cleaned_provider_error}", force=True)
+                    agent._vprint(f"{agent.log_prefix}   ⏱️  {_failure_hint}", force=True)
                     
                     if retry_count >= max_retries:
                         # Try fallback before giving up
@@ -1387,7 +1387,7 @@ def run_conversation(
                     
                     # Backoff before retry — jittered exponential: 5s base, 120s cap
                     wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
-                    agent._buffer_vprint(f"⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...")
+                    agent._vprint(f"{agent.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
                     logger.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                     
                     # Sleep in small increments to stay responsive to interrupts
@@ -2627,16 +2627,16 @@ def run_conversation(
                 _base = getattr(agent, "base_url", "unknown")
                 _model = getattr(agent, "model", "unknown")
                 _status_code_str = f" [HTTP {status_code}]" if status_code else ""
-                agent._buffer_vprint(f"⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}{_status_code_str}")
-                agent._buffer_vprint(f"   🔌 Provider: {_provider}  Model: {_model}")
-                agent._buffer_vprint(f"   🌐 Endpoint: {_base}")
-                agent._buffer_vprint(f"   📝 Error: {_error_summary}")
+                agent._vprint(f"{agent.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}{_status_code_str}", force=True)
+                agent._vprint(f"{agent.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
+                agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
+                agent._vprint(f"{agent.log_prefix}   📝 Error: {_error_summary}", force=True)
                 if status_code and status_code < 500:
                     _err_body = getattr(api_error, "body", None)
                     _err_body_str = str(_err_body)[:300] if _err_body else None
                     if _err_body_str:
-                        agent._buffer_vprint(f"   📋 Details: {_err_body_str}")
-                agent._buffer_vprint(f"   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
+                        agent._vprint(f"{agent.log_prefix}   📋 Details: {_err_body_str}", force=True)
+                agent._vprint(f"{agent.log_prefix}   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens", force=True)
 
                 # Actionable hint for OpenRouter "no tool endpoints" error.
                 # Buffered like the rest of the retry trace — surfaced only
@@ -3538,9 +3538,9 @@ def run_conversation(
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
                 if is_rate_limited:
-                    agent._buffer_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
+                    agent._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                 else:
-                    agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
+                    agent._emit_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
                 logger.warning(
                     "Retrying API call in %ss (attempt %s/%s) %s error=%s",
                     wait_time,

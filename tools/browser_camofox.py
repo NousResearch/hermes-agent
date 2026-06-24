@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 import os
 import threading
 import uuid
@@ -50,6 +51,14 @@ _DEFAULT_TIMEOUT = 30  # seconds per HTTP request
 _SNAPSHOT_MAX_CHARS = 80_000  # camofox paginates at this limit
 _vnc_url: Optional[str] = None  # cached from /health response
 _vnc_url_checked = False  # only probe once per process
+
+
+def _finite_float(value: Any, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def get_camofox_url() -> str:
@@ -736,8 +745,10 @@ def camofox_vision(question: str, annotate: bool = False,
         try:
             _cfg = load_config()
             _vision_cfg = cfg_get(_cfg, "auxiliary", "vision", default={})
-            _vision_timeout = float(_vision_cfg.get("timeout", 120))
-            _vision_temperature = float(_vision_cfg.get("temperature", 0.1))
+            _vision_timeout = _finite_float(_vision_cfg.get("timeout"), 120.0)
+            _vision_temperature = _finite_float(
+                _vision_cfg.get("temperature"), 0.1
+            )
         except Exception:
             _vision_timeout = 120.0
             _vision_temperature = 0.1

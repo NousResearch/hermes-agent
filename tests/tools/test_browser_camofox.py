@@ -400,6 +400,40 @@ class TestCamofoxVisionConfig:
         assert mock_llm.call_args.kwargs["temperature"] == 0.1
         assert mock_llm.call_args.kwargs["timeout"] == 120.0
 
+    @patch("tools.browser_camofox.requests.post")
+    @patch("tools.browser_camofox._get")
+    @patch("tools.browser_camofox._get_raw")
+    def test_camofox_vision_defaults_nonfinite_config(self, mock_get_raw, mock_get, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab13", "url": "https://x.com"})
+        camofox_navigate("https://x.com", task_id="t13")
+
+        raw_resp = MagicMock()
+        raw_resp.content = b"fakepng"
+        mock_get_raw.return_value = raw_resp
+        mock_get.return_value = {"snapshot": '- button "Submit"\n'}
+
+        mock_response = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Default finite config analysis"
+        mock_response.choices = [mock_choice]
+
+        with (
+            patch("tools.browser_camofox.open", create=True) as mock_open,
+            patch("agent.auxiliary_client.call_llm", return_value=mock_response) as mock_llm,
+            patch(
+                "tools.browser_camofox.load_config",
+                return_value={"auxiliary": {"vision": {"temperature": "nan", "timeout": "inf"}}},
+            ),
+        ):
+            mock_open.return_value.__enter__.return_value.read.return_value = b"fakepng"
+            result = json.loads(camofox_vision("what is on the page?", annotate=True, task_id="t13"))
+
+        assert result["success"] is True
+        assert result["analysis"] == "Default finite config analysis"
+        assert mock_llm.call_args.kwargs["temperature"] == 0.1
+        assert mock_llm.call_args.kwargs["timeout"] == 120.0
+
 
 # ---------------------------------------------------------------------------
 # Routing integration — verify browser_tool routes to camofox

@@ -242,6 +242,7 @@ class SearchResult:
     total_count: int = 0
     truncated: bool = False
     limit_reason: Optional[str] = None
+    warning: Optional[str] = None
     error: Optional[str] = None
     
     # Densify content-mode matches into a path-grouped text block above this
@@ -302,6 +303,8 @@ class SearchResult:
             result["truncated"] = True
         if self.limit_reason:
             result["limit_reason"] = self.limit_reason
+        if self.warning:
+            result["warning"] = self.warning
         if self.error:
             result["error"] = self.error
         return result
@@ -717,6 +720,45 @@ def normalize_search_pagination(offset: Any = DEFAULT_SEARCH_OFFSET,
     normalized_offset = max(0, _coerce_int(offset, DEFAULT_SEARCH_OFFSET))
     normalized_limit = max(1, _coerce_int(limit, DEFAULT_SEARCH_LIMIT))
     return normalized_offset, normalized_limit
+
+
+_REGEX_NEWLINE_ESCAPE_RE = re.compile(r"(?<!\\)(?:\\\\)*\\n")
+
+
+def _pattern_has_regex_newline(pattern: str) -> bool:
+    """Return True when a content-search regex tries to match a newline.
+
+    ``search_files`` runs rg/grep in line-oriented mode, not rg
+    ``-U``/``--multiline`` mode, so newline regexes cannot match across
+    lines.  Detect both a literal newline already decoded into the tool
+    argument and a regex ``\n`` escape (odd number of backslashes before
+    ``n``).  Even backslashes, e.g. ``\\n``, mean a literal backslash+n
+    search and should not warn.
+    """
+    return "\n" in pattern or bool(_REGEX_NEWLINE_ESCAPE_RE.search(pattern))
+
+
+def _is_line_oriented_newline_error(error: Optional[str]) -> bool:
+    """Return True for rg's hard error when multiline mode is required."""
+    if not error:
+        return False
+    return "literal \"\\n\" is not allowed" in error and "--multiline" in error
+
+
+def _maybe_warn_line_oriented_newline_pattern(result: SearchResult, pattern: str) -> SearchResult:
+    """Attach a newline-regex warning only when search found no usable results."""
+    if result.total_count != 0 or not _pattern_has_regex_newline(pattern):
+        return result
+    if result.error and not _is_line_oriented_newline_error(result.error):
+        return result
+    result.error = None
+    result.warning = (
+        "0 results found. Note: search_files content search is line-oriented "
+        "and does not run ripgrep with -U/--multiline, so `\\n` in the regex "
+        "does not match line breaks. Use context=N to inspect neighboring "
+        "lines, or escape as `\\\\n` when searching for a literal backslash+n."
+    )
+    return result
 
 
 class ShellFileOperations(FileOperations):
@@ -2117,17 +2159,19 @@ class ShellFileOperations(FileOperations):
         """Search for content inside files (grep-like)."""
         # Try ripgrep first (fast), fallback to grep (slower but works)
         if self._has_command('rg'):
-            return self._search_with_rg(pattern, path, file_glob, limit, offset, 
-                                        output_mode, context)
-        elif self._has_command('grep'):
-            return self._search_with_grep(pattern, path, file_glob, limit, offset,
+            result = self._search_with_rg(pattern, path, file_glob, limit, offset,
                                           output_mode, context)
+        elif self._has_command('grep'):
+            result = self._search_with_grep(pattern, path, file_glob, limit, offset,
+                                            output_mode, context)
         else:
             # Neither rg nor grep available (Windows without Git Bash, etc.)
             return SearchResult(
                 error="Content search requires ripgrep (rg) or grep. "
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
             )
+
+        return _maybe_warn_line_oriented_newline_pattern(result, pattern)
     
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:

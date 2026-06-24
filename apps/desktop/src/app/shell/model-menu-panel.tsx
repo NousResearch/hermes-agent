@@ -207,7 +207,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
           {copy.noModels}
         </DropdownMenuItem>
       ) : (
-        <div className="max-h-80 overflow-y-auto py-0.5">
+        <div className="max-h-[max(150px,30dvh)] overflow-y-auto py-0.5">
           {groups.map(group => (
             <DropdownMenuGroup className="py-0.5" key={group.provider.slug}>
               <DropdownMenuLabel className={dropdownMenuSectionLabel}>{group.provider.name}</DropdownMenuLabel>
@@ -310,7 +310,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
           void refreshModels()
         }}
       >
-        <Codicon className={cn('mr-1.5', refreshing && 'animate-spin')} name="sync" size="0.75rem" />
+        <Codicon className={cn(refreshing && 'animate-spin')} name="sync" size="0.75rem" />
         {copy.refreshModels}
       </DropdownMenuItem>
 
@@ -318,6 +318,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}
         onSelect={() => setModelVisibilityOpen(true)}
       >
+        <Codicon name="settings-gear" size="0.75rem" />
         {copy.editModels}
       </DropdownMenuItem>
     </>
@@ -325,8 +326,10 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 }
 
 // Collapsed we show the user's chosen models (or the curated default); typing
-// spans every available model so anything is reachable past the cut.
-const PER_PROVIDER_SEARCH = 12
+// spans every available model so anything is reachable past the cut. A search
+// is itself a narrowing action, so we do NOT cap per-provider matches — a
+// provider serving 19 models (e.g. opencode-go) must show all 19 when the user
+// searches for it, not a truncated subset. (#47077 follow-up)
 
 function groupModels(
   providers: ModelOptionProvider[],
@@ -373,11 +376,7 @@ function groupModels(
         ? allFamilies.find(family => family.id === current.model || family.fastId === current.model)?.id
         : undefined
 
-    let families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
-
-    if (q) {
-      families = families.slice(0, PER_PROVIDER_SEARCH)
-    }
+    const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
 
     if (families.length > 0) {
       groups.push({ families, provider })

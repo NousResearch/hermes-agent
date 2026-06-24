@@ -89,6 +89,50 @@ try {
 }
 
 # ============================================================================
+# 8.3 short-path normalization
+# ============================================================================
+# When the Windows user-profile folder name contains a space (e.g.
+# "First Last"), Windows generates an 8.3 short alias for it (e.g. FIRST~1.LAS)
+# and may expose %TEMP%/%TMP% in that short form:
+#   C:\Users\FIRST~1.LAS\AppData\Local\Temp
+# PowerShell's FileSystem provider mishandles the "~1.ext" component when such a
+# path is handed to a provider cmdlet like `Tee-Object -FilePath` /
+# `Out-File -FilePath`, throwing:
+#   "An object at the specified path C:\Users\FIRST~1.LAS does not exist."
+# Every Node/Electron build+install stage streams its log to %TEMP% via
+# Tee-Object, so they all abort with that error, while the Python/uv stages --
+# which never write a side log to %TEMP% through a provider cmdlet -- complete
+# fine. Expanding %TEMP%/%TMP% back to their long form once, up front, lets
+# every downstream cmdlet (and child process) see a path the provider can
+# resolve. (GH: Windows desktop installer fails at Node/Electron stages.)
+
+function ConvertTo-LongPath {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $Path }
+    # Only 8.3 short names carry a tilde+digit ("~1"); skip the COM round-trip
+    # for ordinary long paths.
+    if ($Path -notmatch '~\d') { return $Path }
+    try {
+        $fso = New-Object -ComObject Scripting.FileSystemObject
+        if ($fso.FolderExists($Path)) { return $fso.GetFolder($Path).Path }
+        if ($fso.FileExists($Path))   { return $fso.GetFile($Path).Path }
+    } catch {
+        # COM unavailable / locked-down host: fall back to the original path.
+    }
+    return $Path
+}
+
+foreach ($tmpVar in @('TEMP', 'TMP')) {
+    $current = [Environment]::GetEnvironmentVariable($tmpVar)
+    if ($current) {
+        $expanded = ConvertTo-LongPath $current
+        if ($expanded -and $expanded -ne $current) {
+            Set-Item -Path "Env:$tmpVar" -Value $expanded
+        }
+    }
+}
+
+# ============================================================================
 # Configuration
 # ============================================================================
 
@@ -240,18 +284,17 @@ function Resolve-NpmCmd {
 }
 
 function Find-SystemBrowser {
-    $candidates = @(
-        "${env:ProgramFiles}\Google\Chrome\Application\chrome.exe",
-        "${env:ProgramFiles(x86)}\Google\Chrome\Application\chrome.exe",
-        "${env:LOCALAPPDATA}\Google\Chrome\Application\chrome.exe",
-        "${env:ProgramFiles}\Microsoft\Edge\Application\msedge.exe",
-        "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe",
-        "${env:ProgramFiles}\Chromium\Application\chrome.exe",
-        "${env:LOCALAPPDATA}\Chromium\Application\chrome.exe"
-    )
-    foreach ($p in $candidates) {
-        if (Test-Path $p) { return $p }
-    }
+    # Honor ONLY an explicit, user-set AGENT_BROWSER_EXECUTABLE_PATH override.
+    #
+    # We no longer scan well-known install locations for a system browser.
+    # Auto-detection silently bound the install to an arbitrary binary instead
+    # of the bundled Playwright Chromium, which made the browser tool behave
+    # differently across hosts (and, on Linux, picked up a sandboxed Snap
+    # Chromium that hangs every browser_navigate). Every install now uses the
+    # bundled Chromium unless the user explicitly points elsewhere.
+    $override = $env:AGENT_BROWSER_EXECUTABLE_PATH
+    if ([string]::IsNullOrWhiteSpace($override)) { return $null }
+    if (Test-Path $override) { return $override }
     return $null
 }
 
@@ -302,7 +345,7 @@ function Install-AgentBrowser {
         $sysBrowser = Find-SystemBrowser
         if ($sysBrowser) {
             Write-BrowserEnv -BrowserPath $sysBrowser
-            Write-Info "System browser detected -- skipping Chromium download"
+            Write-Info "Explicit browser override set -- skipping bundled Chromium download"
         } else {
             $abExe = Join-Path $prefixDir "agent-browser.cmd"
             if (Test-Path $abExe) {

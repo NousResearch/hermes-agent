@@ -1,0 +1,52 @@
+name: wecom-platform
+label: WeCom (Enterprise WeChat)
+kind: platform
+version: 1.0.0
+description: >
+  WeCom / Enterprise WeChat gateway adapter for Hermes Agent. Registers two
+  platforms: ``wecom`` (Smart Robot over WebSocket) and ``wecom_callback``
+  (self-built apps over an HTTP callback endpoint with AES message crypto).
+  Relays messages between WeCom chats and the Hermes agent.
+author: NousResearch
+requires_env:
+  - name: WECOM_BOT_ID
+    description: "WeCom Smart Robot bot ID"
+    prompt: "WeCom bot ID"
+    password: false
+  - name: WECOM_SECRET
+    description: "WeCom Smart Robot secret"
+    prompt: "WeCom secret"
+    password: true
+optional_env:
+  - name: WECOM_WEBSOCKET_URL
+    description: "WeCom Smart Robot WebSocket URL"
+    prompt: "WeCom WebSocket URL"
+    password: false
+  - name: WECOM_HOME_CHANNEL
+    description: "Default chat ID for cron / notification delivery"
+    prompt: "Home channel ID"
+    password: false
+  - name: WECOM_ALLOWED_USERS
+    description: "Comma-separated WeCom user IDs allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: WECOM_CALLBACK_CORP_ID
+    description: "WeCom callback-mode corp ID (self-built apps)"
+    prompt: "WeCom callback corp ID"
+    password: false
+  - name: WECOM_CALLBACK_CORP_SECRET
+    description: "WeCom callback-mode corp secret"
+    prompt: "WeCom callback corp secret"
+    password: true
+  - name: WECOM_CALLBACK_AGENT_ID
+    description: "WeCom callback-mode agent ID"
+    prompt: "WeCom callback agent ID"
+    password: false
+  - name: WECOM_CALLBACK_TOKEN
+    description: "WeCom callback verification token"
+    prompt: "WeCom callback token"
+    password: true
+  - name: WECOM_CALLBACK_ENCODING_AES_KEY
+    description: "WeCom callback EncodingAESKey for message crypto"
+    prompt: "WeCom callback EncodingAESKey"
+    password: true

@@ -536,3 +536,456 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+
+# ---------------------------------------------------------------------------
+# Additional coverage for uncovered paths
+# ---------------------------------------------------------------------------
+
+
+class TestSafeIntFloat:
+    def test_safe_int_valid(self):
+        from tools.tool_search import _safe_int
+        assert _safe_int("42", 0) == 42
+        assert _safe_int(42, 0) == 42
+
+    def test_safe_int_fallback_on_type_error(self):
+        from tools.tool_search import _safe_int
+        assert _safe_int(None, 7) == 7
+
+    def test_safe_int_fallback_on_value_error(self):
+        from tools.tool_search import _safe_int
+        assert _safe_int("abc", 7) == 7
+
+    def test_safe_float_valid(self):
+        from tools.tool_search import _safe_float
+        assert _safe_float("3.14", 0.0) == 3.14
+
+    def test_safe_float_fallback_on_type_error(self):
+        from tools.tool_search import _safe_float
+        assert _safe_float(None, 1.0) == 1.0
+
+    def test_safe_float_fallback_on_value_error(self):
+        from tools.tool_search import _safe_float
+        assert _safe_float("abc", 1.0) == 1.0
+
+
+class TestConfigParsingExtra:
+    def test_string_true_maps_to_on(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"enabled": "true"})
+        assert cfg.enabled == "on"
+
+    def test_string_1_maps_to_on(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"enabled": "1"})
+        assert cfg.enabled == "on"
+
+    def test_string_yes_maps_to_on(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"enabled": "yes"})
+        assert cfg.enabled == "on"
+
+    def test_string_false_maps_to_off(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"enabled": "false"})
+        assert cfg.enabled == "off"
+
+    def test_string_0_maps_to_off(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"enabled": "0"})
+        assert cfg.enabled == "off"
+
+    def test_string_no_maps_to_off(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"enabled": "no"})
+        assert cfg.enabled == "off"
+
+    def test_search_default_limit_capped_by_max(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({
+            "search_default_limit": 100,
+            "max_search_limit": 10,
+        })
+        assert cfg.search_default_limit == 10
+        assert cfg.max_search_limit == 10
+
+    def test_non_dict_non_bool_raw(self):
+        from tools.tool_search import ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw("just a string")
+        assert cfg.enabled == "auto"
+
+
+class TestClassifySource:
+    def test_unknown_tool_returns_other(self):
+        from tools.tool_search import _classify_source
+        source, source_name = _classify_source("xx_nonexistent_tool")
+        assert source == "other"
+        assert source_name == ""
+
+    def test_registered_plugin_tool(self):
+        from tools.tool_search import _classify_source
+        from tools.registry import registry
+        def _h(args, **kw):
+            return "{}"
+        registry.register(
+            name="test_classify_plugin_tool",
+            handler=_h,
+            schema=_td("test_classify_plugin_tool", "test"),
+            toolset="testplugin",
+        )
+        source, source_name = _classify_source("test_classify_plugin_tool")
+        assert source == "plugin"
+        assert source_name == "testplugin"
+
+    def test_registered_mcp_tool(self):
+        from tools.tool_search import _classify_source
+        from tools.registry import registry
+        def _h(args, **kw):
+            return "{}"
+        registry.register(
+            name="test_classify_mcp_tool",
+            handler=_h,
+            schema=_td("test_classify_mcp_tool", "test"),
+            toolset="mcp-testserver",
+        )
+        source, source_name = _classify_source("test_classify_mcp_tool")
+        assert source == "mcp"
+        assert source_name == "mcp-testserver"
+
+
+class TestSearchCatalogEdgeCases:
+    def test_empty_catalog_returns_empty(self):
+        from tools.tool_search import search_catalog
+        assert search_catalog([], "query", limit=5) == []
+
+    def test_limit_zero_returns_empty(self):
+        from tools.tool_search import search_catalog
+        from tools.tool_search import CatalogEntry, _tokenize, _entry_search_text
+        d = _td("test_tool", "test description")
+        e = CatalogEntry(name="test_tool", description="test", schema=d,
+                         source="mcp", source_name="mcp-test")
+        e._tokens = _tokenize(_entry_search_text(d))
+        assert search_catalog([e], "test", limit=0) == []
+
+    def test_empty_query_returns_empty(self):
+        from tools.tool_search import search_catalog
+        from tools.tool_search import CatalogEntry, _tokenize, _entry_search_text
+        d = _td("test_tool", "test description")
+        e = CatalogEntry(name="test_tool", description="test", schema=d,
+                         source="mcp", source_name="mcp-test")
+        e._tokens = _tokenize(_entry_search_text(d))
+        assert search_catalog([e], "", limit=5) == []
+
+    def test_whitespace_query_returns_empty(self):
+        from tools.tool_search import search_catalog
+        from tools.tool_search import CatalogEntry, _tokenize, _entry_search_text
+        d = _td("test_tool", "test description")
+        e = CatalogEntry(name="test_tool", description="test", schema=d,
+                         source="mcp", source_name="mcp-test")
+        e._tokens = _tokenize(_entry_search_text(d))
+        assert search_catalog([e], "   ", limit=5) == []
+
+
+class TestBridgeToolSchemas:
+    def test_returns_three_schemas(self):
+        from tools.tool_search import bridge_tool_schemas, BRIDGE_TOOL_NAMES
+        schemas = bridge_tool_schemas(42)
+        assert len(schemas) == 3
+        names = {s["function"]["name"] for s in schemas}
+        assert names == BRIDGE_TOOL_NAMES
+
+    def test_search_schema_has_query_param(self):
+        from tools.tool_search import bridge_tool_schemas, TOOL_SEARCH_NAME
+        schemas = bridge_tool_schemas(10)
+        search_schema = next(s for s in schemas if s["function"]["name"] == TOOL_SEARCH_NAME)
+        props = search_schema["function"]["parameters"]["properties"]
+        assert "query" in props
+        assert "limit" in props
+
+    def test_describe_schema_has_name_param(self):
+        from tools.tool_search import bridge_tool_schemas, TOOL_DESCRIBE_NAME
+        schemas = bridge_tool_schemas(10)
+        desc_schema = next(s for s in schemas if s["function"]["name"] == TOOL_DESCRIBE_NAME)
+        props = desc_schema["function"]["parameters"]["properties"]
+        assert "name" in props
+
+    def test_call_schema_has_name_and_arguments(self):
+        from tools.tool_search import bridge_tool_schemas, TOOL_CALL_NAME
+        schemas = bridge_tool_schemas(10)
+        call_schema = next(s for s in schemas if s["function"]["name"] == TOOL_CALL_NAME)
+        props = call_schema["function"]["parameters"]["properties"]
+        assert "name" in props
+        assert "arguments" in props
+
+    def test_deferred_count_in_description(self):
+        from tools.tool_search import bridge_tool_schemas, TOOL_SEARCH_NAME
+        schemas = bridge_tool_schemas(99)
+        search_schema = next(s for s in schemas if s["function"]["name"] == TOOL_SEARCH_NAME)
+        assert "99" in search_schema["function"]["description"]
+
+
+class TestIsBridgeTool:
+    def test_bridge_names(self):
+        from tools.tool_search import is_bridge_tool, BRIDGE_TOOL_NAMES
+        for name in BRIDGE_TOOL_NAMES:
+            assert is_bridge_tool(name)
+
+    def test_non_bridge_name(self):
+        from tools.tool_search import is_bridge_tool
+        assert not is_bridge_tool("terminal")
+        assert not is_bridge_tool("read_file")
+
+
+class TestClassifyToolsBridgeFilter:
+    def test_bridge_tools_filtered_from_classify(self):
+        from tools.tool_search import classify_tools, TOOL_SEARCH_NAME
+        defs = [_td("terminal", "core"), _td(TOOL_SEARCH_NAME, "bridge")]
+        visible, deferrable = classify_tools(defs)
+        names = {(td.get("function") or {}).get("name") for td in visible}
+        assert TOOL_SEARCH_NAME not in names
+        assert "terminal" in names
+        assert deferrable == []
+
+
+class TestEstimateTokensExceptionPath:
+    def test_non_serializable_falls_back_to_str(self):
+        from tools.tool_search import estimate_tokens_from_schemas
+        # A dict with a non-JSON-serializable value triggers the fallback.
+        defs = [{"function": {"name": "bad", "description": object()}}]
+        tokens = estimate_tokens_from_schemas(defs)
+        assert tokens > 0
+
+
+class TestBuildCatalogEdgeCases:
+    def test_skips_tool_without_name(self):
+        from tools.tool_search import build_catalog
+        defs = [_td("", "no name")]
+        catalog = build_catalog(defs)
+        assert catalog == []
+
+    def test_builds_entry_with_tokens(self):
+        from tools.tool_search import build_catalog
+        defs = [_td("test_catalog_tool", "a test tool description")]
+        catalog = build_catalog(defs)
+        assert len(catalog) == 1
+        assert catalog[0].name == "test_catalog_tool"
+        assert len(catalog[0]._tokens) > 0
+
+
+class TestFormatSearchHit:
+    def test_caps_description_at_400(self):
+        from tools.tool_search import _format_search_hit, CatalogEntry
+        long_desc = "x" * 500
+        e = CatalogEntry(
+            name="test", description=long_desc,
+            schema={}, source="mcp", source_name="mcp-test",
+        )
+        hit = _format_search_hit(e)
+        assert len(hit["description"]) <= 400
+
+    def test_none_description_becomes_empty(self):
+        from tools.tool_search import _format_search_hit, CatalogEntry
+        e = CatalogEntry(
+            name="test", description="",
+            schema={}, source="mcp", source_name="mcp-test",
+        )
+        hit = _format_search_hit(e)
+        assert hit["description"] == ""
+
+
+class TestDispatchToolSearchWithResults:
+    def test_search_with_limit(self):
+        from tools.tool_search import dispatch_tool_search, ToolSearchConfig
+        from tools.registry import registry
+        for i in range(3):
+            def _h(args, **kw):
+                return json.dumps({"ok": True})
+            registry.register(
+                name=f"test_search_limit_{i}",
+                handler=_h,
+                schema=_td(f"test_search_limit_{i}", f"test tool {i}"),
+                toolset="mcp-searchtest",
+            )
+        defs = [_td(f"test_search_limit_{i}", f"test tool {i}") for i in range(3)]
+        result = dispatch_tool_search(
+            {"query": "test", "limit": 2},
+            current_tool_defs=defs,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        parsed = json.loads(result)
+        assert len(parsed["matches"]) <= 2
+
+    def test_search_default_limit_when_none(self):
+        from tools.tool_search import dispatch_tool_search, ToolSearchConfig
+        cfg = ToolSearchConfig.from_raw({"enabled": "on", "search_default_limit": 3})
+        result = dispatch_tool_search(
+            {"query": "test"},
+            current_tool_defs=[],
+            config=cfg,
+        )
+        parsed = json.loads(result)
+        assert "total_available" in parsed
+
+
+class TestDispatchToolDescribeSuccess:
+    def test_describe_finds_tool(self):
+        from tools.tool_search import dispatch_tool_describe
+        from tools.registry import registry
+        def _h(args, **kw):
+            return "{}"
+        registry.register(
+            name="test_describe_success_tool",
+            handler=_h,
+            schema=_td("test_describe_success_tool", "a described tool",
+                       {"param": {"type": "string"}}),
+            toolset="mcp-describetest",
+        )
+        defs = [_td("test_describe_success_tool", "a described tool",
+                    {"param": {"type": "string"}})]
+        result = dispatch_tool_describe(
+            {"name": "test_describe_success_tool"},
+            current_tool_defs=defs,
+        )
+        parsed = json.loads(result)
+        assert parsed["name"] == "test_describe_success_tool"
+        assert "param" in parsed["parameters"]["properties"]
+
+    def test_describe_tool_not_in_current_defs(self):
+        from tools.tool_search import dispatch_tool_describe
+        from tools.registry import registry
+        def _h(args, **kw):
+            return "{}"
+        registry.register(
+            name="test_describe_missing_tool",
+            handler=_h,
+            schema=_td("test_describe_missing_tool", "desc"),
+            toolset="mcp-describetest2",
+        )
+        result = dispatch_tool_describe(
+            {"name": "test_describe_missing_tool"},
+            current_tool_defs=[],
+        )
+        parsed = json.loads(result)
+        assert "error" in parsed
+
+
+class TestResolveUnderlyingCallEdgeCases:
+    def test_missing_name(self):
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call({})
+        assert name is None
+        assert err is not None
+        assert "name" in err
+
+    def test_empty_name(self):
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call({"name": ""})
+        assert name is None
+        assert err is not None
+        assert "name" in err
+
+    def test_missing_arguments_defaults_to_empty(self):
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call({"name": "fake_tool"})
+        # err will be about classification, but arguments should be {}
+        assert args == {}
+
+    def test_non_dict_arguments(self):
+        from tools.tool_search import resolve_underlying_call
+        name, args, err = resolve_underlying_call({
+            "name": "fake_tool",
+            "arguments": [1, 2, 3],
+        })
+        assert name is None
+        assert err is not None
+        assert "object" in err
+
+
+class TestAssembleToolDefsActivation:
+    def test_activation_with_deferrable_tools(self):
+        from tools.tool_search import (
+            assemble_tool_defs, ToolSearchConfig, BRIDGE_TOOL_NAMES,
+        )
+        from tools.registry import registry
+        for i in range(5):
+            def _h(args, **kw):
+                return "{}"
+            registry.register(
+                name=f"test_assemble_act_{i}",
+                handler=_h,
+                schema=_td(f"test_assemble_act_{i}", f"tool {i} " * 100,
+                           {"q": {"type": "string", "description": "x" * 200}}),
+                toolset="mcp-assembletest",
+            )
+        defs = [_td(f"test_assemble_act_{i}", f"tool {i} " * 100,
+                    {"q": {"type": "string", "description": "x" * 200}})
+                for i in range(5)]
+        result = assemble_tool_defs(
+            defs,
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+        assert result.activated is True
+        assert result.deferred_count == 5
+        names = {(t.get("function") or {}).get("name") for t in result.tool_defs}
+        assert BRIDGE_TOOL_NAMES.issubset(names)
+
+    def test_threshold_tokens_reported_when_not_activated(self):
+        from tools.tool_search import assemble_tool_defs, ToolSearchConfig
+        from tools.registry import registry
+        def _h(args, **kw):
+            return "{}"
+        registry.register(
+            name="test_threshold_tool",
+            handler=_h,
+            schema=_td("test_threshold_tool", "small"),
+            toolset="mcp-thresholdtest",
+        )
+        defs = [_td("test_threshold_tool", "small")]
+        result = assemble_tool_defs(
+            defs,
+            context_length=200_000,
+            config=ToolSearchConfig.from_raw({"enabled": "auto", "threshold_pct": 10}),
+        )
+        assert not result.activated
+        assert result.deferred_count == 1
+        assert result.threshold_tokens == 20_000
+
+
+class TestTokenizeEdgeCases:
+    def test_empty_string(self):
+        from tools.tool_search import _tokenize
+        assert _tokenize("") == []
+
+    def test_none_input(self):
+        from tools.tool_search import _tokenize
+        assert _tokenize(None) == []  # type: ignore[arg-type]
+
+    def test_only_non_alphanumeric(self):
+        from tools.tool_search import _tokenize
+        assert _tokenize("---...___") == []
+
+    def test_mixed_case_lowercased(self):
+        from tools.tool_search import _tokenize
+        tokens = _tokenize("Hello WORLD")
+        assert tokens == ["hello", "world"]
+
+
+class TestEntrySearchText:
+    def test_includes_name_words(self):
+        from tools.tool_search import _entry_search_text
+        text = _entry_search_text(_td("my_cool_tool", "desc"))
+        assert "my" in text
+        assert "cool" in text
+        assert "tool" in text
+
+    def test_includes_param_names(self):
+        from tools.tool_search import _entry_search_text
+        text = _entry_search_text(_td("test", "desc", {"query": {"type": "string"}}))
+        assert "query" in text
+
+    def test_empty_function(self):
+        from tools.tool_search import _entry_search_text
+        text = _entry_search_text({})
+        assert text.strip() == ""
+

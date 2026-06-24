@@ -683,6 +683,47 @@ class TestAuthFailureAborts:
         assert c._last_compress_aborted is False
         assert len(result) < len(msgs)  # middle window dropped
 
+    def test_generate_summary_flags_network_failure(self):
+        """A connection/network error on the summary call flags
+        _last_summary_network_failure (#29559)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=ConnectionError("Connection error."),
+        ):
+            result = c._generate_summary(self._msgs())
+        assert result is None
+        assert c._last_summary_network_failure is True
+        assert c._last_summary_auth_failure is False
+
+    def test_compress_aborts_on_network_failure_despite_flag_false(self):
+        """#29559/#25585: abort_on_summary_failure=False (default), but a
+        transient connection error must ABORT — messages returned unchanged,
+        _last_compress_aborted=True — NOT drop the middle window. Retrying once
+        the network recovers beats discarding context for a transient blip."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = self._msgs(12)
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=ConnectionError("Connection error."),
+        ):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+        # Session must NOT be compressed/rotated — same messages back.
+        assert result == msgs
+        assert len(result) == len(msgs)
+        assert c._last_compress_aborted is True
+        assert c._last_summary_network_failure is True
+        # Did NOT fall through to the static-fallback (drop-the-middle) path.
+        assert c._last_summary_fallback_used is False
+
     def test_aux_model_auth_failure_recovers_on_main_no_abort(self):
         """A 401 from a DISTINCT auxiliary summary_model retries on the main
         model; if main succeeds, the auth flag is cleared and compression is

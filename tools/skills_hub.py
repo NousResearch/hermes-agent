@@ -921,7 +921,7 @@ class GitHubSource(SkillSource):
             stat = cache_file.stat()
             if time.time() - stat.st_mtime > INDEX_CACHE_TTL:
                 return None
-            return json.loads(cache_file.read_text())
+            return json.loads(cache_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
 
@@ -3104,7 +3104,7 @@ def _read_index_cache(key: str) -> Optional[Any]:
         stat = cache_file.stat()
         if time.time() - stat.st_mtime > INDEX_CACHE_TTL:
             return None
-        return json.loads(cache_file.read_text())
+        return json.loads(cache_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -3157,7 +3157,7 @@ class HubLockFile:
         if not self.path.exists():
             return {"version": 1, "installed": {}}
         try:
-            return json.loads(self.path.read_text())
+            return json.loads(self.path.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             return {"version": 1, "installed": {}}
 
@@ -3229,7 +3229,7 @@ class TapsManager:
         if not self.path.exists():
             return []
         try:
-            data = json.loads(self.path.read_text())
+            data = json.loads(self.path.read_text(encoding="utf-8"))
             return data.get("taps", [])
         except (json.JSONDecodeError, OSError):
             return []
@@ -3538,7 +3538,7 @@ def _load_hermes_index() -> Optional[dict]:
         try:
             age = time.time() - HERMES_INDEX_CACHE_FILE.stat().st_mtime
             if age < HERMES_INDEX_TTL:
-                return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+                return json.loads(HERMES_INDEX_CACHE_FILE.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -3571,7 +3571,7 @@ def _load_stale_index_cache() -> Optional[dict]:
     """Fall back to stale cache when the network fetch fails."""
     if HERMES_INDEX_CACHE_FILE.exists():
         try:
-            return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+            return json.loads(HERMES_INDEX_CACHE_FILE.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             pass
     return None

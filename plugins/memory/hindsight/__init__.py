@@ -746,7 +746,7 @@ class HindsightMemoryProvider(MemoryProvider):
         existing = {}
         if config_path.exists():
             try:
-                existing = json.loads(config_path.read_text())
+                existing = json.loads(config_path.read_text(encoding="utf-8"))
             except Exception:
                 pass
         existing.update(values)
@@ -895,7 +895,7 @@ class HindsightMemoryProvider(MemoryProvider):
                 env_path = Path(hermes_home) / ".env"
                 existing_llm_key = ""
                 if env_path.exists():
-                    for line in env_path.read_text().splitlines():
+                    for line in env_path.read_text(encoding="utf-8").splitlines():
                         if line.startswith("HINDSIGHT_LLM_API_KEY="):
                             existing_llm_key = line.split("=", 1)[1]
                             break
@@ -925,7 +925,7 @@ class HindsightMemoryProvider(MemoryProvider):
             env_path.parent.mkdir(parents=True, exist_ok=True)
             existing_lines = []
             if env_path.exists():
-                existing_lines = env_path.read_text().splitlines()
+                existing_lines = env_path.read_text(encoding="utf-8").splitlines()
             updated_keys = set()
             new_lines = []
             for line in existing_lines:

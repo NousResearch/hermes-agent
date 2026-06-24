@@ -362,7 +362,7 @@ class _ThreadCountStore:
             self._counts = {}
             return
         try:
-            raw = self._path.read_text()
+            raw = self._path.read_text(encoding="utf-8")
             data = json.loads(raw) if raw.strip() else {}
         except json.JSONDecodeError as exc:
             logger.warning(

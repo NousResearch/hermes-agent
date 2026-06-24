@@ -262,7 +262,7 @@ class RealtimeSpeaker:
         if not self.queue_path.exists():
             return []
         out: list[dict] = []
-        for line in self.queue_path.read_text().splitlines():
+        for line in self.queue_path.read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line:
                 continue

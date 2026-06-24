@@ -7,6 +7,7 @@ from agent.skill_utils import (
     get_disabled_skill_names,
     get_external_skills_dirs,
     is_excluded_skill_path,
+    is_external_skill_path,
     is_skill_support_path,
     iter_skill_index_files,
     resolve_skill_config_values,
@@ -168,6 +169,28 @@ def test_skill_config_raw_cache_invalidates_on_config_edit(tmp_path, monkeypatch
     os.utime(config_path, None)
 
     assert get_disabled_skill_names() == {"new-skill"}
+
+
+def test_is_external_skill_path_matches_configured_external_dir(tmp_path, monkeypatch):
+    from agent import skill_utils
+
+    hermes_home = tmp_path / ".hermes"
+    local_skills = hermes_home / "skills"
+    external = tmp_path / "external-skills"
+    local_skills.mkdir(parents=True)
+    external.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        f"skills:\n  external_dirs:\n    - {external}\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    skill_utils._external_dirs_cache_clear()
+
+    assert is_external_skill_path(external / "team-skill" / "SKILL.md") is True
+    assert is_external_skill_path(local_skills / "local-skill" / "SKILL.md") is False
+
+
 def test_iter_skill_index_files_prunes_skill_support_dirs(tmp_path):
     """Archived package SKILL.md files under support dirs are not active skills."""
     real = tmp_path / "umbrella"

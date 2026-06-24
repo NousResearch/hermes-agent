@@ -341,6 +341,29 @@ def test_agent_created_skips_archive_and_hub_dirs(skills_home):
     assert "old-skill" not in names
 
 
+def test_agent_created_excludes_external_dir_even_with_stale_agent_record(skills_home, monkeypatch):
+    from tools.skill_usage import (
+        agent_created_report,
+        is_agent_created,
+        list_agent_created_skill_names,
+        save_usage,
+    )
+
+    skills_dir = skills_home / "skills"
+    external = skills_dir / "shared-vault"
+    _write_skill(external, "external-skill")
+    save_usage({"external-skill": {"created_by": "agent"}})
+
+    monkeypatch.setattr(
+        "agent.skill_utils.get_external_skills_dirs",
+        lambda: [external.resolve()],
+    )
+
+    assert "external-skill" not in list_agent_created_skill_names()
+    assert "external-skill" not in {r["name"] for r in agent_created_report()}
+    assert is_agent_created("external-skill") is False
+
+
 # ---------------------------------------------------------------------------
 # Archive / restore
 # ---------------------------------------------------------------------------
@@ -382,6 +405,23 @@ def test_archive_refuses_hub_skill(skills_home):
 
     ok, msg = archive_skill("hub-skill")
     assert not ok
+
+
+def test_archive_refuses_external_skill(skills_home, monkeypatch):
+    from tools.skill_usage import archive_skill
+
+    skills_dir = skills_home / "skills"
+    external = skills_dir / "shared-vault"
+    skill_dir = _write_skill(external, "external-skill")
+    monkeypatch.setattr(
+        "agent.skill_utils.get_external_skills_dirs",
+        lambda: [external.resolve()],
+    )
+
+    ok, msg = archive_skill("external-skill")
+    assert not ok
+    assert "external" in msg.lower()
+    assert skill_dir.exists()
 
 
 def test_archive_missing_skill_returns_error(skills_home):

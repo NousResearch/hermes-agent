@@ -583,6 +583,35 @@ def _is_valid_env_name(name: str) -> bool:
     return all(c.isalnum() or c == "_" for c in name)
 
 
+def _active_profile_name(home_path: Optional[Path]) -> str:
+    """Best-effort active profile name for profile-scoped secret aliases."""
+    if home_path is not None:
+        resolved = Path(home_path)
+        if resolved.parent.name == "profiles" and resolved.name:
+            return resolved.name
+    for env_name in ("HERMES_PROFILE_NAME", "HERMES_PROFILE"):
+        value = os.environ.get(env_name, "").strip()
+        if value and value != "default":
+            return value
+    return ""
+
+
+def _profile_alias_target(key: str, *, home_path: Optional[Path]) -> Optional[str]:
+    """Map ``FOO_<PROFILE>`` to ``FOO`` for the active profile when safe."""
+    profile = _active_profile_name(home_path)
+    if not profile:
+        return None
+    suffix = "_" + profile.replace("-", "_").upper()
+    if not key.endswith(suffix):
+        return None
+    alias = key[: -len(suffix)]
+    if not alias or not _is_valid_env_name(alias):
+        return None
+    if not any(alias.endswith(s) for s in ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")):
+        return None
+    return alias
+
+
 # ---------------------------------------------------------------------------
 # Public entry point — called from hermes_cli.env_loader
 # ---------------------------------------------------------------------------
@@ -657,18 +686,29 @@ def apply_bitwarden_secrets(
     result.secrets = secrets
     result.warnings.extend(warnings)
 
-    for key, value in secrets.items():
-        if key == access_token_env:
+    def _apply_env_var(env_name: str, value: str) -> bool:
+        if env_name == access_token_env:
             # Don't let BSM clobber the very token we used to fetch
             # itself — that would be a footgun if someone stored the
             # token as a BSM secret too.
-            result.skipped.append(key)
-            continue
-        if not override_existing and os.environ.get(key):
-            result.skipped.append(key)
-            continue
-        os.environ[key] = value
-        result.applied.append(key)
+            result.skipped.append(env_name)
+            return False
+        if not override_existing and os.environ.get(env_name):
+            result.skipped.append(env_name)
+            return False
+        os.environ[env_name] = value
+        result.applied.append(env_name)
+        return True
+
+    for key, value in secrets.items():
+        _apply_env_var(key, value)
+
+        alias = _profile_alias_target(key, home_path=home_path)
+        if alias and alias not in secrets and _apply_env_var(alias, value):
+            result.warnings.append(
+                f"Applied profile-scoped secret {key} as {alias} for active profile "
+                f"{_active_profile_name(home_path)!r}"
+            )
 
     return result
 

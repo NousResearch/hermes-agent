@@ -544,6 +544,65 @@ def test_apply_does_not_override_existing(monkeypatch, tmp_path):
     assert os.environ["NEW_KEY"] == "new-value"
 
 
+def test_apply_profile_scoped_secret_aliases_to_unsuffixed_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    profile_home = tmp_path / ".hermes" / "profiles" / "milla"
+    profile_home.mkdir(parents=True)
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload(
+        [{"key": "TELEGRAM_BOT_TOKEN_MILLA", "value": "123:profile-token"}]
+    )
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+    monkeypatch.setattr(bw, "find_bws", lambda **kw: fake_binary)
+
+    result = bw.apply_bitwarden_secrets(
+        enabled=True,
+        project_id="p",
+        auto_install=False,
+        home_path=profile_home,
+    )
+
+    assert result.ok
+    assert os.environ["TELEGRAM_BOT_TOKEN_MILLA"] == "123:profile-token"
+    assert os.environ["TELEGRAM_BOT_TOKEN"] == "123:profile-token"
+    assert "TELEGRAM_BOT_TOKEN_MILLA" in result.applied
+    assert "TELEGRAM_BOT_TOKEN" in result.applied
+
+
+def test_apply_profile_scoped_alias_keeps_existing_unsuffixed_value(monkeypatch, tmp_path):
+    monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "existing-token")
+    profile_home = tmp_path / ".hermes" / "profiles" / "milla"
+    profile_home.mkdir(parents=True)
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload(
+        [{"key": "TELEGRAM_BOT_TOKEN_MILLA", "value": "123:profile-token"}]
+    )
+    monkeypatch.setattr(
+        bw.subprocess, "run",
+        lambda *a, **kw: mock.Mock(returncode=0, stdout=payload, stderr=""),
+    )
+    monkeypatch.setattr(bw, "find_bws", lambda **kw: fake_binary)
+
+    result = bw.apply_bitwarden_secrets(
+        enabled=True,
+        project_id="p",
+        auto_install=False,
+        home_path=profile_home,
+    )
+
+    assert result.ok
+    assert os.environ["TELEGRAM_BOT_TOKEN_MILLA"] == "123:profile-token"
+    assert os.environ["TELEGRAM_BOT_TOKEN"] == "existing-token"
+    assert "TELEGRAM_BOT_TOKEN" in result.skipped
+
+
 def test_apply_override_existing(monkeypatch, tmp_path):
     monkeypatch.setenv("BWS_ACCESS_TOKEN", "0.t")
     monkeypatch.setenv("OPENAI_API_KEY", "stale")

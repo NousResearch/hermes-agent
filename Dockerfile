@@ -203,13 +203,22 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 # /opt/data instead. Root can still repair the image during build/boot, but
 # supervised Hermes processes drop to the non-root hermes user.
 USER root
+# overlayfs-optimized: only chown/chmod inodes that actually need changing, so
+# each build layer records a minimal diff instead of copying up every inode in
+# the tree (a naive `chown -R`/`chmod -R` rewrites the metadata of every file,
+# bloating the layer and crawling on a busy host). Net result is identical to:
+#   chown -R root:root /opt/hermes   # everything root-owned
+#   chmod -R a+rX     /opt/hermes    # dirs 0555, already-exec files 0555, rest 0444
+#   chmod -R a-w      /opt/hermes    # then strip all write bits -> immutable
 RUN mkdir -p /opt/hermes/bin && \
     cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
     chmod 0755 /opt/hermes/bin/hermes && \
     printf 'docker\n' > /opt/hermes/.install_method && \
-    chown -R root:root /opt/hermes && \
-    chmod -R a+rX /opt/hermes && \
-    chmod -R a-w /opt/hermes
+    find /opt/hermes \( ! -user root -o ! -group root \) -exec chown root:root {} + && \
+    find /opt/hermes -type d ! -perm -555 -exec chmod a+rX {} + && \
+    find /opt/hermes -type f ! -perm -444 -exec chmod a+r {} + && \
+    find /opt/hermes -type f -perm /111 ! -perm -111 -exec chmod a+x {} + && \
+    find /opt/hermes -perm /222 -exec chmod a-w {} +
 # The ``.install_method`` stamp is baked next to the running code (the install
 # tree), NOT into $HERMES_HOME. $HERMES_HOME (/opt/data) is a shared data
 # volume that is commonly bind-mounted from the host and even shared with a

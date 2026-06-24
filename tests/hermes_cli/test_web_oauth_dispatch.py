@@ -107,6 +107,44 @@ def test_minimax_login_does_not_launch_anthropic_flow():
     assert body["expires_in"] == 600
 
 
+def test_minimax_login_defaults_when_interval_is_malformed():
+    """MiniMax's optional interval field must not block dashboard login."""
+    from hermes_cli import web_server as ws
+
+    fake_user_code_resp = {
+        "user_code": "ABCD-1234",
+        "verification_uri": "https://api.minimax.io/oauth/verify",
+        "expired_in": 600,
+        "interval": "fast",
+        "state": "stub-state",
+    }
+    with patch(
+        "hermes_cli.auth._minimax_request_user_code",
+        return_value=fake_user_code_resp,
+    ), patch(
+        "hermes_cli.auth._minimax_pkce_pair",
+        return_value=("verifier-stub", "challenge-stub", "stub-state"),
+    ), patch(
+        "hermes_cli.web_server._minimax_poller",
+        return_value=None,
+    ):
+        resp = client.post(
+            "/api/providers/oauth/minimax-oauth/start",
+            headers=HEADERS,
+        )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    session_id = body["session_id"]
+    try:
+        assert body["flow"] == "device_code"
+        assert body["user_code"] == "ABCD-1234"
+        assert body["poll_interval"] == 2
+        assert ws._oauth_sessions[session_id]["interval_ms"] is None
+    finally:
+        ws._oauth_sessions.pop(session_id, None)
+
+
 def test_nous_dashboard_device_flow_ignores_legacy_scope_override(monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import web_server as ws

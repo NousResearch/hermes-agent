@@ -20,6 +20,7 @@ import hmac
 import importlib.util
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -6499,9 +6500,15 @@ async def _start_device_code_flow(
         # `interval` field is in milliseconds (defensive default 2000ms
         # in _minimax_poll_token).
         interval_raw = device_data.get("interval")
-        sess["interval_ms"] = (
-            int(interval_raw) if interval_raw is not None else None
-        )
+        interval_ms = None
+        if interval_raw is not None:
+            try:
+                parsed_interval = float(interval_raw)
+                if math.isfinite(parsed_interval) and parsed_interval > 0:
+                    interval_ms = int(parsed_interval)
+            except (TypeError, ValueError, OverflowError):
+                interval_ms = None
+        sess["interval_ms"] = interval_ms
         sess["user_code"] = str(device_data["user_code"])
         sess["code_verifier"] = verifier
         sess["state"] = state

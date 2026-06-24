@@ -293,6 +293,32 @@ class TestCronjobToolScript:
         assert update_result["success"] is True
         assert "script" not in update_result["job"]
 
+    def test_update_rejects_invalid_deliver_without_mutating_job(self, cron_env, monkeypatch):
+        monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+        from cron.jobs import get_job
+        from tools.cronjob_tools import cronjob
+
+        create_result = json.loads(cronjob(
+            action="create",
+            schedule="every 1h",
+            prompt="Monitor things",
+            deliver="origin",
+        ))
+        job_id = create_result["job_id"]
+
+        update_result = json.loads(cronjob(
+            action="update",
+            job_id=job_id,
+            prompt="x" * 12000,
+            deliver="telegr",
+        ))
+        assert update_result["success"] is False
+        assert "Invalid cron deliver target" in update_result["error"]
+
+        stored = get_job(job_id)
+        assert stored is not None
+        assert stored["deliver"] == "origin"
+
     def test_list_shows_script(self, cron_env, monkeypatch):
         monkeypatch.setenv("HERMES_INTERACTIVE", "1")
         from tools.cronjob_tools import cronjob

@@ -199,6 +199,54 @@ def _coerce_job_text(value: Any, fallback: str = "") -> str:
     return str(value)
 
 
+def _normalize_and_validate_deliver(deliver: Any) -> str:
+    """Canonicalize ``deliver`` and reject malformed / truncated targets.
+
+    Cron jobs persist ``deliver`` into ``jobs.json`` and only resolve it at run
+    time. A truncated tool-call payload can therefore silently corrupt the
+    stored routing target (for example ``"telegram"`` becoming ``"telegr"``)
+    even though the surrounding JSON stays valid. Reject unknown platform names
+    at write time so large-payload tool-call truncation fails closed instead of
+    poisoning the job record.
+    """
+    if deliver is None or deliver == "":
+        return "local"
+
+    if isinstance(deliver, (list, tuple)):
+        parts = [str(p).strip() for p in deliver if str(p).strip()]
+    else:
+        parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
+
+    if not parts:
+        return "local"
+
+    from cron.scheduler import _is_known_delivery_platform
+
+    normalized_parts: List[str] = []
+    for part in parts:
+        lower = part.lower()
+        if lower in {"local", "origin", "all"}:
+            normalized_parts.append(lower)
+            continue
+
+        platform, sep, rest = part.partition(":")
+        platform = platform.strip()
+        if not platform or not _is_known_delivery_platform(platform):
+            raise ValueError(
+                f"Invalid cron deliver target {part!r}. Use 'local', 'origin', "
+                "'all', a known platform name like 'telegram', or an explicit "
+                "target like 'telegram:<chat_id>'."
+            )
+        if sep and not rest.strip():
+            raise ValueError(
+                f"Invalid cron deliver target {part!r}. Explicit delivery "
+                "targets must include a non-empty destination after ':'."
+            )
+        normalized_parts.append(part)
+
+    return ",".join(normalized_parts)
+
+
 def _schedule_display_for_job(job: Dict[str, Any]) -> str:
     display = _coerce_job_text(job.get("schedule_display")).strip()
     if display:
@@ -810,6 +858,7 @@ def create_job(
     # Default delivery to origin if available, otherwise local
     if deliver is None:
         deliver = "origin" if origin else "local"
+    deliver = _normalize_and_validate_deliver(deliver)
 
     job_id = uuid.uuid4().hex[:12]
     now = _hermes_now().isoformat()
@@ -970,6 +1019,9 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            if "deliver" in updates:
+                updates["deliver"] = _normalize_and_validate_deliver(updates["deliver"])
 
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates

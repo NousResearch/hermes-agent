@@ -275,6 +275,65 @@ def test_codex_dashboard_worker_persists_runtime_provider(tmp_path, monkeypatch)
         ws._oauth_sessions.pop(sid, None)
 
 
+def test_codex_dashboard_worker_defaults_malformed_interval(monkeypatch):
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import web_server as ws
+
+    class _Resp:
+        def __init__(self, status_code, payload):
+            self.status_code = status_code
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, **kwargs):
+            if url.endswith("/deviceauth/usercode"):
+                return _Resp(200, {
+                    "device_auth_id": "device-auth-id",
+                    "interval": "fast",
+                    "user_code": "CODEX-1234",
+                })
+            if url.endswith("/deviceauth/token"):
+                return _Resp(200, {
+                    "authorization_code": "authorization-code",
+                    "code_verifier": "code-verifier",
+                })
+            return _Resp(200, {
+                "access_token": "codex-access",
+                "refresh_token": "codex-refresh",
+            })
+
+    saved = {}
+    monkeypatch.setattr(httpx, "Client", _Client)
+    monkeypatch.setattr(ws.time, "sleep", lambda _: None)
+    monkeypatch.setattr(
+        auth_mod, "_save_codex_tokens", lambda tokens: saved.update(tokens)
+    )
+
+    sid, _ = ws._new_oauth_session("openai-codex", "device_code")
+    try:
+        ws._codex_full_login_worker(sid)
+
+        sess = ws._oauth_sessions[sid]
+        assert sess["status"] == "approved"
+        assert sess["user_code"] == "CODEX-1234"
+        assert sess["interval"] == 5
+        assert saved["access_token"] == "codex-access"
+    finally:
+        ws._oauth_sessions.pop(sid, None)
+
+
 def test_codex_dashboard_worker_persists_inside_session_profile(tmp_path, monkeypatch):
     from hermes_cli import auth as auth_mod
     from hermes_cli import web_server as ws

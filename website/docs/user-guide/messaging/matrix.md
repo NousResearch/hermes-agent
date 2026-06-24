@@ -213,6 +213,27 @@ curl -X POST https://your-server/_matrix/client/v3/login \
 
 The response includes an `access_token` field — copy it.
 
+**Via token exchange for OIDC SSO setups**
+
+1. Paste this URL into your browser to authenticate with your SSO provider:
+
+```plaintext
+https://your-server/_matrix/client/v3/login/sso/redirect?redirectUrl=https://your-server
+   ```
+2. Once authenticated, look at your address bar for the ?loginToken=... parameter.
+3. Immediately exchange that token using this terminal command as it will expire within a few seconds:
+
+```bash
+curl -X POST 'https://your-server/_matrix/client/v3/login' \
+  -H "Content-Type: application/json" \
+  -d '{
+    "type": "m.login.token",
+    "token": "PASTE_YOUR_LOGIN_TOKEN_HERE"
+  }' 
+```
+
+The response includes an `access_token` field — copy it.
+
 :::warning[Keep your access token safe]
 The access token gives full access to the bot's Matrix account. Never share it publicly or commit it to Git. If compromised, revoke it by logging out all sessions for that user.
 :::

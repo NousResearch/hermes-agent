@@ -10424,6 +10424,9 @@ def cmd_profile(args):
         remove_wrapper_script,
         _is_wrapper_dir_in_path,
         _get_wrapper_dir,
+        _apply_local_only_profile_preset,
+        _apply_local_model_profile_preset,
+        _apply_team_profile_preset,
     )
     from hermes_constants import display_hermes_home
 
@@ -10505,12 +10508,17 @@ def cmd_profile(args):
             print(f"Error: {e}")
             sys.exit(1)
 
-    elif action == "create":
+        elif action == "create":
         name = args.profile_name
         clone = getattr(args, "clone", False)
         clone_all = getattr(args, "clone_all", False)
         no_alias = getattr(args, "no_alias", False)
         no_skills = getattr(args, "no_skills", False)
+        local_only = getattr(args, "local_only", False)
+        local_model = getattr(args, "local_model", False)
+        local_model_url = getattr(args, "local_model_url", "http://127.0.0.1:8000/v1")
+        local_model_name = getattr(args, "local_model_name", "local-model")
+        team_preset = getattr(args, "team", False) or getattr(args, "enterprise", False)
 
         try:
             clone_from = getattr(args, "clone_from", None)
@@ -10525,7 +10533,22 @@ def cmd_profile(args):
                 no_skills=no_skills,
                 description=getattr(args, "description", None),
             )
+
+            # Apply profile presets before printing success — presets write
+            # config.yaml into the freshly created profile directory.
+            if local_model:
+                _apply_local_model_profile_preset(
+                    profile_dir,
+                    base_url=local_model_url or "http://127.0.0.1:8000/v1",
+                    model_name=local_model_name or "local-model",
+                )
+            elif local_only:
+                _apply_local_only_profile_preset(profile_dir)
+            if team_preset:
+                _apply_team_profile_preset(profile_dir)
+
             print(f"\nProfile '{name}' created at {profile_dir}")
+
 
             if clone_config or clone_all:
                 source_label = (

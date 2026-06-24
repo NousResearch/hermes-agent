@@ -1827,6 +1827,20 @@ DEFAULT_CONFIG = {
     # Privacy settings
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
+        # Opt-in local-only mode. When enabled, runtime provider resolution
+        # rejects remote inference providers unless they are explicitly listed
+        # in allowed_providers, and tool loading subtracts external/networked
+        # toolsets by default (overridable via disabled_toolsets).
+        "local_only": False,
+        "allowed_providers": ["lmstudio"],
+        "disabled_toolsets": [
+            "web", "search", "x_search",
+            "vision", "browser",
+            "image_gen", "video", "video_gen", "tts",
+            "messaging", "homeassistant", "spotify",
+            "discord", "discord_admin", "yuanbao",
+            "feishu_doc", "feishu_drive",
+        ],
     },
     
     # Text-to-speech configuration
@@ -2311,6 +2325,25 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Declarative tool policy evaluated before every tool call.
+        # Modes: personal_trusted | confirm_dangerous | read_only | project_sandbox | team_governed
+        "tool_policy": {
+            "mode": "confirm_dangerous",
+            "allow": {
+                "commands": [],   # tool names or glob patterns to always allow
+                "paths": [],      # file path globs to always allow
+                "domains": [],    # URL domain globs to always allow
+                "providers": [],
+                "toolsets": [],
+            },
+            "deny": {
+                "commands": [],   # tool names or glob patterns to block
+                "paths": [],      # file path globs to block
+                "domains": [],
+                "providers": [],
+                "toolsets": [],
+            },
+        },
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,

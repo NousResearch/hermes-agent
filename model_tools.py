@@ -273,6 +273,45 @@ def _clear_tool_defs_cache() -> None:
     _tool_defs_cache.clear()
 
 
+def _privacy_tool_filter_config() -> tuple[bool, tuple[str, ...]]:
+    """Read privacy.local_only from config and return (enabled, disabled_toolsets).
+
+    When local_only is True the caller should subtract the returned toolset names
+    from the active tool schema before sending to the model API.  This keeps
+    networked/remote tools out of the prompt for users who want a fully local
+    inference setup without having to enumerate every toolset manually.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+    except Exception:
+        return False, ()
+    privacy = cfg.get("privacy", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(privacy, dict):
+        return False, ()
+    mode = str(privacy.get("mode") or "").strip().lower()
+    enabled = bool(privacy.get("local_only")) or mode in {"local", "local_only", "local-only"}
+    if not enabled:
+        return False, ()
+    raw_disabled = privacy.get("disabled_toolsets")
+    if isinstance(raw_disabled, (list, tuple, set)):
+        disabled = tuple(str(item).strip() for item in raw_disabled if str(item).strip())
+    else:
+        disabled = ()
+    if disabled:
+        return True, disabled
+    # Default set of external/networked toolsets blocked in local-only mode.
+    return True, (
+        "web", "search", "x_search",
+        "vision", "browser",
+        "image_gen", "video", "video_gen", "tts",
+        "messaging", "homeassistant", "spotify",
+        "discord", "discord_admin", "yuanbao",
+        "feishu_doc", "feishu_drive",
+    )
+
+
 def get_tool_definitions(
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
@@ -306,6 +345,7 @@ def get_tool_definitions(
     # mode, discord action allowlist, etc.) without needing an explicit
     # invalidate hook on every config-writer.
     if quiet_mode:
+        privacy_cache_key = _privacy_tool_filter_config()
         try:
             from hermes_cli.config import get_config_path
             cfg_path = get_config_path()
@@ -316,6 +356,7 @@ def get_tool_definitions(
         cache_key = (
             frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
             frozenset(disabled_toolsets) if disabled_toolsets else None,
+            privacy_cache_key,
             registry._generation,
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
@@ -429,11 +470,21 @@ def _compute_tool_definitions(
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
 
-    # Plugin-registered tools are now resolved through the normal toolset
-    # path — validate_toolset() / resolve_toolset() / get_all_toolsets()
-    # all check the tool registry for plugin-provided toolsets.  No bypass
-    # needed; plugins respect enabled_toolsets / disabled_toolsets like any
-    # other toolset.
+    # Apply privacy local-only filter — silently subtracts networked/remote
+    # toolsets when privacy.local_only is enabled in config.yaml.
+    privacy_enabled, privacy_disabled_toolsets = _privacy_tool_filter_config()
+    if privacy_enabled:
+        for toolset_name in privacy_disabled_toolsets:
+            if validate_toolset(toolset_name):
+                resolved = resolve_toolset(toolset_name)
+                tools_to_include.difference_update(resolved)
+                if not quiet_mode:
+                    print(
+                        f"🔒 Privacy local-only: disabled toolset '{toolset_name}': "
+                        f"{', '.join(resolved) if resolved else 'no tools'}"
+                    )
+            elif toolset_name in _LEGACY_TOOLSET_MAP:
+                tools_to_include.difference_update(_LEGACY_TOOLSET_MAP[toolset_name])
 
     # Ask the registry for schemas (only returns tools whose check_fn passes)
     filtered_tools = registry.get_definitions(tools_to_include, quiet=quiet_mode)
@@ -1101,6 +1152,47 @@ def handle_function_call(
             logger.debug("ACP edit approval guard error: %s", _edit_approval_err)
             if function_name in {"write_file", "patch"}:
                 return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
+
+        # Evaluate declarative tool policy (security.tool_policy in config.yaml).
+        # Runs fail-open: any exception in policy evaluation is logged at DEBUG
+        # and execution proceeds normally so a misconfigured policy never becomes
+        # an unrecoverable blocker.
+        try:
+            from agent.tool_policy import audit_tool_policy, evaluate_tool_policy
+
+            _policy_toolset = get_toolset_for_tool(function_name)
+            _policy_decision = evaluate_tool_policy(
+                function_name,
+                function_args,
+                toolset=_policy_toolset,
+                cwd=os.getcwd(),
+            )
+            audit_tool_policy(
+                function_name,
+                function_args,
+                _policy_decision,
+                session_id=session_id or "",
+                tool_call_id=tool_call_id or "",
+            )
+            if not _policy_decision.allows_execution:
+                result = json.dumps({"error": _policy_decision.preview}, ensure_ascii=False)
+                _emit_post_tool_call_hook(
+                    function_name=function_name,
+                    function_args=function_args,
+                    result=result,
+                    task_id=task_id,
+                    session_id=session_id,
+                    tool_call_id=tool_call_id,
+                    turn_id=turn_id,
+                    api_request_id=api_request_id,
+                    status="blocked",
+                    error_type="tool_policy_block",
+                    error_message=_policy_decision.preview,
+                    middleware_trace=list(_tool_middleware_trace),
+                )
+                return result
+        except Exception as _tool_policy_err:
+            logger.debug("tool policy evaluation failed open: %s", _tool_policy_err)
 
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).

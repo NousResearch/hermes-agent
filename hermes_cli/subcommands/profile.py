@@ -56,6 +56,36 @@ def build_profile_parser(subparsers, *, cmd_profile: Callable) -> None:
         help="Create an empty profile with no bundled skills (opts out of `hermes update` skill sync)",
     )
     profile_create.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Enable the local-only privacy preset: block remote providers and networked toolsets",
+    )
+    profile_create.add_argument(
+        "--local-model",
+        action="store_true",
+        help="Configure this profile for a local OpenAI-compatible model endpoint (implies --local-only)",
+    )
+    profile_create.add_argument(
+        "--local-model-url",
+        default="http://127.0.0.1:8000/v1",
+        help="Local model API base URL for --local-model (default: http://127.0.0.1:8000/v1)",
+    )
+    profile_create.add_argument(
+        "--local-model-name",
+        default="local-model",
+        help="Default model name for --local-model (default: local-model)",
+    )
+    profile_create.add_argument(
+        "--team",
+        action="store_true",
+        help="Enable the team/enterprise policy preset: tool_policy mode=team_governed, deny sensitive paths",
+    )
+    profile_create.add_argument(
+        "--enterprise",
+        action="store_true",
+        help="Alias for --team",
+    )
+    profile_create.add_argument(
         "--description",
         default=None,
         help="One- or two-sentence description of what this profile is good at. "

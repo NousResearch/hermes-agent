@@ -734,6 +734,139 @@ def write_profile_meta(
 
 
 # ---------------------------------------------------------------------------
+# Profile preset helpers — applied after profile creation
+# ---------------------------------------------------------------------------
+
+def _apply_local_only_profile_preset(profile_dir: Path) -> None:
+    """Write the local-only privacy preset into a profile's config.yaml."""
+    import yaml
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    config_path = profile_dir / "config.yaml"
+    data: dict = {}
+    if config_path.is_file():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+
+    privacy_defaults = DEFAULT_CONFIG.get("privacy", {})
+    disabled_toolsets = privacy_defaults.get("disabled_toolsets", [])
+    allowed_providers = privacy_defaults.get("allowed_providers", [])
+    data["privacy"] = {
+        **(data.get("privacy") if isinstance(data.get("privacy"), dict) else {}),
+        "local_only": True,
+        "allowed_providers": list(allowed_providers),
+        "disabled_toolsets": list(disabled_toolsets),
+    }
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
+
+
+def _apply_local_model_profile_preset(
+    profile_dir: Path,
+    *,
+    base_url: str = "http://127.0.0.1:8000/v1",
+    model_name: str = "local-model",
+) -> None:
+    """Write a local OpenAI-compatible model preset into config.yaml."""
+    import yaml
+
+    _apply_local_only_profile_preset(profile_dir)
+
+    config_path = profile_dir / "config.yaml"
+    data: dict = {}
+    if config_path.is_file():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+
+    normalized_url = (base_url or "http://127.0.0.1:8000/v1").strip().rstrip("/")
+    normalized_model = (model_name or "local-model").strip()
+    providers = data.get("providers")
+    if not isinstance(providers, dict):
+        providers = {}
+    providers["local-gpu"] = {
+        "name": "Local GPU",
+        "api": normalized_url,
+        "api_key": "no-key-required",
+        "default_model": normalized_model,
+        "transport": "chat_completions",
+        "discover_models": True,
+    }
+    data["providers"] = providers
+    data["model"] = {
+        **(data.get("model") if isinstance(data.get("model"), dict) else {}),
+        "default": normalized_model,
+        "provider": "custom",
+        "base_url": normalized_url,
+        "api_key": "no-key-required",
+        "api_mode": "chat_completions",
+    }
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
+
+
+def _apply_team_profile_preset(profile_dir: Path) -> None:
+    """Write team/enterprise governance policy defaults into config.yaml."""
+    import yaml
+
+    config_path = profile_dir / "config.yaml"
+    data: dict = {}
+    if config_path.is_file():
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                loaded = yaml.safe_load(f) or {}
+            if isinstance(loaded, dict):
+                data = loaded
+        except Exception:
+            data = {}
+
+    security = data.get("security")
+    if not isinstance(security, dict):
+        security = {}
+    tool_policy = security.get("tool_policy")
+    if not isinstance(tool_policy, dict):
+        tool_policy = {}
+    tool_policy["mode"] = "team_governed"
+    allow = tool_policy.get("allow")
+    if not isinstance(allow, dict):
+        allow = {}
+    allow.setdefault("commands", [])
+    allow.setdefault("paths", [])
+    allow.setdefault("domains", [])
+    allow.setdefault("providers", [])
+    allow.setdefault("toolsets", [])
+    deny = tool_policy.get("deny")
+    if not isinstance(deny, dict):
+        deny = {}
+    deny.setdefault("commands", [])
+    deny.setdefault("paths", ["*.env", "auth.json", ".ssh/**", ".aws/**"])
+    deny.setdefault("domains", [])
+    deny.setdefault("providers", [])
+    deny.setdefault("toolsets", [])
+    tool_policy["allow"] = allow
+    tool_policy["deny"] = deny
+    security["tool_policy"] = tool_policy
+    security["redact_secrets"] = True
+    security["tirith_enabled"] = True
+    security["allow_private_urls"] = False
+    data["security"] = security
+
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False, default_flow_style=False)
+
+
+# ---------------------------------------------------------------------------
 # CRUD operations
 # ---------------------------------------------------------------------------
 

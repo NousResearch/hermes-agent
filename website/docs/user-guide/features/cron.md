@@ -298,6 +298,39 @@ cron:
   wrap_response: false
 ```
 
+### Continuable jobs (reply to a cron delivery)
+
+By default a cron delivery is fire-and-forget: the message is sent, but it does
+not live in the chat's conversation history, so if you reply to it the agent
+has no record of what it said. Set a job **continuable** and the delivered brief
+becomes a conversation you can reply into — the agent has the brief in context
+instead of asking "what is Task #2?".
+
+Opt-in, **default off**. Enable globally in config, or per-job via the `cronjob`
+tool's `attach_to_session` (which overrides the global setting for that one job):
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  mirror_delivery: false   # set true to make cron deliveries continuable
+```
+
+Behaviour is **thread-preferred**, scoped to the job's origin chat:
+
+- **Thread-capable platforms** (Telegram topics, Discord/Slack threads): each
+  delivery opens its own dedicated thread and the brief is seeded into that
+  thread's session, so a reply in-thread continues with full context. A
+  recurring job (e.g. a daily brief) opens a fresh thread per run, keeping each
+  delivery's follow-up discussion isolated.
+- **DM-only platforms** (WhatsApp, Signal, SMS): no threads exist, so the brief
+  is mirrored into the origin DM session instead — the DM itself is the
+  continuation surface.
+
+Only the origin chat is ever touched: fan-out / broadcast targets (`all`,
+explicit other-chat deliveries) are never made continuable. The mirror is
+written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
+the conversation history alternation-safe across all model providers.
+
 ### Silent suppression
 
 If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.

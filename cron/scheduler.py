@@ -444,13 +444,22 @@ def _maybe_mirror_cron_delivery(
     try:
         from gateway.mirror import mirror_to_session
 
+        # Mirror as a USER turn with a labelled prefix, NOT an assistant turn.
+        # The brief is not the agent speaking; an assistant-role mirror lands as
+        # assistant→assistant after the agent's last turn and breaks strict
+        # alternation (issue #2221, the exact failure #2313 removed). A
+        # user-role turn collapses safely via repair_message_sequence's
+        # consecutive-user merge on every provider, and the prefix preserves the
+        # "this came from cron" context that the dropped SQLite mirror metadata
+        # would otherwise lose on replay.
         ok = mirror_to_session(
             platform_name,
             str(chat_id),
-            text,
+            f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
             source_label="cron",
             thread_id=thread_id,
             user_id=user_id,
+            role="user",
         )
         if ok:
             logger.info(
@@ -476,22 +485,13 @@ def _open_continuable_cron_thread(
     chat_id: str,
     loop,
 ) -> Optional[str]:
-    """Open a dedicated thread for a continuable cron job, thread-preferred.
+    """Open a dedicated thread for a continuable cron job (thread-preferred).
 
-    On a thread-capable platform (Telegram forum/DM topics, Discord threads,
-    Slack threads) this asks the adapter to create a fresh thread under
-    ``chat_id`` so the job's brief — and the user's replies to it — live in
-    their own scrollback, isolated from the parent channel. This is the
-    "continuable cron job opens its own thread" interface.
-
-    Returns the new ``thread_id`` (str) on success, or ``None`` when the
-    platform does not support threads (WhatsApp / Signal / SMS / DM-only) or
-    creation failed. A ``None`` return is the signal for the caller to fall
-    back to mirroring into the origin DM session instead — same fallback shape
-    the gateway's session-handoff watcher uses (``_process_handoff``).
-
-    Reuses the shipped ``adapter.create_handoff_thread`` primitive; introduces
-    no new adapter surface.
+    Returns the new ``thread_id`` on success, or ``None`` when the platform has
+    no thread primitive (WhatsApp/Signal/SMS) or creation failed — the ``None``
+    return is the caller's signal to fall back to the origin-DM mirror, the same
+    open-thread-or-fallback shape as ``GatewayRunner._process_handoff``. Reuses
+    the shipped ``adapter.create_handoff_thread``; no new adapter surface.
     """
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
@@ -568,12 +568,19 @@ def _seed_cron_thread_session(
 
         from gateway.mirror import mirror_to_session
 
+        # User-role + labelled prefix (see _maybe_mirror_cron_delivery): the
+        # seeded brief must not read as an assistant turn, or the user's first
+        # in-thread reply produces assistant→user→... off a phantom assistant
+        # message. Pass the seed user_id so the mirror resolves the exact
+        # thread-keyed session row we just created.
         mirror_to_session(
             platform_name,
             str(chat_id),
-            text,
+            f"[Cron delivery: {job.get('name') or job.get('id', 'cron')}]\n{text}",
             source_label="cron",
             thread_id=str(thread_id),
+            user_id="system:cron",
+            role="user",
         )
         logger.info(
             "Job '%s': opened continuable thread %s on %s:%s and seeded the brief",
@@ -1066,25 +1073,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     else:
         delivery_content = content
 
+    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+    from gateway.platforms.base import BasePlatformAdapter
+    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+
     # Resolve the delivery-mirror gate ONCE (default off). When on, each
     # successful delivery is also appended to the target chat's gateway session
     # transcript so a user reply in that chat sees the cron output in context.
-    # We mirror the CLEAN, unwrapped agent output (not the cron header/footer) —
-    # that is what the agent "said" in the conversation.
+    # Mirror the CLEAN, unwrapped output (not the cron header/footer).
     try:
         mirror_enabled = _cron_mirror_delivery_enabled(job, user_cfg)
     except Exception:
         mirror_enabled = False
     mirror_text = ""
     if mirror_enabled:
-        from gateway.platforms.base import BasePlatformAdapter as _BPA
-        _, mirror_text = _BPA.extract_media(content)
+        _, mirror_text = BasePlatformAdapter.extract_media(content)
         mirror_text = (mirror_text or "").strip()
-
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
-    from gateway.platforms.base import BasePlatformAdapter
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     try:
         config = load_gateway_config()
@@ -1157,6 +1162,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # create_handoff_thread returns None and we fall back to mirroring into
         # the origin DM session (handled after delivery). Cf. _process_handoff.
         thread_seeded = False
+        opened_thread_id: Optional[str] = None
         if (
             mirror_this_target
             and runtime_adapter is not None
@@ -1167,14 +1173,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 job, runtime_adapter, chat_id, loop,
             )
             if new_thread_id:
-                # Route this delivery into the new thread and seed its session.
+                # Route THIS delivery into the new thread now (the send needs the
+                # thread_id), but defer seeding the thread session until the
+                # delivery actually succeeds — otherwise an open-succeeds /
+                # deliver-fails case leaves a seeded brief the user never saw,
+                # and (worse) suppresses the DM-fallback mirror via thread_seeded.
                 thread_id = new_thread_id
-                _seed_cron_thread_session(
-                    job, runtime_adapter, platform_name, chat_id,
-                    new_thread_id, mirror_text,
-                    chat_name=origin.get("chat_name"),
-                )
-                thread_seeded = True
+                opened_thread_id = new_thread_id
 
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
             # Telegram three-mode topic routing (#22773): a private chat
@@ -1388,6 +1393,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
+                    # Seed the thread session only now that delivery into it
+                    # succeeded (deferred from thread-open above).
+                    if opened_thread_id and not thread_seeded:
+                        _seed_cron_thread_session(
+                            job, runtime_adapter, platform_name, chat_id,
+                            opened_thread_id, mirror_text,
+                            chat_name=origin.get("chat_name"),
+                        )
+                        thread_seeded = True
                     _maybe_mirror_cron_delivery(
                         job, platform_name, chat_id, mirror_text,
                         thread_id=thread_id, user_id=origin_user_id,

@@ -1145,7 +1145,17 @@ class TestUpdateCheck:
     def _run_returning(stdout: str):
         fake = MagicMock()
         fake.stdout = stdout
-        return patch("tools.computer_use.cua_backend.subprocess.run", return_value=fake)
+        # update_check resolves the driver before spawning (#51393); the spawn
+        # itself is mocked, so pin resolution to a fixed path too.
+        from contextlib import ExitStack
+        stack = ExitStack()
+        stack.enter_context(patch(
+            "tools.computer_use.cua_backend.resolve_cua_driver_cmd",
+            return_value="/usr/bin/cua-driver",
+        ))
+        stack.enter_context(patch(
+            "tools.computer_use.cua_backend.subprocess.run", return_value=fake))
+        return stack
 
     def test_update_available(self):
         from tools.computer_use import cua_backend
@@ -2867,3 +2877,89 @@ class TestCuaToolCoverageExpansion:
         backend.call_tool("get_cursor_position")
         name, args = backend._session.call_tool.call_args.args
         assert args == {"session": backend._session_id}
+
+
+# ---------------------------------------------------------------------------
+# cua-driver resolution under a thin GUI/launchd PATH (#51393)
+# ---------------------------------------------------------------------------
+
+
+class TestCuaDriverResolution:
+    """resolve_cua_driver_cmd() must find cua-driver in canonical install
+    locations (e.g. ~/.local/bin) even when the inherited PATH omits them, as
+    happens for the macOS desktop GUI app launched under launchd. (#51393)"""
+
+    def test_which_hit_wins(self):
+        from tools.computer_use import cua_backend
+        with patch("tools.computer_use.cua_backend.shutil.which",
+                   return_value="/usr/bin/cua-driver"):
+            assert cua_backend.resolve_cua_driver_cmd() == "/usr/bin/cua-driver"
+            assert cua_backend.cua_driver_binary_available() is True
+
+    def test_falls_back_to_local_bin_when_path_misses(self):
+        # Reproduces the GUI-app bug: which() misses (~/.local/bin not on the
+        # launchd PATH) but the binary is installed there.
+        from tools.computer_use import cua_backend
+        home = os.path.expanduser("~")
+        local_bin = os.path.join(home, ".local", "bin", "cua-driver")
+
+        def fake_isfile(p):
+            return p == local_bin
+
+        def fake_access(p, _mode):
+            return p == local_bin
+
+        with patch("tools.computer_use.cua_backend.shutil.which",
+                   return_value=None), \
+             patch("tools.computer_use.cua_backend.os.path.isfile",
+                   side_effect=fake_isfile), \
+             patch("tools.computer_use.cua_backend.os.access",
+                   side_effect=fake_access), \
+             patch("tools.computer_use.cua_backend._CUA_DRIVER_CMD",
+                   "cua-driver"):
+            assert cua_backend.resolve_cua_driver_cmd() == local_bin
+            assert cua_backend.cua_driver_binary_available() is True
+
+    def test_missing_everywhere_is_unavailable(self):
+        from tools.computer_use import cua_backend
+        with patch("tools.computer_use.cua_backend.shutil.which",
+                   return_value=None), \
+             patch("tools.computer_use.cua_backend.os.path.isfile",
+                   return_value=False), \
+             patch("tools.computer_use.cua_backend.os.access",
+                   return_value=False), \
+             patch("tools.computer_use.cua_backend._CUA_DRIVER_CMD",
+                   "cua-driver"):
+            assert cua_backend.resolve_cua_driver_cmd() is None
+            assert cua_backend.cua_driver_binary_available() is False
+
+    def test_custom_cmd_does_not_silently_fall_back(self):
+        # A HERMES_CUA_DRIVER_CMD override that does not resolve must NOT
+        # silently resolve to a canonical cua-driver in ~/.local/bin -- that
+        # would run a different binary than the user asked for.
+        from tools.computer_use import cua_backend
+        home = os.path.expanduser("~")
+        local_bin = os.path.join(home, ".local", "bin", "cua-driver")
+
+        with patch("tools.computer_use.cua_backend.shutil.which",
+                   return_value=None), \
+             patch("tools.computer_use.cua_backend.os.path.isfile",
+                   side_effect=lambda p: p == local_bin), \
+             patch("tools.computer_use.cua_backend.os.access",
+                   side_effect=lambda p, _m: p == local_bin), \
+             patch("tools.computer_use.cua_backend._CUA_DRIVER_CMD",
+                   "my-custom-driver"):
+            assert cua_backend.resolve_cua_driver_cmd() is None
+
+    def test_explicit_path_override_used_even_off_path(self):
+        # An explicit override pointing at a real file is trusted even when
+        # which() rejects it (no exec bit / relative path).
+        from tools.computer_use import cua_backend
+        override = "/opt/custom/cua-driver"
+        with patch("tools.computer_use.cua_backend.shutil.which",
+                   return_value=None), \
+             patch("tools.computer_use.cua_backend.os.path.isfile",
+                   side_effect=lambda p: p == override), \
+             patch("tools.computer_use.cua_backend._CUA_DRIVER_CMD",
+                   override):
+            assert cua_backend.resolve_cua_driver_cmd() == override

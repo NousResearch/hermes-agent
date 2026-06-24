@@ -213,9 +213,67 @@ def _is_macos() -> bool:
     return sys.platform == "darwin"
 
 
+# Canonical cua-driver install locations to fall back on when the inherited
+# PATH is too thin to find the binary. The macOS desktop GUI app launches
+# under launchd with a minimal PATH (typically just /usr/bin:/bin:/usr/sbin:
+# /sbin plus /opt/homebrew/bin or /usr/local/bin) that omits ~/.local/bin --
+# exactly where cua-driver installs its symlink. Without this fallback the
+# which()-only gate returns False under the GUI app and computer_use is
+# silently dropped from the toolset, even though it works fine from a shell
+# whose PATH includes ~/.local/bin. (NousResearch/hermes-agent#51393)
+def _cua_driver_fallback_paths() -> List[str]:
+    home = os.path.expanduser("~")
+    candidates = [
+        os.path.join(home, ".local", "bin", "cua-driver"),
+        "/opt/homebrew/bin/cua-driver",
+        "/usr/local/bin/cua-driver",
+    ]
+    if sys.platform == "darwin":
+        # cua-driver app bundle (the binary the ~/.local/bin symlink targets).
+        candidates.append(
+            "/Applications/CuaDriver.app/Contents/MacOS/cua-driver"
+        )
+    return candidates
+
+
+def resolve_cua_driver_cmd() -> Optional[str]:
+    """Resolve cua-driver to a runnable command (absolute path when possible).
+
+    Order:
+      1. ``shutil.which(_CUA_DRIVER_CMD)`` -- honours ``HERMES_CUA_DRIVER_CMD``
+         and the inherited PATH (the normal shell / CLI case).
+      2. If ``HERMES_CUA_DRIVER_CMD`` is an explicit existing path, use it.
+      3. Canonical install locations (``~/.local/bin/cua-driver``, the macOS
+         app bundle, brew / ``/usr/local`` bins) -- covers the GUI/launchd
+         minimal-PATH case where (1) misses. (#51393)
+
+    Returns the resolved command, or ``None`` when nothing is found.
+    """
+    found = shutil.which(_CUA_DRIVER_CMD)
+    if found:
+        return found
+    # An explicit override that points at a real file but is not on PATH
+    # (e.g. a relative or non-exec-bit path which() rejects): trust it if
+    # it exists, so user intent is never silently dropped.
+    if _CUA_DRIVER_CMD not in ("cua-driver", "") and os.path.isfile(
+        os.path.expanduser(_CUA_DRIVER_CMD)
+    ):
+        return os.path.expanduser(_CUA_DRIVER_CMD)
+    # Only probe canonical locations for the default command name -- a custom
+    # override that did not resolve above must not silently fall back to a
+    # different binary than the user asked for.
+    if _CUA_DRIVER_CMD == "cua-driver":
+        for path in _cua_driver_fallback_paths():
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+    return None
+
+
 def cua_driver_binary_available() -> bool:
-    """True if `cua-driver` is on $PATH or HERMES_CUA_DRIVER_CMD resolves."""
-    return bool(shutil.which(_CUA_DRIVER_CMD))
+    """True if `cua-driver` resolves on $PATH, via HERMES_CUA_DRIVER_CMD, or in
+    a canonical install location (e.g. ``~/.local/bin`` under the GUI app's
+    minimal launchd PATH). (#51393)"""
+    return resolve_cua_driver_cmd() is not None
 
 
 def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]:
@@ -231,8 +289,11 @@ def cua_driver_update_check(*, timeout: float = 8.0) -> Optional[Dict[str, Any]]
     raises.
     """
     try:
+        driver_cmd = resolve_cua_driver_cmd()
+        if not driver_cmd:
+            return None
         proc = subprocess.run(
-            [_CUA_DRIVER_CMD, "check-update", "--json"],
+            [driver_cmd, "check-update", "--json"],
             capture_output=True, text=True, timeout=timeout,
             # Some older drivers don't have the verb and fall through to a
             # stdin-reading mode rather than erroring — DEVNULL gives them EOF
@@ -582,7 +643,11 @@ class _CuaDriverSession:
             # Surface 8: ask cua-driver itself which subcommand spawns
             # the MCP server, instead of hardcoding ["mcp"]. Falls back
             # transparently for older drivers / any discovery failure.
-            command, args = _resolve_mcp_invocation(_CUA_DRIVER_CMD)
+            # Use the resolved absolute path (not the bare command name) so the
+            # spawn succeeds under the GUI app's minimal PATH too. (#51393)
+            command, args = _resolve_mcp_invocation(
+                resolve_cua_driver_cmd() or _CUA_DRIVER_CMD
+            )
             params = StdioServerParameters(
                 command=command,
                 args=args,

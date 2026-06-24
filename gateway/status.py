@@ -307,6 +307,54 @@ def _build_runtime_status_record() -> dict[str, Any]:
     return payload
 
 
+def _resolve_runtime_status_identity(
+    current_record: dict[str, Any],
+    payload: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Choose which process identity should own gateway_state.json.
+
+    The gateway runtime owner is the process behind ``gateway.pid`` /
+    ``gateway.lock``. Auxiliary writers such as the desktop dashboard backend
+    may legitimately update platform substate, but they must not overwrite the
+    live gateway's pid/argv metadata in the shared runtime-status file.
+    """
+    owner_pid = get_running_pid(cleanup_stale=False)
+    if owner_pid is None or owner_pid == current_record["pid"]:
+        return current_record
+
+    existing_payload = payload if isinstance(payload, dict) else {}
+    for record in (_read_pid_record(), _read_gateway_lock_record()):
+        if _pid_from_record(record) != owner_pid:
+            continue
+        owner_record = dict(record)
+        owner_record.setdefault("pid", owner_pid)
+        owner_record.setdefault(
+            "kind",
+            existing_payload.get("kind") if existing_payload.get("pid") == owner_pid else _GATEWAY_KIND,
+        )
+        owner_record.setdefault(
+            "argv",
+            existing_payload.get("argv")
+            if existing_payload.get("pid") == owner_pid and isinstance(existing_payload.get("argv"), list)
+            else [],
+        )
+        owner_record.setdefault(
+            "start_time",
+            existing_payload.get("start_time") if existing_payload.get("pid") == owner_pid else None,
+        )
+        return owner_record
+
+    if existing_payload.get("pid") == owner_pid:
+        return {
+            "pid": owner_pid,
+            "kind": existing_payload.get("kind", _GATEWAY_KIND),
+            "argv": existing_payload.get("argv", []),
+            "start_time": existing_payload.get("start_time"),
+        }
+
+    return current_record
+
+
 def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
     if not path.exists():
         return None
@@ -606,11 +654,12 @@ def write_runtime_status(
     path = _get_runtime_status_path()
     payload = _read_json_file(path) or _build_runtime_status_record()
     current_record = _build_pid_record()
+    identity_record = _resolve_runtime_status_identity(current_record, payload)
     payload.setdefault("platforms", {})
-    payload["kind"] = current_record["kind"]
-    payload["pid"] = current_record["pid"]
-    payload["argv"] = current_record["argv"]
-    payload["start_time"] = current_record["start_time"]
+    payload["kind"] = identity_record["kind"]
+    payload["pid"] = identity_record["pid"]
+    payload["argv"] = identity_record["argv"]
+    payload["start_time"] = identity_record["start_time"]
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:

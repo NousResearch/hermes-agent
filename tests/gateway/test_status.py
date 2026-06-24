@@ -311,6 +311,35 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid()
         assert payload["start_time"] == 2000
 
+    def test_write_runtime_status_preserves_live_gateway_identity_for_non_owner_writer(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        gateway_record = {
+            "pid": 4242,
+            "kind": "hermes-gateway",
+            "argv": ["/real/hermes", "gateway", "run", "--replace"],
+            "start_time": 777,
+        }
+        dashboard_record = {
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["/real/hermes", "dashboard", "--no-open"],
+            "start_time": 888,
+        }
+
+        monkeypatch.setattr(status, "_build_pid_record", lambda: dict(dashboard_record))
+        monkeypatch.setattr(status, "get_running_pid", lambda cleanup_stale=False: gateway_record["pid"])
+        monkeypatch.setattr(status, "_read_pid_record", lambda pid_path=None: dict(gateway_record))
+        monkeypatch.setattr(status, "_read_gateway_lock_record", lambda lock_path=None: None)
+
+        status.write_runtime_status(platform="discord", platform_state="connected")
+
+        payload = status.read_runtime_status()
+        assert payload["pid"] == gateway_record["pid"]
+        assert payload["argv"] == gateway_record["argv"]
+        assert payload["start_time"] == gateway_record["start_time"]
+        assert payload["platforms"]["discord"]["state"] == "connected"
+
     def test_write_runtime_status_records_platform_failure(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

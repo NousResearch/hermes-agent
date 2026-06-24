@@ -828,6 +828,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
+    # Also extract markdown images (![alt](url)) so they get sent as native
+    # attachments instead of raw markdown text.  Without this, Discord bot
+    # messages containing `![alt](url)` render as plain text and never embed.
+    images, cleaned_delivery_content = BasePlatformAdapter.extract_images(cleaned_delivery_content)
+
     try:
         config = load_gateway_config()
     except Exception as e:
@@ -1087,6 +1092,38 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
                     logger.warning("Job '%s': %s", job["id"], msg)
                     delivery_errors.append(msg)
+
+                # Send extracted markdown images as native attachments
+                if adapter_ok and images:
+                    from agent.async_utils import safe_schedule_threadsafe
+                    for image_url, alt_text in images:
+                        try:
+                            future = safe_schedule_threadsafe(
+                                runtime_adapter.send_image(
+                                    chat_id, image_url,
+                                    caption=alt_text if alt_text else None,
+                                    metadata=send_metadata,
+                                ),
+                                loop,
+                            )
+                            if future is None:
+                                continue
+                            try:
+                                img_result = future.result(timeout=30)
+                            except TimeoutError:
+                                future.cancel()
+                                raise
+                            if img_result and not getattr(img_result, "success", True):
+                                logger.warning(
+                                    "Job '%s': image send failed for %s: %s",
+                                    job.get("id", "?"), image_url[:80],
+                                    getattr(img_result, "error", "unknown"),
+                                )
+                        except Exception as img_err:
+                            logger.warning(
+                                "Job '%s': failed to send image %s: %s",
+                                job.get("id", "?"), image_url[:80], img_err,
+                            )
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)

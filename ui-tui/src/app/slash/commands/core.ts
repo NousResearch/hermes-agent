@@ -659,42 +659,5 @@ export const coreCommands: SlashCommand[] = [
         })
       )
     }
-  },
-
-  {
-    help: 'open local file in preview panel',
-    name: 'file',
-    run: async (arg, ctx) => {
-      const { transcript, sys } = ctx
-      const filePath = arg.trim()
-
-      if (!filePath) {
-        return transcript.sys('Please provide a file path')
-      }
-
-      try {
-        const content = await sys.fs.readFile(filePath, 'utf8')
-        const lines = content.split('\n')
-        const previewContent = lines.slice(0, 150).join('\n')
-        const isTruncated = lines.length > 150
-        
-        await sys.panels.setActive('preview')
-        await sys.panels.updatePreview({
-          type: 'file',
-          title: `Preview: ${filePath}`,
-          content: previewContent,
-          metadata: { 
-            filePath,
-            isTruncated,
-            lineCount: lines.length,
-            size: Buffer.byteLength(content, 'utf8')
-          }
-        })
-        
-        return transcript.sys(`Previewing ${filePath}${isTruncated ? ' (truncated to 150 lines)' : ''}`)
-      } catch (error) {
-        return transcript.sys(`Error reading file: ${error.message}`)
-      }
-    }
   }
 ]

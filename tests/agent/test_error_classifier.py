@@ -576,6 +576,31 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.context_overflow
 
+    def test_400_max_tokens_above_provider_ceiling_is_format_error(self):
+        """max_tokens request validation is not input context overflow."""
+        e = MockAPIError(
+            "HTTP 400: The parameter `max_tokens` specified in the request are not "
+            "valid: integer above maximum value, expected a value <= 32768, but got "
+            "65536 instead.",
+            status_code=400,
+            body={
+                "error": {
+                    "code": "InvalidParameter",
+                    "param": "max_tokens",
+                    "type": "BadRequest",
+                    "message": (
+                        "The parameter `max_tokens` specified in the request are not "
+                        "valid: integer above maximum value, expected a value <= 32768, "
+                        "but got 65536 instead."
+                    ),
+                }
+            },
+        )
+        result = classify_api_error(e, provider="custom", model="kimi-k2.7-code")
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is False
+
     def test_400_generic_large_session(self):
         """Generic 400 with large session → context overflow heuristic."""
         e = MockAPIError(

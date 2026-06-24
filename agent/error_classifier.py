@@ -270,6 +270,38 @@ _REQUEST_VALIDATION_PATTERNS = [
     "unsupported_parameter",
 ]
 
+_MAX_TOKENS_REQUEST_VALIDATION_PATTERNS = [
+    "above maximum value",
+    "integer above maximum",
+    "expected a value <=",
+    "expected value <=",
+]
+
+
+def _is_max_tokens_request_validation(error_msg: str, error_code: str, body: dict) -> bool:
+    """Return True when max_tokens itself is invalid, not the prompt size."""
+    error_obj = body.get("error", {}) if isinstance(body, dict) else {}
+    param = ""
+    error_type = ""
+    if isinstance(error_obj, dict):
+        param = str(error_obj.get("param") or "").lower()
+        error_type = str(error_obj.get("type") or "").lower()
+
+    code_lower = (error_code or "").lower()
+    invalid_code = code_lower in {
+        "invalidparameter",
+        "invalid_parameter",
+        "invalid_request_error",
+        "badrequest",
+        "bad_request",
+    }
+    if param == "max_tokens" and (invalid_code or error_type == "badrequest"):
+        return True
+
+    return "max_tokens" in error_msg and any(
+        p in error_msg for p in _MAX_TOKENS_REQUEST_VALIDATION_PATTERNS
+    )
+
 # OpenRouter aggregator policy-block patterns.
 #
 # When a user's OpenRouter account privacy setting (or a per-request
@@ -1013,6 +1045,15 @@ def _classify_400(
         )
 
     # Context overflow from 400
+    # max_tokens ceiling validation is about the requested output cap, not
+    # input context size. Keep it out of the compression recovery path.
+    if _is_max_tokens_request_validation(error_msg, error_code, body):
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
+
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
         return result_fn(
             FailoverReason.context_overflow,

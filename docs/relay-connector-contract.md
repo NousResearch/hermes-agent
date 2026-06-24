@@ -225,6 +225,40 @@ only flip/drain ITS OWN instance.
 > primitive is "when the gateway drains, relay flips to buffered + replays on
 > reconnect, with no loss/dup"; WHAT triggers the drain is out of scope.
 
+### 3.3 Wake poke (§5.2)
+
+The other half of the sleep/wake loop: how a SUSPENDED gateway finds out it has
+buffered work waiting. A PRIMITIVE — nothing here suspends a machine; it wires
+the wake SIGNAL so a future scale-to-zero behaviour layer can rely on "buffered
+⇒ wake poked."
+
+- **Registration.** The gateway registers a **wake URL** at enroll/provision —
+  any reachable URL the connector can GET to wake it (a Fly autostart hostname,
+  a dashboard host). Self-hosted: `hermes gateway enroll --wake-url <url>` (or
+  `GATEWAY_RELAY_WAKE_URL` / `gateway.relay_wake_url`). Managed/NAS: stamped into
+  the container env beside `GATEWAY_RELAY_URL`. Forwarded in the
+  `/relay/provision` body as `wakeUrl` and stored per-instance on the connector's
+  secret record (gateway-asserted but safely scoped — same posture as
+  `instanceId`; the org/tenant stays token-verified, so a gateway can only
+  register a wake target for ITS OWN instance). DISTINCT from the retired
+  `gatewayEndpoint`: a **poke target**, not a delivery target.
+- **The poke.** When a buffered-only (going-idle) destination receives its FIRST
+  buffered event, the connector issues a **payload-free, unsigned GET** to that
+  instance's registered `wakeUrl`, **directly** (NOT NAS-mediated — relay stays
+  NAS-independent). It carries no tenant data and no inbound: it only says "you
+  have buffered work, reconnect." Tenant authority is re-established the normal
+  way when the gateway re-dials (the authenticated WS upgrade), so a leaked/
+  guessed wake URL can at worst cause a spurious reconnect of ITS OWN instance.
+  Rate-limited per instance (one poke per cooldown window, not per event), and
+  best-effort — a failed poke is swallowed; the gateway still drains whenever it
+  next reconnects on its own. No new frame: the wake is an out-of-band HTTP GET,
+  not a relay-WS message (the socket is down — that's the whole point).
+
+> NOT in scope (deferred behaviour): the actual machine suspend (Fly
+> `autostop:"suspend"`) and the autonomous idle timer that decides to sleep. The
+> primitive is "buffered event for a sleeping instance ⇒ its wakeUrl gets poked";
+> WHAT makes the instance sleep (and wake-to-serve) is the behaviour layer.
+
 ---
 
 ## 4. Outbound: action set

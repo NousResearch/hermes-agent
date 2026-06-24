@@ -158,6 +158,37 @@ def relay_instance_id() -> Optional[str]:
     return value or None
 
 
+def relay_wake_url() -> Optional[str]:
+    """The gateway's WAKE URL, forwarded at provision (Phase 5 §5.2 wake PRIMITIVE).
+
+    A poke target the connector issues a payload-free GET to when a buffered-only
+    (going-idle) destination for this instance receives its first buffered event,
+    so a suspended gateway wakes, reconnects its relay WS, and drains its
+    delivery-leg backlog. The value's *source* differs by deployment but the code
+    path is uniform: a managed/NAS container has ``GATEWAY_RELAY_WAKE_URL`` stamped
+    in (NAS knows the Fly autostart / dashboard hostname); a self-hosted operator
+    sets it explicitly (or passes ``--wake-url`` to ``hermes gateway enroll``).
+
+    Gateway-asserted but safely scoped: the org/tenant stays token-verified, so a
+    dishonest gateway can only register a wake target for ITS OWN instance — the
+    same posture as ``relay_instance_id()`` / the retired ``relay_endpoint()``.
+    Absent -> the connector stores null and simply can't wake this instance
+    (buffering still works; the gateway drains whenever it next reconnects).
+
+    Env first (Docker/NAS), then ``gateway.relay_wake_url`` in config.yaml.
+    """
+    value = os.environ.get("GATEWAY_RELAY_WAKE_URL", "").strip()
+    if not value:
+        try:
+            from gateway.run import _load_gateway_config  # late import to avoid cycle
+
+            cfg = (_load_gateway_config().get("gateway") or {})
+            value = str(cfg.get("relay_wake_url", "") or "").strip()
+        except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+            value = ""
+    return value.rstrip("/") or None
+
+
 def _provision_url(relay_dial_url: str) -> str:
     """Map the ``ws(s)://…/relay`` dial URL to the ``http(s)://…/relay/provision`` POST URL."""
     raw = relay_dial_url.rstrip("/")
@@ -274,6 +305,7 @@ def _post_provision(
     gateway_endpoint: Optional[str],
     route_keys: list[str],
     instance_id: Optional[str] = None,
+    wake_url: Optional[str] = None,
     timeout: float = 15.0,
 ) -> dict:
     """POST to the connector's ``/relay/provision`` and return the JSON body.
@@ -299,6 +331,10 @@ def _post_provision(
     # connector store null (back-compat) rather than binding an empty string.
     if instance_id:
         body["instanceId"] = instance_id
+    # Same for the wake URL (Phase 5 §5.2): omit when absent so the connector
+    # stores null and simply can't wake this instance (buffering still works).
+    if wake_url:
+        body["wakeUrl"] = wake_url
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         provision_url,
@@ -404,6 +440,7 @@ def self_provision_relay() -> bool:
     endpoint = relay_endpoint()
     route_keys = relay_route_keys()
     instance_id = relay_instance_id()
+    wake_url = relay_wake_url()
 
     try:
         result = _post_provision(
@@ -415,6 +452,7 @@ def self_provision_relay() -> bool:
             gateway_endpoint=endpoint,
             route_keys=route_keys,
             instance_id=instance_id,
+            wake_url=wake_url,
         )
     except RuntimeError as exc:
         logger.warning("relay self-provision failed (%s); gateway will boot without relay auth", exc)
@@ -430,12 +468,13 @@ def self_provision_relay() -> bool:
     os.environ["GATEWAY_RELAY_DELIVERY_KEY"] = str(result.get("deliveryKey") or "")
     tenant = str(result.get("tenant") or "")
     logger.info(
-        "relay self-provisioned (gateway_id=%s tenant=%s routes=%d inbound=%s instance=%s)",
+        "relay self-provisioned (gateway_id=%s tenant=%s routes=%d inbound=%s instance=%s wake=%s)",
         os.environ["GATEWAY_RELAY_ID"],
         tenant or "?",
         len(route_keys),
         "yes" if endpoint else "outbound-only",
         instance_id or "unbound",
+        "yes" if wake_url else "none",
     )
     return True
 

@@ -282,6 +282,19 @@ def build_gateway_parser(
             "Defaults to gw-<hostname>."
         ),
     )
+    gateway_enroll.add_argument(
+        "--wake-url",
+        dest="wake_url",
+        default=None,
+        help=(
+            "Phase 5 §5.2 wake URL: a reachable URL the connector pokes "
+            "(payload-free GET) to wake this gateway when buffered work arrives "
+            "while it's idle/suspended, so it reconnects and drains. Persisted as "
+            "GATEWAY_RELAY_WAKE_URL in ~/.hermes/.env and forwarded at provision. "
+            "Optional — without it the gateway still drains whenever it next "
+            "reconnects on its own."
+        ),
+    )
     gateway_enroll.set_defaults(func=cmd_gateway_enroll)
 
     # =========================================================================

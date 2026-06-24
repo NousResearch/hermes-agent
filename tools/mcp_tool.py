@@ -7,6 +7,8 @@ transport, discovers their tools, and registers them into the hermes-agent
 tool registry so the agent can call them like any built-in tool.
 
 Configuration is read from ~/.hermes/config.yaml under the ``mcp_servers`` key.
+When ``mcp.use_project_mcp_json`` is enabled, project-local ``.mcp.json``
+servers are merged into the session with config.yaml entries taking precedence.
 The ``mcp`` Python package is optional -- if not installed, this module is a
 no-op and logs a debug message.
 
@@ -328,6 +330,12 @@ _SAFE_ENV_KEYS_CASE_INSENSITIVE = frozenset({
     "WINDIR",
 })
 
+_WINDOWS_ENV_CANONICAL_KEYS = {
+    "PROGRAMDATA": "ProgramData",
+    "PROGRAMFILES": "ProgramFiles",
+    "PROGRAMW6432": "ProgramW6432",
+}
+
 # Regex for credential patterns to strip from error messages
 _CREDENTIAL_PATTERN = re.compile(
     r"(?:"
@@ -370,7 +378,7 @@ def _build_safe_env(user_env: Optional[dict]) -> dict:
             or key.upper() in _SAFE_ENV_KEYS_CASE_INSENSITIVE
             or key.startswith("XDG_")
         ):
-            env[key] = value
+            env[_WINDOWS_ENV_CANONICAL_KEYS.get(key.upper(), key)] = value
     if user_env:
         env.update(user_env)
     return env
@@ -721,7 +729,16 @@ def _resolve_client_cert(server_name: str, config: dict):
                 f"MCP server '{server_name}': {label} must be a non-empty "
                 f"string path (got {type(path).__name__})"
             )
-        expanded = os.path.expanduser(path.strip())
+        raw_path = path.strip()
+        if raw_path == "~" or raw_path.startswith(("~/", "~\\")):
+            home = os.environ.get("HOME")
+            if home:
+                suffix = raw_path[2:] if len(raw_path) > 1 else ""
+                expanded = os.path.join(home, suffix) if suffix else home
+            else:
+                expanded = os.path.expanduser(raw_path)
+        else:
+            expanded = os.path.expanduser(raw_path)
         if not os.path.isfile(expanded):
             raise FileNotFoundError(
                 f"MCP server '{server_name}': {label} not found at "
@@ -3053,7 +3070,7 @@ def _filter_suspicious_mcp_servers(servers: Dict[str, dict]) -> Dict[str, dict]:
 
 
 def _load_mcp_config() -> Dict[str, dict]:
-    """Read ``mcp_servers`` from the Hermes config file.
+    """Read effective MCP server config for this process.
 
     Returns a dict of ``{server_name: server_config}`` or empty dict.
     Server config can contain either ``command``/``args``/``env`` for stdio
@@ -3062,17 +3079,27 @@ def _load_mcp_config() -> Dict[str, dict]:
 
     ``${ENV_VAR}`` placeholders in string values are resolved from
     ``os.environ`` (which includes ``~/.hermes/.env`` loaded at startup).
+    Project-local ``.mcp.json`` entries are included only when explicitly
+    enabled and are overridden by same-named ``config.yaml`` entries.
     """
     try:
         from hermes_cli.config import load_config
+        from hermes_cli.mcp_project import (
+            load_project_mcp_servers,
+            merge_mcp_server_configs,
+        )
         # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): troubleshooting run
         # with all customizations disabled — no MCP servers connect.
         from utils import env_var_enabled as _env_enabled
         if _env_enabled("HERMES_SAFE_MODE"):
             return {}
         config = load_config()
-        servers = config.get("mcp_servers")
-        if not servers or not isinstance(servers, dict):
+        config_servers = config.get("mcp_servers")
+        if not isinstance(config_servers, dict):
+            config_servers = {}
+        project_config = load_project_mcp_servers(config=config)
+        servers = merge_mcp_server_configs(config_servers, project_config.servers)
+        if not servers:
             return {}
         # Ensure .env vars are available for interpolation
         try:

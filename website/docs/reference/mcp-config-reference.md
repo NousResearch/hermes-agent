@@ -41,6 +41,17 @@ mcp_servers:
       prompts: true
 ```
 
+Project-local `.mcp.json` files are supported as an opt-in runtime source:
+
+```yaml
+mcp:
+  use_project_mcp_json: true
+```
+
+Use `hermes mcp list --include-project` to inspect project servers without
+enabling them globally. When a project server has the same name as a
+`config.yaml` server, the `config.yaml` entry takes precedence.
+
 ## Server keys
 
 | Key | Type | Applies to | Meaning |

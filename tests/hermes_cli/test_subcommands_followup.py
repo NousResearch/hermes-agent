@@ -64,3 +64,26 @@ def test_mcp_and_acp_accept_hooks_flag():
     # acp takes --accept-hooks at top level
     ns = parser.parse_args(["acp", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+def test_mcp_project_flags_parse():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    build_mcp_parser(sub, cmd_mcp=_h("mcp"))
+
+    ns = parser.parse_args(["mcp", "list", "--include-project"])
+    assert ns.include_project is True
+
+    ns = parser.parse_args(["mcp", "test", "project-srv", "--from-project"])
+    assert ns.from_project is True
+
+
+def test_chat_use_project_mcp_flag_parses():
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=_h("chat"))
+
+    ns = parser.parse_args(["chat", "--use-project-mcp"])
+
+    assert ns.use_project_mcp is True

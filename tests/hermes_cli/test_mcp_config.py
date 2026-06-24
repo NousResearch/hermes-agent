@@ -121,6 +121,40 @@ class TestMcpList:
         assert "myserver" in out
         assert "enabled" in out
 
+    def test_list_include_project_shows_project_servers(self, tmp_path, capsys, monkeypatch):
+        (tmp_path / ".mcp.json").write_text(
+            '{"mcpServers":{"project-srv":{"url":"http://127.0.0.1:8000/mcp"}}}',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list(_make_args(include_project=True))
+        out = capsys.readouterr().out
+        assert "project-srv" in out
+        assert ".mcp.json" in out
+        assert "Project MCP:" in out
+
+    def test_list_config_server_takes_precedence_over_project_duplicate(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        _seed_config(tmp_path, {
+            "dup": {"url": "https://config.example/mcp"},
+        })
+        (tmp_path / ".mcp.json").write_text(
+            '{"mcpServers":{"dup":{"url":"https://project.example/mcp"}}}',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list(_make_args(include_project=True))
+        out = capsys.readouterr().out
+        assert "https://config.example/mcp" in out
+        assert "https://project.example/mcp" not in out
+
 
 # ---------------------------------------------------------------------------
 # Tests: cmd_mcp_remove
@@ -444,6 +478,32 @@ class TestMcpTest:
         out = capsys.readouterr().out
         assert "Connected" in out
         assert "Tools discovered: 2" in out
+
+    def test_test_from_project_uses_project_mcp_json(self, tmp_path, capsys, monkeypatch):
+        _seed_config(tmp_path, {})
+        (tmp_path / ".mcp.json").write_text(
+            '{"mcpServers":{"project-srv":{"url":"http://127.0.0.1:8000/mcp"}}}',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        captured = {}
+
+        def mock_probe(name, config, **kw):
+            captured["name"] = name
+            captured["config"] = dict(config)
+            return [("ping", "Ping")]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        cmd_mcp_test(_make_args(name="project-srv", from_project=True))
+        out = capsys.readouterr().out
+        assert "Connected" in out
+        assert "Source: .mcp.json" in out
+        assert captured["name"] == "project-srv"
+        assert captured["config"]["url"] == "http://127.0.0.1:8000/mcp"
 
 
 # ---------------------------------------------------------------------------

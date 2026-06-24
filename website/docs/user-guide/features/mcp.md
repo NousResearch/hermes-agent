@@ -284,6 +284,45 @@ You can also keep the cert and key fully separate via `client_cert` (combined PE
 
 Hermes reads MCP config from `~/.hermes/config.yaml` under `mcp_servers`.
 
+Hermes can also read MCP server definitions from the nearest project-local
+`.mcp.json` when you opt in for a session or in config. Project entries are
+not imported into `config.yaml`; they are used in place for the current
+workspace. If the same server name exists in both places, `config.yaml` wins.
+
+```bash
+hermes mcp list --include-project
+hermes mcp test --from-project unreal-mcp
+hermes chat --use-project-mcp
+```
+
+```yaml
+mcp:
+  use_project_mcp_json: true
+```
+
+Common project file shape:
+
+```json
+{
+  "mcpServers": {
+    "unreal-mcp": {
+      "url": "http://127.0.0.1:8000/mcp"
+    },
+    "my-server": {
+      "command": "npx",
+      "args": ["-y", "some-mcp-server"],
+      "env": {
+        "SOME_ENV": "value"
+      }
+    }
+  }
+}
+```
+
+Project `.mcp.json` can launch local stdio commands, so runtime use is
+disabled by default. Stdio entries loaded from a project file go through the
+same validation and process-spawn path as Hermes-native MCP servers.
+
 ### Common keys
 
 | Key | Type | Meaning |

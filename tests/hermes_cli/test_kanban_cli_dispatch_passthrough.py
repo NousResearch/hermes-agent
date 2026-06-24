@@ -148,3 +148,63 @@ def test_kanban_swarm_uses_existing_humanizer_skill():
         f"humanizer skill missing at {humanizer_path}; the kanban_swarm fix "
         "for #29415 requires this bundled skill to exist"
     )
+
+
+def test_cli_claim_external_flag_sets_external_kind(isolated_kanban_home):
+    """``hermes kanban claim <id> --external`` must mark the claim as an
+    external (interactive-operator) hold so the dispatcher never spawns a
+    parallel worker on a task a live ccz/ccp session is working."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    kanban_db.init_db()
+    with kanban_db.connect() as conn:
+        tid = kanban_db.create_task(conn, title="live work", assignee="a")
+
+    args = SimpleNamespace(
+        task_id=tid, ttl=kanban_db.DEFAULT_CLAIM_TTL_SECONDS, external=True,
+    )
+    rc = kb_cli._cmd_claim(args)
+    assert rc == 0
+
+    with kanban_db.connect() as conn:
+        task = kanban_db.get_task(conn, tid)
+    assert task.status == "running"
+    assert task.claim_kind == kanban_db.CLAIM_KIND_EXTERNAL
+    assert task.claim_expires is None
+
+
+def test_cli_claim_without_external_is_worker(isolated_kanban_home):
+    """The default CLI claim path is unchanged: a worker claim with a TTL."""
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    kanban_db.init_db()
+    with kanban_db.connect() as conn:
+        tid = kanban_db.create_task(conn, title="work", assignee="a")
+
+    args = SimpleNamespace(
+        task_id=tid, ttl=kanban_db.DEFAULT_CLAIM_TTL_SECONDS, external=False,
+    )
+    rc = kb_cli._cmd_claim(args)
+    assert rc == 0
+
+    with kanban_db.connect() as conn:
+        task = kanban_db.get_task(conn, tid)
+    assert task.claim_kind == kanban_db.CLAIM_KIND_WORKER
+    assert task.claim_expires is not None
+
+
+def test_cli_claim_parser_accepts_external_flag(isolated_kanban_home):
+    """The argparse surface must expose ``--external`` on the claim
+    subcommand (CLI contract)."""
+    import argparse
+    from hermes_cli import kanban as kb_cli
+
+    top = argparse.ArgumentParser()
+    top_sub = top.add_subparsers(dest="top_cmd")
+    kb_cli.build_parser(top_sub)
+    ns = top.parse_args(["kanban", "claim", "t_abc", "--external"])
+    assert ns.external is True
+    ns2 = top.parse_args(["kanban", "claim", "t_abc"])
+    assert ns2.external is False

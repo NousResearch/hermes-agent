@@ -157,6 +157,30 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 # signal lands, and the following tick reclaims cleanly.
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
+# ``tasks.claim_kind`` discriminates *who* holds a claim:
+#   * ``worker``   — a dispatcher-spawned worker subprocess. These are
+#     subject to the full reclaim machinery (TTL expiry, PID-liveness,
+#     heartbeat-staleness, max-runtime) so a dead/wedged worker frees its
+#     task for the next dispatcher tick.
+#   * ``external`` — a live interactive operator session (e.g. a Claude
+#     Code session in tmux ``ccz``/``ccp`` that ran ``hermes kanban claim
+#     --external``). These sessions do NOT emit kanban heartbeats or
+#     Hermes API traffic, so their TTL/heartbeat would protrude exactly
+#     like a wedged worker. To stop the dispatcher from re-dispatching a
+#     task a human is actively working on (the #t_0781f106 parallel-work
+#     incident), an external claim is held *indefinitely* (``claim_expires
+#     = NULL``, ``worker_pid = NULL``) and is therefore invisible to all
+#     three reclaimers (``release_stale_claims`` filters
+#     ``claim_expires IS NOT NULL``; ``enforce_max_runtime`` and
+#     ``detect_crashed_workers`` filter ``worker_pid IS NOT NULL``).
+#     ``release_stale_claims`` additionally guards on this column as
+#     defense-in-depth. An external hold is released only by an explicit
+#     ``complete`` / ``block`` / ``reclaim``.
+# A NULL ``claim_kind`` (legacy rows, pre-migration boards) is treated as
+# ``worker`` everywhere so the historical behaviour is preserved.
+CLAIM_KIND_WORKER = "worker"
+CLAIM_KIND_EXTERNAL = "external"
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
@@ -785,6 +809,9 @@ class Task:
     claim_expires: Optional[int]
     tenant: Optional[str]
     branch_name: Optional[str] = None
+    # 'worker' | 'external' | None. None == legacy/worker. An 'external'
+    # claim is a live interactive operator hold and is never auto-reclaimed.
+    claim_kind: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -911,6 +938,9 @@ class Task:
             session_id=(
                 row["session_id"] if "session_id" in keys else None
             ),
+            claim_kind=(
+                row["claim_kind"] if "claim_kind" in keys else None
+            ),
         )
 
 
@@ -1022,6 +1052,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     branch_name          TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
+    -- Who holds the claim: 'worker' (dispatcher-spawned, fully reclaimable)
+    -- or 'external' (live interactive operator session, held indefinitely
+    -- and never auto-reclaimed). NULL = legacy/worker. See CLAIM_KIND_*.
+    claim_kind           TEXT,
     tenant               TEXT,
     result               TEXT,
     idempotency_key      TEXT,
@@ -1882,6 +1916,14 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
         )
+
+    if "claim_kind" not in cols:
+        # Discriminates worker claims (fully reclaimable) from external
+        # interactive-operator claims (held indefinitely, never
+        # auto-reclaimed). NULL on legacy rows is treated as 'worker'
+        # everywhere, so existing boards keep their current reclaim
+        # behaviour. See CLAIM_KIND_WORKER / CLAIM_KIND_EXTERNAL.
+        _add_column_if_missing(conn, "tasks", "claim_kind", "claim_kind TEXT")
 
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
@@ -3164,15 +3206,30 @@ def claim_task(
     *,
     ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
+    external: bool = False,
 ) -> Optional[Task]:
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``ready`` status).
+
+    ``external=True`` marks the claim as a live interactive-operator hold
+    (``claim_kind = 'external'``). Such a claim is held *indefinitely*
+    (``claim_expires = NULL``) and is therefore never auto-reclaimed by the
+    dispatcher's stale/crash/runtime sweeps — only an explicit
+    ``complete`` / ``block`` / ``reclaim`` releases it. ``ttl_seconds`` is
+    ignored for external claims. This is what stops the dispatcher from
+    spawning a parallel worker on a task a human session is actively
+    working on. See CLAIM_KIND_EXTERNAL.
     """
     now = int(time.time())
     lock = claimer or _claimer_id()
-    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    # External (interactive) holds never expire — they're released only by
+    # an explicit terminal/recovery transition. A NULL ``claim_expires``
+    # also makes the row invisible to ``release_stale_claims`` (which
+    # filters ``claim_expires IS NOT NULL``).
+    expires = None if external else now + _resolve_claim_ttl_seconds(ttl_seconds)
+    kind = CLAIM_KIND_EXTERNAL if external else CLAIM_KIND_WORKER
     with write_txn(conn):
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
@@ -3225,12 +3282,13 @@ def claim_task(
                SET status        = 'running',
                    claim_lock    = ?,
                    claim_expires = ?,
+                   claim_kind    = ?,
                    started_at    = COALESCE(started_at, ?)
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
             """,
-            (lock, expires, now, task_id),
+            (lock, expires, kind, now, task_id),
         )
         if cur.rowcount != 1:
             return None
@@ -3266,7 +3324,7 @@ def claim_task(
         )
         _append_event(
             conn, task_id, "claimed",
-            {"lock": lock, "expires": expires, "run_id": run_id},
+            {"lock": lock, "expires": expires, "run_id": run_id, "kind": kind},
             run_id=run_id,
         )
         claimed = get_task(conn, task_id)
@@ -3419,14 +3477,28 @@ def release_stale_claims(
     now = int(time.time())
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    # External (interactive-operator) holds are never auto-reclaimed: a
+    # live human session doesn't emit kanban heartbeats, so its claim
+    # would protrude exactly like a wedged worker. ``claim_task(external)``
+    # already sets ``claim_expires = NULL`` (so these rows can't match the
+    # ``claim_expires IS NOT NULL`` filter below), but we also guard on
+    # ``claim_kind`` explicitly as defense-in-depth in case a future code
+    # path stamps an expiry on an external claim. See CLAIM_KIND_EXTERNAL.
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, claim_lock, claim_kind, worker_pid, claim_expires, "
+        "       last_heartbeat_at "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
-        "  AND claim_expires < ?",
-        (now,),
+        "  AND claim_expires < ? "
+        "  AND (claim_kind IS NULL OR claim_kind != ?)",
+        (now, CLAIM_KIND_EXTERNAL),
     ).fetchall()
     for row in stale:
+        # Belt-and-suspenders: skip external holds even if the query above
+        # somehow surfaced one (it can't under the current schema — the
+        # SELECT already excludes them).
+        if row["claim_kind"] == CLAIM_KIND_EXTERNAL:
+            continue
         lock = row["claim_lock"] or ""
         host_local = lock.startswith(host_prefix)
         hb = row["last_heartbeat_at"]
@@ -3564,9 +3636,13 @@ def reclaim_task(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
     with write_txn(conn):
+        # Clear claim_kind too: an operator reclaim is the explicit recovery
+        # path for an external hold whose interactive session died without
+        # complete/block. Resetting it to NULL returns the task to a clean
+        # worker-claimable 'ready' state.
         cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
-            "claim_expires = NULL, worker_pid = NULL "
+            "claim_expires = NULL, claim_kind = NULL, worker_pid = NULL "
             "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
             "AND claim_lock IS ?",
             (task_id, prev_lock),
@@ -3841,6 +3917,7 @@ def complete_task(
                        completed_at = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
+                       claim_kind   = NULL,
                        worker_pid   = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
@@ -3856,6 +3933,7 @@ def complete_task(
                        completed_at = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
+                       claim_kind   = NULL,
                        worker_pid   = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
@@ -4339,6 +4417,7 @@ def block_task(
                    SET status       = 'blocked',
                        claim_lock   = NULL,
                        claim_expires= NULL,
+                       claim_kind   = NULL,
                        worker_pid   = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready')
@@ -4352,6 +4431,7 @@ def block_task(
                    SET status       = 'blocked',
                        claim_lock   = NULL,
                        claim_expires= NULL,
+                       claim_kind   = NULL,
                        worker_pid   = NULL
                  WHERE id = ?
                    AND status IN ('running', 'ready')

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import shutil
 import shlex
@@ -1781,7 +1782,10 @@ def _nous_invoke_jwt_status(
     exp = claims.get("exp")
     skew = max(0, int(min_ttl_seconds))
     if isinstance(exp, (int, float)):
-        if float(exp) <= (time.time() + skew):
+        exp_value = float(exp)
+        if not math.isfinite(exp_value):
+            return "invoke_jwt_expiry_unknown_or_expiring"
+        if exp_value <= (time.time() + skew):
             return "invoke_jwt_expiring"
         return None
     if _is_expiring(expires_at, skew):

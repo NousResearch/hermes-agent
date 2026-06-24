@@ -1,6 +1,7 @@
 """Tests for the dangerous command approval module."""
 
 import ast
+import json
 import os
 import threading
 import time
@@ -176,6 +177,48 @@ class TestSessionKeyContext:
         assert "reset_current_session_key" in called_names
 
 
+class TestMiniAppExternalApprovalBridge:
+    def test_external_bridge_writes_pending_status_before_waiting_for_choice(self, tmp_path, monkeypatch):
+        session_key = "miniapp-user-123"
+        request_path = tmp_path / f"{session_key}.json"
+
+        monkeypatch.setenv("MINI_APP_AGENT_APPROVAL_DIR", str(tmp_path))
+        monkeypatch.setenv("MINI_APP_INTERNAL_BASE_URL", "http://127.0.0.1:8787")
+        monkeypatch.setenv("MINI_APP_OPERATOR_API_TOKEN", "operator-token")
+        monkeypatch.setattr(approval_module, "_get_approval_config", lambda: {"gateway_timeout": 1})
+
+        class FakeResponse:
+            status = 200
+
+            def __enter__(self):
+                data = json.loads(request_path.read_text(encoding="utf-8"))
+                assert data["status"] == "pending"
+                data["choice"] = "session"
+                data["status"] = "resolved"
+                request_path.write_text(json.dumps(data), encoding="utf-8")
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        def fake_urlopen(req, timeout):
+            assert req.full_url == "http://127.0.0.1:8787/api/chat/external-approval"
+            assert req.headers["X-hermes-operator-token"] == "operator-token"
+            return FakeResponse()
+
+        monkeypatch.setattr(approval_module.urllib.request, "urlopen", fake_urlopen)
+
+        choice = approval_module._publish_miniapp_external_approval(
+            session_key=session_key,
+            command="rm -rf /tmp/demo",
+            pattern_key="rm-rf",
+            pattern_keys=["rm-rf"],
+            description="delete in root path",
+            allow_permanent=True,
+        )
+
+        assert choice == "session"
+        assert not request_path.exists()
 
 
 class TestRmFalsePositiveFix:

@@ -10,6 +10,7 @@ This module is the single source of truth for the dangerous command system:
 
 import contextvars
 import fnmatch
+import json
 import logging
 import os
 import re
@@ -17,6 +18,10 @@ import sys
 import threading
 import time
 import unicodedata
+import urllib.error
+import urllib.request
+import uuid
+from pathlib import Path
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -114,12 +119,23 @@ def get_current_session_key(default: str = "default") -> str:
     1. approval-specific contextvars (set by gateway before agent.run)
     2. session_context contextvars (set by _set_session_env)
     3. os.environ fallback (CLI, cron, tests)
+
+    Some outer gateway/tool-runner sessions expose the Mini App mapping as
+    HERMES_SESSION_ID rather than HERMES_SESSION_KEY.  Treat that as a final
+    fallback so host-side approval prompts can still bridge into Mini App chats
+    named like miniapp-<user_id>-<chat_id>.
     """
     session_key = _approval_session_key.get()
     if session_key:
         return session_key
-    from gateway.session_context import get_session_env
-    return get_session_env("HERMES_SESSION_KEY", default)
+    try:
+        from gateway.session_context import get_session_env
+        session_key = get_session_env("HERMES_SESSION_KEY", "")
+        if session_key:
+            return session_key
+    except Exception:
+        pass
+    return os.getenv("HERMES_SESSION_KEY") or os.getenv("HERMES_SESSION_ID") or default
 
 
 def _get_session_platform() -> str:
@@ -765,6 +781,121 @@ def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:
         _pending[session_key] = approval
+
+
+def _miniapp_external_approval_dir() -> Path:
+    configured = str(os.environ.get("MINI_APP_AGENT_APPROVAL_DIR") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return (Path.cwd() / "var" / "agent_approvals").resolve()
+
+
+def _publish_miniapp_external_approval(
+    *,
+    session_key: str,
+    command: str,
+    pattern_key: str,
+    pattern_keys: list[str],
+    description: str,
+    allow_permanent: bool,
+) -> Optional[str]:
+    """Bridge host/gateway approvals into a Mini App chat, if configured.
+
+    The Mini App process owns the visible attention message and resolves the
+    JSON request file via /api/chat/approval. This helper is intentionally
+    best-effort and opt-in through MINI_APP_INTERNAL_BASE_URL,
+    MINI_APP_OPERATOR_API_TOKEN, and a miniapp-* session key.
+    """
+    if not session_key.startswith("miniapp-"):
+        return None
+    base_url = str(os.environ.get("MINI_APP_INTERNAL_BASE_URL") or "").strip().rstrip("/")
+    token = str(os.environ.get("MINI_APP_OPERATOR_API_TOKEN") or "").strip()
+    if not base_url or not token:
+        return None
+
+    approval_id = f"external-{uuid.uuid4().hex}"
+    approval_dir = _miniapp_external_approval_dir()
+    try:
+        approval_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("Mini App approval bridge could not create %s: %s", approval_dir, exc)
+        return None
+
+    expires_at = time.time() + int(_get_approval_config().get("gateway_timeout", 300) or 300)
+    request_doc = {
+        "id": approval_id,
+        "session_id": session_key,
+        "status": "pending",
+        "command": command,
+        "pattern_key": pattern_key,
+        "pattern_keys": list(pattern_keys),
+        "description": description,
+        "allow_permanent": allow_permanent,
+        "created_at": time.time(),
+        "expires_at": expires_at,
+        "source": "host_gateway",
+    }
+    request_path = approval_dir / f"{session_key}.json"
+    tmp_path = approval_dir / f".{session_key}.{approval_id}.tmp"
+    try:
+        tmp_path.write_text(json.dumps(request_doc, ensure_ascii=False), encoding="utf-8")
+        tmp_path.replace(request_path)
+    except OSError as exc:
+        logger.warning("Mini App approval bridge could not write %s: %s", request_path, exc)
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+
+    notify_payload = dict(request_doc)
+    url = f"{base_url}/api/chat/external-approval"
+    try:
+        body = json.dumps(notify_payload).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "X-Hermes-Operator-Token": token,
+            "User-Agent": "hermes-miniapp-external-approval/1.0",
+        }
+        bridge_origin = str(os.environ.get("MINI_APP_PUBLIC_ORIGIN") or "").strip()
+        if not bridge_origin:
+            allowed_origins = str(os.environ.get("MINI_APP_ALLOWED_ORIGINS") or "").strip()
+            if allowed_origins:
+                bridge_origin = allowed_origins.split(",", 1)[0].strip()
+        if bridge_origin:
+            headers["Origin"] = bridge_origin
+        req = urllib.request.Request(
+            url,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if int(getattr(resp, "status", 200) or 200) >= 400:
+                logger.warning("Mini App approval bridge notify failed with HTTP %s", getattr(resp, "status", "?"))
+                return None
+    except (OSError, urllib.error.URLError, urllib.error.HTTPError) as exc:
+        logger.warning("Mini App approval bridge notify failed: %s", exc)
+        return None
+
+    timeout = max(0, int(_get_approval_config().get("gateway_timeout", 300) or 300))
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            data = json.loads(request_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            time.sleep(0.5)
+            continue
+        choice = str(data.get("choice") or "").strip().lower()
+        if choice in {"once", "session", "always", "deny"}:
+            try:
+                request_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return choice
+        time.sleep(0.5)
+
+    return "deny"
 
 
 def approve_session(session_key: str, pattern_key: str):
@@ -1691,6 +1822,40 @@ def check_all_command_guards(command: str, env_type: str,
                     "user_approved": True, "description": combined_desc}
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
+        # If this session is associated with a Mini App chat, publish a visible
+        # approval card there and block on the shared file bridge so the Mini
+        # App approval buttons can resolve this host/tool-runner request.
+        miniapp_choice = _publish_miniapp_external_approval(
+            session_key=session_key,
+            command=command,
+            pattern_key=primary_key,
+            pattern_keys=all_keys,
+            description=combined_desc,
+            allow_permanent=not has_tirith,
+        )
+        if miniapp_choice in {"once", "session", "always"}:
+            for key, _, is_tirith in warnings:
+                if miniapp_choice == "session" or (miniapp_choice == "always" and is_tirith):
+                    approve_session(session_key, key)
+                elif miniapp_choice == "always":
+                    approve_session(session_key, key)
+                    approve_permanent(key)
+                    save_permanent_allowlist(_permanent_approved)
+            return {"approved": True, "message": None,
+                    "user_approved": True, "description": combined_desc}
+        if miniapp_choice == "deny":
+            return {
+                "approved": False,
+                "message": (
+                    "BLOCKED: Command denied or timed out in Mini App approval. "
+                    "The user has NOT consented to this action. Do NOT retry."
+                ),
+                "pattern_key": primary_key,
+                "description": combined_desc,
+                "outcome": "denied",
+                "user_consent": False,
+            }
+
         # Return approval_required for backward compat.
         submit_pending(session_key, {
             "command": command,

@@ -16,6 +16,7 @@ import os
 import tempfile
 import html as _html
 import re
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Set, Any
 
@@ -604,6 +605,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Tracks status bubbles owned by this adapter so subsequent calls with the
         # same key edit the same message instead of appending new ones (#30045).
         self._status_message_ids: Dict[tuple, str] = {}
+        # Bot-to-bot safety state.  Keys are scoped by chat/topic/sender/target
+        # so one noisy peer cannot disable unrelated human or bot traffic.
+        self._bot_to_bot_rate_windows: Dict[tuple, List[float]] = {}
+        self._bot_to_bot_circuit_breakers: Dict[tuple, Dict[str, float]] = {}
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -5519,6 +5524,174 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS", "true").lower() in {"true", "1", "yes", "on"}
 
+    @staticmethod
+    def _coerce_bool_value(value: Any, default: bool = False) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(value)
+
+    @staticmethod
+    def _coerce_str_set(value: Any) -> set[str]:
+        if value is None:
+            return set()
+        if isinstance(value, (list, tuple, set)):
+            return {str(part).strip() for part in value if str(part).strip()}
+        return {part.strip() for part in str(value).split(",") if part.strip()}
+
+    def _telegram_bot_to_bot_config(self) -> dict:
+        """Return the bot-to-bot config block, accepting legacy flat keys."""
+        raw = self.config.extra.get("bot_to_bot")
+        cfg = dict(raw) if isinstance(raw, dict) else {}
+        # Back-compat / easy experimentation: allow selected flat keys in extra.
+        for key in (
+            "bot_to_bot_enabled",
+            "allowlisted_bot_ids",
+            "allowlisted_bot_usernames",
+            "enabled_chats",
+            "require_explicit_mention",
+            "exclusive_bot_mentions",
+            "max_reply_depth",
+            "trace_prefix",
+            "rate_limit",
+            "circuit_breaker",
+        ):
+            if key in self.config.extra and key not in cfg:
+                target = "enabled" if key == "bot_to_bot_enabled" else key
+                cfg[target] = self.config.extra[key]
+        return cfg
+
+    def _telegram_bot_to_bot_enabled(self) -> bool:
+        cfg = self._telegram_bot_to_bot_config()
+        return self._coerce_bool_value(cfg.get("enabled"), False)
+
+    def _telegram_bot_to_bot_enabled_chats(self):
+        return self._coerce_str_set(self._telegram_bot_to_bot_config().get("enabled_chats"))
+
+    def _telegram_bot_to_bot_sender_allowed(self, message) -> bool:
+        user = getattr(message, "from_user", None)
+        if not user or not bool(getattr(user, "is_bot", False)):
+            return False
+        cfg = self._telegram_bot_to_bot_config()
+        allowed_ids = self._coerce_str_set(cfg.get("allowlisted_bot_ids"))
+        allowed_usernames = {
+            item.lstrip("@").lower()
+            for item in self._coerce_str_set(cfg.get("allowlisted_bot_usernames"))
+        }
+        sender_id = str(getattr(user, "id", "")).strip()
+        sender_username = str(getattr(user, "username", "") or "").lstrip("@").lower()
+        if not allowed_ids and not allowed_usernames:
+            return False
+        return bool(
+            (sender_id and sender_id in allowed_ids)
+            or (sender_username and sender_username in allowed_usernames)
+        )
+
+    def _telegram_bot_to_bot_chat_enabled(self, message) -> bool:
+        enabled = self._telegram_bot_to_bot_enabled_chats()
+        if not enabled:
+            return True
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        thread_id = getattr(message, "message_thread_id", None)
+        topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+        return chat_id in enabled or f"{chat_id}:{topic_id}" in enabled
+
+    def _bot_to_bot_guard_key(self, message) -> tuple:
+        sender = getattr(message, "from_user", None)
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        thread_id = getattr(message, "message_thread_id", None)
+        topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+        sender_id = str(getattr(sender, "id", ""))
+        target = str(getattr(self._bot, "username", "") or "").lstrip("@").lower()
+        return (chat_id, topic_id, sender_id, target)
+
+    def _telegram_bot_to_bot_trace_depth(self, message) -> int:
+        cfg = self._telegram_bot_to_bot_config()
+        prefix = re.escape(str(cfg.get("trace_prefix") or "hms"))
+        text = "\n".join(
+            part for part in (getattr(message, "text", None), getattr(message, "caption", None)) if part
+        )
+        match = re.search(rf"\[trace:{prefix}:[^\]\s]+\s+depth=(\d+)\]", text)
+        if not match:
+            return 0
+        try:
+            return int(match.group(1))
+        except (TypeError, ValueError):
+            return 0
+
+    def _telegram_bot_to_bot_guard_allows(self, message) -> bool:
+        cfg = self._telegram_bot_to_bot_config()
+        now = time.monotonic()
+        key = self._bot_to_bot_guard_key(message)
+        breakers = getattr(self, "_bot_to_bot_circuit_breakers", {})
+        breaker = breakers.get(key)
+        raw_circuit_cfg = cfg.get("circuit_breaker")
+        circuit_cfg = raw_circuit_cfg if isinstance(raw_circuit_cfg, dict) else {}
+        cooldown = float(circuit_cfg.get("cooldown_seconds", 900))
+        if breaker and breaker.get("until", 0) > now:
+            return False
+        if breaker and breaker.get("until", 0) <= now:
+            breakers.pop(key, None)
+
+        max_depth = int(cfg.get("max_reply_depth", 3) or 3)
+        if self._telegram_bot_to_bot_trace_depth(message) >= max_depth:
+            self._record_bot_to_bot_trip(key, now)
+            return False
+
+        raw_rate_cfg = cfg.get("rate_limit")
+        rate_cfg = raw_rate_cfg if isinstance(raw_rate_cfg, dict) else {}
+        window_seconds = float(rate_cfg.get("window_seconds", 60))
+        max_messages = int(rate_cfg.get("max_messages", 10) or 10)
+        windows = getattr(self, "_bot_to_bot_rate_windows", {})
+        timestamps = [ts for ts in windows.get(key, []) if now - ts < window_seconds]
+        if len(timestamps) >= max_messages:
+            self._record_bot_to_bot_trip(key, now, cooldown=cooldown)
+            windows[key] = timestamps
+            return False
+        timestamps.append(now)
+        windows[key] = timestamps
+        self._bot_to_bot_rate_windows = windows
+        return True
+
+    def _record_bot_to_bot_trip(self, key: tuple, now: Optional[float] = None, *, cooldown: Optional[float] = None) -> None:
+        now = time.monotonic() if now is None else now
+        cfg = self._telegram_bot_to_bot_config()
+        raw_circuit_cfg = cfg.get("circuit_breaker")
+        circuit_cfg = raw_circuit_cfg if isinstance(raw_circuit_cfg, dict) else {}
+        window_seconds = float(circuit_cfg.get("window_seconds", 300))
+        max_trips = int(circuit_cfg.get("max_trips", 3) or 3)
+        cooldown_seconds = float(cooldown if cooldown is not None else circuit_cfg.get("cooldown_seconds", 900))
+        breakers = getattr(self, "_bot_to_bot_circuit_breakers", {})
+        breaker = breakers.get(key, {"trips": 0, "first": now, "until": 0})
+        if now - float(breaker.get("first", now)) > window_seconds:
+            breaker = {"trips": 0, "first": now, "until": 0}
+        breaker["trips"] = float(breaker.get("trips", 0)) + 1
+        if breaker["trips"] >= max_trips:
+            breaker["until"] = now + cooldown_seconds
+        breakers[key] = breaker
+        self._bot_to_bot_circuit_breakers = breakers
+
+    def _telegram_bot_to_bot_allows(self, message) -> bool:
+        """Return whether an incoming bot-authored group message may dispatch."""
+        user = getattr(message, "from_user", None)
+        if not bool(getattr(user, "is_bot", False)):
+            return True
+        if not self._telegram_bot_to_bot_enabled():
+            return False
+        if not self._telegram_bot_to_bot_chat_enabled(message):
+            return False
+        if not self._telegram_bot_to_bot_sender_allowed(message):
+            return False
+        cfg = self._telegram_bot_to_bot_config()
+        if self._coerce_bool_value(cfg.get("require_explicit_mention"), True):
+            if not self._message_mentions_bot(message):
+                return False
+        if self._coerce_bool_value(cfg.get("exclusive_bot_mentions"), True):
+            if self._explicit_bot_mentions_exclude_self(message):
+                return False
+        return self._telegram_bot_to_bot_guard_allows(message)
+
     def _telegram_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
@@ -5811,6 +5984,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return text
         username = re.escape(self._bot.username)
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
+        cleaned = re.sub(r"\s*\[trace:[^\]\s]+:[^\]\s]+\s+depth=\d+\]\s*$", "", cleaned).strip()
         return cleaned or text
 
     def _should_observe_unmentioned_group_message(self, message: Message) -> bool:
@@ -6106,6 +6280,8 @@ class TelegramAdapter(BasePlatformAdapter):
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
+        if bool(getattr(getattr(message, "from_user", None), "is_bot", False)):
+            return self._telegram_bot_to_bot_allows(message)
         if not self._is_group_chat(message):
             return True
 
@@ -7114,8 +7290,78 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 
+    def _telegram_media_config(self) -> dict:
+        raw = self.config.extra.get("media")
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def _telegram_sticker_config(self) -> dict:
+        media = self._telegram_media_config()
+        raw = media.get("stickers")
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def _stickers_enabled(self) -> bool:
+        cfg = self._telegram_sticker_config()
+        return self._coerce_bool_value(cfg.get("enabled"), False)
+
+    def _sticker_aliases(self) -> dict:
+        cfg = self._telegram_sticker_config()
+        aliases = cfg.get("aliases")
+        return dict(aliases) if isinstance(aliases, dict) else {}
+
+    async def send_sticker_alias(
+        self,
+        chat_id: str,
+        alias: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a configured Telegram sticker alias, preserving forum topic routing."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if not self._stickers_enabled():
+            return SendResult(success=False, error="Telegram sticker aliases disabled")
+        file_id = self._sticker_aliases().get(str(alias).strip())
+        if not file_id:
+            return SendResult(success=False, error=f"Unknown Telegram sticker alias: {alias}")
+        try:
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = int(reply_to) if reply_to and self._should_thread_reply(reply_to, 0) else None
+            thread_kwargs = self._thread_kwargs_for_send(
+                chat_id,
+                thread_id,
+                metadata,
+                reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode,
+            )
+            msg = await self._bot.send_sticker(
+                chat_id=int(chat_id),
+                sticker=str(file_id),
+                reply_to_message_id=reply_to_id,
+                **thread_kwargs,
+                **self._notification_kwargs(metadata),
+            )
+            return SendResult(success=True, message_id=str(getattr(msg, "message_id", "")))
+        except Exception as exc:
+            logger.debug("[%s] send_sticker_alias(%s) failed: %s", self.name, alias, exc)
+            return SendResult(success=False, error=str(exc))
+
+    def _telegram_reaction_config(self) -> dict:
+        media = self._telegram_media_config()
+        raw = media.get("reactions")
+        return dict(raw) if isinstance(raw, dict) else {}
+
+    def _telegram_reaction_emoji(self, key: str, default: str) -> str:
+        cfg = self._telegram_reaction_config()
+        return str(cfg.get(key, default) or default)
+
     def _reactions_enabled(self) -> bool:
         """Check if message reactions are enabled via config/env."""
+        cfg = self._telegram_reaction_config()
+        if "enabled" in cfg:
+            return self._coerce_bool_value(cfg.get("enabled"), False)
+        configured = self.config.extra.get("reactions")
+        if configured is not None:
+            return self._coerce_bool_value(configured, False)
         return os.getenv("TELEGRAM_REACTIONS", "false").lower() not in {"false", "0", "no"}
 
     async def _set_reaction(self, chat_id: str, message_id: str, emoji: str) -> bool:
@@ -7161,7 +7407,11 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            await self._set_reaction(
+                chat_id,
+                message_id,
+                self._telegram_reaction_emoji("on_accept", "\U0001f440"),
+            )
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction.
@@ -7185,11 +7435,12 @@ class TelegramAdapter(BasePlatformAdapter):
         if outcome == ProcessingOutcome.CANCELLED:
             await self._clear_reactions(chat_id, message_id)
         else:
-            await self._set_reaction(
-                chat_id,
-                message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+            emoji = (
+                self._telegram_reaction_emoji("on_success", "\U0001f44d")
+                if outcome == ProcessingOutcome.SUCCESS
+                else self._telegram_reaction_emoji("on_error", "\U0001f44e")
             )
+            await self._set_reaction(chat_id, message_id, emoji)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -7378,6 +7629,9 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
             group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
         os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
     for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
+        if _key in telegram_cfg:
+            extras.setdefault(_key, telegram_cfg[_key])
+    for _key in ("bot_to_bot", "rich_streaming", "media", "reactions"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys (e.g. base_url proxy override),

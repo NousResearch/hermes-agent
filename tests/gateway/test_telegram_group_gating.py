@@ -654,7 +654,17 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
         "  group_allowed_chats:\n"
         "    - \"-100\"\n"
         "  allowed_topics:\n"
-        "    - 8\n",
+        "    - 8\n"
+        "  bot_to_bot:\n"
+        "    enabled: true\n"
+        "    allowlisted_bot_ids:\n"
+        "      - \"123\"\n"
+        "    enabled_chats:\n"
+        "      - \"-100:8\"\n"
+        "  media:\n"
+        "    reactions:\n"
+        "      enabled: true\n"
+        "      on_success: \"✅\"\n",
         encoding="utf-8",
     )
 
@@ -687,6 +697,14 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     assert tg_cfg.extra.get("allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("group_allowed_chats") == ["-100"]
     assert tg_cfg.extra.get("allowed_topics") == [8]
+    assert tg_cfg.extra.get("bot_to_bot") == {
+        "enabled": True,
+        "allowlisted_bot_ids": ["123"],
+        "enabled_chats": ["-100:8"],
+    }
+    assert tg_cfg.extra.get("media") == {
+        "reactions": {"enabled": True, "on_success": "✅"}
+    }
     assert tg_cfg.extra.get("exclusive_bot_mentions") is True
     assert tg_cfg.extra.get("observe_unmentioned_group_messages") is True
 

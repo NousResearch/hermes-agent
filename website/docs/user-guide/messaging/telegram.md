@@ -132,6 +132,65 @@ TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 
 This requires Telegram to deliver ordinary group messages to the gateway, so disable BotFather privacy mode or promote the bot to group admin as described above.
 
+### Bot-to-bot communication (advanced)
+
+Telegram can deliver messages authored by other bots when BotFather bot-to-bot mode and the client/account configuration allow it. Hermes keeps bot-authored messages **off by default** because unrestricted bot-to-bot replies can create infinite loops. Enable it only for known peer bots, and preferably only in specific forum topics:
+
+```yaml
+telegram:
+  bot_to_bot:
+    enabled: true
+    # One or both allowlists may be used. Numeric IDs are preferred.
+    allowlisted_bot_ids:
+      - "123456789"
+    allowlisted_bot_usernames:
+      - codex_bot
+    require_explicit_mention: true
+    exclusive_bot_mentions: true
+    enabled_chats:
+      - "-1001234567890:903"  # chat_id:message_thread_id
+    max_reply_depth: 3
+    rate_limit:
+      window_seconds: 60
+      max_messages: 10
+    circuit_breaker:
+      window_seconds: 300
+      max_trips: 3
+      cooldown_seconds: 900
+```
+
+Rules enforced by the adapter:
+
+- bot senders are ignored unless `bot_to_bot.enabled` is true;
+- the sender must match `allowlisted_bot_ids` or `allowlisted_bot_usernames`;
+- the message must explicitly mention this bot (for example `@my_hermes_bot`);
+- when `exclusive_bot_mentions` is true, a message aimed only at another `@...bot` is ignored;
+- optional `enabled_chats` entries may be a whole chat (`-1001234567890`) or a single forum topic (`-1001234567890:903`);
+- visible trace markers like `[trace:hms:abc depth=2]` are parsed and stripped before dispatch so loops stop at `max_reply_depth`.
+
+### Rich messages, streaming drafts, reactions, and stickers
+
+Rich Telegram rendering is opt-in. When enabled, Hermes first tries Telegram Bot API rich-message methods and falls back to legacy MarkdownV2 if the API/client rejects them:
+
+```yaml
+telegram:
+  extra:
+    rich_messages: true
+  reactions: true
+  media:
+    reactions:
+      enabled: true
+      on_accept: "👀"
+      on_success: "👍"
+      on_error: "👎"
+    stickers:
+      enabled: true
+      aliases:
+        shipit: "<telegram-sticker-file-id>"
+```
+
+Sticker aliases are intentionally file-id based in v1. Capture a sticker `file_id` from a known sticker message or from Telegram API logs, then map it to an alias. This avoids relying on global sticker search behavior that may vary by Bot API/client version.
+
 ## Step 4: Find Your User ID
 
 Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.

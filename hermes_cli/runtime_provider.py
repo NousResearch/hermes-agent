@@ -157,6 +157,16 @@ def _host_derived_api_key(base_url: str) -> str:
     return (os.getenv(env_name, "") or "").strip()
 
 
+def _limen_relay_api_key_for_base_url(base_url: str) -> str:
+    """Return the LIMEN employee relay key only for the exact LIMEN relay URL."""
+    key = (os.getenv("LIMEN_RELAY_API_KEY", "") or "").strip()
+    relay_base_url = (os.getenv("LIMEN_RELAY_BASE_URL", "") or "").strip().rstrip("/")
+    candidate = (base_url or "").strip().rstrip("/")
+    if key and relay_base_url and candidate == relay_base_url:
+        return key
+    return ""
+
+
 def _auto_detect_local_model(base_url: str) -> str:
     """Query a local server for its model name when only one model is loaded."""
     if not base_url:
@@ -677,6 +687,7 @@ def _resolve_named_custom_runtime(
         _da_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
         api_key_candidates = [
             (explicit_api_key or "").strip(),
+            _limen_relay_api_key_for_base_url(base_url),
             # Gate env key fallbacks on authoritative hosts (#28660)
             (os.getenv("OPENAI_API_KEY", "").strip()     if _da_is_openai_url else ""),
             (os.getenv("OPENROUTER_API_KEY", "").strip() if _da_is_openrouter  else ""),
@@ -733,6 +744,7 @@ def _resolve_named_custom_runtime(
         (explicit_api_key or "").strip(),
         str(custom_provider.get("api_key", "") or "").strip(),
         os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
+        _limen_relay_api_key_for_base_url(base_url),
         # Gate provider env keys on their authoritative hosts — sending
         # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
         (os.getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""),
@@ -857,6 +869,7 @@ def _resolve_openrouter_runtime(
         api_key_candidates = [
             explicit_api_key,
             (cfg_api_key if use_config_base_url else ""),
+            _limen_relay_api_key_for_base_url(base_url),
             (os.getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
             (os.getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
             (os.getenv("OPENROUTER_API_KEY") if _is_openrouter_url                   else ""),

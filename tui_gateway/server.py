@@ -839,25 +839,32 @@ def _terminal_task_cwd(session: dict | None) -> str:
 
 def _git_branch_for_cwd(cwd: str) -> str:
     try:
-        result = subprocess.run(
-            ["git", "-C", cwd, "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            timeout=1.5,
-            check=False,
-        )
-        if result.returncode == 0:
-            branch = result.stdout.strip()
-            if branch:
-                return branch
-        head = subprocess.run(
-            ["git", "-C", cwd, "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=1.5,
-            check=False,
-        )
-        return head.stdout.strip() if head.returncode == 0 else ""
+        path = Path(cwd).absolute()
+        if path.is_file():
+            path = path.parent
+
+        git_dir: Path | None = None
+        for candidate in (path, *path.parents):
+            marker = candidate / ".git"
+            if marker.is_dir():
+                git_dir = marker
+                break
+            if marker.is_file():
+                text = marker.read_text(encoding="utf-8", errors="ignore").strip()
+                if text.lower().startswith("gitdir:"):
+                    raw = text.split(":", 1)[1].strip()
+                    resolved = Path(raw)
+                    git_dir = resolved if resolved.is_absolute() else (candidate / resolved).absolute()
+                    break
+        if git_dir is None:
+            return ""
+
+        head = (git_dir / "HEAD").read_text(encoding="utf-8", errors="ignore").strip()
+        if head.startswith("ref:"):
+            ref = head.split(":", 1)[1].strip()
+            prefix = "refs/heads/"
+            return ref[len(prefix):] if ref.startswith(prefix) else Path(ref).name
+        return head[:7] if head else ""
     except Exception:
         return ""
 
@@ -1163,6 +1170,8 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
             or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower()
             or "auto"
         )
+        if current_provider == "custom" or current_provider.startswith("custom:"):
+            return model, None
         detected = detect_static_provider_for_model(explicit_model, current_provider)
         if detected:
             provider, detected_model = detected

@@ -2508,6 +2508,48 @@ def test_openai_key_only_sent_to_openai_host(monkeypatch):
     assert resolved["api_key"] == "no-key-required"
 
 
+def test_limen_relay_key_reaches_matching_limen_relay_url(monkeypatch):
+    """LIMEN's scoped LiteLLM virtual key is allowed only for its relay URL."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://tokenhub.limenlab.ai/v1",
+        },
+    )
+    monkeypatch.setenv("LIMEN_RELAY_BASE_URL", "https://tokenhub.limenlab.ai/v1")
+    monkeypatch.setenv("LIMEN_RELAY_API_KEY", "sk-limen-employee")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-should-not-be-used")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "https://tokenhub.limenlab.ai/v1"
+    assert resolved["api_key"] == "sk-limen-employee"
+
+
+def test_limen_relay_key_not_sent_to_non_matching_custom_url(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://api.deepseek.com/v1",
+        },
+    )
+    monkeypatch.setenv("LIMEN_RELAY_BASE_URL", "https://tokenhub.limenlab.ai/v1")
+    monkeypatch.setenv("LIMEN_RELAY_API_KEY", "sk-limen-employee")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-should-not-be-used")
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "https://api.deepseek.com/v1"
+    assert resolved["api_key"] == "no-key-required"
+
+
 def test_openai_key_reaches_openai_host(monkeypatch):
     """OPENAI_API_KEY must be forwarded when the base_url is api.openai.com."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")

@@ -60,6 +60,61 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
 
 
+def test_resolve_startup_runtime_keeps_custom_relay_for_vendor_named_model(monkeypatch):
+    """A custom relay model can look like a vendor model name.
+
+    LIMEN receives tenant-scoped LiteLLM virtual keys and exposes vendor-named
+    model aliases through a custom OpenAI-compatible endpoint. If HERMES_MODEL
+    is set to ``deepseek-v4-pro``, startup must not infer the native DeepSeek
+    provider and bypass the relay.
+    """
+
+    fake_cfg = {
+        "model": {
+            "default": "deepseek-v4-pro",
+            "provider": "custom",
+            "base_url": "https://relay.example.test/v1",
+        }
+    }
+
+    monkeypatch.setenv("HERMES_MODEL", "deepseek-v4-pro")
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+    with patch("tui_gateway.server._load_cfg", return_value=fake_cfg):
+        from tui_gateway.server import _resolve_startup_runtime
+
+        model, provider = _resolve_startup_runtime()
+
+    assert model == "deepseek-v4-pro"
+    assert provider is None
+
+
+def test_git_branch_for_cwd_does_not_spawn_git_for_non_repo_workspace(tmp_path):
+    """Session info must not block on Git for LIMEN employee workspaces."""
+
+    class GitWasCalled(BaseException):
+        pass
+
+    from tui_gateway.server import _git_branch_for_cwd
+
+    with patch("tui_gateway.server.subprocess.run", side_effect=GitWasCalled):
+        assert _git_branch_for_cwd(str(tmp_path)) == ""
+
+
+def test_git_branch_for_cwd_reads_head_without_subprocess(tmp_path):
+    git_dir = tmp_path / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text(
+        "ref: refs/heads/feature/qwen-relay\n",
+        encoding="utf-8",
+    )
+
+    from tui_gateway.server import _git_branch_for_cwd
+
+    assert _git_branch_for_cwd(str(tmp_path)) == "feature/qwen-relay"
+
+
 def test_make_agent_ignores_display_personality_without_system_prompt():
     """The TUI matches the classic CLI: personality only becomes active once
     it has been saved to agent.system_prompt."""

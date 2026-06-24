@@ -3567,8 +3567,16 @@ def resolve_provider_client(
     if provider == "custom":
         if explicit_base_url:
             custom_base = _to_openai_base_url(explicit_base_url).strip()
+            limen_relay_key = ""
+            try:
+                relay_base = (os.getenv("LIMEN_RELAY_BASE_URL", "") or "").strip().rstrip("/")
+                if relay_base and custom_base.rstrip("/") == relay_base:
+                    limen_relay_key = (os.getenv("LIMEN_RELAY_API_KEY", "") or "").strip()
+            except Exception:
+                limen_relay_key = ""
             custom_key = (
                 (explicit_api_key or "").strip()
+                or limen_relay_key
                 or os.getenv("OPENAI_API_KEY", "").strip()
                 or "no-key-required"  # local servers don't need auth
             )

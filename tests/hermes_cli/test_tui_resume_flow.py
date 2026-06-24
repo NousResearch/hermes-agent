@@ -252,6 +252,41 @@ def test_main_top_level_tui_accepts_toolsets(monkeypatch, main_mod):
     assert captured == {"toolsets": "web,terminal", "tui": True}
 
 
+def test_prepare_agent_startup_top_level_tui_skips_mcp_discovery(monkeypatch, main_mod):
+    calls = {"hooks": 0, "mcp": 0, "plugins": 0}
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(
+            discover_plugins=lambda: calls.__setitem__("plugins", calls["plugins"] + 1)
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(
+            discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1)
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "agent.shell_hooks",
+        types.SimpleNamespace(
+            register_from_config=lambda _cfg, accept_hooks=False: calls.__setitem__(
+                "hooks", calls["hooks"] + 1
+            )
+        ),
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+
+    main_mod._prepare_agent_startup(
+        Namespace(command=None, tui=True, accept_hooks=False)
+    )
+
+    assert calls == {"hooks": 1, "mcp": 0, "plugins": 1}
+
+
 def test_termux_fast_tui_launch_uses_light_parser(monkeypatch, main_mod):
     captured = {}
 

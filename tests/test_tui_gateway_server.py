@@ -1684,6 +1684,41 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_shutdown_for_exit_shuts_down_sessions_before_mcp(monkeypatch):
+    events = []
+
+    class _FakeWorker:
+        def close(self):
+            events.append("worker")
+
+    fake_mcp = types.ModuleType("tools.mcp_tool")
+    fake_mcp.shutdown_mcp_servers = lambda: events.append("mcp")
+    monkeypatch.setitem(sys.modules, "tools.mcp_tool", fake_mcp)
+    monkeypatch.setattr(server, "_sessions_shutdown_done", False)
+    monkeypatch.setattr(server, "_mcp_shutdown_done", False)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_notify_session_boundary",
+        lambda hook, session_id: events.append(f"hook:{hook}:{session_id}"),
+    )
+
+    server._sessions["shutdown-sid"] = _session(
+        session_key="shutdown-sid",
+        slash_worker=_FakeWorker(),
+    )
+
+    try:
+        server._shutdown_for_exit()
+        server._shutdown_for_exit()
+    finally:
+        server._sessions.pop("shutdown-sid", None)
+        server._sessions_shutdown_done = False
+        server._mcp_shutdown_done = False
+
+    assert events == ["hook:on_session_finalize:shutdown-sid", "worker", "mcp"]
+
+
 def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
     """A detached WS session past its grace window has its slash_worker closed.
 

@@ -264,7 +264,6 @@
     );
     --ui-chat-bubble-opaque-background: var(--ui-bg-editor);
     --ui-inline-code-background: color-mix(in srgb, #141414 5%, transparent);
-    --ui-inline-code-border: color-mix(in srgb, #141414 8%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #141414 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 55%, transparent);
 
@@ -299,8 +298,11 @@
       'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
+    /* JetBrains Mono first — the face we bundle (@font-face above) and the
+       terminal's primary — so code/diff match the terminal on every platform
+       instead of drifting to a system Cascadia Code where it's installed. */
     --dt-font-mono:
-      'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
+      'JetBrains Mono', 'Cascadia Code', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
       'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
@@ -337,8 +339,8 @@
     --file-tree-row-height: 1.375rem;
 
     --composer-width: 48.75rem;
-    --composer-control-size: 1.75rem;
-    --composer-control-primary-size: 1.875rem;
+    --composer-control-size: 1.5rem;
+    --composer-control-primary-size: 1.625rem;
     --composer-control-gap: 0.25rem;
     --composer-row-gap: 0.25rem;
     --composer-ring-strength: 1;
@@ -405,7 +407,6 @@
     --backdrop-invert-mul: 0;
 
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
-    --ui-inline-code-border: color-mix(in srgb, #ffffff 10%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 38%, transparent);
   }
@@ -680,6 +681,7 @@ textarea,
 [contenteditable]:not([contenteditable='false']),
 [data-slot='aui_user-message-root'],
 [data-slot='aui_assistant-message-content'],
+[data-slot='aui_system-message-root'],
 [data-selectable-text='true'],
 [data-selectable-text='true'] * {
   -webkit-user-select: text;
@@ -1001,8 +1003,53 @@ canvas {
 }
 
 [data-slot='composer-root'] {
-  width: min(var(--composer-width), calc(100% - 2rem));
+  /* +10px width compensates the 5px side padding so the visible surface keeps
+     its exact width/position — the inline padding is just transparent grab space
+     for the peel-out drag, matching the floating composer's 5px platform. */
+  width: calc(min(var(--composer-width), calc(100% - 2rem)) + 10px);
+  padding-inline: 5px;
   padding-bottom: var(--composer-shell-pad-block-end);
+}
+
+/* Popped-out (floating) composer: compact width + an even 5px transparent grab
+   platform. The higher-specificity selector resets the base rule's padding-bottom
+   so the inset is equal on all four sides (not 5px sides / shell-pad bottom). */
+[data-slot='composer-root'][data-popped-out] {
+  width: var(--composer-popout-width, 24rem);
+  max-width: calc(100vw - 1.5rem);
+  padding: 5px;
+}
+
+/* Dock glow intensity scale — dimmer in light mode (the primary glow reads
+   much stronger over a light backdrop), full strength in dark mode. */
+:root {
+  --dock-glow-scale: 0.55;
+}
+
+.dark {
+  --dock-glow-scale: 1;
+}
+
+/* Drag-region hatch — a diagonal ///// pattern (Photoshop-style) that fades into
+   the transparent grab margin on hover (and stays while dragging) to signal the
+   composer is draggable. Inherits the root radius so it clips to the corners. */
+[data-slot='composer-drag-region'] {
+  /* Hatch frame radius (tuned by hand). */
+  border-radius: 0.4rem;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  background-image: repeating-linear-gradient(
+    -45deg,
+    color-mix(in srgb, var(--ui-text-tertiary) 38%, transparent) 0,
+    color-mix(in srgb, var(--ui-text-tertiary) 38%, transparent) 1px,
+    transparent 1px,
+    transparent 3.5px
+  );
+}
+
+[data-slot='composer-drag-region']:hover,
+[data-slot='composer-drag-region'][data-dragging] {
+  opacity: 0.33;
 }
 
 [data-slot='composer-root'] > .pointer-events-none {
@@ -1015,6 +1062,12 @@ canvas {
 
 [data-slot='composer-surface'] {
   border-color: var(--ui-stroke-secondary) !important;
+}
+
+/* On focus we don't change the fill — just shift the border ~15% toward the
+   foreground, which darkens it in light mode and lightens it in dark mode. */
+[data-slot='composer-surface']:focus-within {
+  border-color: color-mix(in srgb, var(--ui-stroke-secondary) 85%, var(--dt-foreground)) !important;
 }
 
 [data-slot='composer-fade'] {
@@ -1048,14 +1101,6 @@ canvas {
 
 [data-slot='composer-root'][data-thread-scrolled-up] {
   --composer-fill: color-mix(in srgb, var(--dt-card) 48%, transparent);
-}
-
-[data-slot='composer-root']:has([data-slot='composer-surface']:focus-within) {
-  --composer-fill: var(--ui-chat-bubble-background);
-}
-
-[data-slot='composer-root']:has([data-slot='composer-completion-drawer']) {
-  --composer-fill: color-mix(in srgb, var(--dt-card) 90%, var(--dt-background));
 }
 
 /* Tool/thinking blocks now live at message-text alignment (no leading
@@ -1133,7 +1178,6 @@ canvas {
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md :not(pre) > code {
-  border: 0.0625rem solid var(--ui-inline-code-border);
   background: var(--ui-inline-code-background);
   color: var(--ui-inline-code-foreground);
 }
@@ -1170,19 +1214,56 @@ canvas {
   background: transparent !important;
 }
 
-[data-slot='aui_assistant-message-content'] > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+/* Fade scaffolding so the prose reading column stays primary. Two targets:
+   a thinking disclosure fades as one block, and each *individual* tool row
+   (`[data-tool-row]`) fades on its own. We deliberately do NOT fade the tool
+   group wrapper (`[data-tool-group]`): opacity on a parent opens a stacking
+   context, so a child row can never be more opaque than the group — that made
+   it impossible to keep one row lit (an open diff) while its siblings faded.
+   With the fade per-row, each row hovers/focuses independently. */
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'],
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
 
-[data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']):is(:hover, :focus-within) {
+/* Lift on hover or *keyboard* focus only. `:focus-within` also matches the
+   focus a mouse click leaves on the disclosure toggle, which kept a row lit
+   after you clicked to collapse it; `:has(:focus-visible)` excludes that. */
+[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure']:is(:hover, :has(:focus-visible)),
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row]:is(:hover, :has(:focus-visible)) {
   opacity: 1;
 }
 
-/* A generated image is the deliverable, not scaffolding — keep it at full
-   strength instead of dimming it until hover. */
-[data-slot='aui_assistant-message-content'] > [data-slot='tool-block']:has([data-slot='aui_generated-image']) {
+/* Syntax-highlighted inline diff (Shiki): strip the theme's own surface +
+   default margins so context lines stay transparent and each changed line owns
+   its tint. `display: grid` on the code puts one `.line` per row and drops the
+   whitespace-only `\n` nodes between them — without it, full-width block lines
+   double up with the literal newlines (phantom blank rows). */
+[data-slot='file-diff-panel'] .shiki,
+[data-slot='file-diff-panel'] .shiki code {
+  margin: 0;
+  background: transparent !important;
+}
+
+[data-slot='file-diff-panel'] .shiki code {
+  display: grid;
+}
+
+/* The github-dark token palette reads candy-bright at our small code size.
+   `github-dark-dimmed` only dims the *background* (which we strip), so soften
+   the token *foregrounds* directly — a small saturation + brightness pullback,
+   hues preserved — for both code blocks and inline diffs. Dark mode only. */
+.dark .shiki {
+  filter: saturate(0.82) brightness(0.92);
+}
+
+/* File edits (write_file / edit_file / patch) are the deliverable, not
+   scaffolding — the diff is what the user reviews, like a PR. An *expanded*
+   edit stays at full strength; collapsed it fades like any other row. The
+   `data-file-edit` marker sits on the same row element and is only present
+   while the row is open. */
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row][data-file-edit] {
   opacity: 1;
 }
 

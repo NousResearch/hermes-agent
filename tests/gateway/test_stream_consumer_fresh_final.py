@@ -617,15 +617,15 @@ class TestStreamConsumerConfigFreshFinalField:
 class TestStreamingConfigFreshFinalField:
     """The gateway-level StreamingConfig carries the setting."""
 
-    def test_default_enables_with_60s(self):
+    def test_default_is_disabled(self):
         from gateway.config import StreamingConfig
         cfg = StreamingConfig()
-        assert cfg.fresh_final_after_seconds == 60.0
+        assert cfg.fresh_final_after_seconds == 0.0
 
     def test_from_dict_uses_default_when_missing(self):
         from gateway.config import StreamingConfig
         cfg = StreamingConfig.from_dict({"enabled": True})
-        assert cfg.fresh_final_after_seconds == 60.0
+        assert cfg.fresh_final_after_seconds == 0.0
 
     def test_from_dict_respects_explicit_zero(self):
         from gateway.config import StreamingConfig
@@ -646,7 +646,7 @@ class TestTelegramAdapterDeleteMessage:
     """Contract: Telegram adapter implements ``delete_message``."""
 
     def test_delete_message_method_exists(self):
-        telegram = pytest.importorskip("gateway.platforms.telegram")
+        telegram = pytest.importorskip("plugins.platforms.telegram.adapter")
         import inspect
         cls = telegram.TelegramAdapter
         assert hasattr(cls, "delete_message"), (

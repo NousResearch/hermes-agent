@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
+import yaml
 
 from hermes_cli.profiles import (
     normalize_profile_name,
@@ -34,7 +35,9 @@ from hermes_cli.profiles import (
     has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
+    profiles_to_serve,
 )
+from hermes_cli.config import DEFAULT_CONFIG
 
 
 # ---------------------------------------------------------------------------
@@ -206,9 +209,25 @@ class TestCreateProfile:
 
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
 
-        assert (profile_dir / "config.yaml").read_text() == "model: test"
-        assert (profile_dir / ".env").read_text() == "KEY=val"
+        cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+        assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert cloned_config["model"] == "test"
+        assert (profile_dir / ".env").read_text().strip() == "KEY=val"
         assert (profile_dir / "SOUL.md").read_text() == "Be helpful."
+
+    def test_clone_config_migrates_legacy_config_version(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n",
+            encoding="utf-8",
+        )
+
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        cloned_config = yaml.safe_load((profile_dir / "config.yaml").read_text())
+
+        assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert cloned_config["model"]["provider"] == "openrouter"
 
     def test_clone_config_copies_source_skills(self, profile_env):
         tmp_path = profile_env
@@ -760,13 +779,14 @@ class TestWrapperScript:
 
     def test_creates_sh_on_posix(self, profile_env, monkeypatch):
         monkeypatch.setattr("sys.platform", "darwin")
+        monkeypatch.setattr("hermes_cli.profiles.shutil.which", lambda name: "/opt/hermes/bin/hermes")
         from hermes_cli.profiles import create_wrapper_script
         wrapper = create_wrapper_script("mybot")
         assert wrapper is not None
         assert wrapper.name == "mybot"
         content = wrapper.read_text()
         assert content.startswith("#!/bin/sh")
-        assert "hermes -p mybot" in content
+        assert "exec /opt/hermes/bin/hermes -p mybot" in content
 
     def test_creates_bat_on_windows(self, profile_env, monkeypatch):
         monkeypatch.setattr("sys.platform", "win32")
@@ -1452,8 +1472,10 @@ class TestEdgeCases:
         target_dir = create_profile(
             "target", clone_from="source", clone_config=True, no_alias=True,
         )
-        assert (target_dir / "config.yaml").read_text() == "model: cloned"
-        assert (target_dir / ".env").read_text() == "SECRET=yes"
+        cloned_config = yaml.safe_load((target_dir / "config.yaml").read_text())
+        assert cloned_config["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert cloned_config["model"] == "cloned"
+        assert (target_dir / ".env").read_text().strip() == "SECRET=yes"
 
     def test_delete_clears_active_profile(self, profile_env):
         """Deleting the active profile resets active to default."""
@@ -1466,3 +1488,48 @@ class TestEdgeCases:
             delete_profile("coder", yes=True)
 
         assert get_active_profile() == "default"
+
+
+class TestProfilesToServe:
+    """profiles_to_serve(multiplex) — the gateway's profile-enumeration chokepoint."""
+
+    def test_off_returns_only_active_default(self, profile_env):
+        serve = profiles_to_serve(multiplex=False)
+        assert len(serve) == 1
+        name, home = serve[0]
+        assert name == "default"
+        assert home == _get_default_hermes_home()
+
+    def test_off_returns_only_active_named(self, profile_env, monkeypatch):
+        # A named profile's gateway runs with HERMES_HOME pointing at the
+        # profile dir; get_active_profile_name() infers the name from there.
+        create_profile("coder", no_alias=True)
+        monkeypatch.setenv("HERMES_HOME", str(get_profile_dir("coder")))
+        serve = profiles_to_serve(multiplex=False)
+        assert len(serve) == 1
+        assert serve[0][0] == "coder"
+        assert serve[0][1] == get_profile_dir("coder")
+
+    def test_on_returns_default_plus_all_named(self, profile_env):
+        create_profile("coder", no_alias=True)
+        create_profile("writer", no_alias=True)
+        serve = dict(profiles_to_serve(multiplex=True))
+        assert set(serve) == {"default", "coder", "writer"}
+        assert serve["default"] == _get_default_hermes_home()
+        assert serve["coder"] == get_profile_dir("coder")
+
+    def test_on_default_always_first(self, profile_env):
+        create_profile("coder", no_alias=True)
+        serve = profiles_to_serve(multiplex=True)
+        assert serve[0][0] == "default"
+
+    def test_on_active_profile_does_not_change_set(self, profile_env):
+        """Enumeration is independent of which profile is active."""
+        create_profile("coder", no_alias=True)
+        set_active_profile("coder")
+        serve = dict(profiles_to_serve(multiplex=True))
+        assert set(serve) == {"default", "coder"}
+
+    def test_on_no_named_profiles_returns_just_default(self, profile_env):
+        serve = profiles_to_serve(multiplex=True)
+        assert [n for n, _ in serve] == ["default"]

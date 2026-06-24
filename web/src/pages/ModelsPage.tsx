@@ -32,6 +32,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
+import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 
 const PERIODS = [
   { label: "7d", days: 7 },
@@ -697,6 +698,9 @@ function ModelSettingsPanel({
 }) {
   const [auxModalOpen, setAuxModalOpen] = useState(false);
   const [picker, setPicker] = useState<PickerTarget | null>(null);
+  const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(
+    null,
+  );
 
   const mainProv = aux?.main.provider ?? "";
   const mainModel = aux?.main.model ?? "";
@@ -798,15 +802,19 @@ function ModelSettingsPanel({
             loader={api.getModelOptions}
             alwaysGlobal
             title="Set Main Model"
-            onApply={({ provider, model, confirmExpensiveModel }) =>
-              applyAssignment({
+            onApply={async ({ provider, model, confirmExpensiveModel }) => {
+              const result = await applyAssignment({
                 confirmExpensiveModel,
                 scope: "main",
                 task: "",
                 provider,
                 model,
-              })
-            }
+              });
+              if (!result.confirm_required) {
+                setPendingReloadModel(model.split("/").slice(-1)[0]);
+              }
+              return result;
+            }}
             onClose={() => setPicker(null)}
           />
         )}
@@ -819,6 +827,11 @@ function ModelSettingsPanel({
             onClose={() => setAuxModalOpen(false)}
           />
         )}
+
+        <ModelReloadConfirm
+          model={pendingReloadModel}
+          onCancel={() => setPendingReloadModel(null)}
+        />
       </CardContent>
     </Card>
   );

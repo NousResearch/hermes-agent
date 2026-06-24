@@ -1,5 +1,6 @@
 """Tests for hermes_cli.gateway."""
 
+import argparse
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -26,6 +27,15 @@ def _install_fake_gateway_run(monkeypatch, start_gateway):
     monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
     monkeypatch.setattr(
         gateway, "refresh_systemd_unit_if_needed", lambda system=False: False
+    )
+    # Neutralize the supervised-gateway conflict guard by default so these
+    # end-to-end tests don't trip over a launchd/systemd gateway that happens
+    # to be installed+running on the developer's machine. Conflict-guard tests
+    # override this snapshot after calling the helper.
+    monkeypatch.setattr(
+        gateway,
+        "get_gateway_runtime_snapshot",
+        lambda *a, **k: gateway.GatewayRuntimeSnapshot(manager="manual process"),
     )
 
 
@@ -102,6 +112,205 @@ def test_run_gateway_root_guard_has_escape_hatch(monkeypatch):
     gateway.run_gateway(verbose=2, replace=True)
 
     assert calls == [(True, 2)]
+
+
+def _clear_supervisor_markers(monkeypatch):
+    """Make ``_running_under_gateway_supervisor()`` report a plain shell."""
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.delenv("HERMES_S6_SUPERVISED_CHILD", raising=False)
+    # Interactive macOS shells inherit XPC_SERVICE_NAME="0"; launchd jobs get
+    # the real label. Default to the shell sentinel so the guard can fire.
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+
+
+def _running_snapshot(manager="systemd (user)"):
+    return gateway.GatewayRuntimeSnapshot(
+        manager=manager, service_installed=True, service_running=True
+    )
+
+
+def test_run_gateway_refuses_when_service_supervising(monkeypatch, capsys):
+    """A shell `gateway run --replace` must not become a second writer."""
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setattr(gateway, "get_gateway_runtime_snapshot", _running_snapshot)
+
+    with pytest.raises(SystemExit) as exc_info:
+        gateway.run_gateway(replace=True)
+
+    assert exc_info.value.code == 1
+    assert calls == []  # dispatcher never started
+    out = capsys.readouterr().out
+    assert "already running under systemd (user)" in out
+    assert "hermes gateway restart" in out
+    assert "--force" in out
+
+
+def test_run_gateway_force_overrides_supervised_conflict(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setattr(gateway, "get_gateway_runtime_snapshot", _running_snapshot)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway(replace=True, force=True)
+
+    assert calls == [(True, 0)]
+
+
+def test_run_gateway_allows_service_managed_startup(monkeypatch):
+    """systemd's own ExecStart (INVOCATION_ID set) must not be blocked."""
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setenv("INVOCATION_ID", "deadbeefcafe")
+    # Even with a "running" snapshot, the supervisor marker means *we* are it.
+    monkeypatch.setattr(gateway, "get_gateway_runtime_snapshot", _running_snapshot)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway(replace=True)
+
+    assert calls == [(True, 0)]
+
+
+def test_run_gateway_allows_when_service_not_running(monkeypatch):
+    """Installed-but-stopped service: a foreground run is not a conflict."""
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setattr(
+        gateway,
+        "get_gateway_runtime_snapshot",
+        lambda: gateway.GatewayRuntimeSnapshot(
+            manager="systemd (user)", service_installed=True, service_running=False
+        ),
+    )
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway()
+
+    assert calls == [(False, 0)]
+
+
+def test_run_gateway_refuses_existing_process_before_importing_gateway_run(monkeypatch, capsys):
+    """Bare `gateway run` should fail cheaply when another gateway owns the profile."""
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 17907)
+
+    with pytest.raises(SystemExit) as exc_info:
+        gateway.run_gateway()
+
+    assert exc_info.value.code == 1
+    assert calls == []
+    out = capsys.readouterr().out
+    assert "Another gateway instance is already running (PID 17907)" in out
+    assert "hermes gateway run --replace" in out
+
+
+def test_run_gateway_replace_skips_existing_process_preflight(monkeypatch):
+    calls = []
+
+    def fake_start_gateway(*, replace, verbosity):
+        calls.append((replace, verbosity))
+        return object()
+
+    _install_fake_gateway_run(monkeypatch, fake_start_gateway)
+    _clear_supervisor_markers(monkeypatch)
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 17907)
+    monkeypatch.setattr(gateway.asyncio, "run", lambda coro: True)
+
+    gateway.run_gateway(replace=True)
+
+    assert calls == [(True, 0)]
+
+
+def test_s6_runtime_snapshot_reports_supervised_service(monkeypatch, tmp_path):
+    service_dir = tmp_path / "gateway-default"
+    service_dir.mkdir()
+
+    class FakeS6Manager:
+        scandir = tmp_path
+
+        def is_running(self, name):
+            assert name == "gateway-default"
+            return True
+
+    monkeypatch.setattr(gateway, "is_linux", lambda: True)
+    monkeypatch.setattr("hermes_constants.is_container", lambda: True)
+    monkeypatch.setattr("hermes_cli.service_manager.detect_service_manager", lambda: "s6")
+    monkeypatch.setattr("hermes_cli.service_manager.get_service_manager", lambda: FakeS6Manager())
+    monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [123])
+    monkeypatch.setattr(gateway, "_profile_suffix", lambda: "")
+
+    snapshot = gateway.get_gateway_runtime_snapshot()
+
+    assert snapshot.manager == "s6 (container supervisor)"
+    assert snapshot.service_installed is True
+    assert snapshot.service_running is True
+    assert snapshot.service_scope == "s6"
+    assert snapshot.gateway_pids == (123,)
+
+
+def test_running_under_gateway_supervisor_markers(monkeypatch):
+    _clear_supervisor_markers(monkeypatch)
+    assert gateway._running_under_gateway_supervisor() is False
+
+    monkeypatch.setenv("XPC_SERVICE_NAME", "org.nousresearch.hermes.gateway")
+    assert gateway._running_under_gateway_supervisor() is True
+
+    monkeypatch.setenv("XPC_SERVICE_NAME", "0")
+    monkeypatch.setenv("INVOCATION_ID", "abc123")
+    assert gateway._running_under_gateway_supervisor() is True
+
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("HERMES_S6_SUPERVISED_CHILD", "1")
+    assert gateway._running_under_gateway_supervisor() is True
+
+
+def test_gateway_run_force_flag_survives_parser_extraction():
+    from hermes_cli.subcommands.gateway import build_gateway_parser
+
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+
+    build_gateway_parser(
+        subparsers,
+        cmd_gateway=lambda _args: None,
+        cmd_proxy=lambda _args: None,
+        cmd_gateway_enroll=lambda _args: None,
+    )
+
+    args = parser.parse_args(["gateway", "run", "--force"])
+
+    assert args.force is True
 
 
 def test_run_gateway_windows_foreground_keeps_ctrl_c_enabled(monkeypatch):

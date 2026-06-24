@@ -352,6 +352,37 @@ class TestTrackForgetQuick:
         for d in ("logs", "memories", "sessions", "cron", "cache"):
             assert (_isolate_env / d).exists(), f"{d}/ should be preserved"
 
+    def test_quick_does_not_descend_into_protected_top_level_dirs(
+        self, _isolate_env, monkeypatch
+    ):
+        dg = _load_lib()
+        protected_empty = (
+            _isolate_env / "hermes-agent" / "node_modules" / "pkg" / "empty"
+        )
+        protected_empty.mkdir(parents=True)
+
+        original_iterdir = Path.iterdir
+
+        def guarded_iterdir(path):
+            if path == _isolate_env / "hermes-agent":
+                raise AssertionError("quick() descended into protected hermes-agent/")
+            return original_iterdir(path)
+
+        monkeypatch.setattr(Path, "iterdir", guarded_iterdir)
+
+        dg.quick()
+
+        assert protected_empty.exists()
+
+    def test_quick_removes_empty_dirs_in_managed_subtrees(self, _isolate_env):
+        dg = _load_lib()
+        managed_empty = _isolate_env / "scratch" / "nested" / "empty"
+        managed_empty.mkdir(parents=True)
+
+        dg.quick()
+
+        assert not (_isolate_env / "scratch").exists()
+
 
 class TestStatus:
     def test_empty_status(self, _isolate_env):

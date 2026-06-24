@@ -8,11 +8,16 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    find_hermes_node_executable,
+    find_node_executable,
+    find_node_executable_on_path,
     get_default_hermes_root,
     get_hermes_home,
+    iter_hermes_node_dirs,
     is_container,
     parse_reasoning_effort,
     secure_parent_dir,
+    with_hermes_node_path,
 )
 
 
@@ -105,6 +110,74 @@ class TestGetHermesHome:
         assert get_hermes_home() == local_appdata / "hermes"
 
 
+class TestHermesManagedNode:
+    def test_windows_node_dir_prefers_portable_root(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        bin_dir = node_dir / "bin"
+        node_dir.mkdir(parents=True)
+        bin_dir.mkdir()
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        assert iter_hermes_node_dirs() == [node_dir, bin_dir]
+
+    def test_windows_finds_npm_cmd_before_path(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        node_dir.mkdir(parents=True)
+        npm_cmd = node_dir / "npm.cmd"
+        npm_cmd.write_text("@echo off\n")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        assert find_hermes_node_executable("npm") == str(npm_cmd)
+
+    def test_windows_path_fallback_prefers_npm_cmd(self, tmp_path, monkeypatch):
+        bin_dir = tmp_path / "nodejs"
+        bin_dir.mkdir()
+        extensionless = bin_dir / "npm"
+        powershell = bin_dir / "npm.ps1"
+        npm_cmd = bin_dir / "npm.cmd"
+        extensionless.write_text("#!/usr/bin/env node\n")
+        powershell.write_text("Write-Output npm\n")
+        npm_cmd.write_text("@echo off\n")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("PATH", str(bin_dir))
+
+        assert find_node_executable_on_path("npm") == str(npm_cmd)
+
+    def test_windows_node_executable_falls_back_to_safe_path_shim(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        home.mkdir()
+        bin_dir = tmp_path / "nodejs"
+        bin_dir.mkdir()
+        extensionless = bin_dir / "npm"
+        npm_cmd = bin_dir / "npm.cmd"
+        extensionless.write_text("#!/usr/bin/env node\n")
+        npm_cmd.write_text("@echo off\n")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PATH", str(bin_dir))
+
+        assert find_node_executable("npm") == str(npm_cmd)
+
+    def test_with_hermes_node_path_prepends_existing_managed_dirs(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        node_dir = home / "node"
+        bin_dir = node_dir / "bin"
+        node_dir.mkdir(parents=True)
+        bin_dir.mkdir()
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        env = with_hermes_node_path({"PATH": "system-node"})
+        parts = env["PATH"].split(os.pathsep)
+
+        assert parts[:2] == [str(node_dir), str(bin_dir)]
+        assert parts[-1] == "system-node"
+
+
 class TestIsContainer:
     """Tests for is_container() — Docker/Podman detection."""
 
@@ -139,12 +212,66 @@ class TestIsContainer:
         """Returns False on a regular Linux host."""
         import builtins
         self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         cgroup_file = tmp_path / "cgroup"
         cgroup_file.write_text("12:memory:/\n")
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text("22 21 0:20 / /sys rw shared:7 - sysfs sysfs rw\n")
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is False
+
+    def test_detects_kubernetes_env(self, monkeypatch):
+        """KUBERNETES_SERVICE_HOST env var triggers detection (k8s/k3s pod)."""
+        self._reset_cache(monkeypatch)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+        assert is_container() is True
+
+    def test_detects_cgroup_kubepods(self, monkeypatch, tmp_path):
+        """/proc/1/cgroup containing 'kubepods' triggers detection."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("12:memory:/kubepods/besteffort/podabc\n")
         _real_open = builtins.open
         monkeypatch.setattr("builtins.open", lambda p, *a, **kw: _real_open(str(cgroup_file), *a, **kw) if p == "/proc/1/cgroup" else _real_open(p, *a, **kw))
-        assert is_container() is False
+        assert is_container() is True
+
+    def test_detects_cgroup_v2_via_mountinfo(self, monkeypatch, tmp_path):
+        """cgroup v2 (0::/ only) falls back to containerd marker in mountinfo."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/\n")  # cgroup v2 — no runtime marker
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            "1234 1233 0:42 /containerd/.../rootfs / rw - overlay overlay rw\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is True
 
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
@@ -297,4 +424,3 @@ class TestSecureParentDir:
         secure_parent_dir(link_target)
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
-

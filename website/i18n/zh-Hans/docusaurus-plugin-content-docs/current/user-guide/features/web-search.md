@@ -305,7 +305,7 @@ web:
 web:
   backend: "xai"
   xai:
-    model: grok-4.3              # web_search 所需的推理模型（默认）
+    model: grok-build-0.1        # web_search 所需的推理模型（默认）
     allowed_domains:             # 可选，最多 5 个——与 excluded_domains 互斥
       - arxiv.org
     excluded_domains:            # 可选，最多 5 个

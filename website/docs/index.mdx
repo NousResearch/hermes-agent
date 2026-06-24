@@ -36,7 +36,7 @@ The self-improving AI agent built by [Nous Research](https://nousresearch.com). 
     Get Started →
   </Link>
   <a
-    href="https://hermes-agent.nousresearch.com/desktop"
+    href="https://hermes-agent.nousresearch.com/"
     style={{
       display: "inline-block",
       padding: "0.6rem 1.2rem",
@@ -65,7 +65,7 @@ The self-improving AI agent built by [Nous Research](https://nousresearch.com). 
 
 ### Windows or macOS
 
-To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
+To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/) from our website and run it.
 
 ### Without Hermes Desktop:
 

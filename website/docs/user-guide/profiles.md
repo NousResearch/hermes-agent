@@ -273,6 +273,32 @@ Profiles use the `HERMES_HOME` environment variable. When you run `coder chat`, 
 
 This is separate from terminal working directory. Tool execution starts from `terminal.cwd` (or the launch directory when `cwd: "."` on the local backend), not automatically from `HERMES_HOME`.
 
+On host installs, tool subprocesses keep your real OS-user `HOME` by default so
+existing CLI credentials under `~` keep working across profiles. Profile data is
+isolated by `HERMES_HOME`, not by changing `HOME`. Container backends still use
+`{HERMES_HOME}/home` for persistent tool state, and host users who need strict
+per-profile tool config can opt in with `terminal.home_mode: profile`.
+
+This means two things that are easy to mix up:
+
+- `HERMES_HOME` is the profile boundary. It controls Hermes config, `.env`,
+  memory, sessions, skills, logs, cron jobs, gateway state, and other Hermes
+  data.
+- `HOME` is the operating-system/user home that external CLIs expect. On host
+  installs, Hermes keeps it as the real user home by default so tools like
+  `git`, `ssh`, `gh`, `az`, `npm`, Claude Code, and Codex find the same
+  credentials they use in your normal shell.
+
+The tradeoff is that host profiles share normal user-level CLI state by default.
+If you need separate CLI identities per profile, set `terminal.home_mode:
+profile` in that profile's `config.yaml`. In that mode Hermes launches tool
+subprocesses with `HOME={HERMES_HOME}/home`; you then need to initialize or link
+the profile-specific `~/.ssh`, `~/.gitconfig`, `~/.config/gh`, cloud CLI auth,
+Claude/Codex auth, npm state, and similar files inside that profile home.
+
+Hermes also exposes `HERMES_REAL_HOME` to subprocesses so scripts can still find
+the actual account home when `home_mode: profile` is active.
+
 The default profile is simply `~/.hermes` itself. No migration needed — existing installs work identically.
 
 ## Sharing profiles as distributions

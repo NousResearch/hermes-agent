@@ -127,7 +127,24 @@ export const zhHant = defineLocale({
       transcriptionUnavailable: '語音轉寫暫不可用。',
       tryRecordingAgain: '請再錄製一次。',
       unavailable: '語音不可用'
+    },
+    native: {
+      approvalTitle: '需要核准',
+      approveAction: '核准',
+      rejectAction: '拒絕',
+      inputTitle: '需要輸入',
+      inputBody: 'Hermes 正在等待你的回應。',
+      turnDoneTitle: 'Hermes 已完成',
+      turnDoneBody: '回覆已就緒。',
+      turnErrorTitle: '本輪失敗',
+      backgroundDoneTitle: '背景工作已完成',
+      backgroundFailedTitle: '背景工作失敗'
     }
+  },
+
+  remoteDisplayBanner: {
+    message: reason => `軟體繪圖已啟用 — 偵測到遠端顯示（${reason}）。為防止畫面閃爍，已停用 GPU 加速。`,
+    dismiss: '關閉'
   },
 
   titlebar: {
@@ -172,7 +189,45 @@ export const zhHant = defineLocale({
       keysSettings: '設定',
       mcp: 'MCP',
       archivedChats: '已封存聊天',
-      about: '關於'
+      about: '關於',
+      notifications: '通知'
+    },
+    notifications: {
+      title: '通知',
+      intro: '原生桌面通知，與應用程式內提示不同。設定會依裝置保存，每台電腦各自獨立。',
+      enableAll: '啟用通知',
+      enableAllDesc: '總開關。關閉後會靜音下方所有通知。',
+      focusedHint: '完成提醒僅在 Hermes 位於背景時觸發。',
+      kinds: {
+        approval: {
+          label: '需要核准',
+          description: '有指令正在等待你核准或拒絕。'
+        },
+        input: {
+          label: '需要輸入',
+          description: 'Hermes 提出了問題，或需要密碼或密鑰。'
+        },
+        turnDone: {
+          label: '回覆就緒',
+          description: 'Hermes 在背景時完成了一輪對話。'
+        },
+        turnError: {
+          label: '本輪失敗',
+          description: '本輪以錯誤結束。'
+        },
+        backgroundDone: {
+          label: '背景工作完成',
+          description: '背景終端機指令已完成。'
+        }
+      },
+      test: '傳送測試通知',
+      testTitle: 'Hermes',
+      testBody: '通知運作正常。',
+      testSent: '測試已傳送。若沒有出現，請檢查系統通知權限與專注模式／勿擾模式。',
+      testUnsupported: '此系統不支援原生通知。',
+      completionSoundTitle: '完成提示音',
+      completionSoundDesc: '代理回合結束時播放。可在此選擇預設並預覽。',
+      completionSoundPreview: '預覽'
     },
     sections: {
       model: '模型',
@@ -221,7 +276,30 @@ export const zhHant = defineLocale({
       installError: '無法安裝該主題。',
       installed: name => `已安裝「${name}」。`,
       removeTheme: '移除主題',
-      importedBadge: '已匯入'
+      importedBadge: '已匯入',
+      pet: {
+        title: '寵物',
+        intro: '領養一隻懸浮在應用上的 petdex 動畫寵物，它會根據 Hermes 的狀態做出反應——工具執行時奔跑、成功時歡呼、出錯時沮喪。',
+        restartHint: '寵物功能需要重新啟動——目前執行的應用在此功能加入前啟動。請結束並重新開啟 Hermes，然後回到此處。',
+        scaleTitle: '大小',
+        scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
+        on: '開啟',
+        off: '關閉',
+        chooseTitle: '選擇寵物',
+        chooseDesc: '選擇後會自動安裝（如需）並設為目前寵物。',
+        searchPlaceholder: '搜尋寵物…',
+        unreachable: '無法連線至 petdex 畫廊。請檢查網路連線並重新開啟此頁面。',
+        noMatch: query => `沒有符合「${query}」的寵物。`,
+        installedTag: '已安裝',
+        countCapped: (cap, total) => `顯示 ${total} 個中的 ${cap} 個——輸入關鍵字以縮小範圍。`,
+        count: n => `${n} 個寵物。`,
+        uninstall: name => `解除安裝 ${name}`,
+        adoptFailed: slug => `無法領養 ${slug}`,
+        uninstallFailed: slug => `無法解除安裝 ${slug}`,
+        noneAvailable: '目前沒有可開啟的寵物。',
+        turnOnFailed: '無法開啟寵物。',
+        turnOffFailed: '無法關閉寵物。'
+      }
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
@@ -439,6 +517,7 @@ export const zhHant = defineLocale({
       checkNow: '立即檢查',
       checking: '檢查中…',
       seeWhatsNew: '查看新增內容',
+      updateNow: '立即更新',
       releaseNotes: '發行說明',
       onLatest: '你已是最新版本。',
       installing: '正在安裝更新。',
@@ -621,7 +700,14 @@ export const zhHant = defineLocale({
       collapse: '收合',
       connectAnother: '連結其他提供方',
       otherProviders: '其他提供方',
+      removeConfirm: provider => `移除 ${provider}？`,
+      removeKeyManaged: provider => `${provider} 由 API 金鑰設定。請從 API Keys 中移除。`,
+      removedTitle: '帳號已移除',
+      removedMessage: provider => `${provider} 已移除。`,
+      failedRemove: provider => `無法移除 ${provider}`,
       noProviderKeys: '沒有可用的提供方 API 金鑰。',
+      searchKeys: '搜尋提供方…',
+      noKeysMatch: '沒有符合的提供方。',
       loading: '正在載入提供方...'
     },
     sessions: {
@@ -752,8 +838,22 @@ export const zhHant = defineLocale({
     commandCenter: '命令中心',
     appearance: '外觀',
     settings: '設定',
-    changeTheme: '變更主題...',
+    changeTheme: '變更主題',
     changeColorMode: '變更色彩模式...',
+    pets: {
+      title: '寵物',
+      placeholder: '搜尋寵物…',
+      loading: '正在載入 petdex 畫廊…',
+      error: '無法連線至 petdex 畫廊。',
+      staleBackend: '請重新啟動 Hermes 以使用寵物功能。',
+      empty: '沒有符合的寵物。',
+      turnOff: '關閉',
+      turnOn: '開啟',
+      installed: '已安裝',
+      adoptFailed: '無法領養該寵物。',
+      toggleFailed: '無法切換寵物顯示。',
+      noneAvailable: '尚無可用寵物——請在下方選擇一個安裝。'
+    },
     installTheme: {
       title: '安裝主題...',
       placeholder: '搜尋 VS Code Marketplace...',
@@ -799,7 +899,8 @@ export const zhHant = defineLocale({
     gatewayRunning: '訊息閘道執行中',
     gatewayStopped: '訊息閘道已停止',
     hermesActiveSessions: (version, count) => `Hermes ${version} · 活躍工作階段 ${count}`,
-    restartMessaging: '重新啟動訊息服務',
+    restartGateway: '重新啟動閘道',
+    gatewayRestartFailed: '閘道重新啟動失敗。',
     updateHermes: '更新 Hermes',
     actionRunning: '執行中',
     actionDone: '完成',
@@ -868,9 +969,9 @@ export const zhHant = defineLocale({
     disableAria: name => `停用 ${name}`,
     platformEnabled: name => `${name} 已啟用`,
     platformDisabled: name => `${name} 已停用`,
-    restartToApply: '重新啟動閘道後此變更才會生效。',
+    restartToApply: '此變更將在閘道重新啟動後生效。',
     setupSaved: name => `${name} 設定已儲存`,
-    restartToReconnect: '重新啟動閘道以使用新憑證重新連線。',
+    restartToReconnect: '新憑證將在閘道重新啟動後生效。',
     keyCleared: key => `${key} 已清除`,
     setupUpdated: name => `${name} 設定已更新。`,
     failedUpdate: name => `更新 ${name} 失敗`,
@@ -1372,8 +1473,12 @@ export const zhHant = defineLocale({
       fetch: '下載中…',
       pull: '快完成了…',
       pydeps: '收尾中…',
+      update: '正在更新 Hermes…',
+      rebuild: '正在重新建置桌面應用程式…',
       restart: '正在重新啟動 Hermes…',
+      done: '更新完成',
       manual: '從終端機更新',
+      guiSkew: '請更新桌面應用程式',
       error: '更新已暫停'
     },
     checking: '正在檢查更新…',
@@ -1396,12 +1501,15 @@ export const zhHant = defineLocale({
     manualTitle: '從終端機更新',
     manualBody: '您是從命令列安裝的 Hermes，因此更新也需要在那裡執行。請將此指令貼到終端機：',
     manualPickedUp: '下次啟動 Hermes 時會使用新版本。',
+    guiSkewTitle: '請更新桌面應用程式',
+    guiSkewBody:
+      '後端已更新，但此桌面應用程式套件未變更。請更新或重新安裝 Hermes 桌面應用程式（你的 AppImage / .deb / .rpm）以保持一致。',
     copy: '複製',
     copied: '已複製',
     done: '完成',
-    applyingBody: 'Hermes 更新程式會在自己的視窗中接管，並在完成後重新開啟 Hermes。',
+    applyingBody: 'Hermes 更新程式會在自己的視窗中接管，並在完成後自動重新開啟 Hermes。更新期間請勿自行重新開啟 Hermes。',
     applyingBodyBackend: '遠端後端正在套用更新並將重新啟動。恢復後 Hermes 會自動重新連線。',
-    applyingClose: 'Hermes 將關閉以套用更新。',
+    applyingClose: '此視窗會在更新期間關閉，隨後 Hermes 會自動重新開啟。',
     errorTitle: '更新未完成',
     errorBody: '沒有資料遺失。您可以現在重試。',
     notNow: '暫不',
@@ -1526,8 +1634,6 @@ export const zhHant = defineLocale({
     unknown: '（未知）',
     search: '篩選提供方和模型...',
     noModels: '找不到模型。',
-    persistGlobalSession: '全域儲存（否則僅限此工作階段）',
-    persistGlobal: '全域儲存',
     addProvider: '新增提供方',
     loadFailed: '無法載入模型',
     noAuthenticatedProviders: '沒有已驗證的提供方。',
@@ -1553,6 +1659,7 @@ export const zhHant = defineLocale({
       search: '搜尋模型',
       noModels: '找不到模型',
       editModels: '編輯模型…',
+      refreshModels: '重新整理模型',
       fast: '快速',
       medium: '中'
     },
@@ -1607,6 +1714,7 @@ export const zhHant = defineLocale({
       gatewayChecking: '檢查中',
       gatewayConnecting: '連線中',
       gatewayOffline: '離線',
+      gatewayRestarting: '重新啟動中…',
       gatewayTitle: 'Hermes 推論閘道狀態',
       agents: '代理',
       closeAgents: '關閉代理',
@@ -1672,6 +1780,7 @@ export const zhHant = defineLocale({
     opening: '開啟中...',
     hide: '隱藏',
     openPreview: '開啟預覽',
+    openInBrowser: '在瀏覽器中開啟',
     sourceLineTitle: '點擊選取 · shift 點擊擴展 · 拖曳至輸入框',
     source: '原始碼',
     renderedPreview: '預覽',
@@ -1753,6 +1862,7 @@ export const zhHant = defineLocale({
       refresh: '重新整理',
       moreActions: '更多動作',
       branchNewChat: '在新聊天中分支',
+      dismissError: '关闭错误',
       readAloudFailed: '朗讀失敗',
       preparingAudio: '正在準備音訊...',
       stopReading: '停止朗讀',
@@ -1860,6 +1970,9 @@ export const zhHant = defineLocale({
     regenerateFailed: '重新生成失敗',
     editFailed: '編輯失敗',
     resumeFailed: '繼續失敗',
+    resumeStrandedTitle: '無法載入此工作階段',
+    resumeStrandedBody: '與此工作階段的連線失敗，自動重試已停止。請確認閘道正在執行，然後重試。',
+    resumeRetry: '重試',
     nothingToBranch: '沒有可分支的內容',
     branchNeedsChat: '分支前請先開始或繼續一個聊天。',
     sessionBusy: '工作階段忙碌中',

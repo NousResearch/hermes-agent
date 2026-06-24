@@ -7138,16 +7138,41 @@ async def list_cron_jobs(profile: str = "all"):
     if requested.lower() != "all":
         return _call_cron_for_profile(requested, "list_jobs", True)
 
-    jobs: List[Dict[str, Any]] = []
+    # Aggregating across profiles can surface the SAME job id more than
+    # once -- e.g. a job copied into a second profile's cron/jobs.json
+    # during profile creation. Deduplicate by id, deterministically
+    # preferring the default profile's copy over per-iteration order
+    # (issue #51721): collect all jobs first, then resolve duplicates by
+    # id with default-profile priority, rather than keeping whichever
+    # copy happened to be seen first during the profile loop.
+    all_jobs: List[Dict[str, Any]] = []
     for item in _cron_profile_dicts():
         name = str(item.get("name") or "")
         if not name:
             continue
         try:
-            jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
+            all_jobs.extend(_call_cron_for_profile(name, "list_jobs", True))
         except Exception:
             _log.exception("Failed to list cron jobs for profile %s", name)
-    return jobs
+
+    by_id: Dict[str, Dict[str, Any]] = {}
+    unkeyed: List[Dict[str, Any]] = []
+    for job in all_jobs:
+        if not isinstance(job, dict):
+            continue
+        jid = job.get("id") or job.get("job_id")
+        if not jid:
+            # Jobs without a stable id can't be deduplicated safely --
+            # keep them all rather than risk dropping a legitimate entry.
+            unkeyed.append(job)
+            continue
+        existing = by_id.get(jid)
+        if existing is None or (
+            job.get("is_default_profile") and not existing.get("is_default_profile")
+        ):
+            by_id[jid] = job
+
+    return list(by_id.values()) + unkeyed
 
 
 @app.get("/api/cron/jobs/{job_id}")

@@ -34,6 +34,7 @@ export type DesktopActionId =
   | 'handoff'
   | 'help'
   | 'new'
+  | 'pet'
   | 'profile'
   | 'skin'
   | 'title'
@@ -128,6 +129,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/debug', description: 'Create a debug report', surface: exec() },
   { name: '/goal', description: 'Manage the standing goal for this session', surface: exec() },
   { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },
+  { name: '/pet', description: 'Toggle or adopt a petdex mascot (/pet, /pet list, /pet boba)', surface: action('pet'), args: true },
   { name: '/queue', description: 'Queue a prompt for the next turn', aliases: ['/q'], surface: exec() },
   { name: '/retry', description: 'Retry the last user message', surface: exec() },
   { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },
@@ -156,8 +158,8 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
     '/sb', '/set-home', '/sethome', '/snap', '/snapshot', '/statusbar', '/toolsets', '/update', '/verbose'
   ],
   messaging: ['/approve', '/deny'],
-  settings: ['/auth', '/skills'],
-  advanced: ['/bundles', '/codex-runtime', '/curator', '/fast', '/insights', '/kanban', '/memory', '/reasoning', '/subgoal', '/voice', '/whoami']
+  settings: ['/skills', '/pets'],
+  advanced: ['/curator', '/fast', '/insights', '/kanban', '/reasoning', '/voice']
 }
 
 const ALL_SPECS: readonly DesktopCommandSpec[] = [

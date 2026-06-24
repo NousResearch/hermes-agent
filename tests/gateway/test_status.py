@@ -174,6 +174,54 @@ class TestGatewayPidState:
         assert status.get_running_pid() is None
         assert not pid_path.exists()
 
+    def test_get_running_pid_accepts_no_supervisor_restart_runtime(self, tmp_path, monkeypatch):
+        """WSL/no-systemd restart fallback runs the gateway in a restart argv process."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pid_path = tmp_path / "gateway.pid"
+        record = {
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "restart"],
+            "start_time": 123,
+        }
+        pid_path.write_text(json.dumps(record))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "python -m hermes_cli.main gateway restart",
+        )
+
+        assert status.acquire_gateway_runtime_lock() is True
+        try:
+            assert status.get_running_pid() == os.getpid()
+        finally:
+            status.release_gateway_runtime_lock()
+
+    def test_get_running_pid_falls_back_to_no_supervisor_runtime_state(self, tmp_path, monkeypatch):
+        """A live gateway_state.json PID should keep status accurate without a pidfile."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "gateway_state": "running",
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway", "restart"],
+            "start_time": 123,
+        }))
+
+        monkeypatch.setattr(status.os, "kill", lambda pid, sig: None)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(
+            status,
+            "_read_process_cmdline",
+            lambda pid: "python -m hermes_cli.main gateway restart",
+        )
+
+        assert status.get_running_pid() == os.getpid()
+
     def test_get_running_pid_cleans_stale_metadata_from_dead_foreign_pid(self, tmp_path, monkeypatch):
         """Stale PID file from a *different* PID (crashed process) must still be cleaned.
 

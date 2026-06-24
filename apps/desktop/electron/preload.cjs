@@ -7,6 +7,32 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openNewSessionWindow: () => ipcRenderer.invoke('hermes:window:openNewSession'),
+  petOverlay: {
+    // Main renderer → main process: window lifecycle + drag. `request` is
+    // `{ bounds, screen }`; resolves with the screen bounds it actually used.
+    open: request => ipcRenderer.invoke('hermes:pet-overlay:open', request),
+    close: () => ipcRenderer.invoke('hermes:pet-overlay:close'),
+    setBounds: bounds => ipcRenderer.send('hermes:pet-overlay:set-bounds', bounds),
+    setIgnoreMouse: ignore => ipcRenderer.send('hermes:pet-overlay:ignore-mouse', ignore),
+    // Flip the overlay focusable (and focus it) while the composer needs keys.
+    setFocusable: focusable => ipcRenderer.send('hermes:pet-overlay:set-focusable', focusable),
+    // Main renderer → overlay (forwarded by main): push the latest pet state.
+    pushState: payload => ipcRenderer.send('hermes:pet-overlay:state', payload),
+    // Overlay → main renderer (forwarded by main): pop back in / composer submit.
+    control: payload => ipcRenderer.send('hermes:pet-overlay:control', payload),
+    // Overlay subscribes to state pushes.
+    onState: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:pet-overlay:state', listener)
+      return () => ipcRenderer.removeListener('hermes:pet-overlay:state', listener)
+    },
+    // Main renderer subscribes to overlay control messages.
+    onControl: callback => {
+      const listener = (_event, payload) => callback(payload)
+      ipcRenderer.on('hermes:pet-overlay:control', listener)
+      return () => ipcRenderer.removeListener('hermes:pet-overlay:control', listener)
+    }
+  },
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),

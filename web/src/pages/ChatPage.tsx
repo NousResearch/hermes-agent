@@ -671,6 +671,25 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // follow up with the authoritative measurement — at worst Ink
       // reflows once after the PTY boots, which is imperceptible.
       ws.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      // One-shot: a ?learn=<text> param (set by the Skills page "Learn a
+      // skill" panel) is typed into the composer as a /learn command once the
+      // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
+      // so this reuses the existing composer path — no special PTY protocol.
+      const learnSeed = searchParams.get("learn");
+      if (learnSeed) {
+        const next = new URLSearchParams(searchParams);
+        next.delete("learn");
+        setSearchParams(next, { replace: true });
+        const cmd = `/learn ${learnSeed}`.trim();
+        // Delay so Ink's composer has mounted and grabbed focus before input.
+        setTimeout(() => {
+          try {
+            wsRef.current?.send(cmd + "\r");
+          } catch {
+            /* PTY not ready / closed — user can retype */
+          }
+        }, 800);
+      }
     };
 
     ws.onmessage = (ev) => {
@@ -945,7 +964,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
-                showTools={false}
               />
             </div>
             <ChatSessionList
@@ -1038,14 +1056,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             aria-label={modelToolsLabel}
             className="flex min-h-0 shrink-0 flex-col gap-3 overflow-hidden lg:h-full lg:w-60"
           >
-            {/* Model picker (tools card hidden — keeps the rail thin). */}
+            {/* Model picker — keeps the rail thin. */}
             <div className="shrink-0">
               <ChatSidebar
                 channel={channel}
                 profile={scopedProfile}
                 onDashboardNewSessionRequest={startFreshDashboardChat}
                 onSessionTitleChange={handleSessionTitleChange}
-                showTools={false}
               />
             </div>
 

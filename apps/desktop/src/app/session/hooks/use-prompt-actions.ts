@@ -27,6 +27,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setSessionYolo } from '@/lib/yolo-session'
+import { openCommandPalettePage } from '@/store/command-palette'
 import {
   $composerAttachments,
   clearComposerAttachments,
@@ -40,6 +41,7 @@ import { resetSessionBackground } from '@/store/composer-status'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { setPetScale } from '@/store/pet-gallery'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
@@ -59,8 +61,8 @@ import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
 import type {
-  ClientSessionState,
   BrowserManageResponse,
+  ClientSessionState,
   FileAttachResponse,
   HandoffFailResponse,
   HandoffRequestResponse,
@@ -1199,6 +1201,35 @@ export function usePromptActions({
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
+        },
+        pet: async ctx => {
+          const [sub = '', rawValue = ''] = ctx.arg.trim().split(/\s+/)
+          const lower = sub.toLowerCase()
+
+          if (lower === 'list' || lower === 'gallery' || lower === 'browse' || lower === 'all') {
+            openCommandPalettePage('pets')
+
+            return
+          }
+
+          // `/pet scale <n>` resizes the floating pet locally (instant) and
+          // persists via the store — no round-trip to the slash worker.
+          if (lower === 'scale') {
+            const value = Number(rawValue)
+
+            if (!rawValue || Number.isNaN(value)) {
+              const resolved = await withSlashOutput(ctx)
+              resolved?.render('usage: /pet scale <factor>  (e.g. /pet scale 0.5)')
+
+              return
+            }
+
+            setPetScale(requestGateway, value)
+
+            return
+          }
+
+          await runExec(ctx)
         },
         // /browser connect|disconnect|status manages the live CDP connection on
         // the gateway host, mirroring the TUI's browser.manage RPC. It mutates

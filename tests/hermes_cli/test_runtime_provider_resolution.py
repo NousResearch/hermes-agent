@@ -2835,3 +2835,61 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+def _patch_bedrock(monkeypatch, config_default=""):
+    """Stub the bedrock_adapter helpers resolve_runtime_provider imports.
+
+    Leaves the real ``is_anthropic_bedrock_model`` in place so the dual-path
+    routing decision is exercised for real. ``config_default`` is the persisted
+    ``model.default`` — kept non-Claude here to prove ``target_model`` (not the
+    stale config default) drives the api_mode decision.
+    """
+    import agent.bedrock_adapter as ba
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "bedrock")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": config_default})
+    monkeypatch.setattr(rp, "load_config", lambda: {"bedrock": {}})
+    monkeypatch.setattr(ba, "has_aws_credentials", lambda: True)
+    monkeypatch.setattr(ba, "resolve_aws_auth_env_var", lambda: "AWS_PROFILE")
+    monkeypatch.setattr(ba, "resolve_bedrock_region", lambda: "eu-north-1")
+
+
+def test_resolve_runtime_provider_bedrock_claude_target_model_uses_anthropic_messages(monkeypatch):
+    """Claude-on-Bedrock delegation must route through the AnthropicBedrock SDK.
+
+    Regression for #49095: the bedrock branch derived api_mode from the stale
+    persisted ``model.default`` instead of ``target_model``. When delegation
+    targets a Claude model but the parent's default is non-Claude, the wrong
+    branch (Converse) was picked, and the child silently fell back to
+    openrouter/free. ``target_model`` must win so Claude keeps the
+    anthropic_messages path (prompt caching, thinking budgets).
+    """
+    _patch_bedrock(monkeypatch, config_default="amazon.nova-pro-v1:0")
+
+    resolved = rp.resolve_runtime_provider(
+        requested="bedrock",
+        target_model="global.anthropic.claude-sonnet-4-6",
+    )
+
+    assert resolved["provider"] == "bedrock"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved.get("bedrock_anthropic") is True
+
+
+def test_resolve_runtime_provider_bedrock_nonclaude_target_model_uses_converse(monkeypatch):
+    """Non-Claude Bedrock target stays on the Converse API path.
+
+    Confirms the target_model fix doesn't over-correct: a Nova target must NOT
+    be forced onto anthropic_messages even when the persisted default is Claude.
+    """
+    _patch_bedrock(monkeypatch, config_default="global.anthropic.claude-sonnet-4-6")
+
+    resolved = rp.resolve_runtime_provider(
+        requested="bedrock",
+        target_model="amazon.nova-pro-v1:0",
+    )
+
+    assert resolved["provider"] == "bedrock"
+    assert resolved["api_mode"] == "bedrock_converse"
+    assert resolved.get("bedrock_anthropic") is not True

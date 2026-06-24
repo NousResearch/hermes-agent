@@ -11,9 +11,13 @@ metadata:
     homepage: https://www.mailinator.com/
 ---
 
-# Mailinator Skill
+# Mailinator - Free, disposable email
 
-This skill provides methods to fetch and inspect emails from public Mailinator inboxes using the Mailinator HTTP API.
+## Requirements
+
+- None. No API key required. Agent needs access to 'curl' or similar
+- [Optional] Alternatively, install the Mailinator CLI for mcp access - npm install -g mailinator-cli
+
 
 ## Quick Start
 
@@ -23,6 +27,9 @@ curl -s "https://www.mailinator.com/api/v2/domains/public/inboxes/{inbox}"
 
 # Get a specific email's content (with raw body)
 curl -s "https://www.mailinator.com/api/v2/domains/public/inboxes/{inbox}/messages/{message_id}?format=raw"
+
+# Get a specific email's HTML content
+curl -s "https://www.mailinator.com/api/v2/domains/public/inboxes/{inbox}/messages/{message_id}/html"
 ```
 
 ## API Endpoints
@@ -84,6 +91,8 @@ For detailed comparison, see `references/mcp-vs-http-api.md`.
 - Public inboxes are shared - emails may be deleted by other users
 - **HTTP API v2 is recommended** - Stateless polling works reliably; see `references/mcp-vs-http-api.md` for details
 - MCP WebSocket/SSE requires persistent connections - not suitable for one-off HTTP requests
+- There is no signup, login, or API auth required to access Public inboxes and emails
+- You do not need to "create" email addresses. All possible email addresses @mailinator.com already exist. Use anything you like.
 
 ## Advanced Examples
 

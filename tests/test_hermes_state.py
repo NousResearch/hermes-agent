@@ -351,6 +351,129 @@ class TestSessionLifecycle:
         assert sess["billing_provider"] == "openai"
         assert sess["billing_mode"] == "local"  # preserved (COALESCE on None)
 
+    def test_per_model_usage_recorded_for_single_model(self, db):
+        """Each per-call delta lands in session_model_usage (#51607)."""
+        db.create_session(session_id="s1", source="cli")
+        db.update_token_counts("s1", input_tokens=200, output_tokens=100,
+                               model="anthropic/claude-opus-4.8",
+                               billing_provider="anthropic", api_call_count=1)
+        db.update_token_counts("s1", input_tokens=100, output_tokens=50,
+                               model="anthropic/claude-opus-4.8",
+                               billing_provider="anthropic", api_call_count=1)
+
+        rows = db._conn.execute(
+            "SELECT model, billing_provider, api_call_count, input_tokens, "
+            "output_tokens FROM session_model_usage WHERE session_id = 's1'"
+        ).fetchall()
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["model"] == "anthropic/claude-opus-4.8"
+        assert row["billing_provider"] == "anthropic"
+        assert row["api_call_count"] == 2
+        assert row["input_tokens"] == 300
+        assert row["output_tokens"] == 150
+
+    def test_mid_session_switch_splits_per_model_usage(self, db):
+        """The headline #51607 case: tokens after a /model switch are
+        attributed to the new model, not the session's initial model.
+
+        The ``sessions`` summary row still holds combined totals + the latest
+        model, but session_model_usage keeps an accurate per-model split.
+        """
+        db.create_session(session_id="s1", source="cli",
+                          model="deepseek/deepseek-v4-pro")
+        # Pre-switch calls on deepseek.
+        db.update_token_counts("s1", input_tokens=40_000, output_tokens=8_000,
+                               model="deepseek/deepseek-v4-pro",
+                               billing_provider="deepseek", api_call_count=2)
+        # User runs /model — the gateway persists the new model …
+        db.update_session_model("s1", "anthropic/claude-opus-4.8")
+        # … and subsequent per-call deltas carry the new model/provider.
+        db.update_token_counts("s1", input_tokens=50_000, output_tokens=4_000,
+                               model="anthropic/claude-opus-4.8",
+                               billing_provider="openrouter", api_call_count=3)
+
+        rows = {
+            r["model"]: r
+            for r in db._conn.execute(
+                "SELECT model, billing_provider, input_tokens, output_tokens, "
+                "api_call_count FROM session_model_usage WHERE session_id = 's1'"
+            ).fetchall()
+        }
+        assert set(rows) == {"deepseek/deepseek-v4-pro",
+                             "anthropic/claude-opus-4.8"}
+        assert rows["deepseek/deepseek-v4-pro"]["input_tokens"] == 40_000
+        assert rows["deepseek/deepseek-v4-pro"]["api_call_count"] == 2
+        assert rows["anthropic/claude-opus-4.8"]["input_tokens"] == 50_000
+        assert rows["anthropic/claude-opus-4.8"]["billing_provider"] == "openrouter"
+        assert rows["anthropic/claude-opus-4.8"]["api_call_count"] == 3
+
+        # Summary row: latest model + combined totals (unchanged behaviour).
+        session = db.get_session("s1")
+        assert session["model"] == "anthropic/claude-opus-4.8"
+        assert session["input_tokens"] == 90_000
+        assert session["output_tokens"] == 12_000
+
+    def test_per_model_usage_falls_back_to_session_model(self, db):
+        """When a call omits the model, attribute it to the session's
+        recorded model — matches the COALESCE-from-session summary behaviour
+        and keeps existing callers (which pass no model) working.
+        """
+        db.create_session(session_id="s1", source="cli",
+                          model="gpt-4o", )
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5)
+
+        rows = db._conn.execute(
+            "SELECT model FROM session_model_usage WHERE session_id = 's1'"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0]["model"] == "gpt-4o"
+
+    def test_absolute_update_does_not_record_per_model(self, db):
+        """absolute=True overwrites the cumulative summary row (gateway path)
+        and must NOT add per-model rows — those are accumulated from the
+        per-call incremental path, so recording here would double-count.
+        """
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db.update_token_counts("s1", input_tokens=500, output_tokens=200,
+                               model="gpt-4o", absolute=True)
+
+        rows = db._conn.execute(
+            "SELECT COUNT(*) AS n FROM session_model_usage WHERE session_id = 's1'"
+        ).fetchone()
+        assert rows["n"] == 0
+
+    def test_v17_backfill_seeds_existing_session_usage(self, tmp_path):
+        """A DB upgraded from <17 seeds one usage row per historical session
+        from its aggregate totals, so insights read uniformly from the table.
+        """
+        db_path = tmp_path / "legacy.db"
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="legacy1", source="cli", model="gpt-4o")
+        db.update_token_counts("legacy1", input_tokens=1234, output_tokens=567,
+                               model="gpt-4o", billing_provider="openai")
+        # Simulate a pre-v17 database: drop the per-model rows and roll the
+        # recorded schema version back so the backfill migration re-runs.
+        db._conn.execute("DELETE FROM session_model_usage")
+        db._conn.execute("UPDATE schema_version SET version = 16")
+        db._conn.commit()
+        db.close()
+
+        # Reopen — _init_schema should backfill from the sessions aggregate.
+        db2 = SessionDB(db_path=db_path)
+        try:
+            rows = db2._conn.execute(
+                "SELECT model, billing_provider, input_tokens, output_tokens "
+                "FROM session_model_usage WHERE session_id = 'legacy1'"
+            ).fetchall()
+            assert len(rows) == 1
+            assert rows[0]["model"] == "gpt-4o"
+            assert rows[0]["billing_provider"] == "openai"
+            assert rows[0]["input_tokens"] == 1234
+            assert rows[0]["output_tokens"] == 567
+        finally:
+            db2.close()
+
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")

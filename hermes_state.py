@@ -21,6 +21,7 @@ import re
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agent.memory_manager import sanitize_context
@@ -589,6 +590,15 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     holder TEXT NOT NULL,
     acquired_at REAL NOT NULL,
     expires_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS telegram_group_topic_cache (
+    chat_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    source TEXT NOT NULL,
+    PRIMARY KEY (chat_id, thread_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
@@ -4332,6 +4342,65 @@ class SessionDB:
                 (key, value),
             )
         self._execute_write(_do)
+
+    def set_telegram_group_topic_name(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+        name: str,
+        source: str = "forum_topic_status_update",
+    ) -> None:
+        """Persist a Telegram forum group topic name observed from Bot API events."""
+        chat_id = str(chat_id).strip()
+        thread_id = str(thread_id).strip()
+        name = str(name).strip()
+        source = str(source or "forum_topic_status_update").strip()
+        if not chat_id or not thread_id or not name:
+            return
+        updated_at = datetime.now(timezone.utc).isoformat()
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT INTO telegram_group_topic_cache (
+                    chat_id, thread_id, name, updated_at, source
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, thread_id) DO UPDATE SET
+                    name = excluded.name,
+                    updated_at = excluded.updated_at,
+                    source = excluded.source
+                """,
+                (chat_id, thread_id, name, updated_at, source),
+            )
+        self._execute_write(_do)
+
+    def get_telegram_group_topic_name(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+    ) -> Optional[str]:
+        """Return a cached Telegram forum group topic name, if one is known."""
+        chat_id = str(chat_id).strip()
+        thread_id = str(thread_id).strip()
+        if not chat_id or not thread_id:
+            return None
+        with self._lock:
+            try:
+                row = self._conn.execute(
+                    """
+                    SELECT name FROM telegram_group_topic_cache
+                    WHERE chat_id = ? AND thread_id = ?
+                    """,
+                    (chat_id, thread_id),
+                ).fetchone()
+            except sqlite3.OperationalError:
+                return None
+        if row is None:
+            return None
+        value = row["name"] if isinstance(row, sqlite3.Row) else row[0]
+        return str(value).strip() or None
 
     def apply_telegram_topic_migration(self) -> None:
         """Create Telegram DM topic-mode tables on explicit /topic opt-in.

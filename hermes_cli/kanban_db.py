@@ -5498,6 +5498,16 @@ _REVIEW_REQUIRED_OWNER_KEYS = (
     "needed_profile",
     "awaiting_profile",
 )
+
+# Canonical reviewer for a review-required source task when no explicit owner is
+# declared.  This is the "assignee directory" fallback: independent review of
+# builder work goes to the researcher.  Other profiles (operator, steward,
+# studio/visual) either have their own routing heuristics or genuinely need
+# triage when no reviewer is inferable.
+_REVIEW_REQUIRED_SOURCE_REVIEWER: dict[str, str] = {
+    "stark": "brennan",  # builder -> researcher (alias builder canonicalizes to stark)
+}
+
 _REVIEW_REQUIRED_SUCCESSOR_KEYS = (
     "successor_task_ids",
     "review_successor_task_ids",
@@ -5965,6 +5975,13 @@ def _review_required_route(
         return _ReviewRequiredRoute(
             _canonical_assignee("researcher") or "researcher",
             "code-review-receipts",
+        )
+    source_canon = _canonical_assignee(source_assignee)
+    directory_reviewer = _REVIEW_REQUIRED_SOURCE_REVIEWER.get(source_canon) if source_canon else None
+    if directory_reviewer:
+        return _ReviewRequiredRoute(
+            _canonical_assignee(directory_reviewer) or directory_reviewer,
+            "source-assignee-directory",
         )
     return _ReviewRequiredRoute("default", "router-triage", triage=True)
 

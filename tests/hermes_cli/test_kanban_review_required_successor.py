@@ -124,7 +124,7 @@ def test_review_required_needed_profile_creates_independent_reviewer_card(
         ).fetchone()[0] == 0
 
 
-def test_review_required_missing_owner_routes_to_default_triage_not_researcher_guess(
+def test_review_required_missing_owner_builder_source_routes_to_researcher_from_directory(
     kanban_home: Path,
 ) -> None:
     with kb.connect() as conn:
@@ -140,11 +140,54 @@ def test_review_required_missing_owner_routes_to_default_triage_not_researcher_g
 
         assert result.created_review_required_successors == [source]
         successor = _only_successor(conn, source)
-        assert successor["title"] == "Route review-required: Ambiguous human review"
+        assert successor["title"] == "Review required: Ambiguous human review"
+        assert successor["assignee"] == "brennan"
+        assert successor["status"] == "ready"
+        assert "Selected reviewer assignee: brennan (source-assignee-directory)" in successor["body"]
+
+
+def test_review_required_missing_owner_unmapped_source_routes_to_default_triage(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Ambiguous non-builder review",
+            body="Needs human review but no reviewer/needed_profile is declared.",
+            assignee="default",
+        )
+        _block_review_required(conn, source, metadata={"tests_run": 1})
+
+        result = kb.scan_liveness(conn)
+
+        assert result.created_review_required_successors == [source]
+        successor = _only_successor(conn, source)
+        assert successor["title"] == "Route review-required: Ambiguous non-builder review"
         assert successor["assignee"] == "default"
         assert successor["status"] == "triage"
         assert "No explicit review owner was inferable" in successor["body"]
         assert "Selected reviewer assignee: default (router-triage)" in successor["body"]
+
+
+def test_review_required_stark_source_without_owner_routes_to_researcher(
+    kanban_home: Path,
+) -> None:
+    with kb.connect() as conn:
+        source = kb.create_task(
+            conn,
+            title="Stark source needs review",
+            body="Builder work without explicit reviewer.",
+            assignee="stark",
+        )
+        _block_review_required(conn, source)
+
+        result = kb.scan_liveness(conn)
+
+        assert result.created_review_required_successors == [source]
+        successor = _only_successor(conn, source)
+        assert successor["assignee"] == "brennan"
+        assert successor["status"] == "ready"
+        assert "Selected reviewer assignee: brennan (source-assignee-directory)" in successor["body"]
 
 
 def test_ai_influencer_visual_output_without_owner_routes_to_taylor_not_default_triage(

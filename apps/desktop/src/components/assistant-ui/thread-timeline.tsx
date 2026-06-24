@@ -28,6 +28,10 @@ const POPOVER_SHELL = cn(
   'bg-(--composer-fill)'
 )
 
+function escapeSelectorValue(value: string): string {
+  return globalThis.CSS?.escape?.(value) ?? value.replace(/["\\]/g, '\\$&')
+}
+
 function userPromptText(content: unknown): string {
   if (typeof content === 'string') {
     return content
@@ -62,7 +66,7 @@ function userPromptText(content: unknown): string {
 
 function scrollToPrompt(id: string) {
   const viewport = document.querySelector<HTMLElement>(VIEWPORT)
-  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
+  const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${escapeSelectorValue(id)}"]`)
 
   if (!viewport || !node) {
     return
@@ -142,7 +146,7 @@ export const ThreadTimeline: FC = () => {
       const top = viewport.getBoundingClientRect().top
 
       const offsets = entries.map(entry => {
-        const node = viewport.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(entry.id)}"]`)
+        const node = viewport.querySelector<HTMLElement>(`[data-message-id="${escapeSelectorValue(entry.id)}"]`)
 
         return node ? node.getBoundingClientRect().top - top : null
       })

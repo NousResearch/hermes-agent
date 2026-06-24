@@ -19,7 +19,11 @@ export function AttachmentList({
   onRemove?: (id: string) => void
 }) {
   return (
-    <div className="flex max-w-full flex-wrap gap-1.5 px-1 pt-1" data-slot="composer-attachments">
+    <div
+      className="flex max-w-full flex-wrap gap-1.5 px-1 pt-1"
+      data-slot="composer-attachments"
+      data-testid="composer-attachments"
+    >
       {attachments.filter(Boolean).map(attachment => (
         <AttachmentPill attachment={attachment} key={attachment.id} onRemove={onRemove} />
       ))}

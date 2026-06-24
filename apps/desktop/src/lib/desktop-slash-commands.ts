@@ -159,7 +159,21 @@ const NO_DESKTOP_SURFACE: Record<DesktopUnavailableReason, readonly string[]> = 
   ],
   messaging: ['/approve', '/deny'],
   settings: ['/skills', '/pets'],
-  advanced: ['/curator', '/fast', '/insights', '/kanban', '/reasoning', '/voice']
+  advanced: [
+    '/auth',
+    '/bundles',
+    '/codex-runtime',
+    '/credits',
+    '/curator',
+    '/fast',
+    '/insights',
+    '/kanban',
+    '/memory',
+    '/reasoning',
+    '/subgoal',
+    '/voice',
+    '/whoami'
+  ]
 }
 
 const ALL_SPECS: readonly DesktopCommandSpec[] = [

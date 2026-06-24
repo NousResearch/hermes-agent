@@ -820,16 +820,53 @@ function CronEditorDialog({
     }
   }, [c.failedLoadModelOptions, initial, open])
 
+  const providersWithSelection = useMemo(() => {
+    if (
+      selectedProvider === DEFAULT_MODEL_VALUE ||
+      providers.some(provider => provider.slug === selectedProvider)
+    ) {
+      return providers
+    }
+
+    return [
+      {
+        authenticated: true,
+        models: selectedModel === DEFAULT_MODEL_VALUE ? [] : [selectedModel],
+        name: selectedProvider,
+        slug: selectedProvider
+      },
+      ...providers
+    ]
+  }, [providers, selectedModel, selectedProvider])
+
   const selectedProviderRow = useMemo(
-    () => providers.find(provider => provider.slug === selectedProvider),
-    [providers, selectedProvider]
+    () => providersWithSelection.find(provider => provider.slug === selectedProvider),
+    [providersWithSelection, selectedProvider]
   )
 
-  const selectedProviderModels = selectedProviderRow?.models ?? []
+  const selectedProviderModels = useMemo(() => {
+    const models = selectedProviderRow?.models ?? []
+
+    if (
+      selectedProvider !== DEFAULT_MODEL_VALUE &&
+      selectedModel !== DEFAULT_MODEL_VALUE &&
+      !models.includes(selectedModel)
+    ) {
+      return [selectedModel, ...models]
+    }
+
+    return models
+  }, [selectedModel, selectedProvider, selectedProviderRow])
 
   function handleProviderChange(nextProvider: string) {
+    if (nextProvider === selectedProvider) {
+      setError(null)
+
+      return
+    }
+
     setSelectedProvider(nextProvider)
-    const models = providers.find(provider => provider.slug === nextProvider)?.models ?? []
+    const models = providersWithSelection.find(provider => provider.slug === nextProvider)?.models ?? []
     setSelectedModel(nextProvider === DEFAULT_MODEL_VALUE ? DEFAULT_MODEL_VALUE : (models[0] ?? DEFAULT_MODEL_VALUE))
     setError(null)
   }
@@ -921,11 +958,11 @@ function CronEditorDialog({
             <Field htmlFor="cron-provider" label={c.providerLabel}>
               <Select disabled={modelOptionsLoading} onValueChange={handleProviderChange} value={selectedProvider}>
                 <SelectTrigger className="h-9 rounded-md" id="cron-provider">
-                  <SelectValue />
+                  <SelectValue placeholder={c.defaultProvider} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={DEFAULT_MODEL_VALUE}>{c.defaultProvider}</SelectItem>
-                  {providers.map(provider => (
+                  {providersWithSelection.map(provider => (
                     <SelectItem key={provider.slug} value={provider.slug}>
                       {provider.name}
                     </SelectItem>
@@ -941,7 +978,7 @@ function CronEditorDialog({
                 value={selectedModel}
               >
                 <SelectTrigger className="h-9 rounded-md" id="cron-model">
-                  <SelectValue />
+                  <SelectValue placeholder={c.defaultModel} />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value={DEFAULT_MODEL_VALUE}>{c.defaultModel}</SelectItem>

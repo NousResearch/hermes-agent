@@ -936,6 +936,9 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
+    def _clears_value(value: Any) -> bool:
+        return value is None or value == "" or value is False
+
     # Block mutation of immutable fields. ``id`` in particular is a filesystem
     # path component under OUTPUT_DIR — letting an update change it leaks
     # path-escape values into output writes/deletes.
@@ -955,7 +958,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             # or None both mean "clear the field" (restore old behaviour).
             if "workdir" in updates:
                 _wd = updates["workdir"]
-                if _wd in {None, "", False}:
+                if _clears_value(_wd):
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
@@ -963,11 +966,14 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             for _field in ("model", "provider", "base_url"):
                 if _field in updates:
                     _value = updates[_field]
-                    if _value in {None, "", False}:
+                    if _clears_value(_value):
                         updates[_field] = None
                     elif isinstance(_value, str):
                         _value = _value.strip()
                         updates[_field] = _value.rstrip("/") if _field == "base_url" else _value
+
+            if "provider" in updates and updates.get("provider") is None and "base_url" not in updates:
+                updates["base_url"] = None
 
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates

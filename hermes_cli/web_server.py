@@ -7816,7 +7816,7 @@ async def update_cron_job(job_id: str, body: CronJobUpdate, profile: Optional[st
         raise HTTPException(status_code=404, detail="Job not found")
     try:
         job = _call_cron_for_profile(selected, "update_job", job_id, body.updates)
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")

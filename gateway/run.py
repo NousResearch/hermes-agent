@@ -403,6 +403,60 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     return text
 
 
+def _is_compaction_lifecycle_status(text: str) -> bool:
+    """Return True for transient compression progress text.
+
+    Messaging platforms without status-message editing (notably Discord) turn
+    every lifecycle callback into a permanent chat message. Compression can be
+    retried by preflight, overflow recovery, and subagents in the same run; if
+    the auxiliary summarizer is unhealthy, those retries used to spam repeated
+    "Compacting context" bubbles while making no progress.
+    """
+    normalized = str(text or "").lower()
+    return (
+        "compacting context" in normalized
+        or "preflight compression" in normalized
+        or ("context too large" in normalized and "compressing" in normalized)
+    )
+
+
+def _is_compaction_abort_status(text: str) -> bool:
+    normalized = str(text or "").lower()
+    return "compression aborted" in normalized or "context compression aborted" in normalized
+
+
+def _should_deliver_gateway_status(
+    platform: Any,
+    event_type: str,
+    message: str,
+    state: dict,
+) -> bool:
+    """Per-run status de-dupe for append-only messaging platforms.
+
+    Telegram status messages are edited in-place via ``send_or_update_status``;
+    Discord falls back to append-only ``send`` and therefore needs a local guard
+    so one failed compression cycle produces at most one progress notice and one
+    abort notice in the chat.
+    """
+    if _gateway_platform_value(platform) == "telegram":
+        return True
+    text = str(message or "")
+    seen = state.setdefault("seen", set())
+    if _is_compaction_lifecycle_status(text):
+        if state.get("compaction_lifecycle_sent"):
+            return False
+        state["compaction_lifecycle_sent"] = True
+    if _is_compaction_abort_status(text):
+        if state.get("compaction_abort_sent"):
+            return False
+        state["compaction_abort_sent"] = True
+    key = (str(event_type or ""), text)
+    if key in seen:
+        return False
+    seen.add(key)
+    return True
+
+
 def render_notice_line(notice) -> str:
     """Render an AgentNotice to a single plaintext line for messaging platforms.
 
@@ -2590,6 +2644,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # /new and /reset.  /model and other mid-session operations
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
+        # One-shot same-thread continuity capsules prepared by native /new.
+        # The next normal message for the session key consumes this into
+        # event.channel_context, preserving automatic context injection while
+        # still starting a fresh Hermes session.
+        self._pending_same_thread_rebase_context: Dict[str, Dict[str, Any]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
@@ -4281,7 +4340,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             and busy_text_mode == "queue"
             and effective_mode != "steer"
         ):
-            return False
+            # Keep normal busy text in the runner-owned FIFO path instead of
+            # falling back to the adapter's single-slot debounce path. The
+            # adapter debounce is only safe before a message is accepted into
+            # an active session; once the gateway has a running agent, every
+            # accepted user turn must be preserved and drained in order. This
+            # aligns legacy busy_text_mode=queue with busy_input_mode=queue and
+            # /queue semantics so Discord text, media, and later follow-ups do
+            # not cross different queueing policies during context-pressure or
+            # restart/rebase recovery.
+            effective_mode = "queue"
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
@@ -8989,6 +9057,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
+
+        # Native /new captures a bounded same-thread rebase capsule before it
+        # resets the session. Apply it automatically to the first normal turn
+        # after the reset so `/new` remains useful in the same Discord thread
+        # without requiring Dionysus to paste a manual capsule.
+        try:
+            self._apply_pending_native_new_rebase_context(event, session_key)
+        except Exception as exc:
+            logger.warning(
+                "Failed to apply pending native /new same-thread rebase capsule for %s: %s",
+                session_key,
+                exc,
+                exc_info=True,
+            )
         
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
@@ -15271,6 +15353,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
+        _status_delivery_state: dict = {"seen": set()}
         if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
             # Feishu topics only keep messages inside the topic when they are
             # sent via the reply API with reply_in_thread=true. Status/interim,
@@ -15294,6 +15377,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if prepared_message is None:
                 logger.debug(
                     "status_callback suppressed for %s/%s: %s",
+                    source.platform.value if source.platform else "unknown",
+                    event_type,
+                    _redact_gateway_user_facing_secrets(str(message or ""))[:160],
+                )
+                return
+            if not _should_deliver_gateway_status(
+                source.platform,
+                event_type,
+                prepared_message,
+                _status_delivery_state,
+            ):
+                logger.debug(
+                    "status_callback de-duped for %s/%s: %s",
                     source.platform.value if source.platform else "unknown",
                     event_type,
                     _redact_gateway_user_facing_secrets(str(message or ""))[:160],

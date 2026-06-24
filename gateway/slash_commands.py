@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import importlib.util
 import inspect
 import logging
 import os
@@ -77,6 +78,113 @@ def _model_switch_skew_guard() -> Optional[str]:
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
+    def _load_same_thread_rebase_module(self) -> Any:
+        """Load the profile-owned same-thread rebase helper if installed.
+
+        The helper intentionally lives under ``~/.hermes/plugins`` so local
+        workflow policy survives package upgrades. Native ``/new`` remains owned
+        by the gateway, but it can reuse the deterministic capsule renderer so a
+        same-thread fresh session is not context-blind.
+        """
+        home = Path(
+            os.environ.get("HERMES_HOME")
+            or os.environ.get("HERMES_PROFILE_HOME")
+            or Path.home() / ".hermes"
+        )
+        module_path = home / "plugins" / "auto-context-management" / "session_rebase.py"
+        spec = importlib.util.spec_from_file_location(
+            "auto_context_management_session_rebase", module_path
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"same-thread rebase helper not available at {module_path}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)  # type: ignore[union-attr]
+        return module
+
+    def _remember_native_new_rebase_handoff(
+        self,
+        *,
+        event: MessageEvent,
+        session_key: str,
+        old_session_id: str = "",
+    ) -> None:
+        """Prepare automatic capsule injection for the first turn after ``/new``.
+
+        Manual ``/new`` has no user message to forward immediately. Without this
+        pending handoff, the next same-thread message starts a fresh session with
+        no continuity context, defeating the purpose of same-thread reset for
+        long-running Discord work. The pending value is consumed once by
+        ``_apply_pending_native_new_rebase_context`` in the normal text path.
+        """
+        if not session_key or not old_session_id:
+            return
+        try:
+            module = self._load_same_thread_rebase_module()
+            source = event.source
+            source_payload = source.to_dict() if hasattr(source, "to_dict") else {}
+            result = module.build_rebase_dry_run_capsule(
+                session_key=session_key,
+                session_id=old_session_id,
+                trigger_text="",
+                source=source_payload,
+                dry_run=False,
+            )
+            capsule = result.get("capsule") or {}
+            handoff = module.capsule_to_handoff_context(
+                capsule,
+                json_path=str(result.get("json_path") or ""),
+                markdown_path=str(result.get("markdown_path") or ""),
+            )
+            if not handoff:
+                return
+            pending = getattr(self, "_pending_same_thread_rebase_context", None)
+            if not isinstance(pending, dict):
+                pending = {}
+                self._pending_same_thread_rebase_context = pending
+            pending[session_key] = {
+                "handoff_context": handoff,
+                "old_session_id": old_session_id,
+                "json_path": result.get("json_path"),
+                "markdown_path": result.get("markdown_path"),
+                "created_at": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            }
+            logger.info(
+                "Prepared native /new same-thread rebase capsule for %s old=%s artifact=%s",
+                session_key,
+                old_session_id,
+                result.get("json_path"),
+            )
+        except Exception as exc:
+            # Do not break /new if the optional local helper is unavailable;
+            # visible verification/logs will catch the missing handoff.
+            logger.warning(
+                "Native /new same-thread rebase capsule preparation failed for %s: %s",
+                session_key,
+                exc,
+                exc_info=True,
+            )
+
+    def _apply_pending_native_new_rebase_context(self, event: MessageEvent, session_key: str) -> bool:
+        """Merge a pending native-``/new`` handoff into the next same-thread turn."""
+        pending = getattr(self, "_pending_same_thread_rebase_context", None)
+        if not isinstance(pending, dict) or not session_key:
+            return False
+        payload = pending.pop(session_key, None)
+        if not isinstance(payload, dict):
+            return False
+        handoff = str(payload.get("handoff_context") or "").strip()
+        if not handoff:
+            return False
+        existing = str(getattr(event, "channel_context", "") or "").strip()
+        event.channel_context = f"{handoff}\n\n{existing}" if existing else handoff
+        logger.info(
+            "Injected pending native /new same-thread rebase capsule for %s old=%s artifact=%s",
+            session_key,
+            payload.get("old_session_id"),
+            payload.get("json_path"),
+        )
+        return True
+
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
 
@@ -107,6 +215,17 @@ class GatewaySlashCommandsMixin:
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
         old_entry = self.session_store._entries.get(session_key)
+        old_session_id = old_entry.session_id if old_entry else ""
+
+        # Native /new must keep same-thread continuity automatic. Capture a
+        # bounded capsule from the old session before the reset, then inject it
+        # into the first normal message after the reset. This preserves the
+        # clean-session boundary while avoiding manual copy/paste capsules.
+        self._remember_native_new_rebase_handoff(
+            event=event,
+            session_key=session_key,
+            old_session_id=old_session_id,
+        )
 
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.
@@ -154,7 +273,7 @@ class GatewaySlashCommandsMixin:
         # previous conversation must not survive the reset.
         self._clear_session_boundary_security_state(session_key)
 
-        _old_sid = old_entry.session_id if old_entry else None
+        _old_sid = old_session_id or None
 
         # Fire plugin on_session_finalize hook (session boundary)
         try:

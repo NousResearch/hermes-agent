@@ -397,78 +397,165 @@ def test_complete_with_result_only(worker_env):
     assert d["ok"] is True
 
 
-def test_complete_with_artifacts_lands_in_event_payload(worker_env):
-    """``artifacts=[...]`` rides into the completed event payload so the
-    gateway notifier can upload them as native attachments. See the
-    kanban notifier in gateway/run.py for the consumer side."""
+def test_complete_with_artifacts_lands_in_event_payload(worker_env, tmp_path):
+    """``artifacts=[...]`` are copied into durable board attachments before
+    completion, then durable paths ride into the completed event payload so
+    the gateway notifier never depends on a cleaned scratch workspace."""
+    from pathlib import Path
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
+    chart = tmp_path / "q3-revenue.png"
+    report = tmp_path / "q3-report.pdf"
+    chart.write_bytes(b"png")
+    report.write_bytes(b"pdf")
+
     out = kt._handle_complete({
         "summary": "rendered the chart",
-        "artifacts": ["/tmp/q3-revenue.png", "/tmp/q3-report.pdf"],
+        "artifacts": [str(chart), str(report)],
     })
     assert json.loads(out)["ok"] is True
 
     conn = kb.connect()
     try:
         events = kb.list_events(conn, worker_env)
-        # Find the completion event
         completed = [e for e in events if e.kind == "completed"]
         assert len(completed) == 1
         payload = completed[0].payload or {}
-        assert payload.get("artifacts") == [
-            "/tmp/q3-revenue.png",
-            "/tmp/q3-report.pdf",
-        ]
-        # And the artifacts also live on metadata for downstream workers
+        payload_artifacts = payload.get("artifacts")
+        assert len(payload_artifacts) == 2
+        assert all(Path(p).is_file() for p in payload_artifacts)
+        assert all("/attachments/" in p for p in payload_artifacts)
+
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata.get("artifacts") == [
-            "/tmp/q3-revenue.png",
-            "/tmp/q3-report.pdf",
-        ]
+        assert run.metadata.get("artifacts") == payload_artifacts
+
+        attachments = kb.list_attachments(conn, worker_env)
+        assert [a.filename for a in attachments] == ["q3-revenue.png", "q3-report.pdf"]
+        assert [a.stored_path for a in attachments] == payload_artifacts
     finally:
         conn.close()
 
 
-def test_complete_artifacts_accepts_single_string(worker_env):
+def test_complete_artifacts_accepts_single_string(worker_env, tmp_path):
     """A bare string is auto-promoted to a single-element list for convenience."""
+    from pathlib import Path
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
+    chart = tmp_path / "chart.png"
+    chart.write_bytes(b"chart")
     out = kt._handle_complete({
         "summary": "one chart",
-        "artifacts": "/tmp/chart.png",
+        "artifacts": str(chart),
     })
     assert json.loads(out)["ok"] is True
 
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        assert run.metadata.get("artifacts") == ["/tmp/chart.png"]
+        artifacts = run.metadata.get("artifacts")
+        assert len(artifacts) == 1
+        assert Path(artifacts[0]).is_file()
+        assert artifacts[0].endswith("chart.png")
     finally:
         conn.close()
 
 
-def test_complete_artifacts_merges_with_explicit_metadata_field(worker_env):
+def test_complete_artifacts_merges_with_explicit_metadata_field(worker_env, tmp_path):
     """If the worker passes metadata.artifacts AND the top-level artifacts
-    param, merge the two without duplicates."""
+    param, merge and persist durable attachment paths without duplicates."""
+    from pathlib import Path
     from hermes_cli import kanban_db as kb
     from tools import kanban_tools as kt
 
+    a = tmp_path / "a.png"
+    b = tmp_path / "b.pdf"
+    a.write_bytes(b"a")
+    b.write_bytes(b"b")
     out = kt._handle_complete({
         "summary": "merged",
-        "metadata": {"artifacts": ["/tmp/a.png"], "other": "fact"},
-        "artifacts": ["/tmp/b.pdf", "/tmp/a.png"],
+        "metadata": {"artifacts": [str(a)], "other": "fact"},
+        "artifacts": [str(b), str(a)],
     })
     assert json.loads(out)["ok"] is True
 
     conn = kb.connect()
     try:
         run = kb.latest_run(conn, worker_env)
-        # Order: existing entries first, then new ones, deduplicated.
-        assert run.metadata.get("artifacts") == ["/tmp/a.png", "/tmp/b.pdf"]
+        artifacts = run.metadata.get("artifacts")
+        assert len(artifacts) == 2
+        assert all(Path(p).is_file() for p in artifacts)
+        assert [Path(p).name for p in artifacts] == ["a.png", "b.pdf"]
         assert run.metadata.get("other") == "fact"
+    finally:
+        conn.close()
+
+
+def test_complete_rejects_missing_artifact_without_completing(worker_env, tmp_path):
+    """Missing artifact paths must block completion instead of producing an
+    unverifiable done handoff that points at a cleaned/nonexistent path."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    missing = tmp_path / "missing.md"
+    out = kt._handle_complete({
+        "summary": "claimed missing artifact",
+        "artifacts": [str(missing)],
+    })
+    err = json.loads(out).get("error", "")
+    assert "artifact path does not exist" in err
+    assert "still in-flight" in err
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task.status == "running"
+        assert not kb.list_attachments(conn, worker_env)
+        assert not [e for e in kb.list_events(conn, worker_env) if e.kind == "completed"]
+    finally:
+        conn.close()
+
+
+def test_complete_preserves_artifact_from_cleaned_scratch_workspace(worker_env):
+    """Regression for synth handoffs: complete_task removes scratch
+    workspaces, so artifact paths in run/event metadata must point at durable
+    attachment copies, not the soon-to-be-cleaned workspace file."""
+    from pathlib import Path
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        workspace = kb.workspaces_root() / worker_env
+        workspace.mkdir(parents=True)
+        artifact = workspace / "handoff.md"
+        artifact.write_text("durable handoff\n", encoding="utf-8")
+        conn.execute(
+            "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+            (str(workspace), worker_env),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({
+        "summary": "handoff ready",
+        "artifacts": [str(artifact)],
+    })
+    assert json.loads(out)["ok"] is True
+    assert not workspace.exists()
+
+    conn = kb.connect()
+    try:
+        run = kb.latest_run(conn, worker_env)
+        durable = Path(run.metadata["artifacts"][0])
+        assert durable.is_file()
+        assert durable.read_text(encoding="utf-8") == "durable handoff\n"
+        assert str(durable) != str(artifact)
+        assert "/attachments/" in str(durable)
+        events = [e for e in kb.list_events(conn, worker_env) if e.kind == "completed"]
+        assert events[-1].payload["artifacts"] == [str(durable)]
     finally:
         conn.close()
 

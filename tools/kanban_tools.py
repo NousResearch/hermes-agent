@@ -30,7 +30,10 @@ from __future__ import annotations
 
 import json
 import logging
+import mimetypes
 import os
+import shutil
+from pathlib import Path
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -129,6 +132,81 @@ def _stamp_worker_session_metadata(
     stamped = dict(metadata or {})
     stamped["worker_session_id"] = session_id
     return stamped
+
+
+def _safe_attachment_filename(path: Path, used: set[str]) -> str:
+    """Return a basename safe to store under a task attachment directory."""
+    raw = path.name.strip() or "artifact"
+    safe = "".join(
+        ch if (ch.isalnum() or ch in {".", "-", "_"}) else "_"
+        for ch in raw
+    )
+    safe = safe.strip("._") or "artifact"
+    if safe not in used:
+        used.add(safe)
+        return safe
+    stem = Path(safe).stem or "artifact"
+    suffix = Path(safe).suffix
+    i = 2
+    while True:
+        candidate = f"{stem}-{i}{suffix}"
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+        i += 1
+
+
+def _materialize_completion_artifacts(
+    kb: Any,
+    conn: Any,
+    task_id: str,
+    artifacts: list[str],
+    *,
+    board: Optional[str],
+) -> list[str] | str:
+    """Validate and copy completion artifacts into durable task attachments.
+
+    Worker scratch workspaces are cleaned after completion, so accepting paths
+    under that workspace into run metadata creates unverifiable handoffs. Fail
+    closed on missing/non-file artifacts and rewrite valid artifact references
+    to board attachment paths that survive workspace cleanup.
+    """
+    stored: list[str] = []
+    used: set[str] = set()
+    dest_dir = kb.task_attachments_dir(task_id, board=board)
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"could not create artifact attachment directory {dest_dir}: {exc}"
+
+    for raw in artifacts:
+        src = Path(os.path.expanduser(str(raw))).resolve()
+        if not src.is_file():
+            return f"artifact path does not exist or is not a file: {raw}"
+        filename = _safe_attachment_filename(src, used)
+        dest = dest_dir / filename
+        try:
+            shutil.copy2(src, dest)
+        except OSError as exc:
+            return f"could not copy artifact {raw} to durable attachment storage: {exc}"
+        try:
+            kb.add_attachment(
+                conn,
+                task_id,
+                filename=filename,
+                stored_path=str(dest),
+                content_type=mimetypes.guess_type(filename)[0],
+                size=dest.stat().st_size,
+                uploaded_by=os.environ.get("HERMES_PROFILE"),
+            )
+        except Exception as exc:
+            try:
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return f"could not record artifact attachment {filename}: {exc}"
+        stored.append(str(dest))
+    return stored
 
 
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
@@ -566,6 +644,26 @@ def _handle_complete(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            artifact_paths = []
+            if isinstance(metadata, dict):
+                raw_artifacts = metadata.get("artifacts")
+                if isinstance(raw_artifacts, (list, tuple)):
+                    artifact_paths = [
+                        str(p).strip() for p in raw_artifacts if str(p).strip()
+                    ]
+            if artifact_paths:
+                materialized = _materialize_completion_artifacts(
+                    kb, conn, tid, artifact_paths, board=board
+                )
+                if isinstance(materialized, str):
+                    return tool_error(
+                        "kanban_complete blocked: "
+                        f"{materialized}. Your task is still in-flight "
+                        "(no completion state change)."
+                    )
+                metadata = dict(metadata or {})
+                metadata["artifacts"] = materialized
+
             try:
                 ok = kb.complete_task(
                     conn, tid,

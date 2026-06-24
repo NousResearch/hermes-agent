@@ -21,6 +21,7 @@ import subprocess
 import sys
 import threading
 
+
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
     import fcntl
@@ -31,7 +32,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -44,6 +45,36 @@ from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+
+
+_gateway_background_runner: Any = None
+
+
+def register_gateway_background_runner(runner: Any) -> None:
+    """Register the live gateway runner for opt-in cron background jobs.
+
+    Cron can also run outside the gateway (manual ticks, external providers,
+    tests), so this is intentionally a soft process-local registration rather
+    than a required scheduler-provider constructor argument. Jobs with
+    ``background: true`` fail clearly when no live runner is registered instead
+    of silently falling back to the old cron-agent path.
+    """
+
+    global _gateway_background_runner
+    _gateway_background_runner = runner
+
+
+def unregister_gateway_background_runner(runner: Any = None) -> None:
+    """Clear the live gateway runner registration.
+
+    If ``runner`` is provided, only clear when it is still the registered
+    instance; this protects restart races where a new gateway has already
+    registered itself while an old shutdown path is unwinding.
+    """
+
+    global _gateway_background_runner
+    if runner is None or _gateway_background_runner is runner:
+        _gateway_background_runner = None
 
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
@@ -679,6 +710,112 @@ def _resolve_delivery_target(job: dict) -> Optional[dict]:
     """Resolve the concrete auto-delivery target for a cron job, if any."""
     targets = _resolve_delivery_targets(job)
     return targets[0] if targets else None
+
+
+def _cron_job_uses_background_surface(job: dict) -> bool:
+    """Whether this job should launch through gateway /background semantics."""
+
+    value = job.get("background") or job.get("run_as_background")
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _session_source_for_cron_background(job: dict):
+    """Build a live gateway SessionSource from a cron delivery target."""
+
+    target = _resolve_delivery_target(job)
+    if not target:
+        raise RuntimeError(
+            "background cron job requires a concrete delivery target; "
+            "use deliver='origin' with a saved origin or deliver='platform:chat[:thread]'"
+        )
+
+    platform_name = str(target.get("platform") or "").strip().lower()
+    chat_id = str(target.get("chat_id") or "").strip()
+    if not platform_name or not chat_id:
+        raise RuntimeError("background cron delivery target is missing platform/chat_id")
+
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    platform = Platform(platform_name)
+    thread_id = target.get("thread_id")
+    has_thread = thread_id not in {None, ""}
+    return SessionSource(
+        platform=platform,
+        chat_id=chat_id,
+        thread_id=str(thread_id) if has_thread else None,
+        chat_type="thread" if has_thread else "channel",
+        user_id=f"cron:{job.get('id', '')}",
+        user_name="Hermes Cron",
+        chat_name=str(job.get("name") or job.get("id") or "cron background"),
+    )
+
+
+def _launch_cron_background_job(job: dict, prompt: str, *, loop=None) -> tuple[bool, str, str, Optional[str]]:
+    """Launch an opt-in cron job via the live gateway /background runner.
+
+    The scheduler records a launch artifact and marks the cron fire complete;
+    the spawned gateway background task owns the final user-facing delivery.
+    """
+
+    if _gateway_background_runner is None:
+        raise RuntimeError(
+            "background cron job cannot run because no live GatewayRunner is registered"
+        )
+    if loop is None or not getattr(loop, "is_running", lambda: False)():
+        raise RuntimeError("background cron job requires the live gateway asyncio loop")
+
+    runner = _gateway_background_runner
+    if not hasattr(runner, "_run_background_task"):
+        raise RuntimeError("registered gateway runner has no _run_background_task method")
+
+    source = _session_source_for_cron_background(job)
+    task_id = f"bgcron_{job.get('id', 'job')}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
+
+    from agent.async_utils import safe_schedule_threadsafe
+
+    future = safe_schedule_threadsafe(
+        runner._run_background_task(prompt, source, task_id),
+        loop,
+        logger=logger,
+        log_message=f"Failed to schedule background cron job {job.get('id', '?')}",
+    )
+    if future is None:
+        raise RuntimeError("failed to schedule background task on gateway loop")
+
+    tasks = getattr(runner, "_background_tasks", None)
+    if tasks is not None:
+        tasks.add(future)
+        future.add_done_callback(tasks.discard)
+
+    now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+    target_label = (
+        f"{getattr(source.platform, 'value', source.platform)}:{source.chat_id}"
+        f"{':' + str(source.thread_id) if source.thread_id else ''}"
+    )
+    output = f"""# Cron Job: {job.get('name') or job.get('id') or 'cron job'}
+
+**Job ID:** {job.get('id')}
+**Run Time:** {now_iso}
+**Mode:** gateway-background
+**Background Task ID:** {task_id}
+**Delivery Target:** {target_label}
+
+The scheduler launched this cron fire through the live gateway background
+runner. The user-facing result will be delivered by the background task when it
+finishes; this cron artifact is only the launch audit record.
+
+## Prompt
+
+{prompt}
+"""
+    final_response = (
+        f"🔁 Cron background task started: `{task_id}`\n"
+        "The result will post here from the gateway background lane when complete."
+    )
+    return True, output, final_response, None
 
 
 # Media extension sets — audio routing is centralized in gateway.platforms.base
@@ -1594,7 +1731,7 @@ def _scan_assembled_cron_prompt(
     return assembled
 
 
-def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def run_job(job: dict, *, loop=None) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -1603,6 +1740,17 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+
+    if _cron_job_uses_background_surface(job) and job.get("no_agent"):
+        err = "background=True is only valid for agent cron jobs, not no_agent script jobs"
+        now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+        doc = (
+            f"# Cron Job: {job_name} (FAILED)\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {now_iso}\n\n"
+            f"## Error\n\n```\n{err}\n```\n"
+        )
+        return False, doc, "", err
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
@@ -1774,6 +1922,30 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     if prompt is None:
         logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
         return True, "", SILENT_MARKER, None
+    if _cron_job_uses_background_surface(job):
+        try:
+            return _launch_cron_background_job(job, prompt, loop=loop)
+        except Exception as e:
+            error_msg = f"{type(e).__name__}: {str(e)}"
+            logger.exception("Background cron job '%s' failed to launch: %s", job_name, error_msg)
+            output = f"""# Cron Job: {job_name} (FAILED)
+
+**Job ID:** {job_id}
+**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
+**Schedule:** {job.get('schedule_display', 'N/A')}
+**Mode:** gateway-background
+
+## Prompt
+
+{prompt}
+
+## Error
+
+```
+{error_msg}
+```
+"""
+            return False, output, "", error_msg
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 
@@ -2321,7 +2493,13 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
     failure is recorded via ``mark_job_run``), False only if processing raised.
     """
     try:
-        success, output, final_response, error = run_job(job)
+        if loop is None:
+            # Preserve the long-standing processor contract for tests and
+            # integrations that monkeypatch or wrap run_job(job).  The gateway
+            # supplies loop explicitly when live adapter delivery needs it.
+            success, output, final_response, error = run_job(job)
+        else:
+            success, output, final_response, error = run_job(job, loop=loop)
 
         output_file = save_job_output(job["id"], output)
         if verbose:
@@ -2334,8 +2512,10 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # Treat whitespace-only final responses the same as empty
         # responses: do not deliver a blank message, and let the
         # empty-response guard below mark the run as a soft failure.
-        should_deliver = bool(deliver_content.strip())
-        if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
+        stripped_delivery = deliver_content.strip()
+        should_deliver = bool(stripped_delivery)
+        silent_marker_match = re.search(r"(?im)(?:^|\n)\s*\[SILENT\](?:\s|$)", stripped_delivery)
+        if should_deliver and success and silent_marker_match:
             logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
             should_deliver = False
 

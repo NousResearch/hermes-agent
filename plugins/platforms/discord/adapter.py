@@ -1261,31 +1261,41 @@ class DiscordAdapter(BasePlatformAdapter):
 
     def _record_command_sync_attempt(self, app_id: Any, fingerprint: str) -> None:
         state = self._read_command_sync_state()
-        state[self._command_sync_state_key(app_id)] = {
-            **(
-                state.get(self._command_sync_state_key(app_id))
-                if isinstance(state.get(self._command_sync_state_key(app_id)), dict)
-                else {}
-            ),
+        key = self._command_sync_state_key(app_id)
+        previous = state.get(key) if isinstance(state.get(key), dict) else {}
+        same_fingerprint = previous.get("fingerprint") == fingerprint
+        entry = {
+            **previous,
             "fingerprint": fingerprint,
             "last_attempt_at": time.time(),
         }
+        if not same_fingerprint:
+            # A previous successful sync only proves that exact desired command
+            # fingerprint.  If startup is interrupted after recording an
+            # attempt for a NEW fingerprint, preserving the old last_success_at
+            # makes the next restart falsely skip the unsynced command set.
+            entry.pop("last_success_at", None)
+            entry.pop("summary", None)
+        state[key] = entry
         self._write_command_sync_state(state)
 
     def _record_command_sync_rate_limit(self, app_id: Any, fingerprint: str, retry_after: float) -> None:
         retry_after = max(1.0, float(retry_after))
         state = self._read_command_sync_state()
-        state[self._command_sync_state_key(app_id)] = {
-            **(
-                state.get(self._command_sync_state_key(app_id))
-                if isinstance(state.get(self._command_sync_state_key(app_id)), dict)
-                else {}
-            ),
+        key = self._command_sync_state_key(app_id)
+        previous = state.get(key) if isinstance(state.get(key), dict) else {}
+        same_fingerprint = previous.get("fingerprint") == fingerprint
+        entry = {
+            **previous,
             "fingerprint": fingerprint,
             "last_attempt_at": time.time(),
             "retry_after_until": time.time() + retry_after,
             "retry_after": retry_after,
         }
+        if not same_fingerprint:
+            entry.pop("last_success_at", None)
+            entry.pop("summary", None)
+        state[key] = entry
         self._write_command_sync_state(state)
 
     def _record_command_sync_success(self, app_id: Any, fingerprint: str, summary: dict) -> None:

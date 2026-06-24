@@ -240,11 +240,19 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
-    async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):
-        """busy_text_mode=queue lets the adapter debounce text silently."""
+    async def test_busy_text_mode_queue_uses_runner_fifo_not_adapter_debounce(self):
+        """busy_text_mode=queue preserves accepted busy text in runner FIFO.
+
+        Regression guard for the Discord/context incident: once a text message
+        is accepted while a session is active, it must not be bounced back to an
+        adapter-specific debounce/single-slot path.  It should follow the same
+        lossless FIFO semantics as busy_input_mode=queue and /queue, so later
+        media/reply events and context-pressure recovery cannot displace it.
+        """
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         runner._busy_text_mode = "queue"
+        runner._queued_events = {}
         adapter = _make_adapter()
 
         first = _make_event(text="part one")
@@ -259,11 +267,55 @@ class TestBusySessionAck:
         result1 = await runner._handle_active_session_busy_message(first, sk)
         result2 = await runner._handle_active_session_busy_message(second, sk)
 
-        assert result1 is False
-        assert result2 is False
-        assert sk not in adapter._pending_messages
+        assert result1 is True
+        assert result2 is True
+        assert adapter._pending_messages[sk].text == "part one"
+        assert [event.text for event in runner._queued_events[sk]] == ["part two"]
         agent.interrupt.assert_not_called()
-        adapter._send_with_retry.assert_not_called()
+        # First accepted busy message gets an ack; the second is within the
+        # busy-ack cooldown but is still preserved in FIFO.
+        adapter._send_with_retry.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_busy_text_then_media_preserves_text_and_attachment(self):
+        """A later media/reply event must not displace an earlier text @mention.
+
+        This mirrors the Discord incident shape: a valid text mention arrived
+        while the session was busy, then a later screenshot/reply arrived. The
+        integrated queue policy must preserve the text and attach the media to
+        the same pending turn rather than treating media as a bypass that hides
+        the first user message.
+        """
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        runner._queued_events = {}
+        adapter = _make_adapter()
+
+        text_event = _make_event(text="Review the previous messages")
+        media_event = MessageEvent(
+            text="screenshot attached",
+            message_type=MessageType.PHOTO,
+            source=text_event.source,
+            message_id="photo-1",
+            media_urls=["/tmp/screenshot.png"],
+            media_types=["image/png"],
+        )
+        sk = build_session_key(text_event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {"seconds_since_activity": 0.0}
+        runner._running_agents[sk] = agent
+        runner.adapters[text_event.source.platform] = adapter
+
+        assert await runner._handle_active_session_busy_message(text_event, sk) is True
+        assert await runner._handle_active_session_busy_message(media_event, sk) is True
+
+        pending = adapter._pending_messages[sk]
+        assert "Review the previous messages" in pending.text
+        assert "screenshot attached" in pending.text
+        assert pending.media_urls == ["/tmp/screenshot.png"]
+        assert pending.media_types == ["image/png"]
+        assert pending.message_type == MessageType.PHOTO
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):
@@ -512,8 +564,11 @@ class TestBusySessionAck:
         assert "10 min" in content  # elapsed
 
     @pytest.mark.asyncio
-    async def test_telegram_omits_status_detail_by_default(self):
+    async def test_telegram_omits_status_detail_by_default(self, monkeypatch):
         """Telegram busy acks stay concise unless busy_ack_detail is enabled."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()

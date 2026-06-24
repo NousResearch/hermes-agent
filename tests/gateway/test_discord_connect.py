@@ -749,6 +749,71 @@ async def test_post_connect_initialization_reraises_non_rate_limit_exceptions(tm
     assert "retry_after" not in entry
 
 
+def test_changed_command_fingerprint_does_not_reuse_stale_success(tmp_path, monkeypatch):
+    """A successful sync only proves the fingerprint that actually synced.
+
+    Regression: recording an attempt for a new desired command fingerprint
+    used to preserve the previous ``last_success_at``. If startup was then
+    interrupted before the Discord API sync finished, the next restart saw the
+    new fingerprint plus the stale success timestamp and skipped the missing
+    slash-command registration.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    state_path = (
+        tmp_path
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME
+    )
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({
+        "999": {
+            "fingerprint": "old-fingerprint",
+            "last_attempt_at": 100.0,
+            "last_success_at": 101.0,
+            "summary": {"total": 12},
+        }
+    }))
+
+    adapter._record_command_sync_attempt(999, "new-fingerprint")
+
+    entry = json.loads(state_path.read_text())["999"]
+    assert entry["fingerprint"] == "new-fingerprint"
+    assert "last_success_at" not in entry
+    assert "summary" not in entry
+    assert adapter._command_sync_skip_reason(999, "new-fingerprint") is None
+
+
+def test_rate_limited_changed_fingerprint_does_not_reuse_stale_success(tmp_path, monkeypatch):
+    """Rate-limit records for a new fingerprint must also clear stale success."""
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+
+    state_path = (
+        tmp_path
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_SUBDIR
+        / discord_platform._DISCORD_COMMAND_SYNC_STATE_FILENAME
+    )
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps({
+        "999": {
+            "fingerprint": "old-fingerprint",
+            "last_attempt_at": 100.0,
+            "last_success_at": 101.0,
+            "summary": {"total": 12},
+        }
+    }))
+
+    adapter._record_command_sync_rate_limit(999, "new-fingerprint", 1.0)
+
+    entry = json.loads(state_path.read_text())["999"]
+    assert entry["fingerprint"] == "new-fingerprint"
+    assert "last_success_at" not in entry
+    assert "summary" not in entry
+    assert entry["retry_after"] == 1.0
+
+
 @pytest.mark.asyncio
 async def test_safe_sync_slash_commands_paces_mutation_writes(monkeypatch):
     adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))

@@ -504,6 +504,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["script"] = job["script"]
     if job.get("no_agent"):
         result["no_agent"] = True
+    if job.get("background"):
+        result["background"] = True
     if job.get("enabled_toolsets"):
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
@@ -576,6 +578,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    background: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -589,6 +592,13 @@ def cronjob(
                 return tool_error("schedule is required for create", success=False)
             canonical_skills = _canonical_skills(skill, skills)
             _no_agent = bool(no_agent)
+            _background = bool(background)
+            if _background and _no_agent:
+                return tool_error(
+                    "background=True is only valid for LLM-driven cron jobs; "
+                    "it cannot be combined with no_agent=True.",
+                    success=False,
+                )
             # Job-shape validation differs by mode:
             #   - no_agent=True → script is the job; prompt/skills are optional
             #     (and irrelevant to execution).
@@ -642,6 +652,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                background=_background,
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -811,7 +822,24 @@ def cronjob(
                             "Set `script` in the same update, or on the job first.",
                             success=False,
                         )
+                    effective_background = updates.get("background") if "background" in updates else job.get("background")
+                    if effective_background:
+                        return tool_error(
+                            "Cannot set no_agent=True on a background job. "
+                            "Disable background in the same update, or leave no_agent disabled.",
+                            success=False,
+                        )
                 updates["no_agent"] = target_no_agent
+            if background is not None:
+                target_background = bool(background)
+                effective_no_agent = updates.get("no_agent") if "no_agent" in updates else job.get("no_agent")
+                if target_background and effective_no_agent:
+                    return tool_error(
+                        "Cannot set background=True on a no_agent job. "
+                        "Disable no_agent in the same update, or leave background disabled.",
+                        success=False,
+                    )
+                updates["background"] = target_background
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -930,6 +958,16 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
                 ),
             },
+            "background": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Default: False. Set True for an LLM-driven cron job that should launch through the live gateway /background-style surface instead of running as a standalone cron agent. "
+                    "This preserves a background lane for long-running recurring work and lets the gateway own the final user-facing delivery. "
+                    "Requires a running gateway with a registered background runner plus a concrete delivery target (for example origin with saved chat/thread context or platform:chat_id[:thread_id]). "
+                    "Incompatible with no_agent=True. On update, pass False to return to normal cron execution."
+                ),
+            },
             "context_from": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -1007,6 +1045,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        background=args.get("background"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

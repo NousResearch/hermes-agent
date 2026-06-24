@@ -2127,6 +2127,40 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
     assert following.get("role") == "assistant"
 
 
+def test_chat_messages_to_responses_input_sanitizes_reasoning_summary(monkeypatch):
+    """Reasoning summary_text is output-only, but the summary field is required.
+
+    Worker profile request dumps from the native-profile recovery swarm showed
+    HTTP 400 ``Unsupported content type`` when replayed reasoning items carried
+    ``summary: [{type: 'summary_text', ...}]``.  The encrypted_content blob is
+    the replay payload; summary_text is provider output metadata.  A later
+    ChatGPT Codex verifier run showed ``input[].summary`` is still required, so
+    replay uses an empty summary list.
+    """
+    agent = _build_agent(monkeypatch)
+    messages = [
+        {"role": "user", "content": "continue"},
+        {
+            "role": "assistant",
+            "content": "",
+            "finish_reason": "incomplete",
+            "codex_reasoning_items": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_with_summary",
+                    "encrypted_content": "enc_abc",
+                    "summary": [{"type": "summary_text", "text": "Thinking..."}],
+                },
+            ],
+        },
+    ]
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    items = _chat_messages_to_responses_input(messages)
+
+    reasoning_item = next(item for item in items if item.get("type") == "reasoning")
+    assert reasoning_item == {"type": "reasoning", "encrypted_content": "enc_abc", "summary": []}
+
+
 def test_codex_message_item_status_survives_conversion_and_preflight(monkeypatch):
     """Stored Codex assistant message statuses must survive replay normalization."""
     agent = _build_agent(monkeypatch)
@@ -2330,6 +2364,30 @@ def test_preflight_codex_input_deduplicates_reasoning_ids(monkeypatch):
     # IDs must be stripped — with store=False the API 404s on id lookups.
     for it in reasoning_items:
         assert "id" not in it
+
+
+def test_preflight_codex_input_sanitizes_reasoning_summary(monkeypatch):
+    """Preflight must also sanitize reasoning summary_text metadata."""
+    agent = _build_agent(monkeypatch)
+    raw_input = [
+        {"role": "user", "content": "hello"},
+        {
+            "type": "reasoning",
+            "id": "rs_summary",
+            "encrypted_content": "enc_summary",
+            "summary": [{"type": "summary_text", "text": "Thinking..."}],
+        },
+        {"role": "assistant", "content": ""},
+    ]
+    from agent.codex_responses_adapter import _preflight_codex_input_items
+    normalized = _preflight_codex_input_items(raw_input)
+
+    reasoning_item = next(item for item in normalized if item.get("type") == "reasoning")
+    assert reasoning_item == {
+        "type": "reasoning",
+        "encrypted_content": "enc_summary",
+        "summary": [],
+    }
 
 
 def test_run_conversation_codex_disables_reasoning_replay_after_invalid_encrypted_content(monkeypatch):

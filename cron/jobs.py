@@ -749,6 +749,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    background: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -793,6 +794,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        background: When True, run this LLM-driven cron job through the live
+                gateway background surface instead of the standalone cron
+                agent path. Requires a concrete delivery target and a running
+                gateway scheduler; incompatible with ``no_agent``.
 
     Returns:
         The created job dict
@@ -827,6 +832,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_background = bool(background)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -835,6 +841,11 @@ def create_job(
         raise ValueError(
             "no_agent=True requires a script — with no agent and no script "
             "there is nothing for the job to run."
+        )
+    if normalized_no_agent and normalized_background:
+        raise ValueError(
+            "background=True is only valid for LLM-driven cron jobs; "
+            "it cannot be combined with no_agent=True."
         )
 
     # Normalize context_from: accept str or list of str, store as list or None
@@ -858,6 +869,7 @@ def create_job(
         "base_url": normalized_base_url,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
+        "background": normalized_background,
         "context_from": context_from,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),

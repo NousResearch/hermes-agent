@@ -1537,7 +1537,9 @@ because the user did not issue an imperative command; reserve "None" for the
 rare case where the last exchange was fully resolved and the user said
 something like "thanks, that's all".
 If multiple items are outstanding, list only the ones NOT yet completed.
-Continuation should pick up exactly here. Examples:
+Record this as historical context only; do not write instructions that tell the
+next agent to resume or continue from this section. The latest user message
+after the compaction summary is the only active instruction. Examples:
 "User asked: 'Now refactor the auth module to use JWT instead of sessions'"
 "User asked: 'Waarom stond provider ineens op openrouter?' — needs investigation + answer"
 "User chose option A; awaiting implementation of step 2"
@@ -1611,7 +1613,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update the historical task snapshot to reflect the user's most recent unfulfilled input within the compacted turns — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved. Do not phrase the snapshot as a live instruction to resume; it is reference-only unless the latest post-summary user message explicitly asks to continue it.
 
 {_template_sections}"""
         else:

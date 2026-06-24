@@ -402,6 +402,36 @@ def _isolate_hermes_home(_hermetic_environment):
     return None
 
 
+@pytest.fixture(autouse=True)
+def _reset_gateway_session_contextvars():
+    """Start and end every test with gateway session ContextVars unset.
+
+    Production gateway handlers get a fresh asyncio task context, but a plain
+    pytest process reuses one thread context across tests. A test that calls
+    ``clear_session_vars()`` deliberately sets the ContextVars to empty strings
+    to suppress ``os.environ`` fallback; without a reset, later tests that set
+    ``HERMES_SESSION_*`` via monkeypatch still see the stale explicit-empty
+    ContextVar. Resetting here preserves production semantics while making
+    direct multi-file pytest runs match the per-file subprocess test runner.
+    """
+    try:
+        from gateway import session_context as _session_context
+    except Exception:
+        yield
+        return
+
+    def _reset() -> None:
+        for var in _session_context._VAR_MAP.values():
+            var.set(_session_context._UNSET)
+        _session_context._SESSION_ASYNC_DELIVERY.set(_session_context._UNSET)
+
+    _reset()
+    try:
+        yield
+    finally:
+        _reset()
+
+
 # ── Module-level state reset — replaced by per-file process isolation ──────
 #
 # Each test FILE runs in a freshly-spawned ``python -m pytest <file>``

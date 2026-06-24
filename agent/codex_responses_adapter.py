@@ -411,13 +411,21 @@ def _chat_messages_to_responses_input(
                             # Responses API cannot look up items by ID and
                             # returns 404.  The encrypted_content blob is
                             # self-contained for reasoning chain continuity.
-                            # Also strip the internal "_issuer_kind" stamp;
-                            # it is a Hermes-side metadata key and not part
-                            # of the Responses API schema.
+                            # Also strip output-only / Hermes-only metadata.
+                            # ``summary`` is required by the ChatGPT Codex
+                            # backend on replay, but provider output summaries
+                            # contain ``summary_text`` parts that some
+                            # Responses-compatible gateways reject as input
+                            # content (HTTP 400 ``Unsupported content type``).
+                            # Send the required field as an empty list: the
+                            # encrypted_content blob is the replay payload,
+                            # while the previous summary text is only display
+                            # metadata. ``_issuer_kind`` is Hermes metadata.
                             replay_item = {
                                 k: v for k, v in ri.items()
-                                if k not in ("id", "_issuer_kind")
+                                if k not in ("id", "summary", "_issuer_kind")
                             }
+                            replay_item["summary"] = []
                             items.append(replay_item)
                             if item_id:
                                 seen_item_ids.add(item_id)
@@ -676,11 +684,11 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 # store=False (our default) the API tries to resolve the
                 # id server-side and returns 404.  The id is still used
                 # above for local deduplication via seen_ids.
-                summary = item.get("summary")
-                if isinstance(summary, list):
-                    reasoning_item["summary"] = summary
-                else:
-                    reasoning_item["summary"] = []
+                # Include the required ``summary`` field, but sanitize it to an
+                # empty list.  The encrypted_content blob is sufficient for
+                # reasoning replay, while output ``summary_text`` parts caused
+                # deterministic Responses 400s on some worker/synth backends.
+                reasoning_item["summary"] = []
                 normalized.append(reasoning_item)
             continue
 

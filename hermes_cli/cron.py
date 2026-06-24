@@ -141,6 +141,8 @@ def cron_list(show_all: bool = False):
             print(f"    Script:    {script}")
         if job.get("no_agent"):
             print(f"    Mode:      {color('no-agent', Colors.DIM)} (script stdout delivered directly)")
+        elif job.get("background"):
+            print(f"    Mode:      {color('gateway-background', Colors.DIM)} (/background-style lane)")
         workdir = job.get("workdir")
         if workdir:
             print(f"    Workdir:   {workdir}")
@@ -278,6 +280,7 @@ def cron_create(args):
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        background=getattr(args, "background", False) or None,
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))

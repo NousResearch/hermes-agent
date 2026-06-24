@@ -1,0 +1,13 @@
+name: finance
+version: 1.0.0
+description: "Provider-agnostic personal finance integration (Plaid first). Adds a `hermes finance` CLI (connect/sync/status/accounts/transactions/disconnect) and a gated `finance` toolset over a local SQLite cache. Secrets: PLAID_CLIENT_ID/PLAID_SECRET in .env; settings under `finance` in config.yaml."
+author: NousResearch
+kind: backend
+provides_tools:
+  - finance_accounts
+  - finance_transactions
+  - finance_spending
+  - finance_net_worth
+  - finance_cashflow
+  - finance_holdings
+  - finance_sync

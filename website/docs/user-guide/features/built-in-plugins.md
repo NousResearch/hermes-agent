@@ -61,6 +61,7 @@ The repo ships these bundled plugins under `plugins/`. All are opt-in — enable
 | `observability/nemo_relay` | hooks | Relay observability events (turns / LLM calls / tools) to an NVIDIA NeMo endpoint |
 | `teams_pipeline` | standalone | Microsoft Teams meeting pipeline — Graph-backed, transcript-first meeting summaries |
 | `spotify` | backend (7 tools) | Native Spotify playback, queue, search, playlists, albums, library |
+| `finance` | backend (7 tools) | Provider-agnostic personal finance (Plaid) — balances, transactions, spending, net worth, cashflow, holdings over a local SQLite cache. See [Personal Finance](./finance.md). |
 | `google_meet` | standalone | Join Meet calls, live-caption transcription, optional realtime duplex audio |
 | `image_gen/openai` | image backend | OpenAI `gpt-image-2` image generation backend (alternative to FAL) |
 | `image_gen/openai-codex` | image backend | OpenAI image generation via Codex OAuth |

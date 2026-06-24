@@ -2855,6 +2855,31 @@ DEFAULT_CONFIG = {
         "cua_telemetry": False,
     },
 
+    # Personal finance integration (finance plugin; Plaid is the first backend).
+    # Secrets (PLAID_CLIENT_ID / PLAID_SECRET) live in .env — only non-secret
+    # behavior is configured here.
+    "finance": {
+        # Active data provider. "plaid" is the only built-in backend today;
+        # the plugin is provider-agnostic so others can be added later.
+        "provider": "plaid",
+        # Suggested refresh cadence for the optional cron sync follow-up.
+        "sync_interval": "6h",
+        # Model-facing privacy: "full" returns exact figures; "summarized"
+        # buckets values (e.g. "$2k-$5k") before they enter any tool result.
+        "privacy_mode": "full",
+        "plaid": {
+            # "sandbox" (test data) or "production". Plaid retired "development".
+            "environment": "sandbox",
+            # Optional Plaid webhook URL for transaction-update notifications.
+            "webhook_url": "",
+        },
+        "categorization": {
+            # Optional LLM fallback for otherwise-uncategorized transactions.
+            # Off by default — categorization stays rules-first and cheap.
+            "llm_fallback": False,
+        },
+    },
+
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 30,
@@ -3342,6 +3367,23 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Brave Search subscription token",
         "url": "https://brave.com/search/api/",
         "tools": ["web_search"],
+        "password": True,
+        "category": "tool",
+    },
+    # ── Finance (Plaid) ──
+    "PLAID_CLIENT_ID": {
+        "description": "Plaid client id for the personal finance integration",
+        "prompt": "Plaid client id",
+        "url": "https://dashboard.plaid.com/developers/keys",
+        "tools": ["finance_accounts", "finance_transactions", "finance_sync"],
+        "password": True,
+        "category": "tool",
+    },
+    "PLAID_SECRET": {
+        "description": "Plaid secret for the configured environment (sandbox/production)",
+        "prompt": "Plaid secret",
+        "url": "https://dashboard.plaid.com/developers/keys",
+        "tools": ["finance_accounts", "finance_transactions", "finance_sync"],
         "password": True,
         "category": "tool",
     },

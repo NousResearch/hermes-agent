@@ -317,6 +317,21 @@ TOOLSETS = {
         "includes": []
     },
 
+    "finance": {
+        "description": (
+            "Personal finance (Plaid): query account balances, transactions, "
+            "spending by category, net worth, cashflow, and holdings from a "
+            "local cache, plus an explicit refresh. Off by default; enable in "
+            "`hermes tools` once Plaid is configured and an account is linked."
+        ),
+        "tools": [
+            "finance_accounts", "finance_transactions", "finance_spending",
+            "finance_net_worth", "finance_cashflow", "finance_holdings",
+            "finance_sync",
+        ],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     

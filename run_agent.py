@@ -1515,6 +1515,18 @@ class AIAgent:
         Ensures conversations are never lost, even on errors or early returns.
         """
         self._drop_trailing_empty_response_scaffolding(messages)
+        # Close any trailing tool-result sequence so the persisted transcript
+        # never ends at role="tool".  Without this, resuming the session
+        # creates a tool → user alternation that strict providers (Gemini,
+        # Claude) reject (#48879).  finalize_turn already handles this for
+        # the normal exit path; this guard catches the ~28 early-return
+        # paths in conversation_loop.py that call _persist_session directly.
+        if (
+            messages
+            and isinstance(messages[-1], dict)
+            and messages[-1].get("role") == "tool"
+        ):
+            messages.append({"role": "assistant", "content": "Operation interrupted."})
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)

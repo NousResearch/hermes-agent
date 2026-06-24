@@ -2667,6 +2667,8 @@ def _normalize_empty_agent_response(
             )
         return response
     if api_calls > 0:
+        if _is_gateway_hidden_reasoning_incomplete_turn(agent_result):
+            return ""
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
             return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
@@ -2692,6 +2694,20 @@ def _normalize_empty_agent_response(
         )
 
     return response
+
+
+def _is_gateway_hidden_reasoning_incomplete_turn(agent_result: dict) -> bool:
+    """Detect retry-exhausted turns with hidden reasoning but no visible answer."""
+    if not isinstance(agent_result, dict):
+        return False
+    if agent_result.get("failed") or agent_result.get("interrupted"):
+        return False
+    if agent_result.get("final_response"):
+        return False
+    if not agent_result.get("partial"):
+        return False
+    error_text = str(agent_result.get("error", "") or "").lower()
+    return "remained incomplete after" in error_text
 
 
 def _should_clear_resume_pending_after_turn(agent_result: dict) -> bool:
@@ -12039,6 +12055,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # forgets what was just asked.  Persist the user turn so the
             # conversation is preserved. (#7100)
             agent_failed_early = bool(agent_result.get("failed"))
+            hidden_reasoning_incomplete = _is_gateway_hidden_reasoning_incomplete_turn(
+                agent_result
+            )
             _err_str_for_classify = str(agent_result.get("error", "")).lower()
             # Use specific multi-word phrases (not bare "exceed" or "token")
             # to avoid false positives on transient errors like "rate limit
@@ -12066,6 +12085,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Transient agent failure in session %s — persisting user "
                     "message so conversation context is preserved on retry.",
                     session_entry.session_id,
+                )
+            elif hidden_reasoning_incomplete:
+                logger.warning(
+                    "Suppressing hidden-reasoning-only incomplete gateway turn "
+                    "for session %s: %s",
+                    session_entry.session_id,
+                    agent_result.get("error", "processing incomplete"),
                 )
 
             # When compression is exhausted, the session is permanently too
@@ -12150,11 +12176,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # entries that were stripped before the agent saw them.
             if is_context_overflow_failure:
                 pass  # handled above — skip all transcript writes
-            elif agent_failed_early:
+            elif agent_failed_early or hidden_reasoning_incomplete:
                 # Transient failure (429/timeout/5xx): persist only the user
                 # message so the next message can load a transcript that
                 # reflects what was said.  Skip the assistant error text since
-                # it's a gateway-generated hint, not model output. (#7100)
+                # it's a gateway-generated hint, not model output. Hidden-
+                # reasoning-only incomplete turns follow the same persistence
+                # rule so peer-agent channels don't ingest them as completed
+                # assistant turns. (#7100, #51628)
                 _user_entry = {
                     "role": "user",
                     "content": (

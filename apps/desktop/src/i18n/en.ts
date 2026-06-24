@@ -1279,6 +1279,7 @@ export const en: Translations = {
     speaking: 'Speaking',
     transcribing: 'Transcribing',
     thinking: 'Thinking',
+    thoughtFor: 'Thought for {time}',
     muted: 'Muted',
     listening: 'Listening',
     muteMic: 'Mute microphone',

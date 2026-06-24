@@ -126,12 +126,13 @@ const APP_ROOT = app.getAppPath()
 // Public-read COS bucket base URL that hosts the ApexNodes runtime source
 // tarball + uv binary for mainland-China first-launch installs (published by
 // scripts/publish-runtime-tarball.sh). When packaged, bootstrap-runner turns on
-// install.sh's CN mirror mode and points its runtime source here. Leave empty
-// (and rely on the env override at pack time) until the bucket is provisioned;
-// while empty, install.sh CN mode degrades gracefully to git clone / astral.sh.
-// TODO(ApexNodes/Kael): set the real base, e.g.
-//   https://<bucket>.cos.<region>.myqcloud.com/runtime
-const RUNTIME_COS_BASE = process.env.HERMES_RUNTIME_COS_BASE || ''
+// install.sh's CN mirror mode and points its runtime source here:
+//   <base>/hermes-agent-<commit>.tar.gz  and  <base>/uv-<triple>.tar.gz
+// Override at pack time via HERMES_RUNTIME_COS_BASE. If this is ever cleared,
+// install.sh CN mode degrades gracefully to git clone / astral.sh.
+const RUNTIME_COS_BASE =
+  process.env.HERMES_RUNTIME_COS_BASE ||
+  'https://apexnodes-runtime-202606250443-1300912302.cos.ap-guangzhou.myqcloud.com/runtime'
 
 function hiddenWindowsChildOptions(options = {}) {
   if (!IS_WINDOWS || Object.prototype.hasOwnProperty.call(options, 'windowsHide')) {

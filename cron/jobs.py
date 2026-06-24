@@ -251,6 +251,46 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
+def _active_profile_name() -> str:
+    """Return the Hermes profile name for the current process.
+
+    Cron jobs are stored in a shared JSON database, but in multi-profile
+    deployments each gateway executes jobs with its own profile-local skills,
+    memory, config, and MCP servers. The active profile is derived from the
+    current Hermes home path so the scheduler can skip jobs pinned to a
+    different profile without touching the global tick lock behaviour.
+
+    Standard layouts:
+
+    * ``~/.hermes`` (or any non-profile Hermes home) -> ``"default"``
+    * ``~/.hermes/profiles/<name>`` -> ``"<name>"``
+
+    ``HERMES_PROFILE`` is honored when present because some launchers already
+    export it alongside ``HERMES_HOME``; otherwise ``get_hermes_home()`` remains
+    the source of truth. Path resolution is non-strict so tests and first-run
+    profiles do not need to pre-create directories.
+    """
+    explicit = os.getenv("HERMES_PROFILE", "").strip()
+    if explicit:
+        return explicit
+
+    hermes_home = get_hermes_home().expanduser().resolve()
+    if hermes_home.parent.name == "profiles" and hermes_home.name:
+        return hermes_home.name
+    return "default"
+
+
+def _job_matches_active_profile(job: Dict[str, Any], active_profile: str) -> bool:
+    """Return True when *job* may be ticked by *active_profile*.
+
+    Missing, ``None``, and empty-string profile values intentionally preserve
+    the historical race behaviour: any gateway that wins ``tick.lock`` may run
+    the job. Only a non-empty profile string pins execution to that profile.
+    """
+    pinned_profile = str(job.get("profile") or "").strip()
+    return not pinned_profile or pinned_profile == active_profile
+
+
 def _secure_dir(path: Path):
     """Set directory to owner-only access (0700). No-op on Windows."""
     try:
@@ -749,6 +789,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    profile: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -793,6 +834,9 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        profile: Optional Hermes profile pin. When set, only the gateway
+                running that profile will tick this job. ``None`` or an empty
+                string preserves the historical any-profile race behaviour.
 
     Returns:
         The created job dict
@@ -827,6 +871,8 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_profile = str(profile).strip() if isinstance(profile, str) else None
+    normalized_profile = normalized_profile or None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -881,6 +927,8 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
     }
+    if normalized_profile:
+        job["profile"] = normalized_profile
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -970,6 +1018,11 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                     updates["workdir"] = None
                 else:
                     updates["workdir"] = _normalize_workdir(_wd)
+
+            if "profile" in updates:
+                _profile = updates["profile"]
+                updates["profile"] = str(_profile).strip() if isinstance(_profile, str) else None
+                updates["profile"] = updates["profile"] or None
 
             updated = _apply_skill_fields({**job, **updates})
             schedule_changed = "schedule" in updates
@@ -1269,12 +1322,16 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     """Inner implementation of get_due_jobs(); must be called with _jobs_lock held."""
     now = _hermes_now()
+    active_profile = _active_profile_name()
     raw_jobs = load_jobs()
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
     due = []
     needs_save = False
 
     for job in jobs:
+        if not _job_matches_active_profile(job, active_profile):
+            continue
+
         if not job.get("enabled", True):
             continue
 

@@ -7377,7 +7377,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     platform_name, source.user_id, source.user_name or ""
                 )
                 if code:
-                    adapter = self.adapters.get(source.platform)
+                    adapter = (
+                        self._profile_adapters.get(getattr(source, "profile", None), {}).get(source.platform)
+                        or self.adapters.get(source.platform)
+                    )
                     if adapter:
                         await adapter.send(
                             source.chat_id,
@@ -7387,7 +7390,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             f"`hermes pairing approve {platform_name} {code}`"
                         )
                 else:
-                    adapter = self.adapters.get(source.platform)
+                    adapter = (
+                        self._profile_adapters.get(getattr(source, "profile", None), {}).get(source.platform)
+                        or self.adapters.get(source.platform)
+                    )
                     if adapter:
                         await adapter.send(
                             source.chat_id,
@@ -9645,7 +9651,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Stop persistent typing indicator now that the agent is done
             try:
-                _typing_adapter = self.adapters.get(source.platform)
+                _profile_name = getattr(source, "profile", None)
+                _profile_typing_adapter = self._profile_adapters.get(_profile_name, {}).get(source.platform) if _profile_name else None
+                _typing_adapter = _profile_typing_adapter or self.adapters.get(source.platform)
                 if _typing_adapter and hasattr(_typing_adapter, "stop_typing"):
                     await _typing_adapter.stop_typing(source.chat_id)
             except Exception:
@@ -9657,7 +9665,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _quick_key or "?",
                     run_generation,
                 )
-                _stale_adapter = self.adapters.get(source.platform)
+                _stale_adapter = (
+                    self._profile_adapters.get(getattr(source, "profile", None), {}).get(source.platform)
+                    or self.adapters.get(source.platform)
+                )
                 if getattr(type(_stale_adapter), "pop_post_delivery_callback", None) is not None:
                     _stale_adapter.pop_post_delivery_callback(
                         _quick_key,
@@ -10622,7 +10633,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     async def _send_goal_status_notice(self, source: Any, message: str) -> None:
         """Send a /goal judge status line back to the originating chat/thread."""
-        adapter = self.adapters.get(source.platform)
+        adapter = (
+            self._profile_adapters.get(getattr(source, "profile", None), {}).get(source.platform)
+            or self.adapters.get(source.platform)
+        )
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
             return
@@ -10649,7 +10663,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         exactly this boundary; when unavailable, fall back to direct awaited
         delivery rather than silently dropping the notice.
         """
-        adapter = self.adapters.get(source.platform)
+        adapter = (
+            self._profile_adapters.get(getattr(source, "profile", None), {}).get(source.platform)
+            or self.adapters.get(source.platform)
+        )
         if not adapter:
             logger.debug("goal continuation: no adapter for %s", getattr(source, "platform", None))
             return
@@ -14242,7 +14259,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if _streaming_enabled:
             try:
                 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-                _adapter = self.adapters.get(source.platform)
+                _profile_name = getattr(source, "profile", None)
+                _profile_adapter = self._profile_adapters.get(_profile_name, {}).get(source.platform) if _profile_name else None
+                _adapter = _profile_adapter or self.adapters.get(source.platform)
                 if _adapter:
                     _pause_typing_before_finalize = None
                     if source.platform == Platform.TELEGRAM and hasattr(_adapter, "pause_typing_for_chat"):
@@ -14292,7 +14311,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             stream_task = asyncio.create_task(_stream_consumer.run())
 
         # Send typing indicator
-        _adapter = self.adapters.get(source.platform)
+        _profile_name = getattr(source, "profile", None)
+        _profile_adapter = self._profile_adapters.get(_profile_name, {}).get(source.platform) if _profile_name else None
+        _adapter = _profile_adapter or self.adapters.get(source.platform)
         if _adapter:
             try:
                 await _adapter.send_typing(source.chat_id, metadata=_thread_metadata)
@@ -14675,7 +14696,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _cleanup_progress = bool(
             resolve_display_setting(user_config, platform_key, "cleanup_progress")
         )
-        _cleanup_adapter = self.adapters.get(source.platform) if _cleanup_progress else None
+        _cleanup_adapter = (
+            self._profile_adapters.get(getattr(source, "profile", None), {}).get(source.platform)
+            or self.adapters.get(source.platform)
+        ) if _cleanup_progress else None
         if _cleanup_adapter is not None and (
             type(_cleanup_adapter).delete_message is BasePlatformAdapter.delete_message
         ):
@@ -14786,7 +14810,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _code_block_full = None
             _code_block_short = None
             try:
-                _progress_adapter = self.adapters.get(source.platform)
+                _progress_adapter = (
+                    self._profile_adapters.get(getattr(source, "profile", None), {}).get(source.platform)
+                    or self.adapters.get(source.platform)
+                )
             except Exception:
                 _progress_adapter = None
             if (
@@ -15279,7 +15306,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("event_callback hook error: %s", _e)
 
         # Bridge sync status_callback → async adapter.send for context pressure
-        _status_adapter = self.adapters.get(source.platform)
+        _profile_name = getattr(source, "profile", None)
+        _profile_status_adapter = self._profile_adapters.get(_profile_name, {}).get(source.platform) if _profile_name else None
+        _status_adapter = _profile_status_adapter or self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
         if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
             # Feishu topics only keep messages inside the topic when they are
@@ -15407,7 +15436,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _want_stream_deltas or _want_interim_consumer:
                 try:
                     from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
-                    _adapter = self.adapters.get(source.platform)
+                    _profile_name = getattr(source, "profile", None)
+                    _profile_adapter = self._profile_adapters.get(_profile_name, {}).get(source.platform) if _profile_name else None
+                    _adapter = _profile_adapter or self.adapters.get(source.platform)
                     if _adapter:
                         _pause_typing_before_finalize = None
                         if source.platform == Platform.TELEGRAM and hasattr(_adapter, "pause_typing_for_chat"):

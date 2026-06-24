@@ -1776,6 +1776,20 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             )
 
     elif provider == "copilot":
+        # Only auto-discover Copilot credentials when the user has
+        # explicitly configured copilot as their provider.
+        # Without this gate, `gh auth token` silently seeds copilot
+        # credentials into the pool, which then get used for other
+        # providers (nous, anthropic, etc.) causing HTTP 400
+        # "model_not_supported" errors due to mismatched base_url.
+        # See issue #51652.
+        try:
+            from hermes_cli.auth import is_provider_explicitly_configured
+            if not is_provider_explicitly_configured("copilot"):
+                return changed, active_sources
+        except ImportError:
+            pass
+
         # Copilot tokens are resolved dynamically via `gh auth token` or
         # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
         # the auth store or credential pool, so we resolve them here.

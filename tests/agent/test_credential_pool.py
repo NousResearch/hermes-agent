@@ -2233,6 +2233,9 @@ def test_load_pool_seeds_copilot_via_gh_auth_token(tmp_path, monkeypatch):
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
     monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True
+    )
+    monkeypatch.setattr(
         "hermes_cli.copilot_auth.resolve_copilot_token",
         lambda: ("gho_fake_token_abc123", "gh auth token"),
     )
@@ -2254,8 +2257,60 @@ def test_load_pool_does_not_seed_copilot_when_no_token(tmp_path, monkeypatch):
     _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
 
     monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True
+    )
+    monkeypatch.setattr(
         "hermes_cli.copilot_auth.resolve_copilot_token",
         lambda: ("", ""),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert not pool.has_credentials()
+    assert pool.entries() == []
+
+
+def test_load_pool_seeds_copilot_when_explicitly_configured(tmp_path, monkeypatch):
+    """Copilot credentials should be seeded when copilot is explicitly configured."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured", lambda pid: True
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_abc123", "gh auth token"),
+    )
+
+    from agent.credential_pool import load_pool
+    pool = load_pool("copilot")
+
+    assert pool.has_credentials()
+    entries = pool.entries()
+    assert len(entries) == 1
+    assert entries[0].source == "gh_cli"
+    assert entries[0].access_token == "gho_fake_token_abc123"
+    assert entries[0].base_url == "https://api.githubcopilot.com"
+
+
+def test_load_pool_does_not_seed_copilot_when_not_explicitly_configured(tmp_path, monkeypatch):
+    """Copilot pool should be empty when copilot is not explicitly configured.
+
+    Even if `gh auth token` returns a valid token, we must NOT auto-seed
+    copilot credentials into the pool when the user has not explicitly
+    configured copilot as their provider.  Without this gate, copilot
+    credentials get silently injected and used for other providers,
+    causing HTTP 400 "model_not_supported" errors.  See issue #51652.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "credential_pool": {}})
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_provider_explicitly_configured", lambda pid: False
+    )
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_fake_token_abc123", "gh auth token"),
     )
 
     from agent.credential_pool import load_pool

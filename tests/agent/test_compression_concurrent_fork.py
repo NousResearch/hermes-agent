@@ -101,6 +101,18 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
     parent_sid = "PARENT_TEST_SESSION"
     db.create_session(parent_sid, source="discord")
 
+    # Barrier ensures both threads reach the compression lock acquisition
+    # before either proceeds — without it, the OS can serialize the threads
+    # so the first finishes before the second even attempts the lock.
+    # Patching try_acquire_compression_lock to synchronize at the exact
+    # contention point eliminates timing sensitivity.
+    lock_barrier = threading.Barrier(2)
+    _orig_try_lock = SessionDB.try_acquire_compression_lock
+
+    def _barrier_try_lock(self, session_id, holder):
+        lock_barrier.wait(timeout=5)
+        return _orig_try_lock(self, session_id, holder)
+
     # Two agents on the same session_id, both wired to the same db —
     # mirrors the parent-turn agent + the background-review fork right
     # after a turn ends.
@@ -115,12 +127,13 @@ def test_concurrent_compression_does_not_fork_session(tmp_path: Path) -> None:
             # Surface to the test if either raises — should not happen.
             raise
 
-    t_a = threading.Thread(target=run, args=(agent_a,), name="main_turn")
-    t_b = threading.Thread(target=run, args=(agent_b,), name="review_fork")
-    t_a.start()
-    t_b.start()
-    t_a.join(timeout=10)
-    t_b.join(timeout=10)
+    with patch.object(SessionDB, "try_acquire_compression_lock", _barrier_try_lock):
+        t_a = threading.Thread(target=run, args=(agent_a,), name="main_turn")
+        t_b = threading.Thread(target=run, args=(agent_b,), name="review_fork")
+        t_a.start()
+        t_b.start()
+        t_a.join(timeout=10)
+        t_b.join(timeout=10)
 
     # Exactly one canonical child — not two orphans.
     assert _count_children(db, parent_sid) == 1, (

@@ -606,3 +606,96 @@ async def handle_archive_profile(adapter, request: "web.Request") -> "web.Respon
     return web.json_response(
         {"ok": True, "profile": canon, "archived": True, "path": str(dest)}, status=200
     )
+
+
+# ---------------------------------------------------------------------------
+# Versioned write path — fleet-state snapshot trigger (master_console P8 M0)
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+# Profile names are passed straight to the snapshot binary's argv; constrain to
+# the Hermes profile-id charset as defence-in-depth (subprocess uses the list
+# form, so this is belt-and-braces, not the only guard against injection).
+_SNAPSHOT_PROFILE_RE = _re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
+def _snapshot_bin() -> Optional[str]:
+    """Resolve the host `fleet-state-snapshot` script (installed to ~/.local/bin).
+
+    Overridable via FLEET_STATE_SNAPSHOT_BIN; falls back to PATH lookup."""
+    override = os.environ.get("FLEET_STATE_SNAPSHOT_BIN")
+    if override and os.path.isfile(override):
+        return override
+    candidate = os.path.expanduser("~/.local/bin/fleet-state-snapshot")
+    if os.path.isfile(candidate):
+        return candidate
+    return shutil.which("fleet-state-snapshot")
+
+
+async def handle_snapshot(adapter, request: "web.Request") -> "web.Response":
+    """POST /api/snapshot — commit a fleet-state snapshot of the agents' brains.
+
+    Body: ``{"reason": <str>, "profile": <name|null>}``. Shells out to the host
+    ``fleet-state-snapshot`` script (the P8 M0 versioned write path), which
+    captures each profile's editable, non-secret state (config / SOUL / routines /
+    skills) into the ``~/fleet-state`` git repo so the change is diffable and
+    revertible. The console calls this right AFTER an apply (provision / config /
+    SOUL / routine edit) so console-initiated changes are committed immediately
+    with a precise reason; a launchd cadence is the safety net for everything else.
+
+    Runs host-native like the gateway start/stop seams — the API server lives in a
+    host gateway process and can spawn host scripts (the containerised console
+    can't). Idempotent: a no-op snapshot returns ``committed: false``.
+    """
+    auth_err = adapter._check_auth(request)
+    if auth_err:
+        return auth_err
+
+    body, err = await adapter._read_json_body(request)
+    if err:
+        return err
+
+    reason = str(body.get("reason") or "console snapshot").strip()[:200]
+    profile = body.get("profile")
+    if profile is not None:
+        profile = str(profile).strip()
+        if not _SNAPSHOT_PROFILE_RE.match(profile):
+            return _err("invalid profile", status=400, code="invalid_profile", param="profile")
+
+    binary = _snapshot_bin()
+    if not binary:
+        return _err("fleet-state-snapshot not installed on host", status=503,
+                    code="snapshot_unavailable")
+
+    def _run() -> "subprocess.CompletedProcess":
+        cmd = [binary, "-m", reason]
+        if profile:
+            cmd += ["--profile", profile]
+        return subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+
+    try:
+        proc = await asyncio.to_thread(_run)
+    except Exception:
+        logger.exception("POST /api/snapshot failed")
+        return _err("Failed to run snapshot", status=500, code="server_error")
+
+    out = (proc.stdout or "").strip()
+    if proc.returncode != 0:
+        return _err(f"snapshot failed: {(proc.stderr or out).strip()[:300]}",
+                    status=500, code="snapshot_error")
+    committed = "no changes" not in out
+    # The script prints "committed <sha> — <reason>" on a commit.
+    sha = None
+    m = _re.search(r"committed (\w+)", out)
+    if m:
+        sha = m.group(1)
+    return web.json_response(
+        {"ok": True, "committed": committed, "sha": sha, "reason": reason,
+         "profile": profile, "output": out}, status=200)

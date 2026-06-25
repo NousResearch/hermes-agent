@@ -2,7 +2,7 @@ import { writeFileSync } from 'node:fs'
 
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
-import { type RefObject, useCallback } from 'react'
+import { type RefObject, useCallback, useMemo } from 'react'
 
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import { introMsg, toTranscriptMessages } from '../domain/messages.js'
@@ -361,7 +361,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     [sys]
   )
 
-  return {
+  return useMemo(() => ({
     activateLiveSession,
     closeSession,
     guardBusySessionSwitch,
@@ -371,5 +371,14 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     resetVisibleHistory,
     resumeById,
     trimLastExchange: trimTail
-  }
+  }), [
+    activateLiveSession,
+    closeSession,
+    guardBusySessionSwitch,
+    newLiveSession,
+    newSession,
+    resetSession,
+    resetVisibleHistory,
+    resumeById
+  ])
 }

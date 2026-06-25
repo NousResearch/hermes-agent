@@ -1445,6 +1445,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            # Seed the thread session here too: the standalone fallback also
+            # delivered into the freshly-opened thread (thread_id == opened_thread_id),
+            # so this is a delivery-succeeded path and must seed exactly like the
+            # live-adapter branch above — otherwise an in-thread reply hits a
+            # session with no record of the brief.
+            if opened_thread_id and not thread_seeded:
+                _seed_cron_thread_session(
+                    job, runtime_adapter, platform_name, chat_id,
+                    opened_thread_id, mirror_text,
+                    chat_name=origin.get("chat_name"),
+                )
+                thread_seeded = True
             _maybe_mirror_cron_delivery(
                 job, platform_name, chat_id, mirror_text,
                 thread_id=thread_id, user_id=origin_user_id,

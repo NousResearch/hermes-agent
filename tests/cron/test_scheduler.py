@@ -3869,3 +3869,76 @@ class TestCronDeliveryMirror:
             )
         store.get_or_create_session.assert_not_called()
         mirror_mock.assert_not_called()
+
+    def test_standalone_fallback_seeds_opened_thread_session(self):
+        """Regression: a continuable-cron delivery that opens a thread but
+        completes via the STANDALONE fallback (live send unconfirmed →
+        adapter_ok=False) must still seed the thread-keyed session, exactly
+        like the live-adapter success branch.
+
+        `b177d4ee4` deferred the seed to "delivery succeeded" but wired it into
+        the live branch only; the standalone fallback also delivers into the
+        freshly-opened thread (``thread_id == opened_thread_id``), so it is
+        equally a delivery-succeeded path. Without the seed, the user's first
+        in-thread reply resolves to a session with no record of the brief
+        ("what is Task #2?"). FAILS before the fix (seed never invoked on the
+        standalone path), PASSES after.
+        """
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = MagicMock()
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        mock_cfg.filter_silence_narration = False
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        # Force the live send to come back UNCONFIRMED so adapter_ok=False and
+        # delivery falls through to the standalone path (see _deliver_result).
+        def fake_schedule(coro, _loop):
+            try:
+                coro.close()
+            except Exception:
+                pass
+            fut = Future()
+            fut.set_result({"success": False, "error": "loop wedged"})
+            return fut
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        job = {
+            "id": "continuable-standalone-job",
+            "name": "Daily Brief",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123", "chat_name": "Ops"},
+            "attach_to_session": True,
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("cron.scheduler._open_continuable_cron_thread", return_value="9001"), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_schedule), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send), \
+             patch("cron.scheduler._seed_cron_thread_session") as seed_mock:
+            result = _deliver_result(
+                job,
+                "Daily brief Task #2",
+                adapters={Platform.TELEGRAM: adapter},
+                loop=loop,
+            )
+
+        # Delivery completed via the standalone fallback.
+        assert result is None, f"standalone should have delivered, got: {result!r}"
+        standalone_send.assert_awaited_once()
+        # The opened thread's session MUST be seeded on this path too.
+        seed_mock.assert_called_once()
+        seed_args = seed_mock.call_args[0]
+        # _seed_cron_thread_session(job, adapter, platform_name, chat_id,
+        #                           thread_id, mirror_text, chat_name=...)
+        assert seed_args[4] == "9001", "seed must target the opened thread id"
+        assert "Task #2" in seed_args[5], "seed must carry the brief text"

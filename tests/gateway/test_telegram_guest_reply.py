@@ -112,6 +112,15 @@ def _make_adapter(TelegramAdapter):
     a._guest_only_chats = {CHAT_ID}
     a._guest_reply_buffer = {}
     a._guest_inline_message_ids = {}
+    # Native-media-delivery state (Bot API 10.0 guest mode).
+    a._guest_staged_media = {}
+    a._guest_pending_media = {}
+    a._guest_file_id_cache = {}
+    a._guest_message_texts = {}
+    # Docker→host path translation is provided by BasePlatformAdapter (PR #47716),
+    # a stated prerequisite of this PR. Stub it to identity so guest-media tests run
+    # without that base method present on this branch.
+    a.translate_docker_local_paths = lambda paths: list(paths)
     return a
 
 
@@ -163,16 +172,22 @@ async def test_edit_message_routes_to_editMessageText_via_imi(TelegramAdapter):
 
 
 @pytest.mark.asyncio
-async def test_on_processing_complete_noop_when_stream_consumer_delivered(TelegramAdapter):
-    """on_processing_complete does not call any API when imi is set and buffer is empty."""
+async def test_on_processing_complete_refuses_when_slot_open_and_empty(TelegramAdapter):
+    """Slot still open (stub never fired) + nothing streamed — i.e. the gateway
+    rejected the sender — resolves to a terse refusal via answerGuestQuery, rather
+    than leaving the query unanswered. (Lazy-stub authz fallback, new in guest media.)"""
     a = _make_adapter(TelegramAdapter)
-    a._guest_inline_message_ids[CHAT_ID] = INLINE_MESSAGE_ID
-    # _guest_reply_buffer is empty — stream consumer handled every chunk
+    a._guest_inline_message_ids[CHAT_ID] = False  # slot open, stub not fired
+    # empty buffer, no staged media
     a._bot.do_api_request = AsyncMock(return_value=None)
 
     await a.on_processing_complete(_make_event(), ProcessingOutcome.SUCCESS)
 
-    a._bot.do_api_request.assert_not_awaited()
+    a._bot.do_api_request.assert_awaited_once()
+    method, = a._bot.do_api_request.await_args.args
+    body = a._bot.do_api_request.await_args.kwargs["api_kwargs"]
+    assert method == "answerGuestQuery"
+    assert "Not authorized" in body["result"]["input_message_content"]["message_text"]
 
 
 # ---------------------------------------------------------------------------
@@ -300,3 +315,135 @@ async def test_on_processing_complete_re_renders_truncated_buffer(TelegramAdapte
     assert method == "editMessageText"
     assert "**" not in text          # artifact stripped
     assert "2" in text               # content preserved
+
+
+# ---------------------------------------------------------------------------
+# 5. Native media delivery (guest mode photo/audio/…)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_guest_media_send_stages_first_for_native_delivery(TelegramAdapter, tmp_path, monkeypatch):
+    """First media item is uploaded to the home channel and reserved for native
+    answerGuestQuery delivery (file_id captured into _guest_staged_media)."""
+    a = _make_adapter(TelegramAdapter)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "12345")
+    f = tmp_path / "song.mp3"
+    f.write_bytes(b"ID3audio")
+    a._bot.send_audio = AsyncMock(
+        return_value=SimpleNamespace(audio=SimpleNamespace(file_id="FID_AUDIO"), message_id=99)
+    )
+
+    res = await a._guest_media_send(CHAT_ID, "audio", str(f), caption="My Song")
+
+    assert res.success is True
+    a._bot.send_audio.assert_awaited_once()
+    assert a._guest_staged_media[CHAT_ID]["type"] == "audio"
+    assert a._guest_staged_media[CHAT_ID]["file_id"] == "FID_AUDIO"
+    assert a._guest_file_id_cache[(str(f), "audio")] == "FID_AUDIO"
+
+
+@pytest.mark.asyncio
+async def test_guest_media_send_second_item_goes_to_pending(TelegramAdapter, tmp_path, monkeypatch):
+    """The slot holds one native item; later items are queued for a DM note."""
+    a = _make_adapter(TelegramAdapter)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "12345")
+    f1 = tmp_path / "a.mp3"; f1.write_bytes(b"a")
+    f2 = tmp_path / "b.mp3"; f2.write_bytes(b"b")
+    a._bot.send_audio = AsyncMock(side_effect=[
+        SimpleNamespace(audio=SimpleNamespace(file_id="F1"), message_id=1),
+        SimpleNamespace(audio=SimpleNamespace(file_id="F2"), message_id=2),
+    ])
+
+    await a._guest_media_send(CHAT_ID, "audio", str(f1), "first")
+    await a._guest_media_send(CHAT_ID, "audio", str(f2), "second")
+
+    assert a._guest_staged_media[CHAT_ID]["file_id"] == "F1"
+    assert [m["file_id"] for m in a._guest_pending_media[CHAT_ID]] == ["F2"]
+
+
+@pytest.mark.asyncio
+async def test_guest_media_send_reuses_file_id_cache(TelegramAdapter, tmp_path, monkeypatch):
+    """Re-sending the same path reuses the cached file_id — no second upload."""
+    a = _make_adapter(TelegramAdapter)
+    monkeypatch.setenv("TELEGRAM_HOME_CHANNEL", "12345")
+    f = tmp_path / "a.mp3"; f.write_bytes(b"a")
+    a._bot.send_audio = AsyncMock(
+        return_value=SimpleNamespace(audio=SimpleNamespace(file_id="F1"), message_id=1)
+    )
+
+    await a._guest_media_send(CHAT_ID, "audio", str(f), "first")
+    await a._guest_media_send(CHAT_ID, "audio", str(f), "again")
+
+    a._bot.send_audio.assert_awaited_once()  # second call hit the cache
+
+
+@pytest.mark.asyncio
+async def test_guest_media_send_errors_without_home_channel(TelegramAdapter, monkeypatch):
+    """No staging channel configured → explicit failure, not a silent drop."""
+    a = _make_adapter(TelegramAdapter)
+    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
+
+    res = await a._guest_media_send(CHAT_ID, "audio", "/tmp/x.mp3", "c")
+
+    assert res.success is False
+    assert "guest_no_staging" in res.error
+
+
+@pytest.mark.asyncio
+async def test_on_processing_complete_delivers_staged_media_natively(TelegramAdapter):
+    """A staged item with the slot still open is delivered via answerGuestQuery(type=…)."""
+    a = _make_adapter(TelegramAdapter)
+    a._guest_inline_message_ids[CHAT_ID] = False  # slot open
+    a._guest_staged_media[CHAT_ID] = {
+        "type": "audio", "file_id": "FID", "caption": "nice track", "title": "Track",
+    }
+    a._guest_reply_buffer[CHAT_ID] = "Here's the track."
+    a._bot.do_api_request = AsyncMock(return_value={"inline_message_id": "imi"})
+
+    await a.on_processing_complete(_make_event(), ProcessingOutcome.SUCCESS)
+
+    a._bot.do_api_request.assert_awaited_once()
+    method, = a._bot.do_api_request.await_args.args
+    result = a._bot.do_api_request.await_args.kwargs["api_kwargs"]["result"]
+    assert method == "answerGuestQuery"
+    assert result["type"] == "audio"
+    assert result["audio_file_id"] == "FID"
+
+
+@pytest.mark.asyncio
+async def test_send_image_blocks_unsafe_url_before_staging(TelegramAdapter, monkeypatch):
+    """SSRF guard runs before guest staging — an unsafe URL never reaches send_photo."""
+    from gateway.platforms.base import BasePlatformAdapter
+    a = _make_adapter(TelegramAdapter)
+    a._bot.send_photo = AsyncMock()
+    monkeypatch.setattr("tools.url_safety.is_safe_url", lambda url: False)
+    monkeypatch.setattr(BasePlatformAdapter, "send_image", AsyncMock(return_value=None))
+
+    await a.send_image(CHAT_ID, "http://169.254.169.254/latest/meta-data/", caption="x")
+
+    a._bot.send_photo.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_guest_fire_text_stub_consumes_slot(TelegramAdapter):
+    """The lazy stub fires an article via answerGuestQuery and records its imi."""
+    a = _make_adapter(TelegramAdapter)
+    a._guest_inline_message_ids[CHAT_ID] = False  # slot open, not yet fired
+    a._bot.do_api_request = AsyncMock(return_value={"inline_message_id": "imi-123"})
+
+    await a._guest_fire_text_stub(CHAT_ID)
+
+    a._bot.do_api_request.assert_awaited_once()
+    method, = a._bot.do_api_request.await_args.args
+    result = a._bot.do_api_request.await_args.kwargs["api_kwargs"]["result"]
+    assert method == "answerGuestQuery"
+    assert result["type"] == "article"
+    assert a._guest_inline_message_ids[CHAT_ID] == "imi-123"
+
+
+def test_media_query_regex_distinguishes_media_from_text(TelegramAdapter):
+    """send_typing uses this to keep the slot open for likely media requests."""
+    rx = TelegramAdapter._GUEST_MEDIA_QUERY_RE
+    assert rx.search("draw me a sunset")
+    assert rx.search("намалюй кота")
+    assert not rx.search("what is the weather in paris tonight")

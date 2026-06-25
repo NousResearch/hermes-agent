@@ -690,6 +690,16 @@ class TelegramAdapter(BasePlatformAdapter):
         self._guest_reply_buffer: Dict[str, str] = {}
         # inline_message_id returned by the stub answerGuestQuery; used for the follow-up editMessageText
         self._guest_inline_message_ids: Dict[str, Optional[str]] = {}
+        # First media item to deliver natively via answerGuestQuery in on_processing_complete.
+        # Populated by _guest_media_send() during processing; consumed in on_processing_complete.
+        self._guest_staged_media: Dict[str, dict] = {}
+        # Additional media items staged after the first; reported as DM notes in the final reply.
+        self._guest_pending_media: Dict[str, list] = {}
+        # Cross-turn file_id cache: (resolved_path, tg_type) → telegram file_id.
+        # Prevents re-staging the same file to TELEGRAM_HOME_CHANNEL on follow-up "post it here" turns.
+        self._guest_file_id_cache: Dict[tuple, str] = {}
+        # Original message text per guest chat; used by send_typing() to skip stub for media queries.
+        self._guest_message_texts: Dict[str, str] = {}
         # inline query router (initialised in connect() once self._bot is available)
         self._inline_router: Optional[Any] = None
 
@@ -2625,9 +2635,9 @@ class TelegramAdapter(BasePlatformAdapter):
             # Bot API 10.0 guest reply: buffer content and return immediately.
             # Must run before the rich/legacy send paths — both use sendMessage
             # which Telegram rejects with Forbidden when the bot is not a member.
-            # Normalize to string: all guest dicts use str keys (the guest update
-            # handler stores str(msg.chat.id)).  chat_id may arrive as int from the
-            # event source, which would silently miss every dict lookup below.
+            # Normalize to string: all guest dicts use str keys (_handle_guest_message_update
+            # stores chat_id_str = str(msg.chat.id)); chat_id here may arrive as int from
+            # the event source, which would silently miss every dict lookup.
             _cid_str = str(chat_id)
             if self._pending_guest_queries.get(_cid_str) is not None or _cid_str in self._guest_only_chats:
                 # Tool-use progress blocks (💻 terminal etc.) come through
@@ -2641,29 +2651,46 @@ class TelegramAdapter(BasePlatformAdapter):
                     and (metadata.get("expect_edits") or metadata.get("notify"))
                 )
                 if not _is_stream_send:
+                    # Tool-progress call from send_progress_messages().
+                    # Fire the thinking stub on the first non-media tool so the user
+                    # sees immediate feedback; keep the slot open for media tools so
+                    # on_processing_complete can deliver natively.
+                    if self._guest_inline_message_ids.get(_cid_str) is False:
+                        # Slot still open — check if this tool is media-producing.
+                        _tname_match = re.match(r'\W+(\w+)', content or "")
+                        _tname = _tname_match.group(1) if _tname_match else ""
+                        if _tname and not self._GUEST_MEDIA_TOOL_RE.search(_tname):
+                            await self._guest_fire_text_stub(_cid_str)
                     return SendResult(success=True, message_id=None)
 
-                # Streaming path: when Phase 1 placed a stub and returned an
-                # inline_message_id, hand ownership of delivery to the stream
-                # consumer by returning that id.  The consumer will then drive
-                # progressive edits via edit_message(), which we intercept below
-                # to route to editMessageText(inline_message_id=...).
-                _imi = self._guest_inline_message_ids.get(_cid_str)
-                if _imi is not None:
-                    return SendResult(success=True, message_id=_imi)
+                # Streaming: fire the stub now if it hasn't fired yet (covers text-only
+                # responses where no tool-progress call ever triggered it), then hand
+                # the imi to the stream consumer for progressive editMessageText edits.
+                # Guard: if media is already staged, the slot must stay open for native
+                # delivery — don't consume it with a text stub here.
+                # False = stub not fired yet → fire now (if no staged media), then check imi.
+                # None = stub fired but API gave no imi → buffer fallback.
+                # str = real imi → live streaming edits.
+                _imi_val = self._guest_inline_message_ids.get(_cid_str)
+                if _imi_val is False and not self._guest_staged_media.get(_cid_str):
+                    await self._guest_fire_text_stub(_cid_str)
+                    _imi_val = self._guest_inline_message_ids.get(_cid_str)
+                if isinstance(_imi_val, str):
+                    return SendResult(success=True, message_id=_imi_val)
 
-                # No imi (stub failed) — fall back to buffer mode so the final
-                # on_processing_complete flush can still deliver via answerGuestQuery.
+                # Stub fired but returned no imi, or slot held open for native media delivery
+                # — buffer mode fallback.
                 _cursor = " ▉"
                 _clean = content
                 if _clean.endswith(_cursor):
                     _clean = _clean[:-len(_cursor)]
                 elif _clean.endswith("▉"):
                     _clean = _clean[:-1]
-                # Strip MEDIA: residuals.  The stream consumer only removes a MEDIA:
-                # tag once the full path (with extension) has streamed; intermediate
-                # chunks like "MEDIA:" or "MEDIA:/path" slip past its extension-anchored
-                # cleanup and would otherwise land in the buffer as visible text.
+                # Streaming sends cumulative chunks; MEDIA: tags are stripped by the
+                # stream consumer only once the full path (including extension) appears.
+                # Intermediate chunks like "MEDIA:" or "MEDIA:/workspace/file" don't
+                # match the extension-anchored cleanup regex and land in the buffer.
+                # Strip any MEDIA: residuals here so they never appear as text.
                 if "MEDIA:" in _clean:
                     _clean = re.sub(r"MEDIA:\S*", "", _clean).strip()
 
@@ -3042,7 +3069,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # Intercept before any path that calls int(chat_id)/int(message_id) — the
         # inline_message_id is a string like "AAMCAgAD..." that cannot be cast to int.
         _imi = self._guest_inline_message_ids.get(str(chat_id))
-        if _imi and message_id == _imi:
+        if isinstance(_imi, str) and message_id == _imi:
             _text = content
             for _cur in (" ▉", "▉"):
                 if _text.endswith(_cur):
@@ -3052,9 +3079,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if "MEDIA:" in _text:
                 _text = re.sub(r"MEDIA:\S+", "", _text).strip()
                 _text = re.sub(r"\n{3,}", "\n\n", _text)
-            # Keep the buffer current with the latest raw (pre-format) text so that
-            # on_processing_complete can re-render it through _strip_mdv2 if the stream
-            # consumer's own finalize edit left a truncation artifact (e.g. "- **2").
+            # Keep buffer current with the latest raw (pre-format) text so that
+            # on_processing_complete can do a finalize edit if the stream consumer's
+            # own finalize edit fails mid-stream (e.g. API error or truncated chunk).
             if _text.strip():
                 self._guest_reply_buffer[str(chat_id)] = _text
             _text = (_strip_mdv2(self.format_message(_text)) if finalize else _text)[:4096]
@@ -4812,8 +4839,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
-        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
-            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
+        if str(chat_id) in self._guest_only_chats:
+            return await self._guest_media_send(str(chat_id), "audio", audio_path, caption)
 
         try:
             if not os.path.exists(audio_path):
@@ -4914,6 +4941,15 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return
         if not images:
+            return
+
+        # Guest mode: stage each image via _guest_media_send (uploads to home channel
+        # to mint a file_id; first image goes to native delivery, rest become notes).
+        if str(chat_id) in self._guest_only_chats:
+            from urllib.parse import unquote as _unquote
+            for _img_url, _img_alt in images:
+                _img_path = _unquote(_img_url[7:]) if _img_url.startswith("file://") else _img_url
+                await self._guest_media_send(str(chat_id), "photo", _img_path, _img_alt or None)
             return
 
         try:
@@ -5041,8 +5077,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
-        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
-            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
+        if str(chat_id) in self._guest_only_chats:
+            return await self._guest_media_send(str(chat_id), "photo", image_path, caption)
 
         try:
             if not os.path.exists(image_path):
@@ -5138,8 +5174,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
-        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
-            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
+        if str(chat_id) in self._guest_only_chats:
+            return await self._guest_media_send(str(chat_id), "document", file_path, caption or file_name)
 
         try:
             if not os.path.exists(file_path):
@@ -5191,8 +5227,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
-        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
-            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
+        if str(chat_id) in self._guest_only_chats:
+            return await self._guest_media_send(str(chat_id), "video", video_path, caption)
 
         try:
             if not os.path.exists(video_path):
@@ -5244,13 +5280,39 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
-        if self._pending_guest_queries.get(str(chat_id)) is not None or str(chat_id) in self._guest_only_chats:
-            return SendResult(success=False, error="guest_chat_no_media: bot is not a member of this group so Telegram blocks file uploads. Send the file to the user's private DMs and tell them in the group that the file is in their DMs.")
-
         from tools.url_safety import is_safe_url
         if not is_safe_url(image_url):
             logger.warning("[%s] Blocked unsafe image URL (SSRF protection)", self.name)
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
+
+        if str(chat_id) in self._guest_only_chats:
+            # URL-based: try sending from URL to staging directly (Telegram downloads it).
+            # Falls back to a local download + _guest_media_send if the URL is a local address.
+            _staging = os.environ.get("TELEGRAM_HOME_CHANNEL")
+            if _staging and self._bot:
+                try:
+                    _staging_id = int(_staging)
+                    _staging_kwargs: Dict[str, Any] = {"photo": image_url, "disable_notification": True}
+                    if caption:
+                        _staging_kwargs["caption"] = caption[:1024]
+                    _smsg = await self._bot.send_photo(_staging_id, **_staging_kwargs)
+                    _file_id = _smsg.photo[-1].file_id if _smsg.photo else None
+                    if _file_id:
+                        _chat_id_str = str(chat_id)
+                        if _chat_id_str not in self._guest_staged_media:
+                            self._guest_staged_media[_chat_id_str] = {
+                                "type": "photo", "file_id": _file_id, "caption": caption or "",
+                            }
+                            logger.info("[%s] guest URL photo queued for native delivery (chat=%s)",
+                                        self.name, _chat_id_str)
+                        else:
+                            self._guest_pending_media.setdefault(_chat_id_str, []).append({
+                                "type": "photo", "file_id": _file_id, "caption": caption or "",
+                            })
+                        return SendResult(success=True, message_id=str(_smsg.message_id))
+                except Exception as _e:
+                    logger.warning("[%s] guest URL photo staging failed: %s", self.name, _e)
+            return SendResult(success=False, error="guest_no_staging: cannot send image in guest chat without TELEGRAM_HOME_CHANNEL")
 
         try:
             # Telegram can send photos directly from URLs (up to ~5MB)
@@ -5374,6 +5436,19 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Send typing indicator."""
+        # For guest-only chats, fire the thinking stub early — send_typing() is called
+        # before the LLM request starts, so the stub appears for the full processing
+        # duration.  Skip for queries that look like media requests so the slot stays
+        # open for native answerGuestQuery(type=photo/audio/…) delivery.
+        _cid_str = str(chat_id)
+        if (
+            _cid_str in self._guest_only_chats
+            and self._guest_inline_message_ids.get(_cid_str) is False
+            and not self._guest_staged_media.get(_cid_str)
+        ):
+            _msg_text = self._guest_message_texts.get(_cid_str, "")
+            if not self._GUEST_MEDIA_QUERY_RE.search(_msg_text):
+                await self._guest_fire_text_stub(_cid_str)
         if self._bot:
             _is_dm_topic: bool = False
             message_thread_id: Optional[int] = None
@@ -6364,6 +6439,172 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] inline dispatch error: %s", self.name, exc)
             await iq.answer([], cache_time=0)
 
+    # Tool names matching this pattern produce MEDIA: output — don't fire the
+    # thinking stub for them so the answerGuestQuery slot stays open for native
+    # delivery.  All other tools (web_search, terminal, python…) trigger the stub.
+    _GUEST_MEDIA_TOOL_RE = re.compile(
+        r"download|image|tts|speech|music|audio|video|ytdlp|ffmpeg|generate_image|create_image",
+        re.IGNORECASE,
+    )
+
+    # User message keywords that suggest a media response is likely.
+    # send_typing() skips the early stub for these so the slot stays open for
+    # native answerGuestQuery(type=photo/audio/…) delivery.
+    _GUEST_MEDIA_QUERY_RE = re.compile(
+        r"\b(draw|paint|illustrate|render|generate|create|make|image|picture|photo|"
+        r"download|music|song|audio|tts|speech|voice|video|watch|play|record|"
+        r"намалюй|зображення|картинку|скачай|музику|пісн|голос|відео|зіграй)\b",
+        re.IGNORECASE,
+    )
+
+    async def _guest_fire_text_stub(self, chat_id: str) -> None:
+        """Fire the thinking-verb stub, consuming the answerGuestQuery slot as text.
+
+        Stores the returned inline_message_id (or None on API failure) in
+        _guest_inline_message_ids so send() can drive progressive stream edits and
+        on_processing_complete can update the message with the real reply.
+        Should only be called when _guest_inline_message_ids[chat_id] is False
+        (slot open, stub not yet fired).
+        """
+        _chat_id_str = str(chat_id)
+        _guest_qid = self._pending_guest_queries.get(_chat_id_str)
+        if not _guest_qid or not self._bot:
+            return
+        if self._guest_inline_message_ids.get(_chat_id_str) is not False:
+            return  # already fired or not a guest chat
+        _verb = random.choice(_THINKING_VERBS)
+        _stub = {
+            "type": "article",
+            "id": "thinking",
+            "title": f"{_verb}...",
+            "input_message_content": {"message_text": f"⏳ {_verb}..."},
+        }
+        try:
+            _stub_resp = await self._bot.do_api_request(
+                "answerGuestQuery",
+                api_kwargs={"guest_query_id": _guest_qid, "result": _stub},
+            )
+            _imi = _stub_resp.get("inline_message_id") if isinstance(_stub_resp, dict) else None
+            self._guest_inline_message_ids[_chat_id_str] = _imi  # None if API gave no imi
+            logger.info("[%s] guest stub sent (chat=%s imi=%s)", self.name, _chat_id_str, _imi)
+        except Exception as _stub_err:
+            self._guest_inline_message_ids[_chat_id_str] = None  # slot consumed, no imi
+            logger.warning(
+                "[%s] guest stub failed (chat=%s): %s — will attempt answerGuestQuery fallback",
+                self.name, _chat_id_str, _stub_err,
+            )
+
+    async def _guest_media_send(self, chat_id: str, tg_type: str, local_path: str, caption: Optional[str] = None) -> "SendResult":
+        """Stage media to the home channel; on_processing_complete delivers it natively.
+
+        Bot API constraint: answerGuestQuery requires a pre-existing file_id — raw bytes
+        cannot be uploaded in one call.  We stage to TELEGRAM_HOME_CHANNEL first to mint
+        a file_id.  The first media item is stored in _guest_staged_media for native
+        answerGuestQuery delivery in on_processing_complete; subsequent items go to
+        _guest_pending_media for a note appended to the text reply.
+
+        tg_type: "photo" | "audio" | "video" | "document"
+        """
+        _staging = os.environ.get("TELEGRAM_HOME_CHANNEL")
+        if not _staging or not self._bot:
+            return SendResult(success=False, error="guest_no_staging: TELEGRAM_HOME_CHANNEL not configured")
+
+        try:
+            staging_id = int(_staging)
+        except (ValueError, TypeError):
+            return SendResult(success=False, error="guest_no_staging: TELEGRAM_HOME_CHANNEL is not a valid chat id")
+
+        # Detect URL-sourced media (browser_get_images, etc.) — Telegram can fetch these
+        # directly so no local file path resolution is needed.
+        _is_url = local_path.startswith("http://") or local_path.startswith("https://")
+
+        # MEDIA:-tagged files are already host-translated by the gateway delivery loop
+        # (BasePlatformAdapter.translate_docker_*).  Direct send_voice/send_document calls
+        # bypass that, so translate the single path here via the same shared helper.
+        _resolved_path = local_path if _is_url else self.translate_docker_local_paths([local_path])[0]
+
+        _chat_id_str = str(chat_id)
+        # Cache lookup BEFORE the existence check: on a follow-up "post it here" turn the
+        # local file may have been cleaned up since turn 1, but the Telegram file_id is still
+        # valid and can be delivered without re-uploading.
+        _cache_key = (_resolved_path, tg_type)
+        _cached_fid = self._guest_file_id_cache.get(_cache_key)
+        if _cached_fid:
+            # Reuse existing file_id — skip re-uploading to staging channel.
+            _stem = os.path.splitext(os.path.basename(local_path))[0] or tg_type.capitalize()
+            if _chat_id_str not in self._guest_staged_media:
+                self._guest_staged_media[_chat_id_str] = {
+                    "type": tg_type, "file_id": _cached_fid,
+                    "caption": caption or "", "title": _stem[:64],
+                }
+                logger.info("[%s] guest media: reusing cached file_id for native delivery (type=%s chat=%s)",
+                            self.name, tg_type, _chat_id_str)
+            else:
+                self._guest_pending_media.setdefault(_chat_id_str, []).append({
+                    "type": tg_type, "file_id": _cached_fid, "caption": caption or "",
+                })
+            return SendResult(success=True, message_id="cached")
+
+        if not _is_url and not os.path.exists(_resolved_path):
+            return SendResult(success=False, error=f"guest_media: file not found on host: {local_path}")
+
+        try:
+            _send_map = {
+                "photo": self._bot.send_photo,
+                "audio": self._bot.send_audio,
+                "video": self._bot.send_video,
+                "document": self._bot.send_document,
+            }
+            _send_fn = _send_map.get(tg_type, self._bot.send_document)
+
+            if _is_url:
+                _kwargs: Dict[str, Any] = {tg_type: _resolved_path, "disable_notification": True}
+                if caption:
+                    _kwargs["caption"] = caption[:1024]
+                if tg_type == "audio" and caption:
+                    _kwargs["title"] = caption[:64]
+                _msg = await _send_fn(staging_id, **_kwargs)
+            else:
+                with open(_resolved_path, "rb") as _fh:
+                    _kwargs = {tg_type: _fh, "disable_notification": True}
+                    if caption:
+                        _kwargs["caption"] = caption[:1024]
+                    if tg_type == "audio" and caption:
+                        _kwargs["title"] = caption[:64]
+                    _msg = await _send_fn(staging_id, **_kwargs)
+
+            _media_attr = getattr(_msg, tg_type, None)
+            if tg_type == "photo" and _msg.photo:
+                _media_attr = _msg.photo[-1]
+            _file_id = getattr(_media_attr, "file_id", None)
+            if not _file_id:
+                return SendResult(success=False, error="guest_media: staging upload returned no file_id")
+            self._guest_file_id_cache[_cache_key] = _file_id
+
+            if _chat_id_str not in self._guest_staged_media:
+                # Reserve this file_id for native delivery in on_processing_complete.
+                # Derive a title from the filename for types that require it (audio, video, document).
+                _stem = os.path.splitext(os.path.basename(local_path))[0] or tg_type.capitalize()
+                self._guest_staged_media[_chat_id_str] = {
+                    "type": tg_type, "file_id": _file_id,
+                    "caption": caption or "", "title": _stem[:64],
+                }
+                logger.info("[%s] guest media queued for native delivery (type=%s chat=%s)",
+                            self.name, tg_type, _chat_id_str)
+            else:
+                # Second or later media item: note it for the DM mention.
+                self._guest_pending_media.setdefault(_chat_id_str, []).append({
+                    "type": tg_type, "file_id": _file_id, "caption": caption or "",
+                })
+                logger.info("[%s] guest extra media staged (type=%s chat=%s)", self.name, tg_type, _chat_id_str)
+
+            return SendResult(success=True, message_id=str(_msg.message_id))
+
+        except Exception as _e:
+            logger.warning("[%s] _guest_media_send failed (type=%s path=%s): %s",
+                           self.name, tg_type, local_path, _e)
+            return SendResult(success=False, error=str(_e))
+
     async def _handle_guest_message_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle guest_message updates (Bot API 10.0 guest bot feature).
 
@@ -6404,37 +6645,22 @@ class TelegramAdapter(BasePlatformAdapter):
         # Register chat before _should_process_message so send() guards work.
         self._pending_guest_queries[chat_id_str] = guest_query_id
         self._guest_only_chats.add(chat_id_str)
+        self._guest_message_texts[chat_id_str] = text
 
         if not self._should_process_message(msg):
             self._pending_guest_queries.pop(chat_id_str, None)
             self._guest_only_chats.discard(chat_id_str)
+            self._guest_staged_media.pop(chat_id_str, None)
+            self._guest_pending_media.pop(chat_id_str, None)
             return
 
-        # Phase 1: fire a stub immediately so the user sees a progress verb
-        # while the LLM processes.  answerGuestQuery consumes the query_id; on
-        # success we save inline_message_id for progressive edits in phase 2.
-        _imi: Optional[str] = None
-        if self._bot:
-            _verb = random.choice(_THINKING_VERBS)
-            _stub = {
-                "type": "article",
-                "id": "thinking",
-                "title": f"{_verb}...",
-                "input_message_content": {"message_text": f"⏳ {_verb}..."},
-            }
-            try:
-                _stub_resp = await self._bot.do_api_request(
-                    "answerGuestQuery",
-                    api_kwargs={"guest_query_id": guest_query_id, "result": _stub},
-                )
-                _imi = _stub_resp.get("inline_message_id") if isinstance(_stub_resp, dict) else None
-                logger.info("[%s] guest stub sent (chat=%s inline_message_id=%s)", self.name, chat_id_str, _imi)
-            except Exception as _stub_err:
-                logger.warning(
-                    "[%s] guest stub failed (chat=%s): %s — will fall back to answerGuestQuery",
-                    self.name, chat_id_str, _stub_err,
-                )
-        self._guest_inline_message_ids[chat_id_str] = _imi
+        # Stub is NOT fired here — the slot stays open so media tools can claim it
+        # for native delivery.  send() fires the stub lazily on the first non-media
+        # tool-progress call; if no tools run (file already cached), the slot stays
+        # open all the way to on_processing_complete which delivers natively.
+        # Sentinel False = "slot open, stub not fired yet" (distinguishes from
+        # None = "stub fired but Telegram returned no inline_message_id").
+        self._guest_inline_message_ids[chat_id_str] = False
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
@@ -7443,32 +7669,83 @@ class TelegramAdapter(BasePlatformAdapter):
         _gc_id = str(getattr(event.source, "chat_id", None) or "")
         if _gc_id:
             _guest_qid = self._pending_guest_queries.pop(_gc_id, None)
-            _guest_imi = self._guest_inline_message_ids.pop(_gc_id, None)
+            # Sentinel semantics for _guest_inline_message_ids:
+            #   False  → stub never fired, answerGuestQuery slot is still open
+            #   None   → stub fired but API returned no inline_message_id
+            #   str    → stub fired, real imi for editMessageText / edit_message
+            _guest_imi_raw = self._guest_inline_message_ids.pop(_gc_id, False)
+            _stub_fired = _guest_imi_raw is not False  # True if stub was attempted
+            _guest_imi = _guest_imi_raw if isinstance(_guest_imi_raw, str) else None
+            _slot_open = not _stub_fired  # slot available for answerGuestQuery
             _buffered = self._guest_reply_buffer.pop(_gc_id, "")
+            _staged_media = self._guest_staged_media.pop(_gc_id, None)
+            _pending_media = self._guest_pending_media.pop(_gc_id, [])
+            self._guest_message_texts.pop(_gc_id, None)
             self._guest_only_chats.discard(_gc_id)
             if (_guest_qid or _guest_imi) and self._bot:
-                if _guest_imi and not _buffered:
-                    # Stream consumer drove delivery via progressive editMessageText
-                    # calls; nothing left to do here.
-                    logger.debug(
-                        "[%s] guest reply delivered by stream consumer (chat=%s)",
-                        self.name, _gc_id,
-                    )
-                else:
-                    _plain = _strip_mdv2(self.format_message(_buffered)).strip() if _buffered else ""
-                    _reply_text = _plain[:4096] or "⚠️ Sorry, something went wrong. Please try again."
-                    try:
+                _plain = _strip_mdv2(self.format_message(_buffered)).strip() if _buffered else ""
+                # Notes for extra media items beyond the first (delivered natively).
+                if _pending_media:
+                    _emoji_map = {"photo": "📷", "audio": "🎵", "video": "🎬", "document": "📎"}
+                    _media_notes = []
+                    for _m in _pending_media[:5]:
+                        _em = _emoji_map.get(_m.get("type", "document"), "📎")
+                        _mtitle = (_m.get("caption") or "file").strip()
+                        _media_notes.append(f"{_em} *{_mtitle}* — file ready. DM me to receive it.")
+                    _plain = (_plain[:3900] + "\n\n" + "\n".join(_media_notes)).strip() if _plain else "\n".join(_media_notes)
+                _reply_text = _plain[:4096] or "⚠️ Sorry, something went wrong. Please try again."
+                try:
+                    if _staged_media and _guest_qid and _slot_open:
+                        # Native media delivery: slot is open.
+                        # Put LLM text as the caption inside the answerGuestQuery result
+                        # so media and text arrive as a single message.
+                        _sm_type = _staged_media["type"]
+                        _sm_fid = _staged_media["file_id"]
+                        _sm_cap = _staged_media.get("caption", "")
+                        _file_field = f"{_sm_type}_file_id"
+                        # Use buffered LLM text as caption; fall back to the media's own caption.
+                        # Never use the error-fallback text (_reply_text) as a caption — it only
+                        # applies to text-only delivery where an empty buffer genuinely means failure.
+                        _delivery_caption = (_plain[:1024] if _plain else _sm_cap[:1024]) or None
+                        _sm_result: Dict[str, Any] = {
+                            "type": _sm_type,
+                            "id": f"guest_{_sm_type}",
+                            _file_field: _sm_fid,
+                        }
+                        if _delivery_caption:
+                            _sm_result["caption"] = _delivery_caption
+                        # title is required for audio, video, document types.
+                        if _sm_type in ("audio", "video", "document"):
+                            _sm_result["title"] = (_staged_media.get("title") or _sm_cap or _sm_type.capitalize())[:64]
+                        _sm_resp = await self._bot.do_api_request(
+                            "answerGuestQuery",
+                            api_kwargs={"guest_query_id": _guest_qid, "result": _sm_result},
+                        )
+                        _sm_imi = _sm_resp.get("inline_message_id") if isinstance(_sm_resp, dict) else None
+                        logger.info("[%s] guest native media delivered (type=%s chat=%s imi=%s)",
+                                    self.name, _sm_type, _gc_id, _sm_imi)
+                    elif _stub_fired:
+                        # Stub consumed the slot as text (non-media tool triggered it).
+                        # If media was also staged (downloaded after the stub fired),
+                        # we can't embed it in the group — tell the user it's ready.
+                        if _staged_media:
+                            _emoji_map = {"photo": "📷", "audio": "🎵", "video": "🎬", "document": "📎"}
+                            _em = _emoji_map.get(_staged_media.get("type", "document"), "📎")
+                            _sm_title = (_staged_media.get("title") or _staged_media.get("caption") or "file").strip()
+                            _media_note = f"{_em} *{_sm_title}* — file ready. Ask me to post it here and I'll send it directly."
+                            _plain = (_plain[:3900] + "\n\n" + _media_note).strip() if _plain else _media_note
+                            _reply_text = _plain[:4096] or "⚠️ Sorry, something went wrong. Please try again."
                         if _guest_imi:
-                            # Streaming started but buffer has content — stub was
-                            # placed but the stream consumer fell back to buffer mode
-                            # (e.g. edit_message flood-fallback).  Do a final edit.
+                            # edit_message() keeps _guest_reply_buffer current on every streaming
+                            # chunk, so _reply_text here reflects the final streamed content.
+                            # If the stream consumer's own finalize edit already succeeded,
+                            # Telegram returns "message is not modified" — handled below.
                             await self._bot.do_api_request(
                                 "editMessageText",
                                 api_kwargs={"inline_message_id": _guest_imi, "text": _reply_text},
                             )
-                            logger.info("[%s] guest reply edited (buffered fallback, chat=%s)", self.name, _gc_id)
-                        else:
-                            # No imi: stub failed — answerGuestQuery still usable.
+                        elif _guest_qid:
+                            # Stub fired but no imi returned — try answerGuestQuery article.
                             _gq_result = {
                                 "type": "article",
                                 "id": "reply",
@@ -7479,21 +7756,44 @@ class TelegramAdapter(BasePlatformAdapter):
                                 "answerGuestQuery",
                                 api_kwargs={"guest_query_id": _guest_qid, "result": _gq_result},
                             )
-                            logger.info("[%s] answerGuestQuery fallback flushed (chat=%s)", self.name, _gc_id)
-                    except Exception as _flush_err:
-                        if "not modified" in str(_flush_err).lower():
-                            # The stream consumer already finalized with identical text;
-                            # this idempotent re-render is the truncation safety net, so
-                            # a no-op edit here is expected, not an error.
-                            logger.debug(
-                                "[%s] guest final re-render idempotent (chat=%s)",
-                                self.name, _gc_id,
+                        logger.info("[%s] guest stub updated (chat=%s staged_media=%s imi=%s)",
+                                    self.name, _gc_id, bool(_staged_media), _guest_imi)
+                    else:
+                        # Slot still open (no tools ran, or all tools were media tools).
+                        if not _buffered:
+                            # Buffer is empty — _message_handler returned None without
+                            # streaming anything. This happens when the gateway rejected
+                            # the sender (unauthorized user, no user_id, etc.).
+                            # Reply with a terse refusal rather than the generic "sorry".
+                            _gq_result = {
+                                "type": "article",
+                                "id": "reply",
+                                "title": "Not authorized",
+                                "input_message_content": {"message_text": "⛔ Not authorized."},
+                            }
+                            await self._bot.do_api_request(
+                                "answerGuestQuery",
+                                api_kwargs={"guest_query_id": _guest_qid, "result": _gq_result},
                             )
+                            logger.info("[%s] guest unauthorized reply (chat=%s)", self.name, _gc_id)
                         else:
-                            logger.warning(
-                                "[%s] guest reply flush failed (chat=%s): %s",
-                                self.name, _gc_id, _flush_err,
+                            # Text-only response: deliver as article via answerGuestQuery.
+                            _gq_result = {
+                                "type": "article",
+                                "id": "reply",
+                                "title": "Reply",
+                                "input_message_content": {"message_text": _reply_text},
+                            }
+                            await self._bot.do_api_request(
+                                "answerGuestQuery",
+                                api_kwargs={"guest_query_id": _guest_qid, "result": _gq_result},
                             )
+                            logger.info("[%s] guest text reply delivered (chat=%s)", self.name, _gc_id)
+                except Exception as _flush_err:
+                    logger.warning(
+                        "[%s] guest reply flush failed (chat=%s): %s",
+                        self.name, _gc_id, _flush_err,
+                    )
 
         if not self._reactions_enabled():
             return

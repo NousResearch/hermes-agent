@@ -63,7 +63,7 @@ jobs:
       # required check never hangs.
       - name: Set up Docker Buildx
         if: github.event_name != 'pull_request'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       # Build once, load into the local daemon for smoke testing.  Cached
       # to gha with a per-arch scope; the push step below reuses every
@@ -205,7 +205,7 @@ jobs:
       # arm64 build runs only on push-to-main and release (see build-amd64).
       - name: Set up Docker Buildx
         if: github.event_name != 'pull_request'
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       # Log in to ghcr.io so the registry-backed build cache below can be
       # read (cache-from) on every event and written (cache-to) on
@@ -311,7 +311,7 @@ jobs:
           merge-multiple: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5  # v4.1.0
 
       - name: Log in to Docker Hub
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0

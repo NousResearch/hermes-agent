@@ -535,3 +535,104 @@ def test_is_available_cloud_requires_api_key(monkeypatch, tmp_path):
     assert Mem0MemoryProvider().is_available() is False
     monkeypatch.setenv("MEM0_API_KEY", "cloud-key")
     assert Mem0MemoryProvider().is_available() is True
+
+
+def test_search_threads_keyword_search_to_the_wire():
+    """Regression (PR #102 review, thread 1): keyword_search must reach the POST body.
+
+    The param-drop fix listed keyword_search among the four fixed params, but
+    initialize() never read it into self._keyword_search and neither call-site
+    forwarded it, so `keyword_search: true` in mem0.json was a silent no-op. The
+    client.search() signature accepts it; assert a non-None value lands in the body
+    and that None is OMITTED (server resolves its own default — INV-8(i)).
+    """
+    from importlib import import_module
+    mod = import_module("plugins.memory.mem0")
+    client = mod._DirectRestMem0Client(
+        host="http://mem0.test", admin_api_key="k", agent_id="apollo", user_id="ace"
+    )
+    sent = []
+
+    def _fake_request(method, path, *, body=None, params=None):
+        sent.append({"method": method, "path": path, "body": body, "params": params})
+        return {"results": []}
+
+    client._request = _fake_request
+
+    # keyword_search=True must appear on the wire
+    client.search(query="q", keyword_search=True, top_k=5)
+    assert sent[-1]["body"].get("keyword_search") is True
+
+    # keyword_search=False is an explicit value -> also on the wire (caller intent)
+    client.search(query="q", keyword_search=False, top_k=5)
+    assert sent[-1]["body"].get("keyword_search") is False
+
+    # keyword_search=None (unset) -> OMITTED so the server default applies
+    client.search(query="q", keyword_search=None, top_k=5)
+    assert "keyword_search" not in sent[-1]["body"]
+
+
+def test_keyword_search_config_is_resolved_and_forwarded_from_both_call_sites(monkeypatch, tmp_path):
+    """Regression (PR #102 review, thread 1): `keyword_search: true` in mem0.json must
+    be read by initialize() into self._keyword_search and forwarded by BOTH the
+    queue_prefetch and mem0_search call-sites."""
+    import json as _json
+    from importlib import import_module
+    mod = import_module("plugins.memory.mem0")
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    (tmp_path / "mem0.json").write_text(_json.dumps({
+        "host": "http://mem0.test", "admin_api_key": "k",
+        "user_id": "ace", "agent_id": "apollo",
+        "keyword_search": True,
+    }))
+
+    provider = mod.Mem0MemoryProvider()
+    provider.initialize("sess-kw")
+    # init resolved the flag off the file
+    assert provider._keyword_search is True
+
+    sent = []
+
+    class _FakeClient:
+        def search(self, **kw):
+            sent.append(kw)
+            return {"results": []}
+
+    monkeypatch.setattr(provider, "_get_client", lambda: _FakeClient())
+
+    # mem0_search call-site forwards it
+    provider.handle_tool_call("mem0_search", {"query": "what runs the relay"})
+    assert any(c.get("keyword_search") is True for c in sent), \
+        "mem0_search did not forward keyword_search to the wire"
+
+    # queue_prefetch call-site forwards it (run synchronously by joining the thread)
+    sent.clear()
+    provider.queue_prefetch("what runs the relay", session_id="sess-kw")
+    t = getattr(provider, "_prefetch_thread", None)
+    if t is not None:
+        t.join(timeout=5)
+    assert any(c.get("keyword_search") is True for c in sent), \
+        "queue_prefetch did not forward keyword_search to the wire"
+
+
+def test_temporal_the_nth_does_not_fire_on_rank_ordinals():
+    """Regression (PR #102 review, thread 2): the bare-"the Nth" day-of-month pattern
+    must NOT fire on rank/enumeration ordinals ("the 3rd result", "the 1st warning"),
+    which would silently promote memories from that calendar day. Real date phrasings
+    ("on the 21st") must still match."""
+    from plugins.memory.mem0.temporal_parse import _RE_THE_NTH
+
+    rank_phrases = [
+        "show me the 3rd result", "what was the 1st warning I got",
+        "recall the 2nd item", "the 4th example please", "the 5th option",
+        "the 10th row", "the 2nd message", "open the 3rd page",
+    ]
+    for q in rank_phrases:
+        assert _RE_THE_NTH.search(q) is None, f"false-positive on rank ordinal: {q!r}"
+
+    date_phrases = [
+        "on the 21st", "what did we ship on the 20th",
+        "the 21st we deployed the fix", "on the 1st",
+    ]
+    for q in date_phrases:
+        assert _RE_THE_NTH.search(q) is not None, f"missed real date: {q!r}"

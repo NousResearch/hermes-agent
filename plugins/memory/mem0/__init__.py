@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -29,6 +30,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
+
+from .temporal_parse import created_at_in_window, parse_temporal_window
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,14 @@ _DEFAULT_DESTRUCTIVE = {
 # Capture-mode values that mean "auto-capture ON" (per-turn sync_turn write).
 # Anything else (notably "off") = recall-only.
 _CAPTURE_ON = ("auto", "on", "true", "1")
+
+# W3-TEMPORAL defaults (all overridable via $HERMES_HOME/mem0.json).
+# tz = the calendar-day reference zone for "the 20th"/"yesterday" (PT, matching the
+# digest's DST-correct PT-day bounds). overfetch = how many candidates to pull from
+# /search before the in-window boost re-rank (the window can favour rows below the
+# top_k semantic cut, so we need a deeper pool to surface them — spec §2.1).
+_TEMPORAL_DEFAULT_TZ = "America/Los_Angeles"
+_TEMPORAL_DEFAULT_OVERFETCH = 50
 
 
 def resolve_capture(env_value: Optional[str], config_value: Optional[str]) -> tuple:
@@ -117,6 +128,10 @@ def _load_config() -> dict:
         # user memory scope across Discord/Telegram/CLI sender ids. When false,
         # gateway-provided user_id continues to win exactly as today.
         "pin_user_id": False,
+        # Prefetch join ceiling (seconds): how long a turn waits at start for the
+        # background mem0 search (now incl. rerank) before proceeding. Hit = the turn
+        # proceeds with whatever memory finished. Behavioral config, not a secret.
+        "prefetch_join_timeout_s": float(os.environ.get("MEM0_PREFETCH_JOIN_TIMEOUT_S", "10") or "10"),
         "rerank": True,
         "keyword_search": False,
     }
@@ -235,11 +250,26 @@ class _DirectRestMem0Client:
                 body[key] = kwargs[key]
         return self._request("POST", "/memories", body=body)
 
-    def search(self, query=None, filters=None, rerank=False, top_k=10, **kwargs):
+    def search(self, query=None, filters=None, rerank=None, top_k=None,
+               keyword_search=None, reference_date=None, **kwargs):
         # reads scope to user_id only (scope_agent=False): cross-session recall +
         # match historical agent-scoped-without-user memories. Explicit agent_id in
         # filters is still honored by _scope.
         body = {"query": query or "", **self._scope(filters, scope_agent=False)}
+        # Retrieval flags MUST reach the wire. The param-drop bug: this body was built
+        # with only query+scope, so rerank/keyword_search/top_k were silently discarded
+        # and rerank was a no-op on the wire for months. Put every caller-set flag in the
+        # POST body. A None flag is OMITTED so the server resolves it from its settings
+        # default (INV-8(i)/INV-10); only the two enumerated call-sites (queue_prefetch,
+        # mem0_search) send explicit values — every other caller passes None.
+        for _flag_key, _flag_val in (
+            ("rerank", rerank),
+            ("keyword_search", keyword_search),
+            ("top_k", top_k),
+            ("reference_date", reference_date),
+        ):
+            if _flag_val is not None:
+                body[_flag_key] = _flag_val
         response = self._request("POST", "/search", body=body)
         try:
             limit = int(top_k)
@@ -296,13 +326,14 @@ SEARCH_SCHEMA = {
     "name": "mem0_search",
     "description": (
         "Search memories by meaning. Returns relevant facts ranked by similarity. "
-        "Set rerank=true for higher accuracy on important queries."
+        "Reranking follows the configured profile by default; set rerank=false to "
+        "skip it for a faster, lower-precision search."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "What to search for."},
-            "rerank": {"type": "boolean", "description": "Enable reranking for precision (default: false)."},
+            "rerank": {"type": "boolean", "description": "Override reranking for this query (default: the configured rerank profile)."},
             "top_k": {"type": "integer", "description": "Max results (default: 10, max: 50)."},
         },
         "required": ["query"],
@@ -409,10 +440,14 @@ class Mem0MemoryProvider(MemoryProvider):
         self._user_id = "hermes-user"
         self._agent_id = "hermes"
         self._rerank = True
+        self._temporal_search = False
+        self._temporal_tz = _TEMPORAL_DEFAULT_TZ
+        self._temporal_overfetch = _TEMPORAL_DEFAULT_OVERFETCH
         self._capture = "auto"
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
+        self._prefetch_join_timeout_s = 10.0
         self._sync_thread = None
         # Circuit breaker state
         self._consecutive_failures = 0
@@ -530,6 +565,48 @@ class Mem0MemoryProvider(MemoryProvider):
     def _truthy(value: Any) -> bool:
         return str(value).strip().lower() in ("1", "true", "yes", "on")
 
+    # Exact-token query detector (W2-RERANK gate). The cross-encoder reranker is a
+    # SEMANTIC relevance model — on exact-identifier lookups (IP / port / email /
+    # long hex / dotted-or-hyphenated ID) it DEMOTES the exact-match row that RRF +
+    # the exact-token arm already rank #1 (measured on the clone TEST split: ip 10→3,
+    # email 2→0). So when a query is dominated by an exact token, force rerank OFF and
+    # let RRF own it. Mirrors the server's `_EXACT_TOKEN_RE` shape so the gate matches
+    # the arm that wins these queries.
+    _EXACT_TOKEN_RE = re.compile(
+        r"\b(?:\d{1,3}\.){3}\d{1,3}\b"                 # IPv4
+        r"|\bport\s+\d{2,5}\b"                          # "port 8443"
+        r"|\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}\b" # email
+        r"|\b[0-9a-f]{8,}\b"                            # long hex (commit/firmware/id)
+        r"|\b[a-z0-9]+(?:[.\-_][a-z0-9]+){2,}\b",       # dotted/hyphen/underscore compound id
+        re.I,
+    )
+
+    @classmethod
+    def _is_exact_token_query(cls, query: Optional[str]) -> bool:
+        """True when the query is an exact-identifier lookup → rerank should stay OFF
+        (RRF + the exact-token arm already nail these; the cross-encoder regresses them)."""
+        if not query:
+            return False
+        return bool(cls._EXACT_TOKEN_RE.search(query))
+
+    def _rerank_killed(self) -> bool:
+        """Runtime kill-switch for rerank, the correctness canary's auto-revert surface
+        (INV-8). Read FRESH from mem0.json each call (NOT cached at init) so the canary
+        can flip `retrieval_kill.rerank: true` and have the live plugin honor it on the
+        very next turn — no gateway restart. Targeted read (just the one key) rather than
+        a full _load_config() env-default reconstruction, because this is on the per-turn
+        hot path (queue_prefetch + every mem0_search). Fail-open: a missing file / read /
+        parse error never forces rerank off and never crashes recall."""
+        try:
+            from hermes_constants import get_hermes_home
+            cfg_path = get_hermes_home() / "mem0.json"
+            kill = (json.loads(cfg_path.read_text(encoding="utf-8")).get("retrieval_kill") or {})
+            return self._truthy(kill.get("rerank", False))
+        except Exception:
+            return False
+
+
+
     @staticmethod
     def _resolve_orig_lane(kwargs: Dict[str, Any]) -> str:
         """Best-effort lane/source label for pin-window provenance.
@@ -551,6 +628,10 @@ class Mem0MemoryProvider(MemoryProvider):
         self._admin_api_key = str(self._config.get("admin_api_key", "") or "").strip()
         self._ca_bundle = str(self._config.get("ca_bundle", "") or "").strip()
         self._pin_user_id = self._truthy(self._config.get("pin_user_id", False))
+        try:
+            self._prefetch_join_timeout_s = float(self._config.get("prefetch_join_timeout_s", 10.0) or 10.0)
+        except (TypeError, ValueError):
+            self._prefetch_join_timeout_s = 10.0
         raw_gateway_user_id = kwargs.get("user_id")
         configured_user_id = str(self._config.get("user_id") or "").strip()
         if self._pin_user_id:
@@ -569,6 +650,30 @@ class Mem0MemoryProvider(MemoryProvider):
             self._orig_lane = None
         self._agent_id = self._config.get("agent_id", "hermes")
         self._rerank = self._config.get("rerank", True)
+        # keyword_search: hybrid BM25+semantic toggle. Resolved here at init (config/env
+        # floor) and threaded to the client search call at BOTH enumerated call-sites so
+        # setting `keyword_search: true` in mem0.json actually reaches the wire (the
+        # param-drop fix listed it but initialize never read it -> it was a silent no-op).
+        # None/unset -> omitted from the body so the server resolves its own default
+        # (INV-8(i)).
+        self._keyword_search = self._config.get("keyword_search", None)
+        # W3-TEMPORAL (tau_m created_at window) — plugin-side, config-gated, reversible
+        # (INV-4). Off by default so deploy is inert until the flag flips. When on,
+        # mem0_search detects a temporal expression, resolves it to a created_at
+        # [start,end) UTC window (DST-correct PT-day bounds), over-fetches, and
+        # boosts in-window candidates to the top (recency as a BOOST, never a hard
+        # filter — the best in-window match is never dropped, spec 2.1). This
+        # changes only WHICH rows rank, not the injected payload size/prefix (INV-3).
+        self._temporal_search = self._truthy(self._config.get("temporal_search", False))
+        self._temporal_tz = str(
+            self._config.get("temporal_tz", _TEMPORAL_DEFAULT_TZ) or _TEMPORAL_DEFAULT_TZ
+        ).strip()
+        try:
+            self._temporal_overfetch = max(
+                1, int(self._config.get("temporal_overfetch", _TEMPORAL_DEFAULT_OVERFETCH))
+            )
+        except (ValueError, TypeError):
+            self._temporal_overfetch = _TEMPORAL_DEFAULT_OVERFETCH
         # Capture mode: "auto" (default) syncs every completed turn to Mem0 for
         # server-side extraction. "off"/"manual" keeps recall (prefetch + search)
         # and explicit mem0_conclude writes, but skips per-turn auto-capture —
@@ -666,6 +771,25 @@ class Mem0MemoryProvider(MemoryProvider):
         """
         return [m for m in (memories or []) if not cls._is_forgotten(m)]
 
+    @staticmethod
+    def _apply_temporal_boost(results: list, window) -> list:
+        """W3-TEMPORAL: stable-partition results so in-window candidates rank first.
+
+        Recency is a BOOST, not a hard filter (spec §2.1): rows whose created_at
+        falls in the [start,end) UTC window move ahead of out-of-window rows, but
+        every row is retained and relative order WITHIN each group is preserved
+        (Python's sort is stable) — so the best in-window match is never dropped,
+        and an out-of-window semantic hit still surfaces if nothing in-window beats
+        it. Rows missing/unparseable created_at sort as out-of-window (never
+        promoted on a bad timestamp).
+        """
+        if not results:
+            return results
+        return sorted(
+            results,
+            key=lambda r: 0 if created_at_in_window(r.get("created_at"), window) else 1,
+        )
+
     def system_prompt_block(self) -> str:
         return (
             "# Mem0 Memory\n"
@@ -680,7 +804,7 @@ class Mem0MemoryProvider(MemoryProvider):
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
-            self._prefetch_thread.join(timeout=3.0)
+            self._prefetch_thread.join(timeout=self._prefetch_join_timeout_s)
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""
@@ -695,10 +819,25 @@ class Mem0MemoryProvider(MemoryProvider):
         def _run():
             try:
                 client = self._get_client()
+                # INV-8(ii) PREFETCH profile (the every-turn hot path). Ace's call
+                # (2026-06-24): rerank RIDES prefetch too (the cross-encoder's +40
+                # semantic / +11 temporal win is worth it), bounded by the prefetch
+                # join ceiling (now 10s, config prefetch_join_timeout_s). Two gates keep
+                # it honest: (1) exact-token queries skip rerank — the cross-encoder
+                # REGRESSES IP/email/port that RRF already nails; (2) a runtime kill-flag
+                # (mem0.json retrieval_kill.rerank) the correctness canary can flip to
+                # auto-revert without a redeploy (INV-8 control surface). An EXPLICIT flag
+                # — one of exactly two enumerated call-sites that send retrieval flags.
+                _pf_rerank = (
+                    self._truthy(self._rerank)
+                    and not self._is_exact_token_query(query)
+                    and not self._rerank_killed()
+                )
                 results = self._drop_forgotten(self._unwrap_results(client.search(
                     query=query,
                     filters=self._read_filters(),
-                    rerank=self._rerank,
+                    rerank=_pf_rerank,
+                    keyword_search=self._keyword_search,
                     top_k=5,
                 )))
                 if results:
@@ -777,16 +916,52 @@ class Mem0MemoryProvider(MemoryProvider):
             query = args.get("query", "")
             if not query:
                 return tool_error("Missing required parameter: query")
-            rerank = args.get("rerank", False)
+            # INV-8(ii) rerank profile (the deliberate precision path): when the model
+            # does not pass rerank, fall back to the configured rerank profile
+            # (self._rerank, config-driven + reversible per INV-4), NOT the server
+            # default. The model may still force it per-call. Coerced because the config
+            # value can be a JSON string ("true"/"false") loaded from mem0.json. This is
+            # the SECOND of exactly two enumerated flag-passing call-sites (call-site lint).
+            rerank = args.get("rerank")
+            rerank = self._truthy(self._rerank if rerank is None else rerank)
+            # W2-RERANK gate: an exact-identifier lookup (IP/port/email/long-id) skips
+            # rerank — the cross-encoder demotes the exact match RRF already ranks #1.
+            # A model-explicit rerank=true overrides the exact-token gate (the gate only
+            # suppresses the PROFILE default), but the canary runtime kill-flag below is a
+            # HARD override that wins even over a model-explicit rerank=true (safety > the
+            # model's per-call preference; the canary only trips on a measured regression).
+            if rerank and args.get("rerank") is None and self._is_exact_token_query(query):
+                rerank = False
+            if rerank and self._rerank_killed():
+                rerank = False
             top_k = min(int(args.get("top_k", 10)), 50)
+            # W3-TEMPORAL: if the query carries a temporal expression and the feature
+            # is on, resolve it to a created_at [start,end) UTC window and over-fetch a
+            # deeper candidate pool so the in-window boost can surface a correctly-dated
+            # row that sits below the top_k semantic cut. No window / feature off → the
+            # fetch is byte-identical to before (fetch_k == top_k). This is NOT a third
+            # flag-passing call-site (INV-8): it only varies top_k, an already-enumerated
+            # flag on this call-site.
+            window = None
+            if self._temporal_search:
+                try:
+                    window = parse_temporal_window(query, tz_name=self._temporal_tz)
+                except Exception as e:  # never let a parse bug break recall
+                    logger.debug("Mem0 temporal parse failed (%s); ignoring window", e)
+                    window = None
+            fetch_k = max(top_k, self._temporal_overfetch) if window else top_k
             try:
                 results = self._drop_forgotten(self._unwrap_results(client.search(
                     query=query,
                     filters=self._read_filters(),
                     rerank=rerank,
-                    top_k=top_k,
+                    keyword_search=self._keyword_search,
+                    top_k=fetch_k,
                 )))
                 self._record_success()
+                if window is not None:
+                    results = self._apply_temporal_boost(results, window)
+                results = results[:top_k]
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})
                 items = [{"memory": r.get("memory", ""), "score": r.get("score", 0)} for r in results]

@@ -187,6 +187,13 @@ _LLM_SPECIFIC_NON_BEARER_PROVIDERS: Tuple[str, ...] = (
     "ANTHROPIC_API_KEY",
     "AZURE_OPENAI_API_KEY",
     "GEMINI_API_KEY",
+    # GOOGLE_API_KEY is an interchangeable alias for GEMINI_API_KEY in
+    # Hermes (auth.py keys Google on both; the native Gemini adapter
+    # accepts either) and authenticates the same generativelanguage
+    # LLM endpoint.  It belongs in the fail-closed tier too — otherwise
+    # an operator with only GOOGLE_API_KEY set who enables
+    # fail_on_uncovered_providers gets a false sense of coverage.
+    "GOOGLE_API_KEY",
 )
 
 
@@ -1155,8 +1162,13 @@ def write_proxy_config(config: Dict) -> Path:
     tmp_path = state / ".proxy.yaml.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False)
+    # Tighten perms on the temp file BEFORE the atomic replace so the
+    # final path is never briefly world-readable under a slack umask
+    # (the config embeds proxy token values).  chmod-after-replace would
+    # leave a TOCTOU window; the 0o700 state dir mitigates but same-uid
+    # processes could still race.
+    os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
     os.replace(tmp_path, out)
-    os.chmod(out, stat.S_IRUSR | stat.S_IWUSR)
     return out
 
 
@@ -1184,8 +1196,11 @@ def write_mappings(mappings: List[TokenMapping]) -> Path:
     tmp_path = state / ".mappings.json.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+    # chmod before the atomic replace — see write_proxy_config.  The
+    # mappings file holds proxy token values, so close the TOCTOU window
+    # rather than chmod-ing after the file is already at its final path.
+    os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
     os.replace(tmp_path, out)
-    os.chmod(out, stat.S_IRUSR | stat.S_IWUSR)
     return out
 
 

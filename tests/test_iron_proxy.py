@@ -392,6 +392,16 @@ def test_write_proxy_config_serializes_yaml(hermes_home, tmp_path):
     text = out.read_text(encoding="utf-8")
     assert "tunnel_listen" in text
     assert f"ca_cert: {ca_crt}" in text
+    # The rendered config embeds proxy token values — it must land at
+    # 0o600, and (TOCTOU) must never be transiently world-readable
+    # between the atomic replace and the chmod.  We chmod the temp file
+    # before the replace, so the final file is 0o600 from first byte.
+    import os as _os
+    mode = _os.stat(out).st_mode & 0o777
+    assert mode == 0o600, f"proxy.yaml perms {oct(mode)}, expected 0o600"
+    mappings_out = ip.write_mappings([_sample_mapping()])
+    mmode = _os.stat(mappings_out).st_mode & 0o777
+    assert mmode == 0o600, f"mappings.json perms {oct(mmode)}, expected 0o600"
 
 
 # ---------------------------------------------------------------------------
@@ -1360,6 +1370,7 @@ def test_blocked_providers_subset_of_uncovered(hermes_home, monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "AKIA-test")
     monkeypatch.setenv("GOOGLE_APPLICATION_CREDENTIALS", "/etc/gcp.json")
     monkeypatch.setenv("GEMINI_API_KEY", "g-test")
+    monkeypatch.setenv("GOOGLE_API_KEY", "g-test-alias")
 
     uncovered = set(ip.discover_uncovered_providers())
     blocked = set(ip.discover_blocked_providers())
@@ -1376,6 +1387,10 @@ def test_blocked_providers_subset_of_uncovered(hermes_home, monkeypatch):
     # LLM-specific providers ARE blocked.
     assert "ANTHROPIC_API_KEY" in blocked
     assert "GEMINI_API_KEY" in blocked
+    # GOOGLE_API_KEY is an alias for GEMINI_API_KEY (same generativelanguage
+    # LLM endpoint) — it must be in the fail-closed tier, not warn-only,
+    # or fail_on_uncovered_providers gives false coverage.
+    assert "GOOGLE_API_KEY" in blocked
 
 
 # ---------------------------------------------------------------------------

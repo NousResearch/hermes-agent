@@ -1929,24 +1929,16 @@ def run_conversation(
                     agent._last_usage = canonical_usage
 
                     # Attribute this call's input cost to the prompt-tail row —
-                    # the user/tool message that triggered the request. Pack
-                    # (total_input, cache_read) into its token_count. Guard on
-                    # role and on a non-packed existing value so we never clobber
-                    # an already-packed (negative) row. This mutates the live
-                    # `messages` list and JSON session log immediately; DB
-                    # persistence is best-effort and depends on the prompt-tail
-                    # row not having been flushed before this usage arrived
-                    # (the assistant row, packed pre-append, always persists).
-                    if messages:
-                        _tail = messages[-1]
-                        if isinstance(_tail, dict) and _tail.get("role") in ("user", "tool"):
-                            _tail_tc = _tail.get("token_count")
-                            if _tail_tc is None or _tail_tc >= 0:
-                                from hermes_token_codec import pack_input_tokens
-                                _tail["token_count"] = pack_input_tokens(
-                                    canonical_usage.prompt_tokens,
-                                    canonical_usage.cache_read_tokens,
-                                )
+                    # the user/tool message that triggered the request. Only a
+                    # user/tool tail is eligible (verified in the helper); an
+                    # assistant/system tail is skipped, not mis-attributed.
+                    # This mutates the live `messages` list and JSON session log
+                    # immediately; DB persistence is best-effort and depends on
+                    # the prompt-tail row not having been flushed before this
+                    # usage arrived (the assistant row, packed pre-append,
+                    # always persists).
+                    from hermes_token_codec import attribute_input_tokens_to_prompt_tail
+                    attribute_input_tokens_to_prompt_tail(messages, canonical_usage)
                     # Forward canonical token + cache buckets so context engines
                     # can make decisions on cache hit ratios / reasoning costs,
                     # not just legacy aggregate tokens. Legacy keys stay for

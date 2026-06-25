@@ -63,6 +63,48 @@ def pack_assistant_tokens(output_tokens: int, reasoning_tokens: int) -> int:
 def pack_input_tokens(total_input_tokens: int, cache_read_tokens: int) -> int:
     return pack_token_count(TAG_TOTAL_INPUT, total_input_tokens, TAG_CACHE_READ, cache_read_tokens)
 
+# Roles eligible to carry a call's input-token attribution. The prompt-tail
+# row that triggered an API call is always a user message (first turn) or a
+# tool-result message (subsequent turns). An assistant row is never the prompt
+# tail at response time — the reply is appended only afterwards — so an
+# assistant/system/developer tail (e.g. an assistant prefill) is skipped
+# rather than mis-attributed.
+INPUT_TOKEN_PROMPT_TAIL_ROLES = ("user", "tool")
+
+
+def attribute_input_tokens_to_prompt_tail(messages, canonical_usage) -> Optional[dict]:
+    """Bit-pack a call's (total_input, cache_read) onto the prompt-tail row.
+
+    Called right after an API response arrives, when ``messages[-1]`` is still
+    the message that triggered the request — the assistant reply has not been
+    appended yet. Attribution is applied ONLY when that tail is a user/tool
+    row (:data:`INPUT_TOKEN_PROMPT_TAIL_ROLES`) whose ``token_count`` is not
+    already bit-packed (negative); otherwise nothing is written. Mutates the
+    row in place and returns it, or returns ``None`` when no eligible tail
+    exists (empty list, non-dict tail, wrong role, or already-packed row).
+
+    ``canonical_usage`` only needs ``.prompt_tokens`` and ``.cache_read_tokens``
+    attributes. Kept here (not in conversation_loop) so the role/timing/
+    no-clobber invariants stay verifiable without the agent import chain.
+    """
+    if not messages:
+        return None
+    tail = messages[-1]
+    if not isinstance(tail, dict):
+        return None
+    if tail.get("role") not in INPUT_TOKEN_PROMPT_TAIL_ROLES:
+        return None
+    existing = tail.get("token_count")
+    if existing is not None and existing < 0:
+        # Already bit-packed (e.g. re-entry on a retried call) — don't clobber.
+        return None
+    tail["token_count"] = pack_input_tokens(
+        canonical_usage.prompt_tokens,
+        canonical_usage.cache_read_tokens,
+    )
+    return tail
+
+
 def resolve_message_tokens(role: str, token_count: Optional[int]) -> dict:
     out = {"input": 0, "output": 0, "cache_read": 0, "reasoning": 0}
     d = unpack_token_count(token_count)

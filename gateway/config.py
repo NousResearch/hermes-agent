@@ -854,6 +854,10 @@ def load_gateway_config() -> GatewayConfig:
             # other session-scope flags above).
             if "multiplex_profiles" in yaml_cfg:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
+            elif isinstance(yaml_cfg.get("gateway"), dict):
+                nested_mp = yaml_cfg["gateway"].get("multiplex_profiles")
+                if nested_mp is not None:
+                    gw_data["multiplex_profiles"] = nested_mp
 
             gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:

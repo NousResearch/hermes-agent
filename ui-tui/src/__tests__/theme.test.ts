@@ -308,4 +308,68 @@ describe('fromSkin', () => {
     expect(color.ok).toBe('#008000')
     expect(color.statusGood).toBe('#008000')
   })
+
+  it('overrides diff colors from skin keys', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const { color } = fromSkin(
+      {
+        diff_added: '#101010',
+        diff_removed: '#202020',
+        diff_added_text: '#303030',
+        diff_removed_text: '#404040'
+      },
+      {}
+    )
+
+    expect(color.diffAdded).toBe('#101010')
+    expect(color.diffRemoved).toBe('#202020')
+    expect(color.diffAddedWord).toBe('#303030')
+    expect(color.diffRemovedWord).toBe('#404040')
+  })
+
+  it('falls back to default diff colors when unset', async () => {
+    const { DEFAULT_THEME, fromSkin } = await importThemeWithCleanEnv()
+    const { color } = fromSkin({ banner_title: '#FF0000' }, {})
+
+    expect(color.diffAdded).toBe(DEFAULT_THEME.color.diffAdded)
+    expect(color.diffRemovedWord).toBe(DEFAULT_THEME.color.diffRemovedWord)
+  })
+
+  it('leaves the selected-completion text unset by default', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    expect(fromSkin({}, {}).color.completionCurrentText).toBe('')
+  })
+
+  it('maps completion_current_text from skins', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    expect(fromSkin({ completion_current_text: '#abcdef' }, {}).color.completionCurrentText).toBe('#abcdef')
+  })
+
+  it('exposes the bundled tagline/vendor brand defaults', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    const { brand } = fromSkin({}, {})
+
+    expect(brand.vendor).toBe('Nous Research')
+    expect(brand.tagline).toBe('Messenger of the Digital Gods')
+  })
+
+  it('overrides branding icon/tagline/vendor from skins', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    const { brand } = fromSkin({}, { icon: 'Ξ', tagline: 'Test Tagline', vendor_label: 'Acme' })
+
+    expect(brand.icon).toBe('Ξ')
+    expect(brand.tagline).toBe('Test Tagline')
+    expect(brand.vendor).toBe('Acme')
+  })
+
+  it('honors empty vendor/tagline overrides', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    const { brand } = fromSkin({}, { tagline: '', vendor_label: '' })
+
+    expect(brand.tagline).toBe('')
+    expect(brand.vendor).toBe('')
+  })
 })

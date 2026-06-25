@@ -249,7 +249,7 @@ export function FloatingOverlays({
                       otherwise shaves the last char off the display column
                       (e.g. /goal renders as /goa). */}
                   <Box flexShrink={0}>
-                    <Text bold color={theme.color.label}>
+                    <Text bold color={active && theme.color.completionCurrentText ? theme.color.completionCurrentText : theme.color.label}>
                       {' '}
                       {item.display}
                     </Text>
@@ -257,7 +257,7 @@ export function FloatingOverlays({
                   {item.meta ? (
                     <Text
                       backgroundColor={active ? theme.color.completionMetaCurrentBg : theme.color.completionMetaBg}
-                      color={theme.color.muted}
+                      color={active && theme.color.completionCurrentText ? theme.color.completionCurrentText : theme.color.muted}
                     >
                       {' '}
                       {item.meta}

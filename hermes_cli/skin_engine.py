@@ -193,6 +193,10 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯",
             "help_header": "(^_^)? Available Commands",
+            # Banner brand fields, overridable per skin like the entries above.
+            "icon": "⚕",
+            "vendor_label": "Nous Research",
+            "tagline": "Messenger of the Digital Gods",
         },
         "tool_prefix": "┊",
     },

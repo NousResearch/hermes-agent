@@ -8,6 +8,10 @@ export interface ThemeColors {
   completionCurrentBg: string
   completionMetaBg: string
   completionMetaCurrentBg: string
+  // Foreground for the *selected* completion row. Empty string = unset: the
+  // row keeps its label/muted text (today's behavior) and only the background
+  // flips. A skin sets `completion_current_text` to recolor the active row.
+  completionCurrentText: string
 
   label: string
   ok: string
@@ -42,6 +46,11 @@ export interface ThemeBrand {
   goodbye: string
   tool: string
   helpHeader: string
+  // Banner tagline and vendor credit, sourced from the skin's branding so
+  // they're overridable per skin like the other brand fields. Both render
+  // only when non-empty.
+  tagline: string
+  vendor: string
 }
 
 export interface Theme {
@@ -243,7 +252,9 @@ const BRAND: ThemeBrand = {
   welcome: 'Type your message or /help for commands.',
   goodbye: 'Goodbye! ⚕',
   tool: '┊',
-  helpHeader: '(^_^)? Commands'
+  helpHeader: '(^_^)? Commands',
+  tagline: 'Messenger of the Digital Gods',
+  vendor: 'Nous Research'
 }
 
 const cleanPromptSymbol = (s: string | undefined, fallback: string) => {
@@ -270,6 +281,7 @@ export const DARK_THEME: Theme = {
     completionCurrentBg: '#333355',
     completionMetaBg: '#1a1a2e',
     completionMetaCurrentBg: '#333355',
+    completionCurrentText: '',
 
     label: '#DAA520',
     ok: '#4caf50',
@@ -318,6 +330,7 @@ export const LIGHT_THEME: Theme = {
     completionCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
     completionMetaBg: '#F5F5F5',
     completionMetaCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
+    completionCurrentText: '',
 
     label: '#7A5A0F',
     ok: '#2E7D32',
@@ -548,6 +561,7 @@ export function fromSkin(
       completionCurrentBg,
       completionMetaBg,
       completionMetaCurrentBg,
+      completionCurrentText: c('completion_current_text') ?? '',
 
       label: c('ui_label') ?? d.color.label,
       ok: c('ui_ok') ?? d.color.ok,
@@ -566,21 +580,27 @@ export function fromSkin(
       statusCritical: d.color.statusCritical,
       selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
 
-      diffAdded: d.color.diffAdded,
-      diffRemoved: d.color.diffRemoved,
-      diffAddedWord: d.color.diffAddedWord,
-      diffRemovedWord: d.color.diffRemovedWord,
+      // Diff colors: skins may override line backgrounds (diff_added/
+      // diff_removed) and foregrounds (diff_added_text/diff_removed_text);
+      // unset keys fall back to the adaptive light/dark defaults.
+      diffAdded: c('diff_added') ?? d.color.diffAdded,
+      diffRemoved: c('diff_removed') ?? d.color.diffRemoved,
+      diffAddedWord: c('diff_added_text') ?? d.color.diffAddedWord,
+      diffRemovedWord: c('diff_removed_text') ?? d.color.diffRemovedWord,
       shellDollar: c('shell_dollar') ?? d.color.shellDollar
     },
 
     brand: {
       name: branding.agent_name ?? d.brand.name,
-      icon: d.brand.icon,
+      icon: branding.icon ?? d.brand.icon,
       prompt: cleanPromptSymbol(branding.prompt_symbol, d.brand.prompt),
       welcome: branding.welcome ?? d.brand.welcome,
       goodbye: branding.goodbye ?? d.brand.goodbye,
       tool: toolPrefix || d.brand.tool,
-      helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader)
+      helpHeader: branding.help_header ?? (helpHeader || d.brand.helpHeader),
+      // `?? ` (not `||`) so an explicit "" from a skin is preserved.
+      tagline: branding.tagline ?? d.brand.tagline,
+      vendor: branding.vendor_label ?? d.brand.vendor
     },
 
     bannerLogo,

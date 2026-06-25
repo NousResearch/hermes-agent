@@ -47,6 +47,14 @@ def main():
     for edir in extra_paths:
         sp = edir / site_packages_rel
         if not sp.exists():
+            # Multi-output derivations (e.g. torch's dev/lib/cxxdev outputs)
+            # have no site-packages dir — that's expected and harmless when a
+            # sibling output carries the Python modules. Log it anyway: a
+            # *silent* skip here is exactly what hid a dropped torch from
+            # PYTHONPATH and made "import torch fails but every other dep
+            # works" impossible to diagnose from the build log.
+            print('note: extra package path "{0}" has no {1} -- skipping (non-python output?)'.format(
+                edir, site_packages_rel), file=sys.stderr)
             continue
         # Read all dist-info names in this package
         dist_names = set()

@@ -887,6 +887,61 @@ class TestInit:
             )
             assert a._cache_ttl == "1h"
 
+    def test_codex_gpt55_autoraise_notice_can_be_suppressed(self):
+        """Notice suppression keeps the 85% Codex gpt-5.5 threshold enabled."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "compression": {
+                        "codex_gpt55_autoraise": True,
+                        "codex_gpt55_autoraise_notice": False,
+                    }
+                },
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="openai-codex",
+                model="gpt-5.5",
+                base_url="https://chatgpt.com/backend-api/codex",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert getattr(a, "context_compressor").threshold_percent == 0.85
+        assert getattr(a, "_compression_threshold_autoraised") == {"from": 0.5, "to": 0.85}
+        assert getattr(a, "_compression_warning") is None
+
+    def test_codex_gpt55_autoraise_notice_defaults_on(self):
+        """Default behaviour still informs gateway users about the automatic raise."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"compression": {"codex_gpt55_autoraise": True}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                provider="openai-codex",
+                model="gpt-5.5",
+                base_url="https://chatgpt.com/backend-api/codex",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert getattr(a, "context_compressor").threshold_percent == 0.85
+        assert getattr(a, "_compression_warning") is not None
+        assert "auto-compaction was raised to 85%" in getattr(a, "_compression_warning")
+
     def test_model_max_tokens_from_config(self):
         """model.max_tokens config populates the chat-completions request cap."""
         with (

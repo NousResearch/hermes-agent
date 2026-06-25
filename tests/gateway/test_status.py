@@ -669,6 +669,25 @@ class TestGatewayRuntimeStatus:
         assert payload["platforms"]["discord"]["error_code"] is None
         assert payload["platforms"]["discord"]["error_message"] is None
 
+    def test_write_runtime_status_records_platform_metrics(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        status.write_runtime_status(
+            platform="api_server",
+            platform_state="connected",
+            platform_metrics={
+                "last_heartbeat": "2026-06-25T00:00:00+00:00",
+                "metrics_today": {"requests": 3, "tokens": 42},
+            },
+        )
+
+        payload = status.read_runtime_status()
+        api_status = payload["platforms"]["api_server"]
+        assert api_status["state"] == "connected"
+        assert api_status["metrics"]["last_heartbeat"] == "2026-06-25T00:00:00+00:00"
+        assert api_status["metrics"]["metrics_today"]["requests"] == 3
+        assert api_status["metrics"]["metrics_today"]["tokens"] == 42
+
 
 class TestGetProcessStartTime:
     """Start-time fingerprint backing the PID-reuse guard (#43846 / #50468).

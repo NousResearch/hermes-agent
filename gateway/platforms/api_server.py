@@ -45,6 +45,7 @@ import re
 import sqlite3
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -103,6 +104,8 @@ DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
+API_SERVER_HEARTBEAT_SECONDS = 30.0
+API_SERVER_LATENCY_SAMPLE_LIMIT = 512
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
@@ -979,6 +982,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # Shutdown counts this reservation so the request cannot slip through
         # the drain between its first await and _run_agent()/task registration.
         self._pending_agent_requests: int = 0
+        self._metrics_day: str = self._metrics_day_key()
+        self._metrics_requests_today: int = 0
+        self._metrics_messages_today: int = 0
+        self._metrics_tokens_today: int = 0
+        self._metrics_latency_ms: List[float] = []
+        self._metrics_last_request_at: Optional[float] = None
+        self._metrics_last_heartbeat_at: Optional[float] = None
 
     def active_agent_work_count(self) -> int:
         """Return all live agent work owned by this API adapter.
@@ -1036,11 +1046,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _readiness_work_counts(self) -> tuple[int, int, int]:
         """Return bounded work counts from each subsystem's public state."""
-        active_api_runs = sum(
-            1
-            for status in self._run_statuses.values()
-            if status.get("status") in {"queued", "running", "waiting_for_approval"}
-        )
+        active_api_runs = self._active_structured_run_count()
         process_depth = 0
         active_delegations = 0
         try:
@@ -1056,6 +1062,14 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             pass
         return active_api_runs, process_depth, active_delegations
+
+    def _active_structured_run_count(self) -> int:
+        """Count structured runs that still have executable work."""
+        return sum(
+            1
+            for status in self._run_statuses.values()
+            if status.get("status") in {"queued", "running", "waiting_for_approval"}
+        )
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1095,6 +1109,89 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return default
         return max(0, value)
+
+    @staticmethod
+    def _metrics_day_key(timestamp: Optional[float] = None) -> str:
+        """Return the UTC day bucket for daily API metrics."""
+        return time.strftime("%Y-%m-%d", time.gmtime(timestamp or time.time()))
+
+    @staticmethod
+    def _iso_timestamp(timestamp: Optional[float]) -> Optional[str]:
+        if timestamp is None:
+            return None
+        return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+    def _reset_metrics_if_needed(self) -> None:
+        current_day = self._metrics_day_key()
+        if self._metrics_day == current_day:
+            return
+        self._metrics_day = current_day
+        self._metrics_requests_today = 0
+        self._metrics_messages_today = 0
+        self._metrics_tokens_today = 0
+        self._metrics_latency_ms.clear()
+
+    @staticmethod
+    def _total_tokens_from_usage(usage: Optional[Dict[str, Any]]) -> int:
+        if not isinstance(usage, dict):
+            return 0
+        try:
+            return max(0, int(usage.get("total_tokens") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _latency_p95_ms(samples: List[float]) -> Optional[float]:
+        if not samples:
+            return None
+        ordered = sorted(samples)
+        index = max(0, min(len(ordered) - 1, int(len(ordered) * 0.95 + 0.999999) - 1))
+        return round(ordered[index], 2)
+
+    def _api_server_status_payload(self, *, heartbeat_at: Optional[float] = None) -> Dict[str, Any]:
+        self._reset_metrics_if_needed()
+        heartbeat = self._metrics_last_heartbeat_at if heartbeat_at is None else heartbeat_at
+        return {
+            "host": self._host,
+            "port": self._port,
+            "active_runs": self._active_structured_run_count() + self._inflight_agent_runs,
+            "stored_runs": len(self._run_statuses),
+            "last_request_at": self._iso_timestamp(self._metrics_last_request_at),
+            "last_heartbeat": self._iso_timestamp(heartbeat),
+            "metrics_today": {
+                "day": self._metrics_day,
+                "requests": self._metrics_requests_today,
+                "messages": self._metrics_messages_today,
+                "tokens": self._metrics_tokens_today,
+                "latency_p95_ms": self._latency_p95_ms(self._metrics_latency_ms),
+            },
+        }
+
+    def _publish_runtime_status(self) -> None:
+        self._metrics_last_heartbeat_at = time.time()
+        self._write_runtime_status_safe(
+            "api_server_heartbeat",
+            platform_state="connected" if self.is_connected else "disconnected",
+            platform_metrics=self._api_server_status_payload(),
+        )
+
+    def _record_api_metrics(self, usage: Optional[Dict[str, Any]], latency_seconds: float) -> None:
+        self._reset_metrics_if_needed()
+        self._metrics_requests_today += 1
+        self._metrics_messages_today += 1
+        self._metrics_tokens_today += self._total_tokens_from_usage(usage)
+        self._metrics_last_request_at = time.time()
+        self._metrics_latency_ms.append(max(0.0, latency_seconds * 1000.0))
+        if len(self._metrics_latency_ms) > API_SERVER_LATENCY_SAMPLE_LIMIT:
+            del self._metrics_latency_ms[:-API_SERVER_LATENCY_SAMPLE_LIMIT]
+        self._publish_runtime_status()
+
+    async def _heartbeat_loop(self) -> None:
+        while self.is_connected:
+            self._publish_runtime_status()
+            if not self.is_connected:
+                break
+            await asyncio.sleep(API_SERVER_HEARTBEAT_SECONDS)
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -1550,6 +1647,15 @@ class APIServerAdapter(BasePlatformAdapter):
         runtime = read_runtime_status() or {}
         gw_state = runtime.get("gateway_state")
         gw_active = parse_active_agents(runtime.get("active_agents", 0))
+        platforms = runtime.get("platforms", {})
+        if not isinstance(platforms, dict):
+            platforms = {}
+        platforms = dict(platforms)
+        api_status = self._api_server_status_payload(heartbeat_at=time.time())
+        api_platform = dict(platforms.get("api_server", {}))
+        api_platform.setdefault("state", "connected" if self.is_connected else "disconnected")
+        api_platform["metrics"] = api_status
+        platforms["api_server"] = api_platform
         # This endpoint is served BY the gateway process, so it is by definition
         # alive — gateway_running is True. Derive busy/drainable from the same
         # shared contract /api/status uses so the two surfaces never disagree.
@@ -1569,7 +1675,10 @@ class APIServerAdapter(BasePlatformAdapter):
             "platform": "hermes-agent",
             "version": _hermes_version(),
             "gateway_state": gw_state,
-            "platforms": runtime.get("platforms", {}),
+            "platforms": platforms,
+            "api_server": api_status,
+            "metrics_today": api_status["metrics_today"],
+            "last_heartbeat": api_status["last_heartbeat"],
             "active_agents": gw_active,
             "gateway_busy": derive_gateway_busy(
                 gateway_running=True,
@@ -4268,10 +4377,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
+        started_at = time.perf_counter()
+        usage: Optional[Dict[str, Any]] = None
         try:
-            return await loop.run_in_executor(None, _run)
+            result, usage = await loop.run_in_executor(None, _run)
+            return result, usage
         finally:
             self._inflight_agent_runs -= 1
+            if usage is not None:
+                self._record_api_metrics(usage, time.perf_counter() - started_at)
 
     # ------------------------------------------------------------------
     # /v1/runs — structured event streaming
@@ -4566,7 +4680,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     }
                     return r, u
 
+                run_started_at = time.perf_counter()
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
+                self._record_api_metrics(usage, time.perf_counter() - run_started_at)
                 if run_id in self._stopping_run_ids:
                     _put_event_if_active({
                         "event": "run.cancelled",
@@ -5063,6 +5179,14 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._site.start()
 
             self._mark_connected()
+            self._publish_runtime_status()
+            heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            try:
+                self._background_tasks.add(heartbeat_task)
+            except TypeError:
+                pass
+            if hasattr(heartbeat_task, "add_done_callback"):
+                heartbeat_task.add_done_callback(self._background_tasks.discard)
             logger.info(
                 "[%s] API server listening on http://%s:%d (model: %s)",
                 self.name, self._host, self._port, self._model_name,

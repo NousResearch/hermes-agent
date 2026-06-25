@@ -90,6 +90,12 @@ class TestParseSchedule:
         assert result["kind"] == "interval"
         assert result["minutes"] == 30
 
+    def test_zero_interval_rejected(self):
+        # A zero interval re-fires every ticker loop (runaway). Reject at parse.
+        for expr in ("every 0m", "every 0h", "every 0d"):
+            with pytest.raises(ValueError):
+                parse_schedule(expr)
+
     def test_cron_expression(self):
         pytest.importorskip("croniter")
         result = parse_schedule("0 9 * * *")

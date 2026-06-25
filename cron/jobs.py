@@ -327,6 +327,15 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     if schedule_lower.startswith("every "):
         duration_str = schedule[6:].strip()
         minutes = parse_duration(duration_str)
+        # Reject a zero interval: compute_next_run would set next_run = now on
+        # every tick, so the job becomes due forever and re-fires each ticker
+        # loop — a runaway (for agent-backed jobs, a paid agent turn every
+        # tick). A simple typo like "every 0m" should fail loudly at create.
+        if minutes <= 0:
+            raise ValueError(
+                f"Interval must be at least 1 minute (got {duration_str!r}). "
+                f"Use e.g. 'every 30m', 'every 2h', 'every 1d'."
+            )
         return {
             "kind": "interval",
             "minutes": minutes,

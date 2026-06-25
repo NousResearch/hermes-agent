@@ -27,6 +27,33 @@ _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
 
 # ---------------------------------------------------------------------------
+# Core command name set -- built once from COMMAND_REGISTRY on first access.
+# Used to prevent skill aliases from colliding with built-in Hermes commands.
+# ---------------------------------------------------------------------------
+_core_command_names: Optional[set] = None
+
+
+def _get_core_command_names() -> set:
+    """Return the set of all built-in command names and aliases (no leading /).
+
+    Built once from ``COMMAND_REGISTRY`` and cached for the lifetime of the
+    process.  Aliases shadowing core commands are silently skipped.
+    """
+    global _core_command_names
+    if _core_command_names is not None:
+        return _core_command_names
+    try:
+        from hermes_cli.commands import COMMAND_REGISTRY
+        names: set = set()
+        for cmd in COMMAND_REGISTRY:
+            names.add(cmd.name)
+            names.update(cmd.aliases)
+        _core_command_names = names
+    except Exception:
+        _core_command_names = set()
+    return _core_command_names
+
+# ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
 #
 # When a user invokes a /skill (or /bundle), Hermes expands the turn into a
@@ -408,6 +435,41 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
                     }
+
+                    # ── Register aliases ──
+                    aliases = frontmatter.get('aliases', [])
+                    if isinstance(aliases, list):
+                        core_names = _get_core_command_names()
+                        for alias in aliases:
+                            if not isinstance(alias, str) or not alias.strip():
+                                continue
+                            # Normalize alias the same way as the main name
+                            alias_cmd = alias.lower().replace(' ', '-').replace('_', '-')
+                            alias_cmd = _SKILL_INVALID_CHARS.sub('', alias_cmd)
+                            alias_cmd = _SKILL_MULTI_HYPHEN.sub('-', alias_cmd).strip('-')
+                            if not alias_cmd:
+                                continue
+                            # Skip if it collides with a core command
+                            if alias_cmd in core_names:
+                                logger.warning(
+                                    "Skill '%s' alias '/%s' collides with a core Hermes command. Skipping.",
+                                    name, alias_cmd,
+                                )
+                                continue
+                            # Skip if another skill (or alias) already claimed this command name
+                            alias_key = f"/{alias_cmd}"
+                            if alias_key in _skill_commands:
+                                logger.warning(
+                                    "Skill '%s' alias '/%s' collides with existing command from '%s'. Skipping.",
+                                    name, alias_cmd, _skill_commands[alias_key]['name'],
+                                )
+                                continue
+                            _skill_commands[alias_key] = {
+                                "name": name,
+                                "description": f"{description or f'Invoke the {name} skill'} (alias for /{cmd_name})",
+                                "skill_md_path": str(skill_md),
+                                "skill_dir": str(skill_md.parent),
+                            }
                 except Exception:
                     continue
     except Exception:

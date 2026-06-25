@@ -15911,6 +15911,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
+
+            # Pre-compaction flush callback (#28093): dequeues any pending
+            # user messages that arrived during active processing so they
+            # are injected into the message list BEFORE compression runs.
+            # Without this, messages queued in the adapter's _pending_messages
+            # are silently dropped when compaction replaces the context.
+            def _pre_compact_flush():
+                if not _status_adapter or not session_key:
+                    return []
+                flushed = []
+                while True:
+                    _evt = _status_adapter.get_pending_message(session_key)
+                    if _evt is None:
+                        break
+                    _text = getattr(_evt, "text", None) or ""
+                    flushed.append({"role": "user", "content": _text})
+                return flushed
+            agent._pre_compaction_flush = _pre_compact_flush
             # Credits / out-of-band notices (usage bands, depletion, restored).
             # Messaging has no persistent status bar, so each notice is a
             # standalone push: render to a single plaintext line and deliver via

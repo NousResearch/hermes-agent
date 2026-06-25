@@ -440,6 +440,23 @@ def compress_context(
         except Exception:
             pass
 
+    # Flush pending gateway messages before compaction so they survive the
+    # context rotation (#28093).  Messages arriving during active processing
+    # are queued by the gateway adapter but may not yet be in *messages* when
+    # compaction triggers, causing permanent data loss.
+    _flush_cb = getattr(agent, "_pre_compaction_flush", None)
+    if _flush_cb is not None:
+        try:
+            _flushed = _flush_cb()
+            if _flushed:
+                messages.extend(_flushed)
+                logger.info(
+                    "Flushed %d pending message(s) before context compression (#28093)",
+                    len(_flushed),
+                )
+        except Exception:
+            logger.debug("pre-compaction flush callback failed", exc_info=True)
+
     try:
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:

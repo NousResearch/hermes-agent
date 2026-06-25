@@ -64,6 +64,7 @@ interface CollectedPane {
   disabled: boolean
   forceCollapsed: boolean
   id: string
+  minWidth?: string
   resizable: boolean
   side: PaneSide
   width: string
@@ -94,6 +95,9 @@ export const PANE_TOGGLE_REVEAL_EVENT = 'hermes:pane-toggle-reveal'
 const widthToCss = (value: WidthValue | undefined, fallback: string) =>
   value === undefined ? fallback : typeof value === 'number' ? `${value}px` : value
 
+const lengthToCss = (value: WidthValue | undefined) =>
+  value === undefined ? undefined : typeof value === 'number' ? `${value}px` : value
+
 const remPx = () =>
   typeof window === 'undefined'
     ? 16
@@ -103,31 +107,48 @@ const viewportPx = () => (typeof window === 'undefined' ? 1280 : window.innerWid
 
 // Resolves PaneProps.minWidth/maxWidth (number | "Npx" | "Nrem" | "Nvw" | "N%") to
 // pixels for drag clamping. Viewport units resolve against the current window width.
-function widthToPx(value: WidthValue | undefined) {
+// Anything more complex (calc()/min()/max()/var()) is resolved by measuring a probe
+// element inside `contextEl`'s cascade, so CSS variables resolve at the pane's scope.
+function widthToPx(value: WidthValue | undefined, contextEl?: HTMLElement | null) {
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : undefined
   }
 
-  const match = value?.trim().match(/^(-?\d*\.?\d+)(px|rem|vw|%)?$/)
-
-  if (!match) {
+  if (value === undefined) {
     return undefined
   }
 
-  const n = Number.parseFloat(match[1])
+  const match = value.trim().match(/^(-?\d*\.?\d+)(px|rem|vw|%)?$/)
 
-  switch (match[2]) {
-    case 'rem':
-      return n * remPx()
+  if (match) {
+    const n = Number.parseFloat(match[1])
 
-    case 'vw':
+    switch (match[2]) {
+      case 'rem':
+        return n * remPx()
 
-    case '%':
-      return (n * viewportPx()) / 100
+      case 'vw':
 
-    default:
-      return n
+      case '%':
+        return (n * viewportPx()) / 100
+
+      default:
+        return n
+    }
   }
+
+  if (typeof document === 'undefined' || !contextEl) {
+    return undefined
+  }
+
+  const probe = document.createElement('div')
+  probe.style.cssText = 'position:absolute;visibility:hidden;height:0;pointer-events:none'
+  probe.style.width = value
+  contextEl.appendChild(probe)
+  const px = probe.getBoundingClientRect().width
+  probe.remove()
+
+  return Number.isFinite(px) && px > 0 ? px : undefined
 }
 
 function isRole(child: unknown, role: 'pane' | 'main'): child is ReactElement {
@@ -157,6 +178,7 @@ function collectPanes(children: ReactNode) {
       disabled: props.disabled ?? false,
       forceCollapsed: props.forceCollapsed ?? false,
       id: props.id,
+      minWidth: lengthToCss(props.minWidth),
       resizable: props.resizable ?? false,
       side: props.side,
       width: widthToCss(props.width, DEFAULT_WIDTH)
@@ -177,8 +199,12 @@ function trackForPane(pane: CollectedPane, states: Record<string, { open: boolea
   }
 
   const override = pane.resizable ? states[pane.id]?.widthOverride : undefined
+  const base = override !== undefined ? `${override}px` : pane.width
 
-  return { open: true, track: override !== undefined ? `${override}px` : pane.width }
+  // Never render narrower than the declared minimum — the stored override or
+  // default width can both fall below it (e.g. a min that grows to clear the
+  // floating titlebar tool cluster). CSS resolves the max() at the pane's scope.
+  return { open: true, track: pane.minWidth ? `max(${base}, ${pane.minWidth})` : base }
 }
 
 export function PaneShell({ children, className, style }: PaneShellProps) {
@@ -300,8 +326,6 @@ export function Pane({
   }, [onOverlayActiveChange, overlayActive])
 
   const canResize = open && resizable
-  const lo = widthToPx(minWidth) ?? DEFAULT_RESIZE_MIN_WIDTH
-  const hi = widthToPx(maxWidth) ?? Number.POSITIVE_INFINITY
 
   const startResize = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -312,6 +336,9 @@ export function Pane({
       }
 
       event.preventDefault()
+
+      const lo = widthToPx(minWidth, paneRef.current) ?? DEFAULT_RESIZE_MIN_WIDTH
+      const hi = widthToPx(maxWidth, paneRef.current) ?? Number.POSITIVE_INFINITY
 
       const handle = event.currentTarget
       const { pointerId, clientX: startX } = event
@@ -343,7 +370,7 @@ export function Pane({
       window.addEventListener('pointercancel', cleanup, true)
       window.addEventListener('blur', cleanup)
     },
-    [canResize, hi, id, lo, side]
+    [canResize, id, maxWidth, minWidth, side]
   )
 
   if (!ctx) {

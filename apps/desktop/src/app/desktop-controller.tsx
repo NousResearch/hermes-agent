@@ -1127,13 +1127,24 @@ export function DesktopController() {
   const sidebarSide = panesFlipped ? 'right' : 'left'
   const railSide = panesFlipped ? 'left' : 'right'
 
+  // The system titlebar cluster (haptics/keybinds/settings/right-sidebar) is
+  // pinned over the window's right edge, past the OS window-control overlay.
+  // A pane on the right must stay at least this wide or its leftmost icon (the
+  // haptics "speaker") spills past the pane onto the main area. Expressed in CSS
+  // so it tracks the live OS overlay width (--titlebar-tools-right) and zoom
+  // (--titlebar-control-size); resolved to px by PaneShell for drag clamping.
+  const rightEdgeToolsMin =
+    'calc(var(--titlebar-tools-right, 0.75rem) + 4 * (var(--titlebar-control-size, 1.25rem) + 0.25rem))'
+  const minWidthForSide = (side: 'left' | 'right', declared: string) =>
+    side === 'right' ? `max(${declared}, ${rightEdgeToolsMin})` : declared
+
   const previewPane = (
     <Pane
       disabled={!chatOpen || (!previewTarget && !filePreviewTarget)}
       id={PREVIEW_PANE_ID}
       key="preview"
       maxWidth={PREVIEW_RAIL_MAX_WIDTH}
-      minWidth={PREVIEW_RAIL_MIN_WIDTH}
+      minWidth={minWidthForSide(railSide, PREVIEW_RAIL_MIN_WIDTH)}
       resizable
       side={railSide}
       width={PREVIEW_RAIL_PANE_WIDTH}
@@ -1153,7 +1164,7 @@ export function DesktopController() {
       id="file-browser"
       key="file-browser"
       maxWidth={FILE_BROWSER_MAX_WIDTH}
-      minWidth={FILE_BROWSER_MIN_WIDTH}
+      minWidth={minWidthForSide(railSide, FILE_BROWSER_MIN_WIDTH)}
       resizable
       side={railSide}
       width={FILE_BROWSER_DEFAULT_WIDTH}
@@ -1174,7 +1185,7 @@ export function DesktopController() {
       id="terminal-sidebar"
       key="terminal-sidebar"
       maxWidth="80vw"
-      minWidth="22vw"
+      minWidth={minWidthForSide(railSide, '22vw')}
       resizable
       side={railSide}
       width="42vw"
@@ -1203,7 +1214,7 @@ export function DesktopController() {
           hoverReveal
           id="chat-sidebar"
           maxWidth={SIDEBAR_MAX_WIDTH}
-          minWidth={SIDEBAR_DEFAULT_WIDTH}
+          minWidth={minWidthForSide(sidebarSide, `${SIDEBAR_DEFAULT_WIDTH}px`)}
           onOverlayActiveChange={setSidebarOverlayMounted}
           resizable
           side={sidebarSide}

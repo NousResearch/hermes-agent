@@ -805,6 +805,59 @@ async def test_natural_language_task_request_creates_ready_kanban_task(adapter, 
 
 
 @pytest.mark.asyncio
+async def test_natural_language_task_request_bypasses_mention_requirement(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
+    monkeypatch.delenv("HERMES_TASK_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_TASK_DEFAULT_ASSIGNEE", raising=False)
+
+    fake_conn = MagicMock()
+    fake_conn.close = MagicMock()
+    created = {}
+
+    def fake_connect(*, board=None):
+        created["board"] = board
+        return fake_conn
+
+    def fake_create_task(conn, **kwargs):
+        created["conn"] = conn
+        created["kwargs"] = kwargs
+        return "t_nomention123"
+
+    def fake_get_task(conn, task_id):
+        return SimpleNamespace(
+            id=task_id,
+            title="ダッシュボードの表示を直してください",
+            assignee="operations-orchestrator",
+            status="ready",
+        )
+
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", fake_connect)
+    monkeypatch.setattr("hermes_cli.kanban_db.create_task", fake_create_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.get_task", fake_get_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.add_notify_sub", MagicMock())
+
+    adapter._active_profile_name = MagicMock(return_value="rino")
+    adapter.handle_message = AsyncMock()
+    adapter.send = AsyncMock()
+
+    msg = _fake_message(
+        _FakeTextChannel(),
+        content="ダッシュボードの表示を直してください",
+    )
+
+    await adapter._handle_message(msg)
+
+    adapter.handle_message.assert_not_awaited()
+    adapter.send.assert_awaited_once()
+    assert created["board"] == "ai-company-2-0"
+    assert created["kwargs"]["title"] == "ダッシュボードの表示を直してください"
+    assert created["kwargs"]["idempotency_key"] == "discord-natural-task:12345"
+    assert created["kwargs"]["initial_status"] == "running"
+
+
+@pytest.mark.asyncio
 async def test_natural_language_question_stays_regular_chat(adapter, monkeypatch):
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
     monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")

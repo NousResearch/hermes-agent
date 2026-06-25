@@ -4985,6 +4985,19 @@ class DiscordAdapter(BasePlatformAdapter):
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:
+                    # Kanban intake: task-like Discord messages should
+                    # become kanban cards even when the channel normally
+                    # requires an @mention before starting a chat session.
+                    if await self._maybe_handle_natural_task_request(
+                        message=message,
+                        prompt=normalized_content,
+                        chat_id=str(message.channel.id),
+                        thread_id=thread_id,
+                        has_attachments=bool(
+                            getattr(message, "attachments", []) or snapshot_attachments
+                        ),
+                    ):
+                        return
                     return
         # Auto-thread: when enabled, automatically create a thread for every
         # @mention in a text channel so each conversation is isolated (like Slack).

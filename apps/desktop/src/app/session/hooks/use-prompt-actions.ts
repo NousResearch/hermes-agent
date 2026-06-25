@@ -1037,6 +1037,34 @@ export function usePromptActions({
           await submitPromptText(message)
         }
 
+        if (name === 'compress') {
+          renderSlashOutput('⏳ Compressing…')
+          try {
+            const result = await requestGateway<unknown>('session.compress', {
+              session_id: sessionId,
+              ...(arg ? { focus_topic: arg } : {})
+            })
+            const r = result as any
+            if (r?.summary?.headline) {
+              const prefix = r.summary.noop ? '' : '✓ '
+              renderSlashOutput(`${prefix}${r.summary.headline}`)
+              if (r.summary.token_line) {
+                renderSlashOutput(`  ${r.summary.token_line}`)
+              }
+              if (r.summary.note) {
+                renderSlashOutput(`  ${r.summary.note}`)
+              }
+            } else if ((r?.removed ?? 0) > 0) {
+              renderSlashOutput(`compressed ${r.removed} messages${r.usage?.total ? ` · ${r.usage.total} tok` : ''}`)
+            } else {
+              renderSlashOutput('nothing to compress')
+            }
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+          return
+        }
+
         try {
           const result = await requestGateway<unknown>('slash.exec', {
             session_id: sessionId,

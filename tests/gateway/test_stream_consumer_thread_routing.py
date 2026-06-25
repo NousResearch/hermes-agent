@@ -183,7 +183,7 @@ class TestFeishuFallbackThreadRouting:
         from gateway.platforms.feishu import FeishuAdapter
 
         # We test the _send_raw_message method directly by mocking the client
-        adapter = MagicMock(spec=FeishuAdapter)
+        adapter = MagicMock()
 
         # Set up the real _send_raw_message logic manually
         mock_client = MagicMock()
@@ -246,7 +246,7 @@ class TestFeishuFallbackThreadRouting:
         )
         mock_client.im.v1.message.create = MagicMock(return_value=mock_create_response)
 
-        adapter = MagicMock(spec=FeishuAdapter)
+        adapter = MagicMock()
         adapter._client = mock_client
         adapter._build_create_message_body = FeishuAdapter._build_create_message_body
         adapter._build_create_message_request = FeishuAdapter._build_create_message_request

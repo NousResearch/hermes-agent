@@ -337,11 +337,20 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # to initialise session-scoped state (e.g. warm a memory cache).
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
         _invoke_hook(
             "on_session_start",
             session_id=agent.session_id,
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            agent_id=_agent_id,
         )
     except Exception as exc:
         logger.warning("on_session_start hook failed: %s", exc)
@@ -1079,6 +1088,14 @@ def run_conversation(
                         has_hook,
                         invoke_hook as _invoke_hook,
                     )
+                    _agent_id = None
+                    try:
+                        from agent.profile import get_active_profile
+                        _p = get_active_profile()
+                        if _p:
+                            _agent_id = _p.id
+                    except Exception:
+                        pass
                     if has_hook("pre_api_request"):
                         request_messages = api_kwargs.get("messages")
                         if not isinstance(request_messages, list):
@@ -1127,6 +1144,7 @@ def run_conversation(
                             started_at=api_start_time,
                             middleware_trace=list(_llm_middleware_trace),
                             request=_request_payload,
+                            agent_id=_agent_id,
                         )
                 except Exception:
                     pass
@@ -3626,6 +3644,14 @@ def run_conversation(
                     has_hook,
                     invoke_hook as _invoke_hook,
                 )
+                _agent_id = None
+                try:
+                    from agent.profile import get_active_profile
+                    _p = get_active_profile()
+                    if _p:
+                        _agent_id = _p.id
+                except Exception:
+                    pass
                 if has_hook("post_api_request"):
                     _assistant_tool_calls = (
                         getattr(assistant_message, "tool_calls", None) or []
@@ -3659,6 +3685,7 @@ def run_conversation(
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
+                        agent_id=_agent_id,
                     )
             except Exception:
                 pass
@@ -3799,7 +3826,11 @@ def run_conversation(
                     if tc.function.name not in agent.valid_tool_names:
                         repaired = agent._repair_tool_call(tc.function.name)
                         if repaired:
-                            print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
+                            logger.debug(
+                                "Auto-repaired tool name: %r -> %r",
+                                tc.function.name,
+                                repaired,
+                            )
                             tc.function.name = repaired
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls

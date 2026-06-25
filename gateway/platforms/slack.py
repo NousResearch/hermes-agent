@@ -3611,6 +3611,17 @@ class SlackAdapter(BasePlatformAdapter):
                 thread_id=thread_ts,
             )
 
+            # Resolve agent_id from routes/plugins so the lookup uses the
+            # same key prefix the writing path stamped (otherwise we'd
+            # always check the agent:main bucket and miss sessions
+            # belonging to other agents).
+            try:
+                synthetic_event = MessageEvent(text="", source=source)
+                self._attach_agent_id(synthetic_event)
+                source = synthetic_event.source
+            except Exception:
+                pass
+
             # Read session isolation settings from the store's config
             store_cfg = getattr(session_store, "config", None)
             gspu = (

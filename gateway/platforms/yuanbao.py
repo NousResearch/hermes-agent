@@ -3074,6 +3074,17 @@ class DispatchMiddleware(InboundMiddleware):
     async def handle(self, ctx: InboundContext, next_fn) -> None:
         adapter = ctx.adapter
 
+        # Stamp agent_id on ctx.source before building the session key so
+        # the key prefix matches the routed agent (idempotent — the base
+        # adapter's handle_message will skip re-stamping later).
+        try:
+            from gateway.platforms.base import MessageEvent as _MsgEvt
+            _se = _MsgEvt(text=ctx.raw_text or "", source=ctx.source)
+            adapter._attach_agent_id(_se)
+            ctx.source = _se.source
+        except Exception:
+            pass
+
         _sk = build_session_key(
             ctx.source,
             group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),

@@ -34,6 +34,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -142,6 +143,18 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
 
 @asynccontextmanager
 async def _lifespan(app: "FastAPI"):
+    """Initialise per-app event state inside the running event loop.
+
+    Why: ``asyncio.Lock()`` binds to the loop that is *running* when it is
+    created. Building it at import time binds it to the wrong loop (or no
+    loop), so under a threaded TestClient the lock raises ``RuntimeError``
+    and broadcasts get silently dropped. Creating the lock here guarantees
+    it lives on the same loop that serves requests.
+    What: Sets ``app.state.event_channels`` (channel -> subscriber set) and
+    ``app.state.event_lock`` for the lifetime of the application.
+    Test: Start the app via TestClient, publish on /api/pub and assert a
+    subscriber on /api/events receives the frame.
+    """
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
     # Serializes chat-argv resolution so concurrent /api/pty connections
@@ -172,14 +185,18 @@ async def _lifespan(app: "FastAPI"):
             cron_stop.set()
 
 
-def _get_event_state(app: "FastAPI"):
-    """Return (event_channels, event_lock) from app.state.
+def _get_event_state(app: "FastAPI") -> Tuple[Dict[str, set], asyncio.Lock]:
+    """Return ``(event_channels, event_lock)`` from app.state.
 
-    Lazily initialises the state if the lifespan hasn't run (e.g. when
-    TestClient is constructed without a ``with`` block).  The lifespan
-    path is preferred because it guarantees the Lock is created on the
-    correct event loop, but the lazy path lets existing non-``with``
-    TestClient usages keep working.
+    Why: WebSocket handlers need the channel registry and its lock without
+    reaching for module globals (which would re-introduce the wrong-loop
+    bug). The fallback init keeps the bare ASGI/TestClient path working even
+    when the lifespan handler has not populated ``app.state`` yet (e.g. a
+    TestClient constructed without a ``with`` block). The lifespan path is
+    preferred because it guarantees the Lock is created on the correct loop.
+    What: Lazily initialises and returns the per-app event channels and lock.
+    Test: Call with a fresh FastAPI app and assert it returns a dict and an
+    ``asyncio.Lock`` instance.
     """
     try:
         return app.state.event_channels, app.state.event_lock
@@ -10097,6 +10114,336 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 
 
 # ---------------------------------------------------------------------------
+# Agents endpoints — read-only view of delegation ``agent_profiles``
+# ---------------------------------------------------------------------------
+# These surface the delegation personas defined under ``agent_profiles:`` in
+# config.yaml — the named sub-agents that ``delegate_task(profile=...)`` can
+# target.  They are currently invisible in the dashboard (only viewable as raw
+# YAML on the Config page).  This is STRICTLY READ-ONLY display: no create /
+# edit / delete, and no platform/channel binding (that routing design is still
+# being decided upstream).  It is also distinct from the ``/api/profiles``
+# endpoints above, which manage multi-instance HERMES_HOME profiles.
+
+
+def _agent_profile_tool_count(toolsets_list):
+    """Best-effort count of the actual tools a profile's toolsets resolve to.
+
+    Returns an int when every toolset is resolvable, else None (we never
+    fabricate a number).  ``mcp-*`` toolsets are registered dynamically at
+    runtime and are not resolvable in the cold dashboard process, so each is
+    counted as 1 passthrough (mirroring ``_get_platform_tools``)."""
+    try:
+        from toolsets import resolve_toolset, TOOLSETS
+    except Exception:
+        return None
+    if not isinstance(toolsets_list, list):
+        return None
+    total = 0
+    for name in toolsets_list:
+        if not isinstance(name, str):
+            return None
+        if name in TOOLSETS:
+            try:
+                total += len(resolve_toolset(name))
+            except Exception:
+                return None
+        elif name.startswith("mcp-"):
+            total += 1  # dynamic MCP toolset — counts as one passthrough entry
+        else:
+            total += 1  # unknown/dynamic — count conservatively, flagged separately
+    return total
+
+
+def _agent_profile_validation(profile, prompt_file_ok):
+    """Return a list of human-readable warning strings for a profile.
+
+    Deliberately conservative: we only flag conditions the cold dashboard
+    process can verify *reliably*.  The only such condition is a declared
+    ``system_prompt_file`` that cannot be read (a real filesystem check).
+
+    We intentionally do NOT validate toolset names here: MCP/dynamic toolsets
+    are registered only at gateway runtime and are not present in the static
+    ``TOOLSETS`` registry, so an "unknown toolset" check produces false
+    positives for perfectly valid profiles.  Nor do we warn on a missing
+    ``model`` — omitting it to inherit the gateway default is valid usage,
+    not a misconfiguration.  (Principle: skip checks we cannot perform
+    honestly rather than guess.)"""
+    warnings = []
+    spf = profile.get("system_prompt_file")
+    if spf and not prompt_file_ok:
+        warnings.append(f"system_prompt_file not readable: {spf}")
+    return warnings
+
+
+def _agent_profile_prompt_text(profile):
+    """Resolve a profile's full system prompt text.
+
+    Prefers ``system_prompt_file`` (resolved relative to HERMES_HOME), falls
+    back to inline ``system_prompt``.  Returns ("", False) if a file was
+    declared but could not be read.  All file I/O is guarded."""
+    spf = profile.get("system_prompt_file")
+    if spf:
+        try:
+            p = Path(spf)
+            if not p.is_absolute():
+                p = get_hermes_home() / spf
+            return p.read_text(encoding="utf-8"), True
+        except Exception:
+            return "", False
+    inline = profile.get("system_prompt")
+    if isinstance(inline, str):
+        return inline, True
+    return "", True
+
+
+def _build_agent_profile_view(name, profile, *, full_prompt=False):
+    """Build the JSON-serialisable view of one agent_profile (read-only)."""
+    if not isinstance(profile, dict):
+        profile = {}
+    prompt_text, prompt_file_ok = _agent_profile_prompt_text(profile)
+    preview = prompt_text.strip()
+    if not full_prompt and len(preview) > 200:
+        preview = preview[:200].rstrip() + "…"
+    toolsets_list = profile.get("toolsets") or []
+    view = {
+        "name": name,
+        "model": profile.get("model") or "",
+        "provider": profile.get("provider") or "",
+        "toolsets": toolsets_list if isinstance(toolsets_list, list) else [],
+        "max_iterations": profile.get("max_iterations"),
+        "description": profile.get("description") or "",
+        "tool_count": _agent_profile_tool_count(toolsets_list),
+        "warnings": _agent_profile_validation(profile, prompt_file_ok),
+    }
+    if full_prompt:
+        view["system_prompt"] = prompt_text
+        view["system_prompt_file"] = profile.get("system_prompt_file") or ""
+    else:
+        view["system_prompt_preview"] = preview
+    return view
+
+
+def _read_agent_profiles():
+    """Return the raw ``agent_profiles`` mapping from config, or {} on any error."""
+    try:
+        profiles = load_config().get("agent_profiles", {})
+        return profiles if isinstance(profiles, dict) else {}
+    except Exception:
+        _log.exception("failed to load agent_profiles from config")
+        return {}
+
+
+@app.get("/api/agent-profiles")
+async def list_agent_profiles_endpoint():
+    """Read-only list of delegation agent_profiles. Never raises."""
+    try:
+        profiles = _read_agent_profiles()
+        return {
+            "agent_profiles": [
+                _build_agent_profile_view(name, prof)
+                for name, prof in profiles.items()
+            ]
+        }
+    except Exception:
+        _log.exception("GET /api/agent-profiles failed")
+        return {"agent_profiles": []}
+
+
+# NOTE: ``/active`` MUST be registered before ``/{name}`` so the literal path
+# is not captured by the path parameter.
+@app.get("/api/agent-profiles/active")
+async def list_active_agents_endpoint():
+    """Read-only list of currently-running delegated sub-agents.
+
+    Wraps ``tools.delegate_tool.list_active_subagents`` defensively; returns
+    an empty list if the helper is unavailable in this build."""
+    try:
+        from tools.delegate_tool import list_active_subagents
+    except Exception:
+        return {"active": []}
+    try:
+        active = list_active_subagents()
+        return {"active": list(active) if active else []}
+    except Exception:
+        _log.exception("GET /api/agent-profiles/active failed")
+        return {"active": []}
+
+
+@app.get("/api/agent-profiles/{name}")
+async def get_agent_profile_endpoint(name: str):
+    """Read-only detail for one agent_profile, including full system prompt."""
+    profiles = _read_agent_profiles()
+    if name not in profiles:
+        raise HTTPException(status_code=404, detail=f"Unknown agent profile: {name}")
+    return _build_agent_profile_view(name, profiles[name], full_prompt=True)
+
+
+# ---------------------------------------------------------------------------
+# Agents endpoints — read-only view of delegation ``agent_profiles``
+# ---------------------------------------------------------------------------
+# These surface the delegation personas defined under ``agent_profiles:`` in
+# config.yaml — the named sub-agents that ``delegate_task(profile=...)`` can
+# target.  They are currently invisible in the dashboard (only viewable as raw
+# YAML on the Config page).  This is STRICTLY READ-ONLY display: no create /
+# edit / delete, and no platform/channel binding (that routing design is still
+# being decided upstream).  It is also distinct from the ``/api/profiles``
+# endpoints above, which manage multi-instance HERMES_HOME profiles.
+
+
+def _agent_profile_tool_count(toolsets_list):
+    """Best-effort count of the actual tools a profile's toolsets resolve to.
+
+    Returns an int when every toolset is resolvable, else None (we never
+    fabricate a number).  ``mcp-*`` toolsets are registered dynamically at
+    runtime and are not resolvable in the cold dashboard process, so each is
+    counted as 1 passthrough (mirroring ``_get_platform_tools``)."""
+    try:
+        from toolsets import resolve_toolset, TOOLSETS
+    except Exception:
+        return None
+    if not isinstance(toolsets_list, list):
+        return None
+    total = 0
+    for name in toolsets_list:
+        if not isinstance(name, str):
+            return None
+        if name in TOOLSETS:
+            try:
+                total += len(resolve_toolset(name))
+            except Exception:
+                return None
+        elif name.startswith("mcp-"):
+            total += 1  # dynamic MCP toolset — counts as one passthrough entry
+        else:
+            total += 1  # unknown/dynamic — count conservatively, flagged separately
+    return total
+
+
+def _agent_profile_validation(profile, prompt_file_ok):
+    """Return a list of human-readable warning strings for a profile.
+
+    Deliberately conservative: we only flag conditions the cold dashboard
+    process can verify *reliably*.  The only such condition is a declared
+    ``system_prompt_file`` that cannot be read (a real filesystem check).
+
+    We intentionally do NOT validate toolset names here: MCP/dynamic toolsets
+    are registered only at gateway runtime and are not present in the static
+    ``TOOLSETS`` registry, so an "unknown toolset" check produces false
+    positives for perfectly valid profiles.  Nor do we warn on a missing
+    ``model`` — omitting it to inherit the gateway default is valid usage,
+    not a misconfiguration.  (Principle: skip checks we cannot perform
+    honestly rather than guess.)"""
+    warnings = []
+    spf = profile.get("system_prompt_file")
+    if spf and not prompt_file_ok:
+        warnings.append(f"system_prompt_file not readable: {spf}")
+    return warnings
+
+
+def _agent_profile_prompt_text(profile):
+    """Resolve a profile's full system prompt text.
+
+    Prefers ``system_prompt_file`` (resolved relative to HERMES_HOME), falls
+    back to inline ``system_prompt``.  Returns ("", False) if a file was
+    declared but could not be read.  All file I/O is guarded."""
+    spf = profile.get("system_prompt_file")
+    if spf:
+        try:
+            p = Path(spf)
+            if not p.is_absolute():
+                p = get_hermes_home() / spf
+            return p.read_text(encoding="utf-8"), True
+        except Exception:
+            return "", False
+    inline = profile.get("system_prompt")
+    if isinstance(inline, str):
+        return inline, True
+    return "", True
+
+
+def _build_agent_profile_view(name, profile, *, full_prompt=False):
+    """Build the JSON-serialisable view of one agent_profile (read-only)."""
+    if not isinstance(profile, dict):
+        profile = {}
+    prompt_text, prompt_file_ok = _agent_profile_prompt_text(profile)
+    preview = prompt_text.strip()
+    if not full_prompt and len(preview) > 200:
+        preview = preview[:200].rstrip() + "…"
+    toolsets_list = profile.get("toolsets") or []
+    view = {
+        "name": name,
+        "model": profile.get("model") or "",
+        "provider": profile.get("provider") or "",
+        "toolsets": toolsets_list if isinstance(toolsets_list, list) else [],
+        "max_iterations": profile.get("max_iterations"),
+        "description": profile.get("description") or "",
+        "tool_count": _agent_profile_tool_count(toolsets_list),
+        "warnings": _agent_profile_validation(profile, prompt_file_ok),
+    }
+    if full_prompt:
+        view["system_prompt"] = prompt_text
+        view["system_prompt_file"] = profile.get("system_prompt_file") or ""
+    else:
+        view["system_prompt_preview"] = preview
+    return view
+
+
+def _read_agent_profiles():
+    """Return the raw ``agent_profiles`` mapping from config, or {} on any error."""
+    try:
+        profiles = load_config().get("agent_profiles", {})
+        return profiles if isinstance(profiles, dict) else {}
+    except Exception:
+        _log.exception("failed to load agent_profiles from config")
+        return {}
+
+
+@app.get("/api/agent-profiles")
+async def list_agent_profiles_endpoint():
+    """Read-only list of delegation agent_profiles. Never raises."""
+    try:
+        profiles = _read_agent_profiles()
+        return {
+            "agent_profiles": [
+                _build_agent_profile_view(name, prof)
+                for name, prof in profiles.items()
+            ]
+        }
+    except Exception:
+        _log.exception("GET /api/agent-profiles failed")
+        return {"agent_profiles": []}
+
+
+# NOTE: ``/active`` MUST be registered before ``/{name}`` so the literal path
+# is not captured by the path parameter.
+@app.get("/api/agent-profiles/active")
+async def list_active_agents_endpoint():
+    """Read-only list of currently-running delegated sub-agents.
+
+    Wraps ``tools.delegate_tool.list_active_subagents`` defensively; returns
+    an empty list if the helper is unavailable in this build."""
+    try:
+        from tools.delegate_tool import list_active_subagents
+    except Exception:
+        return {"active": []}
+    try:
+        active = list_active_subagents()
+        return {"active": list(active) if active else []}
+    except Exception:
+        _log.exception("GET /api/agent-profiles/active failed")
+        return {"active": []}
+
+
+@app.get("/api/agent-profiles/{name}")
+async def get_agent_profile_endpoint(name: str):
+    """Read-only detail for one agent_profile, including full system prompt."""
+    profiles = _read_agent_profiles()
+    if name not in profiles:
+        raise HTTPException(status_code=404, detail=f"Unknown agent profile: {name}")
+    return _build_agent_profile_view(name, profiles[name], full_prompt=True)
+
+
+# ---------------------------------------------------------------------------
 # Skills & Tools endpoints
 #
 # Every read/write below accepts an optional ``profile`` query param so the
@@ -11140,8 +11487,9 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
 # drops AND the publisher has disconnected.
-# (Channel state and the chat-argv lock are initialised in _lifespan on app
-# startup — see _get_event_state / _get_chat_argv_lock above.)
+# NOTE: the channel registry and its lock now live on ``app.state`` (see
+# ``_lifespan`` / ``_get_event_state``) so the lock binds to the running event
+# loop rather than the import-time loop.
 
 
 def _resolve_chat_argv(
@@ -11585,6 +11933,7 @@ async def events_ws(ws: WebSocket) -> None:
     await ws.accept()
 
     event_channels, event_lock = _get_event_state(ws.app)
+
     async with event_lock:
         event_channels.setdefault(channel, set()).add(ws)
 

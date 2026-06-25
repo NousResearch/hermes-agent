@@ -39,7 +39,7 @@ _HERMES_CORE_TOOLS = [
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
-    "vision_analyze", "image_generate",
+    "vision_analyze", "ocr_image", "image_generate",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -57,6 +57,8 @@ _HERMES_CORE_TOOLS = [
     "clarify",
     # Code execution + delegation
     "execute_code", "delegate_task",
+    # Agent-driven model routing (gated on agent.allow_self_model_switch via check_fn)
+    "model_switch",
     # Cronjob management
     "cronjob",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
@@ -113,7 +115,7 @@ TOOLSETS = {
     
     "vision": {
         "description": "Image analysis and vision tools",
-        "tools": ["vision_analyze"],
+        "tools": ["vision_analyze", "ocr_image"],
         "includes": []
     },
 
@@ -238,6 +240,12 @@ TOOLSETS = {
     "delegation": {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": ["delegate_task"],
+        "includes": []
+    },
+
+    "model_switch": {
+        "description": "Let the agent switch its own model based on task complexity (opt-in via agent.allow_self_model_switch)",
+        "tools": ["model_switch"],
         "includes": []
     },
 

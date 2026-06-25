@@ -760,7 +760,11 @@ def init_agent(
             effective_base = base_url
             if base_url_host_matches(effective_base, "openrouter.ai"):
                 from agent.auxiliary_client import build_or_headers
-                client_kwargs["default_headers"] = build_or_headers()
+                # Per-component OpenRouter attribution: the main agent
+                # conversation loop attributes to the "Hermes-MainChat"
+                # dashboard app via X-Title. Pure attribution — HTTP-Referer
+                # and every other base header are preserved.
+                client_kwargs["default_headers"] = build_or_headers(or_title="Hermes-MainChat")
             elif base_url_host_matches(effective_base, "integrate.api.nvidia.com"):
                 from agent.auxiliary_client import build_nvidia_nim_headers
                 client_kwargs["default_headers"] = build_nvidia_nim_headers(effective_base)

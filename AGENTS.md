@@ -1,3 +1,10 @@
+> ⚠️ **LIVE DEPLOY TREE — READ BEFORE TOUCHING GIT** ⚠️
+> `/opt/hermes/home/.hermes/hermes-agent` is the running **editable install** — the checked-out branch IS the live code behind the Telegram bot + dashboard.
+> **NEVER** `git checkout` / `branch` / `rebase` in the stable tree. It must always stay on `integrated`.
+> ALL dev / PR / test / MGA / CI / branch work goes in **`/opt/hermes/dev/hermes-agent`** via the **`hermesdev`** command (sandboxed HERMES_HOME).
+> To update stable: ONLY `git pull origin integrated` → `pip install -e .` → restart services → weather smoke test.
+> A systemd guard (`hermes-branch-guard.timer`) alerts if the stable tree ever drifts off `integrated`.
+
 # Hermes Agent - Development Guide
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
@@ -977,6 +984,16 @@ Key config knobs (under `delegation:` in `config.yaml`):
 `max_concurrent_children`, `max_spawn_depth`, `child_timeout_seconds`,
 `orchestrator_enabled`, `subagent_auto_approve`, `inherit_mcp_toolsets`,
 `max_iterations`.
+
+**MCP toolset resolution for named profiles:** When `_build_child_agent()`
+is called with `profile_name` set (i.e. the delegation originated from a
+named `agent_profiles` entry), MCP toolsets in the requested list bypass
+the parent-intersection check and are resolved directly from the global
+`mcp_servers` config.  This prevents a silent failure mode where an
+orchestrator that restricts its own MCP context (via `no_mcp` in
+`platform_toolsets`) inadvertently starves child agents of domain MCP tools
+they explicitly need.  Non-MCP toolsets still go through parent intersection
+— the security boundary for ad-hoc delegation is preserved.  See #32668.
 
 Synchronicity rule: delegate_task is **not** durable. For long-running
 work that must outlive the current turn, use `cronjob` or

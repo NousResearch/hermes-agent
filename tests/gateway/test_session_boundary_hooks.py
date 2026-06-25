@@ -87,6 +87,7 @@ async def test_reset_fires_finalize_hook(mock_invoke_hook):
         and c.kwargs["platform"] == "telegram"
         and c.kwargs["old_session_id"] == "sess-old"
         and c.kwargs["new_session_id"] == "sess-new"
+        and "agent_id" in c.kwargs
         for c in mock_invoke_hook.call_args_list
     )
 
@@ -105,6 +106,7 @@ async def test_reset_fires_reset_hook(mock_invoke_hook):
         and c.kwargs["platform"] == "telegram"
         and c.kwargs["old_session_id"] == "sess-old"
         and c.kwargs["new_session_id"] == "sess-new"
+        and "agent_id" in c.kwargs
         for c in mock_invoke_hook.call_args_list
     )
 

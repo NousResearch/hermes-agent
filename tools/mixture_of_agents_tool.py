@@ -79,6 +79,13 @@ AGGREGATOR_TEMPERATURE = 0.4  # Focused synthesis for consistency
 # Failure handling configuration
 MIN_SUCCESSFUL_REFERENCES = 1  # Minimum successful reference models needed to proceed
 
+# Per-component OpenRouter X-Title: all MoA reference + aggregator calls
+# attribute to the "Hermes-MoA" dashboard app. Sent as a per-call
+# extra_headers override (merged OVER the shared client's default_headers by
+# the OpenAI SDK), so HTTP-Referer and every other base header are preserved.
+# Pure attribution — no behavior change.
+_OR_TITLE_MOA = "Hermes-MoA"
+
 # System prompt for the aggregator model (from the research paper)
 AGGREGATOR_SYSTEM_PROMPT = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
 
@@ -131,6 +138,7 @@ async def _run_reference_model_safe(
                 "model": model,
                 "messages": [{"role": "user", "content": user_prompt}],
                 "max_tokens": max_tokens,
+                "extra_headers": {"X-Title": _OR_TITLE_MOA},
                 "extra_body": {
                     "reasoning": {
                         "enabled": True,
@@ -206,6 +214,7 @@ async def _run_aggregator_model(
             {"role": "user", "content": user_prompt}
         ],
         "max_tokens": max_tokens,
+        "extra_headers": {"X-Title": _OR_TITLE_MOA},
         "extra_body": {
             "reasoning": {
                 "enabled": True,

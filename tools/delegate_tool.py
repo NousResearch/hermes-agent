@@ -387,7 +387,7 @@ def _looks_like_error_output(content: Any) -> bool:
     head = content.lstrip()
     if head.startswith("{") or head.startswith("["):
         try:
-            parsed = json.loads(content)
+            parsed, _ = json.JSONDecoder().raw_decode(head)
             if isinstance(parsed, dict):
                 if parsed.get("error"):
                     return True
@@ -1180,8 +1180,10 @@ def _build_child_agent(
     effective_model_for_cb = model or getattr(parent_agent, "model", None)
 
     # Build progress callback to relay tool calls to parent display.
-    # Identity kwargs thread the subagent_id through every emitted event so the
-    # TUI can reconstruct the spawn tree and route per-branch controls.
+    # NOTE: `subagent_id` here is the TUI spawn-tree identity used to route
+    # per-branch controls in the CLI display.  It is distinct from the
+    # `agent_id` kwarg used in invoke_hook() calls (PR #25660 multi-agent
+    # routing).  Both are threaded through events but serve different consumers.
     child_session_ref: Dict[str, Any] = {}
     child_progress_cb = _build_child_progress_callback(
         task_index,
@@ -1299,6 +1301,16 @@ def _build_child_agent(
         # Note: openrouter_min_coding_score is model-gated (only emitted on
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
+
+    # Trigger lazy MCP discovery if this child needs MCP toolsets. This is a
+    # no-op when eager discovery already ran at startup; it only does work when
+    # the active platform skipped eager discovery via the no_mcp sentinel
+    # (Phase 2). Runs for ALL MCP-needing child builds, not just profile-named
+    # ones, so the child sees a populated MCP registry before AIAgent builds.
+    if any(_is_mcp_toolset_name(t) for t in child_toolsets):
+        from tools.mcp_tool import ensure_mcp_discovered
+
+        ensure_mcp_discovered()
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -2250,6 +2262,19 @@ def delegate_task(
             }
         )
 
+    # Resolve named profile (baseline values; explicit call params override profile)
+    _profile_overrides: dict = {}
+    if profile:
+        _all_profiles = _load_profiles()
+        try:
+            _profile_overrides = _resolve_profile(profile, _all_profiles)
+        except ValueError as exc:
+            return tool_error(str(exc))
+
+    # Apply profile baselines (explicit call params override profile values).
+    # toolsets baseline from profile when the caller didn't pass any.
+    toolsets = toolsets or _profile_overrides.get("toolsets")
+
     # Load config
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
@@ -2312,11 +2337,12 @@ def delegate_task(
         _resolved_profile_toolsets = _profile_overrides.get("toolsets")
         if _resolved_profile_toolsets and isinstance(_resolved_profile_toolsets, list):
             resolved_profile_name = profile
-            # Copy, not reference (config-aliasing hardening). _resolve_profile
-            # already deep-copies the profile dict, so this is belt-and-suspenders,
-            # but it also insulates the config from any later in-place mutation
-            # (.append()/.clear()) of the working ``toolsets`` variable below.
-            # list() is an independent shallow copy of the string items.
+            # Copy, not reference (config-aliasing hardening, #b06f4f89c).
+            # _resolve_profile already deep-copies the profile dict, so this is
+            # belt-and-suspenders, but it also insulates the config from any
+            # later in-place mutation (.append()/.clear()) of the working
+            # ``toolsets`` variable below. list() is an independent shallow copy
+            # of the string items, which is all we need.
             toolsets = list(_resolved_profile_toolsets)
         else:
             # Profile declares no toolsets — granting the bypass here would
@@ -2761,6 +2787,14 @@ def delegate_task(
         from hermes_cli.plugins import invoke_hook as _invoke_hook
     except Exception:
         _invoke_hook = None
+    _agent_id = None
+    try:
+        from agent.profile import get_active_profile
+        _p = get_active_profile()
+        if _p:
+            _agent_id = _p.id
+    except Exception:
+        pass
     # Aggregate child spend here so the parent's footer/UI reflect the true
     # cost of a subagent-heavy turn.  Port of Kilo-Org/kilocode#9448.  Each
     # child's cost was captured in _run_single_child before its AIAgent was
@@ -2793,6 +2827,7 @@ def delegate_task(
                 child_summary=entry.get("summary"),
                 child_status=entry.get("status"),
                 duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
+                agent_id=_agent_id,
             )
         except Exception:
             logger.debug("subagent_stop hook invocation failed", exc_info=True)
@@ -3456,6 +3491,17 @@ DELEGATE_TASK_SCHEMA = {
                     "Leave empty unless acp_command is explicitly provided."
                 ),
             },
+            "profile": {
+                "type": "string",
+                "description": (
+                    "Named agent_profiles entry whose toolsets (and optionally model "
+                    "and system prompt) the sub-agent should use. When set, the "
+                    "profile's declared MCP toolsets are forwarded to the child even "
+                    "when the orchestrator runs under a no_mcp platform_toolset that "
+                    "has no MCP servers of its own. Leave unset to use ad-hoc "
+                    "toolsets or inherit from the parent. Example: 'documents'."
+                ),
+            },
         },
         "required": [],
     },
@@ -3479,6 +3525,7 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         background=args.get("background"),
+        profile=args.get("profile"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

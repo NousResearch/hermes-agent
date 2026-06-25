@@ -811,17 +811,18 @@ class TestReadLoggingConfig:
     """_read_logging_config() reads from config.yaml."""
 
     def test_returns_none_when_no_config(self, hermes_home):
-        level, max_size, backup = hermes_logging._read_logging_config()
+        level, max_size, backup, loggers = hermes_logging._read_logging_config()
         assert level is None
         assert max_size is None
         assert backup is None
+        assert loggers == {}
 
     def test_reads_logging_section(self, hermes_home):
         import yaml
         config = {"logging": {"level": "DEBUG", "max_size_mb": 10, "backup_count": 5}}
         (hermes_home / "config.yaml").write_text(yaml.dump(config))
 
-        level, max_size, backup = hermes_logging._read_logging_config()
+        level, max_size, backup, loggers = hermes_logging._read_logging_config()
         assert level == "DEBUG"
         assert max_size == 10
         assert backup == 5
@@ -831,8 +832,151 @@ class TestReadLoggingConfig:
         config = {"model": "test"}
         (hermes_home / "config.yaml").write_text(yaml.dump(config))
 
-        level, max_size, backup = hermes_logging._read_logging_config()
+        level, max_size, backup, loggers = hermes_logging._read_logging_config()
         assert level is None
+
+    def test_reads_loggers_dict(self, hermes_home):
+        """loggers dict is returned when present in config.yaml."""
+        import yaml
+        config = {
+            "logging": {
+                "level": "INFO",
+                "loggers": {
+                    "tools.tool_search": {"level": "DEBUG"},
+                    "tools.reranker": {"level": "WARNING"},
+                },
+            }
+        }
+        (hermes_home / "config.yaml").write_text(yaml.dump(config))
+
+        _, _, _, loggers = hermes_logging._read_logging_config()
+        assert loggers == {
+            "tools.tool_search": {"level": "DEBUG"},
+            "tools.reranker": {"level": "WARNING"},
+        }
+
+    def test_returns_empty_loggers_when_absent(self, hermes_home):
+        """loggers is an empty dict when the key is not in config."""
+        import yaml
+        config = {"logging": {"level": "INFO"}}
+        (hermes_home / "config.yaml").write_text(yaml.dump(config))
+
+        _, _, _, loggers = hermes_logging._read_logging_config()
+        assert loggers == {}
+
+
+class TestPerLoggerLevels:
+    """setup_logging() applies per-logger level overrides from config.yaml."""
+
+    def test_dict_shape_sets_logger_level(self, hermes_home):
+        """logging.loggers.<name>: {level: DEBUG} sets that logger to DEBUG."""
+        import yaml
+        config = {
+            "logging": {
+                "level": "INFO",
+                "loggers": {
+                    "tools.tool_search": {"level": "DEBUG"},
+                },
+            }
+        }
+        (hermes_home / "config.yaml").write_text(yaml.dump(config))
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        assert logging.getLogger("tools.tool_search").level == logging.DEBUG
+
+    def test_bare_string_shape_sets_logger_level(self, hermes_home):
+        """logging.loggers.<name>: DEBUG (bare string) is also accepted."""
+        import yaml
+        config = {
+            "logging": {
+                "level": "INFO",
+                "loggers": {
+                    "tools.reranker": "DEBUG",
+                },
+            }
+        }
+        (hermes_home / "config.yaml").write_text(yaml.dump(config))
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        assert logging.getLogger("tools.reranker").level == logging.DEBUG
+
+    def test_invalid_level_is_ignored(self, hermes_home):
+        """An unrecognised level string does not crash setup_logging()."""
+        import yaml
+        config = {
+            "logging": {
+                "level": "INFO",
+                "loggers": {
+                    "tools.tool_search": {"level": "NOTVALID"},
+                },
+            }
+        }
+        (hermes_home / "config.yaml").write_text(yaml.dump(config))
+
+        # Reset the specific logger so we can detect whether setup_logging
+        # touches it — prior tests in the same process may have left it set.
+        target = logging.getLogger("tools.tool_search")
+        target.setLevel(logging.NOTSET)
+
+        # Must not raise.
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        # Level is unchanged (NOTSET) — the invalid entry was silently skipped.
+        assert target.level == logging.NOTSET
+
+    def test_multiple_loggers_all_applied(self, hermes_home):
+        """Multiple loggers in config are all configured independently."""
+        import yaml
+        config = {
+            "logging": {
+                "level": "INFO",
+                "loggers": {
+                    "tools.tool_search": {"level": "DEBUG"},
+                    "tools.reranker": {"level": "WARNING"},
+                    "agent.context": {"level": "ERROR"},
+                },
+            }
+        }
+        (hermes_home / "config.yaml").write_text(yaml.dump(config))
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        assert logging.getLogger("tools.tool_search").level == logging.DEBUG
+        assert logging.getLogger("tools.reranker").level == logging.WARNING
+        assert logging.getLogger("agent.context").level == logging.ERROR
+
+    def test_per_logger_debug_records_propagate_to_agent_log(self, hermes_home):
+        """DEBUG records from a per-logger-configured logger reach agent.log.
+
+        Why: The whole point of the fix — verifying records actually appear.
+        Propagation must remain True so the root-attached agent.log handler
+        receives the records.
+        """
+        import yaml
+        config = {
+            "logging": {
+                "level": "INFO",
+                "loggers": {
+                    "tools.tool_search": {"level": "DEBUG"},
+                },
+            }
+        }
+        (hermes_home / "config.yaml").write_text(yaml.dump(config))
+
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+
+        logger = logging.getLogger("tools.tool_search")
+        assert logger.propagate, "propagation must be True for agent.log to receive records"
+        logger.debug("tool_search debug record")
+
+        for h in logging.getLogger().handlers:
+            h.flush()
+
+        agent_log = hermes_home / "logs" / "agent.log"
+        content = agent_log.read_text()
+        assert "tool_search debug record" in content
 
 
 class TestExternalRotationRecovery:

@@ -1022,6 +1022,25 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
                 reason="shutdown",
             )
     try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
+        _invoke_hook(
+            "on_session_finalize",
+            session_id=_active_agent_ref.session_id if _active_agent_ref else None,
+            platform="cli",
+            reason="shutdown",
+            agent_id=_agent_id,
+        )
+    except Exception:
+        pass
+    try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
             # Forward the agent's own transcript so memory providers'
             # ``on_session_end`` hooks see the real conversation instead of
@@ -3139,6 +3158,12 @@ def build_skill_invocation_message(*args, **kwargs):
     return _impl(*args, **kwargs)
 
 
+def get_skill_model_for_command(*args, **kwargs):
+    from agent.skill_commands import get_skill_model_for_command as _impl
+
+    return _impl(*args, **kwargs)
+
+
 def build_preloaded_skills_prompt(*args, **kwargs):
     from agent.skill_commands import build_preloaded_skills_prompt as _impl
 
@@ -4839,6 +4864,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         else:
             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(text)}[/]")
 
+    def _print_assistant_message(self, text: str) -> None:
+        """Render a final assistant turn in the same boxed style as the agent.
+
+        Why: The deterministic intent fast-path (weather/time) answers in the REPL
+        WITHOUT running the agent, so it must print the reply itself — and it has
+        to look identical to a normal Hermes turn, or users can't tell it apart.
+        This reuses the exact Panel rendering ``chat()`` uses for a streamed
+        response so the surfaces stay visually consistent.
+        What: Wraps ``text`` in the branded response Panel (skin label/colors,
+        markdown render) and prints it via ``ChatConsole``.
+        Test: Call with "*Weather — Woodstock, IL*\\nNow: 70°F" and assert the
+        boxed panel text appears in captured TUI scrollback.
+        """
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            _skin = get_active_skin()
+            label = _skin.get_branding("response_label", "⚕ Hermes")
+            _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
+            _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
+        except Exception:
+            label = "⚕ Hermes"
+            _resp_color = _maybe_remap_for_light_mode("#CD7F32")
+            _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
+        ChatConsole().print(Panel(
+            _render_final_assistant_content(text, mode=self.final_response_markdown),
+            title=f"[{_resp_color} bold]{label}[/]",
+            title_align="left",
+            border_style=_resp_color,
+            style=_resp_text,
+            box=rich_box.HORIZONTALS,
+            padding=(1, 4),
+            width=self._scrollback_box_width(),
+        ))
+
     def _stream_reasoning_delta(self, text: str) -> None:
         """Stream reasoning/thinking tokens into a dim box above the response.
 
@@ -6088,12 +6147,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         lifecycle point (shutdown, /new, /reset).
         """
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
+            import hermes_cli.plugins as _plugins
+            _agent_id = None
+            try:
+                from agent.profile import get_active_profile
+                _p = get_active_profile()
+                if _p:
+                    _agent_id = _p.id
+            except Exception:
+                pass
+            _plugins.invoke_hook(
                 event_type,
                 session_id=self.agent.session_id if self.agent else None,
                 platform=getattr(self, "platform", None) or "cli",
                 reason="new_session" if event_type == "on_session_reset" else "session_boundary",
+                agent_id=_agent_id,
             )
         except Exception:
             pass
@@ -7971,12 +8039,24 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
+                # Skill-level model routing: resolve any per-skill model
+                # preference (config override > SKILL.md frontmatter) before
+                # dispatching, so the swap applies to this skill's turn.
+                _skill_cfg_overrides = (self.config or {}).get("skills", {}).get("model_overrides", {})
+                _skill_model = get_skill_model_for_command(base_cmd, _skill_cfg_overrides)
                 msg = build_skill_invocation_message(
                     base_cmd, user_instruction, task_id=self.session_id
                 )
                 if msg:
                     skill_name = skill_commands[base_cmd]["name"]
                     print(f"\n⚡ Loading skill: {skill_name}")
+                    # Apply lightweight transient model swap if the skill
+                    # declares a model. Reverted in the run-loop finally block.
+                    if _skill_model and self.agent is not None:
+                        from agent.skill_utils import skill_model_swap
+                        self._skill_model_snapshot = skill_model_swap(self.agent, _skill_model)
+                    else:
+                        self._skill_model_snapshot = None
                     if hasattr(self, '_pending_input'):
                         self._pending_input.put(msg)
                 else:
@@ -11151,6 +11231,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             reset_current_session_key(_approval_session_token)
                         except Exception:
                             pass
+                    # Restore model if a skill swapped it for this turn (skill-level
+                    # model routing). Lightweight revert — see skill_model_swap.
+                    if getattr(self, "_skill_model_snapshot", None):
+                        try:
+                            from agent.skill_utils import skill_model_restore
+                            skill_model_restore(self.agent, self._skill_model_snapshot)
+                        except Exception:
+                            pass
+                        self._skill_model_snapshot = None
 
             # Start agent in background thread (daemon so it cannot keep the
             # process alive when the user closes the terminal tab — SIGHUP
@@ -13915,6 +14004,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         n = len(submit_images)
                         _cprint(f"  {_DIM}📎 {n} image{'s' if n > 1 else ''} attached{_RST}")
 
+                    # ── Pre-LLM deterministic intent fast-path (REPL parity) ──
+                    # The single-query (-q) and oneshot (-z) paths answer a small
+                    # set of deterministic intents (weather, time/date) directly
+                    # from a cheap HTTP API, bypassing the agent.  The interactive
+                    # REPL historically did NOT, so a typed "what is the weather?"
+                    # reached the LLM and drifted/hallucinated.  Mirror the gate
+                    # exactly: skip on empty/slash/image/kanban/goal/disabled, and
+                    # on ANY doubt fall through to the agent unchanged.
+                    try:
+                        from intent_fast_path import try_fast_path_reply as _fp_repl
+                        _fp_out = _fp_repl(
+                            user_input, has_images=bool(submit_images)
+                        )
+                    except Exception:
+                        _fp_out = None
+                    if _fp_out:
+                        self._print_assistant_message(_fp_out)
+                        logging.info(
+                            "intent fast-path served REPL turn without an agent run "
+                            "(0 api_calls, 0 tool_turns)"
+                        )
+                        continue
+
                     # Regular chat - run agent
                     self._agent_running = True
                     app.invalidate()  # Refresh status line
@@ -14246,6 +14358,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if self.agent and getattr(self, '_agent_running', False):
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
+                    _agent_id = None
+                    try:
+                        from agent.profile import get_active_profile
+                        _p = get_active_profile()
+                        if _p:
+                            _agent_id = _p.id
+                    except Exception:
+                        pass
                     _invoke_hook(
                         "on_session_end",
                         session_id=self.agent.session_id,
@@ -14254,6 +14374,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         model=getattr(self.agent, 'model', None),
                         platform=getattr(self.agent, 'platform', None) or "cli",
                         reason="shutdown",
+                        agent_id=_agent_id,
                     )
                 except Exception:
                     pass
@@ -14639,6 +14760,31 @@ def main(
             sys.exit(1)
         try:
             query, single_query_images = _collect_query_images(query, image)
+            # ── Pre-LLM deterministic intent fast-path (CLI parity) ───────
+            # Mirrors the gateway/API-server fast-path: a small set of
+            # deterministic intents (weather, time/date) are answered directly
+            # from a cheap HTTP API in ~1-3s, BYPASSING the agent/LLM entirely.
+            # Only fires for a plain text query with no image attachment; on ANY
+            # doubt the handler returns None and we fall through to the agent.
+            # Skipped for slash commands, kanban workers, and goal-loop runs so
+            # it never short-circuits structured tasks.
+            try:
+                from intent_fast_path import try_fast_path_reply as _fp_dispatch
+                _fp_result = _fp_dispatch(query, has_images=bool(single_query_images))
+                if _fp_result:
+                    print(_fp_result)
+                    sys.stdout.flush()
+                    logger.info(
+                        "intent fast-path served CLI query without an agent run "
+                        "(0 api_calls, 0 tool_turns)"
+                    )
+                    sys.exit(0)
+            except SystemExit:
+                raise
+            except Exception as _fp_exc:
+                # Never let a fast-path failure break the normal CLI path;
+                # fall through to the agent.
+                logger.debug("intent fast-path skipped (non-fatal): %s", _fp_exc)
             # Kanban workers spawn with ``hermes chat -q "work kanban task <id>"``;
             # the actual task description lives in the task body. Mirror the
             # gateway/CLI behaviour for inbound images by scanning the body for
@@ -14648,8 +14794,7 @@ def main(
             # model's vision input.
             single_query_image_urls: list[str] = []
             _kanban_task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
-            if _kanban_task_id:
-                try:
+            if _kanban_task_id:                try:
                     from hermes_cli import kanban_db as _kb
                     from agent.image_routing import extract_image_refs as _extract_refs
 

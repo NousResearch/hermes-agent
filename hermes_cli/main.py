@@ -11088,7 +11088,7 @@ def cmd_logs(args):
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "agent", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -11215,6 +11215,32 @@ def _should_background_mcp_startup(args) -> bool:
     return args.command in {None, "chat", "rl"}
 
 
+def _active_platform_uses_no_mcp_at_startup() -> bool:
+    """Return True if the active platform's toolsets include the no_mcp sentinel.
+
+    Resolves the platform from ``HERMES_PLATFORM`` (with the
+    ``HERMES_SESSION_PLATFORM`` fallback used elsewhere), defaulting to ``"cli"``,
+    and reads ``platform_toolsets`` directly from the raw config dict. Used to
+    decide whether eager MCP discovery can be skipped at CLI startup (Phase 2
+    lazy discovery). Best-effort: any failure returns False so discovery runs
+    as before.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        config = read_raw_config() or {}
+    except Exception:
+        return False
+    platform = (
+        os.environ.get("HERMES_PLATFORM")
+        or os.environ.get("HERMES_SESSION_PLATFORM")
+        or "cli"
+    )
+    platform_toolsets = config.get("platform_toolsets", {}) or {}
+    toolsets = platform_toolsets.get(platform, []) or []
+    return "no_mcp" in toolsets
+
+
 def _prepare_agent_startup(args) -> None:
     """Discover plugins/MCP/hooks for commands that can run an agent turn."""
     _sub_attr, _sub_set = _AGENT_SUBCOMMANDS.get(args.command, (None, None))
@@ -11262,9 +11288,23 @@ def _prepare_agent_startup(args) -> None:
         try:
             # MCP tool discovery remains synchronous for entrypoints that do
             # not own a later bounded/executor startup path.
+            #
+            # When the active platform's toolsets include the ``no_mcp`` sentinel
+            # (e.g. api_server), skip eager discovery here too and let the first
+            # MCP-needing delegation trigger it lazily (Phase 2). Only the
+            # no_mcp platforms are affected; cli/cron/telegram run as before.
             from tools.mcp_tool import discover_mcp_tools
 
-            discover_mcp_tools()
+            if _active_platform_uses_no_mcp_at_startup():
+                from tools.mcp_tool import mark_eager_discovery_skipped
+
+                mark_eager_discovery_skipped()
+                logger.debug(
+                    "MCP eager discovery skipped at CLI startup "
+                    "(platform uses no_mcp); tools will load lazily on first delegation"
+                )
+            else:
+                discover_mcp_tools()
         except Exception:
             logger.debug(
                 "MCP tool discovery failed at CLI startup",
@@ -11805,6 +11845,43 @@ def main():
     # status command  (parser built in hermes_cli/subcommands/status.py)
     # =========================================================================
     build_status_parser(subparsers, cmd_status=cmd_status)
+
+    # =========================================================================
+    # agent command
+    # =========================================================================
+    from hermes_cli.agent import cmd_agent_list, cmd_agent_show, cmd_agent_add, cmd_agent_remove
+
+    agent_parser = subparsers.add_parser(
+        "agent",
+        help="Manage multi-agent profiles and routing",
+        description="List, inspect, add, and remove agent profiles.",
+    )
+    agent_subparsers = agent_parser.add_subparsers(dest="agent_command")
+
+    # agent list
+    agent_list = agent_subparsers.add_parser("list", help="List all agents")
+    agent_list.set_defaults(func=cmd_agent_list)
+
+    # agent show
+    agent_show = agent_subparsers.add_parser("show", help="Show agent details")
+    agent_show.add_argument("agent_id", help="Agent ID")
+    agent_show.set_defaults(func=cmd_agent_show)
+
+    # agent add
+    agent_add = agent_subparsers.add_parser("add", help="Add a new agent")
+    agent_add.add_argument("agent_id", help="Unique agent identifier")
+    agent_add.add_argument("--from-profile", help="Clone an existing profile directory")
+    agent_add.add_argument("--model", help="Default model for this agent")
+    agent_add.add_argument("--provider", help="Provider override")
+    agent_add.add_argument("--home-dir", help="Custom home directory")
+    agent_add.add_argument("--enabled-toolsets", help="Comma-separated toolset names")
+    agent_add.set_defaults(func=cmd_agent_add)
+
+    # agent remove
+    agent_remove = agent_subparsers.add_parser("remove", help="Remove an agent")
+    agent_remove.add_argument("agent_id", help="Agent ID to remove")
+    agent_remove.add_argument("--yes", action="store_true", help="Skip confirmation")
+    agent_remove.set_defaults(func=cmd_agent_remove)
 
     # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)

@@ -8,6 +8,11 @@ snake_case name. The repair routine now normalizes CamelCase,
 strips trailing ``_tool`` / ``-tool`` / ``tool`` suffixes (up to
 twice to handle double-tacked suffixes like ``TodoTool_tool``), and
 falls back to fuzzy match.
+
+BUG-8 regression guard: the namespace-prefix guard (step 6) prevents
+a shared ``kb_`` / ``mcp_knowledge_kb_`` prefix from inflating the
+SequenceMatcher ratio enough to allow silent read-to-write repairs
+(e.g. ``kb_search`` -> ``kb_add``).
 """
 from __future__ import annotations
 
@@ -27,6 +32,20 @@ VALID = {
     "terminal",
     "execute_code",
     "session_search",
+}
+
+# Extended VALID set used by TestNamespacePrefixGuard.  Includes
+# sibling operations under the same ``kb_`` and ``mcp_knowledge_kb_``
+# prefixes so the guard's cross-op blocking and same-op allowance can
+# both be exercised.
+VALID_NS = VALID | {
+    "kb_search",
+    "kb_get",
+    "kb_add",
+    "kb_update",
+    "mcp_knowledge_kb_search",
+    "mcp_knowledge_kb_get",
+    "mcp_knowledge_kb_add",
 }
 
 
@@ -186,3 +205,220 @@ class TestVolcEngineXmlPollution:
         # rest of the pipeline (fuzzy match at 0.7 cutoff) can still
         # recover the obvious target.
         assert repair('"terminal"') == "terminal"
+
+
+# MCP-prefixed tool names registered under the canonical ``mcp_<server>_<tool>``
+# scheme. Qwen3-class tool-callers token-split and corrupt the ``mcp_`` prefix.
+MCP_VALID = {
+    "mcp_knowledge_kb_get",
+    "mcp_knowledge_kb_search",
+    "mcp_proxmox_get_nodes",
+}
+
+
+@pytest.fixture
+def mcp_repair():
+    """Bind _repair_tool_call to a stub exposing MCP-prefixed tool names."""
+    from run_agent import AIAgent
+
+    stub = SimpleNamespace(valid_tool_names=MCP_VALID)
+    return AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+
+class TestNormaliseMcpToolPrefix:
+    """Unit coverage for the prefix-normalisation helper in isolation.
+
+    Qwen3-235B token-split emits ``mmcp_knowledge_kb_get`` (extra leading
+    'm') or ``mcp_mcp_knowledge_kb_get`` (doubled prefix). The helper must
+    collapse those to a single ``mcp_`` prefix and leave everything else
+    untouched.
+    """
+
+    def test_strips_spurious_leading_m(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        assert (
+            normalise_mcp_tool_prefix("mmcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+        )
+
+    def test_collapses_doubled_prefix(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        assert (
+            normalise_mcp_tool_prefix("mcp_mcp_knowledge_kb_get")
+            == "mcp_knowledge_kb_get"
+        )
+
+    def test_collapses_triple_nested_prefix(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        # Three layers must collapse all the way to a single ``mcp_``.
+        assert (
+            normalise_mcp_tool_prefix("mcp_mcp_mcp_knowledge_kb_get")
+            == "mcp_knowledge_kb_get"
+        )
+
+    def test_collapses_quadruple_nested_prefix(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        # Arbitrary depth normalises to a single ``mcp_`` prefix.
+        assert (
+            normalise_mcp_tool_prefix("mcp_mcp_mcp_mcp_knowledge_kb_get")
+            == "mcp_knowledge_kb_get"
+        )
+
+    def test_strips_leading_junk_before_mcp(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        assert (
+            normalise_mcp_tool_prefix("xmcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+        )
+        assert (
+            normalise_mcp_tool_prefix("abmcp_knowledge_kb_get")
+            == "mcp_knowledge_kb_get"
+        )
+
+    def test_legit_name_passes_through_unchanged(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        assert (
+            normalise_mcp_tool_prefix("mcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+        )
+
+    def test_non_mcp_name_passes_through_unchanged(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        # No ``mcp_`` anywhere near the front — must not be touched.
+        assert normalise_mcp_tool_prefix("kb_search") == "kb_search"
+        assert normalise_mcp_tool_prefix("4pkoPc7Uh") == "4pkoPc7Uh"
+
+    def test_junk_too_far_from_front_not_normalised(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        # ``mcp_`` more than 5 chars in is not treated as a corrupted prefix.
+        assert normalise_mcp_tool_prefix("toolongprefix_mcp_x") == "toolongprefix_mcp_x"
+
+    def test_empty_string_passes_through(self):
+        from agent.agent_runtime_helpers import normalise_mcp_tool_prefix
+
+        assert normalise_mcp_tool_prefix("") == ""
+
+
+class TestMcpPrefixRepairFastPath:
+    """End-to-end: corrupted MCP names repair to the canonical name via the
+    direct-match fast-path; legit and truly-garbled names behave correctly.
+    """
+
+    def test_mmcp_repairs_to_canonical(self, mcp_repair):
+        assert mcp_repair("mmcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+
+    def test_doubled_prefix_repairs_to_canonical(self, mcp_repair):
+        assert mcp_repair("mcp_mcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+
+    def test_leading_junk_repairs_to_canonical(self, mcp_repair):
+        assert mcp_repair("xmcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+
+    def test_legit_mcp_name_unchanged(self, mcp_repair):
+        assert mcp_repair("mcp_knowledge_kb_get") == "mcp_knowledge_kb_get"
+
+    def test_bare_name_without_prefix_not_falsely_normalised(self, mcp_repair):
+        # ``kb_search`` has no ``mcp_`` prefix — normalisation is a no-op, and
+        # it must NOT be silently rewritten to mcp_knowledge_kb_search by
+        # the prefix fast-path. (Fuzzy match against an mcp_-prefixed name is
+        # well below the 0.7 cutoff, so this returns None.)
+        assert mcp_repair("kb_search") is None
+
+    def test_truly_garbled_token_returns_none(self, mcp_repair):
+        # Random token from a token-split must still fall through, not match.
+        assert mcp_repair("4pkoPc7Uh") is None
+
+
+@pytest.fixture
+def repair_ns():
+    """Bound _repair_tool_call using VALID_NS — the extended tool set.
+
+    Why: The base ``repair`` fixture uses VALID which lacks ``kb_*`` and
+    ``mcp_knowledge_kb_*`` names.  The namespace-prefix guard tests need
+    sibling operations under the same prefix to exercise both the
+    blocking and the allow paths.
+    What: Returns a bound method identical in structure to ``repair`` but
+    backed by VALID_NS.
+    Test: Instantiate and call with a known-blocked pair; assert None is
+    returned to confirm the fixture is wired correctly.
+    """
+    from run_agent import AIAgent
+    stub = SimpleNamespace(valid_tool_names=VALID_NS)
+    return AIAgent._repair_tool_call.__get__(stub, AIAgent)
+
+
+class TestNamespacePrefixGuard:
+    """BUG-8 regression: namespace-prefix guard prevents read->write repairs.
+
+    The guard strips the shared leading ``_``-segment prefix from both the
+    emitted name and any fuzzy-match candidate, then requires the operation
+    suffixes to also score >= 0.7.  This stops ``kb_search`` from silently
+    repairing to ``kb_add`` just because the shared ``kb_`` prefix pushes
+    the full-name SequenceMatcher ratio above the cutoff.
+    """
+
+    def test_kb_search_does_not_repair_to_kb_add(self, repair_ns):
+        # ``kb_search`` is in VALID_NS — direct match should return it.
+        # If emitted exactly, the fast-path returns before fuzzy even runs.
+        # The guard's job is to block the fuzzy path when the op suffixes
+        # diverge too much; verify it is not broken by a direct match.
+        assert repair_ns("kb_search") == "kb_search"
+
+    def test_kb_search_typo_does_not_repair_to_kb_add(self, repair_ns):
+        # ``kb_serach`` is not in VALID_NS.  The fuzzy match would find
+        # ``kb_search`` (ratio ~0.89) AND ``kb_add`` as candidates.
+        # With n=1 the closest match is ``kb_search``; however, without
+        # the guard a slightly different typo could land on ``kb_add``.
+        # We test a pathological typo ``kb_saerch`` that the guard must
+        # handle correctly — the op suffixes ``saerch`` vs ``search``
+        # score well (>= 0.7) so the repair IS allowed.
+        assert repair_ns("kb_saerch") == "kb_search"
+
+    def test_kb_get_does_not_repair_to_kb_add(self, repair_ns):
+        # ``kb_get`` is in VALID_NS — direct match, no fuzzy needed.
+        # Confirm it does not accidentally map to ``kb_add``.
+        assert repair_ns("kb_get") == "kb_get"
+
+    def test_guard_blocks_cross_op_fuzzy_match(self, repair_ns):
+        # Construct a name that would score above 0.7 against ``kb_add``
+        # purely because of the shared ``kb_`` prefix but whose op suffix
+        # diverges from ``add``.  ``kb_aed`` shares prefix ``kb_`` with
+        # all kb_* tools; its op suffix ``aed`` is close to ``add``
+        # (ratio ~0.67 < 0.7) so the guard should block it.
+        # (If the guard is absent, fuzzy would return ``kb_add``.)
+        result = repair_ns("kb_aed")
+        # The guard may block the repair entirely (None) or allow a
+        # sufficiently close op match.  ``aed`` vs ``add`` = 2/3 ~0.67,
+        # which is below 0.7, so the guard must return None.
+        assert result is None
+
+    def test_legitimate_typo_same_op_allowed(self, repair_ns):
+        # ``kb_searc`` is a one-character truncation of ``kb_search``.
+        # Op suffixes: ``searc`` vs ``search`` — SequenceMatcher ~0.91.
+        # The guard must allow this repair.
+        assert repair_ns("kb_searc") == "kb_search"
+
+    def test_non_namespaced_typo_still_works(self, repair_ns):
+        # ``terminall`` has no shared namespace prefix with any candidate.
+        # The guard is a no-op when there is no shared prefix (the op
+        # suffix falls back to the full name), so the original fuzzy
+        # logic should still return ``terminal``.
+        assert repair_ns("terminall") == "terminal"
+
+    def test_mcp_namespaced_typo_in_op_suffix_allowed(self, repair_ns):
+        # ``mcp_knowledge_kb_serach`` is a typo in the op portion.
+        # Shared prefix: ``mcp_knowledge_kb_``; op suffix: ``serach``
+        # vs ``search`` — ratio ~0.91 >= 0.7, so the guard allows it.
+        assert repair_ns("mcp_knowledge_kb_serach") == "mcp_knowledge_kb_search"
+
+    def test_mcp_namespaced_cross_op_blocked(self, repair_ns):
+        # ``mcp_knowledge_kb_get`` is in VALID_NS — direct match first.
+        # For the guard logic, test a variant that fuzzy-matches
+        # ``mcp_knowledge_kb_add`` but should be blocked: ``mcp_knowledge_kb_aet``
+        # has op suffix ``aet`` vs ``add`` (ratio = 2/3 ~0.67 < 0.7).
+        result = repair_ns("mcp_knowledge_kb_aet")
+        assert result is None

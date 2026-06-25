@@ -942,7 +942,7 @@ class PluginLlm:
                 timeout=timeout,
                 extra_body=extra_body,
             )
-        from agent.auxiliary_client import call_llm
+        from agent.auxiliary_client import call_llm, _OR_TITLE_AUX_TEXT
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
@@ -955,6 +955,9 @@ class PluginLlm:
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=merged_extra or None,
+            # Plugin LLM is an auxiliary TEXT component; task=None so attribute
+            # explicitly. Pure OpenRouter X-Title attribution, no behavior change.
+            or_title=_OR_TITLE_AUX_TEXT,
         )
         provider, model = _resolve_attribution(
             provider_override=provider_override,
@@ -986,7 +989,7 @@ class PluginLlm:
                 timeout=timeout,
                 extra_body=extra_body,
             )
-        from agent.auxiliary_client import async_call_llm
+        from agent.auxiliary_client import async_call_llm, _OR_TITLE_AUX_TEXT
         merged_extra = dict(extra_body or {})
         if profile_override:
             merged_extra.setdefault("metadata", {})["auth_profile"] = profile_override
@@ -999,6 +1002,9 @@ class PluginLlm:
             max_tokens=max_tokens,
             timeout=timeout,
             extra_body=merged_extra or None,
+            # Plugin LLM is an auxiliary TEXT component; task=None so attribute
+            # explicitly. Pure OpenRouter X-Title attribution, no behavior change.
+            or_title=_OR_TITLE_AUX_TEXT,
         )
         provider, model = _resolve_attribution(
             provider_override=provider_override,

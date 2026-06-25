@@ -472,7 +472,13 @@ class TestAnthropicOAuthFlag:
             client, model = _try_anthropic()
 
         assert client is not None
-        assert model == "claude-haiku-4-5-20251001"
+        # Anthropic has no catalog aux default (haiku backstop removed in
+        # d129f7fab) and _try_anthropic does not consult the main model, so
+        # it returns an empty model string.  Downstream resolution treats
+        # the empty string as the signal to fall through to the main model.
+        # The point of THIS test is pool priority: the pooled credential is
+        # used and the legacy resolve_anthropic_token path is never touched.
+        assert model == ""
         assert mock_build.call_args.args[0] == "sk-ant-oat01-pooled"
 
 
@@ -995,6 +1001,13 @@ class TestVisionClientFallback:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "***")
         with (
             patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+            # Anthropic's catalog aux default is empty since the haiku backstop
+            # was removed (d129f7fab), so step 2 of resolve_provider_client's
+            # fallback chain produces nothing and resolution falls through to
+            # step 3 — the user's main model.  Pin a known main model so the
+            # assertion proves the fall-through instead of relying on an
+            # unconfigured (and therefore empty) main model.
+            patch("agent.auxiliary_client._read_main_model", return_value="claude-sonnet-4"),
             patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
             patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="***"),
         ):
@@ -1002,7 +1015,8 @@ class TestVisionClientFallback:
 
         assert client is not None
         assert client.__class__.__name__ == "AnthropicAuxiliaryClient"
-        assert model == "claude-haiku-4-5-20251001"
+        # No haiku: resolution falls through to the configured main model.
+        assert model == "claude-sonnet-4"
 
     def test_anthropic_auxiliary_client_aggregates_stream_response(self):
         from agent.auxiliary_client import AnthropicAuxiliaryClient

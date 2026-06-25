@@ -111,7 +111,14 @@ def gui_toolset_label(label: str) -> str:
 # `hermes tools` → X (Twitter) Search setup walks users through credential
 # setup. The tool's check_fn means the schema still won't appear to the
 # model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+#
+# model_switch lets the agent re-route its own model mid-session. It is an
+# opt-in self-modification capability (runtime-gated by
+# agent.allow_self_model_switch) and must NOT be auto-recovered into the
+# default toolset list — otherwise every cli session leaks the tool even
+# when self-switching is disabled. Keep it OFF by default so the non-
+# configurable recovery loop in _get_platform_tools skips it.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search", "model_switch"}
 
 
 def _xai_credentials_present() -> bool:

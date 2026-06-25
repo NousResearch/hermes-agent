@@ -53,7 +53,14 @@ def _get_platform_default_hermes_home() -> Path:
 def get_hermes_home() -> Path:
     """Return the Hermes home directory (default: platform-native path).
 
-    Reads HERMES_HOME env var, falls back to the platform-native default.
+    Resolution order:
+    1. Active ``AgentProfile`` in the current async context (multi-agent
+       gateway routes per-message to a profile via ContextVar).
+    2. Context-local override (``set_hermes_home_override``).
+    3. ``HERMES_HOME`` env var.
+    4. Platform-native default (``~/.hermes`` on POSIX,
+       ``%LOCALAPPDATA%\\hermes`` on native Windows).
+
     This is the single source of truth — all other copies should import this.
 
     When ``HERMES_HOME`` is unset but an ``active_profile`` file indicates
@@ -66,6 +73,17 @@ def get_hermes_home() -> Path:
     template in ``hermes_cli/gateway.py`` and the kanban dispatcher in
     ``hermes_cli/kanban_db.py``).  See https://github.com/NousResearch/hermes-agent/issues/18594.
     """
+    # 1. ContextVar — active AgentProfile wins when present.  Lazy import to
+    # avoid a circular dependency (agent.profile imports this module).
+    try:
+        from agent.profile import get_active_profile  # noqa: WPS433 (lazy)
+        profile = get_active_profile()
+    except ImportError:
+        profile = None
+    if profile is not None and profile.home_dir is not None:
+        return Path(profile.home_dir).expanduser()
+
+    # 2. Context-local override (set_hermes_home_override).
     override = get_hermes_home_override()
     if override:
         return Path(override)

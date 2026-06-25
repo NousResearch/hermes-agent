@@ -1098,6 +1098,17 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
+        elif function_name == "model_switch":
+            from tools.model_switch_tool import model_switch_tool as _model_switch_tool
+            function_result = _model_switch_tool(
+                agent,
+                slug=function_args.get("slug", ""),
+                reason=function_args.get("reason", ""),
+                scope=function_args.get("scope", "session"),
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('model_switch', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):

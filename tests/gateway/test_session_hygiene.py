@@ -581,6 +581,7 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._session_db = None
+    runner._session_model_overrides = {}
     runner._is_user_authorized = lambda _source: True
     runner._set_session_env = lambda _context: None
     runner._run_agent = AsyncMock(
@@ -594,7 +595,7 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
     )
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+    monkeypatch.setattr("gateway.run._resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
     monkeypatch.setattr(
         "agent.model_metadata.get_model_context_length",
         lambda *_args, **_kwargs: 100,

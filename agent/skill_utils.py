@@ -589,6 +589,59 @@ def extract_skill_config_vars(frontmatter: Dict[str, Any]) -> List[Dict[str, Any
     return result
 
 
+# ── Skill model override ──────────────────────────────────────────────────
+
+
+def extract_skill_model_override(frontmatter: Dict[str, Any]) -> str | None:
+    """Extract metadata.hermes.model from skill frontmatter.
+
+    Why: Lets skill authors declare a preferred model for their skill's turn
+    (e.g. a cheap fast model for a mechanical skill) without touching agent code.
+    What: Returns the model slug string under metadata.hermes.model, or None.
+    Test: Pass {"metadata": {"hermes": {"model": "x/y"}}} -> "x/y"; pass {} -> None.
+    """
+    try:
+        model = frontmatter.get("metadata", {}).get("hermes", {}).get("model")
+    except (AttributeError, TypeError):
+        return None
+    # Only return scalar slugs; ignore dict/list shapes to avoid bad swaps.
+    return model if isinstance(model, str) and model.strip() else None
+
+
+def skill_model_swap(agent, new_model: str) -> dict | None:
+    """Lightweight transient model swap for a skill turn.
+
+    Why: switch_model() rebuilds the HTTP client, busts the fallback chain and
+    compressor — far too expensive for a per-skill, single-turn override. This
+    flips just agent.model (and invalidates the cached system prompt so the
+    model identity is reflected) and returns a snapshot for later restore.
+    What: Sets agent.model=new_model, clears _cached_system_prompt; returns
+    {"model": <old>} or None when it's a no-op (empty/same model).
+    Test: agent.model="a"; swap(agent,"b") returns {"model":"a"} and agent.model=="b";
+    swap(agent,"b") again returns None (no-op).
+    """
+    if not new_model or new_model == getattr(agent, "model", None):
+        return None
+    snapshot = {"model": agent.model}
+    agent.model = new_model
+    agent._cached_system_prompt = None
+    return snapshot
+
+
+def skill_model_restore(agent, snapshot: dict | None):
+    """Restore the agent model after a skill turn completes.
+
+    Why: A skill-scoped model override must revert so subsequent turns use the
+    user's chosen main-agent model.
+    What: Restores agent.model from the snapshot and invalidates the cached
+    system prompt; no-op when snapshot is None.
+    Test: After swap snapshot={"model":"a"}; restore(agent,snapshot) -> agent.model=="a".
+    """
+    if snapshot and hasattr(agent, "model"):
+        agent.model = snapshot["model"]
+        agent._cached_system_prompt = None
+
+
 def discover_all_skill_config_vars() -> List[Dict[str, Any]]:
     """Scan all enabled skills and collect their config variable declarations.
 

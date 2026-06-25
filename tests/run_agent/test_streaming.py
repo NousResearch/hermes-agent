@@ -462,6 +462,146 @@ class TestStreamingCallbacks:
         # Content is still accumulated in the response
         assert response.choices[0].message.content == "thinking... more text"
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_suppressed_pure_toolcall_fragment_fires_no_callback(
+        self, mock_close, mock_create
+    ):
+        """Path B: a suppressed-content delta that is ONLY a leaked tool-call
+        opener fragment (e.g. "ool_call>") must fire no stream_delta_callback.
+
+        Qwen3-class models emit a partial "<tool_call>" opener as text right
+        before/after native tool_calls begin.  This branch (tool_calls present
+        → content routed through stream_delta_callback) must scrub the fragment
+        and, when nothing remains, suppress the callback entirely.
+        """
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(
+                tool_calls=[
+                    _make_tool_call_delta(index=0, tc_id="call_abc", name="read_file")
+                ]
+            ),
+            # Pure leaked fragment arriving as suppressed content.
+            _make_stream_chunk(content="ool_call>"),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        deltas = []
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: deltas.append(t),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        # The fragment must never reach the user-facing callback.
+        assert deltas == []
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_suppressed_mixed_toolcall_fragment_scrubs_only_fragment(
+        self, mock_close, mock_create
+    ):
+        """Path B: a suppressed-content delta mixing prose with a trailing
+        fragment must deliver the scrubbed prose (fragment removed)."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(
+                tool_calls=[
+                    _make_tool_call_delta(index=0, tc_id="call_abc", name="read_file")
+                ]
+            ),
+            _make_stream_chunk(content="hello ool_call>"),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+
+        deltas = []
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda t: deltas.append(t),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        # Prose survives; the leaked fragment is stripped.
+        assert deltas == ["hello "]
+
+
+class TestPrimaryStreamDeltaFragmentScrub:
+    """Path A: the primary content path (_fire_stream_delta) scrubs leaked
+    tool-call opener fragments and suppresses pure-fragment deltas."""
+
+    def _make_agent(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        return agent
+
+    def test_fire_stream_delta_suppresses_pure_fragment(self):
+        agent = self._make_agent()
+        fired = []
+        agent.stream_delta_callback = lambda t: fired.append(t)
+        agent._stream_callback = None
+
+        agent._fire_stream_delta("ool_call>")
+
+        assert fired == []
+
+    def test_fire_stream_delta_scrubs_mixed_fragment(self):
+        agent = self._make_agent()
+        fired = []
+        agent.stream_delta_callback = lambda t: fired.append(t)
+        agent._stream_callback = None
+
+        agent._fire_stream_delta("hello ool_call>")
+
+        assert fired == ["hello "]
+
+    def test_fire_stream_delta_passes_normal_text(self):
+        agent = self._make_agent()
+        fired = []
+        agent.stream_delta_callback = lambda t: fired.append(t)
+        agent._stream_callback = None
+
+        agent._fire_stream_delta("normal response text")
+
+        assert fired == ["normal response text"]
+
 
 # ── Test: Streaming Fallback ────────────────────────────────────────────
 

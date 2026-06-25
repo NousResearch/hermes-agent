@@ -977,6 +977,11 @@ DEFAULT_CONFIG = {
         # rather than pinning the running-agent guard forever.  CLI clarify
         # blocks indefinitely (input() is synchronous) and ignores this.
         "clarify_timeout": 600,
+        # Allow the agent to call the model_switch tool to self-optimise its
+        # model mid-conversation (e.g. down-routing to a cheap model for
+        # simple follow-up turns).  Requires the model_switch toolset to be
+        # available.  Disabled by default -- enable per-user in config.yaml.
+        "allow_self_model_switch": False,
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
@@ -1934,6 +1939,8 @@ DEFAULT_CONFIG = {
         "subagent_auto_approve": False,
     },
 
+    "agent_profiles": {},   # named child agent profile definitions
+
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
@@ -1997,6 +2004,12 @@ DEFAULT_CONFIG = {
         #                     never crammed into a chat bubble), apply with
         #                     /skills approve <id> or drop with /skills reject <id>.
         "write_approval": False,
+        # Per-skill model overrides for skill-level model routing.
+        # Map of {"skill-name": "model-slug"}.  Takes precedence over a
+        # skill's own metadata.hermes.model frontmatter recommendation; the
+        # override applies as a lightweight transient model swap for that
+        # skill's turn and reverts afterward.  Empty = honor frontmatter only.
+        "model_overrides": {},
     },
 
     # Curator — background skill maintenance.
@@ -2747,6 +2760,14 @@ DEFAULT_CONFIG = {
     "paste_collapse_char_threshold": 2000,
 
 
+    "smart_model_routing": {
+        "enabled": False,
+        "cheap_model": "deepseek/deepseek-v4-flash",
+        "max_simple_chars": 200,
+        "max_simple_words": 40,
+        "complexity_keywords": ["implement", "debug", "refactor", "diagnose", "migrate", "architect", "explain", "why does", "how does", "broken", "failing"],
+        "simple_keywords": ["status", "show", "check", "list", "restart", "what is", "ping", "health"],
+    },
     # Config schema version - bump this when adding new required fields
     "_config_version": 30,
 }
@@ -4338,6 +4359,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
+    "agent_profiles",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",
 }

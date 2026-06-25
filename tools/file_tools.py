@@ -867,6 +867,15 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         if block_error:
             return json.dumps({"error": block_error})
 
+        # ── Acquire the read backend up front ─────────────────────────
+        # Resolve file_ops BEFORE the dedup short-circuit. _get_file_ops
+        # validates that the read backend (e.g. terminal/container) is
+        # actually available and raises when it is not. Serving a
+        # "file unchanged" dedup stub without this check would silently
+        # mask a genuine backend failure as a successful no-op read.
+        # Acquiring here also lets the real read below reuse the handle.
+        file_ops = _get_file_ops(task_id)
+
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
         # file hasn't been modified since, return a lightweight stub
@@ -928,7 +937,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 pass  # stat failed — fall through to full read
 
         # ── Perform the read ──────────────────────────────────────────
-        file_ops = _get_file_ops(task_id)
+        # file_ops was acquired above (before the dedup short-circuit) so
+        # backend failures surface as errors instead of dedup stubs.
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
 

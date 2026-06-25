@@ -220,7 +220,7 @@ _last_resolved_tool_names: List[str] = []
 _LEGACY_TOOLSET_MAP = {
     "web_tools": ["web_search", "web_extract"],
     "terminal_tools": ["terminal"],
-    "vision_tools": ["vision_analyze"],
+    "vision_tools": ["vision_analyze", "ocr_image"],
     "moa_tools": ["mixture_of_agents"],
     "image_tools": ["image_generate"],
     "skills_tools": ["skills_list", "skill_view", "skill_manage"],
@@ -566,7 +566,7 @@ def _resolve_active_context_length() -> int:
 # because they need agent-level state (TodoStore, MemoryStore, etc.).
 # The registry still holds their schemas; dispatch just returns a stub error
 # so if something slips through, the LLM sees a sensible message.
-_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task"}
+_AGENT_LOOP_TOOLS = {"todo", "memory", "session_search", "delegate_task", "model_switch"}
 _READ_SEARCH_TOOLS = {"read_file", "search_files"}
 
 
@@ -837,6 +837,7 @@ def _emit_post_tool_call_hook(
     error_type: Optional[str] = None,
     error_message: Optional[str] = None,
     middleware_trace: Optional[List[Dict[str, Any]]] = None,
+    agent_id: Optional[str] = None,
 ) -> None:
     """Emit the ``post_tool_call`` observer hook.
 
@@ -868,6 +869,7 @@ def _emit_post_tool_call_hook(
             error_type=error_type,
             error_message=error_message,
             middleware_trace=list(middleware_trace or []),
+            agent_id=agent_id,
         )
     except Exception as _hook_err:
         logger.debug("post_tool_call hook error: %s", _hook_err)
@@ -1147,6 +1149,14 @@ def handle_function_call(
                     pass
         duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
+        _agent_id = None
+        try:
+            from agent.profile import get_active_profile
+            _p = get_active_profile()
+            if _p:
+                _agent_id = _p.id
+        except Exception:
+            pass
         _emit_post_tool_call_hook(
             function_name=function_name,
             function_args=function_args,
@@ -1158,6 +1168,7 @@ def handle_function_call(
             api_request_id=api_request_id,
             duration_ms=duration_ms,
             middleware_trace=list(_tool_middleware_trace),
+            agent_id=_agent_id,
         )
 
         # Generic tool-result canonicalization seam: plugins receive the
@@ -1186,6 +1197,7 @@ def handle_function_call(
                     status=status,
                     error_type=error_type,
                     error_message=error_message,
+                    agent_id=_agent_id,
                 )
                 for hook_result in hook_results:
                     if isinstance(hook_result, str):

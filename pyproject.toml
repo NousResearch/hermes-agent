@@ -181,12 +181,18 @@ pty = [
   # without pulling in extra packages.
 ]
 honcho = ["honcho-ai==2.0.1"]
-# Image resize recovery for the vision tools. Pillow is now a CORE dependency
-# (see the main `dependencies` list) since the byte/pixel shrink paths are on
-# the default vision-embed path and the mid-session lazy install deadlocked the
-# CLI under prompt_toolkit (#40490). This extra is kept as a no-op back-compat
-# alias so existing `pip install hermes-agent[vision]` invocations still resolve.
-vision = []
+# Image resize recovery for the vision tools.  Pillow is a soft dependency:
+# vision_tools / conversation_compression degrade gracefully without it (they
+# log and skip the resize), but without it the byte AND pixel-dimension shrink
+# paths silently no-op, so an oversized image (>5 MB or >8000px) bakes into
+# immutable history and bricks the session on Anthropic's non-retryable 400.
+# Declared here so packagers (Nix, Homebrew) ship it with [all] and so
+# `pip install hermes-agent[vision]` / the lazy-install path can resolve it.
+# pdf2image (with the system poppler/pdftoppm binary) powers PDF OCR in the
+# ocr_image tool: PDFs are rasterized page-by-page before transcription. Like
+# Pillow it is a soft dependency — the image OCR path works without it; only the
+# PDF path requires it (and reports a clear install hint if it's missing).
+vision = ["Pillow==12.2.0", "pdf2image==1.17.0"]
 # CVE-2026-48710 (BadHost): Starlette is pulled transitively by mcp's
 # sse-starlette / HTTP-SSE stack (and by fastapi in the `web` extra). Before
 # 1.0.1, a malformed Host header makes `request.url.path` desync from the path
@@ -299,7 +305,7 @@ hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
+py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve", "intent_fast_path"]
 
 [tool.setuptools.data-files]
 # i18n catalogs. locales/ is a bare data directory (no __init__.py), so it is

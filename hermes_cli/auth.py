@@ -5119,7 +5119,7 @@ def fetch_nous_models(
             description = str(err.get("error_description") or err.get("error") or description)
         except Exception as e:
             logger.debug("Could not parse error response JSON: %s", e)
-        raise AuthError(description, provider="nous", code="models_fetch_failed")
+        raise AuthError(description, provider="nous", code="models_fetch_failed") from e
 
     payload = response.json()
     data = payload.get("data")

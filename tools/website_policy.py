@@ -109,7 +109,7 @@ def _load_policy_config(config_path: Optional[Path] = None) -> Dict[str, Any]:
     except OSError as exc:
         raise WebsitePolicyError(f"Failed to read config file {config_path}: {exc}") from exc
     if not isinstance(config, dict):
-        raise WebsitePolicyError("config root must be a mapping")
+        raise WebsitePolicyError("config root must be a mapping") from exc
 
     security = config.get("security", {})
     if security is None:

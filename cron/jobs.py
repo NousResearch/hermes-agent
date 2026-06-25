@@ -345,7 +345,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         try:
             croniter(schedule)
         except Exception as e:
-            raise ValueError(f"Invalid cron expression '{schedule}': {e}")
+            raise ValueError(f"Invalid cron expression '{schedule}': {e}") from e
         return {
             "kind": "cron",
             "expr": schedule,
@@ -378,7 +378,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
                 "display": f"once at {dt.strftime('%Y-%m-%d %H:%M')}"
             }
         except ValueError as e:
-            raise ValueError(f"Invalid timestamp '{schedule}': {e}")
+            raise ValueError(f"Invalid timestamp '{schedule}': {e}") from e
     
     # Duration like "30m", "2h", "1d" → one-shot from now
     try:

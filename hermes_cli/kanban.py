@@ -1216,7 +1216,7 @@ def _parse_duration(val) -> Optional[int]:
         except ValueError as exc:
             raise ValueError(f"malformed duration {val!r}") from exc
         return int(n * units[s[-1]])
-    raise ValueError(f"malformed duration {val!r} (expected 30s, 5m, 2h, 1d, or a number)")
+    raise ValueError(f"malformed duration {val!r} (expected 30s, 5m, 2h, 1d, or a number)") from exc
 
 
 def _cmd_init(args: argparse.Namespace) -> int:

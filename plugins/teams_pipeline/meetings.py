@@ -147,7 +147,7 @@ async def resolve_meeting_reference(
         except MicrosoftGraphAPIError as exc:
             raise _wrap_graph_error(exc, missing_message=f"Teams meeting not found: {meeting_id}") from exc
         if not isinstance(payload, dict) or not payload.get("id"):
-            raise TeamsMeetingNotFoundError(f"Teams meeting not found: {meeting_id}")
+            raise TeamsMeetingNotFoundError(f"Teams meeting not found: {meeting_id}") from exc
         return _normalize_meeting_ref(payload, tenant_id=tenant_id)
 
     if join_web_url:

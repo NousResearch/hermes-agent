@@ -101,7 +101,7 @@ async def read_message(reader: asyncio.StreamReader) -> Optional[dict]:
         except UnicodeDecodeError as e:
             raise LSPProtocolError(f"non-ASCII LSP header: {line!r}") from e
         if not key:
-            raise LSPProtocolError(f"malformed LSP header line: {line!r}")
+            raise LSPProtocolError(f"malformed LSP header line: {line!r}") from e
         headers[key.strip().lower()] = value.strip()
 
     cl = headers.get("content-length")
@@ -112,7 +112,7 @@ async def read_message(reader: asyncio.StreamReader) -> Optional[dict]:
     except ValueError as e:
         raise LSPProtocolError(f"non-integer Content-Length: {cl!r}") from e
     if n < 0 or n > 64 * 1024 * 1024:  # 64 MiB sanity cap
-        raise LSPProtocolError(f"unreasonable Content-Length: {n}")
+        raise LSPProtocolError(f"unreasonable Content-Length: {n}") from e
 
     try:
         body = await reader.readexactly(n)

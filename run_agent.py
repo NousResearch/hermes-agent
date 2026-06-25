@@ -1629,6 +1629,19 @@ class AIAgent:
                 if msg_id in history_ids:
                     flushed_ids.add(msg_id)
                     continue
+                # Verification-stop nudges are private control-loop scaffolding:
+                # the attempted assistant answer was deliberately not shown to
+                # the user, and the synthetic user nudge is an instruction to
+                # the model, not a real user message.  They may appear in the
+                # live in-memory list for the next API retry, including before
+                # tool-result flushes, but must never enter durable transcripts
+                # where gateways can replay/surface them as user-visible chat.
+                if (
+                    msg.get("_verification_stop_synthetic")
+                    or msg.get("finish_reason") == "verification_required"
+                ):
+                    flushed_ids.add(msg_id)
+                    continue
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
                 # Persist multimodal tool results as their text summary only —

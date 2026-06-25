@@ -241,3 +241,54 @@ class TestShutdownTranscriptSurvivesResumeE2E:
 
         after = db.get_messages_as_conversation(session_id)
         assert len(after) == 2, after
+
+    def test_verification_stop_scaffolding_not_persisted(self, tmp_path, monkeypatch):
+        """Verification-stop retry scaffolding is model-private, not transcript content."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+        from hermes_state import SessionDB
+        from run_agent import AIAgent
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        session_id = "sess-verification-private"
+        db.create_session(session_id=session_id, source="discord")
+
+        msgs = [
+            {"role": "user", "content": "please edit the script"},
+            {
+                "role": "assistant",
+                "content": "Done without tests",
+                "finish_reason": "verification_required",
+            },
+            {
+                "role": "user",
+                "content": "[System: You edited code in this turn...]",
+                "_verification_stop_synthetic": True,
+            },
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "tc1", "function": {"name": "terminal", "arguments": "{}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "tc1", "content": "AD_HOC_VERIFICATION_PASSED"},
+            {"role": "assistant", "content": "Verified and done."},
+        ]
+
+        agent = object.__new__(AIAgent)
+        agent._session_db = db
+        agent._session_db_created = True
+        agent.session_id = session_id
+        agent.platform = "discord"
+        agent._last_flushed_db_idx = 0
+        agent._flushed_db_message_ids = set()
+        agent._flushed_db_message_session_id = None
+
+        agent._flush_messages_to_session_db(msgs)
+
+        persisted = db.get_messages_as_conversation(session_id)
+        contents = [m.get("content") or "" for m in persisted]
+        finish_reasons = [m.get("finish_reason") for m in persisted]
+
+        assert "[System: You edited code in this turn...]" not in contents
+        assert "Done without tests" not in contents
+        assert "verification_required" not in finish_reasons
+        assert "AD_HOC_VERIFICATION_PASSED" in contents
+        assert "Verified and done." in contents

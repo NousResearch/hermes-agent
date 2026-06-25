@@ -266,6 +266,7 @@ from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_
 from hermes_cli.subcommands.cron import build_cron_parser
 from hermes_cli.subcommands.gateway import build_gateway_parser
 from hermes_cli.subcommands.profile import build_profile_parser
+from hermes_cli.subcommands.profile_sync import build_profile_sync_parser
 from hermes_cli.subcommands.model import build_model_parser
 from hermes_cli.subcommands.setup import build_setup_parser
 from hermes_cli.subcommands.postinstall import build_postinstall_parser
@@ -11580,7 +11581,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
-        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile", "proxy",
+        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile", "profile-sync", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -13095,6 +13096,11 @@ def main():
     # profile command  (parser built in hermes_cli/subcommands/profile.py)
     # =========================================================================
     build_profile_parser(subparsers, cmd_profile=cmd_profile)
+
+    # =========================================================================
+    # profile-sync command  (parser built in hermes_cli/subcommands/profile_sync.py)
+    # =========================================================================
+    build_profile_sync_parser(subparsers)
 
     # =========================================================================
     # completion command

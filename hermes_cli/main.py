@@ -1370,7 +1370,24 @@ def _print_tui_exit_summary(
     )
 
 
-_NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert", "peer"})
+_NPM_LOCK_RUNTIME_KEYS = frozenset(
+    {
+        "ideallyInert",
+        "peer",
+        # npm writes these boolean annotation fields non-deterministically
+        # between the declarative package-lock.json and the hidden actualized
+        # .package-lock.json.  The intersection comparison (see
+        # _tui_need_npm_install) already handles the "field present in root
+        # but absent in hidden" case for structured fields like version,
+        # dependencies, license, etc.  These boolean flags need explicit
+        # exclusion because when present in *both* lockfiles they may still
+        # differ (e.g. dev: true → stripped in hidden).
+        "dev",
+        "extraneous",
+        "hasInstallScript",
+        "optional",
+    }
+)
 """Lockfile fields npm writes non-deterministically at install time.
 
 ``ideallyInert`` is npm's runtime annotation for packages it skipped installing
@@ -1380,6 +1397,13 @@ on dev-dependencies that are *also* declared as peers — the canonical
 it.  Neither key represents a real skew between what was declared and what was
 installed, so we exclude them from the comparison in :func:`_tui_need_npm_install`
 to avoid false-positive reinstalls on every launch.
+
+``dev``, ``optional``, ``extraneous``, and ``hasInstallScript`` are boolean
+annotations that npm populates differently in the hidden lock (e.g. ``dev: true``
+from the root lock may be absent or ``false`` in the hidden actualized tree).
+They never indicate a changed dependency — the authoritative check is the
+``resolved``/``integrity`` pair, which the intersection comparison always
+catches.
 """
 
 
@@ -1459,8 +1483,13 @@ def _tui_need_npm_install(root: Path) -> bool:
     For each entry in the root lock's ``packages`` map:
       - missing from hidden lock → reinstall (unless the entry is marked
         ``optional`` or ``peer``, which npm may intentionally skip per platform)
-      - present but with differing fields (excluding npm-written runtime
-        annotations like ``ideallyInert``) → reinstall
+      - present in both → compare only the **intersection** of fields (after
+        stripping ``_NPM_LOCK_RUNTIME_KEYS``).  npm's hidden lock
+        intentionally omits many metadata fields (version, license, engines,
+        dependencies, funding, etc.) — those one-side-only fields are normal
+        npm artefacts, not real skew.  A real version/dependency change will
+        change ``resolved``/``integrity``, which are present in both locks
+        and will be caught by the intersection comparison.
 
     Extra entries that exist only in the hidden lock are ignored — stale
     transitives left over from a removed dependency don't break runtime and
@@ -1509,10 +1538,21 @@ def _tui_need_npm_install(root: Path) -> bool:
                 continue
             return True
 
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
-            installed[name]
-        ):
-            return True
+        if isinstance(installed[name], dict):
+            w = comparable(pkg)
+            i = comparable(installed[name])
+            # Only compare keys present in *both* lockfiles.  npm's hidden
+            # .package-lock.json intentionally omits many metadata fields
+            # (version, dependencies, license, engines, dev, optional, etc.)
+            # that the root lock records.  Missing-on-one-side is a normal
+            # npm artefact, not a real skew.  The authoritative fields
+            # "resolved" and "integrity" are always present for installed
+            # packages, so a real version/dependency change will still
+            # be caught through them.
+            common = set(w) & set(i)
+            for k in common:
+                if w[k] != i[k]:
+                    return True
 
     return False
 

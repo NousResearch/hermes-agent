@@ -142,7 +142,13 @@ def build_turn_context(
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
 
-    agent._ensure_db_session()
+    # NOTE: the DB session row is created later, AFTER the system prompt is
+    # restored/built (see _ensure_db_session() below the system-prompt block).
+    # Creating it here — before _cached_system_prompt is populated — inserts a
+    # row with system_prompt=NULL on a fresh API/gateway agent that carries
+    # client-managed history, which then trips the "stored system prompt is
+    # null; rebuilding from scratch" warning and a needless first-turn prefix
+    # cache miss. (Issue #45499.)
 
     # Tell auxiliary_client what the live main provider/model are for this turn.
     try:
@@ -308,6 +314,11 @@ def build_turn_context(
         restore_or_build_system_prompt(agent, system_message, conversation_history)
 
     active_system_prompt = agent._cached_system_prompt
+
+    # Create the DB session row now that _cached_system_prompt is populated, so
+    # the persisted snapshot is written non-NULL on the first turn (Issue
+    # #45499). Idempotent: _ensure_db_session() no-ops once the row exists.
+    agent._ensure_db_session()
 
     # Crash-resilience: persist the inbound user turn as soon as the session row exists.
     try:

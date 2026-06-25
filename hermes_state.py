@@ -791,57 +791,63 @@ END;
 """
 
 
-def _build_message_token_totals_select() -> str:
-    """Build the SELECT that aggregates bit-packed messages.token_count.
+def _token_category_decode_sql(tag: int) -> str:
+    """SQL summing one bit-packed token category (by codec tag) over rows.
 
     Decodes the codec layout [F:1][tag1:4][value1:27][tag2:4][value2:28]
-    (see :mod:`hermes_token_codec`) entirely in SQL so legacy and packed
-    rows can be summed in a single pass:
+    (see :mod:`hermes_token_codec`): a packed row (token_count < 0)
+    contributes value1 when tag1 == tag and value2 when tag2 == tag.
 
-      * packed rows  → token_count < 0; route each of the two tagged
-        buckets to its category (output / reasoning / input / cache_read).
-      * legacy rows  → token_count >= 0; historically only assistant rows
-        carried a raw output count, so attribute those to ``output`` and
-        ignore non-negative counts on other roles.
-
-    SQLite's ``>>`` is an arithmetic (sign-extending) shift on the negative
-    packed integers, so EVERY ``>>`` is immediately followed by ``& mask``
-    to discard the sign-extended high bits. The 28-bit value2 field needs
-    no shift and is masked directly.
+    SQLite's ``>>`` is arithmetic (sign-extending) on the negative packed
+    integers, so EVERY ``>>`` is immediately followed by ``& mask`` to
+    discard sign-extended high bits; the 28-bit value2 field is masked
+    without a shift.
     """
+    from hermes_token_codec import _TAG_MASK, _V1_MAX, _V2_MAX
+
+    return (
+        "SUM(CASE WHEN token_count < 0 "
+        f"AND ((token_count >> 59) & {_TAG_MASK}) = {tag} "
+        f"THEN ((token_count >> 32) & {_V1_MAX}) ELSE 0 END) + "
+        "SUM(CASE WHEN token_count < 0 "
+        f"AND ((token_count >> 28) & {_TAG_MASK}) = {tag} "
+        f"THEN (token_count & {_V2_MAX}) ELSE 0 END)"
+    )
+
+
+# Legacy non-negative counts historically only carried assistant output.
+_LEGACY_OUTPUT_SQL = (
+    " + SUM(CASE WHEN token_count >= 0 AND role = 'assistant' "
+    "THEN token_count ELSE 0 END)"
+)
+
+
+def _token_decode_columns_sql() -> str:
+    """The four decoded token-bucket columns (input/output/cache_read/reasoning)."""
     from hermes_token_codec import (
         TAG_OUTPUT,
         TAG_REASONING,
         TAG_TOTAL_INPUT,
         TAG_CACHE_READ,
-        _TAG_MASK,
-        _V1_MAX,
-        _V2_MAX,
-    )
-
-    def _bucket(tag: int) -> str:
-        # value1 lives in bits 32..58 (tag1 in 59..62); value2 in bits 0..27
-        # (tag2 in 28..31). A packed row contributes value1 when tag1 == tag,
-        # and value2 when tag2 == tag.
-        return (
-            "SUM(CASE WHEN token_count < 0 "
-            f"AND ((token_count >> 59) & {_TAG_MASK}) = {tag} "
-            f"THEN ((token_count >> 32) & {_V1_MAX}) ELSE 0 END) + "
-            "SUM(CASE WHEN token_count < 0 "
-            f"AND ((token_count >> 28) & {_TAG_MASK}) = {tag} "
-            f"THEN (token_count & {_V2_MAX}) ELSE 0 END)"
-        )
-
-    legacy_output = (
-        " + SUM(CASE WHEN token_count >= 0 AND role = 'assistant' "
-        "THEN token_count ELSE 0 END)"
     )
     return (
+        f"COALESCE(({_token_category_decode_sql(TAG_TOTAL_INPUT)}), 0) AS input, "
+        f"COALESCE(({_token_category_decode_sql(TAG_OUTPUT)}{_LEGACY_OUTPUT_SQL}), 0) AS output, "
+        f"COALESCE(({_token_category_decode_sql(TAG_CACHE_READ)}), 0) AS cache_read, "
+        f"COALESCE(({_token_category_decode_sql(TAG_REASONING)}), 0) AS reasoning"
+    )
+
+
+def _build_message_token_totals_select() -> str:
+    """Build the SELECT that aggregates bit-packed messages.token_count.
+
+    Decodes legacy and packed rows in a single pass via
+    :func:`_token_decode_columns_sql`. Returns the four token buckets plus a
+    message count; callers append the FROM/WHERE/GROUP BY.
+    """
+    return (
         "SELECT "
-        f"COALESCE(({_bucket(TAG_TOTAL_INPUT)}), 0) AS input, "
-        f"COALESCE(({_bucket(TAG_OUTPUT)}{legacy_output}), 0) AS output, "
-        f"COALESCE(({_bucket(TAG_CACHE_READ)}), 0) AS cache_read, "
-        f"COALESCE(({_bucket(TAG_REASONING)}), 0) AS reasoning, "
+        f"{_token_decode_columns_sql()}, "
         "COUNT(*) AS messages "
         "FROM messages "
     )
@@ -3507,6 +3513,73 @@ class SessionDB:
             cursor = self._conn.execute(sql, (root_session_id,))
             row = cursor.fetchone()
         return _row_to_token_totals(row)
+
+    def get_message_token_timeseries(
+        self,
+        start_ts: float,
+        end_ts: float,
+        bucket_seconds: int,
+        session_id: Optional[str] = None,
+    ) -> List[Dict[str, int]]:
+        """Time-bucketed decoded token usage + request counts.
+
+        Buckets messages by ``timestamp`` into ``bucket_seconds``-wide windows
+        in ``[start_ts, end_ts)`` and, per bucket, returns the decoded token
+        buckets (input/output/cache_read/reasoning) plus:
+          * ``requests`` — assistant rows (≈ one per API completion),
+          * ``messages`` — all rows.
+
+        Powers the analytics rate / trend / cache-hit views. Only buckets with
+        at least one message are returned, ascending by ``bucket_start``. Pass
+        ``session_id`` to scope to one session. Active rows only.
+        """
+        if bucket_seconds <= 0:
+            raise ValueError("bucket_seconds must be positive")
+        where = "WHERE active = 1 AND timestamp >= ? AND timestamp < ?"
+        params: List[Any] = [start_ts, end_ts]
+        if session_id is not None:
+            where += " AND session_id = ?"
+            params.append(session_id)
+        sql = (
+            "SELECT "
+            "CAST(timestamp / ? AS INTEGER) * ? AS bucket_start, "
+            "SUM(CASE WHEN role = 'assistant' THEN 1 ELSE 0 END) AS requests, "
+            f"{_token_decode_columns_sql()}, "
+            "COUNT(*) AS messages "
+            "FROM messages "
+            f"{where} "
+            "GROUP BY bucket_start ORDER BY bucket_start"
+        )
+        # bucket_seconds is bound twice at the front, then the WHERE params.
+        bind = [bucket_seconds, bucket_seconds, *params]
+        with self._lock:
+            rows = self._conn.execute(sql, bind).fetchall()
+        out: List[Dict[str, int]] = []
+        for r in rows:
+            out.append({
+                "bucket_start": int(r["bucket_start"]),
+                "requests": int(r["requests"] or 0),
+                "input": int(r["input"] or 0),
+                "output": int(r["output"] or 0),
+                "cache_read": int(r["cache_read"] or 0),
+                "reasoning": int(r["reasoning"] or 0),
+                "messages": int(r["messages"] or 0),
+            })
+        return out
+
+    def get_active_providers(self, since_ts: float) -> List[str]:
+        """Distinct non-empty billing_provider values active since ``since_ts``.
+
+        Used by analytics to decide which provider quotas to compare against.
+        """
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT DISTINCT billing_provider FROM sessions "
+                "WHERE billing_provider IS NOT NULL AND billing_provider != '' "
+                "AND COALESCE(ended_at, started_at) >= ?",
+                (since_ts,),
+            ).fetchall()
+        return [r[0] for r in rows if r[0]]
 
     def get_messages_around(
         self,

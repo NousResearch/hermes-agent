@@ -1287,6 +1287,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
                 "session_token_totals": {"method": "GET", "path": "/api/sessions/{session_id}/token-totals"},
                 "analytics_provider_quotas": {"method": "GET", "path": "/api/analytics/provider-quotas"},
+                "analytics_usage_rates": {"method": "GET", "path": "/api/analytics/usage-rates"},
+                "analytics_token_trends": {"method": "GET", "path": "/api/analytics/token-trends"},
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
@@ -1658,6 +1660,89 @@ class APIServerAdapter(BasePlatformAdapter):
         else:
             data = list_provider_quotas()
         return web.json_response({"object": "list", "data": data})
+
+    # Window → lookback seconds for the analytics endpoints.
+    _ANALYTICS_WINDOWS = {"1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000}
+    # Default trend bucket width per window (seconds).
+    _ANALYTICS_TREND_BUCKETS = {"1h": 60, "24h": 3600, "7d": 86400, "30d": 86400}
+
+    def _analytics_window_seconds(self, request: "web.Request") -> "tuple[str, int] | web.Response":
+        window = (request.query.get("window") or "24h").strip().lower()
+        seconds = self._ANALYTICS_WINDOWS.get(window)
+        if seconds is None:
+            return web.json_response(
+                _openai_error(
+                    "window must be one of: " + ", ".join(self._ANALYTICS_WINDOWS),
+                    code="invalid_window",
+                ),
+                status=400,
+            )
+        return window, seconds
+
+    async def _handle_analytics_usage_rates(self, request: "web.Request") -> "web.Response":
+        """GET /api/analytics/usage-rates?window=1h|24h|7d|30d[&session_id=].
+
+        RPM/TPM peaks over the window + RPD/TPD (last 24h), each compared to
+        the quotas of providers active in the window. Decoded from per-message
+        token_count; requests counted as assistant rows.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        wr = self._analytics_window_seconds(request)
+        if isinstance(wr, web.Response):
+            return wr
+        window, seconds = wr
+        session_id = request.query.get("session_id")
+
+        from agent.analytics import compute_usage_rates
+        from agent.provider_quotas import get_provider_quota
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        now = time.time()
+        minute_buckets = db.get_message_token_timeseries(now - seconds, now, 60, session_id=session_id)
+        daily = db.get_message_token_timeseries(now - 86400, now, 86400, session_id=session_id)
+        daily_totals = daily[-1] if daily else {}
+        quotas = [q for q in (get_provider_quota(p) for p in db.get_active_providers(now - seconds)) if q]
+
+        rates = compute_usage_rates(minute_buckets, daily_totals, quotas)
+        return web.json_response({"window": window, "generated_at": now, **rates})
+
+    async def _handle_analytics_token_trends(self, request: "web.Request") -> "web.Response":
+        """GET /api/analytics/token-trends?window=…[&bucket=…][&session_id=].
+
+        Time-series of decoded tokens with per-request averages/distributions
+        and cache-hit rate (cache_read / input). ``bucket`` (seconds) overrides
+        the per-window default granularity.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        wr = self._analytics_window_seconds(request)
+        if isinstance(wr, web.Response):
+            return wr
+        window, seconds = wr
+        session_id = request.query.get("session_id")
+        bucket = self._ANALYTICS_TREND_BUCKETS[window]
+        if request.query.get("bucket"):
+            try:
+                bucket = max(60, int(request.query["bucket"]))
+            except (TypeError, ValueError):
+                return web.json_response(_openai_error("bucket must be an integer (seconds)", code="invalid_bucket"), status=400)
+
+        from agent.analytics import compute_token_trends
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        now = time.time()
+        buckets = db.get_message_token_timeseries(now - seconds, now, bucket, session_id=session_id)
+        trends = compute_token_trends(buckets)
+        return web.json_response({
+            "window": window, "bucket_seconds": bucket, "generated_at": now, **trends,
+        })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
@@ -4542,6 +4627,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
             self._app.router.add_get("/api/sessions/{session_id}/token-totals", self._handle_session_token_totals)
             self._app.router.add_get("/api/analytics/provider-quotas", self._handle_analytics_provider_quotas)
+            self._app.router.add_get("/api/analytics/usage-rates", self._handle_analytics_usage_rates)
+            self._app.router.add_get("/api/analytics/token-trends", self._handle_analytics_token_trends)
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)

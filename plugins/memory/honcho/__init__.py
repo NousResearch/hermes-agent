@@ -36,12 +36,17 @@ logger = logging.getLogger(__name__)
 PROFILE_SCHEMA = {
     "name": "honcho_profile",
     "description": (
-        "Retrieve or update a peer card from Honcho — a curated list of key facts "
-        "about that peer (name, role, preferences, communication style, patterns). "
-        "Pass `card` to update; omit `card` to read.  If the card is empty, the "
-        "result includes a `hint` field explaining why (observation disabled, "
-        "fresh peer, dialectic layer still warming up, etc.) — this is NOT an "
-        "error.  Peer cards accumulate over time from observed conversation."
+        "Read or write a peer's CARD — a short, curated list of standing facts "
+        "about that peer (name, role, preferences, communication style, recurring "
+        "patterns). This is the cheapest, fastest Honcho call: no query, no LLM, "
+        "just the current card. Pass `card` to overwrite it; omit `card` to read. "
+        "An empty read returns a `hint` explaining why (observation disabled, fresh "
+        "peer, representation still warming up) — that is NOT an error; the card "
+        "accumulates over time from observed conversation. "
+        "Related tools: honcho_context for the fuller standing snapshot (card + "
+        "representation + summary + recent messages); honcho_search to find "
+        "specific things that were actually said; honcho_reasoning for a "
+        "synthesized answer to a question."
     ),
     "parameters": {
         "type": "object",
@@ -63,25 +68,30 @@ PROFILE_SCHEMA = {
 SEARCH_SCHEMA = {
     "name": "honcho_search",
     "description": (
-        "Semantic search over Honcho's stored context about a peer. "
-        "Returns raw excerpts ranked by relevance — no LLM synthesis. "
-        "Cheaper and faster than honcho_reasoning. "
-        "Good when you want to find specific past facts and reason over them yourself."
+        "Hybrid (semantic + keyword) search over a peer's actual message "
+        "history across ALL past sessions they took part in — not just the "
+        "current one. Returns RRF-ranked raw message excerpts (what was "
+        "literally said, including the assistant's own messages about the "
+        "peer), no LLM synthesis. Cheaper and faster than honcho_reasoning. "
+        "Use this to recall specific past facts — 'what did I say about X', "
+        "'what was the regimen/decision/config we settled on' — and reason "
+        "over the excerpts yourself. For nuanced questions needing synthesis, "
+        "use honcho_reasoning instead."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "query": {
                 "type": "string",
-                "description": "What to search for in Honcho's memory.",
+                "description": "What to look for — a topic, keyword, name, or natural-language description of the fact you're trying to recall.",
             },
             "max_tokens": {
                 "type": "integer",
-                "description": "Token budget for returned context (default 800, max 2000).",
+                "description": "Approximate budget for returned excerpts (default 800, max 2000). Larger budgets return more/longer ranked snippets.",
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "Whose history to search. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace. Spans every session that peer took part in.",
             },
         },
         "required": ["query"],
@@ -91,11 +101,18 @@ SEARCH_SCHEMA = {
 REASONING_SCHEMA = {
     "name": "honcho_reasoning",
     "description": (
-        "Ask Honcho a natural language question and get a synthesized answer. "
-        "Uses Honcho's LLM (dialectic reasoning) — higher cost than honcho_profile or honcho_search. "
-        "Can query about any peer via alias or explicit peer ID. "
+        "Ask Honcho's dialectic agent a natural-language question about a peer and "
+        "get back a SYNTHESIZED answer. This is the only Honcho tool that runs an "
+        "LLM: it agentically searches both raw messages and derived conclusions, "
+        "reasons over them, and writes a prose answer — so it is the slowest and "
+        "most expensive call (seconds + tokens). Reach for it for nuanced or "
+        "open-ended questions ('how does this person prefer to receive feedback?', "
+        "'what's their relationship to project X?') where you want Honcho to do the "
+        "synthesis. For a specific fact that was stated, prefer honcho_search "
+        "(cheap, raw excerpts, you synthesize). For standing profile facts, prefer "
+        "honcho_profile / honcho_context (no LLM). "
         "Pass reasoning_level to control depth: minimal (fast/cheap), low (default), "
-        "medium, high, max (deep/expensive). Omit for configured default."
+        "medium, high, max (deep/expensive). Omit for the configured default."
     ),
     "parameters": {
         "type": "object",
@@ -130,18 +147,18 @@ REASONING_SCHEMA = {
 CONTEXT_SCHEMA = {
     "name": "honcho_context",
     "description": (
-        "Retrieve full session context from Honcho — summary, peer representation, "
-        "peer card, and recent messages. No LLM synthesis. "
-        "Cheaper than honcho_reasoning. Use this to see what Honcho knows about "
-        "the current conversation and the specified peer."
+        "Retrieve the standing SNAPSHOT Honcho holds for the current session — "
+        "session summary, the peer's representation, the peer card, and the most "
+        "recent messages — in one call. No query, no LLM synthesis (cheaper than "
+        "honcho_reasoning). Use it to orient yourself on what Honcho currently "
+        "knows about this conversation and peer. This is a fixed snapshot, not a "
+        "search: to look up a specific past fact use honcho_search; to ask a "
+        "question and get a synthesized answer use honcho_reasoning; for just the "
+        "compact card use honcho_profile."
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "query": {
-                "type": "string",
-                "description": "Optional focus query to filter context. Omit for full session context snapshot.",
-            },
             "peer": {
                 "type": "string",
                 "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
@@ -154,11 +171,16 @@ CONTEXT_SCHEMA = {
 CONCLUDE_SCHEMA = {
     "name": "honcho_conclude",
     "description": (
-        "Write or delete a conclusion about a peer in Honcho's memory. "
-        "Conclusions are persistent facts that build a peer's profile. "
-        "You MUST pass exactly one of: `conclusion` (to create) or `delete_id` (to delete). "
-        "Passing neither is an error. "
-        "Deletion is only for PII removal — Honcho self-heals incorrect conclusions over time."
+        "Write or delete a CONCLUSION — a persistent, derived fact about a peer that "
+        "feeds their long-term profile (card + representation). Use this to record "
+        "something durable you've learned about the peer (a stable preference, a "
+        "correction, a standing constraint) so future sessions carry it forward. "
+        "You MUST pass exactly one of `conclusion` (to create) or `delete_id` (to "
+        "delete); passing neither, or both, is an error. Deletion exists only for "
+        "PII removal — for merely wrong facts, write a corrected conclusion instead; "
+        "Honcho self-heals contradictions over time. This is a WRITE tool: to read "
+        "the profile use honcho_profile / honcho_context, and to search what was "
+        "said use honcho_search."
     ),
     "parameters": {
         "type": "object",
@@ -173,7 +195,7 @@ CONCLUDE_SCHEMA = {
             },
             "peer": {
                 "type": "string",
-                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+                "description": "The peer the conclusion is ABOUT. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
             },
         },
         "required": [],

@@ -557,6 +557,7 @@ export function grantComputerUsePermissions(): Promise<ActionResponse> {
 
 export function getMessagingPlatforms(): Promise<MessagingPlatformsResponse> {
   return window.hermesDesktop.api<MessagingPlatformsResponse>({
+    ...profileScoped(),
     path: '/api/messaging/platforms'
   })
 }
@@ -566,14 +567,16 @@ export function updateMessagingPlatform(
   body: MessagingPlatformUpdate
 ): Promise<{ ok: boolean; platform: string }> {
   return window.hermesDesktop.api<{ ok: boolean; platform: string }>({
+    ...profileScoped(),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}`,
     method: 'PUT',
-    body
+    body: { ...profileScoped(), ...body }
   })
 }
 
 export function testMessagingPlatform(platformId: string): Promise<MessagingPlatformTestResponse> {
   return window.hermesDesktop.api<MessagingPlatformTestResponse>({
+    ...profileScoped(),
     path: `/api/messaging/platforms/${encodeURIComponent(platformId)}/test`,
     method: 'POST'
   })
@@ -801,9 +804,10 @@ export function transcribeAudio(dataUrl: string, mimeType?: string): Promise<Aud
 
 export function speakText(text: string): Promise<AudioSpeakResponse> {
   return window.hermesDesktop.api<AudioSpeakResponse>({
+    ...profileScoped(),
     path: '/api/audio/speak',
     method: 'POST',
-    body: { text }
+    body: { text, ...profileScoped() }
   })
 }
 

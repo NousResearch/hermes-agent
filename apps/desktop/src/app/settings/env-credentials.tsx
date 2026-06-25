@@ -1,4 +1,6 @@
+import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
+import { $activeGatewayProfile } from '@/store/profile'
 
 import { deleteEnvVar, getEnvVars, revealEnvVar, setEnvVar } from '@/hermes'
 import { useI18n } from '@/i18n'
@@ -49,6 +51,7 @@ export function useEnvCredentials(): UseEnvCredentials {
   const [edits, setEdits] = useState<Record<string, string>>({})
   const [revealed, setRevealed] = useState<Record<string, string>>({})
   const [saving, setSaving] = useState<string | null>(null)
+  const activeGatewayProfile = useStore($activeGatewayProfile)
 
   // Best-effort cleanup of a retired localStorage flag (global "Show
   // advanced" toggle) — everything in these views is configuration-level.
@@ -76,7 +79,7 @@ export function useEnvCredentials(): UseEnvCredentials {
     })()
 
     return () => void (cancelled = true)
-  }, [])
+  }, [activeGatewayProfile])
 
   function patchVar(key: string, patch: Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>) {
     setVars(c => (c ? { ...c, [key]: { ...c[key], ...patch } } : c))

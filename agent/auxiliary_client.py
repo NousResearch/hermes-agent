@@ -666,6 +666,28 @@ def _pool_runtime_base_url(entry: Any, fallback: str = "") -> str:
     return str(url or "").strip().rstrip("/")
 
 
+# Hostnames (lowercase, exact) that the auxiliary Anthropic path is allowed to
+# be pointed at via config.yaml model.base_url. Anything else falls back to the
+# Anthropic default — operators routing main-session traffic through a
+# non-Anthropic host (e.g. OpenRouter, OpenAI) with provider=anthropic in config
+# must NOT have that foreign host leak into the auxiliary client. See #52608.
+_ANTHROPIC_COMPATIBLE_HOSTS = frozenset({
+    "api.anthropic.com",
+})
+
+
+def _is_anthropic_compatible_host(url: str) -> bool:
+    """Return True if ``url``'s hostname is an Anthropic endpoint we trust for aux calls."""
+    if not url:
+        return False
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(url).hostname or "").strip().lower().rstrip(".")
+        return host in _ANTHROPIC_COMPATIBLE_HOSTS
+    except Exception:
+        return False
+
+
 def _nous_min_key_ttl_seconds() -> int:
     try:
         return max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
@@ -2256,9 +2278,16 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
     if not token:
         return None, None
 
-    # Allow base URL override from config.yaml model.base_url, but only
-    # when the configured provider is anthropic — otherwise a non-Anthropic
-    # base_url (e.g. Codex endpoint) would leak into Anthropic requests.
+    # Allow base URL override from config.yaml model.base_url, but only when:
+    #   1. the configured provider is anthropic (otherwise a non-Anthropic
+    #      base_url, e.g. Codex endpoint, would leak into Anthropic requests), AND
+    #   2. the override URL actually points at an Anthropic-compatible endpoint.
+    # Without gate (2), operators who route main-session traffic through a
+    # non-Anthropic provider that accepts Anthropic-format requests (e.g.
+    # OpenRouter at openrouter.ai/api/v1, with provider=anthropic in config.yaml)
+    # would have every auxiliary side-channel call (memory extractors,
+    # reflection, vision, title generation) 401 from the foreign host —
+    # see issue #52608.
     base_url = _pool_runtime_base_url(entry, _ANTHROPIC_DEFAULT_BASE_URL) if pool_present else _ANTHROPIC_DEFAULT_BASE_URL
     try:
         from hermes_cli.config import load_config
@@ -2268,7 +2297,7 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
             cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
             if cfg_provider == "anthropic":
                 cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-                if cfg_base_url:
+                if cfg_base_url and _is_anthropic_compatible_host(cfg_base_url):
                     base_url = cfg_base_url
     except Exception:
         pass

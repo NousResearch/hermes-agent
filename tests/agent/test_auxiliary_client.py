@@ -1896,6 +1896,94 @@ class TestAuxiliaryFallbackLayering:
             "all fallbacks exhausted" in r.message for r in caplog.records
         ), f"Expected exhaustion warning, got: {[r.message for r in caplog.records]}"
 
+    def test_fallback_success_emits_runtime_status_with_actual_model(self, monkeypatch):
+        """Fallback status is emitted only after the fallback response succeeds."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_payment_err()
+
+        fallback_response = MagicMock(
+            model="provider/routed-model",
+            choices=[MagicMock(message=MagicMock(content="from fallback"))],
+        )
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = fallback_response
+
+        statuses = []
+        import agent.auxiliary_client as aux_mod
+
+        aux_mod._RUNTIME_STATUS_CALLBACK = statuses.append
+        try:
+            with (
+                patch(
+                    "agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "glm-4v-flash"),
+                ),
+                patch(
+                    "agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("glm", "glm-4v-flash", None, None, None),
+                ),
+                patch(
+                    "agent.auxiliary_client._try_configured_fallback_chain",
+                    return_value=(
+                        fallback_client,
+                        "fallback/model",
+                        "fallback_chain[0](openrouter)",
+                    ),
+                ),
+                patch(
+                    "agent.auxiliary_client._try_main_agent_model_fallback",
+                    return_value=(None, None, ""),
+                ),
+            ):
+                result = call_llm(
+                    task="vision",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+        finally:
+            aux_mod._RUNTIME_STATUS_CALLBACK = None
+
+        assert result is fallback_response
+        assert statuses == [
+            "Auxiliary vision: payment error; fallback activated: "
+            "fallback/model via fallback_chain[0](openrouter); "
+            "actual response model: provider/routed-model"
+        ]
+
+    def test_primary_success_does_not_emit_runtime_fallback_status(self):
+        primary_response = MagicMock(
+            model="primary/model",
+            choices=[MagicMock(message=MagicMock(content="from primary"))],
+        )
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.return_value = primary_response
+
+        statuses = []
+        import agent.auxiliary_client as aux_mod
+
+        aux_mod._RUNTIME_STATUS_CALLBACK = statuses.append
+        try:
+            with (
+                patch(
+                    "agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "primary/model"),
+                ),
+                patch(
+                    "agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("openrouter", "primary/model", None, None, None),
+                ),
+            ):
+                result = call_llm(
+                    task="title_generation",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+        finally:
+            aux_mod._RUNTIME_STATUS_CALLBACK = None
+
+        assert result is primary_response
+        assert statuses == []
+
 
 class TestTryMainAgentModelFallback:
     """_try_main_agent_model_fallback resolves the user's main provider+model as a safety net."""

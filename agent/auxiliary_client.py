@@ -1863,6 +1863,7 @@ _RUNTIME_MAIN_MODEL: str = ""
 _RUNTIME_MAIN_BASE_URL: str = ""
 _RUNTIME_MAIN_API_KEY: str = ""
 _RUNTIME_MAIN_API_MODE: str = ""
+_RUNTIME_STATUS_CALLBACK: Any = None
 
 
 def set_runtime_main(
@@ -1872,6 +1873,7 @@ def set_runtime_main(
     base_url: str = "",
     api_key: str = "",
     api_mode: str = "",
+    status_callback: Any = None,
 ) -> None:
     """Record the live runtime provider/model/credentials for the current AIAgent.
 
@@ -1884,24 +1886,26 @@ def set_runtime_main(
     recorded so that ``_resolve_auto`` can construct a valid client in
     Step 1 instead of falling through to the aggregator chain.
     """
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
+    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_STATUS_CALLBACK
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
     _RUNTIME_MAIN_PROVIDER = (provider or "").strip().lower()
     _RUNTIME_MAIN_MODEL = (model or "").strip()
     _RUNTIME_MAIN_BASE_URL = (base_url or "").strip()
     _RUNTIME_MAIN_API_KEY = api_key.strip() if isinstance(api_key, str) else ""
     _RUNTIME_MAIN_API_MODE = (api_mode or "").strip()
+    _RUNTIME_STATUS_CALLBACK = status_callback
 
 
 def clear_runtime_main() -> None:
     """Clear the runtime override (e.g. on session end)."""
-    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL
+    global _RUNTIME_MAIN_PROVIDER, _RUNTIME_MAIN_MODEL, _RUNTIME_STATUS_CALLBACK
     global _RUNTIME_MAIN_BASE_URL, _RUNTIME_MAIN_API_KEY, _RUNTIME_MAIN_API_MODE
     _RUNTIME_MAIN_PROVIDER = ""
     _RUNTIME_MAIN_MODEL = ""
     _RUNTIME_MAIN_BASE_URL = ""
     _RUNTIME_MAIN_API_KEY = ""
     _RUNTIME_MAIN_API_MODE = ""
+    _RUNTIME_STATUS_CALLBACK = None
 
 
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -3096,6 +3100,51 @@ def _try_payment_fallback(
         task or "call", reason, failed_provider, ", ".join(tried),
     )
     return None, None, ""
+
+
+def _extract_response_model_name(response: Any) -> Optional[str]:
+    """Best-effort model extraction from OpenAI-compatible response objects."""
+    if response is None:
+        return None
+    try:
+        model = getattr(response, "model", None)
+        if model:
+            return str(model)
+    except Exception:
+        pass
+    if isinstance(response, dict):
+        model = response.get("model")
+        return str(model) if model else None
+    try:
+        dump = response.model_dump()
+        if isinstance(dump, dict) and dump.get("model"):
+            return str(dump["model"])
+    except Exception:
+        pass
+    return None
+
+
+def _emit_aux_fallback_status(
+    task: Optional[str],
+    reason: str,
+    provider: str,
+    model: Optional[str],
+    actual_model: Optional[str] = None,
+) -> None:
+    """Emit a runtime fallback notice without adding anything to prompts."""
+    cb = _RUNTIME_STATUS_CALLBACK
+    if not cb:
+        return
+    label = task or "auxiliary"
+    actual = (actual_model or "").strip()
+    try:
+        cb(
+            f"Auxiliary {label}: {reason}; fallback activated: "
+            f"{model or ''} via {provider or 'unknown'}; "
+            f"actual response model: {actual}"
+        )
+    except Exception:
+        logger.debug("Auxiliary fallback status callback failed", exc_info=True)
 
 
 def _try_main_agent_model_fallback(
@@ -5714,8 +5763,12 @@ def call_llm(
                     tools=tools, timeout=effective_timeout,
                     extra_body=effective_extra_body,
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
-                return _validate_llm_response(
-                    fb_client.chat.completions.create(**fb_kwargs), task)
+                fb_response = fb_client.chat.completions.create(**fb_kwargs)
+                validated = _validate_llm_response(fb_response, task)
+                _emit_aux_fallback_status(
+                    task, reason, fb_label, fb_model,
+                    _extract_response_model_name(fb_response))
+                return validated
             # All fallback layers exhausted — emit a single user-visible
             # warning so the operator knows aux task is about to fail.
             # (#26882) The error itself is re-raised below.
@@ -6163,8 +6216,12 @@ async def async_call_llm(
                 )
                 if async_fb_model and async_fb_model != fb_kwargs.get("model"):
                     fb_kwargs["model"] = async_fb_model
-                return _validate_llm_response(
-                    await async_fb.chat.completions.create(**fb_kwargs), task)
+                fb_response = await async_fb.chat.completions.create(**fb_kwargs)
+                validated = _validate_llm_response(fb_response, task)
+                _emit_aux_fallback_status(
+                    task, reason, fb_label, fb_kwargs.get("model") or fb_model,
+                    _extract_response_model_name(fb_response))
+                return validated
             # All fallback layers exhausted — warn before re-raising. (#26882)
             logger.warning(
                 "Auxiliary %s (async): %s on %s and all fallbacks exhausted "

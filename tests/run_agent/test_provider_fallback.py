@@ -305,3 +305,68 @@ class TestFallbackChainDedup:
 
         assert ok is False
         mock_resolve.assert_not_called()
+
+
+class TestFallbackRuntimeNotice:
+    def test_activation_defers_status_until_response_model_is_known(self):
+        fb = {"provider": "openrouter", "model": "openrouter/auto"}
+        agent = _make_agent(fallback_model=[fb])
+        statuses = []
+        agent._buffer_status = statuses.append
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), "openrouter/auto"),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert statuses == []
+        assert agent._fallback_notice_pending == {
+            "provider": "openrouter",
+            "model": "openrouter/auto",
+        }
+
+    def test_fallback_status_includes_actual_response_model_once(self):
+        from agent.chat_completion_helpers import _maybe_buffer_fallback_status
+
+        agent = _make_agent(fallback_model=None)
+        statuses = []
+        agent._buffer_status = statuses.append
+        agent.provider = "openrouter"
+        agent.model = "openrouter/auto"
+        agent._fallback_notice_pending = {
+            "provider": "openrouter",
+            "model": "openrouter/auto",
+        }
+
+        assert _maybe_buffer_fallback_status(agent, "meta/llama-3.1") is True
+        assert _maybe_buffer_fallback_status(agent, "ignored") is False
+        assert statuses == [
+            "Fallback activated: openrouter/auto via openrouter; "
+            "actual response model: meta/llama-3.1"
+        ]
+
+    def test_fallback_status_allows_empty_actual_model_after_response(self):
+        from agent.chat_completion_helpers import _maybe_buffer_fallback_status
+
+        agent = _make_agent(fallback_model=None)
+        statuses = []
+        agent._buffer_status = statuses.append
+        agent.provider = "openrouter"
+        agent.model = "openrouter/auto"
+        agent._fallback_notice_pending = {
+            "provider": "openrouter",
+            "model": "openrouter/auto",
+        }
+
+        assert _maybe_buffer_fallback_status(agent, None, allow_empty=True) is True
+        assert statuses == [
+            "Fallback activated: openrouter/auto via openrouter; "
+            "actual response model: "
+        ]

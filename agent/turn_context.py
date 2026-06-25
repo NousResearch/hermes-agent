@@ -153,6 +153,7 @@ def build_turn_context(
             base_url=getattr(agent, "base_url", "") or "",
             api_key=getattr(agent, "api_key", "") or "",
             api_mode=getattr(agent, "api_mode", "") or "",
+            status_callback=getattr(agent, "_emit_status", None),
         )
     except Exception:
         pass

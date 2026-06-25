@@ -15,6 +15,7 @@ def _get_globals(mod):
         "base_url": mod._RUNTIME_MAIN_BASE_URL,
         "cred": mod._RUNTIME_MAIN_API_KEY,  # renamed to avoid redaction
         "api_mode": mod._RUNTIME_MAIN_API_MODE,
+        "status_callback": mod._RUNTIME_STATUS_CALLBACK,
     }
 
 
@@ -55,8 +56,9 @@ class TestSetRuntimeMainCustomProvider:
         )
         mod.clear_runtime_main()
         g = _get_globals(mod)
-        for v in g.values():
-            assert v == "", f"Expected empty, got {v!r}"
+        for key, value in g.items():
+            expected = None if key == "status_callback" else ""
+            assert value == expected, f"Expected {expected!r}, got {value!r}"
 
     def test_resolve_auto_uses_globals_for_custom_provider(self):
         """_resolve_auto reads base_url/api_key from globals when main_runtime is None."""
@@ -125,6 +127,21 @@ class TestSetRuntimeMainCustomProvider:
             assert g["base_url"] == ""
             assert g["cred"] == ""
             assert g["api_mode"] == ""
+            assert g["status_callback"] is None
+        finally:
+            mod.clear_runtime_main()
+
+    def test_status_callback_is_stored_and_cleared(self):
+        """set_runtime_main can carry the active agent's runtime status emitter."""
+        import agent.auxiliary_client as mod
+
+        callback = lambda msg: None
+        mod.clear_runtime_main()
+        try:
+            mod.set_runtime_main("openrouter", "gpt-4o", status_callback=callback)
+            assert mod._RUNTIME_STATUS_CALLBACK is callback
+            mod.clear_runtime_main()
+            assert mod._RUNTIME_STATUS_CALLBACK is None
         finally:
             mod.clear_runtime_main()
 

@@ -548,7 +548,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
             raise InterruptedError("Agent interrupted during API call")
     if result["error"] is not None:
         raise result["error"]
-    return result["response"]
+    response = result["response"]
+    _maybe_buffer_fallback_status(
+        agent, _extract_response_model_name(response), allow_empty=True)
+    return response
 
 
 
@@ -1071,6 +1074,67 @@ def rewrite_prompt_model_identity(agent, model: str, provider: str) -> None:
     agent._cached_system_prompt = sp
 
 
+def _extract_response_model_name(response: Any) -> Optional[str]:
+    """Best-effort model extraction from OpenAI-compatible response objects."""
+    if response is None:
+        return None
+    try:
+        model = getattr(response, "model", None)
+        if model:
+            return str(model)
+    except Exception:
+        pass
+    if isinstance(response, dict):
+        model = response.get("model")
+        return str(model) if model else None
+    try:
+        dump = response.model_dump()
+        if isinstance(dump, dict) and dump.get("model"):
+            return str(dump["model"])
+    except Exception:
+        pass
+    return None
+
+
+def _set_fallback_notice_pending(agent, provider: str, model: str) -> None:
+    agent._fallback_notice_pending = {
+        "provider": provider or "unknown",
+        "model": model or "",
+    }
+
+
+def _maybe_buffer_fallback_status(
+    agent, actual_model: Optional[str], *, allow_empty: bool = False
+) -> bool:
+    """Emit one runtime fallback notice after a fallback response exists."""
+    pending = getattr(agent, "_fallback_notice_pending", None)
+    if not pending:
+        return False
+    actual = (actual_model or "").strip()
+    if not actual and not allow_empty:
+        return False
+    provider = pending.get("provider") or "unknown"
+    model = pending.get("model") or ""
+    current_provider = (getattr(agent, "provider", "") or "").strip().lower()
+    current_model = (getattr(agent, "model", "") or "").strip()
+    if (
+        (provider or "").strip().lower() != current_provider
+        or (model or "").strip() != current_model
+    ):
+        agent._fallback_notice_pending = None
+        return False
+    try:
+        agent._buffer_status(
+            f"Fallback activated: {model} via {provider}; "
+            f"actual response model: {actual}"
+        )
+    except Exception:
+        logger.debug("Fallback status callback failed", exc_info=True)
+    finally:
+        agent._fallback_notice_pending = None
+    return True
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
     """Switch to the next fallback model/provider in the chain.
 
@@ -1320,10 +1384,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         # answering, so "what model are you?" doesn't report the primary.
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
-        agent._buffer_status(
-            f"🔄 Primary model failed — switching to fallback: "
-            f"{fb_model} via {fb_provider}"
-        )
+        _set_fallback_notice_pending(agent, fb_provider, fb_model)
         logger.info(
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,
@@ -1718,7 +1779,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 raise InterruptedError("Agent interrupted during Bedrock API call")
         if result["error"] is not None:
             raise result["error"]
-        return result["response"]
+        response = result["response"]
+        _maybe_buffer_fallback_status(
+            agent, _extract_response_model_name(response), allow_empty=True)
+        return response
 
     result = {"response": None, "error": None, "partial_tool_names": []}
     request_client_holder = {"client": None, "diag": None, "owner_tid": None}
@@ -1918,6 +1982,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if not chunk.choices:
                 if hasattr(chunk, "model") and chunk.model:
                     model_name = chunk.model
+                    _maybe_buffer_fallback_status(agent, model_name)
                 # Usage comes in the final chunk with empty choices
                 if hasattr(chunk, "usage") and chunk.usage:
                     usage_obj = chunk.usage
@@ -1926,6 +1991,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             delta = chunk.choices[0].delta
             if hasattr(chunk, "model") and chunk.model:
                 model_name = chunk.model
+                _maybe_buffer_fallback_status(agent, model_name)
 
             # Accumulate reasoning content
             reasoning_text = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
@@ -2698,7 +2764,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 _dropped_tool_names=_partial_names or None,
             )
         raise result["error"]
-    return result["response"]
+    response = result["response"]
+    _maybe_buffer_fallback_status(
+        agent, _extract_response_model_name(response), allow_empty=True)
+    return response
 
 # ── Provider fallback ──────────────────────────────────────────────────
 

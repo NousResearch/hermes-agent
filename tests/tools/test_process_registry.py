@@ -1538,6 +1538,7 @@ class TestSigkillEscalation:
                             lambda: {"terminal": {"daemon_term_grace_seconds": -5}})
         assert ProcessRegistry._daemon_term_grace_seconds() == 0.0
 
+    @pytest.mark.live_system_guard_bypass
     def test_entire_tree_is_sigkilled_not_just_parent(self, monkeypatch):
         """A SIGTERM-ignoring parent + children are ALL force-killed.
 

@@ -1363,6 +1363,16 @@ class AIAgent:
             return True
         return bool(self.base_url and is_local_endpoint(self.base_url))
 
+    def _is_local_ollama_backend(self) -> bool:
+        """Detect local Ollama-style chat backends that may misreport length."""
+        if not self.base_url:
+            return False
+        if ":11434" in self._base_url_lower or "ollama" in self._base_url_lower:
+            return True
+        if not is_local_endpoint(self.base_url):
+            return False
+        return getattr(self, "_ollama_num_ctx", None) is not None
+
     def _should_treat_stop_as_truncated(
         self,
         finish_reason: str,
@@ -1393,6 +1403,46 @@ class AIAgent:
             return False
 
         return not self._has_natural_response_ending(visible_text)
+
+    def _should_treat_length_as_completed(
+        self,
+        finish_reason: str,
+        assistant_message,
+        *,
+        response: Any = None,
+        api_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Detect short, naturally-finished local Ollama replies mislabeled as length."""
+        if finish_reason != "length" or self.api_mode != "chat_completions":
+            return False
+        if not self._is_local_ollama_backend():
+            return False
+        if assistant_message is None or getattr(assistant_message, "tool_calls", None):
+            return False
+
+        content = getattr(assistant_message, "content", None)
+        if not isinstance(content, str):
+            return False
+
+        visible_text = self._strip_think_blocks(content).strip()
+        if not visible_text or not self._has_natural_response_ending(visible_text):
+            return False
+
+        # Keep the heuristic intentionally narrow: if the provider actually
+        # spent the full requested output cap, trust the truncation signal. If
+        # there's no explicit cap, only waive suspiciously short finished replies.
+        requested_cap = self._requested_output_cap_from_api_kwargs(api_kwargs)
+        usage = getattr(response, "usage", None) if response is not None else None
+        raw_completion_tokens = getattr(usage, "completion_tokens", None) if usage is not None else None
+        try:
+            completion_tokens = int(raw_completion_tokens) if raw_completion_tokens is not None else None
+        except (TypeError, ValueError):
+            completion_tokens = None
+
+        if requested_cap is not None and completion_tokens is not None and completion_tokens >= requested_cap:
+            return False
+
+        return len(visible_text) <= 280
 
     def _looks_like_codex_intermediate_ack(
         self,

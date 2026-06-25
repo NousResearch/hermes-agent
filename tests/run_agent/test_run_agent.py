@@ -4430,6 +4430,66 @@ class TestRunConversation:
         assert result["api_calls"] == 2
         assert result["final_response"] == "Based on the search results, the best next"
 
+    def test_local_ollama_short_natural_length_reply_is_treated_as_complete(self, agent):
+        """Short finished local Ollama replies should not trigger fake continuation."""
+        self._setup_agent(agent)
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "custom"
+        agent.model = "gemma4:12b"
+
+        finished = _mock_response(
+            content="Hello! How can I help today?",
+            finish_reason="length",
+            usage={"completion_tokens": 12},
+        )
+        agent.client.chat.completions.create.return_value = finished
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is True
+        assert result["api_calls"] == 1
+        assert result["final_response"] == "Hello! How can I help today?"
+
+    def test_local_ollama_length_at_requested_cap_still_requests_continuation(self, agent):
+        """Do not waive length when the provider actually spent the full cap."""
+        self._setup_agent(agent)
+        agent.base_url = "http://localhost:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+        agent.provider = "custom"
+        agent.model = "gemma4:12b"
+
+        capped = _mock_response(
+            content="Hello! How can I help today?",
+            finish_reason="length",
+            usage={"completion_tokens": 16},
+        )
+        agent.client.chat.completions.create.side_effect = [capped, capped, capped]
+
+        def _fake_build_api_kwargs(api_messages):
+            return {"model": agent.model, "messages": api_messages, "max_tokens": 16}
+
+        with (
+            patch.object(agent, "_build_api_kwargs", side_effect=_fake_build_api_kwargs),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["api_calls"] == 3
+        assert "continuation attempts" in (result["error"] or "").lower()
+
+        second_call_messages = agent.client.chat.completions.create.call_args_list[1].kwargs["messages"]
+        assert second_call_messages[-1]["role"] == "user"
+        assert "truncated by the output length limit" in second_call_messages[-1]["content"]
+
     def test_length_thinking_exhausted_skips_continuation(self, agent):
         """When finish_reason='length' but content is only thinking, skip retries."""
         self._setup_agent(agent)

@@ -1452,6 +1452,17 @@ def run_conversation(
                             force=True,
                         )
                         finish_reason = "length"
+                    elif agent._should_treat_length_as_completed(
+                        finish_reason,
+                        assistant_message,
+                        response=response,
+                        api_kwargs=api_kwargs,
+                    ):
+                        agent._vprint(
+                            f"{agent.log_prefix}ℹ️  Treating suspicious local Ollama length response as complete",
+                            force=True,
+                        )
+                        finish_reason = "stop"
 
                 # ── Content-policy refusal (HTTP 200) ──────────────────
                 # The model — or the provider's safety system — returned a

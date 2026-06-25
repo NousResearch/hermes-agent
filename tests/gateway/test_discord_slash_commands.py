@@ -241,7 +241,7 @@ async def test_task_slash_creates_kanban_task(adapter, monkeypatch):
     assert created["kwargs"]["assignee"] == "operations-orchestrator"
     assert created["kwargs"]["idempotency_key"] == "discord-task:987654"
     assert "Discordの /task から登録された依頼です。" in created["kwargs"]["body"]
-    assert created["kwargs"]["initial_status"] == "running"
+    assert created["kwargs"]["initial_status"] == "ready"
     assert "通常依頼は triage に固定せず" in created["kwargs"]["body"]
     fake_add_notify_sub.assert_called_once()
 
@@ -794,7 +794,7 @@ async def test_natural_language_task_request_creates_ready_kanban_task(adapter, 
     assert created["kwargs"]["title"] == "この表示を直してください"
     assert created["kwargs"]["assignee"] == "operations-orchestrator"
     assert created["kwargs"]["idempotency_key"] == "discord-natural-task:12345"
-    assert created["kwargs"]["initial_status"] == "running"
+    assert created["kwargs"]["initial_status"] == "ready"
     assert "Discordの自然文依頼から登録されたタスクです。" in created["kwargs"]["body"]
     assert "通常依頼は triage に固定せず" in created["kwargs"]["body"]
 
@@ -854,7 +854,7 @@ async def test_natural_language_task_request_bypasses_mention_requirement(adapte
     assert created["board"] == "ai-company-2-0"
     assert created["kwargs"]["title"] == "ダッシュボードの表示を直してください"
     assert created["kwargs"]["idempotency_key"] == "discord-natural-task:12345"
-    assert created["kwargs"]["initial_status"] == "running"
+    assert created["kwargs"]["initial_status"] == "ready"
 
 
 @pytest.mark.asyncio

@@ -1407,8 +1407,8 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are enabled via config/env."""
-        return os.getenv("DISCORD_REACTIONS", "true").lower() not in {"false", "0", "no"}
+        """Check if message reactions are explicitly enabled via config/env."""
+        return os.getenv("DISCORD_REACTIONS", "").strip().lower() in {"true", "1", "yes", "on"}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction for normal Discord message events."""
@@ -3228,7 +3228,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 created_by=payload["created_by"],
                 workspace_kind="scratch",
                 idempotency_key=idempotency_key,
-                initial_status="running",
+                initial_status="ready",
                 board=board,
             )
             task = kb.get_task(conn, task_id)

@@ -85,7 +85,8 @@ def _make_event(message_id: str, raw_message) -> MessageEvent:
 
 
 @pytest.mark.asyncio
-async def test_process_message_background_adds_and_swaps_reactions(adapter):
+async def test_process_message_background_adds_and_swaps_reactions(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REACTIONS", "true")
     raw_message = SimpleNamespace(
         add_reaction=AsyncMock(),
         remove_reaction=AsyncMock(),
@@ -147,7 +148,8 @@ async def test_interaction_backed_events_do_not_attempt_reactions(adapter):
 
 
 @pytest.mark.asyncio
-async def test_reaction_helper_failures_do_not_break_message_flow(adapter):
+async def test_reaction_helper_failures_do_not_break_message_flow(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REACTIONS", "true")
     raw_message = SimpleNamespace(
         add_reaction=AsyncMock(side_effect=[RuntimeError("no perms"), RuntimeError("no perms")]),
         remove_reaction=AsyncMock(side_effect=RuntimeError("no perms")),
@@ -219,8 +221,8 @@ async def test_reactions_disabled_via_env_zero(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reactions_enabled_by_default(adapter, monkeypatch):
-    """When DISCORD_REACTIONS is unset, reactions should still work (default: true)."""
+async def test_reactions_disabled_by_default(adapter, monkeypatch):
+    """When DISCORD_REACTIONS is unset, Discord message reactions stay off."""
     monkeypatch.delenv("DISCORD_REACTIONS", raising=False)
 
     raw_message = SimpleNamespace(
@@ -231,11 +233,28 @@ async def test_reactions_enabled_by_default(adapter, monkeypatch):
     event = _make_event("6", raw_message)
     await adapter.on_processing_start(event)
 
+    raw_message.add_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reactions_enabled_via_env(adapter, monkeypatch):
+    """When DISCORD_REACTIONS=true, lifecycle reactions are enabled."""
+    monkeypatch.setenv("DISCORD_REACTIONS", "true")
+
+    raw_message = SimpleNamespace(
+        add_reaction=AsyncMock(),
+        remove_reaction=AsyncMock(),
+    )
+
+    event = _make_event("6b", raw_message)
+    await adapter.on_processing_start(event)
+
     raw_message.add_reaction.assert_awaited_once_with("👀")
 
 
 @pytest.mark.asyncio
-async def test_on_processing_complete_cancelled_removes_eyes_without_terminal_reaction(adapter):
+async def test_on_processing_complete_cancelled_removes_eyes_without_terminal_reaction(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REACTIONS", "true")
     raw_message = SimpleNamespace(
         add_reaction=AsyncMock(),
         remove_reaction=AsyncMock(),
@@ -246,3 +265,30 @@ async def test_on_processing_complete_cancelled_removes_eyes_without_terminal_re
 
     raw_message.remove_reaction.assert_awaited_once_with("👀", adapter._client.user)
     raw_message.add_reaction.assert_not_awaited()
+
+
+def test_default_config_disables_discord_reactions():
+    """Default config must not re-enable Discord reactions during gateway load."""
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["discord"]["reactions"] is False
+
+
+def test_config_bridges_discord_reactions_only_when_explicit(monkeypatch, tmp_path):
+    """gateway/config.py bridges an explicit discord.reactions opt-in."""
+    import os
+    import yaml
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "reactions": True,
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_REACTIONS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    assert os.getenv("DISCORD_REACTIONS") == "true"

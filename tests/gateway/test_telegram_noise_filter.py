@@ -23,12 +23,26 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
 
 
-def test_non_telegram_status_is_unchanged():
-    """The Telegram quieting policy must not hide CLI/Discord diagnostics."""
+def test_non_telegram_status_is_unchanged_for_general_diagnostics():
+    """The Telegram-only quieting policy must not hide general CLI/Discord diagnostics."""
     message = "⏳ Retrying in 4.2s (attempt 1/3)..."
 
     assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) == message
     assert _prepare_gateway_status_message("local", "lifecycle", message) == message
+
+
+def test_shared_channel_status_suppresses_empty_model_chatter():
+    """Transient empty-model status chatter should stay out of shared channels."""
+    noisy_messages = [
+        "⚠️ Empty response from model — retrying (1/3)",
+        "❌ Model returned no content after all retries. No fallback providers configured.",
+        "⚠️ Model produced reasoning but no visible response after all retries. Returning empty.",
+        "Model returned no response after processing tool results; try again or rephrase.",
+    ]
+
+    for message in noisy_messages:
+        assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", message) is None
+        assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", message) is None
 
 
 def test_telegram_status_sanitizes_raw_provider_security_errors():

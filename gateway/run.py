@@ -87,6 +87,16 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+_SHARED_CHANNEL_NOISY_STATUS_RE = re.compile(
+    r"("  # transient model status that should stay in logs, not shared chats
+    r"empty\s+response\s+from\s+model\s+[-—]\s+retrying"
+    r"|model\s+returned\s+no\s+content\s+after\s+all\s+retries"
+    r"|model\s+returned\s+no\s+response\s+after\s+processing\s+tool\s+results"
+    r"|model\s+produced\s+reasoning\s+but\s+no\s+visible\s+response"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -391,6 +401,12 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
     if not text:
+        return None
+    # Empty-model retry/failure chatter is useful in logs but too noisy in
+    # shared messaging rooms (Discord HQ/team channels, Telegram DMs, etc.).
+    # Keep the final response path separate so real user-facing failures still
+    # surface through the normal assistant reply when appropriate.
+    if _SHARED_CHANNEL_NOISY_STATUS_RE.search(text):
         return None
     if _gateway_platform_value(platform) != "telegram":
         return text

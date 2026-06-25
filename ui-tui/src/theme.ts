@@ -519,7 +519,17 @@ export function fromSkin(
   bannerLogo = '',
   bannerHero = '',
   toolPrefix = '',
-  helpHeader = ''
+  helpHeader = '',
+  // Status bar colors from skin (separate from general colors for type safety)
+  statusBarBg?: string,
+  statusBarText?: string,
+  statusBarStrong?: string,
+  statusBarDim?: string,
+  statusBarGood?: string,
+  statusBarWarn?: string,
+  statusBarBad?: string,
+  statusBarCritical?: string,
+  selectionBg?: string
 ): Theme {
   const d = DEFAULT_THEME
   const c = (k: string) => colors[k]
@@ -558,13 +568,14 @@ export function fromSkin(
       sessionLabel: c('session_label') ?? muted,
       sessionBorder: c('session_border') ?? muted,
 
-      statusBg: d.color.statusBg,
-      statusFg: d.color.statusFg,
-      statusGood: c('ui_ok') ?? d.color.statusGood,
-      statusWarn: c('ui_warn') ?? d.color.statusWarn,
-      statusBad: d.color.statusBad,
-      statusCritical: d.color.statusCritical,
-      selectionBg: c('selection_bg') ?? c('completion_menu_current_bg') ?? (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
+      // Status bar colors: use skin values with fallbacks to theme defaults
+      statusBg: statusBarBg ?? d.color.statusBg,
+      statusFg: statusBarText ?? d.color.statusFg,
+      statusGood: statusBarGood ?? c('ui_ok') ?? d.color.statusGood,
+      statusWarn: statusBarWarn ?? c('ui_warn') ?? d.color.statusWarn,
+      statusBad: statusBarBad ?? d.color.statusBad,
+      statusCritical: statusBarCritical ?? d.color.statusCritical,
+      selectionBg: selectionBg ?? c('selection_bg') ?? c('completion_menu_current_bg') ?? (hasSkinColors ? completionCurrentBg : d.color.selectionBg),
 
       diffAdded: d.color.diffAdded,
       diffRemoved: d.color.diffRemoved,

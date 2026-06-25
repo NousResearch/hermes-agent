@@ -6,6 +6,7 @@ import unicodeSpinners from 'unicode-animations'
 import { $delegationState } from '../app/delegationStore.js'
 import type { IndicatorStyle, Notice } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
+import { $uiState } from '../app/uiStore.js'
 import { DEV_CREDITS_MODE } from '../config/env.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
@@ -13,17 +14,13 @@ import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
+import { computeVerbPadLen, getActiveFaces, getActiveVerbs, padVerb } from '../lib/tickerVerbs.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
-
-// Keep verb segment width stable so status-bar content to the right doesn't
-// jitter when the ticker rotates between short/long verbs.
-export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
-export const padVerb = (verb: string) => `${verb}…`.padEnd(VERB_PAD_LEN, ' ')
 
 // Compact alternates for the `emoji` and `ascii` indicator styles.
 // Each entry is a fixed-width (display-width) glyph.
@@ -44,9 +41,9 @@ interface IndicatorRender {
   showVerb: boolean
 }
 
-const renderIndicator = (style: IndicatorStyle, tick: number): IndicatorRender => {
+const renderIndicator = (style: IndicatorStyle, tick: number, faces: string[]): IndicatorRender => {
   if (style === 'kaomoji') {
-    return { frame: FACES[tick % FACES.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
+    return { frame: faces[tick % faces.length] ?? '', intervalMs: FACE_TICK_MS, showVerb: true }
   }
 
   if (style === 'emoji') {
@@ -93,6 +90,13 @@ const indicatorFrameWidth = (style: IndicatorStyle): number => {
   return 1
 }
 
+// Static reservation baseline for the verb segment, measured from the default
+// verb list. The live FaceTicker pads dynamically (computeVerbPadLen over the
+// active skin verbs) so custom skins still render without jitter; this constant
+// only sizes the width *budget* for busyIndicatorWidth, which is a pure module
+// function and can't read the React store.
+const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
+
 // Bounded width of the elapsed-time clock, derived from `fmtDuration` itself so
 // the reservation/budget stays consistent with what actually renders (it emits
 // a space between units, e.g. `59m 59s` / `99h 59m`). Durations beyond this
@@ -108,7 +112,8 @@ export const MAX_DURATION_WIDTH = Math.max(
 // ascii add a fixed-width verb; any style adds a bounded elapsed-time tail.
 // Mirrors FaceTicker's `frame + verbSegment + durationSegment` layout.
 export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean): number => {
-  const { showVerb } = renderIndicator(style, 0)
+  // `faces` doesn't affect `showVerb`; pass the defaults to satisfy the signature.
+  const { showVerb } = renderIndicator(style, 0, FACES)
   const verb = showVerb ? 1 + VERB_PAD_LEN : 0
   // ` · ` plus the bounded clock (e.g. `59m 59s`).
   const duration = hasDuration ? stringWidth(' · ') + MAX_DURATION_WIDTH : 0
@@ -117,15 +122,22 @@ export const busyIndicatorWidth = (style: IndicatorStyle, hasDuration: boolean):
 }
 
 function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: null | number; style: IndicatorStyle }) {
+  const ui = useStore($uiState)
+
+  // Use skin-provided verbs/faces when available, fallback to defaults
+  const activeVerbs = getActiveVerbs(ui.tickerVerbs)
+  const activeFaces = getActiveFaces(ui.tickerFaces)
+  const verbPadLen = computeVerbPadLen(activeVerbs)
+
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
-  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * VERBS.length))
+  const [verbTick, setVerbTick] = useState(() => Math.floor(Math.random() * activeVerbs.length))
   const [now, setNow] = useState(() => Date.now())
 
   // Pre-compute cadence + verb-visibility for the active style so an
   // `/indicator` switch re-arms the interval (and skips the verb timer
   // for verb-less styles like `unicode`) without leaving the previous
   // timer dangling.
-  const { intervalMs, showVerb } = renderIndicator(style, 0)
+  const { intervalMs, showVerb } = renderIndicator(style, 0, activeFaces)
 
   useEffect(() => {
     const glyph = setInterval(() => setTick(n => n + 1), intervalMs)
@@ -144,9 +156,9 @@ function FaceTicker({ color, startedAt, style }: { color: string; startedAt?: nu
     }
   }, [intervalMs, showVerb])
 
-  const { frame } = renderIndicator(style, tick)
-  const verb = VERBS[verbTick % VERBS.length] ?? ''
-  const verbSegment = showVerb ? ` ${padVerb(verb)}` : ''
+  const { frame } = renderIndicator(style, tick, activeFaces)
+  const verb = activeVerbs[verbTick % activeVerbs.length] ?? ''
+  const verbSegment = showVerb ? ` ${padVerb(verb, verbPadLen)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra

@@ -7,6 +7,23 @@ export interface GatewaySkin {
   colors?: Record<string, string>
   help_header?: string
   tool_prefix?: string
+  spinner?: {
+    waiting_faces?: string[]
+    thinking_faces?: string[]
+    thinking_verbs?: string[]
+    wings?: [string, string][]
+  }
+  tool_emojis?: Record<string, string>
+  // Status bar colors for full TUI theme parity
+  status_bar_bg?: string
+  status_bar_text?: string
+  status_bar_strong?: string
+  status_bar_dim?: string
+  status_bar_good?: string
+  status_bar_warn?: string
+  status_bar_bad?: string
+  status_bar_critical?: string
+  selection_bg?: string
 }
 
 export interface GatewayCompletionItem {

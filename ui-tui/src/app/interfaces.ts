@@ -182,6 +182,8 @@ export interface UiState {
   streaming: boolean
   theme: Theme
   usage: Usage
+  tickerVerbs: string[]
+  tickerFaces: string[]
 }
 
 export interface VirtualHistoryState {

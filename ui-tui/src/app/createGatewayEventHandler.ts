@@ -37,8 +37,19 @@ const applySkin = (s: GatewaySkin) =>
       s.banner_logo ?? '',
       s.banner_hero ?? '',
       s.tool_prefix ?? '',
-      s.help_header ?? ''
-    )
+      s.help_header ?? '',
+      s.status_bar_bg,
+      s.status_bar_text,
+      s.status_bar_strong,
+      s.status_bar_dim,
+      s.status_bar_good,
+      s.status_bar_warn,
+      s.status_bar_bad,
+      s.status_bar_critical,
+      s.selection_bg
+    ),
+    tickerVerbs: s.spinner?.thinking_verbs,
+    tickerFaces: s.spinner?.thinking_faces,
   })
 
 const dropBgTask = (taskId: string) =>

@@ -308,4 +308,65 @@ describe('fromSkin', () => {
     expect(color.ok).toBe('#008000')
     expect(color.statusGood).toBe('#008000')
   })
+
+  it('uses skin status bar colors when provided', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    const { color } = fromSkin(
+      {},
+      {},
+      '',
+      '',
+      '',
+      '',
+      '#1a1a2e', // statusBarBg
+      '#C0C0C0', // statusBarText
+      '#FFD700', // statusBarStrong
+      '#8B8682', // statusBarDim
+      '#8FBC8F', // statusBarGood
+      '#FFD700', // statusBarWarn
+      '#FF8C00', // statusBarBad
+      '#FF6B6B', // statusBarCritical
+      '#333355'  // selectionBg
+    )
+
+    expect(color.statusBg).toBe('#1a1a2e')
+    expect(color.statusFg).toBe('#C0C0C0')
+    expect(color.statusGood).toBe('#8FBC8F')
+    expect(color.statusWarn).toBe('#FFD700')
+    expect(color.statusBad).toBe('#FF8C00')
+    expect(color.statusCritical).toBe('#FF6B6B')
+    expect(color.selectionBg).toBe('#333355')
+  })
+
+  it('falls back to defaults when status bar colors not provided', async () => {
+    const { fromSkin, DEFAULT_THEME } = await importThemeWithCleanEnv()
+    const { color } = fromSkin({}, {})
+
+    expect(color.statusBg).toBe(DEFAULT_THEME.color.statusBg)
+    expect(color.statusFg).toBe(DEFAULT_THEME.color.statusFg)
+  })
+
+  it('prefers skin status bar colors over ui_ color fallbacks', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    // ui_ok would normally cascade to statusGood, but skin status_bar_good takes precedence
+    const { color } = fromSkin(
+      { ui_ok: '#008000' }, // This would normally be used for statusGood
+      {},
+      '',
+      '',
+      '',
+      '',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      '#8FBC8F', // skin status_bar_good takes precedence
+      undefined,
+      undefined,
+      undefined,
+      undefined
+    )
+
+    expect(color.statusGood).toBe('#8FBC8F')
+  })
 })

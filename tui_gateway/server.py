@@ -1663,6 +1663,18 @@ def resolve_skin() -> dict:
             "banner_hero": skin.banner_hero,
             "tool_prefix": skin.tool_prefix,
             "help_header": (skin.branding or {}).get("help_header", ""),
+            "spinner": skin.spinner,
+            "tool_emojis": skin.tool_emojis,
+            # Status bar colors for full TUI theme parity
+            "status_bar_bg": (skin.colors or {}).get("status_bar_bg"),
+            "status_bar_text": (skin.colors or {}).get("status_bar_text"),
+            "status_bar_strong": (skin.colors or {}).get("status_bar_strong"),
+            "status_bar_dim": (skin.colors or {}).get("status_bar_dim"),
+            "status_bar_good": (skin.colors or {}).get("status_bar_good"),
+            "status_bar_warn": (skin.colors or {}).get("status_bar_warn"),
+            "status_bar_bad": (skin.colors or {}).get("status_bar_bad"),
+            "status_bar_critical": (skin.colors or {}).get("status_bar_critical"),
+            "selection_bg": (skin.colors or {}).get("selection_bg"),
         }
     except Exception:
         return {}

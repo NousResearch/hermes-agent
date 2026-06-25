@@ -1,6 +1,8 @@
 import { atom, computed } from 'nanostores'
 
+import { FACES } from '../content/faces.js'
 import { MOUSE_TRACKING } from '../config/env.js'
+import { VERBS } from '../content/verbs.js'
 import { ZERO } from '../domain/usage.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -30,7 +32,9 @@ const buildUiState = (): UiState => ({
   statusBar: 'top',
   streaming: true,
   theme: DEFAULT_THEME,
-  usage: ZERO
+  usage: ZERO,
+  tickerVerbs: [...VERBS],
+  tickerFaces: [...FACES],
 })
 
 export const $uiState = atom<UiState>(buildUiState())

@@ -183,6 +183,14 @@ def test_workspace_kind_validation(kanban_home):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")
 
 
+def test_create_task_accepts_ready_initial_status(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ready at intake", initial_status="ready")
+        task = kb.get_task(conn, tid)
+
+    assert task.status == "ready"
+
+
 def test_create_task_persists_worktree_branch_name(kanban_home, tmp_path):
     target = tmp_path / ".worktrees" / "t6-wire"
     with kb.connect() as conn:

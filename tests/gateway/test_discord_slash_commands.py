@@ -7,6 +7,7 @@ import sys
 import pytest
 
 from gateway.config import PlatformConfig
+from hermes_cli import kanban_db as kb
 
 
 def _ensure_discord_mock():
@@ -252,6 +253,41 @@ async def test_task_slash_creates_kanban_task(adapter, monkeypatch):
     assert "t_123abc456def" in kwargs["content"]
     assert "operations-orchestrator" in kwargs["content"]
     assert "実行待ち" in kwargs["content"]
+
+
+def test_ai_company_task_creation_accepts_ready_in_real_kanban_db(adapter, monkeypatch):
+    monkeypatch.delenv("HERMES_TASK_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_TASK_DEFAULT_ASSIGNEE", raising=False)
+
+    adapter._active_profile_name = MagicMock(return_value="rino")
+    payload = {
+        "title": "ダッシュボードに登録される確認",
+        "body": "Discordから登録された依頼です。",
+        "created_by": "内田さん",
+        "user_id": "67890",
+    }
+
+    created = adapter._create_ai_company_task(
+        payload=payload,
+        idempotency_key="discord-task:real-db-ready",
+        chat_id="12345",
+        thread_id=None,
+    )
+
+    assert created["status"] == "ready"
+    assert created["assignee"] == "operations-orchestrator"
+
+    with kb.connect(board="ai-company-2-0") as conn:
+        task = kb.get_task(conn, created["id"])
+        subscribers = kb.list_notify_subs(conn, created["id"])
+
+    assert task.status == "ready"
+    assert task.title == "ダッシュボードに登録される確認"
+    assert subscribers
+    assert subscribers[0]["platform"] == "discord"
+    assert subscribers[0]["chat_id"] == "12345"
+    assert subscribers[0]["user_id"] == "67890"
+    assert subscribers[0]["notifier_profile"] == "rino"
 
 
 # ------------------------------------------------------------------

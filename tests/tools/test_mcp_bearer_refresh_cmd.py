@@ -183,6 +183,69 @@ async def test_headers_field_not_a_dict_is_handled():
     assert w._config["headers"] == "Bearer literal-string-not-a-dict"
 
 
+def test_is_auth_error_unwraps_exception_group():
+    """The whole point of the patch: a 401 wrapped inside anyio's
+    TaskGroup ExceptionGroup must still be detected as an auth error.
+    Real-world signature seen in production: anyio.TaskGroup raises
+    BaseExceptionGroup containing an httpx.HTTPStatusError(401)."""
+    import httpx
+    from tools.mcp_tool import _is_auth_error
+
+    # Construct a 401 HTTPStatusError the same way httpx does at runtime.
+    req = httpx.Request("POST", "http://example.test/mcp")
+    resp = httpx.Response(401, request=req)
+    inner = httpx.HTTPStatusError(
+        "Unauthorized", request=req, response=resp,
+    )
+
+    # Direct: still detected (regression guard for the fast path).
+    assert _is_auth_error(inner) is True
+
+    # Single-level wrap (anyio TaskGroup shape).
+    one_level = BaseExceptionGroup("unhandled errors in a TaskGroup", [inner])
+    assert _is_auth_error(one_level) is True
+
+    # Nested wrap (TaskGroup-of-TaskGroup, depth 3).
+    nested = BaseExceptionGroup(
+        "outer", [BaseExceptionGroup("inner", [BaseExceptionGroup("deep", [inner])])],
+    )
+    assert _is_auth_error(nested) is True
+
+    # Mixed siblings: non-auth error alongside the 401 still detects.
+    mixed = BaseExceptionGroup(
+        "siblings",
+        [ConnectionResetError("peer closed"), inner],
+    )
+    assert _is_auth_error(mixed) is True
+
+
+def test_is_auth_error_rejects_non_auth_exception_groups():
+    """A TaskGroup of NON-auth errors (e.g. ConnectionResetError) must
+    NOT fire the auth path — that would force every transient blip
+    through bearer_refresh_cmd unnecessarily."""
+    from tools.mcp_tool import _is_auth_error
+
+    grp = BaseExceptionGroup(
+        "transient network",
+        [ConnectionResetError("peer closed"), TimeoutError("read timeout")],
+    )
+    assert _is_auth_error(grp) is False
+
+
+def test_is_auth_error_handles_non_401_http_status_in_group():
+    """A 500 wrapped in TaskGroup must NOT register as auth error."""
+    import httpx
+    from tools.mcp_tool import _is_auth_error
+
+    req = httpx.Request("POST", "http://example.test/mcp")
+    resp_500 = httpx.Response(500, request=req)
+    inner_500 = httpx.HTTPStatusError(
+        "Server error", request=req, response=resp_500,
+    )
+    grp = BaseExceptionGroup("transport task group", [inner_500])
+    assert _is_auth_error(grp) is False
+
+
 @pytest.mark.asyncio
 async def test_preserves_operator_header_casing():
     """If operator wrote 'authorization' (lowercase), the swap keeps that

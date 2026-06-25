@@ -2687,22 +2687,62 @@ def _get_auth_error_types() -> tuple:
 
 
 def _is_auth_error(exc: BaseException) -> bool:
-    """Return True if ``exc`` indicates an MCP OAuth failure.
+    """Return True if ``exc`` (or any nested sub-exception) indicates an MCP
+    OAuth failure.
 
     ``httpx.HTTPStatusError`` is only treated as auth-related when the
     response status code is 401. Other HTTP errors fall through to the
     generic error path in the tool handlers.
+
+    Unwraps :class:`BaseExceptionGroup` so a 401 raised inside an anyio /
+    asyncio ``TaskGroup`` (the shape every streamable_http MCP server's
+    transport layer presents on the SDK side) is detected even though
+    the outer exception is the group wrapper, not the auth type itself.
+    Without this, the initial-connect auth-failure path and
+    ``bearer_refresh_cmd`` both silently fall through to the generic
+    retry loop because the SDK's transport task group wraps everything
+    in ``ExceptionGroup``.
     """
     types = _get_auth_error_types()
-    if not types or not isinstance(exc, types):
+    if not types:
         return False
+
+    def _matches(e: BaseException) -> bool:
+        if not isinstance(e, types):
+            return False
+        try:
+            import httpx
+            if isinstance(e, httpx.HTTPStatusError):
+                return getattr(e.response, "status_code", None) == 401
+        except ImportError:
+            pass
+        return True
+
+    # Direct match — fast path for already-unwrapped exceptions.
+    if _matches(exc):
+        return True
+
+    # Walk nested BaseExceptionGroup sub-exceptions. Bounded depth (8)
+    # against pathological self-referencing groups; visited-set against
+    # cycles.
     try:
-        import httpx
-        if isinstance(exc, httpx.HTTPStatusError):
-            return getattr(exc.response, "status_code", None) == 401
-    except ImportError:
-        pass
-    return True
+        _BEG = BaseExceptionGroup  # py3.11+
+    except NameError:
+        return False
+    seen: set[int] = set()
+    stack: list[tuple[BaseException, int]] = [(exc, 0)]
+    while stack:
+        cur, depth = stack.pop()
+        if id(cur) in seen or depth > 8:
+            continue
+        seen.add(id(cur))
+        if isinstance(cur, _BEG):
+            for sub in cur.exceptions:
+                stack.append((sub, depth + 1))
+            continue
+        if _matches(cur):
+            return True
+    return False
 
 
 def _handle_auth_error_and_retry(

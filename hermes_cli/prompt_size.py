@@ -34,6 +34,7 @@ def _build_inspection_agent(platform: str) -> Any:
     """
     from run_agent import AIAgent
     from hermes_cli.config import load_config
+    from hermes_cli.tools_config import _get_platform_tools
 
     cfg = load_config()
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
@@ -44,6 +45,9 @@ def _build_inspection_agent(platform: str) -> Any:
     agent_cfg = cfg.get("agent") or {}
     disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
+    # Resolve platform-specific enabled toolsets (mirrors interactive CLI path)
+    enabled_toolsets = sorted(_get_platform_tools(cfg, platform))
+
     return AIAgent(
         model=model,
         api_key="inspect-only",
@@ -51,6 +55,7 @@ def _build_inspection_agent(platform: str) -> Any:
         quiet_mode=True,
         save_trajectories=False,
         platform=platform,
+        enabled_toolsets=enabled_toolsets,
         disabled_toolsets=disabled_toolsets,
     )
 

@@ -22,7 +22,9 @@ npm install
 npm start
 ```
 
-For real iPhone background recording tests, use a development build rather than Expo Go.
+For a real physical iPhone install, use a standalone Release build rather than Expo Go or an Expo Dev Client shell. See the step-by-step guide:
+
+- [Build Hermes Mobile to a physical iPhone](docs/BUILD_TO_IPHONE.md)
 
 ## MVP scope
 

@@ -20597,7 +20597,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # so a later `git pull` under this long-lived process can be detected (and
     # risky work like model switching refused) instead of crashing on a stale
     # in-memory module.
-    from gateway.code_skew import record_boot_fingerprint
+    from gateway.code_skew import purge_stale_pycache, record_boot_fingerprint
+
+    # If the checkout advanced while the previous gateway was running, purge
+    # stale __pycache__ before any import picks up bytecode compiled against
+    # the old source (git can preserve .py mtime, so .pyc headers match the
+    # old source even after a pull — Python won't recompile, and the stale
+    # bytecode causes cryptic crashes like ValueError: too many values to
+    # unpack with mismatched traceback line numbers).
+    purge_stale_pycache()
     record_boot_fingerprint()
 
     # ── Duplicate-instance guard ──────────────────────────────────────

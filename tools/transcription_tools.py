@@ -1322,11 +1322,15 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
         try:
             with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model=model_name,
-                    file=audio_file,
-                    response_format="text",
-                )
+                transcribe_kwargs = {
+                    "model": model_name,
+                    "file": audio_file,
+                    "response_format": "text",
+                }
+                hotwords = _get_hotwords(_load_stt_config())
+                if hotwords:
+                    transcribe_kwargs["prompt"] = "Key terms: " + ", ".join(hotwords)
+                transcription = client.audio.transcriptions.create(**transcribe_kwargs)
 
             transcript_text = str(transcription).strip()
             logger.info("Transcribed %s via Groq API (%s, %d chars)",
@@ -1393,11 +1397,15 @@ def _transcribe_openai(
         client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
         try:
             with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model=model_name,
-                    file=audio_file,
-                    response_format="text" if model_name == "whisper-1" else "json",
-                )
+                transcribe_kwargs = {
+                    "model": model_name,
+                    "file": audio_file,
+                    "response_format": "text" if model_name == "whisper-1" else "json",
+                }
+                hotwords = _get_hotwords(_load_stt_config())
+                if hotwords:
+                    transcribe_kwargs["prompt"] = "Key terms: " + ", ".join(hotwords)
+                transcription = client.audio.transcriptions.create(**transcribe_kwargs)
 
             transcript_text = _extract_transcript_text(transcription)
             logger.info(

@@ -417,3 +417,93 @@ class TestHotwordsLocalProvider:
             assert "hotwords" in kwargs
             # Only "Hermes" and "OpenCode" survive filtering
             assert kwargs["hotwords"] == "Hermes, OpenCode"
+
+
+# ---------------------------------------------------------------------------
+# Hotwords for OpenAI and Groq cloud providers
+# ---------------------------------------------------------------------------
+
+
+class TestHotwordsCloudProviders:
+    """OpenAI and Groq providers pass hotwords as prompt."""
+
+    def test_openai_receives_prompt(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_transcription = MagicMock()
+        mock_transcription.text = "hello world"
+        mock_client.audio.transcriptions.create.return_value = mock_transcription
+
+        stt_config = {
+            "enabled": True,
+            "provider": "openai",
+            "hotwords": ["Hermes", "OpenCode"],
+            "openai": {"model": "whisper-1"},
+        }
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="openai"), \
+             patch("tools.transcription_tools._resolve_openai_audio_client_config", return_value=("sk-test", "https://api.openai.com/v1")), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            call_kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+            assert "prompt" in call_kwargs
+            assert "Hermes" in call_kwargs["prompt"]
+            assert "OpenCode" in call_kwargs["prompt"]
+
+    def test_openai_empty_hotwords_no_prompt(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_transcription = MagicMock()
+        mock_transcription.text = "hello world"
+        mock_client.audio.transcriptions.create.return_value = mock_transcription
+
+        stt_config = {
+            "enabled": True,
+            "provider": "openai",
+            "hotwords": [],
+            "openai": {"model": "whisper-1"},
+        }
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="openai"), \
+             patch("tools.transcription_tools._resolve_openai_audio_client_config", return_value=("sk-test", "https://api.openai.com/v1")), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            call_kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+            assert "prompt" not in call_kwargs
+
+    def test_groq_receives_prompt(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hello world"
+
+        stt_config = {
+            "enabled": True,
+            "provider": "groq",
+            "hotwords": ["Hermes"],
+        }
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="groq"), \
+             patch("openai.OpenAI", return_value=mock_client):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            call_kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+            assert "prompt" in call_kwargs
+            assert "Hermes" in call_kwargs["prompt"]

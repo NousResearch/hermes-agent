@@ -2882,7 +2882,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 30,
+    "_config_version": 31,
 }
 
 # =============================================================================
@@ -5203,6 +5203,35 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     "  ✓ Seeded curator.consolidate: false "
                     "(LLM consolidation is now opt-in; pruning stays on)"
                 )
+
+    # ── Version 30 → 31: prune removed "messaging" toolset ──
+    # PR #47856 removed the agent-callable send_message tool and its
+    # "messaging" toolset, but did not add a config migration to prune
+    # the stale name from platform_toolsets / enabled_toolsets.  Users
+    # who had "messaging" persisted get a red "Unknown toolsets: messaging"
+    # warning on every start.
+    if current_ver < 31:
+        config = read_raw_config()
+        _pruned = False
+        # Prune from platform_toolsets.<platform>
+        raw_pt = config.get("platform_toolsets")
+        if isinstance(raw_pt, dict):
+            for _plat, _ts_list in raw_pt.items():
+                if isinstance(_ts_list, list) and "messaging" in _ts_list:
+                    _ts_list.remove("messaging")
+                    _pruned = True
+        # Prune from agent.enabled_toolsets (legacy field)
+        raw_agent = config.get("agent")
+        if isinstance(raw_agent, dict):
+            _ts = raw_agent.get("enabled_toolsets")
+            if isinstance(_ts, list) and "messaging" in _ts:
+                _ts.remove("messaging")
+                _pruned = True
+        if _pruned:
+            save_config(config)
+            results["config_added"].append("Removed stale 'messaging' toolset from config")
+            if not quiet:
+                print("  ✓ Pruned removed 'messaging' toolset from config")
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──
     # Users can hand-edit mcp_servers, and older installs may already contain a

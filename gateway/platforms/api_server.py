@@ -583,6 +583,69 @@ def _openai_error(message: str, err_type: str = "invalid_request_error", param: 
     }
 
 
+# 5xx error-message sanitization --------------------------------------------
+#
+# Unhandled exceptions whose `str(exc)` is echoed back in `error.message`
+# leak internals to the client: file paths, env var names, agent-internal
+# exception text, and any token/secret that happens to be embedded in an
+# error string (e.g. an LLM provider's "auth failed for key sk-..." message).
+#
+# Default behavior: return a generic message + a short correlation id, with
+# the full exception and traceback still going to the server log under the
+# same correlation id. An operator can match a client complaint to a log
+# line in seconds.
+#
+# Verbose mode (HERMES_API_VERBOSE_ERRORS=1): restore the legacy
+# "Internal server error: {exc}" message for local debugging. NEVER set
+# this in production.
+_VERBOSE_5XX_ERRORS = os.environ.get("HERMES_API_VERBOSE_ERRORS", "").strip().lower() in (
+    "1", "true", "yes", "on",
+)
+
+
+def _sanitize_5xx_message(exc: BaseException, correlation_id: str) -> str:
+    """Build the 5xx ``error.message`` returned to the client.
+
+    Returns a generic message in production and a verbose ``str(exc)`` only
+    when ``HERMES_API_VERBOSE_ERRORS=1`` is set. The caller is responsible
+    for logging the full exception + traceback with the same
+    ``correlation_id`` so an operator can match a client report to a log
+    entry.
+    """
+    if _VERBOSE_5XX_ERRORS:
+        return f"Internal server error: {exc}"
+    return f"Internal server error. See server logs for trace {correlation_id}."
+
+
+def _sanitize_5xx_envelope(exc: BaseException, correlation_id: str) -> Dict[str, Any]:
+    """Build a flat ``{"error": "..."}`` 5xx envelope (cron jobs shape).
+
+    Some endpoints (the cron jobs API at /api/jobs) return a flat envelope
+    rather than the OpenAI shape. Same sanitization contract as
+    ``_sanitize_5xx_message`` — keep the shape, replace the leaky string.
+    """
+    return {"error": _sanitize_5xx_message(exc, correlation_id)}
+
+
+def _5xx_correlation_id(exc: BaseException) -> str:
+    """Generate a correlation id and log the full exception.
+
+    Returns a short hex id (8 chars) for use in the sanitized 5xx response.
+    The full exception + traceback are logged at ERROR level with the same
+    id, so an operator can grep the server log for the id a client reported
+    and find the traceback.
+
+    Centralizes the ``uuid.uuid4().hex[:8]`` + ``logger.error(..., exc_info=True)``
+    boilerplate that was previously duplicated at every 5xx site.
+    """
+    correlation_id = uuid.uuid4().hex[:8]
+    logger.error(
+        "[api_server] unhandled 5xx [%s]: %s",
+        correlation_id, exc, exc_info=True,
+    )
+    return correlation_id
+
+
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
@@ -2036,18 +2099,24 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(
+                        _sanitize_5xx_message(e, _5xx_correlation_id(e)),
+                        err_type="server_error",
+                        code="internal_error",
+                    ),
                     status=500,
                 )
         else:
             try:
                 result, usage = await _compute_completion()
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(
+                        _sanitize_5xx_message(e, _5xx_correlation_id(e)),
+                        err_type="server_error",
+                        code="internal_error",
+                    ),
                     status=500,
                 )
 
@@ -3090,18 +3159,24 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
             except Exception as e:
-                logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(
+                        _sanitize_5xx_message(e, _5xx_correlation_id(e)),
+                        err_type="server_error",
+                        code="internal_error",
+                    ),
                     status=500,
                 )
         else:
             try:
                 result, usage = await _compute_response()
             except Exception as e:
-                logger.error("Error running agent for responses: %s", e, exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error(
+                        _sanitize_5xx_message(e, _5xx_correlation_id(e)),
+                        err_type="server_error",
+                        code="internal_error",
+                    ),
                     status=500,
                 )
 
@@ -3243,7 +3318,7 @@ class APIServerAdapter(BasePlatformAdapter):
             jobs = _cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response(_sanitize_5xx_envelope(e, _5xx_correlation_id(e)), status=500)
 
     async def _handle_create_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs — create a new cron job."""
@@ -3297,7 +3372,7 @@ class APIServerAdapter(BasePlatformAdapter):
             _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response(_sanitize_5xx_envelope(e, _5xx_correlation_id(e)), status=500)
 
     async def _handle_get_job(self, request: "web.Request") -> "web.Response":
         """GET /api/jobs/{job_id} — get a single cron job."""
@@ -3316,7 +3391,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response(_sanitize_5xx_envelope(e, _5xx_correlation_id(e)), status=500)
 
     async def _handle_update_job(self, request: "web.Request") -> "web.Response":
         """PATCH /api/jobs/{job_id} — update a cron job."""
@@ -3354,7 +3429,7 @@ class APIServerAdapter(BasePlatformAdapter):
             _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response(_sanitize_5xx_envelope(e, _5xx_correlation_id(e)), status=500)
 
     async def _handle_delete_job(self, request: "web.Request") -> "web.Response":
         """DELETE /api/jobs/{job_id} — delete a cron job."""
@@ -3374,7 +3449,7 @@ class APIServerAdapter(BasePlatformAdapter):
             _notify_cron_provider_jobs_changed()
             return web.json_response({"ok": True})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response(_sanitize_5xx_envelope(e, _5xx_correlation_id(e)), status=500)
 
     async def _handle_pause_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/pause — pause a cron job."""
@@ -3394,7 +3469,7 @@ class APIServerAdapter(BasePlatformAdapter):
             _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response(_sanitize_5xx_envelope(e, _5xx_correlation_id(e)), status=500)
 
     async def _handle_resume_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/resume — resume a paused cron job."""
@@ -3414,7 +3489,7 @@ class APIServerAdapter(BasePlatformAdapter):
             _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response(_sanitize_5xx_envelope(e, _5xx_correlation_id(e)), status=500)
 
     async def _handle_run_job(self, request: "web.Request") -> "web.Response":
         """POST /api/jobs/{job_id}/run — trigger immediate execution."""
@@ -3433,7 +3508,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            return web.json_response(_sanitize_5xx_envelope(e, _5xx_correlation_id(e)), status=500)
 
     async def _handle_cron_fire(self, request: "web.Request") -> "web.Response":
         """POST /api/cron/fire — Chronos managed-cron fire webhook (NAS → agent).
@@ -4261,7 +4336,14 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.exception("[api_server] approval resolution failed for run %s", run_id)
-            return web.json_response(_openai_error(str(exc)), status=500)
+            return web.json_response(
+                _openai_error(
+                    _sanitize_5xx_message(exc, _5xx_correlation_id(exc)),
+                    err_type="server_error",
+                    code="internal_error",
+                ),
+                status=500,
+            )
 
         if resolved <= 0:
             return web.json_response(

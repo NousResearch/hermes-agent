@@ -1507,8 +1507,15 @@ class TestChatCompletionsEndpoint:
             assert call_kwargs["conversation_history"][1] == {"role": "assistant", "content": "2"}
 
     @pytest.mark.asyncio
-    async def test_agent_error_returns_500(self, adapter):
-        """Agent exception returns 500."""
+    async def test_agent_error_returns_500(self, adapter, monkeypatch):
+        """Agent exception returns 500 with a sanitized error message.
+
+        The exception text MUST NOT be echoed in the response body (it can
+        contain file paths, env var names, or embedded tokens). The server
+        logs the full exception with a correlation id; the client gets a
+        generic 'Internal server error' plus the same id for log lookup.
+        """
+        monkeypatch.delenv("HERMES_API_VERBOSE_ERRORS", raising=False)
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
@@ -1523,7 +1530,19 @@ class TestChatCompletionsEndpoint:
 
             assert resp.status == 500
             data = await resp.json()
-            assert "Provider failed" in data["error"]["message"]
+            msg = data["error"]["message"]
+            # Sanitized: the raw exception text MUST NOT leak to the client.
+            assert "Provider failed" not in msg, (
+                f"5xx body leaked exception text: {msg!r}"
+            )
+            # The response MUST include a correlation id so operators can
+            # match the client report to the server log.
+            import re as _re
+            assert _re.search(r"trace [0-9a-f]{8}\.", msg), (
+                f"5xx body missing correlation id: {msg!r}"
+            )
+            # The structured error code MUST be set so SDKs can branch on it.
+            assert data["error"]["code"] == "internal_error"
 
     @pytest.mark.asyncio
     async def test_stable_session_id_across_turns(self, adapter):

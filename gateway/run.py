@@ -15136,9 +15136,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # API calls to avoid hitting Telegram flood control.
                     # (grammY auto-retry pattern: proactively rate-limit
                     # instead of reacting to 429s.)
+                    # Skip throttle in separate mode — each event is sent
+                    # independently via adapter.send(), so there's no batched
+                    # edit to coalesce.  Throttling here would buffer the line
+                    # in progress_lines but never flush it (no later edit path).
                     _now = time.monotonic()
                     _remaining = _PROGRESS_EDIT_INTERVAL - (_now - _last_edit_ts)
-                    if _remaining > 0:
+                    if can_edit and _remaining > 0:
                         # Wait out the throttle interval, then loop back to
                         # drain any additional queued messages before sending
                         # a single batched edit.

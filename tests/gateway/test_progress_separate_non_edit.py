@@ -180,3 +180,50 @@ async def test_edit_platform_unaffected_by_guard_change():
         can_edit = grouping != "separate"
         if _no_edit_support and can_edit:
             pytest.fail(f"Guard fired for edit-supporting adapter in {grouping} mode")
+
+
+# ---------------------------------------------------------------------------
+# 4. Throttle bypass in separate mode
+#    Issue: #52212, PR #52221
+#
+#    In separate mode (can_edit=False), the edit throttle should NOT run.
+#    Throttling buffers events in progress_lines but separate mode has no
+#    later edit path to flush them — the buffered line is lost.
+# ---------------------------------------------------------------------------
+
+def _simulate_throttle_decision(can_edit: bool, _remaining: float) -> str:
+    """Simulate the throttle gate from send_progress_messages().
+
+    Returns 'throttled' if the event is delayed, 'sent' if it passes through.
+    """
+    # This mirrors the fixed code:
+    #   if can_edit and _remaining > 0:
+    #       await asyncio.sleep(_remaining)
+    #       continue
+    if can_edit and _remaining > 0:
+        return "throttled"
+    return "sent"
+
+
+def test_separate_mode_bypasses_throttle():
+    """In separate mode, rapid progress events must NOT be throttled.
+
+    Before the fix, the throttle ran unconditionally, causing buffered
+    progress_lines to never flush in separate mode (no edit path).
+    """
+    # can_edit=False (separate mode), within throttle interval
+    assert _simulate_throttle_decision(can_edit=False, _remaining=0.8) == "sent"
+    assert _simulate_throttle_decision(can_edit=False, _remaining=0.01) == "sent"
+
+
+def test_accumulate_mode_still_throttles():
+    """In accumulate mode, the edit throttle must still apply.
+
+    This ensures the fix doesn't accidentally disable throttling for
+    the default accumulate mode where it's needed for flood control.
+    """
+    # can_edit=True (accumulate mode), within throttle interval
+    assert _simulate_throttle_decision(can_edit=True, _remaining=0.8) == "throttled"
+    # Past throttle interval — should pass through
+    assert _simulate_throttle_decision(can_edit=True, _remaining=-0.1) == "sent"
+

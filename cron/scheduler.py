@@ -1968,6 +1968,40 @@ def _scan_assembled_cron_prompt(
     return assembled
 
 
+def _guard_job_credential_exfil(job: dict) -> None:
+    """Fail closed if a job's stored provider/base_url pair would exfiltrate a
+    credential (F8 runtime backstop; CWE-200/CWE-522).
+
+    The model-callable cron tool validates this on create/update, but a job
+    persisted before that guard — or written directly to the jobs store —
+    reaches the scheduler's provider-resolution sink unchecked. Re-validate the
+    EFFECTIVE stored pair with the same guard the tool uses, so a named
+    provider's stored key is never paired with an off-host base_url at fire
+    time. Raises ``RuntimeError`` (caught by the run_job failure path → the run
+    is aborted and reported) when the pair is unsafe; returns ``None`` otherwise.
+
+    Fallback providers come from operator config, not the model-callable job, so
+    they are trusted and validated by the caller, not here.
+    """
+    try:
+        from tools.cronjob_tools import _validate_cron_base_url
+        err = _validate_cron_base_url(job.get("provider"), job.get("base_url"))
+    except Exception:
+        # The validator is defensively coded to RETURN (not raise) its own
+        # fail-closed string when provider metadata can't be resolved; only a
+        # truly unexpected error lands here. Don't wedge every cron job on such
+        # an error — the create/update-time guard remains the primary control.
+        err = None
+    if err:
+        job_id = job.get("id")
+        logger.error(
+            "Job '%s': refusing to run — unsafe provider/base_url pair could "
+            "exfiltrate a stored credential: %s",
+            job_id, err,
+        )
+        raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -2344,6 +2378,15 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             format_runtime_provider_error,
         )
         from hermes_cli.auth import AuthError
+
+        # F8 runtime backstop: never resolve a stored provider/base_url pair that
+        # would ship a named provider's stored credential to an off-host endpoint
+        # (CWE-200/CWE-522). The cron tool validates this on create/update, but a
+        # job persisted before that guard — or written directly to the jobs store
+        # — reaches this sink unchecked. Fail closed before resolution so no
+        # off-host call is ever made with a stored key.
+        _guard_job_credential_exfil(job)
+
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when

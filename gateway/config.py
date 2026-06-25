@@ -1015,6 +1015,28 @@ def load_gateway_config() -> GatewayConfig:
             # the messaging gateway. Fail-open via the shared helper.
             from hermes_cli import managed_scope
             yaml_cfg = managed_scope.apply_managed_overlay(yaml_cfg)
+            def _set_env_from_yaml(
+                env_name: str,
+                yaml_setting: str,
+                value: Any,
+                formatter: Callable[[Any], str] = str,
+            ) -> None:
+                if os.getenv(env_name):
+                    logger.warning(
+                        "%s from the environment shadows config.yaml setting %s",
+                        env_name,
+                        yaml_setting,
+                    )
+                    return
+                os.environ[env_name] = formatter(value)
+
+            def _lower_str(value: Any) -> str:
+                return str(value).lower()
+
+            def _csv_str(value: Any) -> str:
+                if isinstance(value, list):
+                    return ",".join(str(v) for v in value)
+                return str(value)
 
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
@@ -1303,10 +1325,61 @@ def load_gateway_config() -> GatewayConfig:
                     _, extra = _ensure_platform_extra_dict(platforms_data, entry.name)
                     extra.update(seeded)
 
+<<<<<<< HEAD
             # Slack settings → env vars: migrated to the slack plugin's
             # ``apply_yaml_config_fn`` hook (see plugins/platforms/slack/
             # adapter.py::_apply_yaml_config), dispatched in the
             # ``apply_yaml_config_fn`` loop above. #41112 / #3823.
+=======
+            # Slack settings → env vars (env vars take precedence)
+            slack_cfg = yaml_cfg.get("slack", {})
+            if isinstance(slack_cfg, dict):
+                if "require_mention" in slack_cfg:
+                    _set_env_from_yaml(
+                        "SLACK_REQUIRE_MENTION",
+                        "slack.require_mention",
+                        slack_cfg["require_mention"],
+                        _lower_str,
+                    )
+                if "strict_mention" in slack_cfg:
+                    _set_env_from_yaml(
+                        "SLACK_STRICT_MENTION",
+                        "slack.strict_mention",
+                        slack_cfg["strict_mention"],
+                        _lower_str,
+                    )
+                if "allow_bots" in slack_cfg:
+                    _set_env_from_yaml(
+                        "SLACK_ALLOW_BOTS",
+                        "slack.allow_bots",
+                        slack_cfg["allow_bots"],
+                        _lower_str,
+                    )
+                frc = slack_cfg.get("free_response_channels")
+                if frc is not None:
+                    _set_env_from_yaml(
+                        "SLACK_FREE_RESPONSE_CHANNELS",
+                        "slack.free_response_channels",
+                        frc,
+                        _csv_str,
+                    )
+                if "reactions" in slack_cfg:
+                    _set_env_from_yaml(
+                        "SLACK_REACTIONS",
+                        "slack.reactions",
+                        slack_cfg["reactions"],
+                        _lower_str,
+                    )
+                # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
+                ac = slack_cfg.get("allowed_channels")
+                if ac is not None:
+                    _set_env_from_yaml(
+                        "SLACK_ALLOWED_CHANNELS",
+                        "slack.allowed_channels",
+                        ac,
+                        _csv_str,
+                    )
+>>>>>>> e553c4ef5 (fix(config): warn when env shadows gateway config (#13582))
 
             # Bridge top-level require_mention to Telegram when the telegram: section
             # does not already provide one.  Users often write "require_mention: true"
@@ -1328,6 +1401,7 @@ def load_gateway_config() -> GatewayConfig:
                     if not os.getenv("TELEGRAM_REQUIRE_MENTION"):
                         os.environ["TELEGRAM_REQUIRE_MENTION"] = str(_tl_require_mention).lower()
 
+<<<<<<< HEAD
             # Telegram settings → env vars / extra: migrated to the telegram
             # plugin's apply_yaml_config_fn hook
             # (plugins/platforms/telegram/adapter.py). #41112 / #3823.
@@ -1335,20 +1409,290 @@ def load_gateway_config() -> GatewayConfig:
             # WhatsApp settings → env vars: migrated to the whatsapp plugin's
             # apply_yaml_config_fn hook (plugins/platforms/whatsapp/adapter.py).
             # #41112 / #3823.
+=======
+            # Telegram settings → env vars (env vars take precedence)
+            telegram_cfg = yaml_cfg.get("telegram", {})
+            if isinstance(telegram_cfg, dict):
+                # Bridge top-level legacy `telegram.disable_topic_auto_rename` into
+                # gateway.platforms.telegram.extra so the runtime config sees it.
+                # Read as a runtime-config flag, not env-var (no need for env override).
+                if "disable_topic_auto_rename" in telegram_cfg:
+                    _tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
+                    _tg_extra = _tg_plat.setdefault("extra", {})
+                    _tg_extra.setdefault(
+                        "disable_topic_auto_rename",
+                        telegram_cfg["disable_topic_auto_rename"],
+                    )
+                # Prefer telegram.require_mention; fall back to the top-level shorthand.
+                _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
+                if _effective_rm is not None:
+                    _rm_setting = (
+                        "telegram.require_mention"
+                        if "require_mention" in telegram_cfg
+                        else "require_mention"
+                    )
+                    _set_env_from_yaml(
+                        "TELEGRAM_REQUIRE_MENTION",
+                        _rm_setting,
+                        _effective_rm,
+                        _lower_str,
+                    )
+                if "mention_patterns" in telegram_cfg:
+                    _set_env_from_yaml(
+                        "TELEGRAM_MENTION_PATTERNS",
+                        "telegram.mention_patterns",
+                        telegram_cfg["mention_patterns"],
+                        json.dumps,
+                    )
+                if "exclusive_bot_mentions" in telegram_cfg:
+                    _set_env_from_yaml(
+                        "TELEGRAM_EXCLUSIVE_BOT_MENTIONS",
+                        "telegram.exclusive_bot_mentions",
+                        telegram_cfg["exclusive_bot_mentions"],
+                        _lower_str,
+                    )
+                if "guest_mode" in telegram_cfg:
+                    _set_env_from_yaml(
+                        "TELEGRAM_GUEST_MODE",
+                        "telegram.guest_mode",
+                        telegram_cfg["guest_mode"],
+                        _lower_str,
+                    )
+                if "observe_unmentioned_group_messages" in telegram_cfg:
+                    _set_env_from_yaml(
+                        "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES",
+                        "telegram.observe_unmentioned_group_messages",
+                        telegram_cfg["observe_unmentioned_group_messages"],
+                        _lower_str,
+                    )
+                frc = telegram_cfg.get("free_response_chats")
+                if frc is not None:
+                    _set_env_from_yaml(
+                        "TELEGRAM_FREE_RESPONSE_CHATS",
+                        "telegram.free_response_chats",
+                        frc,
+                        _csv_str,
+                    )
+                # allowed_chats: if set, bot ONLY responds in these group chats (whitelist)
+                ac = telegram_cfg.get("allowed_chats")
+                if ac is not None:
+                    _set_env_from_yaml(
+                        "TELEGRAM_ALLOWED_CHATS",
+                        "telegram.allowed_chats",
+                        ac,
+                        _csv_str,
+                    )
+                allowed_topics = telegram_cfg.get("allowed_topics")
+                if allowed_topics is not None:
+                    _set_env_from_yaml(
+                        "TELEGRAM_ALLOWED_TOPICS",
+                        "telegram.allowed_topics",
+                        allowed_topics,
+                        _csv_str,
+                    )
+                ignored_threads = telegram_cfg.get("ignored_threads")
+                if ignored_threads is not None:
+                    _set_env_from_yaml(
+                        "TELEGRAM_IGNORED_THREADS",
+                        "telegram.ignored_threads",
+                        ignored_threads,
+                        _csv_str,
+                    )
+                if "reactions" in telegram_cfg:
+                    _set_env_from_yaml(
+                        "TELEGRAM_REACTIONS",
+                        "telegram.reactions",
+                        telegram_cfg["reactions"],
+                        _lower_str,
+                    )
+                if "proxy_url" in telegram_cfg:
+                    _set_env_from_yaml(
+                        "TELEGRAM_PROXY",
+                        "telegram.proxy_url",
+                        telegram_cfg["proxy_url"],
+                        lambda value: str(value).strip(),
+                    )
+                # reply_to_mode: top-level preferred, falls back to extra.reply_to_mode
+                # YAML 1.1 parses bare 'off' as boolean False — coerce to string "off".
+                _telegram_extra = telegram_cfg.get("extra") if isinstance(telegram_cfg.get("extra"), dict) else {}
+                _telegram_rtm = (
+                    telegram_cfg["reply_to_mode"] if "reply_to_mode" in telegram_cfg
+                    else _telegram_extra.get("reply_to_mode")
+                )
+                if _telegram_rtm is not None:
+                    _rtm_setting = (
+                        "telegram.reply_to_mode"
+                        if "reply_to_mode" in telegram_cfg
+                        else "telegram.extra.reply_to_mode"
+                    )
+                    _set_env_from_yaml(
+                        "TELEGRAM_REPLY_TO_MODE",
+                        _rtm_setting,
+                        _telegram_rtm,
+                        lambda value: "off" if value is False else str(value).lower(),
+                    )
+                allowed_users = telegram_cfg.get("allow_from")
+                if allowed_users is not None:
+                    _set_env_from_yaml(
+                        "TELEGRAM_ALLOWED_USERS",
+                        "telegram.allow_from",
+                        allowed_users,
+                        _csv_str,
+                    )
+                group_allowed_users = telegram_cfg.get("group_allow_from")
+                if group_allowed_users is not None:
+                    _set_env_from_yaml(
+                        "TELEGRAM_GROUP_ALLOWED_USERS",
+                        "telegram.group_allow_from",
+                        group_allowed_users,
+                        _csv_str,
+                    )
+                group_allowed_chats = telegram_cfg.get("group_allowed_chats")
+                if group_allowed_chats is not None:
+                    _set_env_from_yaml(
+                        "TELEGRAM_GROUP_ALLOWED_CHATS",
+                        "telegram.group_allowed_chats",
+                        group_allowed_chats,
+                        _csv_str,
+                    )
+                for _telegram_extra_key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
+                    if _telegram_extra_key in telegram_cfg:
+                        plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
+                        if not isinstance(plat_data, dict):
+                            plat_data = {}
+                            platforms_data[Platform.TELEGRAM.value] = plat_data
+                        extra = plat_data.setdefault("extra", {})
+                        if not isinstance(extra, dict):
+                            extra = {}
+                            plat_data["extra"] = extra
+                        extra[_telegram_extra_key] = telegram_cfg[_telegram_extra_key]
+                if _telegram_extra:
+                    _plat_data, _plat_extra = _ensure_platform_extra_dict(
+                        platforms_data, Platform.TELEGRAM.value
+                    )
+                    for _telegram_extra_key, _telegram_extra_value in _telegram_extra.items():
+                        _plat_extra.setdefault(_telegram_extra_key, _telegram_extra_value)
+
+            whatsapp_cfg = yaml_cfg.get("whatsapp", {})
+            if isinstance(whatsapp_cfg, dict):
+                if "require_mention" in whatsapp_cfg:
+                    _set_env_from_yaml(
+                        "WHATSAPP_REQUIRE_MENTION",
+                        "whatsapp.require_mention",
+                        whatsapp_cfg["require_mention"],
+                        _lower_str,
+                    )
+                if "mention_patterns" in whatsapp_cfg:
+                    _set_env_from_yaml(
+                        "WHATSAPP_MENTION_PATTERNS",
+                        "whatsapp.mention_patterns",
+                        whatsapp_cfg["mention_patterns"],
+                        json.dumps,
+                    )
+                frc = whatsapp_cfg.get("free_response_chats")
+                if frc is not None:
+                    _set_env_from_yaml(
+                        "WHATSAPP_FREE_RESPONSE_CHATS",
+                        "whatsapp.free_response_chats",
+                        frc,
+                        _csv_str,
+                    )
+                if "dm_policy" in whatsapp_cfg:
+                    _set_env_from_yaml(
+                        "WHATSAPP_DM_POLICY",
+                        "whatsapp.dm_policy",
+                        whatsapp_cfg["dm_policy"],
+                        _lower_str,
+                    )
+                af = whatsapp_cfg.get("allow_from")
+                if af is not None:
+                    _set_env_from_yaml(
+                        "WHATSAPP_ALLOWED_USERS",
+                        "whatsapp.allow_from",
+                        af,
+                        _csv_str,
+                    )
+                if "group_policy" in whatsapp_cfg:
+                    _set_env_from_yaml(
+                        "WHATSAPP_GROUP_POLICY",
+                        "whatsapp.group_policy",
+                        whatsapp_cfg["group_policy"],
+                        _lower_str,
+                    )
+                gaf = whatsapp_cfg.get("group_allow_from")
+                if gaf is not None:
+                    _set_env_from_yaml(
+                        "WHATSAPP_GROUP_ALLOWED_USERS",
+                        "whatsapp.group_allow_from",
+                        gaf,
+                        _csv_str,
+                    )
+>>>>>>> e553c4ef5 (fix(config): warn when env shadows gateway config (#13582))
 
             # Signal settings → env vars (env vars take precedence)
             signal_cfg = yaml_cfg.get("signal", {})
             if isinstance(signal_cfg, dict):
-                if "require_mention" in signal_cfg and not os.getenv("SIGNAL_REQUIRE_MENTION"):
-                    os.environ["SIGNAL_REQUIRE_MENTION"] = str(signal_cfg["require_mention"]).lower()
+                if "require_mention" in signal_cfg:
+                    _set_env_from_yaml(
+                        "SIGNAL_REQUIRE_MENTION",
+                        "signal.require_mention",
+                        signal_cfg["require_mention"],
+                        _lower_str,
+                    )
 
+<<<<<<< HEAD
             # DingTalk settings → env vars: migrated to the dingtalk plugin's
             # apply_yaml_config_fn hook (plugins/platforms/dingtalk/adapter.py).
             # #41112 / #3823.
+=======
+            # DingTalk settings → env vars (env vars take precedence)
+            dingtalk_cfg = yaml_cfg.get("dingtalk", {})
+            if isinstance(dingtalk_cfg, dict):
+                if "require_mention" in dingtalk_cfg:
+                    _set_env_from_yaml(
+                        "DINGTALK_REQUIRE_MENTION",
+                        "dingtalk.require_mention",
+                        dingtalk_cfg["require_mention"],
+                        _lower_str,
+                    )
+                if "mention_patterns" in dingtalk_cfg:
+                    _set_env_from_yaml(
+                        "DINGTALK_MENTION_PATTERNS",
+                        "dingtalk.mention_patterns",
+                        dingtalk_cfg["mention_patterns"],
+                        json.dumps,
+                    )
+                frc = dingtalk_cfg.get("free_response_chats")
+                if frc is not None:
+                    _set_env_from_yaml(
+                        "DINGTALK_FREE_RESPONSE_CHATS",
+                        "dingtalk.free_response_chats",
+                        frc,
+                        _csv_str,
+                    )
+                # allowed_chats: if set, bot ONLY responds in these group chats (whitelist)
+                ac = dingtalk_cfg.get("allowed_chats")
+                if ac is not None:
+                    _set_env_from_yaml(
+                        "DINGTALK_ALLOWED_CHATS",
+                        "dingtalk.allowed_chats",
+                        ac,
+                        _csv_str,
+                    )
+                allowed = dingtalk_cfg.get("allowed_users")
+                if allowed is not None:
+                    _set_env_from_yaml(
+                        "DINGTALK_ALLOWED_USERS",
+                        "dingtalk.allowed_users",
+                        allowed,
+                        _csv_str,
+                    )
+>>>>>>> e553c4ef5 (fix(config): warn when env shadows gateway config (#13582))
 
             # Mattermost config bridge moved into plugins/platforms/mattermost/
             # adapter.py::_apply_yaml_config — see #25443 (apply_yaml_config_fn).
 
+<<<<<<< HEAD
             # Matrix settings → env vars: migrated to the matrix plugin's
             # apply_yaml_config_fn hook (plugins/platforms/matrix/adapter.py).
             # #41112 / #3823.
@@ -1356,6 +1700,90 @@ def load_gateway_config() -> GatewayConfig:
             # Feishu settings → env vars: migrated to the feishu plugin's
             # apply_yaml_config_fn hook (plugins/platforms/feishu/adapter.py).
             # #41112 / #3823.
+=======
+            # Matrix settings → env vars (env vars take precedence)
+            matrix_cfg = yaml_cfg.get("matrix", {})
+            if isinstance(matrix_cfg, dict):
+                if "require_mention" in matrix_cfg:
+                    _set_env_from_yaml(
+                        "MATRIX_REQUIRE_MENTION",
+                        "matrix.require_mention",
+                        matrix_cfg["require_mention"],
+                        _lower_str,
+                    )
+                allowed_users = matrix_cfg.get("allowed_users")
+                if allowed_users is not None:
+                    _set_env_from_yaml(
+                        "MATRIX_ALLOWED_USERS",
+                        "matrix.allowed_users",
+                        allowed_users,
+                        _csv_str,
+                    )
+                frc = matrix_cfg.get("free_response_rooms")
+                if frc is not None:
+                    _set_env_from_yaml(
+                        "MATRIX_FREE_RESPONSE_ROOMS",
+                        "matrix.free_response_rooms",
+                        frc,
+                        _csv_str,
+                    )
+                # allowed_rooms: if set, bot ONLY responds in these rooms (whitelist)
+                ar = matrix_cfg.get("allowed_rooms")
+                if ar is not None:
+                    _set_env_from_yaml(
+                        "MATRIX_ALLOWED_ROOMS",
+                        "matrix.allowed_rooms",
+                        ar,
+                        _csv_str,
+                    )
+                ignore_patterns = matrix_cfg.get("ignore_user_patterns")
+                if ignore_patterns is not None:
+                    _set_env_from_yaml(
+                        "MATRIX_IGNORE_USER_PATTERNS",
+                        "matrix.ignore_user_patterns",
+                        ignore_patterns,
+                        _csv_str,
+                    )
+                if "process_notices" in matrix_cfg:
+                    _set_env_from_yaml(
+                        "MATRIX_PROCESS_NOTICES",
+                        "matrix.process_notices",
+                        matrix_cfg["process_notices"],
+                        _lower_str,
+                    )
+                if "session_scope" in matrix_cfg:
+                    _set_env_from_yaml(
+                        "MATRIX_SESSION_SCOPE",
+                        "matrix.session_scope",
+                        matrix_cfg["session_scope"],
+                        _lower_str,
+                    )
+                if "auto_thread" in matrix_cfg:
+                    _set_env_from_yaml(
+                        "MATRIX_AUTO_THREAD",
+                        "matrix.auto_thread",
+                        matrix_cfg["auto_thread"],
+                        _lower_str,
+                    )
+                if "dm_mention_threads" in matrix_cfg:
+                    _set_env_from_yaml(
+                        "MATRIX_DM_MENTION_THREADS",
+                        "matrix.dm_mention_threads",
+                        matrix_cfg["dm_mention_threads"],
+                        _lower_str,
+                    )
+
+            # Feishu settings → env vars (env vars take precedence)
+            feishu_cfg = yaml_cfg.get("feishu", {})
+            if isinstance(feishu_cfg, dict):
+                if "allow_bots" in feishu_cfg:
+                    _set_env_from_yaml(
+                        "FEISHU_ALLOW_BOTS",
+                        "feishu.allow_bots",
+                        feishu_cfg["allow_bots"],
+                        _lower_str,
+                    )
+>>>>>>> e553c4ef5 (fix(config): warn when env shadows gateway config (#13582))
 
     except Exception as e:
         logger.warning(

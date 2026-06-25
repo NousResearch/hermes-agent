@@ -1057,6 +1057,7 @@ class TestLoadGatewayConfig:
         assert os.environ.get("FEISHU_ALLOW_BOTS") == "none"
 
     def test_bridges_telegram_allow_bots_from_config_yaml_to_env(self, tmp_path, monkeypatch):
+
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         config_path = hermes_home / "config.yaml"
@@ -1087,6 +1088,71 @@ class TestLoadGatewayConfig:
         load_gateway_config()
 
         assert os.environ.get("TELEGRAM_ALLOW_BOTS") == "none"
+
+    def test_warns_when_env_shadows_non_secret_config_yaml(self, tmp_path, monkeypatch, caplog):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "slack:\n"
+            "  allow_bots: all\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SLACK_ALLOW_BOTS", "none")
+
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            load_gateway_config()
+
+        assert os.environ.get("SLACK_ALLOW_BOTS") == "none"
+        assert any(
+            "SLACK_ALLOW_BOTS" in record.message
+            and "slack.allow_bots" in record.message
+            and "shadows" in record.message
+            for record in caplog.records
+        )
+
+    def test_secret_env_shadowing_config_yaml_does_not_warn(self, tmp_path, monkeypatch, caplog):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "platforms:\n"
+            "  slack:\n"
+            "    enabled: true\n"
+            "    token: yaml-token\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "env-token")
+
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            config = load_gateway_config()
+
+        assert config.platforms[Platform.SLACK].token == "env-token"
+        assert "yaml-token" not in caplog.text
+        assert "env-token" not in caplog.text
+        assert not any(
+            "SLACK_BOT_TOKEN" in record.message and "shadows" in record.message
+            for record in caplog.records
+        )
+
+    def test_env_without_config_yaml_counterpart_does_not_warn(self, tmp_path, monkeypatch, caplog):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("{}\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
+
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            load_gateway_config()
+
+        assert os.environ.get("SLACK_ALLOW_BOTS") == "all"
+        assert not any("shadows config.yaml" in record.message for record in caplog.records)
 
     def test_invalid_quick_commands_in_config_yaml_are_ignored(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"

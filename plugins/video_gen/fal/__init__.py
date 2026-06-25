@@ -384,9 +384,9 @@ def _submit_fal_video_request(endpoint: str, arguments: Dict[str, Any]):
             raise ValueError(
                 f"Nous Subscription gateway rejected endpoint '{endpoint}' "
                 f"(HTTP {status}). This model may not yet be enabled on "
-                f"the Nous Portal's FAL proxy. Either:\n"
-                f"  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
-                f"  • Pick a different model via `hermes tools` → Video Generation."
+                "the Nous Portal's FAL proxy. Either:\n"
+                "  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
+                "  • Pick a different model via `hermes tools` → Video Generation."
             ) from exc
         raise
 
@@ -523,8 +523,8 @@ class FALVideoGenProvider(VideoGenProvider):
                 return error_response(
                     error=(
                         f"FAL family {family_id} has no image-to-video "
-                        f"endpoint. Pick a family with image-to-video support "
-                        f"via `hermes tools` → Video Generation."
+                        "endpoint. Pick a family with image-to-video support "
+                        "via `hermes tools` → Video Generation."
                     ),
                     error_type="modality_unsupported",
                     provider="fal", model=family_id, prompt=prompt,
@@ -536,8 +536,8 @@ class FALVideoGenProvider(VideoGenProvider):
                 return error_response(
                     error=(
                         f"FAL family {family_id} has no text-to-video "
-                        f"endpoint. Pass an image_url to use its "
-                        f"image-to-video endpoint, or pick a different family."
+                        "endpoint. Pass an image_url to use its "
+                        "image-to-video endpoint, or pick a different family."
                     ),
                     error_type="modality_unsupported",
                     provider="fal", model=family_id, prompt=prompt,

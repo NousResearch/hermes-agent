@@ -444,13 +444,13 @@ def run_backup(args) -> None:
     if skipped_external:
         print(
             f"\n  Skipped {len(skipped_external)} memory-provider path(s) "
-            f"outside your home directory (not portable):"
+            "outside your home directory (not portable):"
         )
         for p in sorted(skipped_external)[:10]:
             print(f"    {p}")
 
     if skipped_dirs:
-        print(f"\n  Excluded directories:")
+        print("\n  Excluded directories:")
         for d in sorted(skipped_dirs):
             print(f"    {d}/")
 
@@ -676,7 +676,7 @@ def run_import(args) -> None:
         if skipped_runtime:
             print(
                 f"\n  Preserved {len(skipped_runtime)} runtime state "
-                f"file(s) (kept this machine's, not the backup's):"
+                "file(s) (kept this machine's, not the backup's):"
             )
             for rel in sorted(skipped_runtime)[:10]:
                 print(f"    {rel}")
@@ -721,8 +721,8 @@ def run_import(args) -> None:
             except ImportError:
                 # hermes_cli.profiles might not be available (fresh install)
                 if any(profiles_dir.iterdir()):
-                    print(f"\n  Profiles detected but aliases could not be created.")
-                    print(f"  Run: hermes profile list  (after installing hermes)")
+                    print("\n  Profiles detected but aliases could not be created.")
+                    print("  Run: hermes profile list  (after installing hermes)")
 
         # Guidance
         print()

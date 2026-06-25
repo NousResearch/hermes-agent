@@ -2576,7 +2576,7 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
         path_entries.extend(_build_wsl_interop_paths(path_entries))
         path_entries.extend(common_bin_paths)
         sane_path = ":".join(path_entries)
-        return f"""[Unit]
+        return """[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
 Wants=network-online.target
@@ -2614,7 +2614,7 @@ WantedBy=multi-user.target
     path_entries.extend(_build_wsl_interop_paths(path_entries))
     path_entries.extend(common_bin_paths)
     sane_path = ":".join(path_entries)
-    return f"""[Unit]
+    return """[Unit]
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
 Wants=network-online.target
@@ -2899,7 +2899,7 @@ def _print_system_scope_remediation(action: str) -> None:
     """
     svc = get_service_name()
     print_warning(
-        f"Gateway is installed as a system-wide service — " f"{action} requires root."
+        "Gateway is installed as a system-wide service — " f"{action} requires root."
     )
     print_info("  Options:")
     print_info(f"    1. {action.capitalize()} it this time:")
@@ -3031,7 +3031,7 @@ def _require_service_installed(action: str, system: bool = False) -> None:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
         scope_flag = " --system" if system else ""
-        print(f"✗ Gateway service is not installed")
+        print("✗ Gateway service is not installed")
         print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
         sys.exit(1)
 
@@ -3476,7 +3476,7 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
         return True
     print_error("Failed to start the gateway as a background process.")
     print(
-        f"  Try manually: nohup hermes gateway run --replace "
+        "  Try manually: nohup hermes gateway run --replace "
         f"> {_dhh()}/logs/gateway.log 2>&1 &"
     )
     if exit_on_failure:
@@ -3534,7 +3534,7 @@ def generate_launchd_plist() -> str:
     )
     prog_args_xml = "\n        ".join(prog_args)
 
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
+    return """<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -3636,9 +3636,9 @@ def refresh_launchd_plist_if_needed() -> bool:
         # helper from the gateway's process group, so the bootout that kills
         # the gateway (and us) does not kill the helper before it bootstraps.
         reload_script = (
-            f"sleep 2; "
+            "sleep 2; "
             f"launchctl bootout {shlex.quote(target)} 2>/dev/null; "
-            f"sleep 1; "
+            "sleep 1; "
             f"launchctl bootstrap {shlex.quote(domain)} {shlex.quote(str(plist_path))} 2>/dev/null"
         )
         try:
@@ -4080,7 +4080,7 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
         return
 
     print_error(
-        f"The default gateway is running as a profile multiplexer and already "
+        "The default gateway is running as a profile multiplexer and already "
         f"serves profile '{suffix}'."
     )
     print(

@@ -583,7 +583,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 )
             if not os.path.exists(sa_path):
                 raise FileNotFoundError(
-                    f"Service Account JSON file not found at configured path."
+                    "Service Account JSON file not found at configured path."
                 )
             # Validate file parses before handing to google-auth for nicer error.
             try:
@@ -3162,12 +3162,12 @@ async def _standalone_send(
     if not _GCHAT_CHAT_ID_RE.match(chat_id):
         return {"error": (
             f"Google Chat standalone send: chat_id {chat_id!r} must match "
-            f"'spaces/<id>' or 'users/<id>' with only [A-Za-z0-9_-] in the id"
+            "'spaces/<id>' or 'users/<id>' with only [A-Za-z0-9_-] in the id"
         )}
     if thread_id is not None and not re.match(r"^spaces/[A-Za-z0-9_-]+/threads/[A-Za-z0-9_-]+$", thread_id):
         return {"error": (
             f"Google Chat standalone send: thread_id {thread_id!r} must match "
-            f"'spaces/<id>/threads/<id>'"
+            "'spaces/<id>/threads/<id>'"
         )}
 
     extra = getattr(pconfig, "extra", {}) or {}
@@ -3215,7 +3215,7 @@ async def _standalone_send(
                 creds, _project = _google_auth.default(scopes=_CHAT_SCOPES)
             except Exception as exc:
                 return {"error": (
-                    f"Google Chat standalone send: no SA credentials configured "
+                    "Google Chat standalone send: no SA credentials configured "
                     f"and Application Default Credentials are unavailable: {exc}"
                 )}
     except asyncio.CancelledError:
@@ -3264,7 +3264,7 @@ async def _standalone_send(
                 if resp.status >= 400:
                     text = await resp.text()
                     return {"error": (
-                        f"Google Chat standalone send: API returned "
+                        "Google Chat standalone send: API returned "
                         f"{resp.status}: {text[:300]}"
                     )}
                 payload = await resp.json()

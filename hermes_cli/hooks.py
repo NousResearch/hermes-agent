@@ -93,9 +93,9 @@ def _cmd_list(_args) -> None:
                     mtime_at = entry.get("script_mtime_at_approval")
                     if mtime_now and mtime_at and mtime_now > mtime_at:
                         print(
-                            f"      ⚠ script modified since approval "
+                            "      ⚠ script modified since approval "
                             f"(was {mtime_at}, now {mtime_now}) — "
-                            f"run `hermes hooks doctor` to re-validate"
+                            "run `hermes hooks doctor` to re-validate"
                         )
         print()
 
@@ -340,9 +340,9 @@ def _doctor_one(spec, shell_hooks) -> int:
         mtime_at = entry["script_mtime_at_approval"]
         if mtime_now and mtime_at and mtime_now > mtime_at:
             problems += 1
-            print(f"      ⚠ script modified since approval "
+            print("      ⚠ script modified since approval "
                   f"(was {mtime_at}, now {mtime_now}) — review changes, "
-                  f"then `hermes hooks revoke` + re-approve to refresh")
+                  "then `hermes hooks revoke` + re-approve to refresh")
         elif mtime_now and mtime_at and mtime_now == mtime_at:
             print("      ✓ script unchanged since approval")
 
@@ -372,14 +372,14 @@ def _doctor_one(spec, shell_hooks) -> int:
             if stdout:
                 try:
                     json.loads(stdout)
-                    print(f"      ✓ produced valid JSON on synthetic payload "
+                    print("      ✓ produced valid JSON on synthetic payload "
                           f"(exit={rc}, {elapsed}s)")
                 except json.JSONDecodeError:
                     problems += 1
                     print(f"      ✗ stdout was not valid JSON (exit={rc}, "
                           f"{elapsed}s): {_truncate(stdout, 120)}")
             else:
-                print(f"      ✓ ran clean with empty stdout "
+                print("      ✓ ran clean with empty stdout "
                       f"(exit={rc}, {elapsed}s) — hook is observer-only")
 
     return problems

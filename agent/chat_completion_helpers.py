@@ -406,7 +406,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 agent._buffer_status(
                     f"⚠️ No first byte from provider in {int(_elapsed)}s "
                     f"(codex stream, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Reconnecting."
+                    "Reconnecting."
                 )
             try:
                 _close_request_client_once("codex_ttfb_kill")
@@ -452,7 +452,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
             agent._buffer_status(
                 f"⚠️ Codex stream sent no events for {int(_event_stale_elapsed)}s "
                 f"after first byte (model: {api_kwargs.get('model', 'unknown')}). "
-                f"Reconnecting."
+                "Reconnecting."
             )
             try:
                 _close_request_client_once("codex_stream_idle_kill")
@@ -496,7 +496,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 agent._buffer_status(
                     f"⚠️ No response from provider for {int(_elapsed)}s "
                     f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
-                    f"Aborting call."
+                    "Aborting call."
                 )
             try:
                 if agent.api_mode == "anthropic_messages":
@@ -1321,7 +1321,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
         agent._buffer_status(
-            f"🔄 Primary model failed — switching to fallback: "
+            "🔄 Primary model failed — switching to fallback: "
             f"{fb_model} via {fb_provider}"
         )
         logger.info(
@@ -1581,7 +1581,7 @@ def cleanup_task_resources(agent, task_id: str) -> None:
             if agent.verbose_logging:
                 logging.debug(
                     f"Skipping per-turn cleanup_vm for persistent env {task_id}; "
-                    f"idle reaper will handle it."
+                    "idle reaper will handle it."
                 )
         else:
             _ra().cleanup_vm(task_id)
@@ -2601,7 +2601,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 f"⚠️ No response from provider for {int(_stale_elapsed)}s "
                 f"(model: {api_kwargs.get('model', 'unknown')}, "
                 f"context: ~{_est_ctx:,} tokens). "
-                f"Reconnecting..."
+                "Reconnecting..."
             )
             try:
                 _close_request_client_once("stale_stream_kill")
@@ -2658,9 +2658,9 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 if len(_partial_names) > 3:
                     _name_str += f", +{len(_partial_names) - 3} more"
                 _warn = (
-                    f"\n\n⚠ Stream stalled mid tool-call "
+                    "\n\n⚠ Stream stalled mid tool-call "
                     f"({_name_str}); the action was not executed. "
-                    f"Ask me to retry if you want to continue."
+                    "Ask me to retry if you want to continue."
                 )
                 _partial_text = (_partial_text or "") + _warn
                 # Fire as streaming delta so the user sees it immediately.

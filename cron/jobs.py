@@ -394,10 +394,10 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     
     raise ValueError(
         f"Invalid schedule '{original}'. Use:\n"
-        f"  - Duration: '30m', '2h', '1d' (one-shot)\n"
-        f"  - Interval: 'every 30m', 'every 2h' (recurring)\n"
-        f"  - Cron: '0 9 * * *' (cron expression)\n"
-        f"  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
+        "  - Duration: '30m', '2h', '1d' (one-shot)\n"
+        "  - Interval: 'every 30m', 'every 2h' (recurring)\n"
+        "  - Cron: '0 9 * * *' (cron expression)\n"
+        "  - Timestamp: '2026-02-03T14:00:00' (one-shot at time)"
     )
 
 
@@ -722,7 +722,7 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     if not expanded.is_absolute():
         raise ValueError(
             f"Cron workdir must be an absolute path (got {raw!r}). "
-            f"Cron jobs run detached from any shell cwd, so relative paths are ambiguous."
+            "Cron jobs run detached from any shell cwd, so relative paths are ambiguous."
         )
     resolved = expanded.resolve()
     if not resolved.exists():
@@ -993,7 +993,7 @@ class AmbiguousJobReference(LookupError):
         ids = ", ".join(m["id"] for m in matches)
         super().__init__(
             f"Job name '{ref}' is ambiguous — matches {len(matches)} jobs: {ids}. "
-            f"Use the job ID instead."
+            "Use the job ID instead."
         )
 
 

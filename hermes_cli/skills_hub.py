@@ -200,13 +200,13 @@ def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[
     c.print()
     c.print(
         f"[yellow]The SKILL.md at {url} doesn't declare a `name:` in its "
-        f"frontmatter,[/]\n[yellow]and the URL path doesn't produce a valid "
-        f"identifier either.[/]"
+        "frontmatter,[/]\n[yellow]and the URL path doesn't produce a valid "
+        "identifier either.[/]"
     )
     default_hint = f" [{default}]" if default else ""
     c.print(
         f"[bold]Enter a skill name{default_hint}:[/] "
-        f"[dim](lowercase letters, digits, hyphens, underscores; starts with a letter)[/]"
+        "[dim](lowercase letters, digits, hyphens, underscores; starts with a letter)[/]"
     )
     try:
         answer = input("Name: ").strip()
@@ -468,7 +468,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
     if timed_out:
         c.print(f"  [yellow]⚡ Slow sources skipped: {', '.join(timed_out)} "
-                f"— run again for cached results[/]")
+                "— run again for cached results[/]")
 
     c.print("[dim]Tip: 'hermes skills inspect <identifier>' to preview, "
             "'hermes skills install <identifier>' to install, "
@@ -1554,7 +1554,7 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
             json={
                 "title": f"Add skill: {skill_name}",
                 "body": f"Submitting the `{skill_name}` skill via Hermes Skills Hub.\n\n"
-                        f"This skill was scanned by the Hermes Skills Guard before submission.",
+                        "This skill was scanned by the Hermes Skills Guard before submission.",
                 "head": f"{fork_repo.split('/')[0]}:{branch_name}",
                 "base": default_branch,
             },

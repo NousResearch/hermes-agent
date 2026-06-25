@@ -292,7 +292,7 @@ def _normalize_board_slug(slug: Optional[str]) -> Optional[str]:
     if not _BOARD_SLUG_RE.match(s):
         raise ValueError(
             f"invalid board slug {slug!r}: must be 1-64 chars, lowercase "
-            f"alphanumerics / hyphens / underscores, not starting with '-' or '_'"
+            "alphanumerics / hyphens / underscores, not starting with '-' or '_'"
         )
     return s
 
@@ -2328,7 +2328,7 @@ def create_task(
             if "," in name:
                 raise ValueError(
                     f"skill name cannot contain comma: {name!r} "
-                    f"(pass a list of separate names instead of a comma-joined string)"
+                    "(pass a list of separate names instead of a comma-joined string)"
                 )
             if name.casefold() in KNOWN_TOOLSET_NAMES:
                 toolset_typos.append(name)
@@ -3759,7 +3759,7 @@ class HallucinatedCardsError(ValueError):
         self.phantom = list(phantom)
         self.completing_task_id = completing_task_id
         super().__init__(
-            f"completion blocked: claimed created_cards that do not exist "
+            "completion blocked: claimed created_cards that do not exist "
             f"or were not created by this worker: {', '.join(phantom)}"
         )
 
@@ -4417,7 +4417,7 @@ def promote_task(
     if cur_status not in ("todo", "blocked"):
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
-            f"'todo' or 'blocked'"
+            "'todo' or 'blocked'"
         )
 
     if not force:
@@ -4433,7 +4433,7 @@ def promote_task(
         ]
         if unsatisfied:
             return False, (
-                f"unsatisfied parent dependencies: "
+                "unsatisfied parent dependencies: "
                 f"{', '.join(unsatisfied)} (use --force to override)"
             )
 
@@ -4567,7 +4567,7 @@ def specify_triage_task(
         params.append(task_id)
         cur = conn.execute(
             f"UPDATE tasks SET {', '.join(sets)} "
-            f"WHERE id = ? AND status = 'triage'",
+            "WHERE id = ? AND status = 'triage'",
             tuple(params),
         )
         if cur.rowcount != 1:
@@ -5178,7 +5178,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
             raise ValueError(
                 f"task {task.id} has non-absolute workspace_path "
                 f"{task.workspace_path!r}; use an absolute path "
-                f"(relative paths are ambiguous against the dispatcher's CWD)"
+                "(relative paths are ambiguous against the dispatcher's CWD)"
             )
         p.mkdir(parents=True, exist_ok=True)
         return p
@@ -6057,7 +6057,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 rate_limited_exit = True
                 error_text = (
                     f"pid {pid} exited rate-limited (quota wall) — "
-                    f"requeued without counting a failure"
+                    "requeued without counting a failure"
                 )
                 event_kind = "rate_limited"
                 event_payload = {
@@ -8303,7 +8303,7 @@ def latest_summaries(
         return {}
     placeholders = ",".join("?" for _ in ids)
     rows = conn.execute(
-        f"""
+        """
         SELECT task_id, summary FROM (
             SELECT task_id, summary,
                    ROW_NUMBER() OVER (

@@ -248,9 +248,9 @@ def _missing_provider_error(configured: Optional[str]) -> str:
     if configured:
         msg = (
             f"video_gen.provider='{configured}' is set but no plugin "
-            f"registered that name. Run `hermes plugins list` to see "
-            f"installed video gen backends, or `hermes tools` → Video "
-            f"Generation to pick one."
+            "registered that name. Run `hermes plugins list` to see "
+            "installed video gen backends, or `hermes tools` → Video "
+            "Generation to pick one."
         )
         return json.dumps(error_response(
             error=msg, error_type="provider_not_registered",
@@ -361,8 +361,8 @@ def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
         return json.dumps(error_response(
             error=(
                 f"Provider '{getattr(provider, 'name', '?')}' signature is "
-                f"out of date with the video_generate schema. Report this "
-                f"to the plugin author."
+                "out of date with the video_generate schema. Report this "
+                "to the plugin author."
             ),
             error_type="provider_contract",
             provider=getattr(provider, "name", ""),
@@ -488,7 +488,7 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     if provider is None:
         parts.append(
             f"\nActive backend: {configured} (plugin not yet loaded — the "
-            f"tool will retry discovery on first call)."
+            "tool will retry discovery on first call)."
         )
         return {"description": "\n".join(parts)}
 

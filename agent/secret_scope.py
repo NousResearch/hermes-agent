@@ -149,11 +149,11 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     if _MULTIPLEX_ACTIVE:
         raise UnscopedSecretError(
             f"get_secret({name!r}) called with no profile secret scope active "
-            f"while multiplexing is on. This credential read must run inside a "
-            f"set_secret_scope(...) block (the per-turn / per-adapter profile "
-            f"scope). Reading os.environ here would risk leaking another "
-            f"profile's value. See docs/design/multiplexing-gateway.md "
-            f"(Workstream A)."
+            "while multiplexing is on. This credential read must run inside a "
+            "set_secret_scope(...) block (the per-turn / per-adapter profile "
+            "scope). Reading os.environ here would risk leaking another "
+            "profile's value. See docs/design/multiplexing-gateway.md "
+            "(Workstream A)."
         )
 
     val = os.environ.get(name)

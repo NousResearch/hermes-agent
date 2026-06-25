@@ -734,7 +734,7 @@ def _resolve_client_cert(server_name: str, config: dict):
         if raw_key is not None:
             raise ValueError(
                 f"MCP server '{server_name}': specify either client_cert as "
-                f"a list [cert, key] OR client_cert + client_key, not both"
+                "a list [cert, key] OR client_cert + client_key, not both"
             )
         if len(raw_cert) == 2:
             cert_path = _expand(raw_cert[0], "client_cert[0]")
@@ -747,7 +747,7 @@ def _resolve_client_cert(server_name: str, config: dict):
             if not isinstance(password, str):
                 raise ValueError(
                     f"MCP server '{server_name}': client_cert[2] (key "
-                    f"passphrase) must be a string"
+                    "passphrase) must be a string"
                 )
             return (cert_path, key_path, password)
         raise ValueError(
@@ -1188,7 +1188,7 @@ class SamplingHandler:
         if not getattr(response, "choices", None):
             self.metrics["errors"] += 1
             return self._error(
-                f"LLM returned empty response (no choices) for server "
+                "LLM returned empty response (no choices) for server "
                 f"'{self.server_name}'"
             )
 
@@ -2651,8 +2651,8 @@ def _handle_auth_error_and_retry(
         "error": (
             f"MCP server '{server_name}' requires re-authentication. "
             f"Run `hermes mcp login {server_name}` (or delete the tokens "
-            f"file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
-            f"this tool — ask the user to re-authenticate."
+            "file under ~/.hermes/mcp-tokens/ and restart). Do NOT retry "
+            "this tool — ask the user to re-authenticate."
         ),
         "needs_reauth": True,
         "server": server_name,
@@ -3143,8 +3143,8 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                         f"MCP server '{server_name}' is unreachable after "
                         f"{_server_error_counts[server_name]} consecutive "
                         f"failures. Auto-retry available in ~{remaining}s. "
-                        f"Do NOT retry this tool yet — use alternative "
-                        f"approaches or ask the user to check the MCP server."
+                        "Do NOT retry this tool yet — use alternative "
+                        "approaches or ask the user to check the MCP server."
                     )
                 }, ensure_ascii=False)
             # Cooldown elapsed → fall through as a half-open probe.

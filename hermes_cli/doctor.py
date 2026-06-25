@@ -510,13 +510,13 @@ def run_doctor(args):
         if ack_advisory(ack_target):
             print(color(
                 f"  ✓ Acknowledged advisory {ack_target}. "
-                f"It will no longer trigger startup banners.",
+                "It will no longer trigger startup banners.",
                 Colors.GREEN,
             ))
         else:
             print(color(
                 f"  ✗ Failed to persist ack for {ack_target}. "
-                f"Check ~/.hermes/config.yaml is writable.",
+                "Check ~/.hermes/config.yaml is writable.",
                 Colors.RED,
             ))
             sys.exit(1)
@@ -559,7 +559,7 @@ def run_doctor(args):
                 manual_issues.append(
                     f"Resolve security advisory {hit.advisory.id}: "
                     f"uninstall {hit.package}=={hit.installed_version} and "
-                    f"rotate credentials, then run "
+                    "rotate credentials, then run "
                     f"`hermes doctor --ack {hit.advisory.id}`."
                 )
             # Acked-but-still-installed: show as informational so the user
@@ -799,7 +799,7 @@ def run_doctor(args):
                         (
                             f"model.provider '{provider_raw}' is unknown. "
                             f"Valid providers: {known_list}. "
-                            f"Fix: run 'hermes config set model.provider <valid_provider>'"
+                            "Fix: run 'hermes config set model.provider <valid_provider>'"
                         ),
                         issues,
                     )
@@ -874,7 +874,7 @@ def run_doctor(args):
                             (
                                 f"No credentials found for provider '{runtime_provider}'. "
                                 f"Run 'hermes setup' or set the provider's API key in {_DHH}/.env, "
-                                f"or switch providers with 'hermes config set model.provider <name>'"
+                                "or switch providers with 'hermes config set model.provider <name>'"
                             ),
                             issues,
                         )
@@ -1953,7 +1953,7 @@ def run_doctor(args):
                 [(color("⚠", Colors.YELLOW), label,
                   color(f"({err_name}: {e})", Colors.DIM))],
                 [f"AWS Bedrock: {err_name} — check IAM permissions for "
-                 f"bedrock:ListFoundationModels"],
+                 "bedrock:ListFoundationModels"],
             )
 
     def _probe_azure_entra() -> _ConnectivityResult:

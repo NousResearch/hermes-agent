@@ -779,11 +779,11 @@ class S6ServiceManager:
         import shlex
         prof = shlex.quote(profile)
         return (
-            f"#!/command/with-contenv sh\n"
-            f"# shellcheck shell=sh\n"
+            "#!/command/with-contenv sh\n"
+            "# shellcheck shell=sh\n"
             f': "${{HERMES_HOME:=/opt/data}}"\n'
             f'log_dir="$HERMES_HOME/logs/gateways/{prof}"\n'
-            f'mkdir -p "$log_dir"\n'
+            'mkdir -p "$log_dir"\n'
             # The gateways/ parent must be chowned too (non-recursively):
             # `mkdir -p` creates it root-owned on a root-context boot, and a
             # leaf-only chown leaves it that way — every profile registered
@@ -792,12 +792,12 @@ class S6ServiceManager:
             # root-context boot, so it also heals volumes already poisoned
             # by older images. Non-recursive on purpose: sibling profile
             # dirs are each managed by their own log/run. See #45258.
-            f'chown hermes:hermes "$HERMES_HOME/logs/gateways" 2>/dev/null || true\n'
-            f'chown -R hermes:hermes "$log_dir" 2>/dev/null || true\n'
-            f'rm -f "$log_dir/lock"\n'
+            'chown hermes:hermes "$HERMES_HOME/logs/gateways" 2>/dev/null || true\n'
+            'chown -R hermes:hermes "$log_dir" 2>/dev/null || true\n'
+            'rm -f "$log_dir/lock"\n'
             # Skip the drop when already non-root (CAP_SETGID).
-            f'[ "$(id -u)" = 0 ] || exec s6-log 1 n10 s1000000 T "$log_dir"\n'
-            f'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"\n'
+            '[ "$(id -u)" = 0 ] || exec s6-log 1 n10 s1000000 T "$log_dir"\n'
+            'exec s6-setuidgid hermes s6-log 1 n10 s1000000 T "$log_dir"\n'
         )
 
     # -- lifecycle ---------------------------------------------------------

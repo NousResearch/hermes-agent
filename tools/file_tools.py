@@ -298,9 +298,9 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
             return (
                 f"Relative path {filepath!r} resolved to {str(resolved)!r}, which is "
                 f"OUTSIDE the active workspace ({str(root)!r}). The edit will land in "
-                f"a different directory than the terminal's cwd. If this is not "
-                f"intended (e.g. a git-worktree session writing into the main "
-                f"checkout), pass an absolute path under the workspace instead."
+                "a different directory than the terminal's cwd. If this is not "
+                "intended (e.g. a git-worktree session writing into the main "
+                "checkout), pass an absolute path under the workspace instead."
             )
     except Exception:
         return None
@@ -993,7 +993,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                     if hits >= 2:
                         return json.dumps({
                             "error": (
-                                f"BLOCKED: You have called read_file on this "
+                                "BLOCKED: You have called read_file on this "
                                 f"exact region {hits + 1} times and the file "
                                 "has NOT changed. STOP calling read_file for "
                                 "this path — the content from your earlier "
@@ -1724,7 +1724,7 @@ def _handle_write_file(args, **kw):
         )
     if not isinstance(args["content"], str):
         return tool_error(
-            f"write_file: 'content' must be a string, got "
+            "write_file: 'content' must be a string, got "
             f"{type(args['content']).__name__}."
         )
     return write_file_tool(

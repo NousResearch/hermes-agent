@@ -823,8 +823,8 @@ def switch_model(
         if pdef is None:
             _switch_err = (
                 f"Unknown provider '{explicit_provider}'. "
-                f"Check 'hermes model' for available providers, or define it "
-                f"in config.yaml under 'providers:'."
+                "Check 'hermes model' for available providers, or define it "
+                "in config.yaml under 'providers:'."
             )
             # Check for common config issues that cause provider resolution failures
             try:
@@ -957,8 +957,8 @@ def switch_model(
                         is_global=is_global,
                         error_message=(
                             f"Alias '{key}' maps to {identity.vendor}/{identity.family} "
-                            f"but no matching model was found in any provider catalog. "
-                            f"Try specifying the full model name."
+                            "but no matching model was found in any provider catalog. "
+                            "Try specifying the full model name."
                         ),
                     )
             else:
@@ -1035,7 +1035,7 @@ def switch_model(
                             error_message=(
                                 f"'{new_model}' is declared by multiple configured "
                                 f"providers ({', '.join(match_slugs)}). Re-run with "
-                                f"--provider <slug> to choose which one to use."
+                                "--provider <slug> to choose which one to use."
                             ),
                         )
                     target_provider = match_slugs[0]
@@ -1153,7 +1153,7 @@ def switch_model(
                     provider_label=provider_label,
                     is_global=is_global,
                     error_message=(
-                        f"Could not resolve credentials for provider "
+                        "Could not resolve credentials for provider "
                         f"'{provider_label}': {e}"
                     ),
                 )

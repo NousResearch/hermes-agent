@@ -4144,9 +4144,9 @@ def _xai_validate_oauth_endpoint(url: str, *, field: str) -> str:
     if host != "x.ai" and not host.endswith(".x.ai"):
         raise AuthError(
             f"xAI OIDC discovery {field} host {host!r} is not on the xAI origin "
-            f"(expected x.ai or a *.x.ai subdomain). Refusing to use a cached "
-            f"endpoint that may have been substituted by a MITM during initial "
-            f"discovery; re-authenticate with `hermes model` to re-fetch.",
+            "(expected x.ai or a *.x.ai subdomain). Refusing to use a cached "
+            "endpoint that may have been substituted by a MITM during initial "
+            "discovery; re-authenticate with `hermes model` to re-fetch.",
             provider="xai-oauth",
             code="xai_discovery_invalid",
         )
@@ -4672,7 +4672,7 @@ def _nous_shared_store_path() -> Path:
             resolved = path
         if resolved == real_home_shared:
             raise RuntimeError(
-                f"Refusing to touch real user shared Nous auth store during test run: "
+                "Refusing to touch real user shared Nous auth store during test run: "
                 f"{path}. Set HERMES_SHARED_AUTH_DIR to a tmp_path in your test fixture."
             )
     return path
@@ -6909,7 +6909,7 @@ def _xai_oauth_exchange_code_for_tokens(
         # key fallback.  See #26847.
         if response.status_code == 403:
             raise AuthError(
-                f"xAI token exchange failed (HTTP 403)."
+                "xAI token exchange failed (HTTP 403)."
                 + (f" Response: {body}" if body else "")
                 + " This OAuth account is not authorized for xAI API"
                   " access — xAI may be restricting API/OAuth use to"

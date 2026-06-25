@@ -217,10 +217,10 @@ def dispatch_async_delegation(
                 "status": "rejected",
                 "error": (
                     f"Async delegation capacity reached ({max_async_children} "
-                    f"running). Wait for one to finish (its result will re-enter "
-                    f"the chat), or run this task synchronously "
-                    f"(background=false). Raise delegation.max_async_children in "
-                    f"config.yaml to allow more concurrent background subagents."
+                    "running). Wait for one to finish (its result will re-enter "
+                    "the chat), or run this task synchronously "
+                    "(background=false). Raise delegation.max_async_children in "
+                    "config.yaml to allow more concurrent background subagents."
                 ),
             }
         _records[delegation_id] = record
@@ -397,9 +397,9 @@ def dispatch_async_delegation_batch(
                 "status": "rejected",
                 "error": (
                     f"Async delegation capacity reached ({max_async_children} "
-                    f"running). Wait for one to finish (its result will re-enter "
-                    f"the chat), or raise delegation.max_async_children in "
-                    f"config.yaml to allow more concurrent background units."
+                    "running). Wait for one to finish (its result will re-enter "
+                    "the chat), or raise delegation.max_async_children in "
+                    "config.yaml to allow more concurrent background units."
                 ),
             }
         _records[delegation_id] = record

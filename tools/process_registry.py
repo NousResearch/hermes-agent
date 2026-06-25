@@ -301,8 +301,8 @@ class ProcessRegistry:
                         f"Watch patterns disabled for process {session.id} — "
                         f"{WATCH_STRIKE_LIMIT} consecutive rate-limit windows triggered "
                         f"(min spacing {WATCH_MIN_INTERVAL_SECONDS}s). "
-                        f"Falling back to notify_on_complete semantics; you'll get "
-                        f"exactly one notification when the process exits."
+                        "Falling back to notify_on_complete semantics; you'll get "
+                        "exactly one notification when the process exits."
                     ),
                 })
             return
@@ -360,7 +360,7 @@ class ProcessRegistry:
                         "type": "watch_overflow_released",
                         "suppressed": suppressed,
                         "message": (
-                            f"Watch-pattern notifications resumed. "
+                            "Watch-pattern notifications resumed. "
                             f"{suppressed} match event(s) were suppressed during the flood."
                         ),
                         "platform": "",
@@ -408,7 +408,7 @@ class ProcessRegistry:
                 "message": (
                     f"Watch-pattern overflow: >{WATCH_GLOBAL_MAX_PER_WINDOW} "
                     f"notifications in {WATCH_GLOBAL_WINDOW_SECONDS}s across all processes. "
-                    f"Suppressing further watch_match events for "
+                    "Suppressing further watch_match events for "
                     f"{WATCH_GLOBAL_COOLDOWN_SECONDS}s."
                 ),
                 "platform": "",
@@ -841,7 +841,7 @@ class ProcessRegistry:
         bg_command = (
             f"mkdir -p {quoted_temp_dir} && "
             f"( nohup bash -lc {quoted_command} > {quoted_log_path} 2>&1; "
-            f"rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
+            "rc=$?; printf '%s\\n' \"$rc\" > {quoted_exit_path} ) & "
             f"echo $! > {quoted_pid_path} && cat {quoted_pid_path}"
         )
 
@@ -956,7 +956,7 @@ class ProcessRegistry:
 
                 # Check if process is still running
                 check = env.execute(
-                    f"kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?",
+                    "kill -0 \"$(cat {quoted_pid_path} 2>/dev/null)\" 2>/dev/null; echo $?",
                     timeout=5,
                 )
                 check_output = check.get("output", "").strip()
@@ -1957,7 +1957,7 @@ def format_process_notification(evt: dict) -> "str | None":
         _sup = evt.get("suppressed", 0)
         text = (
             f"[IMPORTANT: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
+            "watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
         )

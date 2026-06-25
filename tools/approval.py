@@ -1663,11 +1663,11 @@ def check_all_command_guards(command: str, env_type: str,
                     "approved": False,
                     "message": (
                         f"BLOCKED: Command {reason}. The user has NOT consented "
-                        f"to this action. Do NOT retry this command, do NOT "
-                        f"rephrase it, and do NOT attempt the same outcome via "
-                        f"a different command. Stop the current workflow and "
-                        f"wait for the user to respond before taking any "
-                        f"further destructive or irreversible action."
+                        "to this action. Do NOT retry this command, do NOT "
+                        "rephrase it, and do NOT attempt the same outcome via "
+                        "a different command. Stop the current workflow and "
+                        "wait for the user to respond before taking any "
+                        "further destructive or irreversible action."
                         f"{timeout_addendum}"
                     ),
                     "pattern_key": primary_key,
@@ -1924,8 +1924,8 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
             "approved": False,
             "message": (
                 f"BLOCKED: execute_code script {reason}. The user has NOT "
-                f"consented to running this code. Do NOT retry, do NOT rephrase "
-                f"the script, and do NOT attempt the same outcome via a "
+                "consented to running this code. Do NOT retry, do NOT rephrase "
+                "the script, and do NOT attempt the same outcome via a "
                 f"different tool.{addendum}"
             ),
             "pattern_key": pattern_key,

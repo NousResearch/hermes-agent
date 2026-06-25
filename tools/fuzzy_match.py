@@ -90,7 +90,7 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
             if len(matches) > 1 and not replace_all:
                 return content, 0, None, (
                     f"Found {len(matches)} matches for old_string. "
-                    f"Provide more context to make it unique, or use replace_all=True."
+                    "Provide more context to make it unique, or use replace_all=True."
                 )
 
             # Escape-drift guard: when the matched strategy is NOT `exact`,
@@ -173,12 +173,12 @@ def _detect_escape_drift(content: str, matches: List[Tuple[int, int]],
         if suspect in new_string and suspect in old_string and suspect not in matched_regions:
             plain = suspect[1]  # "'" or '"'
             return (
-                f"Escape-drift detected: old_string and new_string contain "
+                "Escape-drift detected: old_string and new_string contain "
                 f"the literal sequence {suspect!r} but the matched region of "
-                f"the file does not. This is almost always a tool-call "
-                f"serialization artifact where an apostrophe or quote got "
-                f"prefixed with a spurious backslash. Re-read the file with "
-                f"read_file and pass old_string/new_string without "
+                "the file does not. This is almost always a tool-call "
+                "serialization artifact where an apostrophe or quote got "
+                "prefixed with a spurious backslash. Re-read the file with "
+                "read_file and pass old_string/new_string without "
                 f"backslash-escaping {plain!r} characters."
             )
     return None

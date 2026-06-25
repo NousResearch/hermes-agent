@@ -688,8 +688,8 @@ def _model_flow_custom(config):
     )
     if _looks_local and not _url_lower.endswith("/v1"):
         print()
-        print(f"  Hint: Did you mean to add /v1 at the end?")
-        print(f"  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
+        print("  Hint: Did you mean to add /v1 at the end?")
+        print("  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
         print(f"  e.g. {effective_url.rstrip('/')}/v1")
         try:
             _add_v1 = input("  Add /v1? [Y/n]: ").strip().lower()
@@ -708,7 +708,7 @@ def _model_flow_custom(config):
     if probe.get("used_fallback") and probe.get("resolved_base_url"):
         print(
             f"Warning: endpoint verification worked at {probe['resolved_base_url']}/models, "
-            f"not the exact URL you entered. Saving the working base URL instead."
+            "not the exact URL you entered. Saving the working base URL instead."
         )
         effective_url = probe["resolved_base_url"]
         if base_url:
@@ -721,7 +721,7 @@ def _model_flow_custom(config):
     else:
         print(
             f"Warning: could not verify this endpoint via {probe.get('probed_url')}. "
-            f"Hermes will still save it."
+            "Hermes will still save it."
         )
         if probe.get("suggested_base_url"):
             suggested = probe["suggested_base_url"]
@@ -931,7 +931,7 @@ def _model_flow_azure_foundry(config, current_model=""):
         )
         print(f"  Current API mode:  {_lbl}")
     if current_auth_mode == "entra_id":
-        print(f"  Current auth mode: Microsoft Entra ID (keyless)")
+        print("  Current auth mode: Microsoft Entra ID (keyless)")
     elif current_api_key:
         print(f"  Current auth mode: API key ({current_api_key[:8]}...)")
     print()

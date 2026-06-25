@@ -543,9 +543,9 @@ def sync_skills(quiet: bool = False) -> dict:
                     elif not quiet:
                         print(
                             f"  ⚠ {skill_name}: bundled version shipped but you "
-                            f"already have a local skill by this name — yours "
+                            "already have a local skill by this name — yours "
                             f"was kept. Run `hermes skills reset {skill_name}` "
-                            f"to replace it with the bundled version."
+                            "to replace it with the bundled version."
                         )
                 else:
                     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -694,7 +694,7 @@ def _rmtree_writable(path: Path) -> None:
     if skills_root not in target.parents:
         raise ValueError(
             f"refusing to rmtree {target!r}: not strictly under {skills_root!r} "
-            f"(scope guard — see #48200)"
+            "(scope guard — see #48200)"
         )
     import stat
 
@@ -749,7 +749,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
             "action": "not_in_manifest",
             "message": (
                 f"'{name}' is not a tracked bundled skill. Nothing to reset. "
-                f"(Hub-installed skills use `hermes skills uninstall`.)"
+                "(Hub-installed skills use `hermes skills uninstall`.)"
             ),
             "synced": None,
         }
@@ -765,7 +765,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
                 "action": "bundled_missing",
                 "message": (
                     f"'{name}' has no bundled source — manifest entry preserved "
-                    f"but cannot restore from bundled (skill was removed upstream)."
+                    "but cannot restore from bundled (skill was removed upstream)."
                 ),
                 "synced": None,
             }
@@ -780,7 +780,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
                     "action": "not_reset",
                     "message": (
                         f"Could not delete user copy at {dest}: {e}. "
-                        f"Manifest entry preserved — nothing was changed."
+                        "Manifest entry preserved — nothing was changed."
                     ),
                     "synced": None,
                 }
@@ -804,7 +804,7 @@ def reset_bundled_skill(name: str, restore: bool = False) -> dict:
         action = "manifest_cleared"
         message = (
             f"Cleared manifest entry for '{name}'. Future `hermes update` runs "
-            f"will re-baseline against your current copy and accept upstream changes."
+            "will re-baseline against your current copy and accept upstream changes."
         )
 
     return {"ok": True, "action": action, "message": message, "synced": synced}
@@ -905,7 +905,7 @@ def diff_bundled_skill(name: str) -> dict:
             "diffs": [],
             "message": (
                 f"'{name}' is not a tracked bundled skill (no stock version to "
-                f"diff against). Hub-installed skills use `hermes skills inspect`."
+                "diff against). Hub-installed skills use `hermes skills inspect`."
             ),
         }
     dest = _compute_relative_dest(bundled_src, bundled_dir)

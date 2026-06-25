@@ -12,6 +12,7 @@ Verifies that:
 import time
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from run_agent import AIAgent
 
@@ -283,6 +284,60 @@ class TestTryRecoverPrimaryTransport:
             )
 
         assert result is True
+
+    @pytest.mark.parametrize("error_type", [
+        # Socket-layer / OSError family — the error types that
+        # _TRANSPORT_ERROR_TYPES in agent/error_classifier.py:368-386
+        # added beyond the original _TRANSIENT_TRANSPORT_ERRORS set.
+        # Without the sync fix in agent/agent_runtime_helpers.py:1069,
+        # these silently skipped the recovery gate at line 818 even
+        # though the classifier treats them as retryable.
+        "ConnectionError",
+        "ConnectionResetError",
+        "ConnectionAbortedError",
+        "BrokenPipeError",
+        "TimeoutError",
+        "ReadError",
+        "ServerDisconnectedError",
+    ])
+    def test_recovers_on_socket_layer_errors(self, error_type):
+        """Regression for #52216.
+
+        Each type here is in agent/error_classifier.py:_TRANSPORT_ERROR_TYPES
+        (mapped to FailoverReason.timeout), and the recovery gate at
+        try_recover_primary_transport line 818 must rebuild the pool for
+        the same set.
+        """
+        agent = _make_agent(provider="custom")
+        error = _make_transport_error(error_type)
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"):
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True, (
+            f"_try_recover_primary_transport refused recovery for "
+            f"{error_type}; the gate at agent_runtime_helpers.py:818 is "
+            f"out of sync with agent/error_classifier.py:_TRANSPORT_ERROR_TYPES"
+        )
+
+    def test_transient_sets_remain_identical(self):
+        """The two frozensets must be the same object identity after the sync fix.
+
+        Regression for #52216 — guards against future drift between
+        agent/error_classifier.py:_TRANSPORT_ERROR_TYPES and
+        agent/agent_runtime_helpers.py:_TRANSIENT_TRANSPORT_ERRORS.
+        """
+        from agent import agent_runtime_helpers as arh
+        from agent.error_classifier import _TRANSPORT_ERROR_TYPES as canonical
+
+        assert arh._TRANSIENT_TRANSPORT_ERRORS is canonical, (
+            "_TRANSIENT_TRANSPORT_ERRORS must reference the canonical set "
+            "from agent/error_classifier.py:_TRANSPORT_ERROR_TYPES "
+            "directly, not a duplicated copy that can drift."
+        )
 
     def test_skipped_when_already_on_fallback(self):
         agent = _make_agent(provider="custom")

@@ -36,7 +36,7 @@ from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
-from agent.error_classifier import FailoverReason
+from agent.error_classifier import FailoverReason, _TRANSPORT_ERROR_TYPES
 from utils import base_url_host_matches, base_url_hostname, env_var_enabled, atomic_json_write
 
 logger = logging.getLogger(__name__)
@@ -1066,11 +1066,19 @@ def restore_primary_runtime(agent) -> bool:
 
 # Which error types indicate a transient transport failure worth
 # one more attempt with a rebuilt client / connection pool.
-_TRANSIENT_TRANSPORT_ERRORS = frozenset({
-    "ReadTimeout", "ConnectTimeout", "PoolTimeout",
-    "ConnectError", "RemoteProtocolError",
-    "APIConnectionError", "APITimeoutError",
-})
+#
+# Single source of truth — re-uses the canonical set from
+# agent/error_classifier.py:_TRANSPORT_ERROR_TYPES (line 368-386).
+# The classifier already maps every type here to FailoverReason.timeout
+# via the OSError / ConnectionError isinstance catch at line 736-737;
+# the recovery gate at try_recover_primary_transport line 818 must
+# rebuild the pool for the same set, or it silently skips recovery for
+# socket-level errors like BrokenPipeError / ConnectionResetError that
+# the classifier treats as retryable.
+#
+# Fixes #52216: "BrokenPipeError skips connection-pool rebuild in
+# transport-recovery gate".
+_TRANSIENT_TRANSPORT_ERRORS = _TRANSPORT_ERROR_TYPES
 
 
 

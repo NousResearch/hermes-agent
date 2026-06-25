@@ -186,6 +186,31 @@ class TestPersistence:
 
 
 # ---------------------------------------------------------------------------
+# Auto-archive quota safety
+# ---------------------------------------------------------------------------
+
+class TestAutoArchive:
+    def test_create_passes_default_auto_archive_interval(self, make_env, daytona_sdk):
+        # Capture the params object so we can inspect the create kwargs.
+        capture = MagicMock(name="CreateSandboxFromImageParams")
+        daytona_sdk.CreateSandboxFromImageParams = capture
+        make_env(persistent=False)
+        capture.assert_called_once()
+        kwargs = capture.call_args.kwargs
+        # A stopped sandbox keeps counting against the org disk quota; only an
+        # archived one stops counting. The create call must pass an archive
+        # interval so crashed or interrupted runs do not leak quota.
+        assert kwargs["auto_archive_interval"] == 60
+
+    def test_create_honors_custom_auto_archive_interval(self, make_env, daytona_sdk):
+        capture = MagicMock(name="CreateSandboxFromImageParams")
+        daytona_sdk.CreateSandboxFromImageParams = capture
+        make_env(persistent=False, auto_archive_interval=15)
+        kwargs = capture.call_args.kwargs
+        assert kwargs["auto_archive_interval"] == 15
+
+
+# ---------------------------------------------------------------------------
 # Cleanup
 # ---------------------------------------------------------------------------
 

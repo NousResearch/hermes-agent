@@ -15889,24 +15889,12 @@ class GatewayRunner:
                 _progress_state["content"] = str(content or "")
 
             def _progress_text(lines: list) -> str:
+                if _final_response_edits_progress:
+                    text = str(lines[-1]) if lines else ""
+                    if _progress_len_fn(text) > _PROGRESS_TEXT_LIMIT:
+                        text = "…" + text[-max(1, _PROGRESS_TEXT_LIMIT - 1):]
+                    return text
                 text = "\n".join(str(line) for line in lines)
-                if (
-                    _final_response_edits_progress
-                    and _progress_len_fn(text) > _PROGRESS_TEXT_LIMIT
-                ):
-                    kept: list[str] = []
-                    for line in reversed([str(item) for item in lines]):
-                        candidate_lines = [line] + kept
-                        candidate = "\n".join(candidate_lines)
-                        prefixed = "…\n" + candidate
-                        if _progress_len_fn(prefixed) > _PROGRESS_TEXT_LIMIT:
-                            if kept:
-                                break
-                            line_budget = max(1, _PROGRESS_TEXT_LIMIT - 2)
-                            kept = [line[-line_budget:]]
-                            break
-                        kept = candidate_lines
-                    text = "…\n" + "\n".join(kept)
                 return text
 
             def _split_progress_groups(lines: list) -> list[list]:
@@ -15943,6 +15931,12 @@ class GatewayRunner:
                 if getattr(result, "success", False) and getattr(result, "message_id", None):
                     _remember_progress_message(result.message_id, text)
                 return result
+
+            def _record_progress_line(line) -> None:
+                if _final_response_edits_progress:
+                    progress_lines[:] = [line]
+                else:
+                    progress_lines.append(line)
 
             async def _roll_progress_overflow_if_needed() -> bool:
                 """Start fresh editable progress bubbles before a bubble exceeds limit.
@@ -16019,6 +16013,8 @@ class GatewayRunner:
                         _, base_msg, count = raw
                         if progress_lines:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                        else:
+                            _record_progress_line(f"{base_msg} (×{count + 1})")
                         msg = progress_lines[-1] if progress_lines else base_msg
                     elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                         # Content bubble just landed on the platform — close off
@@ -16036,7 +16032,7 @@ class GatewayRunner:
                         continue
                     else:
                         msg = raw
-                        progress_lines.append(msg)
+                        _record_progress_line(msg)
 
                     if await _roll_progress_overflow_if_needed():
                         _last_edit_ts = time.monotonic()
@@ -16145,7 +16141,9 @@ class GatewayRunner:
                                 _, base_msg, count = raw
                                 if progress_lines:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                                    await _roll_progress_overflow_if_needed()
+                                else:
+                                    _record_progress_line(f"{base_msg} (×{count + 1})")
+                                await _roll_progress_overflow_if_needed()
                             elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                                 # Content-bubble marker during drain: close off
                                 # the current progress bubble and start a fresh
@@ -16163,7 +16161,7 @@ class GatewayRunner:
                                 last_progress_msg[0] = None
                                 repeat_count[0] = 0
                             else:
-                                progress_lines.append(raw)
+                                _record_progress_line(raw)
                                 await _roll_progress_overflow_if_needed()
                         except Exception:
                             break

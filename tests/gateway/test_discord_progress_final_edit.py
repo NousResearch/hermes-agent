@@ -76,9 +76,11 @@ class ProgressAgent:
     def run_conversation(self, message, conversation_history=None, task_id=None):
         cb = self.tool_progress_callback
         if cb is not None:
+            cb("tool.started", "skill_view", "load skill", {})
+            time.sleep(0.25)
             cb("tool.started", "terminal", "pwd", {})
             time.sleep(0.25)
-            cb("tool.started", "terminal", "ls", {})
+            cb("tool.started", "search_files", "find gateway", {})
             time.sleep(0.25)
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
@@ -159,6 +161,10 @@ async def test_discord_progress_updates_one_message_and_returns_edit_target(monk
     assert len(adapter.sent) == 1
     assert adapter.edits
     assert adapter.edits[-1]["message_id"] == adapter.sent[0]["message_id"]
+    assert "\n" not in adapter.edits[-1]["content"]
+    assert "ファイル検索" in adapter.edits[-1]["content"]
+    assert "スキル確認" not in adapter.edits[-1]["content"]
+    assert "端末確認" not in adapter.edits[-1]["content"]
 
 
 @pytest.mark.asyncio

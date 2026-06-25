@@ -20,6 +20,7 @@ import {
   Clock,
   Cpu,
   Download,
+  Egg,
   Globe,
   type IconComponent,
   Info,
@@ -43,6 +44,7 @@ import {
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, $commandPalettePage, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
 import { $bindings } from '@/store/keybinds'
+import { openPetGenerate } from '@/store/pet-generate'
 import { runGatewayRestart } from '@/store/system-actions'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
@@ -409,6 +411,13 @@ export function CommandPalette() {
             keywords: ['pet', 'petdex', 'mascot', 'pets', '/pet', 'paw'],
             label: cc.pets.title,
             to: 'pets'
+          },
+          {
+            icon: Egg,
+            id: 'appearance-generate-pet',
+            keywords: ['pet', 'generate', 'create', 'make', 'new pet', 'mascot', 'hatch', 'ai'],
+            label: cc.generatePet.title,
+            run: () => openPetGenerate()
           }
         ]
       },
@@ -653,6 +662,8 @@ export function CommandPalette() {
                   event.preventDefault()
                   event.stopPropagation()
                   goBack()
+
+                  return
                 }
               }}
               onValueChange={setSearch}
@@ -663,7 +674,7 @@ export function CommandPalette() {
             <CommandList className="dt-portal-scrollbar max-h-[min(20rem,56vh)]">
               {/* Server-driven pages render their own list; the rest show groups. */}
               {page === 'pets' ? (
-                <PetPalettePage search={search} />
+                <PetPalettePage onGenerate={() => { closeCommandPalette(); openPetGenerate() }} search={search} />
               ) : page === 'install-theme' ? (
                 <MarketplaceThemePage onPickTheme={setTheme} search={search} />
               ) : (

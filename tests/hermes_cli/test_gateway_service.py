@@ -1084,6 +1084,56 @@ class TestLaunchdServiceRecovery:
         assert "nohup hermes gateway run" in out
 
 
+    def test_launchd_restart_writes_marker_when_sigusr1_fails(self, monkeypatch, tmp_path):
+        """launchd_restart writes .restart_pending.json when SIGUSR1 path is unavailable.
+
+        When _request_gateway_self_restart returns False (terminal is not a
+        gateway child), launchd falls back to SIGTERM + kickstart.  The
+        planned-restart marker must be written before the kill so the new
+        gateway startup sends the home-channel notification.
+        """
+        import json
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
+        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+
+        def fake_run(cmd, check=False, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        marker = tmp_path / ".restart_pending.json"
+        assert marker.exists(), ".restart_pending.json must be written before kickstart"
+        data = json.loads(marker.read_text())
+        assert data["via_service"] is True
+
+    def test_launchd_restart_writes_marker_when_no_running_pid(self, monkeypatch, tmp_path):
+        """launchd_restart writes the marker even when no existing gateway is found."""
+        import json
+
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: None)
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+
+        def fake_run(cmd, check=False, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        gateway_cli.launchd_restart()
+
+        marker = tmp_path / ".restart_pending.json"
+        assert marker.exists(), ".restart_pending.json must be written even without a running gateway"
+        data = json.loads(marker.read_text())
+        assert data["via_service"] is True
+
+
 class TestLaunchdDomainDetection:
     """Regression tests for _launchd_domain() probing (#40831).
 
@@ -1441,6 +1491,56 @@ class TestGatewaySystemServiceRouting:
         assert any(call[0] == "start" for call in calls)
         out = capsys.readouterr().out.lower()
         assert "restarted" in out
+
+    def test_systemd_restart_writes_marker_on_sigusr1_timeout(self, monkeypatch, tmp_path):
+        """systemd_restart writes .restart_pending.json when SIGUSR1 drain times out.
+
+        When _graceful_restart_via_sigusr1 returns False (SIGUSR1 unavailable or
+        drain timed out), systemd_restart forces a service restart via systemctl.
+        The planned-restart marker must be written before the force-restart so
+        the new gateway startup sends the home-channel notification.
+        """
+        import json
+
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_select_systemd_scope", lambda system=False: False)
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda: None)
+        monkeypatch.setattr(gateway_cli, "_require_service_installed", lambda action, system=False: None)
+        monkeypatch.setattr(gateway_cli, "refresh_systemd_unit_if_needed", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_sync_hermes_home_from_systemd_unit", lambda system=False: None)
+        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 654)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_graceful_restart_via_sigusr1",
+            lambda pid, timeout: False,  # simulate timeout
+        )
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: tmp_path)
+
+        def fake_run_systemctl(args, system=False, check=False, timeout=None):
+            calls.append(args[0] if args else args)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli, "_run_systemctl", fake_run_systemctl)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_systemd_service_restart",
+            lambda system=False, previous_pid=None: True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_systemd_service_is_start_limited",
+            lambda system=False: False,
+        )
+
+        gateway_cli.systemd_restart()
+
+        marker = tmp_path / ".restart_pending.json"
+        assert marker.exists(), ".restart_pending.json must be written before force restart"
+        data = json.loads(marker.read_text())
+        assert data["via_service"] is True
+        assert "restart" in calls
 
     def test_systemd_status_surfaces_planned_restart_failure(self, monkeypatch, capsys):
         unit = SimpleNamespace(exists=lambda: True)

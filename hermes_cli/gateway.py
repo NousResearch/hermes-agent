@@ -5,6 +5,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 """
 
 import asyncio
+import json
 import logging
 import os
 import shlex
@@ -3123,6 +3124,11 @@ def systemd_restart(system: bool = False):
             f"⚠ Graceful restart did not complete within {int(drain_timeout + 5)}s; "
             "forcing a service restart..."
         )
+        # SIGUSR1 drain timed out.  Write the planned-restart marker before
+        # the hard kill so the new gateway startup sends "♻️ Gateway online".
+        # (The marker would normally be written by the gateway on clean exit
+        # via the SIGUSR1 path; the force path skips that.)
+        _write_planned_restart_marker()
         _run_systemctl(
             ["reset-failed", svc],
             system=system,
@@ -3879,6 +3885,28 @@ def _wait_for_gateway_exit(
     return True
 
 
+def _write_planned_restart_marker() -> None:
+    """Write .restart_pending.json so the next gateway startup sends the
+    home-channel "♻️ Gateway online" notification.
+
+    Called from the SIGTERM/force-kill fallback paths on both launchd
+    (macOS) and systemd (Linux) where the SIGUSR1 graceful path is
+    unavailable.  The SIGUSR1 path writes this marker from inside the
+    gateway process (gateway/run.py); the external kill paths must write
+    it here before the process is terminated.
+    """
+    try:
+        marker = get_hermes_home() / ".restart_pending.json"
+        data = {
+            "requested_at": time.time(),
+            "via_service": True,
+            "detached": False,
+        }
+        marker.write_text(json.dumps(data), encoding="utf-8")
+    except Exception as e:  # pragma: no cover
+        print(f"⚠ Failed to write restart notification marker: {e}")
+
+
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
@@ -3890,6 +3918,11 @@ def launchd_restart():
         if pid is not None and _request_gateway_self_restart(pid):
             print("✓ Service restart requested")
             return
+        # SIGUSR1 path failed (terminal is not a gateway child) or no PID
+        # found.  Write the planned-restart marker now so the next gateway
+        # startup sends "♻️ Gateway online" — mirroring what the graceful
+        # SIGUSR1 path does inside the gateway process (gateway/run.py).
+        _write_planned_restart_marker()
         if pid is not None:
             # Announce the drain BEFORE waiting on it. This wait can run for
             # the full drain budget (180s by default) while the old gateway

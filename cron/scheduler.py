@@ -1594,6 +1594,135 @@ def _scan_assembled_cron_prompt(
     return assembled
 
 
+def _get_model_label(model: str, runtime: dict | None = None) -> str:
+    """Build a human-readable model label like ``"deepseek-v4-pro (deepseek)"``.
+
+    Args:
+        model: The resolved model name (may be empty or ``None``).
+        runtime: Optional runtime dict from ``resolve_runtime_provider()``;
+            its ``provider`` key is used for the parenthetical suffix.
+
+    Returns:
+        A label string suitable for display in cron output headers, e.g.
+        ``"deepseek-v4-pro (deepseek)"``.  Falls back to ``"unknown"`` when
+        no model or provider information is available.
+    """
+    model_name = (model or "").strip()
+    provider_name = ""
+    if isinstance(runtime, dict):
+        provider_name = (runtime.get("provider") or "").strip()
+    if model_name and provider_name:
+        return f"{model_name} ({provider_name})"
+    if model_name:
+        return model_name
+    if provider_name:
+        return provider_name
+    return "unknown"
+
+
+def _looks_like_truncated_cron_response(response: str) -> bool:
+    """Detect whether a cron job's final response appears to be truncated.
+
+    A truncated response is one where the agent stopped producing output
+    before completing its natural reply — typically because it hit a token
+    budget limit.  Three signal tiers are checked (the first match wins):
+
+    1. **Explicit markers** — the response ends with a known truncation
+       sentinel: ``...``, ``[...]``, ``[truncated]``, ``(truncated)``,
+       ``[TRUNCATED]``, or ``[TRUNC]``.
+    2. **Unbalanced markdown fences** — an odd number of `` ``` `` or an
+       odd number of ````` blocks (`` ``` ```) suggests the model was cut
+       off inside a code fence.
+    3. **Prose cut-off** — a sufficiently long response (>120 characters)
+       that does not end with sentence-final punctuation or a structural
+       closing marker (markdown list item, table row, heading, ``---``,
+       ``***``, or code-fence) and whose last "word" is either missing a
+       closing brace/bracket/parenthesis or is a single character
+       suggesting a mid-word stop.
+
+    Returns ``True`` if any truncation signal is detected.
+    """
+    stripped = (response or "").rstrip()
+    if not stripped:
+        return False
+
+    # --- Tier 1: explicit truncation sentinels at end ---
+    _EXPLICIT_MARKERS = (
+        "...", "[...]", "[truncated]", "(truncated)", "[TRUNCATED]", "[TRUNC]",
+    )
+    for marker in _EXPLICIT_MARKERS:
+        if stripped.endswith(marker):
+            return True
+
+    # --- Tier 2: unbalanced markdown fences ---
+    # Count top-level (unindented) triple-backtick fences.
+    fence_pattern = "\n```"
+    fence_count = stripped.count(fence_pattern)
+    # Opening fences at the very start of the response (no leading newline)
+    # must also be counted.
+    if stripped.startswith("```"):
+        fence_count += 1
+    if fence_count % 2 != 0:
+        return True
+
+    # --- Tier 3: prose cut-off detection ---
+    if len(stripped) <= 120:
+        return False
+
+    _SENTENCE_END = frozenset({".", "!", "?", "。", "！", "？", "\u2033", "\u2034"})
+    _STRUCTURAL_END = frozenset({"-", "*", "|", "#", ">", "`"})
+
+    last_char = stripped[-1]
+    if last_char in _SENTENCE_END or last_char in _STRUCTURAL_END:
+        return False
+
+    # Check for structural closing patterns at end
+    if stripped.endswith("---") or stripped.endswith("***"):
+        return False
+
+    # The response ends with a non-sentence, non-structural character.
+    # Extract the last "word" (whitespace-delimited token) and check
+    # for signs of mid-word cut-off.
+    last_line = stripped.split("\n")[-1].rstrip()
+    last_token = last_line.split()[-1] if last_line.split() else ""
+    if not last_token:
+        return False  # trailing whitespace only — not a truncation signal
+
+    # Unbalanced brackets / braces / parens in the last token.
+    for open_c, close_c in (("{", "}"), ("[", "]"), ("(", ")")):
+        if open_c in last_token and close_c not in last_token:
+            return True
+
+    # Single character left hanging (e.g. "The answer is 4" cut to "The answer is 4" — not that, but "The answer is T").
+    if len(last_token) == 1 and last_token.isalpha():
+        return True
+
+    # Looks like a mid-word stop: last character is alphanumeric and the
+    # token doesn't end with common "safe" word-ending characters.
+    if last_char.isalnum() and last_token[-1].isalpha():
+        # Additional heuristic: if the last word is a common English stop-word
+        # it's less likely to be truncated.
+        _COMMON_STOP_WORDS = frozenset({
+            "the", "a", "an", "is", "are", "was", "were", "be", "been",
+            "being", "have", "has", "had", "do", "does", "did", "will",
+            "would", "shall", "should", "may", "might", "must", "can",
+            "could", "it", "they", "them", "their", "its", "his", "her",
+            "and", "but", "or", "nor", "for", "so", "yet", "in", "on",
+            "at", "to", "of", "by", "with", "from", "as", "if", "not",
+            "no", "we", "you", "he", "she", "I", "me", "my", "our",
+            "this", "that", "these", "those", "all", "some", "any",
+            "each", "every", "both", "few", "more", "most", "other",
+            "such", "only", "own", "same", "than", "too", "very", "just",
+            "now", "then", "also", "even", "still", "already", "always",
+            "never", "often", "usually", "really",
+        })
+        if last_token.lower() in _COMMON_STOP_WORDS:
+            return False
+        return True
+
+    return False
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -2261,37 +2390,65 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Strip leaked placeholder text that upstream may inject on empty completions.
         if final_response.strip() == "(No response generated)":
             final_response = ""
+
+        # Resolve model label for the output header so operators can see
+        # which model/provider ran this cron job without digging through logs.
+        model_label = _get_model_label(model, runtime)
+
+        # Detect truncated responses — the agent may have hit its output
+        # token limit before completing its natural reply.
+        truncated = _looks_like_truncated_cron_response(final_response)
+
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         
+        status_line = "**Status:** ⚠️ TRUNCATED\n\n" if truncated else ""
+        truncation_notice = (
+            "\n\n⚠️ **Warning:** This response appears to be truncated. "
+            "The agent may have hit its output token limit before "
+            "completing its reply."
+        ) if truncated else ""
+
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
-
-## Prompt
+**Model:** {model_label}
+{status_line}## Prompt
 
 {prompt}
 
 ## Response
 
-{logged_response}
+{logged_response}{truncation_notice}
 """
         
-        logger.info("Job '%s' completed successfully", job_name)
+        if truncated:
+            logger.warning("Job '%s' completed but response appears truncated", job_name)
+        else:
+            logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
         
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+
+        # Build a model label for the error output header.  model / runtime
+        # may not be defined if the error occurred before provider resolution,
+        # so be defensive.
+        try:
+            _err_model_label = _get_model_label(model, runtime)
+        except NameError:
+            _err_model_label = "unknown"
         
         output = f"""# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
 **Schedule:** {job.get('schedule_display', 'N/A')}
+**Model:** {_err_model_label}
 
 ## Prompt
 

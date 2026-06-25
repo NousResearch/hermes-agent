@@ -364,6 +364,55 @@ class TestWebServerEndpoints:
 
         assert resp.status_code == 404
 
+    def test_put_config_personality_syncs_agent_system_prompt(self):
+        from hermes_cli.config import load_config
+
+        resp = self.client.put(
+            "/api/config",
+            json={
+                "config": {
+                    "display": {"personality": "Helpful"},
+                    "agent": {
+                        "personalities": {
+                            "helpful": {
+                                "system_prompt": "You are helpful.",
+                                "tone": "clear",
+                                "style": "concise",
+                            }
+                        }
+                    },
+                }
+            },
+        )
+
+        assert resp.status_code == 200
+        config = load_config()
+        assert config["display"]["personality"] == "helpful"
+        assert config["agent"]["system_prompt"] == (
+            "You are helpful.\nTone: clear\nStyle: concise"
+        )
+
+    def test_put_config_personality_none_clears_agent_system_prompt(self):
+        from hermes_cli.config import load_config
+
+        resp = self.client.put(
+            "/api/config",
+            json={
+                "config": {
+                    "display": {"personality": "none"},
+                    "agent": {
+                        "system_prompt": "You are helpful.",
+                        "personalities": {"helpful": "You are helpful."},
+                    },
+                }
+            },
+        )
+
+        assert resp.status_code == 200
+        config = load_config()
+        assert config["display"]["personality"] == ""
+        assert config["agent"]["system_prompt"] == ""
+
     def test_get_unknown_memory_provider_returns_empty_schema(self):
         resp = self.client.get("/api/memory/providers/builtin/config")
 

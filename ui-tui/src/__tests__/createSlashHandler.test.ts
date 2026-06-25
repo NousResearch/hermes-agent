@@ -2,13 +2,30 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
+import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } from '../app/slash/commands/core.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+
+// DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
+// so toggling process.env in a test body can't move it. Mock just that one
+// export (everything else stays real) and flip the holder per test.
+const envState = { dashboardTuiMode: false }
+vi.mock('../config/env.js', async importActual => {
+  const actual = await importActual<typeof import('../config/env.js')>()
+
+  return {
+    ...actual,
+    get DASHBOARD_TUI_MODE() {
+      return envState.dashboardTuiMode
+    }
+  }
+})
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
     resetOverlayState()
     resetUiState()
+    envState.dashboardTuiMode = false
   })
 
   it('opens the unified sessions overlay for /resume', () => {
@@ -60,12 +77,46 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
   })
 
+  it('opens the editor locally for /prompt without slash worker fallback', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/prompt')).toBe(true)
+    expect(ctx.composer.openEditor).toHaveBeenCalledTimes(1)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('routes /compose to the editor and seeds inline text', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/compose draft text')).toBe(true)
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('draft text')
+    expect(ctx.composer.openEditor).toHaveBeenCalledTimes(1)
+  })
+
   it('exits locally for /quit', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/quit')).toBe(true)
     expect(ctx.session.die).toHaveBeenCalledTimes(1)
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('keeps hosted dashboard chat alive for /exit', () => {
+    envState.dashboardTuiMode = true
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/exit')).toBe(true)
+    expect(ctx.session.die).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_EXIT_DISABLED_MESSAGE)
+  })
+
+  it('keeps /quit available outside hosted dashboard chat', () => {
+    envState.dashboardTuiMode = false
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/quit')).toBe(true)
+    expect(ctx.session.die).toHaveBeenCalledTimes(1)
   })
 
   it('handles /update locally and exits with code 42 via dieWithCode', () => {
@@ -79,6 +130,22 @@ describe('createSlashHandler', () => {
     // Advance past the 100ms setTimeout
     vi.advanceTimersByTime(150)
     expect(ctx.session.dieWithCode).toHaveBeenCalledWith(42)
+
+    vi.useRealTimers()
+  })
+
+  it('refuses /update in hosted dashboard chat instead of killing the PTY', () => {
+    vi.useFakeTimers()
+    envState.dashboardTuiMode = true
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/update')).toBe(true)
+    expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith(DASHBOARD_UPDATE_DISABLED_MESSAGE)
+
+    vi.advanceTimersByTime(150)
+    expect(ctx.session.dieWithCode).not.toHaveBeenCalled()
 
     vi.useRealTimers()
   })
@@ -206,6 +273,41 @@ describe('createSlashHandler', () => {
       action: 'install',
       query: 'foo'
     })
+  })
+
+  it('opens the pet picker for /pet list only', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/pet list')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+
+    resetOverlayState()
+    expect(createSlashHandler(ctx)('/pet')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'pet' })
+    )
+
+    resetOverlayState()
+    expect(createSlashHandler(ctx)('/pet toggle')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'pet toggle' })
+    )
+  })
+
+  it('routes /pet <slug> to the slash worker without opening the picker', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/pet boba')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'pet boba' })
+    )
   })
 
   it('routes /skills inspect <name> to skills.manage', () => {
@@ -643,6 +745,42 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
   })
 
+  it('handles command.dispatch payloads returned directly by slash.exec', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.resolve({
+                message: 'complete all the steps and provide a final report',
+                notice: '⊙ Goal set (20-turn budget): complete all the steps and provide a final report',
+                type: 'send'
+              })
+            }
+
+            return Promise.resolve({})
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    const h = createSlashHandler(ctx)
+    expect(h('/goal complete all the steps and provide a final report')).toBe(true)
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        '⊙ Goal set (20-turn budget): complete all the steps and provide a final report'
+      )
+    })
+    expect(ctx.transcript.send).toHaveBeenCalledWith('complete all the steps and provide a final report')
+    expect(ctx.transcript.sys).not.toHaveBeenCalledWith('/goal: no output')
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+  })
+
   it('/history pages the current TUI transcript (user + assistant)', () => {
     const ctx = buildCtx({
       local: {
@@ -788,6 +926,7 @@ const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({
 const buildComposer = () => ({
   enqueue: vi.fn(),
   hasSelection: false,
+  openEditor: vi.fn(async () => {}),
   paste: vi.fn(),
   queueRef: { current: [] as string[] },
   selection: { copySelection: vi.fn(async () => '') },

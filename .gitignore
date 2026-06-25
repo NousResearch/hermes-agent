@@ -5,6 +5,7 @@
 *.pyc*
 __pycache__/
 .venv/
+.venv
 .vscode/
 .env
 .env.local
@@ -132,3 +133,7 @@ scripts/out/
 # stores the published notes. They are not a build artifact and must never be
 # committed to the repo root. See the hermes-release skill.
 RELEASE_v*.md
+
+# Desktop demo-run scratch output (hermes writes demo/*.txt during recorded
+# walkthroughs). Throwaway artifacts, never part of the app.
+apps/desktop/demo/

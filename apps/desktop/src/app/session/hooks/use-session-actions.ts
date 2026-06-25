@@ -2,7 +2,7 @@ import type { MutableRefObject } from 'react'
 import { useCallback, useRef } from 'react'
 import type { NavigateFunction } from 'react-router-dom'
 
-import { deleteSession, getSessionMessages, listAllProfileSessions, setSessionArchived } from '@/hermes'
+import { deleteSession, getSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
@@ -12,9 +12,13 @@ import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $activeGatewayProfile, $newChatProfile, $profiles, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
+  $currentFastMode,
+  $currentModel,
+  $currentProvider,
+  $currentReasoningEffort,
   $messages,
   $sessions,
   $yoloActive,
@@ -34,6 +38,8 @@ import {
   setFreshDraftReady,
   setIntroSeed,
   setMessages,
+  setResumeExhaustedSessionId,
+  setResumeFailedSessionId,
   setSelectedStoredSessionId,
   setSessions,
   setSessionStartedAt,
@@ -42,7 +48,9 @@ import {
   setYoloActive,
   workspaceCwdForNewSession
 } from '@/store/session'
+import { broadcastSessionsChanged } from '@/store/session-sync'
 import { reportBackendContract } from '@/store/updates'
+import { isWatchWindow } from '@/store/windows'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo, UsageStats } from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
@@ -235,18 +243,42 @@ async function resolveStoredSession(storedSessionId: string): Promise<SessionInf
     return cached
   }
 
+  // Direct by-id on the live backend — one row lookup, no list scan. Covers
+  // single-profile users and any id on the active profile (e.g. an old session
+  // past the sidebar's recent window). 404 just means it's not on this profile.
   try {
-    const result = await listAllProfileSessions(500, 0, 'include', 'recent', 'all')
-    const resolved = result.sessions.find(session => sessionMatchesStoredId(session, storedSessionId))
+    const session = await getSession(storedSessionId)
 
-    if (resolved) {
-      upsertResolvedSession(resolved, storedSessionId)
-    }
+    upsertResolvedSession(session, storedSessionId)
 
-    return resolved
+    return session
   } catch {
-    return undefined
+    // Not on the active profile — fall through to the cross-profile probe.
   }
+
+  // Multi-profile only: probe each other profile by id (still one cheap lookup
+  // each) rather than pulling every profile's recent sessions. The first hit
+  // carries its owning `profile`, which routes the resume to the right backend.
+  const activeKey = normalizeProfileKey($activeGatewayProfile.get())
+
+  const otherProfiles = $profiles
+    .get()
+    .map(profile => normalizeProfileKey(profile.name))
+    .filter(key => key !== activeKey)
+
+  for (const profile of otherProfiles) {
+    try {
+      const session = await getSession(storedSessionId, profile)
+
+      upsertResolvedSession(session, storedSessionId)
+
+      return session
+    } catch {
+      // Not on this profile; try the next.
+    }
+  }
+
+  return undefined
 }
 
 type SessionRuntimeStatePatch = Partial<
@@ -381,13 +413,13 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      // New chats start in the configured default project dir when set,
-      // otherwise the sticky last-used workspace (PR #37586).
-      setCurrentModel('')
-      setCurrentProvider('')
-      setCurrentReasoningEffort('')
+      // The composer's model/effort/fast is sticky UI state (persisted in
+      // localStorage) — a new chat FOLLOWS your last pick instead of snapping
+      // back to the profile default, so we deliberately don't reset it here. The
+      // profile default still owns first-run seeding and profile switches (see
+      // refreshCurrentModel). Only $currentServiceTier (a live-session mirror)
+      // is cleared.
       setCurrentServiceTier('')
-      setCurrentFastMode(false)
       setYoloActive(false)
       setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
@@ -406,18 +438,34 @@ export function useSessionActions({
       creatingSessionRef.current = true
 
       try {
-        // Route the new chat to the chosen profile's backend (null = primary,
-        // so single-profile users are unaffected).
-        await ensureGatewayProfile($newChatProfile.get())
+        // A plain new session (top "New Session", /new, keybind) leaves
+        // $newChatProfile null to mean "use the live context"; the per-profile
+        // "+" sets it explicitly. Resolve null to the active gateway profile so
+        // session.create always carries it: in global-remote mode one backend
+        // serves every profile, so an omitted profile param silently lands the
+        // chat on the launch (default) profile — the "rubberbands back to
+        // default" bug. This is a no-op for single-profile/local-pooled users:
+        // a backend resolves its own launch profile to None (_profile_home).
+        const newChatProfile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
+        await ensureGatewayProfile(newChatProfile)
         const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
-        // Pass the owning profile so a new chat under a non-launch profile (global
-        // remote mode) builds its agent + persists against THAT profile's home/db.
-        const newChatProfile = $newChatProfile.get()
+        // The composer's model/effort/fast is sticky UI state ($currentModel,
+        // $currentProvider, $currentReasoningEffort, $currentFastMode). Ship it
+        // with every session.create so the new chat opens on whatever the picker
+        // shows — applied as per-session overrides, never written to the profile
+        // default (that lives in Settings → Model).
+        const uiModel = $currentModel.get().trim()
+        const uiProvider = $currentProvider.get().trim()
+        const uiEffort = $currentReasoningEffort.get().trim()
+        const uiFast = $currentFastMode.get()
 
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
-          ...(newChatProfile ? { profile: newChatProfile } : {})
+          ...(newChatProfile ? { profile: newChatProfile } : {}),
+          ...(uiModel ? { model: uiModel, ...(uiProvider ? { provider: uiProvider } : {}) } : {}),
+          ...(uiEffort ? { reasoning_effort: uiEffort } : {}),
+          ...(uiFast ? { fast: true } : {})
         })
 
         const stored = created.stored_session_id ?? null
@@ -443,6 +491,9 @@ export function useSessionActions({
           // server later returns its own preview/title and supersedes this.
           upsertOptimisticSession(created, stored, null, preview?.trim() || null)
           navigate(sessionRoute(stored), { replace: true })
+          // Other windows (e.g. the main window when this is the pop-out) can't
+          // see this session until they re-pull the shared list.
+          broadcastSessionsChanged()
         }
 
         setFreshDraftReady(false)
@@ -518,8 +569,40 @@ export function useSessionActions({
       const isCurrentResume = () =>
         resumeRequestRef.current === requestId && selectedStoredSessionIdRef.current === storedSessionId
 
+      // Paint the click before the profile-resolve / gateway-swap awaits below,
+      // so there's zero dead air: highlight the row instantly (the sidebar reads
+      // $selectedStoredSessionId) and, for a cold target, drop the previous
+      // transcript so the thread shows its loader instead of the old session
+      // lingering until resume lands. A warm-cached target keeps its transcript —
+      // the cached fast-path repaints it this same tick. Setting the ref here is
+      // also what use-route-resume's self-heal assumes ("set synchronously at
+      // resume entry").
+      setFreshDraftReady(false)
+      clearNotifications()
+      setSelectedStoredSessionId(storedSessionId)
+      selectedStoredSessionIdRef.current = storedSessionId
+      // Optimistically clear any prior resume-failure latch for this session:
+      // we're attempting a fresh resume, so the self-heal in use-route-resume
+      // must not keep treating it as stranded. It's re-armed below only if THIS
+      // attempt fails terminally (RPC reject + REST fallback failure).
+      setResumeFailedSessionId(current => (current === storedSessionId ? null : current))
+      // Also clear the exhausted-latch: a fresh attempt (manual Retry, reconnect,
+      // reselect) gives the bounded auto-retry counter a clean cycle, so the
+      // chat view drops the error state and shows the loader again.
+      setResumeExhaustedSessionId(current => (current === storedSessionId ? null : current))
+
+      const warmRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
+
+      if (!warmRuntimeId || !sessionStateByRuntimeIdRef.current.get(warmRuntimeId)) {
+        setActiveSessionId(null)
+        activeSessionIdRef.current = null
+        setMessages([])
+      }
+
       // Swap the single live gateway to this session's profile before any
       // gateway call (no-op when it's already on that profile / single-profile).
+      // resolveStoredSession finds the row by id (cheap), so an uncached pasted
+      // id loads as fast as a sidebar click instead of hanging on a list scan.
       const storedForProfile = await resolveStoredSession(storedSessionId)
       const sessionProfile = storedForProfile?.profile
 
@@ -534,6 +617,7 @@ export function useSessionActions({
 
       if (cachedRuntimeId && cachedState) {
         const stored = $sessions.get().find(session => session.id === storedSessionId)
+
         const cachedViewState =
           !cachedState.model && stored?.model != null
             ? {
@@ -606,40 +690,46 @@ export function useSessionActions({
         }))
       }
 
+      let resumedRunning = false
+
       try {
-        // Load the local snapshot first, then ask the gateway to resume.
-        // Previously these raced:
-        //   1. clear messages to []
-        //   2. local getSessionMessages -> 45 msgs
-        //   3. a second resume path cleared [] again
-        //   4. gateway resume -> 43 msgs
-        // That is the ctrl+R flash chain. Avoid showing an empty thread
-        // while we already have a route-scoped session id, and don't race the
-        // local snapshot against gateway resume.
+        const watchWindow = isWatchWindow()
         let localSnapshot = $messages.get()
 
+        // REST transcript prefetch and the gateway resume RPC are independent
+        // — run them concurrently so a big session's wall time is
+        // max(prefetch, resume) instead of their sum. The prefetch paints the
+        // transcript as soon as it lands; the RPC binds the runtime id.
+        // Watch windows skip the prefetch — lazy resume attaches the live mirror.
+        const prefetchPromise = watchWindow ? null : getSessionMessages(storedSessionId, sessionProfile)
+
+        const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
+          session_id: storedSessionId,
+          cols: 96,
+          ...(watchWindow ? { lazy: true } : {}),
+          ...(sessionProfile ? { profile: sessionProfile } : {})
+        })
+        // The rejection is consumed by the `await` below; this guard only
+        // keeps it from surfacing as unhandled while the prefetch settles.
+        resumePromise.catch(() => undefined)
+
         try {
-          const storedMessages = await getSessionMessages(storedSessionId, sessionProfile)
+          if (prefetchPromise) {
+            const storedMessages = await prefetchPromise
 
-          if (isCurrentResume()) {
-            localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
+            if (isCurrentResume()) {
+              localSnapshot = preserveLocalAssistantErrors(toChatMessages(storedMessages.messages), $messages.get())
 
-            if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
-              setMessages(localSnapshot)
+              if (!chatMessageArraysEquivalent($messages.get(), localSnapshot)) {
+                setMessages(localSnapshot)
+              }
             }
           }
         } catch {
           // Non-fatal: gateway resume below can still hydrate the session.
         }
 
-        const resumed = await requestGateway<SessionResumeResponse>('session.resume', {
-          session_id: storedSessionId,
-          cols: 96,
-          // Owning profile: in app-global remote mode one backend serves every
-          // profile, so the gateway opens this profile's state.db + home to
-          // resume + persist the right session (no-op for single/launch profile).
-          ...(sessionProfile ? { profile: sessionProfile } : {})
-        })
+        const resumed = await resumePromise
 
         if (!isCurrentResume()) {
           return
@@ -647,25 +737,22 @@ export function useSessionActions({
 
         const currentMessages = $messages.get()
 
-        const resumedMessages = preserveLocalAssistantErrors(
-          reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
-          currentMessages
-        )
-        // Avoid a second visible transcript rebuild on resume/switch.
-        // `getSessionMessages()` is the stable stored transcript snapshot and
-        // paints first; `session.resume` can return a slightly different
-        // runtime-shaped projection (e.g. tool/system coalescing), which was
-        // causing a second full message-list replacement a second later.
-        // Keep the already-painted local snapshot for the view/cache when it
-        // exists; use gateway messages only as a fallback when no local
-        // snapshot was available.
-
+        // Keep the local snapshot when resume would only reshuffle runtime
+        // projection. When the REST prefetch already hydrated the transcript,
+        // skip converting/reconciling the resume payload entirely — on a
+        // 1000+-message session that second conversion plus the deep
+        // equivalence compare costs over a second of main-thread time.
         const preferredMessages =
           localSnapshot.length > 0
             ? localSnapshot
-            : chatMessageArraysEquivalent(currentMessages, resumedMessages)
-              ? currentMessages
-              : resumedMessages
+            : (() => {
+                const resumedMessages = preserveLocalAssistantErrors(
+                  reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
+                  currentMessages
+                )
+
+                return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
+              })()
 
         const messagesForView = preserveLocalAssistantErrors(preferredMessages, currentMessages)
 
@@ -675,14 +762,16 @@ export function useSessionActions({
 
         patchSessionWorkspace(storedSessionId, runtimeInfo?.cwd)
 
+        resumedRunning = Boolean((resumed as { running?: boolean }).running)
+
         updateSessionState(
           resumed.session_id,
           state => ({
             ...state,
             ...(runtimeInfo ?? {}),
             messages: messagesForView,
-            busy: false,
-            awaitingResponse: false
+            busy: resumedRunning,
+            awaitingResponse: resumedRunning
           }),
           storedSessionId
         )
@@ -691,19 +780,47 @@ export function useSessionActions({
           return
         }
 
-        const fallback = await getSessionMessages(storedSessionId, sessionProfile)
+        // The gateway resume RPC failed. Try the REST transcript as a fallback
+        // so the window at least shows history. CRITICAL: this fallback must be
+        // wrapped in its own try — if it ALSO throws (wedged/unreachable backend,
+        // the common case when resume failed in the first place), an unguarded
+        // throw here skips setMessages AND leaves activeSessionId null with an
+        // empty transcript. That is the exact state the thread loader latches on
+        // forever (messagesEmpty && !activeSessionId) with no recovery path —
+        // the "open in new window stays stuck loading, even after a nap" bug.
+        try {
+          const fallback = await getSessionMessages(storedSessionId, sessionProfile)
 
-        if (!isCurrentResume()) {
-          return
+          if (!isCurrentResume()) {
+            return
+          }
+
+          setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
+        } catch {
+          // Fallback also failed: nothing to paint. Leave whatever messages are
+          // already shown and fall through to arm the resume-failure latch so
+          // use-route-resume re-attempts the resume on the next render / window
+          // focus / gateway reconnect instead of stranding the loader.
         }
 
-        setMessages(preserveLocalAssistantErrors(toChatMessages(fallback.messages), $messages.get()))
+        if (isCurrentResume() && $messages.get().length === 0) {
+          // Arm the self-heal ONLY when the window is still empty: the gateway
+          // resume rejected AND the REST fallback failed to paint a transcript.
+          // That is the exact stranded state the loader latches on
+          // (messagesEmpty && !activeSessionId), and matches $resumeFailedSessionId's
+          // documented contract. If the REST fallback DID paint history, the
+          // window is readable — arming here would needlessly auto-retry and,
+          // once retries exhaust, blank that visible transcript behind the
+          // exhausted-state error overlay (a regression vs. plain fallback success).
+          setResumeFailedSessionId(storedSessionId)
+        }
+
         notifyError(err, copy.resumeFailed)
       } finally {
         if (isCurrentResume()) {
-          busyRef.current = false
-          setBusy(false)
-          setAwaitingResponse(false)
+          busyRef.current = resumedRunning
+          setBusy(resumedRunning)
+          setAwaitingResponse(resumedRunning)
         }
       }
     },

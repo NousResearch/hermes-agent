@@ -15,10 +15,17 @@ import {
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { ChevronDown, Loader2 } from '@/lib/icons'
+import { AlertCircle, ChevronDown, Loader2 } from '@/lib/icons'
+import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
-import { $approvalRequest, type ApprovalRequest, clearApprovalRequest } from '@/store/prompts'
+import {
+  $approvalInlineVisible,
+  $approvalRequest,
+  type ApprovalRequest,
+  clearApprovalRequest,
+  registerApprovalInlineAnchor
+} from '@/store/prompts'
 
 import type { ToolPart } from './tool-fallback-model'
 
@@ -47,12 +54,47 @@ export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
     return null
   }
 
-  return <ApprovalBar request={request} />
+  return <InlineApprovalBar request={request} />
+}
+
+const InlineApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
+  useEffect(() => registerApprovalInlineAnchor(), [])
+
+  return <ApprovalBar request={request} surface="inline" />
+}
+
+export const PendingApprovalFallback: FC = () => {
+  const { t } = useI18n()
+  const request = useStore($approvalRequest)
+  const inlineVisible = useStore($approvalInlineVisible)
+
+  if (!request || inlineVisible) {
+    return null
+  }
+
+  return (
+    <div
+      className="pointer-events-none absolute left-1/2 z-30 w-[calc(100%-2rem)] max-w-2xl -translate-x-1/2"
+      data-slot="tool-approval-fallback"
+      style={{ bottom: 'calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 0.875rem)' }}
+    >
+      <div className="pointer-events-auto rounded-xl border border-primary/30 bg-(--ui-chat-surface-background) px-3 py-2 shadow-lg backdrop-blur-xl [-webkit-backdrop-filter:blur(1rem)]">
+        <div className="flex min-w-0 items-center gap-2 text-sm text-primary">
+          <AlertCircle className="size-4 shrink-0" />
+          <span className="shrink-0 font-medium">{t.assistant.approval.jumpToApproval}</span>
+          {request.description && (
+            <span className="min-w-0 truncate text-(--ui-text-tertiary)">{request.description}</span>
+          )}
+        </div>
+        <ApprovalBar request={request} surface="floating" />
+      </div>
+    </div>
+  )
 }
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
 
-const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
+const ApprovalBar: FC<{ request: ApprovalRequest; surface: 'floating' | 'inline' }> = ({ request, surface }) => {
   const { t } = useI18n()
   const copy = t.assistant.approval
   const gateway = useStore($gateway)
@@ -60,9 +102,15 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   // "Always allow" persists the pattern to ~/.hermes/config.yaml permanently, so
   // it goes through a confirm step rather than firing straight from the menu.
   const [confirmAlways, setConfirmAlways] = useState(false)
+  // The pending tool row only shows a single truncated line of the command, and
+  // a pending row can't be expanded (no result yet), so the full command was
+  // previously only reachable via the "Always allow" modal. Let the user reveal
+  // it inline instead — "expand, Run" (2 clicks) rather than the modal dance.
+  const [showCommand, setShowCommand] = useState(false)
   const busy = submitting !== null
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
+  const hasCommand = request.command.trim().length > 0
 
   const respond = useCallback(
     async (choice: ApprovalChoice) => {
@@ -92,7 +140,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
         setSubmitting(null)
       }
     },
-    [busy, gateway, request.sessionId]
+    [busy, copy.gatewayDisconnected, copy.sendFailed, gateway, request.sessionId]
   )
 
   // ⌘/Ctrl+Enter → Run, Esc → Reject.
@@ -119,70 +167,92 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   }, [confirmAlways, respond])
 
   return (
-    <div className="mt-1 flex items-center gap-2.5 ps-5" data-slot="tool-approval-inline">
-      <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
+    <div
+      className={cn(surface === 'inline' ? 'mt-1 ps-5' : 'mt-2')}
+      data-slot={surface === 'inline' ? 'tool-approval-inline' : 'tool-approval-actions'}
+    >
+      <div className="flex items-center gap-2.5">
+        <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
+          <Button
+            className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
+            disabled={busy}
+            onClick={() => void respond('once')}
+            size="xs"
+            variant="ghost"
+          >
+            {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
+            {submitting !== 'once' && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
+          </Button>
+          <span aria-hidden className="w-px self-stretch bg-primary/20" />
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                aria-label={copy.moreOptions}
+                className="h-full w-5 rounded-none px-0 text-primary hover:bg-primary/15 hover:text-primary"
+                disabled={busy}
+                size="xs"
+                variant="ghost"
+              >
+                <ChevronDown className="size-3" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="min-w-44">
+              <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
+              {allowPermanent && (
+                <DropdownMenuItem
+                  onSelect={() => {
+                    // Defer one tick so the menu fully unmounts before the dialog
+                    // mounts — otherwise Radix's focus-return races the dialog and
+                    // dismisses it via onInteractOutside.
+                    setTimeout(() => setConfirmAlways(true), 0)
+                  }}
+                >
+                  {copy.alwaysAllowMenu}
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
+                {copy.reject}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+
         <Button
-          className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
+          className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
           disabled={busy}
-          onClick={() => void respond('once')}
+          onClick={() => void respond('deny')}
           size="xs"
           variant="ghost"
         >
-          {submitting === 'once' ? <Loader2 className="size-3 animate-spin" /> : copy.run}
-          {submitting !== 'once' && <span className="text-[0.625rem] text-primary/60">{isMac ? '⌘⏎' : 'Ctrl⏎'}</span>}
+          {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
+          {submitting !== 'deny' && <span className="text-[0.625rem] opacity-55">Esc</span>}
         </Button>
-        <span aria-hidden className="w-px self-stretch bg-primary/20" />
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              aria-label={copy.moreOptions}
-              className="h-full w-5 rounded-none px-0 text-primary hover:bg-primary/15 hover:text-primary"
-              disabled={busy}
-              size="xs"
-              variant="ghost"
-            >
-              <ChevronDown className="size-3" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-44">
-            <DropdownMenuItem onSelect={() => void respond('session')}>{copy.allowSession}</DropdownMenuItem>
-            {allowPermanent && (
-              <DropdownMenuItem
-                onSelect={() => {
-                  // Defer one tick so the menu fully unmounts before the dialog
-                  // mounts — otherwise Radix's focus-return races the dialog and
-                  // dismisses it via onInteractOutside.
-                  setTimeout(() => setConfirmAlways(true), 0)
-                }}
-              >
-                {copy.alwaysAllowMenu}
-              </DropdownMenuItem>
-            )}
-            <DropdownMenuItem onSelect={() => void respond('deny')} variant="destructive">
-              {copy.reject}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+
+        {hasCommand && (
+          <Button
+            aria-expanded={showCommand}
+            className="h-6 gap-1 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
+            onClick={() => setShowCommand(value => !value)}
+            size="xs"
+            variant="ghost"
+          >
+            {copy.command}
+            <ChevronDown className={cn('size-3 transition-transform', showCommand && 'rotate-180')} />
+          </Button>
+        )}
       </div>
 
-      <Button
-        className="h-6 gap-1.5 rounded-md px-1.5 text-xs font-normal text-(--ui-text-tertiary) hover:text-foreground"
-        disabled={busy}
-        onClick={() => void respond('deny')}
-        size="xs"
-        variant="ghost"
-      >
-        {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
-        {submitting !== 'deny' && <span className="text-[0.625rem] opacity-55">Esc</span>}
-      </Button>
+      {showCommand && hasCommand && (
+        <pre className="mt-1.5 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2.5 py-1.5 font-mono text-xs leading-snug text-foreground">
+          {request.command.trim()}
+        </pre>
+      )}
 
       <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>{copy.alwaysTitle}</DialogTitle>
-            <DialogDescription>
-              {copy.alwaysDescription(request.description)}
-            </DialogDescription>
+            <DialogDescription>{copy.alwaysDescription(request.description)}</DialogDescription>
           </DialogHeader>
 
           {request.command.trim() && (

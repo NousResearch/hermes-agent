@@ -319,7 +319,7 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
         return {
             "name": "OpenAI (Codex auth)",
             "badge": "free",
-            "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required",
+            "tag": "gpt-image-2 via ChatGPT/Codex OAuth — no API key required (text-to-image only)",
             "env_vars": [],
             "post_setup_hint": (
                 "Sign in with `hermes auth codex` (or `hermes setup` → Codex) "
@@ -327,14 +327,40 @@ class OpenAICodexImageGenProvider(ImageGenProvider):
             ),
         }
 
+    def capabilities(self) -> Dict[str, Any]:
+        # The Codex Responses image_generation tool path is text-to-image
+        # only here. Image-to-image / editing via Codex OAuth is not wired —
+        # users who need editing should use the `openai` (API key), `fal`, or
+        # `xai` backends. Declaring text-only keeps the dynamic tool schema
+        # honest so the model doesn't attempt an unsupported edit.
+        return {"modalities": ["text"], "max_reference_images": 0}
+
     def generate(
         self,
         prompt: str,
         aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+        *,
+        image_url: Optional[str] = None,
+        reference_image_urls: Optional[List[str]] = None,
         **kwargs: Any,
     ) -> Dict[str, Any]:
         prompt = (prompt or "").strip()
         aspect = resolve_aspect_ratio(aspect_ratio)
+
+        # Image-to-image / editing is not supported on the Codex OAuth path.
+        # Surface a clear, actionable error instead of silently ignoring the
+        # source image and producing an unrelated picture.
+        if (isinstance(image_url, str) and image_url.strip()) or reference_image_urls:
+            return error_response(
+                error=(
+                    "This model is not capable of image-to-image / editing. "
+                    "Please provide a text-only prompt (drop image_url and "
+                    "reference_image_urls)."
+                ),
+                error_type="modality_unsupported",
+                provider="openai-codex",
+                aspect_ratio=aspect,
+            )
 
         if not prompt:
             return error_response(

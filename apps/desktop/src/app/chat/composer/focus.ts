@@ -10,6 +10,7 @@
  * steal focus from the composer effect.
  */
 
+import { RICH_INPUT_SLOT } from './rich-editor'
 import type { InlineRefInput } from './inline-refs'
 
 export type ComposerTarget = 'edit' | 'main'
@@ -33,6 +34,7 @@ interface InsertRefsDetail {
 const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
+const VOICE_TOGGLE_EVENT = 'hermes:composer-voice-toggle'
 
 let activeTarget: ComposerTarget = 'main'
 
@@ -104,6 +106,13 @@ export const requestComposerInsertRefs = (
 export const onComposerInsertRefsRequest = (handler: (detail: InsertRefsDetail) => void) =>
   subscribe<InsertRefsDetail>(INSERT_REFS_EVENT, handler)
 
+/** Toggle the active composer's voice conversation — the `composer.voice`
+ *  hotkey (Ctrl+B) reaching into the composer that owns the voice state. */
+export const requestVoiceToggle = () => dispatch<{ at: number }>(VOICE_TOGGLE_EVENT, { at: Date.now() })
+
+export const onComposerVoiceToggleRequest = (handler: () => void) =>
+  subscribe<{ at: number }>(VOICE_TOGGLE_EVENT, () => handler())
+
 /**
  * Focus a composer input across React commit + browser focus restore.
  *
@@ -122,4 +131,13 @@ export const focusComposerInput = (el: HTMLElement | null) => {
   focus()
   window.requestAnimationFrame(focus)
   window.setTimeout(focus, 0)
+}
+
+/** Drop focus from the main composer input (status-stack chrome, sidebar, etc.). */
+export const blurComposerInput = () => {
+  const el = document.querySelector(`[data-slot="${RICH_INPUT_SLOT}"]`) as HTMLElement | null
+
+  if (el && document.activeElement === el) {
+    el.blur()
+  }
 }

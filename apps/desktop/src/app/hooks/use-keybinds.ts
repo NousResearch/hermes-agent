@@ -37,9 +37,10 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
+import { openNewSessionInNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus } from '../chat/composer/focus'
+import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 import {
   AGENTS_ROUTE,
@@ -113,6 +114,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
     'composer.focus': () => requestComposerFocus('main'),
     'composer.modelPicker': () => setModelPickerOpen(true),
+    'composer.voice': requestVoiceToggle,
 
     'nav.commandPalette': toggleCommandPalette,
     'nav.commandCenter': deps.toggleCommandCenter,
@@ -132,6 +134,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       deps.startFreshSession()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
+    'session.newWindow': () => void openNewSessionInNewWindow(),
     'session.next': () => stepSession(1),
     'session.prev': () => stepSession(-1),
     ...sessionSlotHandlers,

@@ -701,3 +701,13 @@ test("matrixToCsv and safeExportName", () => {
   assert.strictEqual(safeExportName(""), "hermes-export.csv");
   assert.strictEqual(safeExportName("../../etc/passwd"), "etcpasswd.csv");
 });
+
+test("matrixToCsv: neutralizes CSV formula injection", () => {
+  assert.strictEqual(matrixToCsv([['=2+2']]), "'=2+2");
+  assert.strictEqual(matrixToCsv([['+cmd|dir']]), "'+cmd|dir");
+  assert.strictEqual(matrixToCsv([['-IF(1,1)']]), "\"'-IF(1,1)\"");
+  assert.strictEqual(matrixToCsv([['@evil']]), "'@evil");
+  assert.strictEqual(matrixToCsv([["hello"]]), "hello");
+  assert.strictEqual(matrixToCsv([["123"]]), "123");
+  assert.strictEqual(matrixToCsv([["=evil"], ["normal"]]), "'=evil\r\nnormal");
+});

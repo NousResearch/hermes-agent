@@ -239,7 +239,7 @@ function truncateText(text, maxChars = maxExtractedCharsPerFile) {
 }
 
 function windowsPathToWsl(filePath) {
-  const resolved = path.resolve(filePath);
+  const resolved = path.win32.resolve(filePath);
   const driveMatch = resolved.match(/^([a-zA-Z]):\\(.*)$/);
   if (!driveMatch) return resolved.replace(/\\/g, "/");
   const drive = driveMatch[1].toLowerCase();
@@ -773,9 +773,11 @@ function matrixToCsv(values) {
       (Array.isArray(row) ? row : [])
         .map((cell) => {
           const str = cell === null || cell === undefined ? "" : String(cell);
-          return /[",\r\n]/.test(str) ? `"${str.replace(/"/g, '""')}"` : str;
+          // Neutralize CSV formula injection: prefix with ' if it starts with = + - @
+          const safe = /^[=+\-@]/.test(str) ? `'${str}` : str;
+          return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
         })
-        .join(","),
+        .join(",")
     )
     .join("\r\n");
 }
@@ -1608,8 +1610,9 @@ async function handleChat(req, res) {
   const onClose = () => controller.abort();
   req.on("close", onClose);
   const budget = setTimeout(() => controller.abort(), llmRequestBudgetMs);
-  const body = await readJson(req);
+  let body;
   try {
+    body = await readJson(req);
     // Loop rounds echo parsed_files back so attachments are not re-uploaded or re-parsed.
     body.files =
       Array.isArray(body.parsed_files) && body.parsed_files.length
@@ -1618,7 +1621,7 @@ async function handleChat(req, res) {
 
     return send(res, 200, await callHermesModel(body, { signal: controller.signal }), undefined, origin);
   } catch (error) {
-    return send(res, 200, fallbackResponse(body, error.message), undefined, origin);
+    return send(res, 200, fallbackResponse(body || { prompt: "", files: [] }, error.message), undefined, origin);
   } finally {
     clearTimeout(budget);
     req.off("close", onClose);
@@ -1678,9 +1681,10 @@ async function serveStatic(req, res) {
       // Same-origin token handoff: only the bridge's own origin receives the page
       // (cross-origin reads are CORS-blocked), so embedding the token here is safe
       // and the pane echoes it on every /api/* call.
+      const escapedToken = bridgeToken.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
       const html = bytes
         .toString("utf8")
-        .replace(/<\/head>/i, `  <meta name="hermes-bridge-token" content="${bridgeToken}" />\n  </head>`);
+        .replace(/<\/head>/i, `  <meta name="hermes-bridge-token" content="${escapedToken}" />\n  </head>`);
       bytes = Buffer.from(html, "utf8");
     }
     if (process.env.HERMES_EXCEL_DISABLE_CSP !== "1") {

@@ -1914,7 +1914,7 @@ class MCPServerTask:
 
         client_kwargs: dict = {
             "verify": ssl_verify,
-            "follow_redirects": True,
+            "follow_redirects": False,
             "timeout": _httpx.Timeout(timeout),
         }
         if client_cert is not None:

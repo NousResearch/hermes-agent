@@ -128,6 +128,120 @@ def _detect_image_mime_type(image_path: Path) -> Optional[str]:
     return None
 
 
+# Media types the major vision providers (Anthropic in particular) accept for
+# inline base64 images.  Anything outside this set — SVG, BMP, TIFF, etc. — is
+# rejected with a non-retryable 400.  Because a vision tool-result is baked into
+# immutable conversation history and re-sent every turn, embedding an
+# unsupported media_type permanently wedges the session (retries re-send the
+# same bad bytes).  We MUST normalize to one of these before embedding.
+_ANTHROPIC_SUPPORTED_MEDIA_TYPES = frozenset(
+    {"image/jpeg", "image/png", "image/gif", "image/webp"}
+)
+
+
+def _rasterize_svg_to_png(svg_path: Path, out_path: Path) -> bool:
+    """Best-effort SVG → PNG rasterization. Returns True on success.
+
+    Tries, in order: cairosvg, svglib+reportlab, then system rasterizers
+    (rsvg-convert, inkscape).  All are soft dependencies; if none is available
+    we return False and the caller rejects the image with an actionable error
+    rather than embedding an unsupported media_type that would wedge the
+    session.
+    """
+    # 1) cairosvg (pure-python-ish, most common)
+    try:
+        import cairosvg  # type: ignore
+        cairosvg.svg2png(url=str(svg_path), write_to=str(out_path))
+        return out_path.exists() and out_path.stat().st_size > 0
+    except Exception:
+        pass
+    # 2) svglib + reportlab
+    try:
+        from svglib.svglib import svg2rlg  # type: ignore
+        from reportlab.graphics import renderPM  # type: ignore
+        drawing = svg2rlg(str(svg_path))
+        if drawing is not None:
+            renderPM.drawToFile(drawing, str(out_path), fmt="PNG")
+            return out_path.exists() and out_path.stat().st_size > 0
+    except Exception:
+        pass
+    # 3) system rasterizers
+    import shutil as _shutil
+    import subprocess as _subprocess
+    for cmd in (
+        ["rsvg-convert", "-o", str(out_path), str(svg_path)],
+        ["inkscape", str(svg_path), "--export-type=png",
+         f"--export-filename={out_path}"],
+    ):
+        if _shutil.which(cmd[0]):
+            try:
+                _subprocess.run(cmd, check=True, capture_output=True, timeout=30)
+                if out_path.exists() and out_path.stat().st_size > 0:
+                    return True
+            except Exception:
+                continue
+    return False
+
+
+def _normalize_to_supported_image(
+    image_path: Path, detected_mime: str
+) -> tuple[Optional[Path], Optional[str], Optional[str]]:
+    """Ensure an image is in a vision-provider-supported format.
+
+    Returns a 3-tuple ``(path, mime, error)``:
+      - If ``detected_mime`` is already supported: ``(image_path, detected_mime, None)``.
+      - If conversion succeeds: ``(new_png_path, "image/png", None)`` — the new
+        path is a temp file the CALLER must clean up.
+      - If conversion is impossible: ``(None, None, <error message>)``.
+
+    SVG is rasterized to PNG (best-effort, soft deps).  Other raster formats
+    Pillow can read (BMP, TIFF, etc.) are re-encoded to PNG.  This runs BEFORE
+    the image is base64-embedded into conversation history, so an unsupported
+    media_type can never reach the provider and wedge the session.
+    """
+    if detected_mime in _ANTHROPIC_SUPPORTED_MEDIA_TYPES:
+        return image_path, detected_mime, None
+
+    out_path = (
+        get_hermes_dir("cache/vision", "temp_vision_images")
+        / f"converted_{uuid.uuid4()}.png"
+    )
+
+    # SVG: needs a rasterizer (Pillow cannot render SVG).
+    if detected_mime == "image/svg+xml":
+        if _rasterize_svg_to_png(image_path, out_path):
+            return out_path, "image/png", None
+        return (
+            None,
+            None,
+            "This is an SVG, which vision models cannot read directly, and no "
+            "SVG rasterizer is installed (tried cairosvg, svglib, rsvg-convert, "
+            "inkscape). Convert the SVG to PNG first — e.g. open it in a browser "
+            "and screenshot it, or install a rasterizer "
+            "(`pip install cairosvg`) — then re-run vision_analyze on the PNG.",
+        )
+
+    # Other non-supported raster formats (BMP, TIFF, ...): re-encode via Pillow.
+    try:
+        from PIL import Image as _PILImage
+        with _PILImage.open(image_path) as _img:
+            if _img.mode not in ("RGB", "RGBA", "L"):
+                _img = _img.convert("RGBA")
+            _img.save(out_path, format="PNG")
+        if out_path.exists() and out_path.stat().st_size > 0:
+            return out_path, "image/png", None
+    except Exception as _exc:
+        logger.warning("Failed to normalize %s image to PNG: %s",
+                       detected_mime, _exc)
+    return (
+        None,
+        None,
+        f"Image format {detected_mime!r} is not supported by the vision API "
+        f"and could not be converted to PNG (install Pillow for raster "
+        f"conversion). Convert it to PNG or JPEG and try again.",
+    )
+
+
 def _is_retryable_download_error(error: Exception) -> bool:
     """Return True only for transient image-download failures worth retrying.
 
@@ -744,6 +858,28 @@ async def _vision_analyze_native(
                 success=False,
             )
 
+        # Normalize unsupported formats (SVG, BMP, ...) to PNG BEFORE embedding.
+        # Anthropic only accepts jpeg/png/gif/webp; an unsupported media_type
+        # baked into immutable history wedges the session with a 400 on every
+        # resume.  Convert here so it can never enter history.
+        normalized_path, detected_mime_type, _norm_err = (
+            _normalize_to_supported_image(temp_image_path, detected_mime_type)
+        )
+        if _norm_err or normalized_path is None:
+            return tool_error(
+                _norm_err or "Image normalization failed.", success=False,
+            )
+        if normalized_path != temp_image_path:
+            # We created a temp PNG — swap to it and ensure it's cleaned up.
+            if should_cleanup and temp_image_path.exists():
+                try:
+                    temp_image_path.unlink()
+                except Exception:
+                    pass
+            temp_image_path = normalized_path
+            should_cleanup = True
+            image_size_bytes = temp_image_path.stat().st_size
+
         image_data_url = _image_to_base64_data_url(
             temp_image_path, mime_type=detected_mime_type,
         )
@@ -898,7 +1034,23 @@ async def vision_analyze_tool(
         detected_mime_type = _detect_image_mime_type(temp_image_path)
         if not detected_mime_type:
             raise ValueError("Only real image files are supported for vision analysis.")
-        
+
+        # Normalize unsupported formats (SVG, BMP, ...) to PNG. Vision providers
+        # reject these media types; convert before encoding.
+        normalized_path, detected_mime_type, _norm_err = (
+            _normalize_to_supported_image(temp_image_path, detected_mime_type)
+        )
+        if _norm_err or normalized_path is None:
+            raise ValueError(_norm_err or "Image normalization failed.")
+        if normalized_path != temp_image_path:
+            if should_cleanup and temp_image_path.exists():
+                try:
+                    temp_image_path.unlink()
+                except Exception:
+                    pass
+            temp_image_path = normalized_path
+            should_cleanup = True
+
         # Convert image to base64 — send at full resolution first.
         # If the provider rejects it as too large, we auto-resize and retry.
         logger.info("Converting image to base64...")

@@ -12,9 +12,20 @@ import pytest
 
 @pytest.fixture
 def temp_home(tmp_path, monkeypatch):
-    """Isolated HERMES_HOME so jobs.json doesn't touch the real store."""
+    """Isolated cron store so jobs.json doesn't touch the real one.
+
+    cron.jobs resolves HERMES_HOME ONCE at import (JOBS_FILE/CRON_DIR are
+    module-level constants — see cron/jobs.py:59-61). By the time this fixture
+    runs, the module is already imported with the real HERMES_HOME, so merely
+    setenv-ing HERMES_HOME is too late and create_job() would write to the REAL
+    ~/.hermes/cron/jobs.json (this leaked junk t/o/p/s/c jobs into production
+    when the suite ran on the live host). Patch the frozen module constants
+    directly — the same isolation pattern sibling tests use (test_jobs.py /
+    test_cron_workdir.py tmp_cron_dir). setenv is kept for any live reads."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # cron.jobs caches no home at import; get_hermes_home() reads the env live.
+    monkeypatch.setattr("cron.jobs.CRON_DIR", tmp_path / "cron")
+    monkeypatch.setattr("cron.jobs.JOBS_FILE", tmp_path / "cron" / "jobs.json")
+    monkeypatch.setattr("cron.jobs.OUTPUT_DIR", tmp_path / "cron" / "output")
     yield tmp_path
 
 

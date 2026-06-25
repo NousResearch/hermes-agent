@@ -232,7 +232,21 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     lastDelegationFetchAt = now
     rpc<DelegationStatusResponse>('delegation.status', {})
-      .then(r => applyDelegationStatus(r))
+      .then(r => {
+        applyDelegationStatus(r)
+        // Reconcile: any subagent still marked 'running' in turnState but
+        // absent from the server's active set has completed (or failed).
+        // This catches cases where the subagent.complete event was lost,
+        // delayed, or processed after the turn snapshot was archived.
+        if (r?.active) {
+          const activeIds = new Set(
+            r.active
+              .map(a => a.subagent_id)
+              .filter((id): id is string => typeof id === 'string')
+          )
+          turnController.reconcileSubagentStatus(activeIds)
+        }
+      })
       .catch(() => {})
   }
 

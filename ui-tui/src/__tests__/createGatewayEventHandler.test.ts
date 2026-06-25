@@ -963,6 +963,48 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().subagents.find(s => s.id === 'sa-weird')?.status).toBe('completed')
   })
 
+  it('reconciles running subagents against delegation.status active list', async () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    // Make rpc return a delegation.status response with only sa-a active
+    ctx.gateway.rpc = vi.fn(async () => ({
+      active: [{ subagent_id: 'sa-a', status: 'running', goal: 'child a', task_index: 0, task_count: 2 }],
+      max_concurrent_children: 5,
+      max_spawn_depth: 3,
+      paused: false
+    }))
+    const onEvent = createGatewayEventHandler(ctx)
+
+    // Register two subagents as running
+    onEvent({
+      payload: { goal: 'child a', subagent_id: 'sa-a', task_index: 0, task_count: 2 },
+      type: 'subagent.start'
+    } as any)
+    onEvent({
+      payload: { goal: 'child b', subagent_id: 'sa-b', task_index: 1, task_count: 2 },
+      type: 'subagent.start'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-a')?.status).toBe('running')
+    expect(getTurnState().subagents.find(s => s.id === 'sa-b')?.status).toBe('running')
+
+    // Trigger refreshDelegationStatus via spawn_requested (forces a poll)
+    onEvent({
+      payload: { goal: 'child c', subagent_id: 'sa-c', task_index: 2, task_count: 3 },
+      type: 'subagent.spawn_requested'
+    } as any)
+
+    // Wait for the rpc promise to resolve
+    await vi.waitFor(() => {
+      expect(ctx.gateway.rpc).toHaveBeenCalled()
+    })
+
+    // sa-a is still in the active list → stays 'running'
+    expect(getTurnState().subagents.find(s => s.id === 'sa-a')?.status).toBe('running')
+    // sa-b is NOT in the active list → reconciled to 'completed'
+    expect(getTurnState().subagents.find(s => s.id === 'sa-b')?.status).toBe('completed')
+  })
+
   it('nudges toward /agents on the first spawn_requested of a turn', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

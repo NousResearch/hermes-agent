@@ -1002,6 +1002,32 @@ class TurnController {
       return { ...state, subagents }
     })
   }
+
+  /**
+   * Reconcile live subagent statuses against the server's active-subagent set.
+   *
+   * When the `delegation.status` poll returns, any subagent in
+   * `turnState.subagents` that is still `'running'` but absent from the
+   * server's `active` list has completed (or failed/timed out).  Mark it
+   * `'completed'` so the /agents overlay reflects reality even if the
+   * `subagent.complete` event was lost or delayed.
+   *
+   * Safe to call with an empty set — a missing `active` field in the RPC
+   * response is treated as "no reconciliation" (caller guards with `if (r?.active)`).
+   */
+  reconcileSubagentStatus(activeServerIds: Set<string>) {
+    patchTurnState(state => {
+      let changed = false
+      const subagents = state.subagents.map(s => {
+        if (s.status === 'running' && !activeServerIds.has(s.id)) {
+          changed = true
+          return { ...s, status: 'completed' as const }
+        }
+        return s
+      })
+      return changed ? { ...state, subagents } : state
+    })
+  }
 }
 
 export const turnController = new TurnController()

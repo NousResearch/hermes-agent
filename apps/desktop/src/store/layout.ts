@@ -16,7 +16,7 @@ export const SIDEBAR_MAX_WIDTH = 360
 // Open at the same width as the sessions sidebar so the two rails match.
 export const FILE_BROWSER_DEFAULT_WIDTH = `${SIDEBAR_DEFAULT_WIDTH}px`
 export const FILE_BROWSER_MIN_WIDTH = '14rem'
-export const FILE_BROWSER_MAX_WIDTH = '20rem'
+export const FILE_BROWSER_MAX_WIDTH = '40rem'
 
 export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 

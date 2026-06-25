@@ -2239,6 +2239,7 @@ def list_picker_providers(
     custom_providers: list | None = None,
     max_models: int | None = None,
     current_model: str = "",
+    provider_lockdown: bool = False,
 ) -> List[dict]:
     """Interactive-picker variant of :func:`list_authenticated_providers`.
 
@@ -2269,6 +2270,17 @@ def list_picker_providers(
         max_models=max_models,
         current_model=current_model,
     )
+
+    if provider_lockdown:
+        current_slug = current_provider.strip().lower()
+        house_slug = "replabs"
+        providers = [
+            p for p in providers
+            if (
+                str(p.get("slug", "")).strip().lower() in {current_slug, house_slug}
+                or str(p.get("source", "")).strip().lower() in {"hermes", "user-config"}
+            )
+        ]
 
     filtered: List[dict] = []
     for p in providers:

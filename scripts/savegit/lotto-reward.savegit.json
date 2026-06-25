@@ -1,0 +1,29 @@
+{
+  "project": "lotto-reward",
+  "remote_must_match": "lotto-reward.git",
+  "default_target": "master",
+  "stack": "pnpm",
+  "checks": {
+    "install": "pnpm install --frozen-lockfile",
+    "typecheck": "pnpm typecheck",
+    "build": "pnpm build"
+  },
+  "test_timeout_sec": 600,
+  "forbidden_paths": [".env", ".env.*", "*.key", "*.pem"],
+  "bundle_globs": ["apps/web/dist/**/*.js"],
+  "bundle_must_not_contain": ["localhost:", "127.0.0.1:"],
+  "scope_guard": { "max_commits": 5, "max_files": 30 },
+  "ci": { "enabled": false },
+  "deploy": {
+    "branch_only": "origin/master",
+    "container_health": {
+      "container": "lotto-reward-web",
+      "command": "wget -qO- http://127.0.0.1/ >/dev/null 2>&1 && echo ok"
+    },
+    "vps_service": {
+      "name": "lotto-reward-web",
+      "expect_workdir": "/srv/projects/LottoReward"
+    },
+    "note": "เว็บ static เสิร์ฟด้วย nginx · ไม่มี endpoint คืน commitSha · ตรวจ PRODUCTION_VERIFIED ด้วย SHA อัตโนมัติไม่ได้ ต้องเทียบ commit ที่ build กับ origin/master ด้วยมือ · deploy = docker compose build + up -d (พอร์ต 8090)"
+  }
+}

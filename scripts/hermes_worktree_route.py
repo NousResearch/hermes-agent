@@ -23,7 +23,14 @@ from pathlib import Path
 
 
 DEFAULT_HOST = "linux-nat@103.142.150.185"
-DEFAULT_ROOTS = ("/home/linux-nat/projects", "/srv/projects")
+# Team work now lives under ~/.worktree/<project>/<staff>/<YYYYMMDD>-<task>
+# (three levels). The first two roots keep the per-project reference clone and
+# its 2-level legacy worktrees. The probe handles both depths.
+DEFAULT_ROOTS = (
+    "/home/linux-nat/projects",
+    "/srv/projects",
+    "/home/linux-nat/.worktree",
+)
 
 # --------------------------------------------------------------------------- #
 # Claim store — team booking so two staff/AI do not edit the same paths.
@@ -420,7 +427,18 @@ def _remote_probe_script(staff_id: str, project: str, roots: list[str]) -> str:
                 continue
             for pv in project_variants:
                 for sv in staff_variants:
-                    record(os.path.join(root, pv, sv))
+                    base = os.path.join(root, pv, sv)
+                    # 2-level layout: <root>/<project>/<staff> is itself a worktree.
+                    record(base)
+                    # 3-level layout: <root>/<project>/<staff>/<YYYYMMDD>-<task>.
+                    # Each child task folder is its own worktree/branch.
+                    try:
+                        for task in sorted(os.listdir(base)):
+                            if task.startswith("."):
+                                continue
+                            record(os.path.join(base, task))
+                    except OSError:
+                        pass
 
             # Shallow fallback only. Do not walk dependency folders or bare repo
             # object stores during chat startup.
@@ -432,11 +450,27 @@ def _remote_probe_script(staff_id: str, project: str, roots: list[str]) -> str:
                 ]
             except OSError:
                 first_level = []
+            project_norm_set = {norm(v) for v in project_variants}
             for path in first_level:
-                if norm(os.path.basename(path)) in {norm(v) for v in project_variants}:
+                if norm(os.path.basename(path)) not in project_norm_set:
+                    continue
+                # <root>/<project>/<staff> — record, then descend one more level
+                # for <root>/<project>/<staff>/<task> worktrees. Case-insensitive
+                # so PascalCase folders (LottoReward) still resolve.
+                try:
+                    staff_dirs = os.listdir(path)
+                except OSError:
+                    staff_dirs = []
+                for child in staff_dirs:
+                    child_path = os.path.join(path, child)
+                    record(child_path)
+                    if not os.path.isdir(child_path):
+                        continue
                     try:
-                        for child in os.listdir(path):
-                            record(os.path.join(path, child))
+                        for task in os.listdir(child_path):
+                            if task.startswith("."):
+                                continue
+                            record(os.path.join(child_path, task))
                     except OSError:
                         pass
 

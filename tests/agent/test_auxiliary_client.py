@@ -23,6 +23,7 @@ from agent.auxiliary_client import (
     _is_payment_error,
     _is_rate_limit_error,
     _is_model_not_found_error,
+    _is_model_incompatible_error,
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
@@ -1540,6 +1541,60 @@ class TestIsModelNotFoundError:
         exc = Exception("model does not exist")  # right phrase, wrong status
         exc.status_code = 500
         assert _is_model_not_found_error(exc) is False
+
+
+class TestIsModelIncompatibleError:
+    """_is_model_incompatible_error detects 400s where the route cannot run
+    the model at all (capability mismatch), distinct from not-found and
+    payment errors."""
+
+    def test_codex_chatgpt_account_model_gating(self):
+        """The exact incident: an openai-codex/ChatGPT-account fallback asked
+        to compress a glm-5.2 conversation."""
+        exc = Exception(
+            "Error code: 400 - {'detail': \"The 'glm-5.2' model is not "
+            "supported when using Codex with a ChatGPT account.\"}"
+        )
+        exc.status_code = 400
+        assert _is_model_incompatible_error(exc) is True
+
+    def test_model_is_not_supported_phrasing(self):
+        exc = Exception("This model is not supported for this endpoint")
+        exc.status_code = 400
+        assert _is_model_incompatible_error(exc) is True
+
+    def test_unsupported_model_keyword(self):
+        exc = Exception("unsupported model for this account tier")
+        exc.status_code = 400
+        assert _is_model_incompatible_error(exc) is True
+
+    def test_not_found_is_not_incompatible(self):
+        """A model-does-not-exist 400 belongs to _is_model_not_found_error —
+        the two predicates must not overlap."""
+        exc = Exception("openrouter/foo/bar is not a valid model ID")
+        exc.status_code = 400
+        assert _is_model_incompatible_error(exc) is False
+        assert _is_model_not_found_error(exc) is True
+
+    def test_payment_400_is_not_incompatible(self):
+        """A billing 400 that also contains capability-ish phrasing must be
+        rejected here — billing keywords win so the payment path owns it and
+        the two buckets don't overlap."""
+        exc = Exception("insufficient credits: model is not supported on free tier")
+        exc.status_code = 400
+        assert _is_model_incompatible_error(exc) is False
+
+    def test_wrong_status_is_not_incompatible(self):
+        exc = Exception("model is not supported")  # right phrase, wrong status
+        exc.status_code = 500
+        assert _is_model_incompatible_error(exc) is False
+
+    def test_generic_400_is_not_incompatible(self):
+        """A plain request-validation 400 without capability phrasing must not
+        trigger fallback (we respect explicit-provider choice for those)."""
+        exc = Exception("invalid value for parameter temperature")
+        exc.status_code = 400
+        assert _is_model_incompatible_error(exc) is False
 
 
 class TestRefreshNousRecommendedModel:

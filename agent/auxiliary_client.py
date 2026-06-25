@@ -2700,6 +2700,60 @@ def _is_model_not_found_error(exc: Exception) -> bool:
     ))
 
 
+def _is_model_incompatible_error(exc: Exception) -> bool:
+    """Detect "this route cannot serve this model" 400s (capability mismatch).
+
+    Distinct from :func:`_is_model_not_found_error` (the model does not exist
+    anywhere): here the model name is valid but the *current provider/account*
+    is structurally unable to run it. The canonical case is a configured
+    fallback that cannot run the main model — e.g. an ``openai-codex`` /
+    ChatGPT-account fallback asked to compress a ``glm-5.2`` conversation::
+
+        Error code: 400 - {'detail': "The 'glm-5.2' model is not supported
+        when using Codex with a ChatGPT account."}
+
+    The candidate authenticates fine and builds a client, so the auth and
+    payment predicates don't fire and the call would otherwise raise and
+    abort the whole auxiliary task (commonly compression — which then drops
+    middle turns and churns the session, destroying the prompt cache).
+    Treating it as a fallback-worthy capability error lets the chain skip the
+    incapable route and continue to the next candidate, mirroring the
+    context-window feasibility screen (#52392).
+
+    Billing/quota 400s belong to :func:`_is_payment_error`; "model does not
+    exist" 400s belong to :func:`_is_model_not_found_error`. This predicate
+    explicitly excludes both so the three don't overlap.
+    """
+    status = getattr(exc, "status_code", None)
+    if status not in {400, None}:
+        return False
+    err_lower = str(exc).lower()
+    # Not-found 400s ("invalid model ID", "model does not exist") are owned by
+    # _is_model_not_found_error. Billing/free-tier 400s are owned by the
+    # payment path — key on the billing keywords directly here rather than
+    # calling _is_payment_error(), because that predicate is status-gated
+    # ({402,403,404,429,None}) and would not recognise a 400-coded billing
+    # body, letting it leak into this capability bucket.
+    if _is_model_not_found_error(exc):
+        return False
+    if any(kw in err_lower for kw in (
+        "credits", "insufficient funds", "billing", "out of funds",
+        "balance_depleted", "no usable credits", "payment required",
+        "free tier", "free-tier", "not available on the free tier",
+        "model_not_supported_on_free_tier", "quota",
+    )):
+        return False
+    return any(kw in err_lower for kw in (
+        "is not supported when using",   # codex/ChatGPT-account model gating
+        "model is not supported",
+        "not supported with this",
+        "not supported for this account",
+        "model_not_supported",
+        "does not support this model",
+        "unsupported model",
+    ))
+
+
 def _evict_cached_clients(provider: str) -> None:
     """Drop cached auxiliary clients for a provider so fresh creds are used."""
     normalized = _normalize_aux_provider(provider)
@@ -5803,6 +5857,7 @@ def call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_model_incompatible_error(first_err)
         )
         # Respect explicit provider choice for transient errors (auth, request
         # validation, etc.) but allow fallback when the provider clearly cannot
@@ -5815,7 +5870,17 @@ def call_llm(
         # literally cannot serve this request regardless of user intent.
         # Rate limits are included: after retries are exhausted, a 429 means
         # the provider cannot serve this request — fall back. See #52228.
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err) or _is_rate_limit_error(first_err)
+        # Model-incompatibility 400s are also a hard capability mismatch (the
+        # route cannot run this model at all — e.g. a codex/ChatGPT-account
+        # fallback asked to compress a glm-5.2 conversation), so they bypass
+        # the explicit-provider gate and continue to the next candidate
+        # instead of aborting the auxiliary task and churning the session.
+        is_capacity_error = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_rate_limit_error(first_err)
+            or _is_model_incompatible_error(first_err)
+        )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
@@ -5828,6 +5893,8 @@ def call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif _is_model_incompatible_error(first_err):
+                reason = "model incompatible with route"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -6266,14 +6333,22 @@ async def async_call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_model_incompatible_error(first_err)
         )
         # Capacity errors (payment/quota/connection/rate-limit) bypass the
         # explicit-provider gate — the provider cannot serve the request
         # regardless of user intent. Rate limits are included: after retries
         # are exhausted, a 429 means the provider is at capacity. See #52228.
         # See #26803: daily token quota must fall back like a 402 credit error.
+        # Model-incompatibility 400s (route cannot run this model at all)
+        # bypass the gate too — see the sync call_llm() path for rationale.
         is_auto = resolved_provider in {"auto", "", None}
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err) or _is_rate_limit_error(first_err)
+        is_capacity_error = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_rate_limit_error(first_err)
+            or _is_model_incompatible_error(first_err)
+        )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
@@ -6282,6 +6357,8 @@ async def async_call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif _is_model_incompatible_error(first_err):
+                reason = "model incompatible with route"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

@@ -1090,21 +1090,46 @@ def run_ai_pair_coder_plan(
     }
 
 
+# ทะเบียนที่นั่ง AI ทั้งหมด (bundle_id ตรวจจาก /Applications จริง · ไม่เดา · 2026-06-07)
+# ทุกตัวรับบทไหนก็ได้ (coach/coder/reviewer) ตามที่เจ้าของกำหนดใน role_map
 DESKTOP_SEAT_PROFILES = {
     "claude": {
         "bundle_id": "com.anthropic.claudefordesktop",
         "app_name": "Claude",
-        "aliases": ("claude", "claude code", "claude-code", "claude app"),
+        "aliases": ("claude", "claude code", "claude-code", "claude app", "claude desktop"),
     },
     "codex": {
         "bundle_id": "com.openai.codex",
         "app_name": "Codex",
         "aliases": ("codex", "codex app"),
     },
-    "cursor-qwen": {
+    "cursor": {
         "bundle_id": "com.todesktop.230313mzl4w4u92",
         "app_name": "Cursor",
-        "aliases": ("cursor", "qwen", "cursor/qwen", "cursor qwen", "qwen code"),
+        "aliases": ("cursor", "cursor app"),
+    },
+    # Qwen ใช้งานผ่าน Cursor (Qwen extension) → แชร์แอป Cursor ตัวเดียวกัน
+    "qwen": {
+        "bundle_id": "com.todesktop.230313mzl4w4u92",
+        "app_name": "Cursor",
+        "aliases": ("qwen", "qwen code", "qwen extension", "cursor/qwen", "cursor qwen", "cursor-qwen"),
+    },
+    # Gemini ใช้งานบน Antigravity (IDE ของ Google)
+    "gemini": {
+        "bundle_id": "com.google.antigravity",
+        "app_name": "Antigravity",
+        "aliases": ("gemini", "antigravity", "gemini antigravity"),
+    },
+    # Grok ใช้งานผ่าน grok CLI ใน Terminal ของ macOS
+    "grok": {
+        "bundle_id": "com.apple.Terminal",
+        "app_name": "Terminal",
+        "aliases": ("grok", "grok cli", "grok terminal"),
+    },
+    "manus": {
+        "bundle_id": "im.manus.desktop",
+        "app_name": "Manus",
+        "aliases": ("manus", "manus app", "manus desktop"),
     },
 }
 

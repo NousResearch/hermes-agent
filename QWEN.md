@@ -9,7 +9,7 @@
 2. ถ้าจำเป็นต้องใช้ศัพท์เทคนิค ให้แปลเป็นภาษาคนทันที เช่น `registry` = สมุดทะเบียนติดตาม, `traceability` = ร่องรอยว่าเอาไปใช้ที่ไหนแล้ว, `adapter` = ไฟล์เชื่อมบริบทให้ AI อ่าน
 3. ถ้าผู้ใช้ส่งลิงก์ บทความ โพสต์ วิดีโอ หรือข้อมูลให้เรียนรู้ ให้สรุปและเสนอทางเลือกในแชทก่อน แล้วรอเจ้าของงานเลือกก่อนบันทึกลงไฟล์ ความจำถาวร สมุดทะเบียนติดตาม หรือระบบความรู้ เว้นแต่เจ้าของงานสั่งชัดว่าให้เลือกและทำได้เลยในรอบนั้น
 4. ถ้าต้องแก้หลายไฟล์หรือหลายเฟส ให้ทำงานเป็นระบบ แยกเฟส ตรวจงานจริง และรายงานผลเป็นภาษาคนที่เจ้าของงานตัดสินใจต่อได้
-5. ถ้าผู้ใช้เรียก Shortcut เช่น `Use Act-As`, `Use Comply`, `Use Summary`, `Use Scan Feature`, `Use Opus Plan`, `Use AI Pair`, `Use Business Plan`, `Use Viber Structure`, `Use Viber Audit`, `Use Impeccable`, `Use Blog Auto`, `Use WOW Resource`, `Use Flow Guardian`, `Use New Chat`, `Use Continue`, `Review Chat` หรือชื่อย่อที่ใกล้เคียง ต้องเปิดไฟล์ทะเบียน Shortcut และ Prompt เต็มก่อนใช้ ห้ามเดาหรือใช้จากความจำ
+5. ถ้าผู้ใช้เรียก Shortcut เช่น `Use Act-As`, `Use Comply`, `Use Summary`, `Use Scan Feature`, `Use Opus Plan`, `Use AI Pair`, `Use Pair AI`, `Use Business Plan`, `Use Viber Structure`, `Use Viber Audit`, `Use Impeccable`, `Use Blog Auto`, `Use WOW Resource`, `Use Flow Guardian`, `Use New Chat`, `Use Save Git`, `Use Continue`, `Review Chat` หรือชื่อย่อที่ใกล้เคียง ต้องเปิดไฟล์ทะเบียน Shortcut และ Prompt เต็มก่อนใช้ ห้ามเดาหรือใช้จากความจำ
 6. ห้ามสรุปงานด้วยภาษาเครื่องมืออย่างเดียว เช่น `parse passed`, `promoted`, `registry updated` ต้องบอกความหมายและผลกระทบเป็นภาษาไทยด้วย
 
 ## ไฟล์ความจำกลางที่ต้องอ้างอิง
@@ -49,4 +49,4 @@ Do not duplicate long Obsidian knowledge here. This file points Qwen to the righ
 
 ## Prompt Shortcuts
 
-When the user invokes `Use Act-As`, `Use Comply`, `Use Summary`, `Use Scan Feature`, `Use Opus Plan`, `Use AI Pair`, `Use Business Plan`, `Use Viber Structure`, `Use Viber Audit`, `Use Impeccable`, `Use Blog Auto`, `Use WOW Resource`, `Use Flow Guardian`, `Use New Chat`, `Use Continue`, `Review Chat`, or an alias, read `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/prompt-shortcut-registry.md` and then open the mapped prompt file. Do not guess or summarize the shortcut from memory.
+When the user invokes `Use Act-As`, `Use Comply`, `Use Summary`, `Use Scan Feature`, `Use Opus Plan`, `Use AI Pair`, `Use Pair AI`, `Use Business Plan`, `Use Viber Structure`, `Use Viber Audit`, `Use Impeccable`, `Use Blog Auto`, `Use WOW Resource`, `Use Flow Guardian`, `Use New Chat`, `Use Save Git`, `Use Continue`, `Review Chat`, or an alias, read `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/prompt-shortcut-registry.md` and then open the mapped prompt file. Do not guess or summarize the shortcut from memory.

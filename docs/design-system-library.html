@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>คลังดีไซน์ซิสเต็ม 15 ระบบ — Hermes Design Library</title>
+<link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0f1115; --card:#181b22; --card2:#1f232c; --line:#2a2f3a;
+    --text:#e8eaee; --muted:#9aa1ad; --dim:#6c7380;
+    --gold:#d9a441; --silver:#c2c8d0; --bronze:#c08457;
+    --blue:#378add; --green:#63991f; --red:#e24b4a; --teal:#1d9e75; --purple:#7f77dd;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'Sarabun','Inter',sans-serif;line-height:1.65;padding:32px 18px 64px}
+  .wrap{max-width:1080px;margin:0 auto}
+  header{border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:28px}
+  h1{font-size:26px;font-weight:700;letter-spacing:-.4px}
+  .sub{color:var(--muted);font-size:14px;margin-top:6px}
+  .meta{color:var(--dim);font-size:12.5px;margin-top:10px}
+  h2{font-size:18px;font-weight:600;margin:34px 0 14px;letter-spacing:-.2px}
+  .lead{color:var(--muted);font-size:14px;margin-bottom:18px;max-width:760px}
+
+  .grid{display:grid;grid-template-columns:1fr;gap:14px}
+  .row{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px 20px;display:grid;grid-template-columns:54px 1fr;gap:16px;align-items:start}
+  .rank{font-size:24px;font-weight:700;color:var(--dim);text-align:center;padding-top:4px}
+  .row.r1{border-color:var(--gold)} .row.r1 .rank{color:var(--gold)}
+  .row.r2{border-color:var(--silver)} .row.r2 .rank{color:var(--silver)}
+  .row.r3{border-color:var(--bronze)} .row.r3 .rank{color:var(--bronze)}
+  .medal{font-size:11px;font-weight:600;display:inline-block;padding:2px 9px;border-radius:20px;margin-left:8px;vertical-align:middle}
+  .r1 .medal{background:rgba(217,164,65,.16);color:var(--gold)}
+  .r2 .medal{background:rgba(194,200,208,.16);color:var(--silver)}
+  .r3 .medal{background:rgba(192,132,87,.16);color:var(--bronze)}
+
+  .name{font-size:17px;font-weight:700}
+  .cat{font-size:12px;color:var(--dim);font-weight:400;margin-left:8px}
+  .scorebar{display:flex;align-items:center;gap:10px;margin:8px 0 2px}
+  .track{flex:1;height:7px;background:var(--card2);border-radius:6px;overflow:hidden;max-width:320px}
+  .fill{height:100%;background:var(--blue);border-radius:6px}
+  .r1 .fill{background:var(--gold)} .r2 .fill{background:var(--silver)} .r3 .fill{background:var(--bronze)}
+  .pct{font-size:13px;font-weight:600;color:var(--muted);min-width:46px}
+
+  .fit{font-size:13px;color:var(--muted);margin:8px 0 2px}
+  .fit b{color:var(--text);font-weight:600}
+  .swot{display:grid;grid-template-columns:1fr 1fr;gap:8px 18px;margin-top:10px;font-size:12.5px}
+  .swot .s{color:#8fd6b4} .swot .w{color:#f0997b}
+  .swot ul{list-style:none;padding:0} .swot li{margin:2px 0;padding-left:16px;position:relative}
+  .swot .s li:before{content:"+";position:absolute;left:0;color:var(--teal);font-weight:700}
+  .swot .w li:before{content:"–";position:absolute;left:0;color:#d85a30;font-weight:700}
+  .swot h4{font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--dim);margin-bottom:3px;font-weight:600}
+  a.src{display:inline-block;margin-top:10px;font-size:12.5px;color:var(--blue);text-decoration:none;border:1px solid var(--line);padding:4px 11px;border-radius:8px}
+  a.src:hover{background:var(--card2)}
+
+  .note{background:var(--card);border:1px solid var(--line);border-left:3px solid var(--blue);border-radius:0 10px 10px 0;padding:14px 18px;font-size:13px;color:var(--muted);margin:18px 0}
+  .note b{color:var(--text)}
+  table.ctx{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+  table.ctx th,table.ctx td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line)}
+  table.ctx th{color:var(--dim);font-weight:600;font-size:12px}
+  table.ctx td b{color:var(--gold)}
+  footer{margin-top:40px;padding-top:18px;border-top:1px solid var(--line);color:var(--dim);font-size:12px}
+  @media(max-width:640px){.swot{grid-template-columns:1fr}.track{max-width:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>คลังดีไซน์ซิสเต็ม 15 ระบบ</h1>
+  <div class="sub">ระบบแบบหน้าตาเว็บ (Design System = ชุดกฎสี ฟอนต์ ปุ่ม การวางหน้า) ที่ทีมเก็บไว้เลือกใช้กับลูกค้าแต่ละราย</div>
+  <div class="meta">ที่เก็บจริงในเครื่อง · <code>~/.claude/design-library/</code> · 5 หมวด · ใช้ผ่านสคิล design-selector · อัปเดตคลัง 2026-04-15</div>
+</header>
+
+<div class="lead">
+  อันดับด้านล่างจัดตาม <b style="color:var(--text)">งานจริงของบริษัทเรา</b> คือเว็บราชการและงานการเงิน/กำกับ (เช่น ก.ล.ต. กรมการศาสนา) เพราะนี่คือฐานลูกค้าหลัก คะแนนถ่วงน้ำหนักให้ความน่าเชื่อถือ ความเหมาะกับราชการ การเข้าถึงคนพิการ และรองรับสองภาษา (ไทย/อังกฤษ) มากกว่าด้านอื่น
+</div>
+
+<h2>อันดับ 1 ถึง 15 (เรียงตามความเหมาะกับงานราชการ/การเงินไทย)</h2>
+<div class="grid" id="grid"></div>
+
+<div class="note">
+  <b>อันดับนี้สลับได้ตามประเภทงาน</b> — ถ้าเป็นงานสตาร์ทอัพ/เทคพรีเมียม (เว็บขายของหรู ผลิตภัณฑ์เทค) สามตัวแรกจะกลายเป็น Vercel, Linear, Stripe แทน เพราะเด่นเรื่องความทันสมัยและความหรู สคิล design-selector จะคำนวณคะแนนใหม่ให้อัตโนมัติเมื่อบอกประเภทงานของลูกค้า
+</div>
+
+<h2>เลือกตัวไหนกับงานแบบไหน (สรุปเร็ว)</h2>
+<table class="ctx">
+  <tr><th>ลักษณะงานลูกค้า</th><th>แนะนำตัวแรก</th><th>สำรอง</th></tr>
+  <tr><td>เว็บราชการไทย / หน่วยงานรัฐ</td><td><b>DGA Thailand</b> + Singapore Gov</td><td>GOV.UK, USWDS</td></tr>
+  <tr><td>การเงิน / กำกับ (ก.ล.ต. แบงก์)</td><td><b>Stripe</b> + DGA Thailand</td><td>Wise, IBM Carbon</td></tr>
+  <tr><td>หลังบ้าน / แดชบอร์ดข้อมูลเยอะ</td><td><b>IBM Carbon</b></td><td>AWS Cloudscape, Linear</td></tr>
+  <tr><td>สตาร์ทอัพ / ผลิตภัณฑ์เทค</td><td><b>Vercel</b> + Linear</td><td>Stripe, Notion</td></tr>
+  <tr><td>มาร์เก็ตเพลส / ท่องเที่ยว / ไลฟ์สไตล์</td><td><b>Airbnb</b></td><td>Wise, Notion</td></tr>
+  <tr><td>แบรนด์หรู / รถ / ของสะสม</td><td><b>BMW</b> / Ferrari</td><td>Vercel</td></tr>
+  <tr><td>โอนเงินข้ามประเทศ / หลายภาษา</td><td><b>Wise</b></td><td>Singapore Gov, Revolut</td></tr>
+  <tr><td>คลังความรู้ / คู่มือ / เนื้อหายาว</td><td><b>Notion</b></td><td>Airbnb</td></tr>
+</table>
+
+<footer>
+  เอกสารนี้สร้างจากคลังจริงในเครื่อง · 15 ไฟล์ใน 5 โฟลเดอร์ (gov 4, enterprise 2, fintech 3, premium-tech 4, luxury 2) · ลิงก์ทุกอันคือแหล่งทางการของแต่ละแบรนด์ กดเปิดดูได้ · ส่งต่อทีมงานได้เลย
+</footer>
+</div>
+
+<script>
+const data = [
+ {r:1,name:"Singapore Gov (SGDS)",cat:"Government",pct:88,url:"https://github.com/GovTechSG/sgds",
+  fit:"งานราชการที่ต้องหลายภาษา (ไทย/อังกฤษ), บริบทอาเซียน, บริการประชาชน",
+  s:["รองรับหลายภาษาดีที่สุดในคลัง","การ์ดมุมโค้ง+เงาบางๆ ราชการแต่ดูเป็นมิตร","ระบบสีสถานะผ่านมาตรฐานเข้าถึงคนพิการ","แถบ Government Agency สร้างความน่าเชื่อถือทันที"],
+  w:["สีม่วง #6137b3 เป็นแบรนด์สิงคโปร์ ต้องเปลี่ยนเป็นสีหน่วยงานไทย","ตราสิงคโปร์บังคับ ต้องสลับเป็นโลโก้หน่วยงาน"]},
+ {r:2,name:"DGA Thailand 3.0",cat:"Government",pct:86,url:"https://www.dga.or.th",
+  fit:"เว็บราชการไทยทุกชนิด หน่วยงานกำกับไทย บริการภาครัฐ การเงินภาครัฐ",
+  s:["ฟอนต์ Sarabun + กฎพิมพ์ไทย บังคับใช้ทุกเว็บรัฐไทย","สีกรมท่า #003087 จำได้ทันทีว่าเว็บรัฐไทย","มีแพตเทิร์นขอความยินยอม PDPA ตามกฎหมาย","ปุ่มแตะ ≥44px + วันที่ พ.ศ. ตรงใจคนไทย"],
+  w:["สีแบนล้วนไม่มีมิติ ดูเก่า ไม่พรีเมียม","ตัวอักษรอนุรักษ์นิยมเกิน ปรับให้ทันสมัยได้"]},
+ {r:3,name:"IBM Carbon",cat:"Enterprise",pct:84,url:"https://github.com/carbon-design-system/carbon",
+  fit:"แพลตฟอร์มองค์กร, ราชการเชิงเทคนิค, การเงิน, แดชบอร์ดข้อมูล, หลังบ้าน CMS",
+  s:["กริด 8pt + 16 คอลัมน์ แม่นยำระดับองค์กร","ระบบสีไล่เฉดสร้างมิติโดยไม่ต้องใช้เงา","ช่องกรอกแบบเส้นล่างอย่างเดียว สะอาด","สเกเลตันตอนโหลด ดีกว่าวงกลมหมุน"],
+  w:["มุมเหลี่ยม 0px ทุกที่ ดูเย็นชาเกินสำหรับคนไทย","ฟอนต์หัวข้อน้ำหนักบาง 300 อ่านยากบนจอ"]},
+ {r:4,name:"GOV.UK Design System",cat:"Government",pct:83,url:"https://github.com/alphagov/govuk-design-system",
+  fit:"ราชการ, ภาครัฐ, สาธารณสุข, กฎหมาย, หน่วยงานกำกับการเงิน",
+  s:["ระบบสี (น้ำเงิน+ดำ) ให้ความน่าเชื่อถือแกร่งที่สุด","แพตเทิร์นฟอร์มเป็นมาตรฐานทองเรื่องการเข้าถึง","กรอบโฟกัสสีเหลือง ใช้คีย์บอร์ดดีที่สุดในโลก","ดีไซน์แบนลดความรก ช่วยความน่าเชื่อถือ"],
+  w:["มุมเหลี่ยม 0px ทุกอย่าง แข็งเกินสำหรับงานไทย","ไม่มีการเคลื่อนไหวเลย คนไทยคาดหวังลูกเล่นเล็กน้อย","ฟอนต์ Transport ลิขสิทธิ์เฉพาะรัฐ UK ต้องใช้ Sarabun แทน"]},
+ {r:5,name:"US Web Design System (USWDS)",cat:"Government",pct:81,url:"https://github.com/uswds/uswds",
+  fit:"ราชการ, สาธารณสุข, หน่วยงานกำกับ, งานที่ต้องการการเข้าถึงสูงมาก",
+  s:["ดีไซน์ฟอร์มเป็นมาตรฐานทองเรื่องการเข้าถึง","ปรัชญาภาษาง่าย ลดศัพท์ยาก ประชาชนเข้าใจ","ระบบสีแบบโทเคน ปรับต่อหน่วยงานได้ง่าย","ลดการเคลื่อนไหวให้คนแพ้ภาพเคลื่อนไหวทุกจุด"],
+  w:["เน้นภาษาอังกฤษล้วน ไม่ได้ออกแบบเพื่อภาษาเอเชีย","แพตเทิร์นเฉพาะรัฐบาลกลางสหรัฐ ไม่เหมาะไทย","ความรู้สึกพรีเมียมต่ำ เด่นเข้าถึงแต่ไม่สวยหรู"]},
+ {r:6,name:"Stripe",cat:"Fintech",pct:77,url:"https://stripe.com",
+  fit:"การเงิน, แพลตฟอร์มชำระเงิน, หน่วยงานกำกับ, บริการมืออาชีพ, พอร์ทัลการเงินภาครัฐ",
+  s:["ระบบเงาหลายชั้น สร้างมิติแบบไม่ดูสำเร็จรูป","ระยะตัวอักษรหัวข้อแน่น ส่งสัญญาณพรีเมียม","การ์ดยกตัวตอนชี้เมาส์ เป็นเอกลักษณ์","เว้นช่องว่างเยอะ 96px ให้ความหรู"],
+  w:["ไล่สีพื้นหลัง Hero แรงเกินสำหรับงานราชการ","ฟอนต์ Camphor ไม่รองรับไทย ต้องใช้ Sarabun"]},
+ {r:7,name:"Wise",cat:"Fintech",pct:76,url:"https://github.com/transferwise/neptune-web",
+  fit:"โอนเงินข้ามประเทศ, ฟินเทค, แอปการเงินหลายภาษา, บริการข้ามพรมแดน, SaaS ระดับโลก",
+  s:["สีเขียวสด+เขียวเข้ม เป็นเอกลักษณ์ ไม่ใช่น้ำเงินแบงก์ทั่วไป","ปุ่มทรงแคปซูล เป็นมิตร เข้าถึงง่าย ทันสมัย","ฟอนต์หลายภาษาในตัว เหมาะงานสองภาษา","ช่องตัวเลขเรียงสวย อ่านง่าย"],
+  w:["ปุ่มสีเขียวสดเกินไปสำหรับงานกำกับ ดูไม่ขรึม","ปุ่มแคปซูล ควรใช้มุมโค้ง 6-8px แทนในงานราชการ"]},
+ {r:8,name:"Airbnb",cat:"Premium Tech",pct:75,url:"https://airbnb.design",
+  fit:"มาร์เก็ตเพลส, ท่องเที่ยว, ชุมชน, จองบริการ, แอปผู้บริโภคหลายภาษา, แบรนด์ไลฟ์สไตล์",
+  s:["สีคอรัลอุ่น ให้อารมณ์ ต่างจากน้ำเงินแบงก์","สีตัวอักษรเทาเข้มไม่ดำสนิท ดูเป็นมิตร","ช่องค้นหาทรงแคปซูล เป็นเอกลักษณ์ต้อนรับ","การ์ดขยายตอนชี้เมาส์ ให้ความรู้สึกมีชีวิต"],
+  w:["ฟอนต์ Cereal ลิขสิทธิ์ ห้ามใช้ในงานลูกค้า","สีคอรัลเป็นสีแบรนด์/ความสุข ไม่เหมาะเป็นสีแจ้งเตือน"]},
+ {r:9,name:"AWS Cloudscape",cat:"Enterprise",pct:71,url:"https://github.com/cloudscape-design/components",
+  fit:"แผงหลังบ้านองค์กร, คอนโซลจัดการคลาวด์, แดชบอร์ดข้อมูล, หลังบ้าน SaaS",
+  s:["ตารางข้อมูลปรับขนาด/เรียง/กรองได้ มาตรฐานทององค์กร","หน่วยฐาน 4px แม่นยำระดับวิศวกรรม","3 โหมดความหนาแน่น ยืดหยุ่นสำหรับผู้ใช้ขั้นสูง","แถบแจ้งเตือนบนสุดหน้า ชัดเจน"],
+  w:["หัวสีส้ม AWS เป็นแบรนด์ AWS ไม่เหมาะงานลูกค้า","หัวเมนูสีเข้มบนเว็บสาธารณะ ดูเหมือนเครื่องมือภายใน"]},
+ {r:10,name:"Revolut",cat:"Fintech",pct:71,url:"https://www.revolut.com",
+  fit:"นีโอแบงก์, ฟินเทคยุคใหม่, แพลตฟอร์มคริปโต, แอปเงินระหว่างประเทศ, การเงินดิจิทัลพรีเมียม",
+  s:["น้ำเงินไฟฟ้า #0075EB ทันสมัย ไม่ใช่แบงก์เดิมๆ","ตัวอักษรหนาเด่น ให้ความมั่นใจและพลัง","แสดงจำนวนเงินตัวใหญ่ ชัดเจนด้านการเงิน","มุมการ์ดโค้ง 16-24px ดูพรีเมียมยุคใหม่"],
+  w:["ฟอนต์ Revolut Grotesk เป็นลิขสิทธิ์ ต้องใช้ Inter แทน","Hero สีเข้มมาก ไม่เหมาะงานราชการ/ทางการไทย"]},
+ {r:11,name:"BMW",cat:"Luxury",pct:71,url:"https://www.bmw.com",
+  fit:"รถยนต์หรู, แบรนด์เทคพรีเมียม, การเงินระดับสูง, พอร์ทัลผู้บริหาร, องค์กรพรีเมียม",
+  s:["หัวข้อหนา 700 + เนื้อบาง 300 ตัดกันแบบหรู","ระยะตัวอักษรแน่นมากบนหัวใหญ่ ส่งสัญญาณความแม่นยำ","ปุ่มมุมเหลี่ยม 0px ดูคมแบบวิศวกรรม","หน้ากว้าง 1440px + เว้นช่อง 120px ให้ความหรู"],
+  w:["ฟอนต์ BMW Type Next ลิขสิทธิ์ ต้องใช้ Inter แทน","มุมเหลี่ยม 0px ทุกที่ เย็นชาเกินสำหรับงานสาธารณะไทย"]},
+ {r:12,name:"Vercel / Geist",cat:"Premium Tech",pct:67,url:"https://vercel.com/design",
+  fit:"แพลตฟอร์มนักพัฒนา, ผลิตภัณฑ์ SaaS, สตาร์ทอัพเทค, บริการโครงสร้างพื้นฐาน, แลนดิ้งเพจพรีเมียม",
+  s:["ฟอนต์ Geist (ฟรี MIT) ดูพรีเมียมสายนักพัฒนา","ระยะตัวอักษรแน่นมากบนหัวใหญ่ หรูชัดสุด","ขาวดำล้วน มั่นใจ ไม่ต้องพึ่งสี","จังหวะเคลื่อนไหวสแนปแบบพรีเมียม"],
+  w:["พื้นหลังดำสนิท ไม่เหมาะเว็บราชการ/สาธารณะ","โทนขาวดำล้วน คนไทยต้องการสีเป็นตัวบอกทาง"]},
+ {r:13,name:"Linear",cat:"Premium Tech",pct:66,url:"https://linear.app",
+  fit:"เครื่องมือจัดการโปรเจกต์, ผลิตภัณฑ์ SaaS, องค์กร B2B, เครื่องมือนักพัฒนา, ติดตามงาน",
+  s:["สีม่วง #5E6AD2 สวยเป็นเอกลักษณ์ ไม่โหล","ไล่เฉดพื้นมืดสร้างมิติโดยไม่ใช้เงา","ตอบสนองเร็วมาก 120ms ความเร็วระดับมือโปร","แพตเทิร์น Command palette เป็นมาตรฐานทองผู้ใช้ขั้นสูง"],
+  w:["โหมดมืดเป็นค่าเริ่มต้น ไม่เหมาะราชการ/สาธารณะไทย","ตัวอักษรเนื้อ 14px เล็กไป ควรเพิ่มเป็น 16px เพื่อการเข้าถึง"]},
+ {r:14,name:"Notion",cat:"Premium Tech",pct:65,url:"https://www.notion.so/blog/notion-design",
+  fit:"คลังความรู้, เว็บเอกสาร, แพลตฟอร์มเนื้อหา, วิกิภายใน, CMS, เครื่องมือทำงานร่วมกัน",
+  s:["พื้นหลังครีม #F1F1EF ให้ความอบอุ่นที่ขาวล้วนให้ไม่ได้","ระบบสีบล็อกพาสเทล แท็ก/กล่องเน้นที่ไม่จัดจ้าน","เงาบางๆ สองชั้น ให้มิติแบบธรรมชาติ","ระยะบรรทัด 1.6-1.8 อ่านเนื้อหายาวสบายตา"],
+  w:["พื้นครีมไม่เหมาะหลังบ้านข้อมูลเยอะ ดูเก่าและไม่แม่นยำ","ไม่มีสีแบรนด์หลัก งานราชการ/กำกับต้องการสีแสดงอำนาจ"]},
+ {r:15,name:"Ferrari",cat:"Luxury",pct:60,url:"https://www.ferrari.com",
+  fit:"แบรนด์หรูสุดขั้ว, มอเตอร์สปอร์ต, ไลฟ์สไตล์เอ็กซ์คลูซีฟ, แบรนด์แพสชัน, ของสะสมพรีเมียม",
+  s:["สีแดง Rosso Corsa สีที่เร้าอารมณ์ที่สุดในงานหรู","ตัดน้ำหนักตัวอักษรสุดขั้ว (800 หัว / 300 เนื้อ) ดราม่าสุด","เว้นช่อง 160px มากที่สุดในทุกระบบ","เลย์เอาต์ภาพเต็มจอ ภาพคือดีไซน์"],
+  w:["ฟอนต์ Scuderia Ferrari ลิขสิทธิ์","สีแดงใช้เป็นสีเน้นเท่านั้น ไม่ใช่พื้นหลัง — แคบมากสำหรับงานทั่วไป"]},
+];
+const medals={1:"ที่ 1",2:"ที่ 2",3:"ที่ 3"};
+document.getElementById('grid').innerHTML = data.map(d=>`
+  <div class="row ${d.r<=3?'r'+d.r:''}">
+    <div class="rank">${d.r}</div>
+    <div>
+      <div><span class="name">${d.name}</span><span class="cat">· ${d.cat}</span>${d.r<=3?`<span class="medal">${medals[d.r]}</span>`:''}</div>
+      <div class="scorebar"><div class="track"><div class="fill" style="width:${d.pct}%"></div></div><span class="pct">${d.pct}/100</span></div>
+      <div class="fit"><b>เหมาะกับ:</b> ${d.fit}</div>
+      <div class="swot">
+        <div class="s"><h4>จุดแข็ง</h4><ul>${d.s.map(x=>`<li>${x}</li>`).join('')}</ul></div>
+        <div class="w"><h4>จุดอ่อน</h4><ul>${d.w.map(x=>`<li>${x}</li>`).join('')}</ul></div>
+      </div>
+      <a class="src" href="${d.url}" target="_blank" rel="noopener">เปิดแหล่งทางการ ↗</a>
+    </div>
+  </div>`).join('');
+</script>
+</body>
+</html>

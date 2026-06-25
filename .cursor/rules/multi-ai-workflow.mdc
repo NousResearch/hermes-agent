@@ -11,5 +11,4 @@ alwaysApply: true
 
 ## Hermes Prompt Shortcuts
 
-If the user invokes `Use Act-As`, `Use Comply`, `Use Business Plan`, `Go to Sleep`, `Review Chat`, or an alias, read `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/prompt-shortcut-registry.md` and then open the mapped prompt file before answering. Do not guess or summarize the shortcut from memory.
-
+If the user invokes `Use Act-As`, `Use Comply`, `Use Summary`, `Use Scan Feature`, `Use Opus Plan`, `Use AI Pair`, `Use Pair AI`, `Use Business Plan`, `Use Viber Structure`, `Use Viber Audit`, `Use Impeccable`, `Use Blog Auto`, `Use WOW Resource`, `Use Flow Guardian`, `Use New Chat`, `Use Continue`, `Review Chat`, or an alias, read `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/prompt-shortcut-registry.md` and then open the mapped prompt file before answering. Do not guess or summarize the shortcut from memory.

@@ -1,10 +1,34 @@
 # Phase 013: Destructive Workspace Retirement Guard
 
-status: open
+status: implemented-local-tested · awaiting owner commit + VPS deploy
 priority: P0
 owner: Hermes Agent
 reported_at: 2026-06-07 Asia/Bangkok
+resolved_at: 2026-06-21 Asia/Bangkok (via Use AI Relay · Codex coded · Opus reviewed)
 project: EmailHunter
+
+## Resolution (2026-06-21)
+
+Implemented a narrow workspace-retirement guard in `tools/approval.py`:
+
+- `detect_workspace_retirement_command()` + `WORKSPACE_RETIREMENT_PATTERNS`
+  block whole project-root / worktree-root deletion: `git worktree remove`,
+  recursive delete of any `/.worktree/` path, and recursive delete of a
+  `/srv/projects/<name>` root (NOT subpaths).
+- `_workspace_retirement_block_result()` returns a hardline-style block with
+  a message: archive + restore-verify first, never auto-delete from
+  "no leftovers" / "100%".
+- Wired at BOTH `check_dangerous_command` call sites, right after the existing
+  hardline floor (so `--yolo` cannot bypass it).
+- Tests: `tests/tools/test_workspace_retirement_guard.py` (19 cases, 8 block /
+  11 allow) — all pass; existing `test_command_guards.py` (19) still pass;
+  destructive-confirm tests (14) still pass. No false positive on
+  `rm -rf /tmp/x`, `node_modules`, project subpaths, `git worktree list/prune`.
+
+Still pending (NOT done autonomously — needs owner):
+- commit + merge (owner approval gate)
+- deploy to the running VPS Hermes runtime at
+  `/home/linux-nat/SynerryTools/hermes-agent/main`
 
 ## Incident
 

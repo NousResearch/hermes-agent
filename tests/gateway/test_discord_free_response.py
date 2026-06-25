@@ -115,6 +115,7 @@ def adapter(monkeypatch):
         "DISCORD_IGNORED_CHANNELS",
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
+        "DISCORD_THREAD_HISTORY_RECALL",
         "DISCORD_ALLOW_BOTS",
     ):
         monkeypatch.delenv(_var, raising=False)
@@ -182,6 +183,15 @@ class FakeHistoryChannel(FakeTextChannel):
                 yield message
 
         return _iter()
+
+
+class FakeHistoryThread(FakeThread):
+    def __init__(self, history_messages, channel_id: int = 1, name: str = "thread", parent=None, guild_name: str = "Hermes Server"):
+        super().__init__(channel_id=channel_id, name=name, parent=parent, guild_name=guild_name)
+        self._history_messages = list(history_messages)
+
+    def history(self, *, limit, before, after=None, oldest_first=None):
+        return FakeHistoryChannel.history(self, limit=limit, before=before, after=after, oldest_first=oldest_first)
 
 
 @pytest.mark.asyncio
@@ -665,6 +675,39 @@ async def test_fetch_channel_context_stops_at_self_message_and_reverses_to_chron
         "[Recent channel messages]\n"
         "[Gemini [bot]] latest bot note\n"
         "[Alice] latest human note"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_recalls_earlier_thread_messages_before_self_boundary(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "none")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    meghann = SimpleNamespace(id=56, display_name="Meghann", name="Meghann", bot=False)
+    brett = SimpleNamespace(id=57, display_name="Brett", name="Brett", bot=False)
+
+    thread = FakeHistoryThread(
+        [
+            make_history_message(author=meghann, content="ok fix it", msg_id=6),
+            make_history_message(author=adapter._client.user, content="I cannot see prior thread history", msg_id=5),
+            make_history_message(author=meghann, content="add to mission control and begin implementation", msg_id=4),
+            make_history_message(author=brett, content="screenshot says live video is black", msg_id=3),
+        ],
+        channel_id=456,
+        name="mission-control-triage",
+    )
+
+    result = await adapter._fetch_channel_context(
+        thread,
+        before=make_message(channel=thread, content="trigger", msg_type=discord_platform.discord.MessageType.reply),
+    )
+
+    assert result == (
+        "[Earlier thread messages before Hermes' last reply]\n"
+        "[Brett] screenshot says live video is black\n"
+        "[Meghann] add to mission control and begin implementation\n\n"
+        "[Recent channel messages]\n"
+        "[Meghann] ok fix it"
     )
 
 

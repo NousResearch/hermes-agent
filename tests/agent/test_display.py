@@ -40,6 +40,38 @@ class TestBuildToolPreview:
         assert result is not None
         assert "ls -la" in result
 
+    def test_terminal_preview_compacts_shell_plumbing(self):
+        result = build_tool_preview(
+            "terminal",
+            {
+                "command": (
+                    'cd /Users/brooklyn/www/bb-rainbows && pnpm run lint 2>&1 '
+                    '| tail -20; echo "lint_exit=${PIPESTATUS[0]}"'
+                )
+            },
+        )
+        assert result == "pnpm run lint"
+
+    def test_terminal_preview_compacts_multi_command_probe(self):
+        result = build_tool_preview(
+            "terminal",
+            {
+                "command": (
+                    'which node pnpm corepack; node -v; echo "---"; '
+                    'corepack --version 2>&1; echo "---pnpm via corepack---"; '
+                    'pnpm --version 2>&1 | tail -5'
+                )
+            },
+        )
+        assert result == "which node pnpm corepack + 3 commands"
+
+    def test_execute_code_preview_uses_same_shell_summary(self):
+        result = build_tool_preview(
+            "execute_code",
+            {"code": 'cd /tmp/demo && python -m pytest -q 2>&1 | tail -5; echo "exit=$?"'},
+        )
+        assert result == "python -m pytest -q"
+
     def test_web_search_preview(self):
         result = build_tool_preview("web_search", {"query": "hello world"})
         assert result is not None
@@ -48,7 +80,11 @@ class TestBuildToolPreview:
     def test_read_file_preview(self):
         result = build_tool_preview("read_file", {"path": "/tmp/test.py", "offset": 1})
         assert result is not None
-        assert "/tmp/test.py" in result
+        assert result == "test.py L1"
+
+    def test_read_file_preview_includes_requested_line_range(self):
+        result = build_tool_preview("read_file", {"path": "./package.json", "offset": 1, "limit": 5})
+        assert result == "package.json L1-5"
 
     def test_unknown_tool_with_fallback_key(self):
         """Unknown tool but with a recognized fallback key should still preview."""
@@ -145,7 +181,8 @@ class TestCuteToolMessagePreviewLength:
 
         line = get_cute_tool_message("terminal", {"command": command}, 0.1)
 
-        assert command in line
+        assert "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")'" in line
+        assert "head -5" not in line
         assert "..." not in line
 
     def test_terminal_preview_uses_positive_configured_limit(self):
@@ -154,8 +191,8 @@ class TestCuteToolMessagePreviewLength:
 
         line = get_cute_tool_message("terminal", {"command": command}, 0.1)
 
-        assert command[:77] in line
-        assert "..." in line
+        assert "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")'" in line
+        assert "..." not in line
         assert "head -5" not in line
 
     def test_search_files_preview_uses_positive_configured_limit_not_default(self):
@@ -173,7 +210,7 @@ class TestCuteToolMessagePreviewLength:
 
         line = get_cute_tool_message("read_file", {"path": path}, 0.1)
 
-        assert path in line
+        assert "test-output.txt" in line
         assert "..." not in line
 
     def test_write_file_lint_error_result_is_not_marked_failed(self):

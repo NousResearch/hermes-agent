@@ -487,6 +487,21 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     return result if changed else messages
 
 
+def _str_arg(args: dict, key: str, default: str = "") -> str:
+    """Safely get a string argument from parsed tool args.
+
+    LLMs sometimes return non-string parameter values (e.g. bool, int) for
+    tool calls.  Calling ``len()`` / ``.count()`` / slicing on those causes
+    ``TypeError`` / ``AttributeError`` which crashes context compression.
+    This helper coerces any value to ``str`` so downstream code can assume
+    a string is always returned.
+    """
+    val = args.get(key, default)
+    if isinstance(val, str):
+        return val
+    return str(val) if val is not None else default
+
+
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
     """Create an informative 1-line summary of a tool call + result.
 
@@ -510,7 +525,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
     line_count = content.count("\n") + 1 if content.strip() else 0
 
     if tool_name == "terminal":
-        cmd = args.get("command", "")
+        cmd = _str_arg(args, "command")
         if len(cmd) > 80:
             cmd = cmd[:77] + "..."
         exit_match = re.search(r'"exit_code"\s*:\s*(-?\d+)', content)
@@ -524,7 +539,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
 
     if tool_name == "write_file":
         path = args.get("path", "?")
-        written_lines = args.get("content", "").count("\n") + 1 if args.get("content") else "?"
+        written_lines = _str_arg(args, "content").count("\n") + 1 if args.get("content") else "?"
         return f"[write_file] wrote to {path} ({written_lines} lines)"
 
     if tool_name == "search_files":
@@ -559,14 +574,15 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[web_extract] {url_desc} ({content_len:,} chars)"
 
     if tool_name == "delegate_task":
-        goal = args.get("goal", "")
+        goal = _str_arg(args, "goal")
         if len(goal) > 60:
             goal = goal[:57] + "..."
         return f"[delegate_task] '{goal}' ({content_len:,} chars result)"
 
     if tool_name == "execute_code":
-        code_preview = (args.get("code") or "")[:60].replace("\n", " ")
-        if len(args.get("code", "")) > 60:
+        code_str = _str_arg(args, "code")
+        code_preview = code_str[:60].replace("\n", " ")
+        if len(code_str) > 60:
             code_preview += "..."
         return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
@@ -575,7 +591,7 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
         return f"[{tool_name}] name={name} ({content_len:,} chars)"
 
     if tool_name == "vision_analyze":
-        question = args.get("question", "")[:50]
+        question = _str_arg(args, "question")[:50]
         return f"[vision_analyze] '{question}' ({content_len:,} chars)"
 
     if tool_name == "memory":

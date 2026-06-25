@@ -54,6 +54,7 @@ describe('CodexQuotaCard', () => {
       isPending: false,
       data: {
         account_id: fullAccountId,
+        account_email: 'coder@example.com',
         account_label: 'work-codex-account',
         available: true,
         details: [],
@@ -72,6 +73,8 @@ describe('CodexQuotaCard', () => {
     expect(screen.getByText('Profile')).toBeTruthy()
     expect(screen.getByText('acewill-dev')).toBeTruthy()
     expect(screen.getByText('Account')).toBeTruthy()
-    expect(screen.getByText(`work-codex-account (${fullAccountId})`)).toBeTruthy()
+    expect(
+      screen.getByText(`coder@example.com (work-codex-account · ${fullAccountId})`)
+    ).toBeTruthy()
   })
 })

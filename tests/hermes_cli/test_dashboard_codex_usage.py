@@ -51,6 +51,7 @@ def test_codex_usage_serializes_account_snapshot(monkeypatch, _isolate_hermes_ho
             title="OpenAI Codex quota",
             plan="Plus",
             account_id="acct_user_full_1234567890abcdef",
+            account_email="coder@example.com",
             account_label="work-codex-account",
             windows=(
                 AccountUsageWindow(
@@ -69,6 +70,7 @@ def test_codex_usage_serializes_account_snapshot(monkeypatch, _isolate_hermes_ho
     assert resp.status_code == 200
     assert resp.json() == {
         "account_id": "acct_user_full_1234567890abcdef",
+        "account_email": "coder@example.com",
         "account_label": "work-codex-account",
         "available": True,
         "details": ["Credits balance: unlimited"],

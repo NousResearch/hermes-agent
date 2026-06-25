@@ -3550,6 +3550,7 @@ def _serialize_account_usage(snapshot: Any, *, provider: str = "openai-codex") -
         return {
             "available": False,
             "account_id": None,
+            "account_email": None,
             "account_label": None,
             "details": [],
             "error": "Codex quota unavailable",
@@ -3565,6 +3566,7 @@ def _serialize_account_usage(snapshot: Any, *, provider: str = "openai-codex") -
     return {
         "available": bool(getattr(snapshot, "available", False)),
         "account_id": getattr(snapshot, "account_id", None),
+        "account_email": getattr(snapshot, "account_email", None),
         "account_label": getattr(snapshot, "account_label", None),
         "details": list(getattr(snapshot, "details", ()) or ()),
         "error": unavailable_reason,

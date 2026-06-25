@@ -51,7 +51,7 @@ export const CodexQuotaCard: FC<CodexQuotaCardProps> = ({ enabled, profile, prov
 
   const windows = data.windows ?? []
   const plan = data.plan ? ` · ${data.plan}` : ''
-  const accountDisplay = formatAccountDisplay(data.account_label, data.account_id)
+  const accountDisplay = formatAccountDisplay(data.account_email, data.account_label, data.account_id)
 
   return (
     <div className="min-w-52 max-w-64 select-none px-3 py-2.5 text-xs">
@@ -128,9 +128,26 @@ function normalizeProvider(value: string): string {
     .toLowerCase()
 }
 
-function formatAccountDisplay(label?: null | string, accountId?: null | string): string {
+function formatAccountDisplay(
+  accountEmail?: null | string,
+  label?: null | string,
+  accountId?: null | string
+): string {
+  const cleanEmail = String(accountEmail || '').trim()
   const cleanLabel = String(label || '').trim()
   const cleanId = String(accountId || '').trim()
+
+  if (cleanEmail) {
+    const secondary = [cleanLabel, cleanId]
+      .filter(value => value && value !== cleanEmail)
+      .filter((value, index, values) => values.indexOf(value) === index)
+
+    if (secondary.length > 0) {
+      return `${cleanEmail} (${secondary.join(' · ')})`
+    }
+
+    return cleanEmail
+  }
 
   if (cleanLabel && cleanId && cleanLabel !== cleanId) {
     return `${cleanLabel} (${cleanId})`

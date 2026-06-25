@@ -248,6 +248,7 @@ export interface CodexUsageWindow {
 
 export interface CodexUsageResponse {
   account_id?: null | string
+  account_email?: null | string
   account_label?: null | string
   available: boolean
   details: string[]

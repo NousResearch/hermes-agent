@@ -38,6 +38,7 @@ class AccountUsageSnapshot:
     title: str = "Account limits"
     plan: Optional[str] = None
     account_id: Optional[str] = None
+    account_email: Optional[str] = None
     account_label: Optional[str] = None
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
@@ -465,6 +466,9 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
         response.raise_for_status()
     payload = response.json() or {}
     account = payload.get("account") or {}
+    account_email = (
+        str(payload.get("account_email") or account.get("email") or "").strip() or None
+    )
     if not account_id:
         account_id = str(payload.get("account_id") or account.get("id") or "").strip() or None
     if not account_label:
@@ -472,7 +476,6 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
             payload.get("account_label")
             or account.get("label")
             or account.get("name")
-            or account.get("email")
             or ""
         ).strip() or None
     rate_limit = payload.get("rate_limit") or {}
@@ -503,6 +506,7 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
         fetched_at=_utc_now(),
         plan=_title_case_slug(payload.get("plan_type")),
         account_id=account_id,
+        account_email=account_email,
         account_label=account_label,
         windows=tuple(windows),
         details=tuple(details),

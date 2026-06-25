@@ -1,0 +1,18 @@
+name: observeco
+version: "1.0.0"
+description: "ObserveCo observability for Hermes — exports token usage, session lifecycle, tool calls, and error telemetry to an ObserveCo OTEL listener. Opt-in via `hermes plugins enable observability/observeco`."
+author: ObserveCo
+requires_env:
+  - HERMES_OBSERVECO_ENDPOINT
+hooks:
+  - pre_api_request
+  - post_api_request
+  - api_request_error
+  - on_session_start
+  - on_session_end
+  - on_session_finalize
+  - pre_tool_call
+  - post_tool_call
+  - subagent_start
+  - subagent_stop
+  - pre_gateway_dispatch

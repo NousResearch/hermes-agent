@@ -665,7 +665,7 @@ def _build_native_vision_tool_result(
         text_part += f"\n\nQuestion: {question.strip()}"
 
     summary = (
-        f"Image attached natively for the main model "
+        "Image attached natively for the main model "
         f"({image_size_bytes / 1024:.1f} KB). "
         "Answer using built-in vision."
     )
@@ -769,12 +769,12 @@ async def _vision_analyze_native(
             # session-wedging payload.
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 return tool_error(
-                    f"Image too large for vision API: base64 payload is "
+                    "Image too large for vision API: base64 payload is "
                     f"{len(image_data_url) / (1024 * 1024):.1f} MB "
                     f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) "
-                    f"even after resizing. Install Pillow "
-                    f"(`pip install Pillow`) for better auto-resize, "
-                    f"or compress the image manually.",
+                    "even after resizing. Install Pillow "
+                    "(`pip install Pillow`) for better auto-resize, "
+                    "or compress the image manually.",
                     success=False,
                 )
 
@@ -913,12 +913,12 @@ async def vision_analyze_tool(
                 temp_image_path, mime_type=detected_mime_type)
             if len(image_data_url) > _MAX_BASE64_BYTES:
                 raise ValueError(
-                    f"Image too large for vision API: base64 payload is "
+                    "Image too large for vision API: base64 payload is "
                     f"{len(image_data_url) / (1024 * 1024):.1f} MB "
                     f"(limit {_MAX_BASE64_BYTES / (1024 * 1024):.0f} MB) "
-                    f"even after resizing. "
-                    f"Install Pillow (`pip install Pillow`) for better auto-resize, "
-                    f"or compress the image manually."
+                    "even after resizing. "
+                    "Install Pillow (`pip install Pillow`) for better auto-resize, "
+                    "or compress the image manually."
                 )
 
         debug_call_data["image_size_bytes"] = image_size_bytes
@@ -1411,7 +1411,7 @@ async def video_analyze_tool(
             raise ValueError(
                 f"Video too large for API: base64 payload is {data_size_mb:.1f} MB "
                 f"(limit {_MAX_VIDEO_BASE64_BYTES / (1024 * 1024):.0f} MB). "
-                f"Compress or trim the video and retry."
+                "Compress or trim the video and retry."
             )
 
         debug_call_data["video_size_bytes"] = video_size_bytes
@@ -1501,8 +1501,8 @@ async def video_analyze_tool(
             "video_url",
         )):
             analysis = (
-                f"The model does not support video analysis or the request was "
-                f"rejected. Ensure you're using a video-capable model "
+                "The model does not support video analysis or the request was "
+                "rejected. Ensure you're using a video-capable model "
                 f"(e.g. google/gemini-2.5-flash). Error: {e}"
             )
         elif any(hint in err_str for hint in (

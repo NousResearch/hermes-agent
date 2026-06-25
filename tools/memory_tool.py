@@ -93,13 +93,13 @@ def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
         "success": False,
         "error": (
             f"Refusing to write {path.name}: file on disk has content that "
-            f"wouldn't round-trip through the memory tool (likely added by "
-            f"the patch tool, a shell append, a manual edit, or a "
+            "wouldn't round-trip through the memory tool (likely added by "
+            "the patch tool, a shell append, a manual edit, or a "
             f"concurrent session). A snapshot was saved to {bak_path}. "
-            f"Resolve the drift first — either rewrite the file as a clean "
-            f"§-delimited list of entries, or move the extra content out — "
-            f"then retry. This guard exists to prevent silent data loss "
-            f"(issue #26045)."
+            "Resolve the drift first — either rewrite the file as a clean "
+            "§-delimited list of entries, or move the extra content out — "
+            "then retry. This guard exists to prevent silent data loss "
+            "(issue #26045)."
         ),
         "drift_backup": bak_path,
         "remediation": (
@@ -197,8 +197,8 @@ class MemoryStore:
                 sanitized.append(
                     f"[BLOCKED: {filename} entry contained threat pattern(s): "
                     f"{', '.join(findings)}. Removed from system prompt; "
-                    f"use memory(action=remove) "
-                    f"to delete the original.]"
+                    "use memory(action=remove) "
+                    "to delete the original.]"
                 )
             else:
                 sanitized.append(entry)
@@ -335,9 +335,9 @@ class MemoryStore:
                     "error": (
                         f"Memory at {current:,}/{limit:,} chars. "
                         f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Consolidate now: use 'replace' to merge overlapping entries into "
-                        f"shorter ones or 'remove' stale or less important entries (see "
-                        f"current_entries below), then retry this add — all in this turn."
+                        "Consolidate now: use 'replace' to merge overlapping entries into "
+                        "shorter ones or 'remove' stale or less important entries (see "
+                        "current_entries below), then retry this add — all in this turn."
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
@@ -400,9 +400,9 @@ class MemoryStore:
                     "success": False,
                     "error": (
                         f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content, or 'remove' other stale or less important "
-                        f"entries to make room (see current_entries below), then retry — all "
-                        f"in this turn."
+                        "Shorten the new content, or 'remove' other stale or less important "
+                        "entries to make room (see current_entries below), then retry — all "
+                        "in this turn."
                     ),
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
@@ -545,7 +545,7 @@ class MemoryStore:
                     "error": (
                         f"After applying all {len(operations)} operations, memory would be at "
                         f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
-                        f"entries in the same batch (see current_entries below), then retry."
+                        "entries in the same batch (see current_entries below), then retry."
                     ),
                     "current_entries": self._entries_for(target),
                     "usage": f"{current:,}/{limit:,}",
@@ -894,7 +894,7 @@ def _missing_old_text_error(store: "MemoryStore", target: str, action: str) -> s
             "error": (
                 f"'{action}' needs old_text -- a short unique substring of the entry "
                 f"to {action}. None was provided. Reissue the {action} with old_text "
-                f"set to part of one of the current_entries below."
+                "set to part of one of the current_entries below."
             ),
             "current_entries": entries,
             "usage": f"{current:,}/{limit:,}",

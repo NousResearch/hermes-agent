@@ -172,7 +172,7 @@ def _validate_delete_target(skill_dir: Path) -> Optional[str]:
     if _is_path_redirect(skill_dir):
         return (
             f"Refusing to delete '{skill_dir}': the skill directory is a "
-            f"symlink/junction. Remove the link target manually if intended."
+            "symlink/junction. Remove the link target manually if intended."
         )
 
     try:
@@ -192,7 +192,7 @@ def _validate_delete_target(skill_dir: Path) -> Optional[str]:
         if resolved == root:
             return (
                 f"Refusing to delete '{skill_dir}': resolves to the skills root "
-                f"itself, which would remove every installed skill."
+                "itself, which would remove every installed skill."
             )
         # (1) Must be strictly inside a known root.
         try:
@@ -204,7 +204,7 @@ def _validate_delete_target(skill_dir: Path) -> Optional[str]:
 
     return (
         f"Refusing to delete '{skill_dir}': path does not resolve inside any "
-        f"known skills root."
+        "known skills root."
     )
 
 
@@ -225,10 +225,10 @@ def _pinned_guard(name: str) -> Optional[str]:
         if rec.get("pinned"):
             return (
                 f"Skill '{name}' is pinned and cannot be deleted by "
-                f"skill_manage. Ask the user to run "
+                "skill_manage. Ask the user to run "
                 f"`hermes curator unpin {name}` if they want to delete it. "
-                f"Patches and edits are allowed on pinned skills; only "
-                f"deletion is blocked."
+                "Patches and edits are allowed on pinned skills; only "
+                "deletion is blocked."
             )
     except Exception:
         logger.debug("pinned-guard lookup failed for %s", name, exc_info=True)
@@ -258,7 +258,7 @@ def _validate_name(name: str) -> Optional[str]:
     if not VALID_NAME_RE.match(name):
         return (
             f"Invalid skill name '{name}'. Use lowercase letters, numbers, "
-            f"hyphens, dots, and underscores. Must start with a letter or digit."
+            "hyphens, dots, and underscores. Must start with a letter or digit."
         )
     return None
 
@@ -336,8 +336,8 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
         return (
             f"{label} content is {len(content):,} characters "
             f"(limit: {MAX_SKILL_CONTENT_CHARS:,}). "
-            f"Consider splitting into a smaller SKILL.md with supporting files "
-            f"in references/ or templates/."
+            "Consider splitting into a smaller SKILL.md with supporting files "
+            "in references/ or templates/."
         )
     return None
 
@@ -451,18 +451,18 @@ def _skill_not_found_error(name: str, suffix: str = "") -> str:
         if len(others) == 1:
             other_profile, other_path = others[0]
             base += (
-                f" A skill by that name exists in profile "
+                " A skill by that name exists in profile "
                 f"'{other_profile}' ({other_path}). To edit a skill in "
-                f"another profile, switch profiles (`hermes -p "
+                "another profile, switch profiles (`hermes -p "
                 f"{other_profile}`) or operate via explicit file tools "
-                f"with ``cross_profile=True``."
+                "with ``cross_profile=True``."
             )
         else:
             names = ", ".join(f"'{p}'" for p, _ in others)
             base += (
                 f" Skills by that name exist in other profiles: {names}. "
-                f"Switch profiles (`hermes -p <name>`) to edit there, or "
-                f"operate via explicit file tools with ``cross_profile=True``."
+                "Switch profiles (`hermes -p <name>`) to edit there, or "
+                "operate via explicit file tools with ``cross_profile=True``."
             )
     else:
         base += " Use skills_list() to see available skills."
@@ -802,7 +802,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
                 "success": False,
                 "error": (
                     f"absorbed_into='{target_name}' does not exist. "
-                    f"Create or patch the umbrella skill first, then retry the delete."
+                    "Create or patch the umbrella skill first, then retry the delete."
                 ),
             }
 
@@ -848,7 +848,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
             "error": (
                 f"File content is {content_bytes:,} bytes "
                 f"(limit: {MAX_SKILL_FILE_BYTES:,} bytes / 1 MiB). "
-                f"Consider splitting into smaller files."
+                "Consider splitting into smaller files."
             ),
         }
     err = _validate_content_size(file_content, label=file_path)

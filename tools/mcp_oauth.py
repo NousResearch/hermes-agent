@@ -404,8 +404,8 @@ async def _redirect_handler(authorization_url: str) -> None:
     as a fallback for headless/SSH/gateway environments.
     """
     msg = (
-        f"\n  MCP OAuth: authorization required.\n"
-        f"  Open this URL in your browser:\n\n"
+        "\n  MCP OAuth: authorization required.\n"
+        "  Open this URL in your browser:\n\n"
         f"    {authorization_url}\n"
     )
     print(msg, file=sys.stderr)
@@ -418,20 +418,20 @@ async def _redirect_handler(authorization_url: str) -> None:
     # port forward so the redirect tunnels through.
     if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
         print(
-            f"  Remote session detected. After you authorize, the provider redirects to\n"
+            "  Remote session detected. After you authorize, the provider redirects to\n"
             f"    http://127.0.0.1:{_oauth_port}/callback\n"
-            f"  which only the listener on THIS machine can receive. Two options:\n"
-            f"\n"
-            f"    1. Easiest — when your browser shows a connection error after\n"
-            f"       authorizing, copy the full URL from the address bar and paste\n"
-            f"       it at the prompt below. The pasted ``code=...&state=...`` is\n"
-            f"       enough to complete the flow.\n"
-            f"\n"
-            f"    2. Or forward the port first in a separate terminal:\n"
+            "  which only the listener on THIS machine can receive. Two options:\n"
+            "\n"
+            "    1. Easiest — when your browser shows a connection error after\n"
+            "       authorizing, copy the full URL from the address bar and paste\n"
+            "       it at the prompt below. The pasted ``code=...&state=...`` is\n"
+            "       enough to complete the flow.\n"
+            "\n"
+            "    2. Or forward the port first in a separate terminal:\n"
             f"         ssh -N -L {_oauth_port}:127.0.0.1:{_oauth_port} <user>@<this-host>\n"
-            f"       then open the URL above and let it redirect normally.\n"
-            f"\n"
-            f"  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
+            "       then open the URL above and let it redirect normally.\n"
+            "\n"
+            "  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
             file=sys.stderr,
         )
 

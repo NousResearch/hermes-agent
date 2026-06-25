@@ -10273,7 +10273,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except Exception:
                     pass  # Best-effort
 
-            print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
+            if self.agent is not None:
+                print(f"  ✅ Agent updated — {len(self.agent.tools or [])} tool(s) available")
+            else:
+                print(
+                    f"  ✅ MCP registry updated — {len(new_tools)} MCP tool(s) available; "
+                    "agent will load tools on the next message"
+                )
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")

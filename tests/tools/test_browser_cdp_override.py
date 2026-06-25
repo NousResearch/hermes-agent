@@ -162,6 +162,30 @@ class TestGetCdpOverride:
         assert resolved == WS_URL
         mock_get.assert_called_once_with(VERSION_URL, timeout=10)
 
+    def test_camofox_yields_to_config_cdp_override(self, monkeypatch):
+        """CAMOFOX_URL + a persistent browser.cdp_url config override must NOT
+        report camofox mode: the CDP browser takes precedence so navigation is
+        not routed through Camofox, and the CDP backend stays non-local for SSRF
+        checks. Regression for the env-only suppression gap (config CDP was
+        ignored, so CAMOFOX_URL + config CDP still dispatched to Camofox)."""
+        import tools.browser_camofox as bc
+
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+
+        # No CDP anywhere -> camofox mode is on.
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            assert bc.is_camofox_mode() is True
+
+        # A config-only CDP override suppresses camofox.
+        with patch("hermes_cli.config.read_raw_config",
+                   return_value={"browser": {"cdp_url": HTTP_URL}}):
+            assert bc.is_camofox_mode() is False
+
+        # The env override still suppresses camofox.
+        monkeypatch.setenv("BROWSER_CDP_URL", HTTP_URL)
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            assert bc.is_camofox_mode() is False
 
 class TestCreateCdpSession:
     """_create_cdp_session() must sanitize the CDP URL before logging.

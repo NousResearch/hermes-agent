@@ -21,6 +21,7 @@ Env var fallbacks (used when the corresponding arg is not passed):
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 import sys
@@ -122,6 +123,26 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     return valid, None
 
 
+def _output_tail(text: str, *, max_lines: int = 12, max_chars: int = 2000) -> str:
+    """Return the last few non-empty lines of captured output, bounded.
+
+    Surfaces a real provider/auth error (e.g. an Anthropic 401 or a billing
+    400) that the provider adapter prints — to stdout, in practice — before the
+    agent loop returns an empty response. Without it, ``hermes -z`` fails with
+    only the generic "no final response" message. See #45155.
+    """
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    tail = "\n".join(lines[-max_lines:])
+    if len(tail) > max_chars:
+        tail = tail[-max_chars:]
+        # Start on a clean line boundary so the snippet doesn't begin mid-line.
+        newline = tail.find("\n")
+        tail = "…" + (tail[newline + 1 :] if newline != -1 else tail)
+    return tail
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
@@ -171,38 +192,38 @@ def run_oneshot(
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
 
-    # Redirect stderr AND stdout to devnull for the entire call tree.
-    # We'll print the final response to the real stdout at the end.
+    # Capture stdout+stderr during the run so a real provider/auth error can be
+    # surfaced if the agent yields no response. The final response is returned
+    # by _run_agent (not printed), so buffering the streams is safe. Previously
+    # both went to devnull, so a 401/400/billing error printed by the provider
+    # adapter — which goes to stdout in practice — was discarded and the user
+    # saw only the generic "no final response" message. See #45155.
     real_stdout = sys.stdout
     real_stderr = sys.stderr
-    devnull = open(os.devnull, "w", encoding="utf-8")
+    captured_output = io.StringIO()
 
     response: Optional[str] = None
     failure: BaseException | None = None
-    try:
-        with redirect_stdout(devnull), redirect_stderr(devnull):
-            try:
-                response = _run_agent(
-                    prompt,
-                    model=model,
-                    provider=provider,
-                    toolsets=explicit_toolsets,
-                    use_config_toolsets=use_config_toolsets,
-                )
-            except BaseException as exc:  # noqa: BLE001
-                # Capture anything that escapes the agent (including OSError
-                # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
-                # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
-                # the real stderr instead of crashing past the redirect with a
-                # traceback that the caller never sees. A silent exit in a
-                # cron / SSH / subprocess context is the worst failure mode.
-                # See #30623.
-                failure = exc
-    finally:
+    with redirect_stdout(captured_output), redirect_stderr(captured_output):
         try:
-            devnull.close()
-        except Exception:
-            pass
+            response = _run_agent(
+                prompt,
+                model=model,
+                provider=provider,
+                toolsets=explicit_toolsets,
+                use_config_toolsets=use_config_toolsets,
+            )
+        except BaseException as exc:  # noqa: BLE001
+            # Capture anything that escapes the agent (including OSError
+            # from prompt_toolkit/Vt100 when stdout is a non-TTY pipe,
+            # KeyboardInterrupt, SystemExit, etc.) so we can surface it on
+            # the real stderr instead of crashing past the redirect with a
+            # traceback that the caller never sees. A silent exit in a
+            # cron / SSH / subprocess context is the worst failure mode.
+            # See #30623.
+            failure = exc
+
+    captured_tail = _output_tail(captured_output.getvalue())
 
     if failure is not None:
         # Re-raise control-flow exceptions so the parent handles them as usual
@@ -210,11 +231,19 @@ def run_oneshot(
         if isinstance(failure, (KeyboardInterrupt, SystemExit)):
             raise failure
         real_stderr.write(f"hermes -z: agent failed: {failure}\n")
+        if captured_tail:
+            real_stderr.write(captured_tail + "\n")
         real_stderr.flush()
         return 1
 
     if not (response or "").strip():
-        real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
+        real_stderr.write(
+            "hermes -z: no final response was produced; treating the run as failed.\n"
+        )
+        if captured_tail:
+            real_stderr.write(
+                "hermes -z: the provider/agent reported:\n" + captured_tail + "\n"
+            )
         real_stderr.flush()
         return 1
 

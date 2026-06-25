@@ -650,6 +650,28 @@ def test_oneshot_fails_closed_on_empty_final_response(monkeypatch, capsys):
     assert "no final response" in captured.err
 
 
+def test_oneshot_surfaces_provider_error_on_empty_response(monkeypatch, capsys):
+    _stub_plugin_discovery(monkeypatch)
+    import hermes_cli.oneshot as oneshot_mod
+
+    def _fake_run_agent(*_args, **_kwargs):
+        # Provider adapters print auth/billing errors to stdout (verified
+        # against the real Anthropic adapter) and the agent loop then returns an
+        # empty response instead of raising (#45155). run_oneshot must capture
+        # that output and surface it rather than discard it.
+        print("Anthropic 401 — authentication failed.")
+        return ""
+
+    monkeypatch.setattr(oneshot_mod, "_run_agent", _fake_run_agent)
+
+    assert oneshot_mod.run_oneshot("hello") == 1
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "no final response" in captured.err
+    # The real provider error is now surfaced, not swallowed.
+    assert "401" in captured.err
+
+
 def test_oneshot_prints_nonempty_final_response(monkeypatch, capsys):
     _stub_plugin_discovery(monkeypatch)
     import hermes_cli.oneshot as oneshot_mod

@@ -20,6 +20,7 @@ import {
 } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
+import { MermaidBlock } from '@/components/chat/mermaid-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
@@ -583,6 +584,17 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
     [isStreaming]
   )
 
+  // Mermaid diagrams rendered by language-specific component override
+  // (the Streamdown `componentsByLanguage` API — see react-streamdown docs).
+  const mermaidComponentsByLanguage = useMemo(
+    () => ({
+      mermaid: {
+        SyntaxHighlighter: (props: { code?: string }) => <MermaidBlock code={props.code ?? ''} />,
+      },
+    }),
+    [],
+  )
+
   if (text.length > MAX_MARKDOWN_CHARS) {
     return <HugeTextFallback containerClassName={containerClassName} text={text} />
   }
@@ -590,6 +602,7 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
   return (
     <StreamdownTextPrimitive
       components={components}
+      componentsByLanguage={mermaidComponentsByLanguage}
       containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
       containerProps={containerProps}
       lineNumbers={false}

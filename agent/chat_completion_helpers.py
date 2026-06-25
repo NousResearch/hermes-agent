@@ -796,6 +796,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             openrouter_min_coding_score=agent.openrouter_min_coding_score,
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
+            api_key=getattr(agent, "api_key", None),
             qwen_session_metadata=_qwen_meta,
         )
 

@@ -3,7 +3,7 @@
 Both OpenRouter and the Nous Portal inference endpoint speak the same
 OpenAI-style ``/chat/completions`` image-generation protocol: send
 ``modalities: ["image", "text"]`` with an image-output model (e.g.
-``google/gemini-2.5-flash-image``), pass reference images as ``image_url``
+``google/gemini-3-pro-image``), pass reference images as ``image_url``
 content parts for grounding, and read the generated images back from
 ``choices[0].message.images[].image_url.url`` (a ``data:image/...;base64`` URI).
 
@@ -40,10 +40,17 @@ from agent.image_gen_provider import (
 
 logger = logging.getLogger(__name__)
 
-# Default image-output model. Gemini 2.5 Flash Image ("nano-banana") is GA on
-# OpenRouter, accepts reference images for grounding, and honors
-# ``image_config.aspect_ratio``.
-DEFAULT_MODEL = "google/gemini-2.5-flash-image"
+# Quality-first model chain for OpenRouter-compatible endpoints.
+#
+# Default behavior (no env/config override): try the highest-fidelity OpenAI
+# image model first, then fall back to Gemini 3 Pro Image if the OpenAI model
+# is access-gated / unavailable / times out on this endpoint.
+#
+# Explicit override (OPENROUTER_IMAGE_MODEL or image_gen.<provider>.model):
+# use exactly that model (no auto fallback), so power users keep full control.
+DEFAULT_MODEL = "openai/gpt-5.4-image-2"
+_FALLBACK_MODEL = "google/gemini-3-pro-image"
+_DEFAULT_MODEL_CHAIN = (DEFAULT_MODEL, _FALLBACK_MODEL)
 
 # Semantic aspect ratio (the image_gen contract) → OpenRouter's image_config
 # aspect_ratio strings.
@@ -121,6 +128,43 @@ def _extract_images(payload: Dict[str, Any]) -> List[str]:
     return out
 
 
+def _access_error_hint(
+    display: str, model_id: str, env_var: str, status: int, err_msg: str
+) -> Optional[str]:
+    """A targeted hint when an access-gated OpenAI image model can't be reached.
+
+    Some OpenAI image models on OpenRouter need account enablement / BYOK, so the
+    failure isn't a missing key (the key is valid) — the *model* is unreachable.
+    The generic "check your key" message is misleading there, so we detect that
+    case and point the user at the real fix. Returns one actionable line, or
+    ``None`` when this isn't the access-gated case.
+    """
+    if not model_id.startswith("openai/"):
+        return None
+    low = (err_msg or "").lower()
+    gated = status in (402, 403, 404) or any(
+        s in low for s in ("no endpoints", "no allowed", "not a valid model", "data policy")
+    )
+    if not gated:
+        return None
+    return (
+        f"{display} can't reach image model '{model_id}' ({status}) — enable OpenAI "
+        f"image access in your {display} account, or set {env_var}={_FALLBACK_MODEL}."
+    )
+
+
+def _dedupe_models(models: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for model in models:
+        m = (model or "").strip()
+        if not m or m in seen:
+            continue
+        seen.add(m)
+        out.append(m)
+    return out
+
+
 class OpenRouterCompatImageProvider(ImageGenProvider):
     """Image generation over an OpenRouter-compatible chat-completions endpoint.
 
@@ -180,9 +224,14 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
         return [
             {
                 "id": DEFAULT_MODEL,
-                "display": "Gemini 2.5 Flash Image (nano-banana)",
-                "strengths": "Reference-grounded edits; aspect-ratio control",
-            }
+                "display": "OpenAI GPT-5.4 Image 2",
+                "strengths": "Highest fidelity; best prompt adherence; slower on OpenRouter",
+            },
+            {
+                "id": _FALLBACK_MODEL,
+                "display": "Gemini 3 Pro Image",
+                "strengths": "Fast, reliable fallback with good layout adherence",
+            },
         ]
 
     def default_model(self) -> Optional[str]:
@@ -193,16 +242,24 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
 
     def _resolve_model(self) -> str:
         """Pick the image model: env override → config → :data:`DEFAULT_MODEL`."""
+        return self._resolve_model_chain()[0]
+
+    def _resolve_model_chain(self) -> list[str]:
+        """Ordered model attempts for this request.
+
+        Explicit user/model config means "use this exact model", so no fallback.
+        Without overrides we run the quality-first default chain.
+        """
         env_override = os.environ.get(self._model_env_var, "").strip()
         if env_override:
-            return env_override
+            return [env_override]
         cfg = _load_image_gen_config()
         scoped = cfg.get(self._config_key) if isinstance(cfg.get(self._config_key), dict) else {}
         if isinstance(scoped, dict):
             value = scoped.get("model")
             if isinstance(value, str) and value.strip():
-                return value.strip()
-        return DEFAULT_MODEL
+                return [value.strip()]
+        return _dedupe_models(list(_DEFAULT_MODEL_CHAIN))
 
     def generate(
         self,
@@ -237,7 +294,7 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
                 aspect_ratio=aspect_ratio,
             )
 
-        model_id = self._resolve_model()
+        model_chain = self._resolve_model_chain()
         aspect = resolve_aspect_ratio(aspect_ratio)
         or_aspect = _ASPECT_RATIOS.get(aspect, "1:1")
 
@@ -258,12 +315,6 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             if part:
                 content.append({"type": "image_url", "image_url": {"url": part}})
 
-        payload: Dict[str, Any] = {
-            "model": model_id,
-            "modalities": ["image", "text"],
-            "messages": [{"role": "user", "content": content}],
-            "image_config": {"aspect_ratio": or_aspect},
-        }
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
@@ -271,102 +322,145 @@ class OpenRouterCompatImageProvider(ImageGenProvider):
             "HTTP-Referer": "https://github.com/NousResearch/hermes-agent",
             "X-Title": "Hermes Agent",
         }
-
-        try:
-            response = requests.post(
-                f"{base_url}/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=_REQUEST_TIMEOUT,
-            )
-            response.raise_for_status()
-        except requests.HTTPError as exc:
-            resp = exc.response
-            status = resp.status_code if resp is not None else 0
+        last_error: Optional[Dict[str, Any]] = None
+        for i, model_id in enumerate(model_chain):
+            payload: Dict[str, Any] = {
+                "model": model_id,
+                "modalities": ["image", "text"],
+                "messages": [{"role": "user", "content": content}],
+                "image_config": {"aspect_ratio": or_aspect},
+            }
+            is_last = i == len(model_chain) - 1
             try:
-                err_msg = resp.json().get("error", {}).get("message", resp.text[:300])
-            except Exception:  # noqa: BLE001
-                err_msg = resp.text[:300] if resp is not None else str(exc)
-            logger.error("%s image gen failed (%d): %s", self._name, status, err_msg)
-            return error_response(
-                error=f"{self._display} image generation failed ({status}): {err_msg}",
-                error_type="api_error",
-                provider=self._name,
+                response = requests.post(
+                    f"{base_url}/chat/completions",
+                    headers=headers,
+                    json=payload,
+                    timeout=_REQUEST_TIMEOUT,
+                )
+                response.raise_for_status()
+            except requests.HTTPError as exc:
+                resp = exc.response
+                status = resp.status_code if resp is not None else 0
+                try:
+                    err_msg = resp.json().get("error", {}).get("message", resp.text[:300])
+                except Exception:  # noqa: BLE001
+                    err_msg = resp.text[:300] if resp is not None else str(exc)
+                logger.error("%s image gen failed (%d) on %s: %s", self._name, status, model_id, err_msg)
+                hint = _access_error_hint(self._display, model_id, self._model_env_var, status, err_msg)
+                if hint and not is_last:
+                    logger.info(
+                        "%s model %s unavailable; retrying with fallback %s",
+                        self._name,
+                        model_id,
+                        model_chain[i + 1],
+                    )
+                    continue
+                last_error = error_response(
+                    error=hint or f"{self._display} image generation failed ({status}): {err_msg}",
+                    error_type="model_access" if hint else "api_error",
+                    provider=self._name,
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+                return last_error
+            except requests.Timeout:
+                if not is_last:
+                    logger.info(
+                        "%s model %s timed out; retrying with fallback %s",
+                        self._name,
+                        model_id,
+                        model_chain[i + 1],
+                    )
+                    continue
+                return error_response(
+                    error=f"{self._display} image generation timed out "
+                    f"({int(_REQUEST_TIMEOUT)}s)",
+                    error_type="timeout",
+                    provider=self._name,
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+            except requests.ConnectionError as exc:
+                return error_response(
+                    error=f"{self._display} connection error: {exc}",
+                    error_type="connection_error",
+                    provider=self._name,
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+
+            try:
+                result = response.json()
+            except Exception as exc:  # noqa: BLE001
+                return error_response(
+                    error=f"{self._display} returned invalid JSON: {exc}",
+                    error_type="invalid_response",
+                    provider=self._name,
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+
+            images = _extract_images(result)
+            if not images:
+                if not is_last:
+                    logger.info(
+                        "%s model %s returned no image; retrying with fallback %s",
+                        self._name,
+                        model_id,
+                        model_chain[i + 1],
+                    )
+                    continue
+                # A response with text but no image usually means the model didn't
+                # honor image output (wrong model or modalities); surface that.
+                return error_response(
+                    error=(
+                        f"{self._display} returned no image. Ensure the model "
+                        f"'{model_id}' supports image output."
+                    ),
+                    error_type="empty_response",
+                    provider=self._name,
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+
+            first = images[0]
+            try:
+                if first.startswith("data:"):
+                    b64 = first.split(",", 1)[1] if "," in first else ""
+                    saved_path = save_b64_image(b64, prefix=f"{self._name}_gen")
+                else:
+                    saved_path = save_url_image(first, prefix=f"{self._name}_gen")
+            except Exception as exc:  # noqa: BLE001
+                return error_response(
+                    error=f"Could not save generated image: {exc}",
+                    error_type="io_error",
+                    provider=self._name,
+                    model=model_id,
+                    prompt=prompt,
+                    aspect_ratio=aspect,
+                )
+
+            return success_response(
+                image=str(saved_path),
                 model=model_id,
                 prompt=prompt,
                 aspect_ratio=aspect,
-            )
-        except requests.Timeout:
-            return error_response(
-                error=f"{self._display} image generation timed out "
-                f"({int(_REQUEST_TIMEOUT)}s)",
-                error_type="timeout",
                 provider=self._name,
-                model=model_id,
-                prompt=prompt,
-                aspect_ratio=aspect,
-            )
-        except requests.ConnectionError as exc:
-            return error_response(
-                error=f"{self._display} connection error: {exc}",
-                error_type="connection_error",
-                provider=self._name,
-                model=model_id,
-                prompt=prompt,
-                aspect_ratio=aspect,
             )
 
-        try:
-            result = response.json()
-        except Exception as exc:  # noqa: BLE001
-            return error_response(
-                error=f"{self._display} returned invalid JSON: {exc}",
-                error_type="invalid_response",
-                provider=self._name,
-                model=model_id,
-                prompt=prompt,
-                aspect_ratio=aspect,
-            )
-
-        images = _extract_images(result)
-        if not images:
-            # A response with text but no image usually means the model didn't
-            # honor image output (wrong model or modalities); surface that.
-            return error_response(
-                error=(
-                    f"{self._display} returned no image. Ensure the model "
-                    f"'{model_id}' supports image output."
-                ),
-                error_type="empty_response",
-                provider=self._name,
-                model=model_id,
-                prompt=prompt,
-                aspect_ratio=aspect,
-            )
-
-        first = images[0]
-        try:
-            if first.startswith("data:"):
-                b64 = first.split(",", 1)[1] if "," in first else ""
-                saved_path = save_b64_image(b64, prefix=f"{self._name}_gen")
-            else:
-                saved_path = save_url_image(first, prefix=f"{self._name}_gen")
-        except Exception as exc:  # noqa: BLE001
-            return error_response(
-                error=f"Could not save generated image: {exc}",
-                error_type="io_error",
-                provider=self._name,
-                model=model_id,
-                prompt=prompt,
-                aspect_ratio=aspect,
-            )
-
-        return success_response(
-            image=str(saved_path),
-            model=model_id,
+        return last_error or error_response(
+            error=f"{self._display} image generation failed after trying all candidate models.",
+            error_type="api_error",
+            provider=self._name,
+            model=model_chain[-1] if model_chain else "",
             prompt=prompt,
             aspect_ratio=aspect,
-            provider=self._name,
         )
 
 

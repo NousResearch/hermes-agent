@@ -702,6 +702,7 @@ export interface Translations {
       namePlaceholder: string
       staleBackend: string
       backgroundHint: string
+      slowProviderHint: string
       genericError: string
       referenceImageTooLarge: string
       referenceImageInvalid: string

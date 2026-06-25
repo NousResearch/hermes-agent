@@ -2055,3 +2055,103 @@ class TestCompatibleProvidersMalformedLegacyKey:
 
         assert names == ["legacy"]
         assert not [r for r in caplog.records if "custom_providers is a" in r.getMessage()]
+
+
+class TestRetiredToolsetMigration:
+    """Version 50→51 prunes toolset names retired from built-in toolsets."""
+
+    def _write(self, tmp_path, data):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    @staticmethod
+    def _run_step(tmp_path, current_ver=50):
+        from hermes_cli.config_migrations import run_migrations
+
+        results = {"env_added": [], "config_added": [], "warnings": []}
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            run_migrations(current_ver, results, quiet=True)
+        return results
+
+    def test_prunes_messaging_from_platform_and_agent_enabled(self, tmp_path):
+        self._write(
+            tmp_path,
+            {
+                "_config_version": 50,
+                "agent": {"enabled_toolsets": ["terminal", "messaging"]},
+                "platform_toolsets": {
+                    "cli": ["web", "messaging", "terminal"],
+                    "telegram": ["messaging", "web"],
+                },
+            },
+        )
+
+        self._run_step(tmp_path)
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+
+        assert raw["agent"]["enabled_toolsets"] == ["terminal"]
+        assert raw["platform_toolsets"]["cli"] == ["web", "terminal"]
+        assert raw["platform_toolsets"]["telegram"] == ["web"]
+
+    def test_preserves_mcp_sentinel_and_custom_toolset_names(self, tmp_path):
+        self._write(
+            tmp_path,
+            {
+                "_config_version": 50,
+                "mcp_servers": {"local-mcp": {"url": "http://127.0.0.1/mcp"}},
+                "platform_toolsets": {
+                    "cli": ["messaging", "local-mcp", "custom-plugin", "no_mcp"],
+                },
+            },
+        )
+
+        self._run_step(tmp_path)
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+
+        assert raw["platform_toolsets"]["cli"] == [
+            "local-mcp",
+            "custom-plugin",
+            "no_mcp",
+        ]
+
+    def test_preserves_mcp_server_named_messaging(self, tmp_path):
+        self._write(
+            tmp_path,
+            {
+                "_config_version": 50,
+                "mcp_servers": {"messaging": {"url": "http://127.0.0.1/mcp"}},
+                "platform_toolsets": {"cli": ["messaging"]},
+            },
+        )
+
+        self._run_step(tmp_path)
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+
+        assert raw["platform_toolsets"]["cli"] == ["messaging"]
+
+    @pytest.mark.parametrize("start_version", [31, 32, 33])
+    def test_full_migration_prunes_from_every_older_version(self, tmp_path, start_version):
+        """The prune reaches a config however old its stamp is, and the ladder lands on the
+        current version. The 44→45 step may fold `connections` into a stale platform list and
+        sort it; the retired name must be gone either way."""
+        self._write(
+            tmp_path,
+            {
+                "_config_version": start_version,
+                "agent": {"enabled_toolsets": ["terminal", "messaging"]},
+                "platform_toolsets": {
+                    "cli": ["web", "messaging", "terminal"],
+                    "telegram": ["messaging", "web"],
+                },
+            },
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["agent"]["enabled_toolsets"] == ["terminal"]
+        for platform, kept in (("cli", {"web", "terminal"}), ("telegram", {"web"})):
+            names = raw["platform_toolsets"][platform]
+            assert "messaging" not in names
+            assert kept <= set(names)

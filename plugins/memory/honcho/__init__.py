@@ -692,9 +692,18 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._injection_frequency == "first-turn" and self._turn_count > 1:
             return ""
 
-        # Trivial prompts ("ok", "yes", slash commands) carry no semantic signal.
+        # Trivial prompts ("ok", "yes", slash commands) carry no semantic
+        # signal, so we don't fetch base context or fire new dialectic work for
+        # them. But a dialectic result fired at the END of the previous turn was
+        # primed for THIS turn — blindly returning here used to strand it
+        # (consumption happens further down), after which the stale-discard
+        # guard silently dropped a successfully-generated answer. Instead,
+        # drain any ready non-stale pending result and inject just that:
+        # trivial turns still spend no NEW work, but they no longer throw
+        # away work already paid for.
         if self._is_trivial_prompt(query):
-            return ""
+            ready = self._consume_pending_dialectic()
+            return self._truncate_to_budget(ready) if ready else ""
 
         parts = []
 
@@ -842,6 +851,35 @@ class HonchoMemoryProvider(MemoryProvider):
         if (not _did_first_turn_wait and self._prefetch_thread
                 and self._prefetch_thread.is_alive()):
             self._prefetch_thread.join(timeout=3.0)
+
+        # Drain the pending result (applies the stale-discard guard). Shared
+        # with the trivial-prompt path above via _consume_pending_dialectic so
+        # both routes pop + age-check identically.
+        dialectic_result = self._consume_pending_dialectic()
+
+        if dialectic_result and dialectic_result.strip():
+            parts.append(dialectic_result)
+
+        if not parts:
+            return ""
+
+        result = "\n\n".join(parts)
+
+        # ----- Port #3265: token budget enforcement -----
+        result = self._truncate_to_budget(result)
+
+        return result
+
+    def _consume_pending_dialectic(self) -> str:
+        """Pop any pending dialectic result, applying the stale-discard guard.
+
+        Drains _prefetch_result under the lock and returns it unless it is
+        stale (fired more than cadence × multiplier turns ago), in which case
+        it is dropped and "" is returned. Does NOT wait on an in-flight thread
+        — callers that want to give a near-finished thread a moment must join
+        before calling. Idempotent: a second call returns "" until a new
+        result is primed.
+        """
         with self._prefetch_lock:
             dialectic_result = self._prefetch_result
             fired_at = self._prefetch_result_fired_at
@@ -858,20 +896,8 @@ class HonchoMemoryProvider(MemoryProvider):
                 "Honcho pending dialectic discarded as stale: fired_at=%d, "
                 "turn=%d, limit=%d", fired_at, self._turn_count, stale_limit,
             )
-            dialectic_result = ""
-
-        if dialectic_result and dialectic_result.strip():
-            parts.append(dialectic_result)
-
-        if not parts:
             return ""
-
-        result = "\n\n".join(parts)
-
-        # ----- Port #3265: token budget enforcement -----
-        result = self._truncate_to_budget(result)
-
-        return result
+        return dialectic_result if (dialectic_result and dialectic_result.strip()) else ""
 
     def _truncate_to_budget(self, text: str) -> str:
         """Truncate text to fit within context_tokens budget if set."""

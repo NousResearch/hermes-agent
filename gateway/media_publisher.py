@@ -313,14 +313,14 @@ def _upload_r2_wrangler(cfg: ExternalMediaConfig, local_path: Path, key: str) ->
 
 
 def _verify_public_url(url: str) -> None:
-    req = urllib.request.Request(url, method="HEAD")
+    req = urllib.request.Request(url, method="HEAD", headers={"User-Agent": "HermesAgent/1.0"})
     try:
         with _urlopen_no_proxy(req, timeout=20) as resp:  # noqa: S310 - URL was just produced by configured storage
             if resp.status < 200 or resp.status >= 400:
                 raise RuntimeError(f"published media URL returned HTTP {resp.status}")
     except Exception:
         # Some object-store custom domains reject HEAD but serve GET.
-        req = urllib.request.Request(url, method="GET")
+        req = urllib.request.Request(url, method="GET", headers={"User-Agent": "HermesAgent/1.0"})
         req.add_header("Range", "bytes=0-0")
         with _urlopen_no_proxy(req, timeout=20) as resp:  # noqa: S310
             if resp.status < 200 or resp.status >= 400:

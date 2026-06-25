@@ -3604,14 +3604,15 @@ def fetch_ollama_cloud_models(
         seen: set[str] = set()
         merged: list[str] = []
         for m in live_models:
-            if m and m not in seen:
-                seen.add(m)
+            normalized = _strip_ollama_cloud_suffix(m)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
                 merged.append(m)
         for m in mdev_models:
             normalized = _strip_ollama_cloud_suffix(m)
             if normalized and normalized not in seen:
                 seen.add(normalized)
-                merged.append(normalized)
+                merged.append(m)
         if merged:
             _save_ollama_cloud_cache(merged)
             return merged

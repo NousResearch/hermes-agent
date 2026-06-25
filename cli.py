@@ -14768,6 +14768,20 @@ def main(
     except Exception:
         pass
 
+    # Optional MCP/platform SDKs can emit import-time deprecation warnings to
+    # raw stderr during tool discovery, before prompt_toolkit takes control of
+    # the screen. Silence the known lark_oapi/pkg_resources warning so startup
+    # stays clean; real errors still surface normally.
+    try:
+        import warnings
+        warnings.filterwarnings(
+            "ignore",
+            message=r"pkg_resources is deprecated as an API\..*",
+            category=UserWarning,
+        )
+    except Exception:
+        pass
+
     # Signal to terminal_tool that we're in interactive mode
     # This enables interactive sudo password prompts with timeout
     os.environ["HERMES_INTERACTIVE"] = "1"

@@ -11,6 +11,7 @@ import types
 import pytest
 
 import cli as cli_mod
+import hermes_logging
 from hermes_cli import main as main_mod
 from hermes_cli import mcp_startup
 
@@ -164,3 +165,35 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
     monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
+
+
+def test_background_mcp_discovery_stderr_can_be_redirected(monkeypatch, tmp_path):
+    secret_line = "mcp reconnect token=sk-1234567890ABCDE\n"
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
+            load_config=lambda: {},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=lambda: sys.stderr.write(secret_line)),
+    )
+
+    logger = types.SimpleNamespace(debug=lambda *_a, **_k: None)
+    hermes_home = tmp_path / "hermes_home"
+
+    with hermes_logging.redirect_stderr_to_log(hermes_home=hermes_home) as path:
+        mcp_startup.start_background_mcp_discovery(
+            logger=logger,
+            thread_name="test-mcp-discovery",
+        )
+        mcp_startup.wait_for_mcp_discovery(timeout=1.0)
+
+    text = path.read_text(encoding="utf-8")
+    assert "mcp reconnect token=" in text
+    assert "sk-1234567890ABCDE" not in text

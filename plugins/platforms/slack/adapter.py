@@ -113,6 +113,63 @@ def check_slack_requirements() -> bool:
     return ensure_and_bind("platform.slack", _import, globals(), prompt=False)
 
 
+def _collect_slack_block_mentions(blocks: list) -> list:
+    """Return ``<@UID>`` mention tokens authored in non-quoted Block Kit text.
+
+    Slack's flat top-level ``text`` field does NOT contain mentions that were
+    authored only inside Block Kit ``blocks`` (e.g. a ``rich_text_section`` with
+    a ``user`` element).  This walker recovers those mentions so the gates can
+    see Block-Kit-only mentions instead of silently dropping them (#52387).
+
+    Mentions nested inside ``rich_text_quote`` (quoted/forwarded content) are
+    deliberately ignored, so quoted text cannot trick the bot into responding
+    (matches the existing channel-routing contract).
+    """
+    mentions: list = []
+
+    def _walk(node, in_quote: bool) -> None:
+        if isinstance(node, list):
+            for item in node:
+                _walk(item, in_quote)
+            return
+        if not isinstance(node, dict):
+            return
+        node_type = node.get("type")
+        quoted = in_quote or node_type == "rich_text_quote"
+        if node_type == "user" and not quoted:
+            uid = node.get("user_id", "")
+            if uid:
+                mentions.append(f"<@{uid}>")
+        for key in ("elements", "element"):
+            child = node.get(key)
+            if child is not None:
+                _walk(child, quoted)
+
+    try:
+        _walk(blocks, False)
+    except Exception:  # pragma: no cover - defensive, never break gating
+        return []
+    return mentions
+
+
+def _slack_mention_detection_text(event: dict) -> str:
+    """Return the text used for @mention detection on a Slack message event.
+
+    Combines the flat top-level ``text`` with any ``<@UID>`` mentions recovered
+    from non-quoted Block Kit blocks (#52387), so a genuine Block-Kit-only
+    mention reaches the gates while quoted/forwarded mentions stay ignored.
+    """
+    flat = event.get("text", "") or ""
+    blocks = event.get("blocks")
+    if not blocks:
+        return flat
+    mentions = _collect_slack_block_mentions(blocks)
+    extra = [m for m in mentions if m not in flat]
+    if not extra:
+        return flat
+    return (flat.strip() + "\n" + " ".join(extra)).strip()
+
+
 def _extract_text_from_slack_blocks(blocks: list) -> str:
     """Extract readable text from Slack Block Kit blocks, including quoted/forwarded content.
 
@@ -3127,8 +3184,14 @@ class SlackAdapter(BasePlatformAdapter):
             if allow_bots == "none":
                 return
             elif allow_bots == "mentions":
-                text_check = event.get("text", "")
+                # Include Block-Kit-only mentions, not just the flat text (#52387)
+                text_check = _slack_mention_detection_text(event)
                 if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
+                    logger.debug(
+                        "[Slack] Dropping bot message under allow_bots=mentions: "
+                        "no <@%s> mention in flat text or blocks",
+                        self._bot_user_id,
+                    )
                     return
             # "all" falls through to process the message
             # Always ignore our own messages to prevent echo loops
@@ -3348,7 +3411,8 @@ class SlackAdapter(BasePlatformAdapter):
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-        routing_text = original_text or ""
+        # Detect mentions authored only inside Block Kit blocks too (#52387)
+        routing_text = _slack_mention_detection_text(event) or original_text or ""
         is_mentioned = bool(
             (bot_uid and f"<@{bot_uid}>" in routing_text)
             or self._slack_message_matches_mention_patterns(routing_text)

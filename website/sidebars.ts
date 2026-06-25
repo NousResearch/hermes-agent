@@ -691,6 +691,7 @@ const sidebars: SidebarsConfig = {
         'guides/automate-with-cron',
         'guides/cron-script-only',
         'guides/automation-blueprints',
+        'guides/operating-agent-loops',
         'guides/cron-troubleshooting',
         'guides/work-with-skills',
         'guides/delegation-patterns',

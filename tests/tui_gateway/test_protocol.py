@@ -1214,7 +1214,7 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
     assert worker.calls == []
 
 
-@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan", "learn create a skill from https://example.com/docs"])
 def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
     """slash.exec must route _pending_input commands to command.dispatch
     internally instead of returning the old 4018 "use command.dispatch"
@@ -1286,6 +1286,38 @@ def test_command_dispatch_queue_requires_arg(server):
 
     assert "error" in resp
     assert resp["error"]["code"] == 4004
+
+
+def test_command_dispatch_learn_sends_built_prompt(server):
+    """command.dispatch /learn returns {type: 'send', message: <built prompt>}
+    so the TUI fires a real agent turn (#51829). The CLI handler queues onto
+    _pending_input — a queue the TUI slash worker has no reader for — so the
+    prompt was silently dropped after the ack. Routing through command.dispatch
+    injects the standards-guided prompt as a normal turn instead.
+    """
+    from agent.learn_prompt import build_learn_prompt
+
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    arg = "create a skill from https://example.com/docs"
+    resp = server.handle_request({
+        "id": "r-learn",
+        "method": "command.dispatch",
+        "params": {"name": "learn", "arg": arg, "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == build_learn_prompt(arg)
+
+
+def test_pending_input_commands_includes_learn(server):
+    """Guard: _PENDING_INPUT_COMMANDS must list 'learn' — without it slash.exec
+    routes /learn to the slash worker, which only prints the ack and drops the
+    prompt onto the dead _pending_input queue (#51829)."""
+    assert "learn" in server._PENDING_INPUT_COMMANDS
 
 
 def test_skills_manage_search_uses_tools_hub_sources(server):

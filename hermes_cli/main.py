@@ -253,6 +253,7 @@ if _try_termux_ultrafast_version():
     raise SystemExit(0)
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import shutil
@@ -7851,6 +7852,40 @@ def _update_node_dependencies() -> None:
             print(f"    {stderr.splitlines()[-1]}")
 
 
+def _format_update_elapsed(seconds: float) -> str:
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    total_seconds = int(round(seconds))
+    minutes, remaining_seconds = divmod(total_seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {remaining_seconds:02d}s"
+    hours, remaining_minutes = divmod(minutes, 60)
+    return f"{hours}h {remaining_minutes:02d}m {remaining_seconds:02d}s"
+
+
+def _print_update_stage_elapsed(
+    message: str,
+    started_at: float,
+    *,
+    marker: str = "✓",
+) -> None:
+    elapsed = _format_update_elapsed(_time.monotonic() - started_at)
+    print(f"  {marker} {message} in {elapsed}")
+
+
+@contextmanager
+def _timed_update_stage(stage: str, success_message: str):
+    started_at = _time.monotonic()
+    try:
+        yield
+    except BaseException:
+        _print_update_stage_elapsed(f"{stage} failed", started_at, marker="✗")
+        raise
+    else:
+        _print_update_stage_elapsed(success_message, started_at)
+
+
 class _UpdateOutputStream:
     """Stream wrapper used during ``hermes update`` to survive terminal loss.
 
@@ -8990,103 +9025,105 @@ def _cmd_update_impl(args, gateway_mode: bool):
         branch = _resolve_update_branch(args)
 
         print("→ Fetching updates...")
-        fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin", branch],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        if fetch_result.returncode != 0:
-            stderr = fetch_result.stderr.strip()
-            if "Could not resolve host" in stderr or "unable to access" in stderr:
-                print("✗ Network error — cannot reach the remote repository.")
-                print(f"  {stderr.splitlines()[0]}" if stderr else "")
-            elif (
-                "Authentication failed" in stderr or "could not read Username" in stderr
-            ):
-                print(
-                    "✗ Authentication failed — check your git credentials or SSH key."
-                )
-            else:
-                print(f"✗ Failed to fetch updates from origin.")
-                if stderr:
-                    print(f"  {stderr.splitlines()[0]}")
-            sys.exit(1)
-
-        # Get current branch (returns literal "HEAD" when detached)
-        result = subprocess.run(
-            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        current_branch = result.stdout.strip()
-
-        # If user is on a different branch than the update target, switch
-        # to the target. When the target is "main" this is the historical
-        # "always update against main" behavior; for any other target it's
-        # the same thing — get HEAD onto the requested branch first, then
-        # fast-forward.
-        if current_branch != branch:
-            label = (
-                "detached HEAD"
-                if current_branch == "HEAD"
-                else f"branch '{current_branch}'"
-            )
-            print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
-            # Stash before checkout so uncommitted work isn't lost
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            checkout_result = subprocess.run(
-                git_cmd + ["checkout", branch],
+        with _timed_update_stage("Fetching updates", "Fetched updates"):
+            fetch_result = subprocess.run(
+                git_cmd + ["fetch", "origin", branch],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
             )
-            if checkout_result.returncode != 0:
-                # Local checkout doesn't have this branch yet. Try to set
-                # it up as a tracking branch of origin/<branch>. This is
-                # the common case when the requested branch exists upstream
-                # but was never checked out locally.
-                track_result = subprocess.run(
-                    git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
+            if fetch_result.returncode != 0:
+                stderr = fetch_result.stderr.strip()
+                if "Could not resolve host" in stderr or "unable to access" in stderr:
+                    print("✗ Network error — cannot reach the remote repository.")
+                    print(f"  {stderr.splitlines()[0]}" if stderr else "")
+                elif (
+                    "Authentication failed" in stderr or "could not read Username" in stderr
+                ):
+                    print(
+                        "✗ Authentication failed — check your git credentials or SSH key."
+                    )
+                else:
+                    print(f"✗ Failed to fetch updates from origin.")
+                    if stderr:
+                        print(f"  {stderr.splitlines()[0]}")
+                sys.exit(1)
+
+        with _timed_update_stage("Checking update status", "Checked update status"):
+            # Get current branch (returns literal "HEAD" when detached)
+            result = subprocess.run(
+                git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            current_branch = result.stdout.strip()
+
+            # If user is on a different branch than the update target, switch
+            # to the target. When the target is "main" this is the historical
+            # "always update against main" behavior; for any other target it's
+            # the same thing — get HEAD onto the requested branch first, then
+            # fast-forward.
+            if current_branch != branch:
+                label = (
+                    "detached HEAD"
+                    if current_branch == "HEAD"
+                    else f"branch '{current_branch}'"
+                )
+                print(f"  ⚠ Currently on {label} — switching to {branch} for update...")
+                # Stash before checkout so uncommitted work isn't lost
+                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+                checkout_result = subprocess.run(
+                    git_cmd + ["checkout", branch],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
-                if track_result.returncode != 0:
-                    # Restore the user's prior branch + stash before bailing
-                    # so we don't leave them stranded in a weird state.
-                    if auto_stash_ref is not None:
-                        _restore_stashed_changes(
-                            git_cmd,
-                            PROJECT_ROOT,
-                            auto_stash_ref,
-                            prompt_user=False,
-                            input_fn=gw_input_fn,
-                        )
-                    print(f"✗ Branch '{branch}' does not exist locally or on origin.")
-                    if track_result.stderr.strip():
-                        print(f"  {track_result.stderr.strip().splitlines()[0]}")
-                    sys.exit(1)
-        else:
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+                if checkout_result.returncode != 0:
+                    # Local checkout doesn't have this branch yet. Try to set
+                    # it up as a tracking branch of origin/<branch>. This is
+                    # the common case when the requested branch exists upstream
+                    # but was never checked out locally.
+                    track_result = subprocess.run(
+                        git_cmd + ["checkout", "-B", branch, f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if track_result.returncode != 0:
+                        # Restore the user's prior branch + stash before bailing
+                        # so we don't leave them stranded in a weird state.
+                        if auto_stash_ref is not None:
+                            _restore_stashed_changes(
+                                git_cmd,
+                                PROJECT_ROOT,
+                                auto_stash_ref,
+                                prompt_user=False,
+                                input_fn=gw_input_fn,
+                            )
+                        print(f"✗ Branch '{branch}' does not exist locally or on origin.")
+                        if track_result.stderr.strip():
+                            print(f"  {track_result.stderr.strip().splitlines()[0]}")
+                        sys.exit(1)
+            else:
+                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
-        prompt_for_restore = (
-            auto_stash_ref is not None
-            and not assume_yes
-            and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
-        )
+            prompt_for_restore = (
+                auto_stash_ref is not None
+                and not assume_yes
+                and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+            )
 
-        # Check if there are updates
-        result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        commit_count = int(result.stdout.strip())
+            # Check if there are updates
+            result = subprocess.run(
+                git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            commit_count = int(result.stdout.strip())
 
         if commit_count == 0:
             _invalidate_update_cache()
@@ -9144,76 +9181,77 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the bad commit and the fix landing).
         pre_pull_sha = _capture_head_sha(git_cmd, PROJECT_ROOT)
         try:
-            pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
-            if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+            with _timed_update_stage("Pulling updates", "Pulled updates"):
+                pull_result = subprocess.run(
+                    git_cmd + ["pull", "--ff-only", "origin", branch],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
+                if pull_result.returncode != 0:
+                    # ff-only failed — local and remote have diverged (e.g. upstream
+                    # force-pushed or rebase).  Since local changes are already
+                    # stashed, reset to match the remote exactly.
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
                     )
-                    sys.exit(1)
-
-            # Post-pull syntax guard: validate critical-path files actually
-            # parse before declaring the update successful. If a bad commit
-            # made it through CI (e.g. admin-merge bypass of a failing
-            # ruff check), this catches it on the user side and rolls back
-            # so the CLI stays bootable. The user can then retry ``hermes
-            # update`` later once a fix lands upstream.
-            syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(
-                PROJECT_ROOT
-            )
-            if not syntax_ok:
-                print()
-                print("✗ Pulled code has a syntax error in a critical file:")
-                print(f"  {failing_path}")
-                if syntax_error:
-                    # py_compile errors can be multi-line; show the first
-                    # ~6 lines so the user sees the actual SyntaxError text.
-                    for line in str(syntax_error).splitlines()[:6]:
-                        print(f"    {line}")
-                if pre_pull_sha:
-                    print()
-                    print(f"→ Rolling back to {pre_pull_sha[:10]}...")
-                    rollback_result = subprocess.run(
-                        git_cmd + ["reset", "--hard", pre_pull_sha],
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
                         cwd=PROJECT_ROOT,
                         capture_output=True,
                         text=True,
                     )
-                    if rollback_result.returncode == 0:
-                        print("  ✓ Rollback complete — your install is unchanged.")
-                        print("  Try ``hermes update`` again later once a fix lands.")
-                    else:
-                        print("  ✗ Rollback failed. Recover manually with:")
-                        print(f"    cd {PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
-                        if rollback_result.stderr.strip():
-                            print(f"    ({rollback_result.stderr.strip().splitlines()[0]})")
-                else:
-                    print()
-                    print("  Could not capture pre-pull SHA — recover manually with:")
-                    print(f"    cd {PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
-                sys.exit(1)
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
-            update_succeeded = True
+                # Post-pull syntax guard: validate critical-path files actually
+                # parse before declaring the update successful. If a bad commit
+                # made it through CI (e.g. admin-merge bypass of a failing
+                # ruff check), this catches it on the user side and rolls back
+                # so the CLI stays bootable. The user can then retry ``hermes
+                # update`` later once a fix lands upstream.
+                syntax_ok, failing_path, syntax_error = _validate_critical_files_syntax(
+                    PROJECT_ROOT
+                )
+                if not syntax_ok:
+                    print()
+                    print("✗ Pulled code has a syntax error in a critical file:")
+                    print(f"  {failing_path}")
+                    if syntax_error:
+                        # py_compile errors can be multi-line; show the first
+                        # ~6 lines so the user sees the actual SyntaxError text.
+                        for line in str(syntax_error).splitlines()[:6]:
+                            print(f"    {line}")
+                    if pre_pull_sha:
+                        print()
+                        print(f"→ Rolling back to {pre_pull_sha[:10]}...")
+                        rollback_result = subprocess.run(
+                            git_cmd + ["reset", "--hard", pre_pull_sha],
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                            text=True,
+                        )
+                        if rollback_result.returncode == 0:
+                            print("  ✓ Rollback complete — your install is unchanged.")
+                            print("  Try ``hermes update`` again later once a fix lands.")
+                        else:
+                            print("  ✗ Rollback failed. Recover manually with:")
+                            print(f"    cd {PROJECT_ROOT} && git reset --hard {pre_pull_sha}")
+                            if rollback_result.stderr.strip():
+                                print(f"    ({rollback_result.stderr.strip().splitlines()[0]})")
+                    else:
+                        print()
+                        print("  Could not capture pre-pull SHA — recover manually with:")
+                        print(f"    cd {PROJECT_ROOT} && git reflog && git reset --hard <prev-sha>")
+                    sys.exit(1)
+
+                update_succeeded = True
         finally:
             if auto_stash_ref is not None:
                 # Don't attempt stash restore if the code update itself failed —
@@ -9267,57 +9305,61 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # the install + core-dependency verification completes below.
         _write_update_incomplete_marker()
         print("→ Updating Python dependencies...")
-        from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+        with _timed_update_stage(
+            "Updating Python dependencies",
+            "Updated Python dependencies",
+        ):
+            from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
-        # Keep managed uv current — runs `uv self update` if we already have one.
-        update_managed_uv()
+            # Keep managed uv current — runs `uv self update` if we already have one.
+            update_managed_uv()
 
-        uv_bin = ensure_uv()
+            uv_bin = ensure_uv()
 
-        pip_cmd = [sys.executable, "-m", "pip"]
-        if not uv_bin:
-            uv_bin = _ensure_uv_for_termux(pip_cmd)
-        install_group = "all"
-
-        if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-            if _is_termux_env(uv_env):
-                uv_env.pop("PYTHONPATH", None)
-                uv_env.pop("PYTHONHOME", None)
-                install_group = "termux-all"
-                print("  → Termux detected: using uv + curated termux-all optional profile...")
-            if _is_termux_env(uv_env) and _is_android_python():
-                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
-            _install_python_dependencies_with_optional_fallback(
-                [uv_bin, "pip"], env=uv_env, group=install_group
-            )
-        else:
-            # Use sys.executable to explicitly call the venv's pip module,
-            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-            # Some environments lose pip inside the venv; bootstrap it back with
-            # ensurepip before trying the editable install.
             pip_cmd = [sys.executable, "-m", "pip"]
-            try:
-                subprocess.run(
-                    pip_cmd + ["--version"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                    capture_output=True,
+            if not uv_bin:
+                uv_bin = _ensure_uv_for_termux(pip_cmd)
+            install_group = "all"
+
+            if uv_bin:
+                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                if _is_termux_env(uv_env):
+                    uv_env.pop("PYTHONPATH", None)
+                    uv_env.pop("PYTHONHOME", None)
+                    install_group = "termux-all"
+                    print("  → Termux detected: using uv + curated termux-all optional profile...")
+                if _is_termux_env(uv_env) and _is_android_python():
+                    print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+                    _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
+                _install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"], env=uv_env, group=install_group
                 )
-            except subprocess.CalledProcessError:
-                subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                    cwd=PROJECT_ROOT,
-                    check=True,
-                )
-            if _is_termux_env():
-                install_group = "termux-all"
-                print("  → Termux detected: using curated termux-all optional profile...")
-            if _is_termux_env() and _is_android_python():
-                print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
-                _install_psutil_android_compat(pip_cmd)
-            _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+            else:
+                # Use sys.executable to explicitly call the venv's pip module,
+                # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
+                # Some environments lose pip inside the venv; bootstrap it back with
+                # ensurepip before trying the editable install.
+                pip_cmd = [sys.executable, "-m", "pip"]
+                try:
+                    subprocess.run(
+                        pip_cmd + ["--version"],
+                        cwd=PROJECT_ROOT,
+                        check=True,
+                        capture_output=True,
+                    )
+                except subprocess.CalledProcessError:
+                    subprocess.run(
+                        [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                        cwd=PROJECT_ROOT,
+                        check=True,
+                    )
+                if _is_termux_env():
+                    install_group = "termux-all"
+                    print("  → Termux detected: using curated termux-all optional profile...")
+                if _is_termux_env() and _is_android_python():
+                    print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+                    _install_psutil_android_compat(pip_cmd)
+                _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
 
         # Core Python deps installed AND verified (the fallback helper runs
         # _verify_core_dependencies_installed). Clear the interrupted-install
@@ -9327,8 +9369,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _refresh_active_lazy_features()
 
-        _update_node_dependencies()
-        _build_web_ui(PROJECT_ROOT / "web")
+        with _timed_update_stage(
+            "Checking Node.js dependencies",
+            "Finished Node.js dependency step",
+        ):
+            _update_node_dependencies()
+
+        web_build_started_at = _time.monotonic()
+        web_build_ok = _build_web_ui(PROJECT_ROOT / "web")
+        _print_update_stage_elapsed(
+            (
+                "Finished web UI build step"
+                if web_build_ok
+                else "Finished web UI build step with warnings"
+            ),
+            web_build_started_at,
+            marker="✓" if web_build_ok else "⚠",
+        )
 
         # Rebuild the desktop app if the source tree changed since the last
         # build.  ``hermes desktop --build-only`` uses the content-hash stamp
@@ -9343,6 +9400,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
+            desktop_build_started_at = _time.monotonic()
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Stream the build output live (long Electron builds otherwise
             # look hung). On the rare nonzero exit, retry once after waiting
@@ -9353,6 +9411,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 build_result = subprocess.run(_desktop_build_cmd, cwd=PROJECT_ROOT, check=False)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
+            _print_update_stage_elapsed(
+                (
+                    "Finished desktop build check"
+                    if build_result.returncode == 0
+                    else "Finished desktop build check with warnings"
+                ),
+                desktop_build_started_at,
+                marker="✓" if build_result.returncode == 0 else "⚠",
+            )
 
         print()
         print("✓ Code updated!")

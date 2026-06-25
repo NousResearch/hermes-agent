@@ -418,7 +418,39 @@ def render_notice_line(notice) -> str:
     return str(getattr(notice, "text", "") or "").strip()
 
 
+def extract_tool_result_progress_message(tool_name: str | None, result: Any) -> Optional[str]:
+    """Return an intentional gateway progress payload embedded in a tool result.
+
+    Plugin tools can opt in by returning JSON with ``gateway_progress`` or
+    ``progress_message``. The gateway treats that payload as user-visible
+    operational progress and renders it in the existing editable progress
+    bubble. Arbitrary tool stdout is deliberately ignored so private/noisy tool
+    results do not leak into chat.
+    """
+    if not isinstance(result, str) or not result.strip():
+        return None
+    try:
+        payload = json.loads(result)
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("gateway_progress") or payload.get("progress_message")
+    if isinstance(value, dict):
+        value = value.get("content")
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    # Keep a small provenance line so standalone progress bubbles are readable.
+    if tool_name and not value.startswith(("╭", "**", "#", "```")):
+        return f"{tool_name}\n{value}"
+    return value
+
+
 async def _send_or_update_status_coro(adapter, chat_id, status_key, content, metadata):
+
     """Route a status message through adapter.send_or_update_status when supported.
 
     Issue #30045: adapters that implement send_or_update_status (currently
@@ -14769,7 +14801,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not tool_progress_enabled:
                 return
 
-            # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
+            if event_type == "tool.completed":
+                result_progress = extract_tool_result_progress_message(
+                    tool_name, kwargs.get("result")
+                )
+                if result_progress:
+                    last_was_terminal_block[0] = False
+                    progress_queue.put(result_progress)
+                return
+
+            # Only act on tool.started events (ignore reasoning.available, etc.)
             if event_type not in {"tool.started",}:
                 return
 

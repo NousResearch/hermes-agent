@@ -342,6 +342,20 @@ export const setSessionPickerOpen = (next: Updater<boolean>) => updateAtom($sess
 const SESSION_WATCHDOG_TIMEOUT_MS = 8 * 60 * 1000
 const sessionWatchdogTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
+// Notified (with the stored session id) whenever the watchdog force-clears a
+// stuck session. The session-state cache subscribes to also drop that session's
+// busy/awaiting flags — clearing `$workingSessionIds` alone only removes the
+// sidebar dot, leaving the composer stuck on "Thinking"/Stop for a hung or
+// looping turn that never streamed its terminal event.
+type SessionWatchdogListener = (storedSessionId: string) => void
+const sessionWatchdogListeners = new Set<SessionWatchdogListener>()
+
+export function onSessionWatchdogClear(listener: SessionWatchdogListener): () => void {
+  sessionWatchdogListeners.add(listener)
+
+  return () => void sessionWatchdogListeners.delete(listener)
+}
+
 function armSessionWatchdog(sessionId: string) {
   const existing = sessionWatchdogTimers.get(sessionId)
 
@@ -356,6 +370,10 @@ function armSessionWatchdog(sessionId: string) {
     // away or the session genuinely finished, the timer is a no-op.
     if ($workingSessionIds.get().includes(sessionId)) {
       setWorkingSessionIds(current => current.filter(id => id !== sessionId))
+    }
+
+    for (const listener of sessionWatchdogListeners) {
+      listener(sessionId)
     }
   }, SESSION_WATCHDOG_TIMEOUT_MS)
 

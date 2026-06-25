@@ -1286,6 +1286,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
                 "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
                 "session_token_totals": {"method": "GET", "path": "/api/sessions/{session_id}/token-totals"},
+                "analytics_provider_quotas": {"method": "GET", "path": "/api/analytics/provider-quotas"},
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
@@ -1636,6 +1637,27 @@ class APIServerAdapter(BasePlatformAdapter):
             "scope": scope,
             "tokens": tokens,
         })
+
+    async def _handle_analytics_provider_quotas(self, request: "web.Request") -> "web.Response":
+        """GET /api/analytics/provider-quotas — reference rate/token limits.
+
+        Static, published reference limits per provider (RPM/RPD/TPM/TPD) so
+        the dashboard can show how close current usage sits to a provider's
+        ceiling. Representative entry-tier values; see each entry's source_url
+        and as_of. Optional ?provider= filters to one provider.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        from agent.provider_quotas import get_provider_quota, list_provider_quotas
+
+        provider = request.query.get("provider")
+        if provider:
+            quota = get_provider_quota(provider)
+            data = [quota] if quota else []
+        else:
+            data = list_provider_quotas()
+        return web.json_response({"object": "list", "data": data})
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
@@ -4519,6 +4541,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
             self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
             self._app.router.add_get("/api/sessions/{session_id}/token-totals", self._handle_session_token_totals)
+            self._app.router.add_get("/api/analytics/provider-quotas", self._handle_analytics_provider_quotas)
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)

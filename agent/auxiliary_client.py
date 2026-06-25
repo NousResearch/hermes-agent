@@ -1080,7 +1080,33 @@ class _AnthropicCompletionsAdapter:
             if not _forbids_sampling_params(model):
                 anthropic_kwargs["temperature"] = temperature
 
-        response = self._client.messages.create(**anthropic_kwargs)
+        # Route-scoped resilience (PRD 2026-06-25 — Phase-0 root cause): this
+        # adapter used to call the native Anthropic client with NO timeout (it
+        # silently dropped the caller's ``timeout`` kwarg) and the SDK's default
+        # ``max_retries=2``. On the claude-app compaction route a saturated relay
+        # (held-open socket / 504 ``pool deadline exceeded``) therefore turned ONE
+        # bounded failure into ~900s × retries — the ~30-min wedge the gateway
+        # idle-timeout then killed. Fix: thread the caller's ``timeout`` to the
+        # native client, and for the COMPACTION task ONLY force ``max_retries=0``
+        # so a wedged relay fails fast and LCM's L3 degrade is reached.
+        # ``.with_options`` returns a COPY (non-mutating), so the shared cached
+        # client and every OTHER aux task keep the SDK default retries (AC-13:
+        # route-scoped, not factory-wide).
+        _aux_task = kwargs.get("_aux_task")
+        _timeout = kwargs.get("timeout")
+        _opts: Dict[str, Any] = {}
+        if isinstance(_timeout, (int, float)) and _timeout > 0:
+            _opts["timeout"] = float(_timeout)
+        if _aux_task == "compression":
+            _opts["max_retries"] = 0
+        _client = self._client
+        if _opts and hasattr(_client, "with_options"):
+            try:
+                _client = _client.with_options(**_opts)
+            except Exception:
+                _client = self._client  # never break the call over an options quirk
+
+        response = _client.messages.create(**anthropic_kwargs)
         _transport = get_transport("anthropic_messages")
         _nr = _transport.normalize_response(
             response, strip_tool_prefix=self._is_oauth
@@ -5141,6 +5167,50 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
     return response
 
 
+def _scope_client_for_task(client: Any, task: Optional[str], effective_timeout: float) -> "Tuple[Any, Dict[str, Any]]":
+    """Return ``(client, extra_create_kwargs)`` with route-scoped resilience for
+    the compaction summarizer (PRD 2026-06-25, Phase-0 root cause).
+
+    The claude-app compaction route runs the Anthropic transport, whose adapter
+    (``_AnthropicCompletionsAdapter``) historically DROPPED the caller's
+    ``timeout`` kwarg — so the aux ``compression`` timeout never applied and the
+    native client used the SDK's 900s default with ``max_retries=2``. A saturated
+    relay (held-open socket / 504 ``pool deadline exceeded``) thus turned ONE
+    bounded failure into a ~30-min wedge the gateway idle-timeout then killed.
+
+    Fix, applied ONLY for ``task == "compression"``:
+      * Anthropic wrapper: pass ``_aux_task`` so the adapter threads ``timeout``
+        to the native client and forces ``max_retries=0`` (via ``.with_options``,
+        non-mutating).
+      * OpenAI-wire client: it already honors ``timeout`` from kwargs; wrap it in
+        ``.with_options(max_retries=0)`` (non-mutating) so the SDK doesn't retry a
+        wedged relay.
+
+    Both are route-scoped — every OTHER aux task (vision, title-gen, …) keeps the
+    shared cached client and its default SDK retries (AC-13). Never raises; on any
+    quirk it returns the client unchanged so the call still proceeds.
+    """
+    extra: Dict[str, Any] = {}
+    if task != "compression":
+        return client, extra
+    try:
+        # Anthropic transport wrapper (the claude-app compaction route — the
+        # incident path): the adapter reads ``_aux_task`` from the create kwargs
+        # and scopes its OWN inner native client (threads the dropped timeout +
+        # max_retries=0). We pass the tag rather than wrapping the wrapper, both
+        # because the wrapper hides the inner client and because returning a
+        # different client object would break callers that re-use the same client
+        # across the retry path. The OpenAI-wire path is intentionally left to its
+        # existing behavior (it already honors ``timeout`` from kwargs, and the
+        # incident is anthropic-transport-only) — scoping it via ``with_options``
+        # would swap the client identity mid-retry-path.
+        if _safe_isinstance(client, AnthropicAuxiliaryClient):
+            extra["_aux_task"] = task
+    except Exception:
+        logger.debug("Auxiliary compaction route-scoping skipped (non-fatal)", exc_info=True)
+    return client, extra
+
+
 def call_llm(
     task: str = None,
     *,
@@ -5260,6 +5330,18 @@ def call_llm(
         temperature=temperature, max_tokens=max_tokens,
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_base_info or resolved_base_url)
+
+    # Route-scoped resilience for the COMPACTION summarizer (PRD 2026-06-25).
+    # The Anthropic transport adapter reads ``_aux_task`` to thread the timeout
+    # it otherwise DROPS + force max_retries=0 for compaction only; the OpenAI
+    # transport (which already honors ``timeout``) is wrapped in
+    # ``.with_options(max_retries=0)`` for compaction. ``_scope_client_for_task``
+    # returns the (possibly wrapped) client plus any create-kwargs to merge —
+    # ``_aux_task`` is added ONLY for the Anthropic wrapper, never for the OpenAI
+    # client (whose ``.create`` rejects unknown kwargs). Route-scoped +
+    # non-mutating (AC-13): other aux tasks keep the SDK default retries.
+    client, _scope_kwargs = _scope_client_for_task(client, task, effective_timeout)
+    kwargs.update(_scope_kwargs)
 
     # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
     _client_base = str(getattr(client, "base_url", "") or "")

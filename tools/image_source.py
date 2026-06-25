@@ -304,11 +304,9 @@ def _finalize(data: bytes, declared_mime: str, origin: str, src: str) -> Resolve
     sniffed = _detect_image_mime_type_from_bytes(data)
     if sniffed is None:
         if b"<svg" in data[:4096].lower():
-            raise NotAnImage(
-                "SVG is not supported for vision analysis (providers only "
-                "ingest raster images). Convert it to PNG first, e.g. "
-                "`rsvg-convert` or ImageMagick's `convert`.",
-                src=src, origin=origin,
-            )
+            # Pass SVG through — the vision call sites rasterize it to PNG
+            # via _normalize_to_supported_image before embedding (providers
+            # only ingest raster images).
+            return ResolvedImage(data=data, mime="image/svg+xml", origin=origin)
         raise NotAnImage("source is not a recognized image", src=src, origin=origin)
     return ResolvedImage(data=data, mime=sniffed, origin=origin)

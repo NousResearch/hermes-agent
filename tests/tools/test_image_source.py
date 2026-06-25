@@ -91,15 +91,17 @@ class TestLocalBackend:
                 "ftp://example.com/pic.png", isrc.ResolveContext())
 
     @pytest.mark.asyncio
-    async def test_svg_rejected_with_conversion_hint(self, tmp_path, monkeypatch):
-        """SVG has no raster magic bytes; the resolver rejects it with a
-        dedicated, actionable message (review note W3)."""
+    async def test_svg_passes_through_for_rasterization(self, tmp_path, monkeypatch):
+        """SVG has no raster magic bytes but is passed through with mime
+        image/svg+xml so the vision call sites can rasterize it to PNG."""
         isrc = _reload(monkeypatch, tmp_path / "hermes")
         monkeypatch.setenv("TERMINAL_ENV", "local")
         svg = tmp_path / "art.svg"
-        svg.write_bytes(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>')
-        with pytest.raises(isrc.NotAnImage, match="SVG is not supported"):
-            await isrc.resolve_image_source(str(svg), isrc.ResolveContext())
+        svg_bytes = b'<svg xmlns="http://www.w3.org/2000/svg"></svg>'
+        svg.write_bytes(svg_bytes)
+        res = await isrc.resolve_image_source(str(svg), isrc.ResolveContext())
+        assert res.mime == "image/svg+xml"
+        assert res.data == svg_bytes
 
 
 class TestNonLocalBackendConfinement:

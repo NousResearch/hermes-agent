@@ -876,10 +876,13 @@ class WeComAdapter(BasePlatformAdapter):
         return False
 
     def _is_dm_intake_allowed(self, sender_id: str) -> bool:
+        principal = str(sender_id or "").strip()
+        if not principal:
+            return False
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return _entry_matches(self._allow_from, sender_id)
+            return _entry_matches(self._allow_from, principal)
         if self._dm_policy == "pairing":
             return True
         if self._dm_policy == "open":

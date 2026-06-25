@@ -244,6 +244,30 @@ def test_pairing_dm_policy_strict_intake_auth_denies_unknown(
     assert getattr(adapter, dm_helper)("unknown-user") is False
 
 
+@pytest.mark.parametrize(
+    "module_path, class_name, intake_helper",
+    [
+        ("gateway.platforms.qqbot.adapter", "QQAdapter", "_is_dm_intake_allowed"),
+        ("plugins.platforms.wecom.adapter", "WeComAdapter", "_is_dm_intake_allowed"),
+        ("plugins.platforms.whatsapp.adapter", "WhatsAppAdapter", "_is_dm_intake_allowed"),
+    ],
+)
+@pytest.mark.parametrize("blank_sender", ["", "   ", None])
+def test_pairing_dm_intake_denies_blank_principal(
+    monkeypatch, module_path, class_name, intake_helper, blank_sender,
+):
+    """Pairing intake must not forward senderless DM callbacks to the gateway."""
+    _clear_auth_env(monkeypatch)
+    import importlib
+
+    from gateway.config import PlatformConfig
+
+    module = importlib.import_module(module_path)
+    adapter_cls = getattr(module, class_name)
+    adapter = adapter_cls(PlatformConfig(enabled=True, extra={"dm_policy": "pairing"}))
+    assert getattr(adapter, intake_helper)(blank_sender) is False
+
+
 @pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
 def test_pairing_group_policy_not_blanket_authorized(monkeypatch, platform):
     """Default ``group_policy: pairing`` must not authorize unknown group senders."""

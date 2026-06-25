@@ -3157,10 +3157,13 @@ class QQAdapter(BasePlatformAdapter):
         return False
 
     def _is_dm_intake_allowed(self, user_id: str) -> bool:
+        principal = str(user_id or "").strip()
+        if not principal:
+            return False
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return self._entry_matches(self._allow_from, user_id)
+            return self._entry_matches(self._allow_from, principal)
         if self._dm_policy == "pairing":
             return True
         if self._dm_policy == "open":

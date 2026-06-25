@@ -18,6 +18,7 @@ import sys
 import time
 import uuid
 from abc import ABC, abstractmethod
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
@@ -50,6 +51,28 @@ def _float_env(name: str, default: float) -> float:
         return float(raw)
     except (TypeError, ValueError):
         return default
+
+
+def _paths_case_insensitive() -> bool:
+    return os.name == "nt" or sys.platform == "darwin"
+
+
+def _path_compare_key(path: str | Path) -> str:
+    key = os.path.normpath(os.fspath(path))
+    if _paths_case_insensitive():
+        key = os.path.normcase(key).casefold()
+    return key
+
+
+def _same_path(left: str | Path, right: str | Path) -> bool:
+    return _path_compare_key(left) == _path_compare_key(right)
+
+
+def _path_under_or_equal(path: str | Path, root: str | Path) -> bool:
+    path_key = _path_compare_key(path)
+    root_key = _path_compare_key(root)
+    root_prefix = root_key.rstrip("/\\") or root_key
+    return path_key == root_prefix or path_key.startswith(root_prefix + os.sep)
 
 
 def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
@@ -483,7 +506,6 @@ def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = Non
 import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 from enum import Enum
 
@@ -1134,11 +1156,11 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
             resolved_denied = denied.expanduser().resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
             continue
-        if not (_path_is_within(resolved, resolved_denied) or resolved == resolved_denied):
+        if not _path_under_or_equal(resolved, resolved_denied):
             continue
         # Allow the running user's own home tree; its credential sub-dirs are
         # caught by their own (more-specific) denylist entries above.
-        if home is not None and resolved_denied == home:
+        if home is not None and _same_path(resolved_denied, home):
             continue
         return True
     return False

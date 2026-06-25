@@ -792,6 +792,7 @@ class TestMediaDeliveryPathValidation:
         secret = ssh_dir / "id_rsa.txt"
         secret.write_bytes(b"-----BEGIN ...")  # mtime = now
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
@@ -886,6 +887,7 @@ class TestMediaDeliveryDefaultMode:
         secret = ssh_dir / "id_rsa"
         secret.write_bytes(b"-----BEGIN ...")
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
@@ -1122,6 +1124,7 @@ class TestMediaDeliveryDefaultMode:
         doc = workdir / "proposal.docx"
         doc.write_bytes(b"PK\x03\x04")
         monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
         # $HOME is itself on the denied-prefix list, mirroring /root.
         monkeypatch.setattr(
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
@@ -1151,6 +1154,25 @@ class TestMediaDeliveryDefaultMode:
             "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
             (str(fake_home),),
         )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(key)) is None
+
+    def test_case_variant_ssh_key_blocked_on_case_insensitive_fs(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "0")
+        monkeypatch.setattr(
+            "gateway.platforms.base._paths_case_insensitive",
+            lambda: True,
+        )
+
+        fake_home = tmp_path / "home"
+        ssh_dir = fake_home / ".SSH"
+        ssh_dir.mkdir(parents=True)
+        key = ssh_dir / "id_rsa"
+        key.write_bytes(b"-----BEGIN OPENSSH PRIVATE KEY-----")
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setenv("USERPROFILE", str(fake_home))
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(key)) is None
 

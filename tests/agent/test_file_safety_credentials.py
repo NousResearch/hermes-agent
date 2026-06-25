@@ -48,6 +48,19 @@ def test_auth_json_blocked(fake_home):
     assert "auth.json" in err
 
 
+def test_auth_json_case_variant_blocked_on_case_insensitive_fs(
+    fake_home, monkeypatch
+):
+    import agent.file_safety as fs
+    from agent.file_safety import get_read_block_error
+
+    monkeypatch.setattr(fs, "_paths_case_insensitive", lambda: True)
+
+    err = get_read_block_error(str(fake_home / "AUTH.JSON"))
+    assert err is not None
+    assert "credential store" in err
+
+
 def test_auth_lock_blocked(fake_home):
     from agent.file_safety import get_read_block_error
 
@@ -203,6 +216,17 @@ def test_dotenv_blocked(fake_home):
     err = get_read_block_error(str(env))
     assert err is not None
     assert "credential store" in err
+
+
+def test_project_env_case_variant_blocked_on_case_insensitive_fs(monkeypatch):
+    import agent.file_safety as fs
+    from agent.file_safety import get_read_block_error
+
+    monkeypatch.setattr(fs, "_paths_case_insensitive", lambda: True)
+
+    err = get_read_block_error("/tmp/project/.ENV")
+    assert err is not None
+    assert "environment file" in err
 
 
 def test_webhook_subscriptions_blocked(fake_home):

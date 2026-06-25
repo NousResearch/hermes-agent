@@ -80,6 +80,128 @@ const E164_RE = /^\+\d{6,}$/;
 const MAX_KNOWN_SPACES = 2048;
 const MAX_KNOWN_MESSAGES = 1024;
 const MAX_REACTION_HANDLES = 512;
+const STREAM_DEGRADED_RESTART_MS =
+  Number(process.env.PHOTON_STREAM_DEGRADED_RESTART_MS) || 90 * 1000;
+const STREAM_INTERRUPTED_DEGRADE_COUNT =
+  Number(process.env.PHOTON_STREAM_INTERRUPTED_DEGRADE_COUNT) || 3;
+
+const streamHealth = {
+  state: "starting",
+  degradedSince: null,
+  lastHealthyAt: null,
+  lastIssueAt: null,
+  lastIssue: null,
+  issueCount: 0,
+};
+let streamRestartTimer = null;
+
+function streamHealthSnapshot() {
+  const now = Date.now();
+  const degradedForMs =
+    streamHealth.degradedSince === null ? 0 : now - streamHealth.degradedSince;
+  return {
+    ok: streamHealth.state !== "degraded",
+    state: streamHealth.state,
+    degradedForMs,
+    restartAfterMs: STREAM_DEGRADED_RESTART_MS,
+    lastHealthyAt: streamHealth.lastHealthyAt,
+    lastIssueAt: streamHealth.lastIssueAt,
+    lastIssue: streamHealth.lastIssue,
+    issueCount: streamHealth.issueCount,
+  };
+}
+
+function markStreamHealthy() {
+  streamHealth.state = "healthy";
+  streamHealth.degradedSince = null;
+  streamHealth.lastHealthyAt = new Date().toISOString();
+  streamHealth.issueCount = 0;
+  if (streamRestartTimer) {
+    clearTimeout(streamRestartTimer);
+    streamRestartTimer = null;
+  }
+}
+
+function scheduleStreamRestart() {
+  if (STREAM_DEGRADED_RESTART_MS <= 0 || streamRestartTimer) return;
+  streamRestartTimer = setTimeout(() => {
+    streamRestartTimer = null;
+    if (streamHealth.state !== "degraded" || streamHealth.degradedSince === null) {
+      return;
+    }
+    const degradedForMs = Date.now() - streamHealth.degradedSince;
+    if (degradedForMs < STREAM_DEGRADED_RESTART_MS) {
+      scheduleStreamRestart();
+      return;
+    }
+    console.error(
+      `photon-sidecar: upstream stream degraded for ${degradedForMs}ms; ` +
+        "exiting so Hermes can restart the Photon adapter"
+    );
+    process.exit(75);
+  }, STREAM_DEGRADED_RESTART_MS + 1000);
+  streamRestartTimer.unref();
+}
+
+function markStreamDegraded(reason) {
+  const now = Date.now();
+  if (streamHealth.state !== "degraded") {
+    streamHealth.degradedSince = now;
+  }
+  streamHealth.state = "degraded";
+  streamHealth.lastIssueAt = new Date(now).toISOString();
+  streamHealth.lastIssue = reason;
+  streamHealth.issueCount += 1;
+  scheduleStreamRestart();
+}
+
+function markStreamRecovering(reason) {
+  if (streamHealth.state !== "recovering") {
+    streamHealth.issueCount = 0;
+  }
+  streamHealth.state = "recovering";
+  streamHealth.lastIssueAt = new Date().toISOString();
+  streamHealth.lastIssue = reason;
+  streamHealth.issueCount += 1;
+  if (streamHealth.issueCount >= STREAM_INTERRUPTED_DEGRADE_COUNT) {
+    markStreamDegraded(reason);
+  }
+}
+
+function classifyStreamLog(text) {
+  if (!text.includes("[spectrum.stream]")) return;
+  const reason = text.split("\n", 1)[0];
+  if (text.includes("persistently failing")) {
+    markStreamDegraded(reason);
+  } else if (text.includes("stream interrupted")) {
+    markStreamRecovering(reason);
+  }
+}
+
+// spectrum-ts routes its stream telemetry through @photon-ai/otel's
+// createLogger, which sends severity >= ERROR to console.error and
+// everything else (WARN/INFO) to console.log. The two lines we key off
+// land on *different* channels: `log.error("stream persistently failing")`
+// -> console.error, but `log.warn("stream interrupted; reconnecting")`
+// -> console.log. Patch both so the recovering/degraded counters see the
+// interrupt bursts, not just the terminal "persistently failing" line.
+const originalConsoleError = console.error.bind(console);
+console.error = (...args) => {
+  const text = args
+    .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
+    .join(" ");
+  classifyStreamLog(text);
+  originalConsoleError(...args);
+};
+
+const originalConsoleLog = console.log.bind(console);
+console.log = (...args) => {
+  const text = args
+    .map((arg) => (arg && arg.stack ? arg.stack : String(arg)))
+    .join(" ");
+  classifyStreamLog(text);
+  originalConsoleLog(...args);
+};
 
 if (!projectId || !projectSecret || !sharedToken) {
   console.error(
@@ -343,6 +465,31 @@ async function normalizeEvent(space, message) {
   }
 }
 
+function inboundStreamErrorMessage(e) {
+  const msg = e && e.message ? e.message : String(e);
+  let out = "photon-sidecar: inbound stream errored — restarting: " + msg;
+
+  // The Spectrum SDK surfaces Photon cloud CatchUpEvents failures as an
+  // iMessage internal error. Local Hermes allowlists cannot cause or fix this:
+  // inbound messages stop before they reach the gateway. Add an explicit hint
+  // so operators know to retry/restart or escalate to Photon support instead
+  // of chasing PHOTON_ALLOWED_USERS / pairing configuration.
+  const details = String(e?.cause?.details || e?.details || "");
+  const path = String(e?.cause?.path || e?.path || "");
+  const code = String(e?.code || "");
+  if (
+    path.includes("EventService/CatchUpEvents") ||
+    details.includes("Unknown server error occurred") ||
+    (code === "internalError" && msg.includes("Unknown server error"))
+  ) {
+    out +=
+      " | Photon Spectrum CatchUpEvents returned an internal server error; " +
+      "this is upstream of Hermes, so inbound iMessages may not be delivered " +
+      "until Photon recovers or the stream is re-established.";
+  }
+  return out;
+}
+
 // spectrum-ts handles in-session gRPC reconnects internally, but if the async
 // iterator itself throws or ends, this consumer would stop forever. Wrap it in
 // a re-subscribe loop with capped exponential backoff + jitter so inbound
@@ -353,6 +500,7 @@ async function normalizeEvent(space, message) {
     try {
       for await (const [space, message] of app.messages) {
         backoff = 1000; // healthy traffic — reset
+        markStreamHealthy();
         // Only forward inbound messages (ignore our own outbound echoes).
         if (message && message.direction && message.direction !== "inbound") {
           continue;
@@ -364,11 +512,11 @@ async function normalizeEvent(space, message) {
         await deliver(JSON.stringify(event));
       }
       console.error("photon-sidecar: inbound stream ended — re-subscribing");
+      markStreamRecovering("inbound stream ended");
     } catch (e) {
-      console.error(
-        "photon-sidecar: inbound stream errored — restarting: " +
-          (e && e.message ? e.message : String(e))
-      );
+      const reason = e && e.message ? e.message : String(e);
+      console.error(inboundStreamErrorMessage(e));
+      markStreamRecovering(reason);
     }
     await new Promise((r) =>
       setTimeout(r, backoff + Math.random() * backoff * 0.2)
@@ -530,7 +678,7 @@ const server = http.createServer(async (req, res) => {
   }
   try {
     if (req.url === "/healthz") {
-      return ok(res, {});
+      return ok(res, { stream: streamHealthSnapshot() });
     }
     if (req.url === "/shutdown") {
       ok(res, {});

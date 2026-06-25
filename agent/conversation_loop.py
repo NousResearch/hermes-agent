@@ -55,7 +55,7 @@ from agent.model_metadata import (
 )
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.retry_utils import jittered_backoff
+from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -464,6 +464,32 @@ def _content_policy_blocked_result(
         "failed": True,
         "error": f"content_policy_blocked: {error_detail}",
     }
+
+
+def _sync_failover_system_message(agent, api_messages, active_system_prompt):
+    """Refresh the in-flight system message after a provider failover.
+
+    ``try_activate_fallback`` rewrites the ``Model:``/``Provider:`` identity
+    lines on ``agent._cached_system_prompt`` (see
+    ``rewrite_prompt_model_identity``) so the agent reports the model that is
+    actually answering.  But the current call block's ``api_messages`` were
+    built from the pre-failover prompt, and the retry loop rebuilds
+    ``api_kwargs`` from that list each iteration — without this sync the
+    whole turn (and every gateway turn, since fallback re-activates per
+    message while the primary is down) ships the stale identity.
+
+    Mutates ``api_messages[0]`` in place and returns the prompt to use as
+    ``active_system_prompt`` for subsequent call-block rebuilds.
+    """
+    sp = getattr(agent, "_cached_system_prompt", None)
+    if not isinstance(sp, str) or not sp:
+        return active_system_prompt
+    if api_messages and api_messages[0].get("role") == "system":
+        effective = sp
+        if agent.ephemeral_system_prompt:
+            effective = (effective + "\n\n" + agent.ephemeral_system_prompt).strip()
+        api_messages[0]["content"] = effective
+    return sp
 
 
 def run_conversation(
@@ -940,6 +966,8 @@ def run_conversation(
                         )
                         agent._buffer_status(f"⏳ {_nous_msg}")
                         if agent._try_activate_fallback():
+                            active_system_prompt = _sync_failover_system_message(
+                                agent, api_messages, active_system_prompt)
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
@@ -1265,6 +1293,8 @@ def run_conversation(
                     if agent._fallback_index < len(agent._fallback_chain):
                         agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
                     if agent._try_activate_fallback():
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
@@ -1336,6 +1366,8 @@ def run_conversation(
                         if agent._has_pending_fallback():
                             agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
                         if agent._try_activate_fallback():
+                            active_system_prompt = _sync_failover_system_message(
+                                agent, api_messages, active_system_prompt)
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
@@ -1479,6 +1511,8 @@ def run_conversation(
                             "⚠️ Model declined to respond (safety refusal) — trying fallback..."
                         )
                     if agent._try_activate_fallback():
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
@@ -2783,10 +2817,45 @@ def run_conversation(
                         else:
                             agent._buffer_status("⚠️ Rate limited — switching to fallback provider...")
                         if agent._try_activate_fallback(reason=classified.reason):
+                            active_system_prompt = _sync_failover_system_message(
+                                agent, api_messages, active_system_prompt)
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
                             continue
+
+                # ── Auth-failure provider failover ───────────────────────
+                # A 401/403 that survives the per-provider credential-refresh
+                # attempt above (each guarded by its own
+                # ``*_auth_retry_attempted`` flag) means the active provider's
+                # credential or endpoint is broken in a way refreshing can't
+                # fix (revoked OAuth, blocked/expired key, an account pinned to
+                # a dead/staging endpoint). Previously the loop only printed
+                # "switch providers manually" advice and fell through, so a
+                # user with a configured fallback chain kept thrashing on the
+                # same dead credential every turn instead of failing over.
+                # Escalate to the fallback chain here, mirroring the rate-
+                # limit/billing failover above. When no fallback is configured
+                # (or the chain is exhausted), _try_activate_fallback returns
+                # False and we fall through to the existing terminal handling
+                # + provider-specific troubleshooting guidance unchanged.
+                if (
+                    classified.is_auth
+                    and not _retry.auth_failover_attempted
+                    and agent._fallback_index < len(agent._fallback_chain)
+                ):
+                    _retry.auth_failover_attempted = True
+                    agent._buffer_status(
+                        "🔐 Authentication failed and could not be refreshed — "
+                        "switching to fallback provider..."
+                    )
+                    if agent._try_activate_fallback(reason=classified.reason):
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
+                        retry_count = 0
+                        compression_attempts = 0
+                        _retry.primary_recovery_attempted = False
+                        continue
 
                 # ── Nous Portal: record rate limit & skip retries ─────
                 # When Nous returns a 429 that is a genuine account-
@@ -2914,6 +2983,7 @@ def run_conversation(
                     agent._buffer_status(f"⚠️  Request payload too large (413) — compression attempt {compression_attempts}/{max_compression_attempts}...")
 
                     original_len = len(messages)
+                    original_tokens = estimate_messages_tokens_rough(messages)
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
@@ -2923,8 +2993,18 @@ def run_conversation(
                     # messages to the new session, not skipping them.
                     conversation_history = None
 
-                    if len(messages) < original_len:
-                        agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                    # Re-estimate tokens after compression.  Same-message-count
+                    # compression (tool-result pruning, in-place summarization)
+                    # can materially reduce request size without reducing the
+                    # message array.  (#39550)
+                    new_tokens = estimate_messages_tokens_rough(messages)
+                    approx_tokens = new_tokens  # update for downstream logging
+
+                    if len(messages) < original_len or (new_tokens > 0 and new_tokens < original_tokens * 0.95):
+                        if len(messages) < original_len:
+                            agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                        else:
+                            agent._buffer_status(f"🗜️ Compressed ~{original_tokens:,} → ~{new_tokens:,} tokens, retrying...")
                         time.sleep(2)  # Brief pause between compression retries
                         _retry.restart_with_compressed_messages = True
                         break
@@ -3070,6 +3150,7 @@ def run_conversation(
                     agent._buffer_status(f"🗜️ Context too large (~{approx_tokens:,} tokens) — compressing ({compression_attempts}/{max_compression_attempts})...")
 
                     original_len = len(messages)
+                    original_tokens = estimate_messages_tokens_rough(messages)
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message, approx_tokens=approx_tokens,
                         task_id=effective_task_id,
@@ -3079,9 +3160,18 @@ def run_conversation(
                     # messages to the new session, not skipping them.
                     conversation_history = None
 
-                    if len(messages) < original_len or new_ctx and new_ctx < old_ctx:
+                    # Re-estimate tokens after compression.  Same-message-count
+                    # compression (tool-result pruning, in-place summarization)
+                    # can materially reduce request size without reducing the
+                    # message array.  (#39550)
+                    new_tokens = estimate_messages_tokens_rough(messages)
+                    approx_tokens = new_tokens  # update for downstream logging
+
+                    if len(messages) < original_len or (new_tokens > 0 and new_tokens < original_tokens * 0.95) or (new_ctx and new_ctx < old_ctx):
                         if len(messages) < original_len:
                             agent._buffer_status(f"🗜️ Compressed {original_len} → {len(messages)} messages, retrying...")
+                        elif new_tokens > 0 and new_tokens < original_tokens * 0.95:
+                            agent._buffer_status(f"🗜️ Compressed ~{original_tokens:,} → ~{new_tokens:,} tokens, retrying...")
                         time.sleep(2)  # Brief pause between compression retries
                         _retry.restart_with_compressed_messages = True
                         break
@@ -3090,13 +3180,13 @@ def run_conversation(
                         agent._flush_status_buffer()
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
-                        logger.error(f"{agent.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
+                        logger.error(f"{agent.log_prefix}Context length exceeded: {new_tokens:,} tokens. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
                             "completed": False,
                             "api_calls": api_call_count,
-                            "error": f"Context length exceeded ({approx_tokens:,} tokens). Cannot compress further.",
+                            "error": f"Context length exceeded ({new_tokens:,} tokens). Cannot compress further.",
                             "partial": True,
                             "failed": True,
                             "compression_exhausted": True,
@@ -3186,6 +3276,8 @@ def run_conversation(
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                     if agent._try_activate_fallback():
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
@@ -3333,6 +3425,8 @@ def run_conversation(
                     if agent._has_pending_fallback():
                         agent._buffer_status(f"⚠️ Max retries ({max_retries}) exhausted — trying fallback...")
                     if agent._try_activate_fallback():
+                        active_system_prompt = _sync_failover_system_message(
+                            agent, api_messages, active_system_prompt)
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
@@ -3443,16 +3537,38 @@ def run_conversation(
                             except (TypeError, ValueError):
                                 pass
                 wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                _backoff_policy = None
+                if is_rate_limited and not _retry_after:
+                    wait_time, _backoff_policy = adaptive_rate_limit_backoff(
+                        retry_count,
+                        base_url=str(_base),
+                        model=_model,
+                        error=api_error,
+                        default_wait=wait_time,
+                    )
                 if is_rate_limited:
-                    agent._buffer_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
+                    _policy_note = ""
+                    if _backoff_policy == "zai_coding_overload_long":
+                        _policy_note = " (Z.AI Coding overload adaptive long backoff)"
+                    elif _backoff_policy == "zai_coding_overload_short":
+                        _policy_note = " (Z.AI Coding overload short retry)"
+                    _rate_limit_status = f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries}){_policy_note}..."
+                    # Normal retries are buffered to avoid noisy transient chatter. Long
+                    # Z.AI Coding waits are different: they can last minutes, so surface
+                    # progress immediately instead of making the TUI look frozen.
+                    if _backoff_policy == "zai_coding_overload_long":
+                        agent._emit_status(_rate_limit_status)
+                    else:
+                        agent._buffer_status(_rate_limit_status)
                 else:
                     agent._buffer_status(f"⏳ Retrying in {wait_time:.1f}s (attempt {retry_count}/{max_retries})...")
                 logger.warning(
-                    "Retrying API call in %ss (attempt %s/%s) %s error=%s",
+                    "Retrying API call in %ss (attempt %s/%s) %s policy=%s error=%s",
                     wait_time,
                     retry_count,
                     max_retries,
                     agent._client_log_context(),
+                    _backoff_policy or "default",
                     api_error,
                 )
                 # Sleep in small increments so we can respond to interrupts quickly
@@ -3956,6 +4072,19 @@ def run_conversation(
 
                 messages.append(assistant_msg)
                 agent._emit_interim_assistant_message(assistant_msg)
+                try:
+                    # Persist the assistant tool-call turn before any tool
+                    # side effects run. If a destructive tool restarts or
+                    # terminates Hermes mid-turn, resume logic still sees the
+                    # exact tool-call block that already executed.
+                    agent._flush_messages_to_session_db(messages, conversation_history)
+                except Exception as exc:
+                    logger.warning(
+                        "Incremental tool-call persistence failed before execution "
+                        "(session=%s): %s",
+                        agent.session_id or "none",
+                        exc,
+                    )
 
                 # Close any open streaming display (response box, reasoning
                 # box) before tool execution begins.  Intermediate turns may
@@ -4279,6 +4408,8 @@ def run_conversation(
                             "switching to fallback provider..."
                         )
                         if agent._try_activate_fallback():
+                            active_system_prompt = _sync_failover_system_message(
+                                agent, api_messages, active_system_prompt)
                             agent._empty_content_retries = 0
                             agent._buffer_status(
                                 f"↻ Switched to fallback: {agent.model} "
@@ -4383,9 +4514,10 @@ def run_conversation(
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 
                 # Pop thinking-only prefill and empty-response retry
-                # scaffolding before appending the final response.  These
-                # internal turns are only for the next API retry and should
-                # not become durable transcript context.
+                # scaffolding before appending either a final response or a
+                # verification-stop follow-up. These internal turns are only
+                # for the next API retry and should not become durable
+                # transcript context.
                 while (
                     messages
                     and isinstance(messages[-1], dict)
@@ -4396,6 +4528,44 @@ def run_conversation(
                     )
                 ):
                     messages.pop()
+
+                try:
+                    from agent.verification_stop import (
+                        build_verify_on_stop_nudge,
+                        verify_on_stop_enabled,
+                    )
+
+                    if verify_on_stop_enabled():
+                        _verify_nudge = build_verify_on_stop_nudge(
+                            session_id=getattr(agent, "session_id", None),
+                            changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
+                            attempts=getattr(agent, "_verification_stop_nudges", 0),
+                        )
+                    else:
+                        _verify_nudge = None
+                except Exception:
+                    logger.debug("verification stop-loop check failed", exc_info=True)
+                    _verify_nudge = None
+
+                if _verify_nudge:
+                    agent._verification_stop_nudges = (
+                        getattr(agent, "_verification_stop_nudges", 0) + 1
+                    )
+                    final_msg["finish_reason"] = "verification_required"
+                    messages.append(final_msg)
+                    # Keep the attempted final answer in model history so the
+                    # synthetic user nudge preserves role alternation, but do
+                    # not surface it to the user as an interim answer. The
+                    # whole point of this guard is to prevent premature
+                    # "done" claims before checks run.
+                    messages.append({
+                        "role": "user",
+                        "content": _verify_nudge,
+                        "_verification_stop_synthetic": True,
+                    })
+                    agent._session_messages = messages
+                    agent._emit_status("↻ Verification required before finishing")
+                    continue
 
                 messages.append(final_msg)
                 

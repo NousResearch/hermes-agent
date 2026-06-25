@@ -51,7 +51,7 @@ def _ensure_telegram_mock():
 _ensure_telegram_mock()
 
 # Now we can safely import
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -336,14 +336,25 @@ class TestDocumentDownloadBlock:
         assert event.media_types == ["application/pdf"]
 
     @pytest.mark.asyncio
-    async def test_missing_filename_and_mime_rejected(self, adapter):
-        doc = _make_document(file_name=None, mime_type=None, file_size=100)
+    async def test_missing_filename_and_mime_cached_as_octet_stream(self, adapter):
+        """No filename and no mime: cached anyway as application/octet-stream.
+
+        Authorization to message the agent is the gate, not the file type — an
+        untyped upload is still surfaced to the agent as a cached path.
+        """
+        content = b"\x00\x01\x02 untyped payload"
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name=None, mime_type=None, file_size=len(content), file_obj=file_obj,
+        )
         msg = _make_message(document=doc)
         update = _make_update(msg)
 
         await adapter._handle_media_message(update, MagicMock())
         event = adapter.handle_message.call_args[0][0]
-        assert "Unsupported" in event.text
+        assert len(event.media_urls) == 1
+        assert event.media_types == ["application/octet-stream"]
+        assert "Unsupported" not in (event.text or "")
 
     @pytest.mark.asyncio
     async def test_unicode_decode_error_handled(self, adapter):
@@ -442,7 +453,7 @@ class TestMediaGroups:
         msg1 = _make_message(caption="two images", photo=[first_photo])
         msg2 = _make_message(photo=[second_photo])
 
-        with patch("gateway.platforms.telegram.cache_image_from_bytes", side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]):
+        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes", side_effect=["/tmp/burst-one.jpg", "/tmp/burst-two.jpg"]):
             await adapter._handle_media_message(_make_update(msg1), MagicMock())
             await adapter._handle_media_message(_make_update(msg2), MagicMock())
             assert adapter.handle_message.await_count == 0
@@ -462,7 +473,7 @@ class TestMediaGroups:
         msg1 = _make_message(caption="two images", media_group_id="album-1", photo=[first_photo])
         msg2 = _make_message(media_group_id="album-1", photo=[second_photo])
 
-        with patch("gateway.platforms.telegram.cache_image_from_bytes", side_effect=["/tmp/one.jpg", "/tmp/two.jpg"]):
+        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes", side_effect=["/tmp/one.jpg", "/tmp/two.jpg"]):
             await adapter._handle_media_message(_make_update(msg1), MagicMock())
             await adapter._handle_media_message(_make_update(msg2), MagicMock())
             assert adapter.handle_message.await_count == 0
@@ -479,7 +490,7 @@ class TestMediaGroups:
         first_photo = _make_photo(_make_file_obj(b"first"))
         msg = _make_message(caption="two images", media_group_id="album-2", photo=[first_photo])
 
-        with patch("gateway.platforms.telegram.cache_image_from_bytes", return_value="/tmp/one.jpg"):
+        with patch("plugins.platforms.telegram.adapter.cache_image_from_bytes", return_value="/tmp/one.jpg"):
             await adapter._handle_media_message(_make_update(msg), MagicMock())
 
         assert "album-2" in adapter._media_group_events
@@ -782,8 +793,8 @@ class TestTelegramPhotoBatching:
         )
 
         with (
-            patch("gateway.platforms.telegram.asyncio.current_task", return_value=old_task),
-            patch("gateway.platforms.telegram.asyncio.sleep", new=AsyncMock()),
+            patch("plugins.platforms.telegram.adapter.asyncio.current_task", return_value=old_task),
+            patch("plugins.platforms.telegram.adapter.asyncio.sleep", new=AsyncMock()),
         ):
             await adapter._flush_photo_batch(batch_key)
 

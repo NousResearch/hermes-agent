@@ -290,13 +290,41 @@ def find_hermes_node_executable(command: str) -> str | None:
     return None
 
 
+def find_node_executable_on_path(command: str) -> str | None:
+    """Return a Node/npm executable from PATH with Windows shim ordering.
+
+    ``shutil.which("npm")`` can resolve an extensionless npm shim before the
+    ``.cmd`` shim on Windows. Python's CreateProcess cannot execute that shim
+    directly, so prefer the launchable variants explicitly for Hermes-owned
+    subprocesses.
+    """
+    if sys.platform != "win32":
+        return shutil.which(command)
+
+    command_str = str(command)
+    has_path_separator = any(
+        sep and sep in command_str for sep in (os.sep, os.altsep, "/", "\\")
+    )
+    if has_path_separator:
+        return command_str if Path(command_str).is_file() else None
+
+    for name in _candidate_node_command_names(command_str):
+        for directory in os.environ.get("PATH", "").split(os.pathsep):
+            if not directory:
+                continue
+            candidate = Path(directory) / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
 def find_node_executable(command: str) -> str | None:
     """Resolve a Node.js command, preferring Hermes-managed installs.
 
     This is for Hermes-owned subprocesses that should not be broken by a bad,
     missing, or elevation-triggering system Node/npm on PATH.
     """
-    return find_hermes_node_executable(command) or shutil.which(command)
+    return find_hermes_node_executable(command) or find_node_executable_on_path(command)
 
 
 def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
@@ -310,6 +338,51 @@ def with_hermes_node_path(env: dict[str, str] | None = None) -> dict[str, str]:
             parts.insert(0, entry)
     merged["PATH"] = os.pathsep.join(parts)
     return merged
+
+
+def agent_browser_runnable(path: str | None) -> bool:
+    """Return True only when *path* is an agent-browser CLI that actually runs.
+
+    A bare presence check (``shutil.which`` / ``Path.exists``) is not enough:
+    agent-browser's npm ``postinstall`` re-points a *global* install symlink
+    (e.g. ``/opt/homebrew/bin/agent-browser``) at our local
+    ``node_modules/agent-browser/bin/...`` binary, which then disappears on the
+    next ``hermes update`` — leaving a **dangling symlink** that ``which`` still
+    reports but exec fails on with exit 127 (issue #48521). Callers that trust
+    such a path silently break every browser tool.
+
+    This validates the candidate by resolving it to a real, executable file and
+    running ``--version`` with a short timeout. Returns True only on a clean
+    (exit 0) run, so a dead/wrong-arch/hung binary is rejected and the caller
+    can fall through to the next resolution candidate.
+
+    Special cases:
+      * ``None`` / empty → False.
+      * The ``"npx agent-browser"`` fallback form (contains a space, not a real
+        file) → True; npx resolves and validates the package at run time, so
+        there is nothing to stat here.
+    """
+    if not path:
+        return False
+    # The npx fallback is a two-token command string, not a filesystem path.
+    if " " in path and path.split()[0].endswith("npx"):
+        return True
+    # exists() follows symlinks — a dangling link returns False here, so we
+    # never even spawn a subprocess for the broken-link case.
+    if not os.path.exists(path) or not os.access(path, os.X_OK):
+        return False
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            [path, "--version"],
+            capture_output=True,
+            timeout=10,
+            env=with_hermes_node_path(),
+        )
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return False
+    return result.returncode == 0
 
 
 def display_hermes_home() -> str:

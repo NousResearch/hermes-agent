@@ -104,6 +104,21 @@ def _make_event(chat_id="chan-1", guild_id="guild-9"):
     return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
 
 
+def _make_dm_event(chat_id="dm-1", user_id="user-42"):
+    """An inbound DM: no guild_id, carries the authentic author user_id."""
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    src = SessionSource(
+        platform=Platform.RELAY,
+        chat_id=chat_id,
+        chat_type="dm",
+        guild_id=None,
+        user_id=user_id,
+    )
+    return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
+
+
 @pytest.mark.asyncio
 async def test_send_reattaches_guild_id_from_inbound_scope():
     """The connector's egress guard resolves the owning tenant from
@@ -140,3 +155,112 @@ async def test_send_preserves_explicit_guild_id():
     a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
     await a.send("chan-1", "hi", metadata={"guild_id": "explicit-1"})
     assert t.sent["metadata"]["guild_id"] == "explicit-1"
+
+
+@pytest.mark.asyncio
+async def test_send_reattaches_dm_user_id_from_inbound_scope():
+    """A DM reply has no guild_id, so the connector resolves the tenant from the
+    recipient's author binding — it needs metadata.user_id. The adapter must
+    re-attach the authentic author id learned from the inbound DM. Regression for
+    live 'discord egress declined: target not routed to an onboarded tenant' on
+    DM replies (the connector-side fix is gateway-gateway #67)."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a._capture_scope(_make_dm_event(chat_id="dm-1", user_id="user-42"))
+
+    await a.send("dm-1", "the reply")
+
+    assert t.sent["metadata"].get("user_id") == "user-42"
+    # A DM carries no guild_id — only the author discriminator.
+    assert "guild_id" not in t.sent["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_send_dm_does_not_invent_user_id_for_unknown_chat():
+    """A chat we never saw inbound gets neither discriminator — no-op."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    await a.send("unknown-dm", "hi")
+    assert "user_id" not in t.sent["metadata"]
+    assert "guild_id" not in t.sent["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_send_preserves_explicit_user_id():
+    """An explicitly-provided metadata.user_id is never overwritten."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a._capture_scope(_make_dm_event(chat_id="dm-1", user_id="user-42"))
+    await a.send("dm-1", "hi", metadata={"user_id": "explicit-user"})
+    assert t.sent["metadata"]["user_id"] == "explicit-user"
+
+
+@pytest.mark.asyncio
+async def test_guild_reply_does_not_carry_user_id():
+    """A guild reply resolves by guild_id and must NOT carry a DM user_id even if
+    the same chat_id was somehow seen — guild capture wins and user_id stays out
+    (guild_id is the discriminator; user_id is the DM-only fallback)."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
+    await a.send("chan-1", "hi")
+    assert t.sent["metadata"].get("guild_id") == "guild-9"
+    assert "user_id" not in t.sent["metadata"]
+
+
+# ── Phase 7 Unit 7d-B: terminal auth revocation → clean "relay disabled" ─────
+
+
+class _RevokedTransport:
+    """Transport stand-in that reports a terminal auth revocation (the
+    production WebSocketRelayTransport latches this after a 4401 close that
+    follows a successful handshake)."""
+
+    def __init__(self):
+        self.auth_revoked = True
+
+    def set_inbound_handler(self, h):  # noqa: D401
+        self._h = h
+
+
+@pytest.mark.asyncio
+async def test_revocation_marks_relay_disabled_non_retryable():
+    """When the transport reports auth_revoked, the adapter surfaces a clean,
+    NON-retryable `relay_disabled` fatal and fires the fatal-error handler."""
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=_RevokedTransport())
+    notified = []
+    a.set_fatal_error_handler(lambda adapter: notified.append(adapter))
+
+    # Drive the monitor body directly (poll loop breaks immediately on the
+    # already-revoked transport).
+    await a._watch_for_revocation(poll_interval_s=0.01)
+
+    assert a.has_fatal_error is True
+    assert a.fatal_error_code == "relay_disabled"
+    assert a.fatal_error_retryable is False
+    assert "disabled" in (a.fatal_error_message or "").lower()
+    assert notified == [a]
+
+
+@pytest.mark.asyncio
+async def test_no_revocation_no_fatal():
+    """A transport that has NOT been revoked never trips the disabled fatal."""
+
+    class _LiveTransport:
+        auth_revoked = False
+
+        def set_inbound_handler(self, h):  # noqa: D401
+            self._h = h
+
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=_LiveTransport())
+    # Run the monitor with a tiny window then cancel — it should never fire.
+    import asyncio
+
+    task = asyncio.create_task(a._watch_for_revocation(poll_interval_s=0.01))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    assert a.has_fatal_error is False

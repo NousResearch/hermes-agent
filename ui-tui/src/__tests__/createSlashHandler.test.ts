@@ -77,6 +77,22 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenCalledWith('ui redrawn')
   })
 
+  it('opens the editor locally for /prompt without slash worker fallback', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/prompt')).toBe(true)
+    expect(ctx.composer.openEditor).toHaveBeenCalledTimes(1)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('routes /compose to the editor and seeds inline text', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/compose draft text')).toBe(true)
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('draft text')
+    expect(ctx.composer.openEditor).toHaveBeenCalledTimes(1)
+  })
+
   it('exits locally for /quit', () => {
     const ctx = buildCtx()
 
@@ -257,6 +273,41 @@ describe('createSlashHandler', () => {
       action: 'install',
       query: 'foo'
     })
+  })
+
+  it('opens the pet picker for /pet list only', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/pet list')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+
+    resetOverlayState()
+    expect(createSlashHandler(ctx)('/pet')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'pet' })
+    )
+
+    resetOverlayState()
+    expect(createSlashHandler(ctx)('/pet toggle')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'pet toggle' })
+    )
+  })
+
+  it('routes /pet <slug> to the slash worker without opening the picker', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/pet boba')).toBe(true)
+    expect(getOverlayState().petPicker).toBe(false)
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith(
+      'slash.exec',
+      expect.objectContaining({ command: 'pet boba' })
+    )
   })
 
   it('routes /skills inspect <name> to skills.manage', () => {
@@ -875,6 +926,7 @@ const buildCtx = (overrides: Partial<Ctx> = {}): Ctx => ({
 const buildComposer = () => ({
   enqueue: vi.fn(),
   hasSelection: false,
+  openEditor: vi.fn(async () => {}),
   paste: vi.fn(),
   queueRef: { current: [] as string[] },
   selection: { copySelection: vi.fn(async () => '') },

@@ -177,6 +177,19 @@ _LONG_HANDLERS = frozenset(
         "billing.step_up",
         "browser.manage",
         "cli.exec",
+        "llm.oneshot",
+        # Pet RPCs hit the network (manifest fetch / spritesheet download) or do
+        # per-frame PNG decode/encode (pet.cells): inline they serialize on the
+        # reader thread, so picker previews trickle in one at a time and the
+        # animation poll stutters. On the pool they run concurrently.
+        "pet.cells",
+        "pet.gallery",
+        # Generation is the heaviest pet path by far — multiple image-model
+        # round-trips per call — so it must never block the reader thread.
+        "pet.generate",
+        "pet.hatch",
+        "pet.select",
+        "pet.thumb",
         "plugins.manage",
         "session.branch",
         "session.compress",
@@ -380,8 +393,68 @@ def _release_active_session_slot(session: dict | None) -> None:
         logger.debug("Failed to release active session slot", exc_info=True)
 
 
+def _transfer_active_session_slot(
+    sid: str,
+    session: dict,
+    *,
+    new_session_id: str,
+) -> bool:
+    if not new_session_id:
+        return False
+    lease = session.get("active_session_lease")
+    if lease is None:
+        return True
+    try:
+        from hermes_cli.active_sessions import transfer_active_session
+
+        if transfer_active_session(
+            lease,
+            session_id=new_session_id,
+            metadata={"live_session_id": sid},
+        ):
+            return True
+    except Exception:
+        logger.debug("Failed to transfer active session slot", exc_info=True)
+
+    # Fallback: the in-place transfer could not move the lease (entry pruned /
+    # pid-check transiently failed). Reserve the new slot BEFORE releasing the
+    # old one, so a concurrent gateway at the session cap cannot grab the freed
+    # slot in a release-then-reacquire window and leave this session with no
+    # lease at all (#49041 review). If the reserve fails, KEEP the old lease.
+    new_lease, limit_message = _claim_active_session_slot(
+        new_session_id,
+        live_session_id=sid,
+    )
+    if new_lease is not None:
+        old_lease = session.pop("active_session_lease", None)
+        if old_lease is not None:
+            try:
+                old_lease.release()
+            except Exception:
+                logger.debug("Failed to release stale active session slot", exc_info=True)
+        session["active_session_lease"] = new_lease
+        return True
+    # Reserve failed — retain the existing lease rather than dropping it.
+    if limit_message:
+        logger.warning(
+            "Compression session lease re-anchor failed (kept old lease): "
+            "sid=%s new_session_id=%s reason=%s",
+            sid,
+            new_session_id,
+            limit_message,
+        )
+    return False
+
+
 def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> None:
-    """Best-effort finalize hook + memory commit for a session."""
+    """Best-effort finalize hook + memory commit for a session.
+
+    Fires ``on_session_end`` plugin hook and attempts to persist any
+    unflushed messages before closing the session.  This mirrors the
+    CLI's exit-path behaviour and prevents data loss when the TUI is
+    force-quit (double Ctrl‑C, terminal‑close, SIGHUP) while the agent
+    is mid‑turn.
+    """
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
@@ -397,6 +470,51 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             history = list(session.get("history", []))
     else:
         history = list(session.get("history", []))
+
+    # ── Persist unflushed messages to SQLite ──────────────────────────
+    # Two sources, tried in order of freshness:
+    #   1. agent._session_messages — set by the last _persist_session()
+    #      call inside run_conversation().  This is the most recent
+    #      snapshot the agent thread wrote, and may include partial
+    #      turn data that hasn't reached session["history"] yet.
+    #   2. session["history"] — updated after run_conversation()
+    #      returns.  Stale when the agent is mid‑turn, but correct
+    #      when the turn completed before finalize.
+    # Best‑effort — the agent thread may still be mid‑turn, so only
+    # previously completed messages are guaranteed.
+    if agent is not None and hasattr(agent, "_persist_session"):
+        snapshot = (
+            getattr(agent, "_session_messages", None)
+            or history
+        )
+        if snapshot:
+            try:
+                agent._persist_session(snapshot, conversation_history=history)
+            except Exception:
+                pass
+
+    # ── Plugin hook: on_session_end ────────────────────────────────────
+    # Signals every plugin that the session is closing, with
+    # interrupted=True so crash‑recovery plugins can flush buffers,
+    # persist state, or close connections before the gateway exits.
+    # Mirrors cli.py's atexit handler that fires the same hook when
+    # the user Ctrl‑C's mid‑turn.
+    if agent is not None:
+        try:
+            from hermes_cli.plugins import invoke_hook
+
+            invoke_hook(
+                "on_session_end",
+                session_id=getattr(agent, "session_id", None)
+                or session.get("session_key", ""),
+                completed=False,
+                interrupted=True,
+                model=getattr(agent, "model", "unknown"),
+                platform=getattr(agent, "platform", None) or "tui",
+            )
+        except Exception:
+            pass
+
     if agent is not None and history and hasattr(agent, "commit_memory_session"):
         try:
             agent.commit_memory_session(history)
@@ -692,6 +810,29 @@ def _profile_home(profile: str | None) -> Path | None:
     return home if (home / "state.db").exists() or home.exists() else None
 
 
+def _profile_scoped(handler):
+    """Bind ``params['profile']``'s HERMES_HOME around a pet RPC handler.
+
+    Pets are per-profile: ``display.pet.*`` lives in the profile's config.yaml and
+    sprites install under its ``pets/`` dir (both resolve via ``get_hermes_home``).
+    The desktop sends ``profile`` on pet calls so config + pets dir resolve to the
+    focused profile even in app-global remote mode, where one backend serves every
+    profile. No-op for the launch profile (own-profile backends already resolve it).
+    """
+
+    def wrapper(rid, params):
+        home = _profile_home(params.get("profile") if isinstance(params, dict) else None)
+        if home is None:
+            return handler(rid, params)
+        token = set_hermes_home_override(home)
+        try:
+            return handler(rid, params)
+        finally:
+            reset_hermes_home_override(token)
+
+    return wrapper
+
+
 # Placeholder ``terminal.cwd`` values that don't name a real directory — the
 # gateway resolves these to the home dir at runtime, so they must NOT be treated
 # as an explicit workspace (mirrors gateway/run.py's config bridge).
@@ -752,6 +893,21 @@ def _emit(event: str, sid: str, payload: dict | None = None):
     if payload is not None:
         params["payload"] = payload
     write_json({"jsonrpc": "2.0", "method": "event", "params": params})
+
+
+def _emit_approval_request(sid: str, data: dict | None) -> None:
+    """Emit an ``approval.request`` event to the TUI client with the command
+    redacted. The approval payload is built from the RAW command string, so a
+    credential-shaped value Tirith flagged would otherwise be echoed verbatim
+    to the TUI client (#48456 — third egress transport alongside the chat
+    platforms and the SSE/API stream fixed in #50767). Reuse the shared gateway
+    seam so all approval transports redact consistently."""
+    payload = dict(data or {})
+    if "command" in payload:
+        from gateway.run import _redact_approval_command
+
+        payload["command"] = _redact_approval_command(payload.get("command"))
+    _emit("approval.request", sid, payload)
 
 
 def _status_update(sid: str, kind: str, text: str | None = None):
@@ -988,7 +1144,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 )
 
                 register_gateway_notify(
-                    key, lambda data: _emit("approval.request", sid, data)
+                    key, lambda data: _emit_approval_request(sid, data)
                 )
                 notify_registered = True
                 load_permanent_allowlist()
@@ -1389,7 +1545,7 @@ def _save_cfg(cfg: dict):
 
     path = _hermes_home / "config.yaml"
     with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f)
+        yaml.safe_dump(cfg, f, allow_unicode=True)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
         _cfg_path = path
@@ -2149,21 +2305,23 @@ def _restart_slash_worker(sid: str, session: dict):
 
 
 def _persist_model_switch(result) -> None:
-    from hermes_cli.config import save_config
+    # Use targeted, atomic key writes (comment/ordering-preserving) instead of
+    # rewriting the whole `model:` block. A full-block rewrite via save_config()
+    # destroys sibling keys the user set under `model:` — `model_slots`,
+    # `model_fallback`, etc. — when switching models from the TUI (#48305).
+    from cli import save_config_value
 
-    cfg = _load_cfg()
-    model_cfg = cfg.get("model")
-    if not isinstance(model_cfg, dict):
-        model_cfg = {}
-        cfg["model"] = model_cfg
-
-    model_cfg["default"] = result.new_model
-    model_cfg["provider"] = result.target_provider
+    save_config_value("model.default", result.new_model)
+    save_config_value("model.provider", result.target_provider)
     if result.base_url:
-        model_cfg["base_url"] = result.base_url
+        save_config_value("model.base_url", result.base_url)
     else:
-        model_cfg.pop("base_url", None)
-    save_config(cfg)
+        # Clear any stale base_url when switching to a provider that doesn't use
+        # one (e.g. custom endpoint -> native provider). Reads coalesce null to
+        # absent (`model_cfg.get("base_url") or ""`), so a null is equivalent to
+        # removal without needing a key-delete. Leaving the old value would
+        # route the new model at the previous custom host (#48305).
+        save_config_value("model.base_url", None)
 
 
 def _apply_model_switch(
@@ -2248,6 +2406,25 @@ def _apply_model_switch(
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
 
+    if agent:
+        try:
+            from hermes_cli.context_switch_guard import merge_preflight_compression_warning
+
+            _cfg_ctx = None
+            if isinstance(cfg, dict):
+                _mc = cfg.get("model", {})
+                if isinstance(_mc, dict) and _mc.get("context_length") is not None:
+                    _cfg_ctx = int(_mc["context_length"])
+            merge_preflight_compression_warning(
+                result,
+                agent=agent,
+                messages=list(session.get("history", [])),
+                custom_providers=custom_provs,
+                config_context_length=_cfg_ctx,
+            )
+        except Exception as exc:
+            logger.debug("preflight-compression switch warning failed: %s", exc)
+
     if not confirm_expensive_model:
         try:
             from hermes_cli.model_cost_guard import expensive_model_warning
@@ -2262,21 +2439,38 @@ def _apply_model_switch(
         except Exception:
             warning = None
         if warning is not None:
+            confirm_msg = warning.message
+            if result.warning_message:
+                confirm_msg = f"{confirm_msg}\n\n{result.warning_message}"
             return {
                 "value": result.new_model,
-                "warning": warning.message,
+                "warning": confirm_msg,
                 "confirm_required": True,
-                "confirm_message": warning.message,
+                "confirm_message": confirm_msg,
             }
 
     if agent:
-        agent.switch_model(
-            new_model=result.new_model,
-            new_provider=result.target_provider,
-            api_key=result.api_key,
-            base_url=result.base_url,
-            api_mode=result.api_mode,
-        )
+        try:
+            agent.switch_model(
+                new_model=result.new_model,
+                new_provider=result.target_provider,
+                api_key=result.api_key,
+                base_url=result.base_url,
+                api_mode=result.api_mode,
+            )
+        except Exception as exc:
+            # The in-place swap rolled the agent back to the old working
+            # model/client and re-raised.  Abort the commit: do NOT restart the
+            # slash worker, persist runtime, append the switch marker, set a
+            # session model_override, or persist to config — all of which would
+            # otherwise leave the session pinned to a broken model and kill the
+            # conversation on the next turn (#50163).  A failed switch is a
+            # no-op; surface a clean error to the client.
+            logger.warning("In-place model switch failed for TUI agent: %s", exc)
+            raise ValueError(
+                f"Model switch to {result.new_model} failed ({exc}); "
+                f"staying on {getattr(agent, 'model', current_model)}."
+            ) from exc
         _restart_slash_worker(sid, session)
         _persist_live_session_runtime(session)
         _persist_live_session_system_prompt(session)
@@ -2439,6 +2633,19 @@ def _sync_session_key_after_compress(
     if not new_session_id or new_session_id == old_key:
         return
 
+    lease_reanchored = _transfer_active_session_slot(
+        sid,
+        session,
+        new_session_id=new_session_id,
+    )
+    if not lease_reanchored:
+        logger.warning(
+            "Compression session lease did not re-anchor: sid=%s old_session_id=%s new_session_id=%s",
+            sid,
+            old_key,
+            new_session_id,
+        )
+
     try:
         from tools.approval import (
             disable_session_yolo,
@@ -2466,7 +2673,7 @@ def _sync_session_key_after_compress(
         try:
             register_gateway_notify(
                 new_session_id,
-                lambda data: _emit("approval.request", sid, data),
+                lambda data: _emit_approval_request(sid, data),
             )
         except Exception:
             pass
@@ -2508,6 +2715,14 @@ def _get_usage(agent) -> dict:
             usage["context_max"] = ctx_max
             usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
         usage["compressions"] = getattr(comp, "compression_count", 0) or 0
+    # Live count of background/async subagents still running (delegate_task
+    # batches + background single delegations). Mirrors the classic CLI status
+    # bar's ⛓ indicator; sourced from the same async_delegation registry.
+    try:
+        from tools.async_delegation import active_count as _async_active_count
+        usage["active_subagents"] = _async_active_count()
+    except Exception:
+        pass
     try:
         from agent.usage_pricing import CanonicalUsage, estimate_usage_cost
 
@@ -2608,6 +2823,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
                 session = candidate
                 break
     cwd = _session_cwd(session)
+    session_key = str(
+        (session or {}).get("session_key") or getattr(agent, "session_id", "") or ""
+    )
     cfg_personality = ((_load_cfg().get("display") or {}).get("personality") or "")
     personality = (session or {}).get("personality", cfg_personality)
     reasoning_config = getattr(agent, "reasoning_config", None)
@@ -2632,8 +2850,9 @@ def _session_info(agent, session: dict | None = None) -> dict:
             is_session_yolo_enabled,
         )
 
-        session_key = (session or {}).get("session_key")
-        session_yolo = bool(is_session_yolo_enabled(session_key)) if session_key else False
+        session_yolo = (
+            bool(is_session_yolo_enabled(session_key)) if session_key else False
+        )
         yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
     except Exception:
         yolo = False
@@ -2650,6 +2869,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "branch": _git_branch_for_cwd(cwd),
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
+        "title": _session_live_title(session or {}, session_key) if session_key else "",
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "",
         "release_date": "",
@@ -2712,6 +2932,16 @@ def _tool_ctx(name: str, args: dict) -> str:
         return build_tool_preview(name, args, max_len=80) or ""
     except Exception:
         return ""
+
+
+def _emit_session_info_for_session(sid: str, session: dict) -> None:
+    agent = session.get("agent")
+    if agent is None:
+        return
+    try:
+        _emit("session.info", sid, _session_info(agent, session))
+    except Exception:
+        pass
 
 
 # Tool Args/Result text shipped to the TUI for the verbose trail line. The TUI
@@ -3526,7 +3756,8 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
 
     The agent snapshots ``agent.tools`` once at build time and never re-reads
     the registry (run_agent/agent_init). ``_make_agent`` briefly joins the
-    background MCP discovery thread (``wait_for_mcp_discovery``, ~0.75s) so
+    background MCP discovery thread (``wait_for_mcp_discovery``, bounded by the
+    ``mcp_discovery_timeout`` config value, default 1.5s) so
     already-spawning servers land in that snapshot — but a server that takes
     longer than the bound to connect (common for an HTTP MCP server on first
     connect) lands *after* the agent is built. Its tools are then absent from
@@ -3812,7 +4043,7 @@ def _init_session(
     try:
         from tools.approval import register_gateway_notify, load_permanent_allowlist
 
-        register_gateway_notify(key, lambda data: _emit("approval.request", sid, data))
+        register_gateway_notify(key, lambda data: _emit_approval_request(sid, data))
         load_permanent_allowlist()
     except Exception:
         pass
@@ -4414,6 +4645,48 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"session_id": None})
 
 
+@method("project.facts")
+def _(rid, params: dict) -> dict:
+    """Structured project facts for a cwd — manifests, package manager, the
+    exact verify commands, and context files.
+
+    The same detection the coding-context posture (#43316) bakes into the system
+    prompt, exposed so UIs (the desktop verify surface) consume it instead of
+    re-sniffing. ``{"facts": null}`` means the cwd isn't a code workspace.
+    """
+    try:
+        from agent.coding_context import project_facts_for
+
+        return _ok(rid, {"facts": project_facts_for(params.get("cwd"))})
+    except Exception:
+        logger.exception("project.facts failed")
+        return _ok(rid, {"facts": None})
+
+
+@method("verification.status")
+def _(rid, params: dict) -> dict:
+    """Best known coding verification evidence for a cwd/session.
+
+    Read-only consumer of the core ledger. It never runs checks and never
+    upgrades targeted evidence into a repository-wide guarantee.
+    """
+    try:
+        from agent.verification_evidence import verification_status
+
+        return _ok(
+            rid,
+            {
+                "verification": verification_status(
+                    session_id=params.get("session_id") or params.get("session_key"),
+                    cwd=params.get("cwd"),
+                )
+            },
+        )
+    except Exception:
+        logger.exception("verification.status failed")
+        return _ok(rid, {"verification": {"status": "unknown", "evidence": None}})
+
+
 @method("session.resume")
 def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")
@@ -4794,7 +5067,7 @@ def _session_live_title(session: dict, key: str) -> str:
 
 
 def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
-    key = str(session.get("session_key") or sid)
+    key = _session_lookup_key(session, fallback=sid)
     agent = session.get("agent")
     history = list(session.get("history") or [])
     status = _session_live_status(sid, session)
@@ -4818,11 +5091,21 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     }
 
 
+def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
+    agent = session.get("agent")
+    return str(
+        getattr(agent, "session_id", None)
+        or session.get("session_key")
+        or fallback
+        or ""
+    )
+
+
 def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
     for sid, session in list(_sessions.items()):
         if session.get("_finalized"):
             continue
-        if str(session.get("session_key") or "") == session_key:
+        if _session_lookup_key(session, fallback=sid) == session_key:
             return sid, session
     return None
 
@@ -4866,7 +5149,7 @@ def _live_session_payload(
         "messages": _history_to_messages(history),
         "running": running,
         "session_id": sid,
-        "session_key": session.get("session_key") or sid,
+        "session_key": _session_lookup_key(session, fallback=sid),
         "started_at": float(session.get("created_at") or time.time()),
         "status": _session_live_status(sid, session),
     }
@@ -5008,6 +5291,7 @@ def _(rid, params: dict) -> dict:
                 session["pending_title"] = None
         except Exception:
             resolved_title = fallback
+        _emit_session_info_for_session(params.get("session_id", ""), session)
         return _ok(
             rid,
             {
@@ -5021,11 +5305,13 @@ def _(rid, params: dict) -> dict:
     try:
         if db.set_session_title(key, title):
             session["pending_title"] = None
+            _emit_session_info_for_session(params.get("session_id", ""), session)
             return _ok(rid, {"pending": False, "title": title})
         # rowcount == 0 can mean "same value" as well as "missing row".
         existing_row = db.get_session(key)
         if existing_row:
             session["pending_title"] = None
+            _emit_session_info_for_session(params.get("session_id", ""), session)
             return _ok(
                 rid,
                 {
@@ -5047,15 +5333,95 @@ def _(rid, params: dict) -> dict:
         with _session_db(session) as scoped_db:
             if scoped_db is not None and scoped_db.set_session_title(key, title):
                 session["pending_title"] = None
+                _emit_session_info_for_session(params.get("session_id", ""), session)
                 return _ok(rid, {"pending": False, "title": title})
         # Row creation didn't take (DB unavailable, or a concurrent writer) —
         # fall back to queuing so the post-turn apply block can still recover.
         session["pending_title"] = title
+        _emit_session_info_for_session(params.get("session_id", ""), session)
         return _ok(rid, {"pending": True, "title": title})
     except ValueError as e:
         return _err(rid, 4022, str(e))
     except Exception as e:
         return _err(rid, 5007, str(e))
+
+
+def _main_runtime_from_agent(agent) -> dict | None:
+    """Build an aux-client main_runtime override from a live agent.
+
+    Lets a one-shot inherit the session's provider/model/credentials so its
+    output matches the model the user is actually coding with, instead of
+    falling back to the cheapest auto-detected backend.
+    """
+    if agent is None:
+        return None
+    runtime: dict = {}
+    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode"):
+        value = getattr(agent, field, None)
+        if isinstance(value, str) and value.strip():
+            runtime[field] = value.strip()
+        elif field == "api_key" and callable(value):
+            runtime[field] = value
+    return runtime or None
+
+
+@method("llm.oneshot")
+def _(rid, params: dict) -> dict:
+    """Run a single stateless LLM request outside any conversation.
+
+    Generic helper for small generative chores (e.g. a commit message from a
+    diff). Accepts either a named ``template`` + ``variables`` or an explicit
+    ``instructions`` / ``input`` pair. When ``session_id`` resolves to a live
+    session the call inherits that agent's model; otherwise it uses the
+    configured auxiliary ``task`` backend. Never mutates session history, so
+    prompt caching is untouched.
+    """
+    template = (params.get("template") or "").strip() or None
+    instructions = params.get("instructions") or ""
+    user_input = params.get("input") or ""
+    variables = params.get("variables") if isinstance(params.get("variables"), dict) else {}
+    task = (params.get("task") or "title_generation").strip() or "title_generation"
+
+    try:
+        max_tokens = int(params.get("max_tokens") or 1024)
+    except (TypeError, ValueError):
+        max_tokens = 1024
+    temperature = params.get("temperature")
+    if temperature is not None:
+        try:
+            temperature = float(temperature)
+        except (TypeError, ValueError):
+            temperature = None
+
+    if not template and not str(instructions).strip() and not str(user_input).strip():
+        return _err(rid, 4030, "llm.oneshot requires a template or instructions/input")
+
+    # Optional: inherit the live session's model (no error if absent).
+    session = _sessions.get(params.get("session_id") or "")
+    main_runtime = _main_runtime_from_agent(session.get("agent")) if session else None
+
+    try:
+        from agent.oneshot import run_oneshot
+
+        text = run_oneshot(
+            instructions=instructions,
+            user_input=user_input,
+            template=template,
+            variables=variables,
+            task=task,
+            max_tokens=max_tokens,
+            temperature=temperature if temperature is not None else 0.3,
+            main_runtime=main_runtime,
+        )
+    except KeyError as e:
+        return _err(rid, 4031, str(e))
+    except ValueError as e:
+        return _err(rid, 4032, str(e))
+    except Exception as e:
+        logger.warning("llm.oneshot failed: %s", e)
+        return _err(rid, 5030, f"one-shot generation failed: {e}")
+
+    return _ok(rid, {"text": text})
 
 
 @method("handoff.request")
@@ -5221,6 +5587,988 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     return _ok(rid, usage)
+
+
+def _pet_frame_counts(spritesheet) -> dict:
+    """Real (padding-trimmed) frame count per state, for the desktop canvas.
+
+    Fail-open: a decode hiccup returns ``{}`` and the canvas falls back to its
+    static ``framesPerState`` rather than breaking the (cosmetic) pet.
+    """
+    try:
+        from agent.pet import render
+
+        return render.state_frame_counts(str(spritesheet))
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        return {}
+
+
+_pet_payload_cache_lock = threading.Lock()
+_pet_payload_cache: dict[tuple, dict] = {}
+
+
+def _pet_sheet_revision(spritesheet) -> str:
+    """Stable revision id for one spritesheet file."""
+    try:
+        stat = spritesheet.stat()
+        return f"{stat.st_mtime_ns}:{stat.st_size}"
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        return "0:0"
+
+
+def _pet_payload_cache_key(pet, *, scale: float) -> tuple | None:
+    """Cache key for the expensive sprite payload build."""
+    try:
+        stat = pet.spritesheet.stat()
+    except Exception:  # noqa: BLE001
+        return None
+    return (
+        str(pet.spritesheet),
+        stat.st_mtime_ns,
+        stat.st_size,
+        pet.slug,
+        pet.display_name,
+        round(scale, 4),
+    )
+
+
+def _clone_pet_payload(payload: dict) -> dict:
+    """Shallow-clone cached payloads so callers can't mutate shared state."""
+    out = dict(payload)
+    if isinstance(payload.get("framesByState"), dict):
+        out["framesByState"] = dict(payload["framesByState"])
+    if isinstance(payload.get("framesByRow"), dict):
+        out["framesByRow"] = dict(payload["framesByRow"])
+    if isinstance(payload.get("stateRows"), list):
+        out["stateRows"] = list(payload["stateRows"])
+    return out
+
+
+def _pet_row_frame_counts(spritesheet) -> dict:
+    """Real frame count per concrete spritesheet row name."""
+    try:
+        from PIL import Image
+
+        from agent.pet import constants, render
+
+        with Image.open(spritesheet) as opened:
+            image = opened.convert("RGBA")
+        cols = max(1, image.width // constants.FRAME_W)
+        row_count = max(1, image.height // constants.FRAME_H)
+        rows = constants.state_rows_for_grid(row_count)
+        out: dict[str, int] = {}
+        for row_idx, name in enumerate(rows[:row_count]):
+            top = row_idx * constants.FRAME_H
+            count = 0
+            for col in range(cols):
+                left = col * constants.FRAME_W
+                frame = image.crop((left, top, left + constants.FRAME_W, top + constants.FRAME_H))
+                if render._frame_is_blank(frame):
+                    break
+                count += 1
+            out[name] = count
+        return out
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        return {}
+
+
+def _pet_config_scale() -> float:
+    """Configured ``display.pet.scale`` (or the engine default), never raises."""
+    from agent.pet import constants
+
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+        pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        return float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
+    except Exception:  # noqa: BLE001
+        return constants.DEFAULT_SCALE
+
+
+def _pet_sprite_payload(pet, *, scale: float) -> dict:
+    """Build the renderer payload (spritesheet bytes + geometry) for *pet*.
+
+    Shared by ``pet.info`` (the active mascot) and ``pet.hatch`` (the unadopted
+    preview) so both feed the desktop canvas / TUI from one shape.
+    """
+    import base64
+
+    from agent.pet import constants
+
+    cache_key = _pet_payload_cache_key(pet, scale=scale)
+    if cache_key is not None:
+        with _pet_payload_cache_lock:
+            cached = _pet_payload_cache.get(cache_key)
+        if cached is not None:
+            return _clone_pet_payload(cached)
+
+    raw = pet.spritesheet.read_bytes()
+    suffix = pet.spritesheet.suffix.lower()
+    mime = "image/png" if suffix == ".png" else "image/webp"
+    payload = {
+        "slug": pet.slug,
+        "displayName": pet.display_name,
+        "mime": mime,
+        "spritesheetBase64": base64.standard_b64encode(raw).decode("ascii"),
+        "spritesheetRevision": _pet_sheet_revision(pet.spritesheet),
+        "frameW": constants.FRAME_W,
+        "frameH": constants.FRAME_H,
+        "framesPerState": constants.FRAMES_PER_STATE,
+        "framesByState": _pet_frame_counts(pet.spritesheet),
+        "framesByRow": _pet_row_frame_counts(pet.spritesheet),
+        "loopMs": constants.LOOP_MS,
+        "scale": scale,
+        "stateRows": _pet_state_rows(pet.spritesheet),
+    }
+    if cache_key is not None:
+        with _pet_payload_cache_lock:
+            _pet_payload_cache[cache_key] = payload
+            while len(_pet_payload_cache) > 8:
+                _pet_payload_cache.pop(next(iter(_pet_payload_cache)))
+    return _clone_pet_payload(payload)
+
+
+def _pet_active_selection():
+    """Resolve configured active pet + scale from config."""
+    from agent.pet import constants, store
+
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+        pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+    except Exception:
+        pet_cfg = {}
+
+    enabled = bool(pet_cfg.get("enabled"))
+    configured_slug = str(pet_cfg.get("slug", "") or "")
+    pet = store.resolve_active_pet(configured_slug) if enabled else None
+    scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
+    return enabled, pet, scale
+
+
+def _pet_state_rows(spritesheet) -> list[str]:
+    """Row taxonomy for the concrete active pet sheet.
+
+    Hermes has to support both the legacy 8-row petdex atlas and the current
+    Codex/petdex 9-row atlas. The desktop canvas gets this list and indexes it
+    with the same `PetState` names the Python renderer uses.
+    """
+    try:
+        from PIL import Image
+
+        from agent.pet import constants
+
+        with Image.open(spritesheet) as image:
+            row_count = max(1, image.height // constants.FRAME_H)
+        return list(constants.state_rows_for_grid(row_count))
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        from agent.pet import constants
+
+        return list(constants.STATE_ROWS)
+
+
+@method("pet.info")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Return the active petdex pet for surfaces that render sprites.
+
+    Shared by the desktop (canvas) and the TUI (half-block). Carries the
+    spritesheet bytes (base64) plus the engine's frame geometry + state-row
+    taxonomy so the renderer is a thin, framework-native consumer. The
+    activity→state decision is mirrored from ``agent.pet.state`` client-side.
+
+    Agent-independent (reads config + disk), so it works on any session and
+    before the agent finishes building. Fail-open: returns ``enabled=False``
+    on any error rather than erroring the surface.
+    """
+    try:
+        enabled, pet, scale = _pet_active_selection()
+
+        if not enabled or pet is None or not pet.exists:
+            return _ok(rid, {"enabled": False})
+
+        return _ok(rid, {"enabled": True, **_pet_sprite_payload(pet, scale=scale)})
+    except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
+        logger.debug("pet.info failed: %s", exc)
+        return _ok(rid, {"enabled": False})
+
+
+@method("pet.info.meta")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Cheap active-pet metadata used to avoid full payload refreshes."""
+    try:
+        enabled, pet, scale = _pet_active_selection()
+        if not enabled or pet is None or not pet.exists:
+            return _ok(rid, {"enabled": False})
+        return _ok(
+            rid,
+            {
+                "enabled": True,
+                "slug": pet.slug,
+                "displayName": pet.display_name,
+                "scale": scale,
+                "spritesheetRevision": _pet_sheet_revision(pet.spritesheet),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
+        logger.debug("pet.info.meta failed: %s", exc)
+        return _ok(rid, {"enabled": False})
+
+
+@method("pet.cells")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Return half-block cell frames for one pet state (TUI renderer).
+
+    The TUI can't draw a canvas, so the engine downsamples the spritesheet to
+    a grid of half-block cells and the Ink side paints them with native color
+    props. Each cell is ``[tr,tg,tb,ta, br,bg,bb,ba]`` (top + bottom pixel).
+
+    Params: ``state`` (idle/run/review/failed/wave/jump), ``cols`` (width).
+    Fail-open: ``enabled=False`` on any problem.
+    """
+    try:
+        from agent.pet import constants, render, store
+        from agent.pet.render import PetRenderer
+
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        except Exception:
+            pet_cfg = {}
+
+        if not bool(pet_cfg.get("enabled")):
+            return _ok(rid, {"enabled": False})
+
+        pet = store.resolve_active_pet(str(pet_cfg.get("slug", "") or ""))
+        if pet is None or not pet.exists:
+            return _ok(rid, {"enabled": False})
+
+        state = str(params.get("state") or constants.PetState.IDLE.value)
+        scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
+        cols = int(params.get("cols") or 0) or constants.resolve_cols(scale, pet_cfg.get("unicode_cols", 0))
+
+        # Graphics path: when the TUI is attached to a real TTY (``graphics``)
+        # and the terminal speaks the kitty protocol, return a Unicode-
+        # placeholder payload for a crisp image instead of half-blocks. Env
+        # detection (KITTY_WINDOW_ID / TERM / TERM_PROGRAM) is shared with the
+        # Ink process since it spawns us; the dashboard PTY (xterm.js) has no
+        # such env, so it falls through to half-blocks automatically. Only
+        # kitty is grid-safe in Ink — iTerm/sixel stay on the fallback.
+        if params.get("graphics"):
+            configured = str(pet_cfg.get("render_mode", "auto") or "auto").lower()
+            gmode = render.detect_terminal_graphics() if configured in ("", "auto") else configured
+            if gmode == "kitty":
+                image_id = render.kitty_image_id(pet.slug)
+                # kitty sizes from scaled pixels (_cell_box), so unicode_cols is moot here.
+                payload = PetRenderer(
+                    str(pet.spritesheet), mode="kitty", scale=scale
+                ).kitty_payload(state, image_id=image_id)
+                if payload:
+                    kcount = len(payload["frames"]) or 1
+                    return _ok(
+                        rid,
+                        {
+                            "enabled": True,
+                            "slug": pet.slug,
+                            "displayName": pet.display_name,
+                            "state": state,
+                            "graphics": "kitty",
+                            "imageId": image_id,
+                            "color": render.kitty_color_hex(image_id),
+                            "cols": payload["cols"],
+                            "rows": payload["rows"],
+                            "placeholder": payload["placeholder"],
+                            "frames": payload["frames"],
+                            "frameMs": constants.LOOP_MS / max(1, kcount),
+                            "scale": scale,
+                        },
+                    )
+
+        renderer = PetRenderer(
+            str(pet.spritesheet),
+            mode="unicode",
+            scale=scale,
+            unicode_cols=cols,
+        )
+        count = renderer.frame_count(state) or 1
+        frames = []
+        for i in range(count):
+            grid = renderer.cells(state, i, cols=cols)
+            frames.append(
+                [[[*top, *bottom] for (top, bottom) in row] for row in grid]
+            )
+
+        return _ok(
+            rid,
+            {
+                "enabled": True,
+                "slug": pet.slug,
+                "displayName": pet.display_name,
+                "state": state,
+                "cols": cols,
+                "frameMs": constants.LOOP_MS / max(1, count),
+                "frames": frames,
+                "scale": scale,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.cells failed: %s", exc)
+        return _ok(rid, {"enabled": False})
+
+
+@method("pet.gallery")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """List adoptable pets for the desktop appearance picker.
+
+    Returns the petdex gallery merged with local install state plus the
+    current config (active slug + enabled). Agent-independent. Fail-open:
+    returns whatever is installed locally if the gallery can't be reached, so
+    the picker still works offline.
+
+    Param ``localOnly`` (bool): skip the remote petdex manifest fetch and return
+    only locally-installed pets. The desktop loads this first so the user's own
+    pets render instantly instead of waiting on the (possibly slow) manifest.
+    """
+    local_only = bool(params.get("localOnly"))
+    try:
+        from agent.pet import store
+
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+        except Exception:
+            pet_cfg = {}
+
+        installed = {p.slug: p for p in store.installed_pets()}
+
+        gallery: list[dict] = []
+        seen: set[str] = set()
+        try:
+            from agent.pet.manifest import fetch_manifest, prefetch
+
+            # Local-only: skip the network entirely, but kick off a background
+            # warm so the follow-up full request usually hits a cached manifest.
+            if local_only:
+                prefetch()
+
+            for entry in [] if local_only else fetch_manifest():
+                seen.add(entry.slug)
+                gallery.append(
+                    {
+                        "slug": entry.slug,
+                        "displayName": entry.display_name,
+                        "installed": entry.slug in installed,
+                        "spritesheetUrl": entry.spritesheet_url,
+                        # petdex exposes no popularity metric; "curated" (its
+                        # hand-picked/official set, identified by the asset path)
+                        # is the closest signal, so the picker can surface it first.
+                        "curated": "/curated/" in entry.spritesheet_url,
+                        "generated": entry.slug in installed and installed[entry.slug].generated,
+                    }
+                )
+        except Exception as exc:  # noqa: BLE001 - offline: fall back to installed
+            logger.debug("pet.gallery manifest fetch failed: %s", exc)
+
+        # Always include locally-installed pets even if the gallery is unreachable.
+        for slug, pet in installed.items():
+            if slug not in seen:
+                gallery.append(
+                    {
+                        "slug": slug,
+                        "displayName": pet.display_name,
+                        "installed": True,
+                        "spritesheetUrl": "",
+                        "generated": pet.generated,
+                    }
+                )
+
+        return _ok(
+            rid,
+            {
+                "enabled": bool(pet_cfg.get("enabled")),
+                "active": str(pet_cfg.get("slug", "") or ""),
+                "pets": gallery,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.gallery failed: %s", exc)
+        return _ok(rid, {"enabled": False, "active": "", "pets": []})
+
+
+@method("pet.select")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Adopt a pet from the desktop picker: install (if needed) + activate.
+
+    Params: ``slug`` (required). Writes ``display.pet.*`` to config and returns
+    ``{ok, slug, displayName}``. The surface re-pulls ``pet.info`` to render it.
+    """
+    slug = str(params.get("slug") or "").strip()
+    if not slug:
+        return _err(rid, 4004, "missing slug")
+    try:
+        from agent.pet import store
+        from agent.pet.manifest import ManifestError
+        from hermes_cli.pets import _set_active
+
+        try:
+            pet = store.install_pet(slug)
+        except (store.PetStoreError, ManifestError) as exc:
+            return _err(rid, 5031, f"could not adopt '{slug}': {exc}")
+        _set_active(slug)
+        return _ok(rid, {"ok": True, "slug": slug, "displayName": pet.display_name})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.select failed: %s", exc)
+        return _err(rid, 5031, f"pet.select failed: {exc}")
+
+
+@method("pet.remove")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Uninstall a pet from the desktop picker (delete its on-disk directory).
+
+    Params: ``slug`` (required). If the removed pet was the active one, the
+    display is turned off so nothing tries to render a now-missing sprite.
+    Returns ``{ok, slug}`` where ``ok`` reflects whether a directory was deleted.
+    """
+    slug = str(params.get("slug") or "").strip()
+    if not slug:
+        return _err(rid, 4004, "missing slug")
+    try:
+        from agent.pet import store
+        from hermes_cli.pets import _clear_active_if
+
+        removed = store.remove_pet(slug)
+
+        # If that was the active pet, stop surfaces pointing at a deleted sprite.
+        try:
+            _clear_active_if(slug)
+        except Exception as exc:  # noqa: BLE001 - removal already succeeded
+            logger.debug("pet.remove config update failed: %s", exc)
+
+        return _ok(rid, {"ok": removed, "slug": slug})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.remove failed: %s", exc)
+        return _err(rid, 5031, f"pet.remove failed: {exc}")
+
+
+@method("pet.export")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Export an installed pet as a re-importable ``.zip`` (pet.json + sprite).
+
+    Params: ``slug`` (required). Returns ``{ok, filename, zipBase64}`` — the
+    client decodes the base64 and saves it. Heavy-ish (reads + zips files) but
+    small; runs inline.
+    """
+    slug = str(params.get("slug") or "").strip()
+    if not slug:
+        return _err(rid, 4004, "missing slug")
+    try:
+        import base64
+
+        from agent.pet import store
+
+        filename, data = store.export_pet(slug)
+        return _ok(
+            rid,
+            {"ok": True, "filename": filename, "zipBase64": base64.standard_b64encode(data).decode("ascii")},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.export failed: %s", exc)
+        return _err(rid, 5031, f"pet.export failed: {exc}")
+
+
+@method("pet.rename")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Rename an installed pet's display name + realign its slug/dir.
+
+    Params: ``slug`` + ``name`` (both required). Lets the generate flow hatch
+    with a provisional name and apply the user's chosen name at adopt time.
+    Returns ``{ok, slug, displayName}`` with the (possibly new) slug.
+    """
+    slug = str(params.get("slug") or "").strip()
+    name = str(params.get("name") or "").strip()
+    if not slug:
+        return _err(rid, 4004, "missing slug")
+    if not name:
+        return _err(rid, 4004, "missing name")
+    try:
+        from agent.pet import store
+
+        new_slug = store.rename_pet(slug, name)
+        if not new_slug:
+            return _err(rid, 5031, "pet.rename failed")
+
+        # The dir may have moved; if the renamed pet was active, follow the slug
+        # in config so surfaces don't point at the old (now-missing) directory.
+        if new_slug != slug:
+            try:
+                from hermes_cli.pets import _rename_active_if
+
+                _rename_active_if(slug, new_slug)
+            except Exception as exc:  # noqa: BLE001 - rename already succeeded
+                logger.debug("pet.rename config update failed: %s", exc)
+
+        return _ok(rid, {"ok": True, "slug": new_slug, "displayName": name})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.rename failed: %s", exc)
+        return _err(rid, 5031, f"pet.rename failed: {exc}")
+
+
+@method("pet.thumb")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Return a small idle-frame PNG (data URI) for one pet — the picker preview.
+
+    Cropped + cached server-side so the renderer gets a same-origin data URL
+    instead of a CDN ``<img>`` (which the desktop CSP / R2 hotlink rules break).
+    Params: ``slug`` (required), ``url`` (optional petdex spritesheet URL used
+    only for not-yet-installed pets). Fail-open: ``{ok: false}`` with no error.
+    """
+    slug = str(params.get("slug") or "").strip()
+    if not slug:
+        return _err(rid, 4004, "missing slug")
+    try:
+        import base64
+
+        from agent.pet import store
+
+        data = store.thumbnail_png(slug, source_url=str(params.get("url") or ""))
+        if not data:
+            return _ok(rid, {"ok": False, "slug": slug})
+
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "slug": slug,
+                "dataUri": "data:image/png;base64," + base64.standard_b64encode(data).decode("ascii"),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.thumb failed: %s", exc)
+        return _ok(rid, {"ok": False, "slug": slug})
+
+
+@method("pet.disable")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Turn the pet off from the desktop picker (``display.pet.enabled=false``)."""
+    try:
+        from hermes_cli.pets import _set_enabled
+
+        _set_enabled(False)
+        return _ok(rid, {"ok": True})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.disable failed: %s", exc)
+        return _err(rid, 5031, f"pet.disable failed: {exc}")
+
+
+@method("pet.scale")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Persist ``display.pet.scale`` from the desktop slider. Params: ``scale``.
+
+    Clamped to the engine bounds. The renderer updates its own ``$petInfo`` for
+    instant feedback; this just makes the change durable + visible to the other
+    terminal surfaces on their next read.
+    """
+    try:
+        from hermes_cli.pets import set_pet_scale
+
+        scale, err = set_pet_scale(params.get("scale"))
+        if err:
+            return _err(rid, 4004, err)
+        return _ok(rid, {"ok": True, "scale": scale})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.scale failed: %s", exc)
+        return _err(rid, 5031, f"pet.scale failed: {exc}")
+
+
+def _pet_gen_root():
+    """Profile-scoped staging dir for in-progress generation drafts."""
+    from hermes_constants import get_hermes_home
+
+    root = get_hermes_home() / "cache" / "pet-gen"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _pet_gen_sweep(root, *, max_age_s: float = 3600.0) -> None:
+    """Drop stale draft staging dirs so cache never grows unbounded."""
+    import shutil
+    import time
+
+    try:
+        now = time.time()
+        for child in root.iterdir():
+            if child.is_dir() and now - child.stat().st_mtime > max_age_s:
+                shutil.rmtree(child, ignore_errors=True)
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+        logger.debug("pet-gen sweep failed: %s", exc)
+
+
+def _pet_png_data_uri(path, *, max_px: int = 160) -> str:
+    """Downscaled PNG data URI for a draft image (small preview payload)."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as opened:
+        img = opened.convert("RGBA")
+    img.thumbnail((max_px, max_px), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.standard_b64encode(buf.getvalue()).decode("ascii")
+
+
+# Cooperative cancellation for the heavy pet generation paths. The client's Stop
+# aborts its RPC immediately, but the worker-pool generation keeps running unless
+# told to stop — pet.cancel flips a token's flag, which generate_base_drafts /
+# hatch_pet poll between provider calls to skip work they haven't started.
+_pet_cancel_lock = threading.Lock()
+_pet_cancelled: set[str] = set()
+_PET_REFERENCE_MIME_EXT = {
+    "png": "png",
+    "jpeg": "jpg",
+    "jpg": "jpg",
+    "webp": "webp",
+    "gif": "gif",
+}
+try:
+    _PET_REFERENCE_MAX_BYTES = max(
+        1,
+        int(os.environ.get("HERMES_PET_REFERENCE_MAX_BYTES") or str(16 * 1024 * 1024)),
+    )
+except (TypeError, ValueError):
+    _PET_REFERENCE_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _pet_reference_images_from_data_url(ref_raw: str, stage) -> list:
+    """Decode + validate a reference-image data URL into the stage dir."""
+    import base64
+    import binascii
+    import re as _re
+
+    match = _re.match(r"^data:image/([a-zA-Z0-9.+-]+);base64,(.*)$", ref_raw, _re.DOTALL)
+    if not match:
+        raise ValueError("invalid reference image format")
+
+    mime = match.group(1).lower()
+    ext = _PET_REFERENCE_MIME_EXT.get(mime)
+    if ext is None:
+        raise ValueError("unsupported reference image type")
+
+    payload = "".join(match.group(2).split())
+    approx = (len(payload) * 3) // 4
+    if approx > _PET_REFERENCE_MAX_BYTES:
+        raise ValueError("reference image too large")
+
+    try:
+        raw = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("invalid reference image data") from exc
+
+    if len(raw) > _PET_REFERENCE_MAX_BYTES:
+        raise ValueError("reference image too large")
+
+    ref_path = stage / f"reference.{ext}"
+    ref_path.write_bytes(raw)
+    return [ref_path]
+
+
+def _pet_cancel_arm(token: str) -> None:
+    """Clear a stale cancel flag at the start of a generate/hatch run."""
+    with _pet_cancel_lock:
+        _pet_cancelled.discard(token)
+
+
+def _pet_cancel_request(token: str) -> None:
+    with _pet_cancel_lock:
+        _pet_cancelled.add(token)
+
+
+def _pet_is_cancelled(token: str) -> bool:
+    with _pet_cancel_lock:
+        return token in _pet_cancelled
+
+
+def _pet_cancel_release(token: str) -> None:
+    with _pet_cancel_lock:
+        _pet_cancelled.discard(token)
+
+
+@method("pet.cancel")
+def _(rid, params: dict) -> dict:
+    """Signal an in-flight ``pet.generate``/``pet.hatch`` (by token) to stop.
+
+    Best-effort + idempotent: cancelling an unknown/finished token is a no-op.
+    Stays off the worker pool so it lands while a heavy generation is occupying
+    it. Returns ``{ok: True}``.
+    """
+    token = str(params.get("token") or "").strip()
+    if token:
+        _pet_cancel_request(token)
+    return _ok(rid, {"ok": True})
+
+
+@method("pet.generate.status")
+def _(rid, params: dict) -> dict:
+    """Whether pet generation is possible right now.
+
+    True only when a reference-capable image backend (Nous Portal / OpenRouter /
+    OpenAI gpt-image) is configured — the desktop checks this on open so it can
+    offer setup instead of a dead prompt. Cheap (config + plugin discovery).
+    """
+    try:
+        from agent.pet.generate.imagegen import (
+            GenerationError,
+            list_sprite_providers,
+            resolve_provider,
+        )
+
+        try:
+            resolve_provider(require_references=True)
+            available = True
+        except GenerationError:
+            available = False
+        try:
+            providers = list_sprite_providers()
+        except Exception as exc:  # noqa: BLE001 - picker is best-effort
+            logger.debug("pet provider list failed: %s", exc)
+            providers = []
+        return _ok(rid, {"available": available, "providers": providers})
+    except Exception as exc:  # noqa: BLE001 - never break the surface
+        logger.debug("pet.generate.status failed: %s", exc)
+        return _ok(rid, {"available": False, "providers": []})
+
+
+@method("pet.generate")
+def _(rid, params: dict) -> dict:
+    """Generate candidate base looks for a new pet (the draft/variant step).
+
+    Params: ``prompt`` (required unless ``referenceImage`` is given), ``count``
+    (default 4), ``style`` (default ``auto``), ``referenceImage`` (optional data
+    URL — a user photo/reference every draft is grounded on, e.g. to make *their*
+    pet). Returns ``{ok, token, drafts:[{index, dataUri}]}`` — the token keys the
+    staged base images for a later ``pet.hatch``. Heavy (network): worker pool.
+    """
+    prompt = str(params.get("prompt") or "").strip()
+    ref_raw = str(params.get("referenceImage") or "").strip()
+    if not prompt and not ref_raw:
+        return _err(rid, 4004, "missing prompt")
+    try:
+        count = max(1, min(4, int(params.get("count") or 4)))
+    except (TypeError, ValueError):
+        count = 4
+    style = str(params.get("style") or "auto").strip() or "auto"
+
+    try:
+        import shutil
+        import uuid
+
+        from agent.pet.generate import generate_base_drafts
+        from agent.pet.generate.imagegen import GenerationError, resolve_provider
+
+        root = _pet_gen_root()
+        _pet_gen_sweep(root)
+
+        # Token up front so each draft can be staged + streamed the moment it
+        # lands, instead of the user staring at a blank grid until all N finish.
+        token = uuid.uuid4().hex[:12]
+        _pet_cancel_arm(token)
+        stage = root / token
+        stage.mkdir(parents=True, exist_ok=True)
+
+        reference_images = None
+        if ref_raw:
+            try:
+                reference_images = _pet_reference_images_from_data_url(ref_raw, stage)
+            except ValueError as exc:
+                _pet_cancel_release(token)
+                return _err(rid, 4004, str(exc))
+
+        # Optional desktop picker override: resolve the chosen provider up front so
+        # a bad/uncredentialed pick fails fast instead of mid-fan-out.
+        provider_name = str(params.get("provider") or "").strip()
+        sprite = None
+        if provider_name:
+            try:
+                sprite = resolve_provider(require_references=bool(reference_images), prefer=provider_name)
+            except GenerationError as exc:
+                _pet_cancel_release(token)
+                return _err(rid, 5031, str(exc))
+
+        concept = prompt or "a pet based on the reference image"
+        out: list[dict] = []
+
+        # Hand the token to the client up front (token-only init event) so a Stop
+        # fired before the first draft lands can still target this run.
+        try:
+            _emit("pet.generate.progress", "", {"token": token, "count": count})
+        except Exception as exc:  # noqa: BLE001 - streaming is best-effort
+            logger.debug("pet.generate init emit failed: %s", exc)
+
+        def _on_draft(index: int, src) -> None:
+            dest = stage / f"draft-{index}.png"
+            try:
+                shutil.copyfile(src, dest)
+                data_uri = _pet_png_data_uri(dest)
+            except Exception as exc:  # noqa: BLE001 - skip a bad draft, keep the rest
+                logger.debug("pet.generate draft %d failed: %s", index, exc)
+                return
+            out.append({"index": index, "dataUri": data_uri})
+            # Stream this draft to the client so the grid fills in live. Best-
+            # effort: a transport hiccup must not abort the generation itself.
+            try:
+                _emit(
+                    "pet.generate.progress",
+                    "",
+                    {"token": token, "index": index, "dataUri": data_uri, "count": count},
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("pet.generate progress emit failed: %s", exc)
+
+        try:
+            generate_base_drafts(
+                concept,
+                n=count,
+                style=style,
+                reference_images=reference_images,
+                provider=sprite,
+                on_draft=_on_draft,
+                is_cancelled=lambda: _pet_is_cancelled(token),
+            )
+        except GenerationError as exc:
+            _pet_cancel_release(token)
+            return _err(rid, 5031, str(exc))
+
+        cancelled = _pet_is_cancelled(token)
+        _pet_cancel_release(token)
+        if cancelled:
+            return _err(rid, 5031, "generation cancelled")
+        if not out:
+            return _err(rid, 5031, "generation produced no usable drafts")
+        out.sort(key=lambda d: d["index"])
+        return _ok(rid, {"ok": True, "token": token, "drafts": out})
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.generate failed: %s", exc)
+        return _err(rid, 5031, f"pet.generate failed: {exc}")
+
+
+@method("pet.hatch")
+def _(rid, params: dict) -> dict:
+    """Turn a chosen base draft into a full pet — installed but NOT yet active.
+
+    Generation is expensive and the result varies, so hatch produces a *preview*
+    the surface plays (all frames) before the user commits: the pet is written to
+    the store (so it can be rendered + later activated) but the active pet is left
+    untouched. Adopt with ``pet.select`` or throw it away with ``pet.remove``.
+
+    Params: ``token`` + ``index`` (from ``pet.generate``), ``name`` (required),
+    ``description`` (optional), ``prompt`` (optional concept for row prompts),
+    ``style`` (optional). Returns ``{ok, slug, displayName, warnings, pet}`` where
+    ``pet`` is the renderer payload. Heavy (network + raster): worker pool.
+    """
+    token = str(params.get("token") or "").strip()
+    # Hatch cancellation rides its own key, not the generation token: hatching a
+    # draft mid-generation means pet.generate is still releasing `token`, which
+    # would otherwise wipe the arm we set here. Falls back to `token` for clients
+    # that don't send one.
+    cancel_token = str(params.get("cancelToken") or "").strip() or token
+    index = params.get("index", 0)
+    name = str(params.get("name") or "").strip()
+    if not token:
+        return _err(rid, 4004, "missing token")
+    if not name:
+        return _err(rid, 4004, "missing name")
+    try:
+        index = int(index)
+    except (TypeError, ValueError):
+        index = 0
+
+    try:
+        from agent.pet import store
+        from agent.pet.generate import hatch_pet
+        from agent.pet.generate.imagegen import GenerationError, resolve_provider
+
+        base = _pet_gen_root() / token / f"draft-{index}.png"
+        if not base.is_file():
+            return _err(rid, 4004, "draft expired — generate again")
+
+        # Optional desktop picker override (rows always need reference grounding).
+        provider_name = str(params.get("provider") or "").strip()
+        sprite = None
+        if provider_name:
+            try:
+                sprite = resolve_provider(require_references=True, prefer=provider_name)
+            except GenerationError as exc:
+                return _err(rid, 5031, str(exc))
+
+        _pet_cancel_arm(cancel_token)
+        slug = store.unique_slug(name)
+
+        def _on_progress(event: str, detail: str) -> None:
+            # Row progress is encoded as "<state>:<done>:<total>" so the egg
+            # screen can show "Drawing <state>… (n/total)"; other phases
+            # (compose, save) pass through as-is. Best-effort streaming.
+            payload: dict = {"event": event, "detail": detail}
+            if event == "row" and detail.count(":") == 2:
+                state, done, total = detail.split(":")
+                payload = {"event": "row", "state": state, "done": done, "total": total}
+            try:
+                _emit("pet.hatch.progress", "", payload)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("pet.hatch progress emit failed: %s", exc)
+
+        try:
+            result = hatch_pet(
+                base_image=base,
+                slug=slug,
+                display_name=name,
+                description=str(params.get("description") or ""),
+                concept=str(params.get("prompt") or name),
+                style=str(params.get("style") or "auto").strip() or "auto",
+                provider=sprite,
+                on_progress=_on_progress,
+                is_cancelled=lambda: _pet_is_cancelled(cancel_token),
+            )
+        except GenerationError as exc:
+            return _err(rid, 5031, str(exc))
+        finally:
+            _pet_cancel_release(cancel_token)
+
+        pet = store.load_pet(result.slug)
+        payload = _pet_sprite_payload(pet, scale=_pet_config_scale()) if pet else {}
+        return _ok(
+            rid,
+            {
+                "ok": True,
+                "slug": result.slug,
+                "displayName": result.display_name,
+                "warnings": result.validation.get("warnings", []),
+                "pet": payload,
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("pet.hatch failed: %s", exc)
+        return _err(rid, 5031, f"pet.hatch failed: {exc}")
 
 
 @method("credits.view")
@@ -6607,9 +7955,15 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             default_max_turns=goal_max_turns,
                         )
                         if goal_mgr.is_active():
+                            try:
+                                from hermes_cli.goals import gather_background_processes as _gather_bg
+                                _bg_procs = _gather_bg()
+                            except Exception:
+                                _bg_procs = None
                             decision = goal_mgr.evaluate_after_turn(
                                 raw,
                                 user_initiated=True,
+                                background_processes=_bg_procs,
                             )
                             verdict_msg = decision.get("message") or ""
                             if verdict_msg:
@@ -7892,6 +9246,45 @@ def _(rid, params: dict) -> dict:
                     session["show_reasoning"] = False
                 return _ok(rid, {"key": key, "value": "hide"})
 
+            # /reasoning full | clamp — parity with the classic CLI's
+            # reasoning_full toggle. The TUI renders thinking as an
+            # expand/collapse section rather than a fixed 10-line recap, so
+            # full maps to sections.thinking=expanded and clamp to collapsed.
+            # display.reasoning_full is persisted too so the config key stays
+            # consistent across the CLI and TUI surfaces.
+            if arg in {"full", "all"}:
+                cfg = _load_cfg()
+                display = (
+                    cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                )
+                sections = (
+                    display.get("sections")
+                    if isinstance(display.get("sections"), dict)
+                    else {}
+                )
+                display["reasoning_full"] = True
+                sections["thinking"] = "expanded"
+                display["sections"] = sections
+                cfg["display"] = display
+                _save_cfg(cfg)
+                return _ok(rid, {"key": key, "value": "full"})
+            if arg in {"clamp", "collapse", "short"}:
+                cfg = _load_cfg()
+                display = (
+                    cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+                )
+                sections = (
+                    display.get("sections")
+                    if isinstance(display.get("sections"), dict)
+                    else {}
+                )
+                display["reasoning_full"] = False
+                sections["thinking"] = "collapsed"
+                display["sections"] = sections
+                cfg["display"] = display
+                _save_cfg(cfg)
+                return _ok(rid, {"key": key, "value": "clamp"})
+
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
@@ -8252,7 +9645,8 @@ def _(rid, params: dict) -> dict:
         from hermes_cli.auth import has_usable_secret
         from hermes_cli.main import _has_any_provider_configured
 
-        runtime = resolve_runtime_provider(requested=None)
+        requested = str(params.get("provider") or "").strip() or None
+        runtime = resolve_runtime_provider(requested=requested)
         provider_configured = bool(_has_any_provider_configured())
         provider = runtime.get("provider") or "provider"
         source = str(runtime.get("source") or "")
@@ -8515,6 +9909,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "plan",
         "goal",
         "undo",
+        "learn",
     }
 )
 
@@ -8776,6 +10171,15 @@ def _(rid, params: dict) -> dict:
         if not arg:
             return _err(rid, 4004, "usage: /queue <prompt>")
         return _ok(rid, {"type": "send", "message": arg})
+
+    if name == "learn":
+        # Open-ended: build the standards-guided prompt and submit it as a
+        # normal agent turn. The live agent gathers whatever the user
+        # described (dirs, URLs, this conversation, pasted text) with its own
+        # tools and authors the skill via skill_manage. Works on any backend.
+        from agent.learn_prompt import build_learn_prompt
+
+        return _ok(rid, {"type": "send", "message": build_learn_prompt(arg)})
 
     if name == "retry":
         if not session:
@@ -9731,9 +11135,49 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             agent.ephemeral_system_prompt = new_prompt or None
             agent._cached_system_prompt = None
         elif name == "compress" and agent:
+            # Mirror the session.compress RPC: build a before/after summary so
+            # the user gets feedback (#46686). The slash path previously just
+            # compressed + emitted session.info and returned "", so the TUI
+            # showed no "compressed N → M messages / ~X → ~Y tokens" stats
+            # while CLI and gateway both did.
+            from agent.manual_compression_feedback import summarize_manual_compression
+            from agent.model_metadata import estimate_request_tokens_rough
+
+            with session["history_lock"]:
+                _before_messages = list(session.get("history", []))
+            _before_count = len(_before_messages)
+            _sys_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+            _tools = getattr(agent, "tools", None) or None
+            _before_tokens = (
+                estimate_request_tokens_rough(
+                    _before_messages, system_prompt=_sys_prompt, tools=_tools
+                )
+                if _before_count
+                else 0
+            )
+
             _compress_session_history(session, arg)
             _sync_session_key_after_compress(sid, session)
+
+            with session["history_lock"]:
+                _after_messages = list(session.get("history", []))
+            _sys_prompt_after = getattr(agent, "_cached_system_prompt", "") or _sys_prompt
+            _tools_after = getattr(agent, "tools", None) or _tools
+            _after_tokens = (
+                estimate_request_tokens_rough(
+                    _after_messages, system_prompt=_sys_prompt_after, tools=_tools_after
+                )
+                if _after_messages
+                else 0
+            )
             _emit("session.info", sid, _session_info(agent, session))
+            _fb = summarize_manual_compression(
+                _before_messages, _after_messages, _before_tokens, _after_tokens
+            )
+            _lines = [_fb["headline"], _fb["token_line"]]
+            if _fb.get("note"):
+                _lines.append(_fb["note"])
+            return "\n".join(_lines)
         elif name == "fast" and agent:
             mode = arg.lower()
             if mode in {"fast", "on"}:

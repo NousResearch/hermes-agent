@@ -589,6 +589,38 @@ class TestRootLevelProviderOverride:
         assert result["model"]["provider"] == "correct-provider"
         assert "provider" not in result  # root key still cleaned up
 
+    def test_normalize_model_api_base_aliases_to_base_url(self):
+        """model.api_base is migrated to model.base_url (issue #8919)."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "model": {
+                "provider": "custom",
+                "api_base": "http://localhost:4000",
+                "api_key": "my-key",
+                "default": "default",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["base_url"] == "http://localhost:4000"
+        assert "api_base" not in result["model"]  # alias cleaned up
+
+    def test_normalize_api_base_does_not_override_base_url(self):
+        """An explicit model.base_url is never overridden by api_base."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "model": {
+                "provider": "custom",
+                "api_base": "http://wrong:9999",
+                "base_url": "http://localhost:4000",
+                "default": "default",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["base_url"] == "http://localhost:4000"
+        assert "api_base" not in result["model"]
+
     def test_normalize_root_context_length_migrates_to_model(self):
         """Root-level context_length is migrated into the model section."""
         from hermes_cli.config import _normalize_root_model_keys

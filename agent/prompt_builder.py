@@ -957,8 +957,8 @@ def _probe_remote_backend(env_type: str) -> str | None:
     os_bits = " ".join(x for x in (parsed.get("os"), parsed.get("kernel")) if x and x != "unknown")
     if os_bits:
         pieces.append(f"OS: {os_bits}")
-    if parsed.get("user") and parsed["user"] != "unknown":
-        pieces.append(f"User: {parsed['user']}")
+    # Do NOT include the OS username in the system prompt — it leaks into
+    # auto-generated fields like skill author without the user's consent.
     if parsed.get("home"):
         pieces.append(f"Home: {parsed['home']}")
     if parsed.get("cwd"):

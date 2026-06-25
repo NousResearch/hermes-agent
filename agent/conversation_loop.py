@@ -798,6 +798,10 @@ def run_conversation(
             # hermes_token_codec); it must never reach a provider payload,
             # where it is an unknown field strict APIs reject.
             api_msg.pop("token_count", None)
+            # Strip the flattened token view too — get_messages_as_conversation
+            # attaches `tokens` for display consumers, but it must not ride
+            # along into a provider payload.
+            api_msg.pop("tokens", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields

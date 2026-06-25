@@ -1419,16 +1419,20 @@ class APIServerAdapter(BasePlatformAdapter):
         resp = {key: message.get(key) for key in safe_keys if key in message}
         # token_count is stored bit-packed (NEGATIVE for packed rows — see
         # hermes_token_codec). Never leak the raw packed sentinel to API
-        # clients: decode it into per-bucket counts under `tokens`, and keep
-        # the scalar `token_count` field backward-compatible (legacy assistant
-        # output count) so existing consumers don't see a negative number.
-        if "token_count" in resp:
+        # clients: surface per-bucket counts under `tokens` and keep the scalar
+        # `token_count` backward-compatible (legacy assistant output count).
+        # Prefer the flattened view SessionDB.get_messages already attached
+        # (whose scalar token_count is likewise already neutralised); only
+        # decode here when handed a raw row (e.g. flatten_tokens=False).
+        tokens = message.get("tokens")
+        if tokens is None and "token_count" in resp:
             from hermes_token_codec import resolve_message_tokens
             tokens = resolve_message_tokens(message.get("role"), message.get("token_count"))
-            resp["tokens"] = tokens
             resp["token_count"] = (
                 tokens["output"] if message.get("role") == "assistant" else None
             )
+        if tokens is not None:
+            resp["tokens"] = tokens
         return resp
 
     async def _read_json_body(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
@@ -1626,7 +1630,9 @@ class APIServerAdapter(BasePlatformAdapter):
             system_prompt=source.get("system_prompt"),
             parent_session_id=source_id,
         )
-        messages = db.get_messages(source_id)
+        # flatten_tokens=False: keep the raw bit-packed token_count so the
+        # fork's per-message token accounting is preserved on re-persist.
+        messages = db.get_messages(source_id, flatten_tokens=False)
         db.replace_messages(fork_id, messages)
         title = body.get("title")
         if title is None:

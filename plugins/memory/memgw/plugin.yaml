@@ -1,0 +1,5 @@
+name: memgw
+version: 1.0.0
+description: "Memory Gateway — Neo4j+Qdrant hybrid recall (semantic+keyword+graph fusion), mental-model reflection, and graph/vault-grounded context. Dan's self-hosted memory backend."
+pip_dependencies:
+  - mcp>=1.26.0,<2

@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +71,7 @@ async def ensure_runtime_schema() -> None:
             """
         )
         await ensure_source_schema(conn)
+        await ensure_analytics_schema(conn)
 
 
 async def ensure_source_schema(conn: Any) -> None:
@@ -124,6 +126,63 @@ async def ensure_source_schema(conn: Any) -> None:
           PRIMARY KEY (source_id, external_id)
         )
         """
+    )
+
+
+async def ensure_analytics_schema(conn: Any) -> None:
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS query_events (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          actor_email text,
+          actor_role text NOT NULL DEFAULT 'member',
+          actor_groups text[] NOT NULL DEFAULT '{}'::text[],
+          query_text text NOT NULL,
+          mode text NOT NULL DEFAULT 'mix',
+          allowed_workspaces text[] NOT NULL DEFAULT '{}'::text[],
+          status text NOT NULL CHECK (status IN ('ok', 'error')),
+          latency_ms integer NOT NULL DEFAULT 0,
+          error text,
+          created_at timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS query_workspace_events (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          query_event_id uuid NOT NULL REFERENCES query_events(id) ON DELETE CASCADE,
+          workspace_slug text NOT NULL,
+          latency_ms integer NOT NULL DEFAULT 0,
+          status text NOT NULL CHECK (status IN ('ok', 'error')),
+          reference_count integer NOT NULL DEFAULT 0,
+          error text,
+          created_at timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS query_document_hits (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          query_event_id uuid NOT NULL REFERENCES query_events(id) ON DELETE CASCADE,
+          workspace_slug text NOT NULL,
+          reference_id text,
+          title text,
+          source_uri text,
+          rank integer NOT NULL DEFAULT 0,
+          document_id uuid REFERENCES documents(id) ON DELETE SET NULL,
+          created_at timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_query_events_created_at ON query_events (created_at DESC)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_query_events_actor ON query_events (actor_email, created_at DESC)")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_query_workspace_events_workspace ON query_workspace_events (workspace_slug, created_at DESC)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_query_document_hits_lookup ON query_document_hits (workspace_slug, title, created_at DESC)"
     )
 
 
@@ -295,17 +354,241 @@ def serialize_scan_run(row: Any) -> dict[str, Any]:
     return data
 
 
+def analytics_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def analytics_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def analytics_iso(value: Any) -> Any:
+    return value.isoformat() if hasattr(value, "isoformat") else value
+
+
+def clamp_analytics_days(value: Any) -> int:
+    try:
+        days = int(value)
+    except (TypeError, ValueError):
+        days = 30
+    return max(1, min(days, 365))
+
+
+def clamp_analytics_limit(value: Any) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        limit = 20
+    return max(1, min(limit, 100))
+
+
+def compact_query_text(value: Any, limit: int = 2000) -> str:
+    return " ".join(str(value or "").split())[:limit]
+
+
+def reference_field(ref: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = ref.get(key)
+        if value not in {None, ""}:
+            return str(value)
+    return None
+
+
+def coerce_document_id(value: Any) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        import uuid
+
+        return str(uuid.UUID(text))
+    except ValueError:
+        return None
+
+
+def extract_document_hits(answers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    hits: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    ranks_by_workspace: dict[str, int] = {}
+    for answer in answers:
+        workspace = str(answer.get("workspace") or "unknown")
+        result = answer.get("result") or {}
+        references = result.get("references") if isinstance(result, dict) else None
+        if isinstance(references, dict):
+            references = list(references.values())
+        if not isinstance(references, list):
+            continue
+        for ref in references:
+            ref_data = ref if isinstance(ref, dict) else {"reference_id": str(ref)}
+            reference_id = reference_field(ref_data, "reference_id", "id", "chunk_id", "doc_id")
+            source_uri = reference_field(ref_data, "source_uri", "file_path", "url", "source")
+            title = reference_field(ref_data, "title", "file_path", "source", "source_uri", "url", "reference_id", "id")
+            document_id = coerce_document_id(reference_field(ref_data, "document_id", "doc_id"))
+            dedupe_key = (workspace, reference_id or source_uri or title or "")
+            if not dedupe_key[1] or dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            ranks_by_workspace[workspace] = ranks_by_workspace.get(workspace, 0) + 1
+            hits.append(
+                {
+                    "workspace_slug": workspace,
+                    "rank": ranks_by_workspace[workspace],
+                    "reference_id": reference_id,
+                    "title": title,
+                    "source_uri": source_uri or title,
+                    "document_id": document_id,
+                }
+            )
+    return hits
+
+
+async def record_query_analytics(
+    pool: Any,
+    *,
+    actor_email: str | None,
+    actor_role: str,
+    actor_groups: list[str],
+    query_text: str,
+    mode: str,
+    allowed_workspaces: list[str],
+    answers: list[dict[str, Any]],
+    latency_ms: int,
+    status: str,
+    error: str | None,
+) -> None:
+    hits = extract_document_hits(answers)
+    reference_counts: dict[str, int] = {}
+    for hit in hits:
+        workspace = hit["workspace_slug"]
+        reference_counts[workspace] = reference_counts.get(workspace, 0) + 1
+
+    async with pool.acquire() as conn:
+        event_id = await conn.fetchval(
+            """
+            INSERT INTO query_events (
+              actor_email, actor_role, actor_groups, query_text, mode,
+              allowed_workspaces, status, latency_ms, error
+            )
+            VALUES ($1, $2, $3::text[], $4, $5, $6::text[], $7, $8, $9)
+            RETURNING id
+            """,
+            actor_email,
+            actor_role or "member",
+            actor_groups,
+            compact_query_text(query_text),
+            mode or "mix",
+            allowed_workspaces,
+            status,
+            max(0, int(latency_ms)),
+            error,
+        )
+        for answer in answers:
+            workspace = str(answer.get("workspace") or "unknown")
+            workspace_error = answer.get("error")
+            await conn.execute(
+                """
+                INSERT INTO query_workspace_events (
+                  query_event_id, workspace_slug, latency_ms, status,
+                  reference_count, error
+                )
+                VALUES ($1, $2, $3, $4, $5, $6)
+                """,
+                event_id,
+                workspace,
+                max(0, analytics_int(answer.get("latency_ms"), latency_ms)),
+                "error" if workspace_error else "ok",
+                reference_counts.get(workspace, 0),
+                str(workspace_error) if workspace_error else None,
+            )
+        if hits:
+            await conn.executemany(
+                """
+                INSERT INTO query_document_hits (
+                  query_event_id, workspace_slug, reference_id, title,
+                  source_uri, rank, document_id
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7::uuid)
+                """,
+                [
+                    (
+                        event_id,
+                        hit["workspace_slug"],
+                        hit["reference_id"],
+                        hit["title"],
+                        hit["source_uri"],
+                        hit["rank"],
+                        hit["document_id"],
+                    )
+                    for hit in hits
+                ],
+            )
+
+
+def serialize_analytics_rows(rows: list[Any]) -> list[dict[str, Any]]:
+    serialized = []
+    for row in rows:
+        data = dict(row)
+        serialized.append({key: analytics_iso(value) for key, value in data.items()})
+    return serialized
+
+
+def build_analytics_response(
+    *,
+    period_days: int,
+    limit: int,
+    summary: dict[str, Any] | None,
+    top_documents: list[Any],
+    top_users: list[Any],
+    recent_queries: list[Any],
+    workspace_usage: list[Any],
+    top_questions: list[Any],
+) -> dict[str, Any]:
+    summary = dict(summary or {})
+    total_queries = analytics_int(summary.get("total_queries"))
+    successful_queries = analytics_int(summary.get("successful_queries"))
+    return {
+        "period_days": period_days,
+        "limit": limit,
+        "summary": {
+            "total_queries": total_queries,
+            "unique_users": analytics_int(summary.get("unique_users")),
+            "successful_queries": successful_queries,
+            "failed_queries": analytics_int(summary.get("failed_queries")),
+            "success_rate": (successful_queries / total_queries) if total_queries else 0,
+            "avg_latency_ms": analytics_float(summary.get("avg_latency_ms")),
+            "document_hits": analytics_int(summary.get("document_hits")),
+        },
+        "top_documents": serialize_analytics_rows(top_documents),
+        "top_users": serialize_analytics_rows(top_users),
+        "recent_queries": serialize_analytics_rows(recent_queries),
+        "workspace_usage": serialize_analytics_rows(workspace_usage),
+        "top_questions": serialize_analytics_rows(top_questions),
+    }
+
+
 @app.post("/query")
 async def query(payload: dict[str, Any]) -> dict[str, Any]:
+    started_at = time.monotonic()
     user_groups = payload.get("groups") or []
     allowed = allowed_workspaces(user_groups)
     headers = {"X-API-Key": LIGHTRAG_API_KEY} if LIGHTRAG_API_KEY else {}
     semaphore = asyncio.Semaphore(max(1, QUERY_WORKSPACE_CONCURRENCY))
 
     async def query_workspace(client: httpx.AsyncClient, workspace: str) -> dict[str, Any]:
+        workspace_started_at = time.monotonic()
         base_url = LIGHTRAG_URLS.get(workspace)
         if not base_url:
-            return {"workspace": workspace, "error": "workspace is not configured"}
+            return {
+                "workspace": workspace,
+                "error": "workspace is not configured",
+                "latency_ms": int((time.monotonic() - workspace_started_at) * 1000),
+            }
         async with semaphore:
             try:
                 response = await client.post(
@@ -318,12 +601,39 @@ async def query(payload: dict[str, Any]) -> dict[str, Any]:
                     headers=headers,
                 )
                 response.raise_for_status()
-                return {"workspace": workspace, "result": response.json()}
+                return {
+                    "workspace": workspace,
+                    "result": response.json(),
+                    "latency_ms": int((time.monotonic() - workspace_started_at) * 1000),
+                }
             except Exception as exc:
-                return {"workspace": workspace, "error": str(exc)}
+                return {
+                    "workspace": workspace,
+                    "error": str(exc),
+                    "latency_ms": int((time.monotonic() - workspace_started_at) * 1000),
+                }
 
     async with httpx.AsyncClient(timeout=180) as client:
         answers = await asyncio.gather(*(query_workspace(client, workspace) for workspace in allowed))
+    latency_ms = int((time.monotonic() - started_at) * 1000)
+    status = "ok" if any(not answer.get("error") for answer in answers) else "error"
+    error = None if status == "ok" else "; ".join(str(answer.get("error")) for answer in answers if answer.get("error"))
+    try:
+        await record_query_analytics(
+            app.state.pool,
+            actor_email=str(payload.get("actor_email") or "") or None,
+            actor_role=str(payload.get("actor_role") or "member"),
+            actor_groups=[str(group) for group in user_groups],
+            query_text=str(payload.get("query") or ""),
+            mode=str(payload.get("mode") or "mix"),
+            allowed_workspaces=allowed,
+            answers=answers,
+            latency_ms=latency_ms,
+            status=status,
+            error=error,
+        )
+    except Exception as exc:
+        print(f"query analytics write failed: {exc}", flush=True)
     return {
         "status": "ok",
         "query": payload.get("query"),
@@ -596,3 +906,136 @@ async def queue_status() -> dict[str, Any]:
         "document_status_counts": {row["status"]: row["count"] for row in rows},
         "worker_expected": True,
     }
+
+
+@app.get("/analytics")
+async def analytics(days: int = 30, limit: int = 20) -> dict[str, Any]:
+    period_days = clamp_analytics_days(days)
+    row_limit = clamp_analytics_limit(limit)
+    async with app.state.pool.acquire() as conn:
+        summary = await conn.fetchrow(
+            """
+            SELECT
+              count(*)::int AS total_queries,
+              count(DISTINCT actor_email)::int AS unique_users,
+              count(*) FILTER (WHERE status = 'ok')::int AS successful_queries,
+              count(*) FILTER (WHERE status = 'error')::int AS failed_queries,
+              coalesce(avg(latency_ms), 0)::float AS avg_latency_ms,
+              (
+                SELECT count(*)::int
+                FROM query_document_hits h
+                JOIN query_events qh ON qh.id = h.query_event_id
+                WHERE qh.created_at >= now() - ($1::int * interval '1 day')
+              ) AS document_hits
+            FROM query_events q
+            WHERE q.created_at >= now() - ($1::int * interval '1 day')
+            """,
+            period_days,
+        )
+        top_documents = await conn.fetch(
+            """
+            SELECT
+              coalesce(d.title, h.title, h.source_uri, h.reference_id, 'unknown') AS title,
+              coalesce(d.source_uri, h.source_uri) AS source_uri,
+              h.workspace_slug,
+              count(*)::int AS hits,
+              count(DISTINCT q.actor_email)::int AS unique_users,
+              max(h.created_at) AS last_accessed_at
+            FROM query_document_hits h
+            JOIN query_events q ON q.id = h.query_event_id
+            LEFT JOIN documents d ON d.id = h.document_id
+            WHERE q.created_at >= now() - ($1::int * interval '1 day')
+            GROUP BY coalesce(d.title, h.title, h.source_uri, h.reference_id, 'unknown'),
+                     coalesce(d.source_uri, h.source_uri),
+                     h.workspace_slug
+            ORDER BY hits DESC, last_accessed_at DESC
+            LIMIT $2
+            """,
+            period_days,
+            row_limit,
+        )
+        top_users = await conn.fetch(
+            """
+            SELECT
+              coalesce(actor_email, 'unknown') AS actor_email,
+              max(actor_role) AS actor_role,
+              count(*)::int AS query_count,
+              count(*) FILTER (WHERE status = 'error')::int AS failed_queries,
+              max(created_at) AS last_query_at
+            FROM query_events
+            WHERE created_at >= now() - ($1::int * interval '1 day')
+            GROUP BY coalesce(actor_email, 'unknown')
+            ORDER BY query_count DESC, last_query_at DESC
+            LIMIT $2
+            """,
+            period_days,
+            row_limit,
+        )
+        recent_queries = await conn.fetch(
+            """
+            SELECT
+              q.created_at,
+              coalesce(q.actor_email, 'unknown') AS actor_email,
+              q.actor_role,
+              q.query_text,
+              q.mode,
+              q.allowed_workspaces,
+              q.status,
+              q.latency_ms,
+              q.error,
+              count(h.id)::int AS document_count
+            FROM query_events q
+            LEFT JOIN query_document_hits h ON h.query_event_id = q.id
+            WHERE q.created_at >= now() - ($1::int * interval '1 day')
+            GROUP BY q.id
+            ORDER BY q.created_at DESC
+            LIMIT $2
+            """,
+            period_days,
+            row_limit,
+        )
+        workspace_usage = await conn.fetch(
+            """
+            SELECT
+              w.workspace_slug,
+              count(*)::int AS query_count,
+              count(*) FILTER (WHERE w.status = 'error')::int AS error_count,
+              coalesce(avg(w.latency_ms), 0)::float AS avg_latency_ms,
+              sum(w.reference_count)::int AS reference_count,
+              max(w.created_at) AS last_query_at
+            FROM query_workspace_events w
+            JOIN query_events q ON q.id = w.query_event_id
+            WHERE q.created_at >= now() - ($1::int * interval '1 day')
+            GROUP BY w.workspace_slug
+            ORDER BY query_count DESC, w.workspace_slug
+            LIMIT $2
+            """,
+            period_days,
+            row_limit,
+        )
+        top_questions = await conn.fetch(
+            """
+            SELECT
+              query_text,
+              count(*)::int AS count,
+              count(DISTINCT actor_email)::int AS unique_users,
+              max(created_at) AS last_asked_at
+            FROM query_events
+            WHERE created_at >= now() - ($1::int * interval '1 day')
+            GROUP BY query_text
+            ORDER BY count DESC, last_asked_at DESC
+            LIMIT $2
+            """,
+            period_days,
+            row_limit,
+        )
+    return build_analytics_response(
+        period_days=period_days,
+        limit=row_limit,
+        summary=dict(summary or {}),
+        top_documents=top_documents,
+        top_users=top_users,
+        recent_queries=recent_queries,
+        workspace_usage=workspace_usage,
+        top_questions=top_questions,
+    )

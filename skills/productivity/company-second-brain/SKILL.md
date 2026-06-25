@@ -42,6 +42,8 @@ Use this skill when the user asks to:
 - Create a user/agent token as an admin.
 - Ingest a plain-text document into the company RAG.
 - Configure or manually scan Notion and public Google Drive document sources.
+- Inspect admin analytics: top documents, user queries, workspace latency/errors,
+  and repeated questions.
 
 Do not use this skill for local codebase search. Use normal repository tools for
 code files unless the user explicitly asks for company second-brain knowledge.
@@ -195,6 +197,19 @@ Check system status:
 ~/.hermes/skills/productivity/company-second-brain/scripts/second-brain queue-status
 ~/.hermes/skills/productivity/company-second-brain/scripts/second-brain sources-list
 ```
+
+Inspect analytics:
+
+```bash
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain analytics --days 30 --limit 20
+```
+
+Analytics includes:
+
+- top documents/references surfaced by LightRAG
+- users and recent query text
+- repeated questions
+- workspace latency/error counts
 
 ## Ingest Text
 

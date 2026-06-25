@@ -170,7 +170,7 @@ def cmd_admin_token_create(args: argparse.Namespace) -> None:
         body["role"] = "admin"
         if "role_admin" not in body["groups"]:
             body["groups"].append("role_admin")
-    data = request_json("POST", f"{config['base_url']}/api/admin/tokens", headers=auth_headers(config, admin=True), body=body)
+    data = request_json("POST", f"{config['base_url']}/api/admin/tokens", headers=admin_or_token_headers(config), body=body)
     if args.save_user_token:
         config["token"] = data["token"]
         save_config(config)
@@ -258,7 +258,7 @@ def cmd_document_status(args: argparse.Namespace) -> None:
         request_json(
             "GET",
             f"{config['base_url']}/api/documents/{args.document_id}",
-            headers=auth_headers(config, admin=True),
+            headers=admin_or_token_headers(config),
             timeout=30,
         )
     )
@@ -270,7 +270,19 @@ def cmd_queue_status(args: argparse.Namespace) -> None:
         request_json(
             "GET",
             f"{config['base_url']}/api/queue/status",
-            headers=auth_headers(config, admin=True),
+            headers=admin_or_token_headers(config),
+            timeout=30,
+        )
+    )
+
+
+def cmd_analytics(args: argparse.Namespace) -> None:
+    config = load_config()
+    print_json(
+        request_json(
+            "GET",
+            f"{config['base_url']}/api/analytics?days={args.days}&limit={args.limit}",
+            headers=admin_or_token_headers(config),
             timeout=30,
         )
     )
@@ -304,7 +316,7 @@ def source_config_from_args(args: argparse.Namespace, *, update: bool = False) -
 
 def cmd_sources_list(args: argparse.Namespace) -> None:
     config = load_config()
-    print_json(request_json("GET", f"{config['base_url']}/api/sources", headers=auth_headers(config, admin=True), timeout=30))
+    print_json(request_json("GET", f"{config['base_url']}/api/sources", headers=admin_or_token_headers(config), timeout=30))
 
 
 def cmd_source_create(args: argparse.Namespace) -> None:
@@ -322,11 +334,11 @@ def cmd_source_create(args: argparse.Namespace) -> None:
     }
     print_json(
         request_json(
-            "POST",
-            f"{config['base_url']}/api/sources",
-            headers=auth_headers(config, admin=True),
-            body=body,
-            timeout=60,
+        "POST",
+        f"{config['base_url']}/api/sources",
+        headers=admin_or_token_headers(config),
+        body=body,
+        timeout=60,
         )
     )
 
@@ -353,11 +365,11 @@ def cmd_source_update(args: argparse.Namespace) -> None:
         raise SystemExit("No source updates provided.")
     print_json(
         request_json(
-            "PATCH",
-            f"{config['base_url']}/api/sources/{args.source_id}",
-            headers=auth_headers(config, admin=True),
-            body=body,
-            timeout=60,
+        "PATCH",
+        f"{config['base_url']}/api/sources/{args.source_id}",
+        headers=admin_or_token_headers(config),
+        body=body,
+        timeout=60,
         )
     )
 
@@ -366,11 +378,11 @@ def cmd_source_scan(args: argparse.Namespace) -> None:
     config = load_config()
     print_json(
         request_json(
-            "POST",
-            f"{config['base_url']}/api/sources/{args.source_id}/scan",
-            headers=auth_headers(config, admin=True),
-            body={"trigger": "manual"},
-            timeout=60,
+        "POST",
+        f"{config['base_url']}/api/sources/{args.source_id}/scan",
+        headers=admin_or_token_headers(config),
+        body={"trigger": "manual"},
+        timeout=60,
         )
     )
 
@@ -379,11 +391,11 @@ def cmd_source_runs(args: argparse.Namespace) -> None:
     config = load_config()
     print_json(
         request_json(
-            "GET",
-            f"{config['base_url']}/api/sources/{args.source_id}/runs",
-            headers=auth_headers(config, admin=True),
-            timeout=30,
-        )
+        "GET",
+        f"{config['base_url']}/api/sources/{args.source_id}/runs",
+        headers=admin_or_token_headers(config),
+        timeout=30,
+    )
     )
 
 
@@ -456,6 +468,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("queue-status", help="Admin token only: show ingest queue depth and document status counts")
     p.set_defaults(func=cmd_queue_status)
+
+    p = sub.add_parser("analytics", help="Admin: show query/user/document analytics")
+    p.add_argument("--days", type=int, default=30)
+    p.add_argument("--limit", type=int, default=20)
+    p.set_defaults(func=cmd_analytics)
 
     p = sub.add_parser("sources-list", help="Admin: list Notion/Drive document sources")
     p.set_defaults(func=cmd_sources_list)

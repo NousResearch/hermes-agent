@@ -127,6 +127,48 @@ CREATE TABLE IF NOT EXISTS audit_events (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS query_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  actor_email text,
+  actor_role text NOT NULL DEFAULT 'member',
+  actor_groups text[] NOT NULL DEFAULT '{}'::text[],
+  query_text text NOT NULL,
+  mode text NOT NULL DEFAULT 'mix',
+  allowed_workspaces text[] NOT NULL DEFAULT '{}'::text[],
+  status text NOT NULL CHECK (status IN ('ok', 'error')),
+  latency_ms integer NOT NULL DEFAULT 0,
+  error text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS query_workspace_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  query_event_id uuid NOT NULL REFERENCES query_events(id) ON DELETE CASCADE,
+  workspace_slug text NOT NULL,
+  latency_ms integer NOT NULL DEFAULT 0,
+  status text NOT NULL CHECK (status IN ('ok', 'error')),
+  reference_count integer NOT NULL DEFAULT 0,
+  error text,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS query_document_hits (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  query_event_id uuid NOT NULL REFERENCES query_events(id) ON DELETE CASCADE,
+  workspace_slug text NOT NULL,
+  reference_id text,
+  title text,
+  source_uri text,
+  rank integer NOT NULL DEFAULT 0,
+  document_id uuid REFERENCES documents(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_query_events_created_at ON query_events (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_query_events_actor ON query_events (actor_email, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_query_workspace_events_workspace ON query_workspace_events (workspace_slug, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_query_document_hits_lookup ON query_document_hits (workspace_slug, title, created_at DESC);
+
 INSERT INTO users (email, display_name, status)
 VALUES ('admin@example.com', 'Initial Admin', 'active')
 ON CONFLICT (email) DO NOTHING;

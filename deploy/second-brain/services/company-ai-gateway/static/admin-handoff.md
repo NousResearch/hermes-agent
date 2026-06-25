@@ -238,6 +238,33 @@ second-brain source-update SOURCE_ID --disabled
 second-brain source-update SOURCE_ID --enabled --reset-schedule
 ```
 
+## Analytics
+
+Every query is logged with actor email, role, groups, query text, allowed
+workspaces, workspace latency/error, and LightRAG references returned in the
+answer.
+
+Admin access:
+
+```bash
+second-brain analytics --days 30 --limit 20
+
+curl "__PUBLIC_BASE_URL__/api/analytics?days=30&limit=20" \
+  -H "Authorization: Bearer ADMIN_TOKEN"
+
+curl "__PUBLIC_BASE_URL__/api/analytics?days=30&limit=20" \
+  -H "X-API-Key: PASTE_GATEWAY_API_KEY"
+```
+
+Response sections:
+
+- `summary`: total queries, unique users, success rate, average latency, document hits
+- `top_documents`: documents/references surfaced most often
+- `top_users`: users with the most queries
+- `recent_queries`: who asked what, status, latency, referenced document count
+- `workspace_usage`: query/error/latency counts per LightRAG workspace
+- `top_questions`: repeated question text
+
 ## Upload Documents
 
 Public document:
@@ -306,6 +333,9 @@ Tables:
 - `document_sources`: source config, target workspace, interval, last/next scan
 - `source_scan_runs`: queued/running/complete/failed scan runs
 - `source_items`: dedupe map from external document id to checksum/document id
+- `query_events`: who asked what, role/groups, allowed workspaces, status, latency
+- `query_workspace_events`: per-workspace query status, latency, reference count
+- `query_document_hits`: LightRAG references surfaced in answers for top-document analytics
 
 Redis queue:
 

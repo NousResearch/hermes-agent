@@ -225,6 +225,28 @@ company_public
 department_c_level
 ```
 
+## Analytics
+
+Every query is logged with actor email, role, groups, query text, allowed
+workspaces, workspace latency/error, and LightRAG references returned in the
+answer. Admins can inspect usage through the CLI or API:
+
+```bash
+second-brain analytics --days 30 --limit 20
+
+curl "https://second-brain.your-company.com/api/analytics?days=30&limit=20" \
+  -H "Authorization: Bearer ADMIN_TOKEN"
+```
+
+The analytics response includes:
+
+- `summary`: total queries, unique users, success rate, average latency, document hits
+- `top_documents`: documents/references surfaced most often
+- `top_users`: users with the most queries
+- `recent_queries`: who asked what, status, latency, referenced document count
+- `workspace_usage`: query/error/latency counts per LightRAG workspace
+- `top_questions`: repeated question text
+
 ## Upload Documents
 
 Public document:
@@ -354,7 +376,7 @@ Give that URL to another agent with the repo branch and target organization sett
 ## Production Gaps
 
 - Add token revoke/rotation storage.
-- Add audit log writes for query/upload/token creation.
+- Add audit log writes for upload/token creation and token revocation.
 - Add PDF/DOCX parser pipeline.
 - Add dynamic workspace provisioning if the organization later needs separate department containers.
 - Add scheduled backups for Postgres and LightRAG volumes.

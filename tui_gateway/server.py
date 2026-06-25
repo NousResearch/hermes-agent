@@ -266,6 +266,14 @@ class _SlashWorker:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            # Decode child output as UTF-8 (what Hermes emits) instead of the
+            # OS locale codepage. On non-UTF-8 Windows consoles (e.g. cp950)
+            # the default text-mode decode raises UnicodeDecodeError inside the
+            # reader threads on any non-ASCII byte, killing _drain_stdout /
+            # _drain_stderr and stalling the worker (#52649). errors="replace"
+            # keeps a stray byte from ever crashing the stream.
+            encoding="utf-8",
+            errors="replace",
             bufsize=1,
             cwd=os.getcwd(),
             env=os.environ.copy(),
@@ -1369,6 +1377,12 @@ def _git_branch_for_cwd(cwd: str) -> str:
             ["git", "-C", cwd, "branch", "--show-current"],
             capture_output=True,
             text=True,
+            # Decode as UTF-8, not the OS locale codepage: a non-ASCII branch
+            # name on a cp950 console otherwise raises UnicodeDecodeError in the
+            # subprocess reader thread (#52649). This runs on the periodic
+            # session-status refresh, so the crash repeats on a fixed cadence.
+            encoding="utf-8",
+            errors="replace",
             timeout=1.5,
             check=False,
             stdin=subprocess.DEVNULL,
@@ -1381,6 +1395,8 @@ def _git_branch_for_cwd(cwd: str) -> str:
             ["git", "-C", cwd, "rev-parse", "--short", "HEAD"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=1.5,
             check=False,
             stdin=subprocess.DEVNULL,

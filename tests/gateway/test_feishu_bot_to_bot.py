@@ -17,7 +17,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.platforms.base import MessageType, SendResult
-from gateway.platforms.feishu import (
+from plugins.platforms.feishu.adapter import (
     _build_bot_sender_notice,
     _build_markdown_post_payload,
 )
@@ -114,14 +114,14 @@ class TestPostPayloadAtElement:
         assert rows == [[{"tag": "md", "text": "收到 **重点**"}]]
 
     def test_post_at_conversion_is_logged_with_user_id(self, caplog):
-        with caplog.at_level(logging.INFO, logger="gateway.platforms.feishu"):
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.feishu.adapter"):
             _build_markdown_post_payload('<at user_id="ou_peer">龙虾二号</at> 收到 **重点**')
         assert any(
             "structured post" in r.message and "ou_peer" in r.message for r in caplog.records
         )
 
     def test_post_without_at_logs_no_conversion(self, caplog):
-        with caplog.at_level(logging.INFO, logger="gateway.platforms.feishu"):
+        with caplog.at_level(logging.INFO, logger="plugins.platforms.feishu.adapter"):
             _build_markdown_post_payload("收到 **重点**")
         assert not any("structured post" in r.message for r in caplog.records)
 

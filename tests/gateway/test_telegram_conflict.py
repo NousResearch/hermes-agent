@@ -34,7 +34,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
+from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -42,9 +42,9 @@ def _no_auto_discovery(monkeypatch):
     """Disable DoH auto-discovery so connect() uses the plain builder chain."""
     async def _noop():
         return []
-    monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", _noop)
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.discover_fallback_ips", _noop)
     # Mock HTTPXRequest so the builder chain doesn't fail
-    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", lambda **kwargs: MagicMock())
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.HTTPXRequest", lambda **kwargs: MagicMock())
 
 
 @pytest.mark.asyncio
@@ -103,7 +103,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
-    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     # Speed up retries for testing
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
@@ -179,7 +179,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
-    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     # Speed up retries for testing
     monkeypatch.setattr("asyncio.sleep", AsyncMock())
@@ -232,7 +232,7 @@ async def test_connect_marks_retryable_fatal_error_for_startup_network_failure(m
         start=AsyncMock(),
     )
     builder.build.return_value = app
-    monkeypatch.setattr("gateway.platforms.telegram.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
     ok = await adapter.connect()
 
@@ -277,7 +277,7 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
     builder.get_updates_request.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
-        "gateway.platforms.telegram.Application",
+        "plugins.platforms.telegram.adapter.Application",
         SimpleNamespace(builder=MagicMock(return_value=builder)),
     )
 
@@ -301,7 +301,7 @@ async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     adapter._app = app
 
     warning = MagicMock()
-    monkeypatch.setattr("gateway.platforms.telegram.logger.warning", warning)
+    monkeypatch.setattr("plugins.platforms.telegram.adapter.logger.warning", warning)
 
     await adapter.disconnect()
 
@@ -309,3 +309,92 @@ async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
     app.stop.assert_not_awaited()
     app.shutdown.assert_awaited_once()
     warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
+    """Regression for #19471.
+
+    When a conflict-retry's start_polling raises and we are still below the
+    retry ceiling, the handler reschedules itself via loop.create_task. The
+    old code used the deprecated asyncio.get_event_loop(), which raises
+    "RuntimeError: There is no current event loop in thread 'MainThread'" on
+    Python 3.11+ when no loop is attached to the thread (as happens when PTB
+    dispatches this error callback). That left the gateway alive but silent
+    and drove the --replace crash loop. The fix uses get_running_loop(), which
+    is always valid inside a coroutine. Force get_event_loop() to raise so a
+    regression would surface as the original RuntimeError, not pass silently.
+    """
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter.set_fatal_error_handler(AsyncMock())
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    captured = {}
+    call_count = {"n": 0}
+
+    async def failing_start_polling(**kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            captured["error_callback"] = kwargs["error_callback"]
+        else:
+            # Retry attempt fails so the handler enters the reschedule branch.
+            raise Exception("Connection refused")
+
+    updater = SimpleNamespace(
+        start_polling=AsyncMock(side_effect=failing_start_polling),
+        stop=AsyncMock(),
+        running=True,
+    )
+    bot = SimpleNamespace(set_my_commands=AsyncMock(), delete_webhook=AsyncMock())
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "plugins.platforms.telegram.adapter.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+
+    ok = await adapter.connect()
+    assert ok is True
+
+    # If the fix regresses to get_event_loop(), this makes it raise — the same
+    # RuntimeError users hit in #19471. The running-loop path ignores it.
+    def _boom():
+        raise RuntimeError("There is no current event loop in thread 'MainThread'.")
+
+    monkeypatch.setattr("asyncio.get_event_loop", _boom)
+
+    conflict = type("Conflict", (Exception,), {})
+
+    # One conflict: count goes to 1 (< MAX), retry's start_polling raises,
+    # handler reschedules via loop.create_task — the previously-broken line.
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
+
+    assert adapter.has_fatal_error is False
+    assert adapter._polling_error_task is not None
+    # The rescheduled task must be schedulable on the running loop.
+    adapter._polling_error_task.cancel()
+    try:
+        await adapter._polling_error_task
+    except (asyncio.CancelledError, Exception):
+        pass

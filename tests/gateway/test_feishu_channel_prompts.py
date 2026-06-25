@@ -5,7 +5,7 @@ These tests lock down two contracts:
 1. ``gateway.platforms.base.resolve_channel_prompt`` works for
    Feishu-shaped ``open_chat_id`` keys (``oc_…``) when called with the
    adapter's ``config.extra`` dict.
-2. ``gateway.platforms.feishu.FeishuAdapter._process_inbound_message``
+2. ``plugins.platforms.feishu.adapter.FeishuAdapter._process_inbound_message``
    populates ``MessageEvent.channel_prompt`` from the resolved value.
 
 We do not duplicate the resolver's full unit-test surface (already
@@ -41,7 +41,7 @@ class TestComposeChannelPromptWithAtTutorial:
     """``_compose_channel_prompt_for_chat`` appends the @-syntax tutorial after the configured prompt."""
 
     def test_no_configured_prompt_returns_tutorial_only(self):
-        from gateway.platforms.feishu import (
+        from plugins.platforms.feishu.adapter import (
             _FEISHU_AT_TUTORIAL,
             _compose_channel_prompt_for_chat,
         )
@@ -49,7 +49,7 @@ class TestComposeChannelPromptWithAtTutorial:
         assert _compose_channel_prompt_for_chat({}, "oc_test") == _FEISHU_AT_TUTORIAL
 
     def test_configured_prompt_appears_before_tutorial(self):
-        from gateway.platforms.feishu import (
+        from plugins.platforms.feishu.adapter import (
             _FEISHU_AT_TUTORIAL,
             _compose_channel_prompt_for_chat,
         )
@@ -60,7 +60,7 @@ class TestComposeChannelPromptWithAtTutorial:
         assert result == f"Persona X\n\n{_FEISHU_AT_TUTORIAL}"
 
     def test_blank_configured_prompt_treated_as_absent(self):
-        from gateway.platforms.feishu import (
+        from plugins.platforms.feishu.adapter import (
             _FEISHU_AT_TUTORIAL,
             _compose_channel_prompt_for_chat,
         )
@@ -75,7 +75,7 @@ class TestComposeChannelPromptSelfIdentity:
     """Group chats get a self-identity line so the agent knows which open_id is itself."""
 
     def test_group_with_bot_open_id_includes_self_identity(self):
-        from gateway.platforms.feishu import (
+        from plugins.platforms.feishu.adapter import (
             _FEISHU_AT_TUTORIAL,
             _compose_channel_prompt_for_chat,
         )
@@ -88,7 +88,7 @@ class TestComposeChannelPromptSelfIdentity:
         assert result.endswith(_FEISHU_AT_TUTORIAL)
 
     def test_self_identity_after_configured_prompt(self):
-        from gateway.platforms.feishu import _compose_channel_prompt_for_chat
+        from plugins.platforms.feishu.adapter import _compose_channel_prompt_for_chat
 
         result = _compose_channel_prompt_for_chat(
             {"channel_prompts": {"oc_g": "Persona X"}},
@@ -100,7 +100,7 @@ class TestComposeChannelPromptSelfIdentity:
         assert result.index("Persona X") < result.index("ou_self") < result.index("@-mention")
 
     def test_dm_omits_self_identity(self):
-        from gateway.platforms.feishu import (
+        from plugins.platforms.feishu.adapter import (
             _FEISHU_AT_TUTORIAL,
             _compose_channel_prompt_for_chat,
         )
@@ -112,7 +112,7 @@ class TestComposeChannelPromptSelfIdentity:
         assert result == _FEISHU_AT_TUTORIAL
 
     def test_group_without_bot_open_id_omits_self_identity(self):
-        from gateway.platforms.feishu import (
+        from plugins.platforms.feishu.adapter import (
             _FEISHU_AT_TUTORIAL,
             _compose_channel_prompt_for_chat,
         )
@@ -131,7 +131,7 @@ class TestInboundMessageCarriesChannelPrompt(unittest.TestCase):
 
     def _make_adapter_with_extra(self, extra: dict):
         from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        from plugins.platforms.feishu.adapter import FeishuAdapter
 
         config = PlatformConfig()
         config.extra = extra
@@ -160,7 +160,7 @@ class TestInboundMessageCarriesChannelPrompt(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_inbound_event_carries_channel_prompt_when_chat_id_matches(self):
-        from gateway.platforms.feishu import _FEISHU_AT_TUTORIAL
+        from plugins.platforms.feishu.adapter import _FEISHU_AT_TUTORIAL
 
         adapter = self._make_adapter_with_extra(
             {"channel_prompts": {"oc_test": "Persona X"}}
@@ -184,7 +184,7 @@ class TestInboundMessageCarriesChannelPrompt(unittest.TestCase):
 
     @patch.dict(os.environ, {}, clear=True)
     def test_inbound_event_channel_prompt_is_tutorial_only_when_chat_id_unknown(self):
-        from gateway.platforms.feishu import _FEISHU_AT_TUTORIAL
+        from plugins.platforms.feishu.adapter import _FEISHU_AT_TUTORIAL
 
         adapter = self._make_adapter_with_extra(
             {"channel_prompts": {"oc_other": "Persona X"}}

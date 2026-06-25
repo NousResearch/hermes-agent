@@ -11,8 +11,20 @@ on:
       - 'optional-skills/**'
       - '.github/workflows/deploy-site.yml'
   workflow_dispatch:
+    inputs:
+      skills_index_run_id:
+        description: 'Optional Build Skills Index run ID whose skills-index artifact should be deployed'
+        required: false
+        type: string
+      rebuild_skills_index:
+        description: 'Force a fresh multi-source crawl instead of reusing the latest healthy index'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
+  contents: read
+  actions: read
   pages: write
   id-token: write
 
@@ -44,7 +56,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: website/package-lock.json
 
@@ -55,16 +67,81 @@ jobs:
       - name: Install PyYAML for skill extraction
         run: pip install pyyaml==6.0.2 httpx==0.28.1
 
-      - name: Build skills index (unified multi-source catalog)
+      - name: Prepare skills index (unified multi-source catalog)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN: ${{ github.token }}
+          SKILLS_INDEX_RUN_ID: ${{ github.event.inputs.skills_index_run_id || '' }}
+          REBUILD_SKILLS_INDEX: ${{ github.event.inputs.rebuild_skills_index || 'false' }}
         run: |
-          # Always rebuild — the file isn't committed (gitignored), so a
-          # fresh checkout starts without it and we want the freshest crawl
-          # in every deploy. Failure is non-fatal: extract-skills.py will
-          # fall back to the legacy snapshot cache and the Skills Hub page
-          # still renders, just without the latest community catalog.
-          python3 scripts/build_skills_index.py || echo "Skills index build failed (non-fatal)"
+          # The unified external catalog is expensive to crawl and can burn
+          # through the repository installation's GitHub API quota when several
+          # docs deploys land close together.  Normal docs deploys therefore
+          # reuse the latest healthy catalog: first the artifact from a
+          # scheduled skills-index run, then the currently live index.  Only a
+          # manual force rebuild does a fresh crawl here.
+          #
+          # If we do crawl, the build remains fatal. build_skills_index.py runs
+          # the health check BEFORE writing and exits non-zero on source
+          # collapse, keeping the last good Pages deployment live instead of
+          # publishing a degenerate catalog.
+          set -euo pipefail
+          INDEX_PATH="website/static/api/skills-index.json"
+          mkdir -p "$(dirname "$INDEX_PATH")"
+
+          validate_index() {
+            python3 - "$INDEX_PATH" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path(sys.argv[1])
+          try:
+              data = json.loads(path.read_text(encoding="utf-8"))
+          except Exception as exc:
+              print(f"invalid skills index JSON: {exc}", file=sys.stderr)
+              sys.exit(1)
+          skills = data.get("skills")
+          if not isinstance(skills, list) or len(skills) < 1500:
+              count = len(skills) if isinstance(skills, list) else "missing"
+              print(f"skills index too small: {count}", file=sys.stderr)
+              sys.exit(1)
+          print(f"skills index ready: {len(skills)} skills")
+          PY
+          }
+
+          if [ "$REBUILD_SKILLS_INDEX" = "true" ]; then
+            python3 scripts/build_skills_index.py
+            validate_index
+            exit 0
+          fi
+
+          if [ -n "$SKILLS_INDEX_RUN_ID" ]; then
+            tmpdir="$(mktemp -d)"
+            echo "Downloading skills-index artifact from run $SKILLS_INDEX_RUN_ID"
+            if gh run download "$SKILLS_INDEX_RUN_ID" --name skills-index --dir "$tmpdir"; then
+              candidate="$(find "$tmpdir" -name skills-index.json -type f | head -n 1 || true)"
+              if [ -n "$candidate" ]; then
+                cp "$candidate" "$INDEX_PATH"
+                if validate_index; then
+                  exit 0
+                fi
+              fi
+            fi
+            echo "::warning::Could not use skills-index artifact from run $SKILLS_INDEX_RUN_ID; trying live index"
+          fi
+
+          echo "Downloading currently live skills index"
+          if curl -fsSL --retry 3 --retry-delay 5 \
+            "https://hermes-agent.nousresearch.com/docs/api/skills-index.json" \
+            -o "$INDEX_PATH" && validate_index; then
+            exit 0
+          fi
+
+          echo "::warning::Live skills index unavailable or unhealthy; falling back to a fresh crawl"
+          rm -f "$INDEX_PATH"
+          python3 scripts/build_skills_index.py
+          validate_index
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py

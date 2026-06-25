@@ -58,9 +58,9 @@ Element.prototype.animate = function animate() {
   } as unknown as Animation
 }
 
-// jsdom returns 0 for offset*; the virtualizer reads those to size its
+// jsdom returns 0 for offset*; some layout code reads those to size the
 // viewport. Fall through to client* (which tests can override) or a sane
-// default so virtualized items render.
+// default so message rows render with non-zero dimensions.
 function stubOffsetDimension(
   prop: 'offsetHeight' | 'offsetWidth',
   clientProp: 'clientHeight' | 'clientWidth',
@@ -130,12 +130,12 @@ function assistantErrorMessage(error: string): ThreadMessage {
   } as ThreadMessage
 }
 
-function assistantReasoningMessage(text: string): ThreadMessage {
+function assistantReasoningMessage(text: string, running = false): ThreadMessage {
   return {
     id: 'assistant-reasoning-1',
     role: 'assistant',
     content: [{ type: 'reasoning', text }],
-    status: { type: 'complete', reason: 'stop' },
+    status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
     createdAt,
     metadata: {
       unstable_state: null,
@@ -153,6 +153,27 @@ function assistantMultiReasoningMessage(texts: string[]): ThreadMessage {
     role: 'assistant',
     content: texts.map(text => ({ type: 'reasoning', text })),
     status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
+function assistantSeparatedReasoningMessage(): ThreadMessage {
+  return {
+    id: 'assistant-reasoning-separated-1',
+    role: 'assistant',
+    content: [
+      { type: 'reasoning', text: ' Complete first thought.', status: { type: 'complete' } },
+      { type: 'text', text: 'Interim answer.' },
+      { type: 'reasoning', text: ' Streaming second thought.', status: { type: 'running' } }
+    ],
+    status: { type: 'running' },
     createdAt,
     metadata: {
       unstable_state: null,
@@ -195,25 +216,21 @@ function assistantTodoMessage(
   } as ThreadMessage
 }
 
-function assistantReasoningTodoMessage(
-  todos: Array<{ content: string; id: string; status: 'cancelled' | 'completed' | 'in_progress' | 'pending' }>
-): ThreadMessage {
+function assistantImageMessage(running = false): ThreadMessage {
   return {
-    id: 'assistant-reasoning-todo-1',
+    id: `assistant-image-${running ? 'running' : 'done'}`,
     role: 'assistant',
     content: [
-      { type: 'reasoning', text: 'Let me make a quick todo list.' },
       {
         type: 'tool-call',
-        toolCallId: 'todo-1',
-        toolName: 'todo',
-        args: { todos },
-        argsText: JSON.stringify({ todos }),
-        result: { todos }
-      },
-      { type: 'text', text: 'Done — fake list created.' }
+        toolCallId: 'image-1',
+        toolName: 'image_generate',
+        args: { prompt: 'draw a cat' },
+        argsText: JSON.stringify({ prompt: 'draw a cat' }),
+        ...(running ? {} : { result: { image: 'https://cdn.example/cat.png', success: true } })
+      }
     ],
-    status: { type: 'complete', reason: 'stop' },
+    status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
     createdAt,
     metadata: {
       unstable_state: null,
@@ -291,10 +308,38 @@ function MessageHarness({ message }: { message: ThreadMessage }) {
   )
 }
 
+function RunningMessageHarness({ message }: { message: ThreadMessage }) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [message],
+    isRunning: true,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
 function ReasoningHarness() {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [assistantReasoningMessage(' The user is asking what this file is.')],
     isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
+
+function RunningReasoningHarness() {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [assistantReasoningMessage('```ts\nconst answer = 42\n', true)],
+    isRunning: true,
     onNew: async () => {}
   })
 
@@ -329,6 +374,20 @@ function IntroHarness() {
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <Thread intro={{ personality: 'default', seed: 1 }} />
+    </AssistantRuntimeProvider>
+  )
+}
+
+function DismissibleErrorHarness({ onDismissError }: { onDismissError: (messageId: string) => void }) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [assistantErrorMessage('OpenRouter rejected the request (403).')],
+    isRunning: false,
+    onNew: async () => {}
+  })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread onDismissError={onDismissError} />
     </AssistantRuntimeProvider>
   )
 }
@@ -376,49 +435,64 @@ describe('assistant-ui streaming renderer', () => {
     expect(screen.getByRole('alert').textContent).toContain('OpenRouter rejected the request (403).')
   })
 
-  it('does not pull the viewport back down after the user scrolls up during streaming', async () => {
-    const { container } = render(<StreamingHarness />)
+  it('omits the dismiss control when no onDismissError handler is supplied', () => {
+    render(<MessageHarness message={assistantErrorMessage('OpenRouter rejected the request (403).')} />)
 
-    const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
-    const viewport = content.parentElement as HTMLDivElement
-    let scrollHeight = 1_000
+    expect(screen.queryByRole('button', { name: 'Dismiss error' })).toBeNull()
+  })
 
-    Object.defineProperty(viewport, 'clientHeight', { configurable: true, value: 200 })
-    Object.defineProperty(viewport, 'scrollHeight', {
-      configurable: true,
-      get: () => scrollHeight
+  it('invokes onDismissError with the errored message id when the dismiss control is clicked', () => {
+    const onDismissError = vi.fn()
+    render(<DismissibleErrorHarness onDismissError={onDismissError} />)
+
+    const dismiss = screen.getByRole('button', { name: 'Dismiss error' })
+    fireEvent.click(dismiss)
+
+    expect(onDismissError).toHaveBeenCalledTimes(1)
+    expect(onDismissError).toHaveBeenCalledWith('assistant-error-1')
+  })
+
+  // Scroll behavior (follow-at-bottom, escape-on-scroll-up, re-engage) is owned
+  // by the use-stick-to-bottom library and covered by its own test suite. We
+  // don't re-assert its scrollTop mechanics here — doing so in jsdom (no real
+  // layout, spring animation via rAF) only produces brittle change-detector
+  // tests. The rendering/streaming-content tests below remain the contract.
+
+  it('renders an incomplete streaming fenced code block as a code card', async () => {
+    const { container } = render(<RunningMessageHarness message={assistantMessage('```ts\nconst answer = 42\n')} />)
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
     })
 
-    await wait(80)
+    expect(container.textContent).toContain('const answer = 42')
+    expect(container.textContent).not.toContain('```ts')
+  })
 
-    await act(async () => {
-      viewport.scrollTop = 800
-      fireEvent.scroll(viewport)
+  it('renders an incomplete streaming reasoning fenced code block as a code card', async () => {
+    const { container } = render(<RunningReasoningHarness />)
+    const ui = within(container)
+    const thinkingToggle = ui.getByRole('button', { name: /thinking/i })
+
+    if (thinkingToggle.getAttribute('aria-expanded') !== 'true') {
+      fireEvent.click(thinkingToggle)
+    }
+
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()
     })
-    await wait(0)
 
-    await act(async () => {
-      fireEvent.wheel(viewport, { deltaY: -120 })
-      viewport.scrollTop = 420
-      fireEvent.scroll(viewport)
+    await waitFor(() => {
+      expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
     })
-
-    scrollHeight = 1_200
-
-    await act(async () => {
-      for (const observer of resizeObservers) {
-        observer.trigger(1_200)
-      }
-    })
-    await wait(0)
-
-    expect(viewport.scrollTop).toBe(420)
+    expect(container.textContent).not.toContain('```ts')
   })
 
   it('renders reasoning text without a leading token space', () => {
     const { container } = render(<ReasoningHarness />)
+    const ui = within(container)
 
-    fireEvent.click(screen.getByRole('button', { name: /thinking/i }))
+    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
 
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toBe(
       'The user is asking what this file is.'
@@ -439,7 +513,19 @@ describe('assistant-ui streaming renderer', () => {
     expect(reasoningParts[1]?.textContent).toBe('Second thought.')
   })
 
-  it('renders live todo rows during a running turn', () => {
+  it('does not reopen an earlier completed thinking group when a later group is running', () => {
+    const { container } = render(<RunningMessageHarness message={assistantSeparatedReasoningMessage()} />)
+
+    const disclosures = container.querySelectorAll('[data-slot="aui_thinking-disclosure"]')
+    expect(disclosures.length).toBe(2)
+
+    expect(disclosures[0].querySelector('button')?.getAttribute('aria-expanded')).toBe('false')
+    expect(disclosures[1].querySelector('button')?.getAttribute('aria-expanded')).toBe('true')
+    expect(container.textContent).not.toContain('Complete first thought.')
+    expect(container.textContent).toContain('Interim answer.')
+  })
+
+  it('does not render an inline todo panel — todos live in the composer status stack', () => {
     const { container } = render(
       <TodoHarness
         message={assistantTodoMessage([
@@ -449,52 +535,18 @@ describe('assistant-ui streaming renderer', () => {
       />
     )
 
-    const ui = within(container)
-
-    expect(container.querySelector('[data-slot="aui_todo-hoisted"]')).toBeTruthy()
-    expect(ui.getAllByText('Boil water').length).toBeGreaterThan(0)
-    expect(ui.getByText('Gather ingredients')).toBeTruthy()
-    expect(ui.queryByText(/pending/i)).toBeNull()
-    expect(ui.queryByRole('button', { name: /todo/i })).toBeNull()
+    expect(container.querySelector('[data-slot="aui_todo-hoisted"]')).toBeNull()
   })
 
-  it('renders archived todos after turn completion regardless of pending state', () => {
-    const first = render(
-      <TodoHarness message={assistantTodoMessage([{ content: 'Boil water', id: 'boil', status: 'pending' }], false)} />
-    )
+  it('renders completed image generation results in the tool slot', async () => {
+    const { container } = render(<MessageHarness message={assistantImageMessage()} />)
 
-    const ui = within(first.container)
-
-    expect(ui.getAllByText('Boil water').length).toBeGreaterThan(0)
-
-    first.unmount()
-
-    const second = render(
-      <TodoHarness
-        message={assistantTodoMessage([{ content: 'Serve latte', id: 'serve', status: 'completed' }], false)}
-      />
-    )
-
-    const archivedUi = within(second.container)
-
-    expect(archivedUi.getAllByText('Serve latte').length).toBeGreaterThan(0)
-  })
-
-  it('hoists todo outside the thinking disclosure when reasoning is present', () => {
-    const { container } = render(
-      <TodoHarness
-        message={assistantReasoningTodoMessage([
-          { content: 'Buy oats', id: 'oats', status: 'completed' },
-          { content: "Reply to Sam's email", id: 'email', status: 'in_progress' }
-        ])}
-      />
-    )
-
-    const todoPanel = container.querySelector('[data-slot="aui_todo-hoisted"]')
-    const thinkingDisclosure = container.querySelector('[data-slot="aui_thinking-disclosure"]')
-
-    expect(todoPanel).toBeTruthy()
-    expect(thinkingDisclosure).toBeTruthy()
-    expect(Boolean(thinkingDisclosure?.contains(todoPanel as Node))).toBe(false)
+    await waitFor(() => {
+      expect(screen.getByRole('img', { name: 'Generated image' }).getAttribute('src')).toBe(
+        'https://cdn.example/cat.png'
+      )
+    })
+    expect(container.querySelector('[data-slot="aui_generated-image"]')).toBeTruthy()
+    expect(screen.queryByRole('status', { name: /rendering image/i })).toBeNull()
   })
 })

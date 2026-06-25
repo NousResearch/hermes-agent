@@ -9,6 +9,7 @@ import {
   IconAt as AtSign,
   IconWaveSine as AudioLines,
   IconChartBar as BarChart3,
+  IconBell as Bell,
   IconBrain as Brain,
   IconBug as Bug,
   IconCheck as Check,
@@ -28,6 +29,7 @@ import {
   IconCopy as CopyIcon,
   IconCpu as Cpu,
   IconDownload as Download,
+  IconEgg as Egg,
   IconExternalLink as ExternalLink,
   IconEye as Eye,
   IconEyeOff as EyeOff,
@@ -49,6 +51,8 @@ import {
   IconLoader2 as Loader2,
   IconLoader2 as Loader2Icon,
   IconLock as Lock,
+  IconLogin as LogIn,
+  IconMail as Mail,
   IconMessageCircle as MessageCircle,
   IconMessage2 as MessageSquareText,
   IconMicrophone as Mic,
@@ -65,6 +69,7 @@ import {
   IconLayoutBottombar as PanelBottom,
   IconLayoutSidebar as PanelLeftIcon,
   IconPlayerPause as Pause,
+  IconPaw as PawPrint,
   IconPencil as Pencil,
   IconPencil as PencilIcon,
   IconPencil as PencilLine,
@@ -82,6 +87,7 @@ import {
   IconAdjustmentsHorizontal as SlidersHorizontal,
   IconSparkles as Sparkles,
   IconSquare as Square,
+  IconSteeringWheel as SteeringWheel,
   IconSun as Sun,
   IconTerminal2 as Terminal,
   IconTrash as Trash2,
@@ -93,7 +99,8 @@ import {
   IconTool as Wrench,
   IconX as X,
   IconX as XIcon,
-  IconBolt as Zap
+  IconBolt as Zap,
+  IconBoltFilled as ZapFilled
 } from '@tabler/icons-react'
 
 export {
@@ -107,6 +114,7 @@ export {
   AtSign,
   AudioLines,
   BarChart3,
+  Bell,
   Brain,
   Bug,
   Check,
@@ -126,6 +134,7 @@ export {
   CopyIcon,
   Cpu,
   Download,
+  Egg,
   ExternalLink,
   Eye,
   EyeOff,
@@ -147,6 +156,8 @@ export {
   Loader2,
   Loader2Icon,
   Lock,
+  LogIn,
+  Mail,
   MessageCircle,
   MessageSquareText,
   Mic,
@@ -163,6 +174,7 @@ export {
   PanelBottom,
   PanelLeftIcon,
   Pause,
+  PawPrint,
   Pencil,
   PencilIcon,
   PencilLine,
@@ -180,6 +192,7 @@ export {
   SlidersHorizontal,
   Sparkles,
   Square,
+  SteeringWheel,
   Sun,
   Terminal,
   Trash2,
@@ -191,7 +204,8 @@ export {
   Wrench,
   X,
   XIcon,
-  Zap
+  Zap,
+  ZapFilled
 }
 
 export type { Icon as IconComponent } from '@tabler/icons-react'

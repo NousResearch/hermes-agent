@@ -22,11 +22,15 @@ import { applyAdoptedPet, type GatewayRequest } from '@/store/pet-gallery'
  */
 
 // Generation is many grounded image calls — far longer than the default 30s RPC
-// timeout. Drafts fan out 4 base looks; hatch fans out ~8 animation rows. Even
-// parallelized, a cold provider call is slow, so we give these calls real
-// headroom (the bug was "request timed out: pet.generate" on the 30s default).
-const GENERATE_TIMEOUT_MS = 240_000
-const HATCH_TIMEOUT_MS = 420_000
+// timeout. Drafts fan out 4 base looks; hatch fans out ~8 animation rows. The
+// quality-first default (OpenAI image via OpenRouter) is slow, and each hatch
+// row can retry up to 3x (300s/call) across 2 parallel waves, so the absolute
+// backend worst case is ~30 min. The hatch ceiling sits above that (1h) so the
+// frontend never throws "request timed out" before the backend has actually
+// exhausted its own retries — the background-resumable notify path is the real
+// UX safety net (the user can close the modal and get pinged on completion).
+const GENERATE_TIMEOUT_MS = 420_000
+const HATCH_TIMEOUT_MS = 3_600_000
 
 // Filler words to drop when deriving a default name from a free-text prompt.
 const NAME_STOPWORDS = new Set([

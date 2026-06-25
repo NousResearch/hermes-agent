@@ -159,6 +159,7 @@ const TranscriptPane = memo(function TranscriptPane({
                     sections: ui.sections
                   })}
                   sections={ui.sections}
+                  showTokens={ui.showTokens}
                   t={ui.theme}
                 />
               )}

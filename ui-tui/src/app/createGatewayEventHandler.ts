@@ -927,6 +927,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (!wasInterrupted) {
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
+          // Per-turn token breakdown for the /tokens footer: usage is
+          // cumulative session state, so diff the new totals against the
+          // previous to get this turn's input/output/reasoning, and attach it
+          // to the final assistant message. Clamp to >=0 (a compression reset
+          // can shrink the cumulative counters).
+          const u = ev.payload?.usage
+          if (u) {
+            const prev = getUiState().usage
+            const dIn = Math.max(0, (u.input ?? 0) - (prev.input ?? 0))
+            const dOut = Math.max(0, (u.output ?? 0) - (prev.output ?? 0))
+            const dReason = Math.max(0, (u.reasoning ?? 0) - (prev.reasoning ?? 0))
+            if (dIn || dOut || dReason) {
+              for (let i = msgs.length - 1; i >= 0; i--) {
+                if (msgs[i].role === 'assistant') {
+                  msgs[i] = { ...msgs[i], tokenBreakdown: { input: dIn, output: dOut, reasoning: dReason } }
+                  break
+                }
+              }
+            }
+          }
           msgs.forEach(appendMessage)
 
           // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.

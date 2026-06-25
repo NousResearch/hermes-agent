@@ -159,6 +159,7 @@ export interface ConfigDisplayConfig {
   mouse_tracking?: boolean | null | number | string
   sections?: Record<string, string>
   show_cost?: boolean
+  show_message_tokens?: boolean
   show_reasoning?: boolean
   streaming?: boolean
   thinking_mode?: string

@@ -2592,6 +2592,36 @@ class SlackAdapter(BasePlatformAdapter):
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)
 
+        # Plan 074-C: clarification relay reply path. A reply in a thread that
+        # has a PENDING orchestrator clarification is NEVER an agent turn, so it
+        # MUST be handled before the mention / allowed-channel / session gating
+        # below. Otherwise an unmentioned reply in a channel like
+        # #product-feedback (whose thread anchor is the user's own feedback post,
+        # not a bot message) hits the early-return gate and the answer is
+        # silently dropped — the bug this fixes. Defensive: any failure degrades
+        # to normal handling (returns False).
+        if is_thread_reply and event_thread_ts:
+            try:
+                from gateway.clarify_relay import maybe_relay_clarify_reply
+                relayed = await maybe_relay_clarify_reply(
+                    channel_id=channel_id,
+                    thread_ts=event_thread_ts,
+                    answer=original_text,
+                )
+            except Exception as _clarify_exc:  # pragma: no cover - defensive
+                logger.debug(
+                    "[Slack] clarify relay check failed (continuing normally): %s",
+                    _clarify_exc,
+                )
+                relayed = False
+            if relayed:
+                logger.info(
+                    "[Slack] message routed to orchestrator clarification relay "
+                    "(channel=%s thread=%s) — not dispatching to agent",
+                    channel_id, event_thread_ts,
+                )
+                return
+
         if not is_dm and bot_uid:
             # Check allowed channels — if set, only respond in these channels (whitelist)
             allowed_channels = self._slack_allowed_channels()
@@ -2637,33 +2667,6 @@ class SlackAdapter(BasePlatformAdapter):
                     to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
-
-        # Plan 074-C: clarification relay reply path. If this is a thread reply
-        # whose thread anchor has a pending orchestrator clarification, POST the
-        # answer back to the orchestrator sensor and short-circuit — a
-        # clarification answer is NOT an agent turn. Defensive: any failure
-        # inside the relay degrades to normal handling (returns False).
-        if is_thread_reply and event_thread_ts:
-            try:
-                from gateway.clarify_relay import maybe_relay_clarify_reply
-                relayed = await maybe_relay_clarify_reply(
-                    channel_id=channel_id,
-                    thread_ts=event_thread_ts,
-                    answer=original_text,
-                )
-            except Exception as _clarify_exc:  # pragma: no cover - defensive
-                logger.debug(
-                    "[Slack] clarify relay check failed (continuing normally): %s",
-                    _clarify_exc,
-                )
-                relayed = False
-            if relayed:
-                logger.info(
-                    "[Slack] message routed to orchestrator clarification relay "
-                    "(channel=%s thread=%s) — not dispatching to agent",
-                    channel_id, event_thread_ts,
-                )
-                return
 
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.

@@ -797,6 +797,61 @@ class TestBangPrefixCommands:
 
 
 # ---------------------------------------------------------------------------
+# TestClarifyReplyRelayGating
+# ---------------------------------------------------------------------------
+
+
+class TestClarifyReplyRelayGating:
+    """Plan 074-C reply leg must run BEFORE the mention/channel gate.
+
+    Regression: a clarification answer is posted as a plain (un-@mentioned)
+    reply in a channel thread whose anchor is the user's own feedback post —
+    not a bot message and with no active session. The mention-gate would
+    early-return such a message; if the clarify-relay check sits after that
+    gate, the answer is silently dropped (the workflow never gets the signal).
+    """
+
+    def _thread_reply_event(self):
+        return {
+            "text": "here are the success criteria ...",
+            "user": "U_USER",
+            "channel": "C_PRODUCT_FEEDBACK",  # a channel (not a DM)
+            "channel_type": "channel",
+            "ts": "200.000002",               # this reply's ts
+            "thread_ts": "100.000001",        # anchor differs → is_thread_reply
+        }
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_thread_reply_with_pending_is_relayed(self, adapter):
+        """With a pending clarification, an unmentioned thread reply is relayed
+        and NOT dispatched to the agent — even though require_mention is on."""
+        with patch(
+            "gateway.clarify_relay.maybe_relay_clarify_reply",
+            new_callable=AsyncMock,
+        ) as relay:
+            relay.return_value = True  # a pending clarification matched
+            await adapter._handle_slack_message(self._thread_reply_event())
+
+        relay.assert_awaited_once()
+        # short-circuit: a clarification answer is not an agent turn
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_thread_reply_without_pending_is_still_gated(self, adapter):
+        """No pending clarification → relay returns False → the normal mention
+        gate still applies (unmentioned channel reply is not dispatched)."""
+        with patch(
+            "gateway.clarify_relay.maybe_relay_clarify_reply",
+            new_callable=AsyncMock,
+        ) as relay:
+            relay.return_value = False  # no pending row for this thread
+            await adapter._handle_slack_message(self._thread_reply_event())
+
+        relay.assert_awaited_once()  # the relay was STILL consulted (before the gate)
+        adapter.handle_message.assert_not_called()  # gated out as before
+
+
+# ---------------------------------------------------------------------------
 # TestIncomingDocumentHandling
 # ---------------------------------------------------------------------------
 

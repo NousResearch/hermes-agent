@@ -1958,7 +1958,6 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 ),
                 next_args,
             )
-        )
     elif function_name == "model_switch":
         from tools.model_switch_tool import model_switch_tool as _model_switch_tool
         return _model_switch_tool(

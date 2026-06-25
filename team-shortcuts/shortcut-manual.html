@@ -1,0 +1,371 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>คู่มือ Prompt Shortcut — Hermes Agent</title>
+<style>
+  :root{
+    --bg:#f4f5f7; --surface:#ffffff; --ink:#1f2329; --muted:#5b626b; --line:#e3e6ea;
+    --brand:#1f6feb; --brand-ink:#0b4fc0; --ok:#1a7f4b; --warn:#b06b00; --danger:#c0392b;
+    --chip:#eef1f5; --code:#f6f8fa;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans Thai",Roboto,sans-serif;
+    line-height:1.65;font-size:15.5px}
+  a{color:var(--brand);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{display:grid;grid-template-columns:280px 1fr;max-width:1180px;margin:0 auto;gap:0}
+  /* sidebar */
+  aside{position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+    background:var(--surface);border-right:1px solid var(--line);padding:22px 16px}
+  aside h2{font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--muted);margin:18px 8px 6px}
+  aside a{display:block;padding:6px 10px;border-radius:7px;color:var(--ink);font-size:14px}
+  aside a:hover{background:var(--chip);text-decoration:none}
+  .brandbox{padding:6px 8px 14px;border-bottom:1px solid var(--line);margin-bottom:6px}
+  .brandbox b{font-size:16px}
+  .brandbox span{display:block;color:var(--muted);font-size:12.5px;margin-top:2px}
+  /* content */
+  main{padding:34px 40px 80px;max-width:860px}
+  header.page h1{font-size:27px;margin:0 0 6px}
+  header.page p{color:var(--muted);margin:0 0 8px}
+  .meta{font-size:13px;color:var(--muted)}
+  .group-title{margin:38px 0 4px;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:var(--brand-ink);font-weight:700}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px 22px;margin:14px 0;scroll-margin-top:20px}
+  .card h3{margin:0 0 2px;font-size:19px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .ver{font-size:11.5px;font-weight:600;color:var(--ok);background:#e7f6ed;border:1px solid #bce6cd;border-radius:20px;padding:1px 9px}
+  .aliases{font-size:13px;color:var(--muted);margin:2px 0 12px}
+  .aliases code{background:var(--chip);border-radius:5px;padding:1px 6px;font-size:12.5px}
+  .use{margin:0 0 10px}
+  .use b{color:var(--brand-ink)}
+  .flow{margin:6px 0 0;padding:0;list-style:none;counter-reset:f}
+  .flow li{counter-increment:f;position:relative;padding:5px 0 5px 34px;border-top:1px dashed var(--line)}
+  .flow li:first-child{border-top:none}
+  .flow li::before{content:counter(f);position:absolute;left:0;top:6px;width:22px;height:22px;
+    background:var(--brand);color:#fff;border-radius:50%;font-size:12px;font-weight:700;
+    display:flex;align-items:center;justify-content:center}
+  .flowlabel{font-size:12.5px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.03em;margin:12px 0 2px}
+  .note{font-size:13.5px;background:#fff8e8;border:1px solid #f1e2b8;border-left:3px solid var(--warn);border-radius:8px;padding:8px 12px;margin:10px 0 0;color:#6a5410}
+  .danger{background:#fdeceb;border-color:#f3c6c1;border-left-color:var(--danger);color:#7c241c}
+  .intro{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:18px 22px;margin:16px 0 8px}
+  .intro b{color:var(--brand-ink)}
+  kbd{background:#22262c;color:#fff;border-radius:6px;padding:2px 8px;font-size:13px;font-family:ui-monospace,Menlo,monospace}
+  @media(max-width:880px){.wrap{grid-template-columns:1fr}aside{display:none}main{padding:22px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <aside>
+    <div class="brandbox"><b>คู่มือ Prompt Shortcut</b><span>Hermes Agent · สำหรับทีม</span></div>
+    <h2>เริ่ม/ปิด/ต่อ แชท</h2>
+    <a href="#m-new-chat">Use New Chat</a>
+    <a href="#m-close-chat">Use Close Chat</a>
+    <a href="#m-review-chat">Review Chat</a>
+    <a href="#m-continue">Use Continue</a>
+    <h2>วางแผน / บทบาท</h2>
+    <a href="#m-act-as">Use Act-As</a>
+    <a href="#m-comply">Use Comply</a>
+    <h2>ทำงานหลาย AI</h2>
+    <a href="#m-ai-relay">Use AI Relay</a>
+    <h2>สแกน / ตรวจคุณภาพ</h2>
+    <a href="#m-scan-feature">Use Scan Feature</a>
+    <a href="#m-viber-audit">Use Viber Audit</a>
+    <a href="#m-impeccable">Use Impeccable</a>
+    <h2>โครงสร้าง / ดีไซน์</h2>
+    <a href="#m-viber-structure">Use Viber Structure</a>
+    <a href="#m-wow">Use WOW Resource</a>
+    <h2>Git / ขึ้น production</h2>
+    <a href="#m-save-git">Use Save Git</a>
+    <a href="#m-merge">Use Merge to Production</a>
+    <h2>ความรู้ / เนื้อหา</h2>
+    <a href="#m-summary">Use Summary</a>
+    <a href="#m-blog-auto">Use Blog Auto</a>
+    <h2>ความปลอดภัย / จัดการ</h2>
+    <a href="#m-flow-guardian">Use Flow Guardian</a>
+    <a href="#m-move-folder">Use Move Folder</a>
+  </aside>
+
+  <main>
+    <header class="page">
+      <h1>คู่มือ Prompt Shortcut สำหรับทีม</h1>
+      <p>พิมพ์ชื่อ Shortcut ในแชท AI (Cursor / Claude Code / Codex) แล้ว AI จะทำตามขั้นตอนมาตรฐานให้</p>
+      <p class="meta">อัปเดต 2026-06-24 · ครอบคลุม 18 Shortcut ที่ใช้งานจริง</p>
+    </header>
+
+    <div class="intro">
+      <b>Shortcut คืออะไร</b> — คำสั่งสั้น ๆ ที่พิมพ์ให้ AI เพื่อเรียก "วิธีทำงานมาตรฐาน" ที่ตรวจสอบแล้ว
+      แทนที่จะอธิบายขั้นตอนยาว ๆ ทุกครั้ง · เรียกได้ทั้งภาษาไทยและอังกฤษ เช่น <kbd>Use Comply</kbd> = <kbd>แตกเฟส</kbd>
+      <br><br>
+      <b>คู่ที่ใช้บ่อยสุด</b> — เปิดงาน <kbd>Use New Chat</kbd> (AI อ่านว่างานถึงไหน) → ปิดงาน <kbd>Use Close Chat</kbd>
+      (AI บันทึกความจำให้แชทหน้า) · คู่นี้แก้ปัญหา AI ลืมงานข้ามแชท
+    </div>
+
+    <!-- ============ เริ่ม/ปิด/ต่อ ============ -->
+    <div class="group-title">เริ่ม / ปิด / ต่อ แชท</div>
+
+    <section class="card" id="m-new-chat">
+      <h3>Use New Chat <span class="ver">v1.6</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use New Chat</code> · <code>เปิดแชทใหม่</code> · <code>เริ่ม New Chat</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> เริ่มแชทใหม่/มาทำงานต่อ · อยากให้ AI รู้ว่างานถึงไหน อยู่ branch ไหน ก่อนเริ่ม (กันทำผิดที่)</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>อ่านความจำล่าสุด (handoff + session log) → สรุป 3 บรรทัด: process ขั้นไหน / งานล่าสุดถึงไหน / ต้องทำต่ออะไร</li>
+        <li>ตรวจของจริง: project path / branch / ไฟล์ค้าง / remote / VPS-service (มีอะไรตรวจอันนั้น)</li>
+        <li>ฟีเจอร์ใหม่ + อยู่ branch รวม → หยุด บังคับสร้าง branch ใหม่ก่อนแก้โค้ด</li>
+        <li>เช็กการจองงาน (กันแก้ทับเพื่อนร่วมทีม)</li>
+        <li>ออกผลเป็น READY / BLOCKED / NEED_OWNER_INPUT</li>
+      </ol>
+      <div class="note">แก้ปัญหาเดิม: AI ลืมบริบท + ทำงานบน branch ผิดจนพัง</div>
+    </section>
+
+    <section class="card" id="m-close-chat">
+      <h3>Use Close Chat <span class="ver">v1.0</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Close Chat</code> · <code>ปิดแชท</code> · <code>จบแชท</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> จะปิดแชท/เลิกงานรอบนี้ · อยากให้ AI บันทึกว่าทำอะไรไป เพื่อแชทหน้าจำได้</p>
+      <div class="flowlabel">Flow (ถาม 5 ข้อก่อนปิด)</div>
+      <ol class="flow">
+        <li>commit แล้วยัง — มีไฟล์ค้าง = ยังปิดสะอาดไม่ได้</li>
+        <li>ต้อง push / merge / แจ้งคนมีสิทธิ์ merge ไหม (ชี้ไป Save Git / Merge to Production)</li>
+        <li>แต่ละงานทำจริงไหม — แยก "ตรวจแล้วมีหลักฐาน" กับ "แค่บอกว่าเสร็จ"</li>
+        <li>AI ลืมอะไรไหม — ทวนคำสั่งทั้งแชท</li>
+        <li>เขียนความจำถาวร (handoff สั้น + session log ละเอียด) แล้วปิดด้วย CLOSED_CLEAN / CLOSED_WITH_PENDING / NEED_OWNER_ACTION</li>
+      </ol>
+      <div class="note">คู่กับ Use New Chat → ปิดเขียนความจำ เปิดอ่านความจำ</div>
+    </section>
+
+    <section class="card" id="m-review-chat">
+      <h3>Review Chat <span class="ver">v2.1</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Review Chat</code> · <code>รีวิวแชท</code> · <code>สรุปส่งต่อ</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> อยากตรวจว่างานในแชทนี้เชื่อถือได้ไหม + เตรียมข้อความต่อแชทใหม่</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>ไล่งานทั้งแชท: เสร็จ/ค้าง/ทำผิด + แยก "ตรวจจากหลักฐานจริง" กับ "สรุปจากบทสนทนา"</li>
+        <li>เสนอจะอัปเดตไฟล์ไหน (ยังไม่เขียนจนกว่าอนุมัติ)</li>
+        <li>โชว์ "หลักฐานที่ยังขาด" (ยังไม่ได้ตรวจอะไร)</li>
+        <li>ทำข้อความเปิดแชทใหม่พร้อมใช้</li>
+      </ol>
+    </section>
+
+    <section class="card" id="m-continue">
+      <h3>Use Continue <span class="ver">v3.1</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Continue</code> · <code>ทำต่อ</code> · <code>ไม่ต้องรอผม</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> อยากให้ AI ทำงานต่อเองอัตโนมัติ ปิดทุกเฟสให้ครบ</p>
+      <div class="flowlabel">Flow — ระดับอิสระ 3 ชั้น</div>
+      <ol class="flow">
+        <li>ชั้น 1 ทำเองได้ (อ่าน/แก้โค้ดใน scope/รันเทส)</li>
+        <li>ชั้น 2 รายงานแล้วทำต่อ (ลง dependency/แก้ config ที่ไม่ใช่ production)</li>
+        <li>ชั้น 3A งานเสี่ยง (push/merge/deploy/migration) → ทำได้เองแต่ต้องผ่านด่านตรวจอัตโนมัติก่อน</li>
+        <li>ชั้น 3B ของย้อนยากสุด (ใช้เงิน/ส่งอีเมล/เปิด secret/ลบถาวร) → ต้องขออนุมัติคนเสมอ</li>
+      </ol>
+      <div class="note">ปิดทุกเฟส 100% (ตรวจจริง) ก่อนข้าม · ไม่ขยายงานนอกเป้าหมาย</div>
+    </section>
+
+    <!-- ============ วางแผน / บทบาท ============ -->
+    <div class="group-title">วางแผน / บทบาท</div>
+
+    <section class="card" id="m-act-as">
+      <h3>Use Act-As <span class="ver">v2.1</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Act-As</code> · <code>กำหนดบทบาท</code> · <code>เรียกทีมผู้เชี่ยวชาญ</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> งานยาก/ซับซ้อน อยากให้ AI จัดทีมผู้เชี่ยวชาญ + วางแผนก่อนลงมือ</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>วิเคราะห์งาน + นิยาม "ว้าว" (เหนือคาด/ประสบการณ์ใหม่) ที่วัดได้จริง</li>
+        <li>แยกข้อมูล 3 กล่อง: รู้จริง / สมมติฐาน / ยังไม่รู้ (กันเดา)</li>
+        <li>จัดทีม role 3-6 คน ตามความถนัด + ระบุคนตัดสินสุดท้าย</li>
+        <li>วางแผนเป็นเฟส (2-5) + เสนอทางที่ดีที่สุด · ห้ามแก้ไฟล์จนอนุมัติ</li>
+      </ol>
+    </section>
+
+    <section class="card" id="m-comply">
+      <h3>Use Comply <span class="ver">v2.1</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Comply</code> · <code>แตกเฟส</code> · <code>ทำตารางเปอร์เซ็นต์</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> งานใหญ่ อยากกัน AI ลืม/ข้าม/โกหกว่าเสร็จ → แตกเป็นเฟส+เปอร์เซ็นต์ที่ตรวจได้</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>แยกเป้าหมาย + scope</li>
+        <li>แตกเป็น phase และ issue ย่อย พร้อมเกณฑ์ผ่าน + วิธีตรวจ</li>
+        <li>ให้สถานะมาตรฐาน (verified/blocked/failed...) + % ที่มีสูตร (นับเฉพาะที่ตรวจแล้ว)</li>
+        <li>รายงานท้ายเฟส + หลักฐานจริง · ห้าม 100% ถ้าไม่ตรวจ</li>
+      </ol>
+    </section>
+
+    <!-- ============ ทำงานหลาย AI ============ -->
+    <div class="group-title">ทำงานหลาย AI</div>
+
+    <section class="card" id="m-ai-relay">
+      <h3>Use AI Relay <span class="ver">v1.3</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use AI Relay</code> · <code>สายพาน AI</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> งานโค้ดเยอะ อยากประหยัดเครดิต Claude → ให้ AI ถูกกว่าเขียน Claude ตรวจ</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>ถามก่อน: ใครเขียน / ใครตรวจ (คนละค่าย) / งานอะไร ขอบเขตแค่ไหน</li>
+        <li>ตรวจเครื่องมือพร้อม (preflight) เฉพาะคนเขียนที่เลือก</li>
+        <li>คนเขียนทำบน branch แยก → ตัวตรวจ scope อัตโนมัติ (กันแตะนอกขอบเขต)</li>
+        <li>Claude ตรวจ + รันเทสจริง → วนแก้จนผ่าน 100% · บันทึก ledger ทุกครั้ง</li>
+      </ol>
+    </section>
+
+    <!-- ============ สแกน / ตรวจ ============ -->
+    <div class="group-title">สแกน / ตรวจคุณภาพ</div>
+
+    <section class="card" id="m-scan-feature">
+      <h3>Use Scan Feature <span class="ver">v1.0</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Scan Feature</code> · <code>สแกนฟีเจอร์</code> · <code>บัญชีฟีเจอร์</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> อยากได้บัญชีฟีเจอร์ทั้งหมดของโปรเจกต์ (ของจริง พิสูจน์ได้) เพื่อส่งต่อทีมการตลาด</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>สแกน repo ทีละเฟส (หยุดทุก GATE ให้คนอนุมัติ)</li>
+        <li>ทุกฟีเจอร์ติดสถานะ real/mock/planned + หลักฐาน path:line</li>
+        <li>ทำ Reality Matrix + Hidden Gems (ของดีที่เจ้าของลืม)</li>
+        <li>ออกเป็นเอกสารไทยไฟล์เดียว</li>
+      </ol>
+    </section>
+
+    <section class="card" id="m-viber-audit">
+      <h3>Use Viber Audit <span class="ver">v1.1</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Viber Audit</code> · <code>ตรวจมาตรฐาน Viber</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> อยากตรวจว่าโปรเจกต์ทำตามมาตรฐาน Viber Enterprise ครบไหม ขาดอะไร</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>เลือกโหมด: Quick (ตรวจเร็ว) / Full 360 / Portfolio (หลายโปรเจกต์สรุปก่อน)</li>
+        <li>ตรวจ artifact + quality gate 0-8 + security แบบมีหลักฐาน</li>
+        <li>ให้คะแนน % (คะแนนสูงไม่ผ่านถ้า security/release ขาด)</li>
+        <li>ออก gap เป็น issue พร้อม owner + วิธีแก้</li>
+      </ol>
+    </section>
+
+    <section class="card" id="m-impeccable">
+      <h3>Use Impeccable <span class="ver">v1.2</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Impeccable</code> · <code>ตรวจ UI Slop</code> · <code>แก้ AI Slop</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> หน้าเว็บดูเป็นงาน AI ลวก ๆ อยากให้ตรวจ+ปรับคุณภาพ UI</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>ตัดสินก่อน: เป็นงาน frontend ไหม / ติดตั้งเครื่องมือได้ปลอดภัยไหม (ไม่ใช่ = ตรวจด้วยมือ)</li>
+        <li>แยกปัญหาพัง (blocking) ออกจากหนี้หน้าตา (UI debt) → แก้ตัวพังก่อน</li>
+        <li>ให้คะแนน 100 (layout/responsive/a11y/design-system/น่าเชื่อถือ) ต่ำกว่า 80 = ยังไม่พร้อม production</li>
+        <li>แก้แบบ scoped + ตรวจด้วยหลักฐานจริง</li>
+      </ol>
+    </section>
+
+    <!-- ============ โครงสร้าง / ดีไซน์ ============ -->
+    <div class="group-title">โครงสร้าง / ดีไซน์</div>
+
+    <section class="card" id="m-viber-structure">
+      <h3>Use Viber Structure <span class="ver">v1.0</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Viber Structure</code> · <code>วางโครงสร้าง Viber Code</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> เริ่มโปรเจกต์ใหม่ อยากวางโครงสร้าง+เอกสาร+ด่านคุณภาพ ก่อนเขียนโค้ด</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>ไม่มีสเปก = ไม่เริ่มโค้ด (ต้องมี requirement/user story/acceptance)</li>
+        <li>วางโครงโปรเจกต์ + ตาราง artifact + tracker เฟส/งานย่อย</li>
+        <li>ตั้งด่านตรวจคุณภาพ + กฎหลักฐานจริง</li>
+      </ol>
+    </section>
+
+    <section class="card" id="m-wow">
+      <h3>Use WOW Resource <span class="ver">v1.1</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use WOW Resource</code> · <code>WOW Layout</code> · <code>WOW Design</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> ต้องการดีไซน์เว็บระดับพรีเมียม → ให้ AI คัดทรัพยากรดีไซน์มาปรับให้ตรงงาน</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>อ่านคลังดีไซน์ WOW เฉพาะที่เกี่ยว (ไม่โหลดทั้งคลัง)</li>
+        <li>ให้คะแนนคัด (fit/accessibility/น่าเชื่อถือ/ต้นทุน) แล้วเลือกตัวดีสุด</li>
+        <li>ปฏิเสธตัวที่ generic/flashy เกิน + อธิบายเหตุผล</li>
+        <li>แปลงเป็นทิศทางเฉพาะโปรเจกต์ (ไม่ก๊อปสคริปต์ตรง)</li>
+      </ol>
+    </section>
+
+    <!-- ============ Git ============ -->
+    <div class="group-title">Git / ขึ้น production</div>
+
+    <section class="card" id="m-save-git">
+      <h3>Use Save Git <span class="ver">v2.1</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Save Git</code> · <code>ก่อน push</code> · <code>ก่อน merge</code> · <code>Merge Gate</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> ก่อนจะ push/merge · อยากให้ตรวจครบก่อนเจ้าของกด merge (ทุกคนใช้ได้)</p>
+      <div class="flowlabel">Flow — ด่านตรวจ</div>
+      <ol class="flow">
+        <li>รัน <code>save-git --stage merge-gate</code> (ตรวจ local + MR + CI)</li>
+        <li>อ่านค่าจาก <code>.savegit.json</code> ของโปรเจกต์ · ขาดข้อมูลสำคัญ = ไม่ปล่อยผ่านเงียบ</li>
+        <li>คืนคำตัดสินเดียว: SAFE_TO_MERGE / BLOCKED / OWNER_DECISION + ตารางบอกชั้นที่ติด</li>
+        <li>เจ้าของงานเป็นคนกด merge เอง</li>
+      </ol>
+    </section>
+
+    <section class="card" id="m-merge">
+      <h3>Use Merge to Production <span class="ver">v1.1</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Merge to Production</code> · <code>ขึ้น production</code> · <code>Ship to Production</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> รวมงานขึ้น production จริง · <b style="color:var(--danger)">เฉพาะคนมีสิทธิ์ merge</b></p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>ยืนยันผู้สั่งเป็น merger จริง (จากตัวตน GitLab ไม่ใช่ชื่อที่พิมพ์)</li>
+        <li>merge-gate → เจ้าของ merge → ship-gate</li>
+        <li>deploy จาก origin/target เท่านั้น + เตรียม rollback</li>
+        <li>ยืนยัน production: health เขียว + commit ตรง (เทียบไม่ได้ = ยังไม่ถือว่าเสร็จ)</li>
+      </ol>
+      <div class="note danger">คนอื่นที่ไม่ใช่ merger ให้ใช้ Use Save Git แทน (ได้แค่ถึงก่อน merge)</div>
+    </section>
+
+    <!-- ============ ความรู้ ============ -->
+    <div class="group-title">ความรู้ / เนื้อหา</div>
+
+    <section class="card" id="m-summary">
+      <h3>Use Summary <span class="ver">v1.7</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Summary</code> · <code>สรุป</code> · <code>สรุปลิงก์</code> · <code>วิเคราะห์บทความ</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> ส่งลิงก์/บทความให้ AI สรุป+วิเคราะห์ ก่อนตัดสินว่าจะเก็บเข้าระบบความรู้ไหม</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>เลือกโหมด (สั้น/ปกติ/ลึก/ติดตั้ง) → คุมความยาว</li>
+        <li>สรุป + วิเคราะห์ (จริง/ไม่จริง/ยังไม่ยืนยัน) + เหมาะกับงานเราไหม</li>
+        <li>เสนอทางเลือกให้เจ้าของเลือก · ยังไม่บันทึกจนอนุมัติ</li>
+        <li>อนุมัติแล้ว → บันทึกเป็นระเบียนที่ติดตามได้ (มีวันครบกำหนดทบทวน)</li>
+      </ol>
+    </section>
+
+    <section class="card" id="m-blog-auto">
+      <h3>Use Blog Auto <span class="ver">v1.1</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Blog Auto</code> · <code>เขียนบล็อกอัตโนมัติ</code> · <code>ส่งเข้า Hi Logic Labs</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> อยากเปลี่ยนความรู้จากงานเป็นบล็อก Hi Logic Labs (ร่างก่อน ไม่เผยแพร่เอง)</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>ตัดข้อมูลลับ (ชื่อลูกค้า/secret/IP) ออกก่อน</li>
+        <li>วางแผนบล็อก + ทำดัชนีความรู้</li>
+        <li>เขียนร่าง (เสียงแบรนด์ Hi Logic Labs) · ไม่ publish เอง</li>
+        <li>ส่งต่อ Content Factory ทำเป็นโพสต์โซเชียล (ร่างก่อน รออนุมัติ)</li>
+      </ol>
+    </section>
+
+    <!-- ============ ความปลอดภัย ============ -->
+    <div class="group-title">ความปลอดภัย / จัดการ</div>
+
+    <section class="card" id="m-flow-guardian">
+      <h3>Use Flow Guardian <span class="ver">v1.1</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Flow Guardian</code> · <code>ตรวจ worktree</code> · <code>กัน AI แก้งานทับกัน</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> ระหว่างทำงาน อยากให้ AI มีวินัยความปลอดภัย กันแก้งานทับเพื่อนร่วมทีม</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>รายงานสถานะจริง (worktree/branch/dirty ด้วยคำสั่ง git จริง)</li>
+        <li>ฟีเจอร์ใหม่ → ถาม/สร้าง branch ใหม่ · จองงาน (กันชน)</li>
+        <li>งานเสี่ยง → ตรวจแบบไม่แก้ไฟล์ก่อน + ขออนุมัติ</li>
+        <li>ทำเฉพาะ scope → ตรวจจริง → ส่งต่อ handoff</li>
+      </ol>
+    </section>
+
+    <section class="card" id="m-move-folder">
+      <h3>Use Move Folder <span class="ver">—</span></h3>
+      <div class="aliases">เรียกด้วย: <code>Use Move Folder</code> · <code>ย้ายโฟลเดอร์</code> · <code>จัดเรียงโฟลเดอร์</code></div>
+      <p class="use"><b>ใช้เมื่อ:</b> จัดเรียง/ย้ายโฟลเดอร์โปรเจกต์บน VPS ตามระบบที่วางไว้</p>
+      <div class="flowlabel">Flow</div>
+      <ol class="flow">
+        <li>อ่าน checkpoint + นโยบายห้ามแตะ + หลักฐานขอบเขตล่าสุดก่อนทำ</li>
+        <li>ทำเฉพาะที่อนุมัติ (safe-only) · ของเสี่ยงรอเจ้าของตัดสิน</li>
+        <li>รายงานเป็นภาษาไทย + สถานะส่งต่อ</li>
+      </ol>
+      <div class="note">ตัวนี้ยังไม่ผ่านการรีวิว 2 AI รอบล่าสุด (อยู่ในคิว)</div>
+    </section>
+
+  </main>
+</div>
+</body>
+</html>

@@ -461,6 +461,10 @@ class TestConfig:
                 captured.update(kwargs)
 
         monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr(
+            "tools.lazy_deps.ensure",
+            lambda *args, **kwargs: pytest.fail("lazy install should be skipped when hindsight is already importable"),
+        )
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
 
         p = HindsightMemoryProvider()

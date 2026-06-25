@@ -1024,13 +1024,17 @@ class HindsightMemoryProvider(MemoryProvider):
                         + (f": {reason}" if reason else "")
                     )
                 try:
-                    from tools.lazy_deps import ensure as _lazy_ensure
-                    _lazy_ensure("memory.hindsight", prompt=False)
+                    hindsight_mod = importlib.import_module("hindsight")
                 except ImportError:
-                    pass
-                except Exception as _e:
-                    raise ImportError(str(_e))
-                from hindsight import HindsightEmbedded
+                    try:
+                        from tools.lazy_deps import ensure as _lazy_ensure
+                        _lazy_ensure("memory.hindsight", prompt=False)
+                    except ImportError:
+                        pass
+                    except Exception as _e:
+                        raise ImportError(str(_e))
+                    hindsight_mod = importlib.import_module("hindsight")
+                HindsightEmbedded = hindsight_mod.HindsightEmbedded
                 HindsightEmbedded.__del__ = lambda self: None
                 llm_provider = self._config.get("llm_provider", "")
                 if llm_provider in {"openai_compatible", "openrouter"}:

@@ -39,6 +39,11 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 
+# Generated embedded renderer for React Native WebView. Build with
+# `npm run renderer:bundle`; keep only the declaration file committed.
+/src/bundled-renderer-html.ts
+/src/generated/bundled-renderer-html.ts
+
 # generated native folders
 /ios
 /android

@@ -94,6 +94,8 @@
     "port:reset": "npm run copy:desktop && npm run typecheck",
     "renderer:web": "vite --host 0.0.0.0 --port 5174",
     "renderer:bundle": "vite build && node scripts/bundle-renderer-html.mjs",
+    "preios:mobile": "npm run renderer:bundle",
+    "preios:release": "npm run renderer:bundle",
     "ios:mobile": "EXPO_PUBLIC_RENDERER_URL=http://127.0.0.1:5174 expo run:ios --configuration Release",
     "ios:release": "expo run:ios --configuration Release --device"
   },

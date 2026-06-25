@@ -128,12 +128,20 @@ xcrun xctrace list devices
 xcrun devicectl list devices
 ```
 
-Then build/install Release:
+Then generate the embedded renderer and build/install Release:
 
 ```bash
 cd apps/mobile
 npm run typecheck
+npm run renderer:bundle
 npx expo run:ios --configuration Release --device <IPHONE_UDID>
+```
+
+Or use the convenience script, which runs `renderer:bundle` automatically first:
+
+```bash
+cd apps/mobile
+npm run ios:release -- <IPHONE_UDID>
 ```
 
 The successful install used this command shape, with a real HTTPS gateway URL, a local token file, and the physical iPhone UDID:
@@ -296,7 +304,7 @@ npx expo run:ios --configuration Release --device <IPHONE_UDID>
 
 ### App has missing icons/square glyphs
 
-The iPhone `WKWebView` cannot rely on sibling font files emitted by Vite the way Electron/Desktop can. The build script inlines renderer assets/fonts into `src/bundled-renderer-html.ts`. If icons disappear, regenerate the bundled renderer and confirm font URLs became data URIs.
+The iPhone `WKWebView` cannot rely on sibling font files emitted by Vite the way Electron/Desktop can. The build script inlines renderer assets/fonts into the generated `src/generated/bundled-renderer-html.ts`. That file is intentionally gitignored; run `npm run renderer:bundle` before a standalone native build. If icons disappear, regenerate the bundled renderer and confirm font URLs became data URIs.
 
 ### `HERMES AGENT` wordmark is off-center on the physical iPhone
 

@@ -2,7 +2,7 @@ import { useCallback, useRef, useState } from 'react';
 import { SafeAreaView, StyleSheet, Text, View } from 'react-native';
 import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
-import { bundledRendererHtml } from './src/bundled-renderer-html';
+import { bundledRendererHtml } from './src/generated/bundled-renderer-html';
 
 const defaultGatewayUrl = process.env.EXPO_PUBLIC_HERMES_GATEWAY_URL || '';
 const defaultGatewayToken = process.env.EXPO_PUBLIC_HERMES_GATEWAY_TOKEN || '';

@@ -13,6 +13,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -293,6 +295,66 @@ def _reject_distribution_symlinks(staged: Path) -> None:
         raise DistributionError(f"Profile distributions cannot contain symlinks: {rel}")
 
 
+def _remove_path_with_retries(
+    path: Path,
+    *,
+    attempts: int = 5,
+    delay: float = 0.05,
+    ignore_errors: bool = False,
+) -> None:
+    """Remove a file or directory, retrying transient Windows file-lock races."""
+    last_exc: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_exc = exc
+            if attempt + 1 < attempts:
+                time.sleep(delay * (attempt + 1))
+
+    if not ignore_errors and last_exc is not None:
+        raise last_exc
+
+
+def _copy_dist_dir_atomic(entry: Path, dest: Path, ignore=None) -> None:
+    """Replace a distribution-owned directory without deleting it in place.
+
+    The old implementation did ``rmtree(dest); copytree(entry, dest)``. On
+    Windows, a transient delete/copy failure in a large ``skills/`` tree could
+    remove the working profile before the replacement was ready. Stage first,
+    then swap the staged tree into place so a failure leaves ``dest`` intact.
+    """
+    parent = dest.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    staging = parent / f".{dest.name}.hermes-dist-staging-{uuid.uuid4().hex}"
+    backup = parent / f".{dest.name}.hermes-dist-old-{uuid.uuid4().hex}"
+
+    try:
+        shutil.copytree(entry, staging, ignore=ignore)
+    except BaseException:
+        _remove_path_with_retries(staging, ignore_errors=True)
+        raise
+
+    moved_old = False
+    try:
+        if dest.exists() or dest.is_symlink():
+            dest.rename(backup)
+            moved_old = True
+        staging.rename(dest)
+    except BaseException:
+        if moved_old and backup.exists() and not dest.exists():
+            backup.rename(dest)
+        _remove_path_with_retries(staging, ignore_errors=True)
+        raise
+
+    if moved_old:
+        _remove_path_with_retries(backup, ignore_errors=True)
 # Install
 
 @dataclass
@@ -376,12 +438,16 @@ def _remove_existing(path: Path) -> None:
 
 def _replace_entry(src: Path, dest: Path) -> None:
     """Replace *dest* with *src* wholesale so files retired upstream disappear and
-    file<->directory transitions cannot raise or leave stale content behind."""
-    _remove_existing(dest)
+    file<->directory transitions cannot raise or leave stale content behind.
+
+    A directory is staged and swapped (``_copy_dist_dir_atomic``) instead of deleted
+    in place first: a transient Windows delete/copy failure in a large tree must not
+    remove the working profile's directory before the replacement is ready."""
     if src.is_dir():
-        shutil.copytree(src, dest)
-    else:
-        shutil.copy2(src, dest)
+        _copy_dist_dir_atomic(src, dest)
+        return
+    _remove_existing(dest)
+    shutil.copy2(src, dest)
 
 
 def _shipped_cron_store(entries: List[Tuple[Path, Tuple[str, ...]]]) -> Optional[Path]:

@@ -4540,6 +4540,12 @@ _PLATFORM_OVERRIDES: dict[str, dict[str, Any]] = {
         "env_vars": ("QQ_APP_ID", "QQ_CLIENT_SECRET", "QQ_ALLOWED_USERS"),
         "required_env": ("QQ_APP_ID", "QQ_CLIENT_SECRET"),
     },
+    # Teams ships as a platform plugin, so its name/env vars come from the
+    # plugin registry. Only the docs link needs an override here so the
+    # Channels page can point at the Microsoft Teams setup guide.
+    "teams": {
+        "docs_url": "https://hermes-agent.nousresearch.com/docs/user-guide/messaging/teams",
+    },
     "yuanbao": {
         "name": "Yuanbao (元宝)",
         "description": "Connect Hermes to Tencent Yuanbao.",

@@ -19,8 +19,13 @@ def _decode(role: Optional[str], token_count: Any) -> Dict[str, int]:
 def build_token_line(agent_result: Dict[str, Any]) -> str:
     """Return a compact one-line token breakdown, or "" when unavailable.
 
-    Example: ``📊 in:1520 out:234 reason:128 cache:890``.
+    Wrapped in inline-code backticks so it reads as a discreet information
+    block appended to the reply tail (renders as monospace on Telegram /
+    Discord / Slack etc.; harmless literal backticks on plain-text platforms).
+    Magnitudes use :func:`hermes_token_codec.format_token_count` (K/M).
+    Example: ```📊 in:1.52K out:234 rsn:128 cache:890```.
     """
+    from hermes_token_codec import format_token_count as _f
     messages: List[Dict[str, Any]] = agent_result.get("messages") or []
 
     out_tokens = reason_tokens = in_tokens = cache_tokens = 0
@@ -53,4 +58,7 @@ def build_token_line(agent_result: Dict[str, Any]) -> str:
     if not (out_tokens or reason_tokens or in_tokens or cache_tokens):
         return ""
 
-    return f"📊 in:{in_tokens} out:{out_tokens} reason:{reason_tokens} cache:{cache_tokens}"
+    return (
+        f"`📊 in:{_f(in_tokens)} out:{_f(out_tokens)} "
+        f"rsn:{_f(reason_tokens)} cache:{_f(cache_tokens)}`"
+    )

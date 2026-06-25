@@ -105,6 +105,36 @@ def attribute_input_tokens_to_prompt_tail(messages, canonical_usage) -> Optional
     return tail
 
 
+def format_token_count(n: int) -> str:
+    """Human-friendly token magnitude for compact footers (shared by all UIs).
+
+      * n < 1000        -> exact integer        ("234")
+      * 1000 <= n < 1e6 -> K, adaptive decimals ("1.52K", "23.5K", "123K")
+      * n >= 1e6        -> M                     ("1.23M", "12.5M")
+
+    Negative / non-numeric inputs clamp to "0".
+    """
+    try:
+        n = int(n)
+    except (TypeError, ValueError):
+        return "0"
+    if n < 1000:
+        return str(max(0, n))
+    for threshold, suffix in ((1_000_000, "M"), (1_000, "K")):
+        if n >= threshold:
+            scaled = n / threshold
+            if scaled < 10:
+                text = f"{scaled:.2f}"
+            elif scaled < 100:
+                text = f"{scaled:.1f}"
+            else:
+                text = f"{scaled:.0f}"
+            if "." in text:
+                text = text.rstrip("0").rstrip(".")
+            return f"{text}{suffix}"
+    return str(n)
+
+
 def resolve_message_tokens(role: str, token_count: Optional[int]) -> dict:
     out = {"input": 0, "output": 0, "cache_read": 0, "reasoning": 0}
     d = unpack_token_count(token_count)

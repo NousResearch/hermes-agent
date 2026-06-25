@@ -719,6 +719,7 @@ try:
         pause_job as _cron_pause,
         resume_job as _cron_resume,
         trigger_job as _cron_trigger,
+        list_job_runs as _cron_list_runs,
     )
     _CRON_AVAILABLE = True
 except ImportError:
@@ -730,6 +731,7 @@ except ImportError:
     _cron_pause = None
     _cron_resume = None
     _cron_trigger = None
+    _cron_list_runs = None
 
 
 def _notify_cron_provider_jobs_changed() -> None:
@@ -1336,10 +1338,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=500,
             )
 
-        return web.json_response({
-            "object": "list",
-            "data": skills,
-        })
+        body = {"object": "list", "data": skills}
+        # ?include=files&names=a,b,c: attach live file contents for the named
+        # skills (the caller's version-controlled set) so a remote drift diff
+        # matches a local one. Scoped to names to keep the payload small.
+        if request.query.get("include", "").lower() == "files":
+            names = [n.strip() for n in request.query.get("names", "").split(",") if n.strip()]
+            try:
+                from tools.skills_tool import read_skill_files
+                body["files"] = read_skill_files(names)
+            except Exception:
+                logger.exception("GET /v1/skills?include=files failed")
+                body["files"] = {}
+        return web.json_response(body)
 
     async def _handle_toolsets(self, request: "web.Request") -> "web.Response":
         """GET /v1/toolsets — list toolsets and their resolved tools.
@@ -3270,6 +3281,23 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             include_disabled = request.query.get("include_disabled", "").lower() in {"true", "1"}
             jobs = _cron_list(include_disabled=include_disabled)
+            # ?include=runs[&days=N]: fold each job's per-run outcomes (windowed)
+            # + its newest run so dashboards can compute health without reading
+            # the cron output directory off disk. Summaries only (no bodies);
+            # full output files come from /api/jobs/{id}/runs.
+            if request.query.get("include", "").lower() == "runs" and _cron_list_runs:
+                try:
+                    days = int(request.query.get("days", "7"))
+                except ValueError:
+                    days = 7
+                days = max(1, min(days, 90))
+                for job in jobs:
+                    jid = job.get("id") or ""
+                    runs = _cron_list_runs(jid, days=days)
+                    job["recent_runs"] = runs
+                    job["last_run"] = (
+                        runs[0] if runs else next(iter(_cron_list_runs(jid, limit=1)), None)
+                    )
             return web.json_response({"jobs": jobs})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -3344,6 +3372,42 @@ class APIServerAdapter(BasePlatformAdapter):
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    async def _handle_job_runs(self, request: "web.Request") -> "web.Response":
+        """GET /api/jobs/{job_id}/runs — per-run history WITH the output bodies.
+
+        Returns the actual run-output files (newest first) so a dashboard can
+        show the full log of any run, not just the latest status. Query:
+        ``limit`` (default 20, ≤100), ``days`` (trailing window). Each record:
+        ``{ts, status, error, content}``.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        cron_err = self._check_jobs_available()
+        if cron_err:
+            return cron_err
+        job_id, id_err = self._check_job_id(request)
+        if id_err:
+            return id_err
+        if not _cron_list_runs:
+            return web.json_response({"error": "Cron run history unavailable"}, status=503)
+        try:
+            limit = int(request.query.get("limit", "20"))
+        except ValueError:
+            limit = 20
+        limit = max(1, min(limit, 100))
+        days = None
+        if "days" in request.query:
+            try:
+                days = max(1, min(int(request.query["days"]), 90))
+            except ValueError:
+                days = None
+        try:
+            runs = _cron_list_runs(job_id, days=days, limit=limit, include_content=True)
+            return web.json_response({"job_id": job_id, "runs": runs})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
@@ -4436,6 +4500,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)
             self._app.router.add_get("/api/jobs/{job_id}", self._handle_get_job)
+            self._app.router.add_get("/api/jobs/{job_id}/runs", self._handle_job_runs)
             self._app.router.add_patch("/api/jobs/{job_id}", self._handle_update_job)
             self._app.router.add_delete("/api/jobs/{job_id}", self._handle_delete_job)
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)

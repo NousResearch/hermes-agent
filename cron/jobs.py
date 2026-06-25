@@ -31,8 +31,8 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_default_hermes_root, get_hermes_home
-from typing import Optional, Dict, List, Any, Union
+from hermes_constants import get_hermes_home
+from typing import Optional, Dict, List, Any, Tuple, Union
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +49,7 @@ except ImportError:
 # Configuration
 # =============================================================================
 
-HERMES_DIR = get_default_hermes_root().resolve()
+HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 # Heartbeat file the in-process ticker touches on every loop iteration. The
@@ -615,44 +615,10 @@ def get_ticker_success_age() -> Optional[float]:
 # Job CRUD Operations
 # =============================================================================
 
-_WARNED_ORPHAN_STORE = False
-
-
-def _warn_if_orphaned_profile_store() -> None:
-    """Loudly warn (once) if the root store is empty but a profile-local
-    jobs.json exists from before #32091's root-anchoring fix.
-
-    Such a file is now unreachable (the store anchors at the default root, not
-    the active profile). The jobs in it were already orphaned pre-fix (the
-    profile-less gateway never read them), so this is not a regression — but a
-    user who could SEE them in `cron list` under their profile would otherwise
-    find them silently gone. Point them at the path instead of failing silent.
-    """
-    global _WARNED_ORPHAN_STORE
-    if _WARNED_ORPHAN_STORE:
-        return
-    try:
-        active = get_hermes_home().resolve()
-        if active == HERMES_DIR:
-            return  # not in a profile; nothing could be orphaned
-        legacy = active / "cron" / "jobs.json"
-        if legacy.exists():
-            _WARNED_ORPHAN_STORE = True
-            logger.warning(
-                "Cron jobs now live at %s (shared across profiles). A legacy "
-                "profile-local store exists at %s and is no longer read; "
-                "re-create those jobs or move them into the root store. (#32091)",
-                JOBS_FILE, legacy,
-            )
-    except Exception:
-        pass  # best-effort advisory; never block load_jobs
-
-
 def load_jobs() -> List[Dict[str, Any]]:
     """Load all jobs from storage."""
     ensure_dirs()
     if not JOBS_FILE.exists():
-        _warn_if_orphaned_profile_store()
         return []
 
     _strict_retry = False  # track whether we used the strict=False fallback
@@ -1454,6 +1420,121 @@ def save_job_output(job_id: str, output: str):
         raise
     
     return output_file
+
+
+# =============================================================================
+# Cron run history (read-only)
+# =============================================================================
+# The scheduler writes one file per run to OUTPUT_DIR/<job_id>/<ts>.md — a
+# `## Response` section on success (body `[SILENT]` = nothing to report) or a
+# `## Error` section on failure. ``jobs.json`` keeps only the LATEST status, so
+# real health (failure rate, recurring cause) lives in these files. These
+# read-only helpers back the bearer API server's /api/jobs run-history routes,
+# so dashboards see per-run outcomes (and the actual output bodies) without
+# reading the cron output directory off disk.
+
+_RUN_FILE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})\.md$")
+_ERROR_HDR_RE = re.compile(r"(?m)^## Error\b")
+_RESP_HDR_RE = re.compile(r"(?m)^## Response\b")
+
+
+def _run_ts(name: str) -> Optional[str]:
+    """ISO-8601 timestamp parsed from a run-output filename, or None."""
+    m = _RUN_FILE_RE.match(name)
+    if not m:
+        return None
+    try:
+        return datetime(*(int(g) for g in m.groups())).isoformat(timespec="seconds")
+    except ValueError:
+        return None
+
+
+def _output_section(text: str, header_re: "re.Pattern") -> str:
+    """Body of a `## <Header>` section, up to the next top-level `## `/`# `."""
+    m = header_re.search(text)
+    if not m:
+        return ""
+    rest = text[m.end():]
+    nxt = re.search(r"(?m)^#{1,2} ", rest)
+    return (rest[: nxt.start()] if nxt else rest).strip()
+
+
+def _classify_output(text: str) -> Tuple[str, Optional[str]]:
+    """(status, error_line) for one run-output body.
+
+    status ∈ ok | silent | failed. A `## Error` section ⇒ failed (error_line =
+    its first non-empty line, backticks stripped, capped). Otherwise success; a
+    `## Response` whose only content is `[SILENT]` ⇒ silent. `[SILENT]` is read
+    from the Response section only — the prompt body echoes the literal token.
+    """
+    if _ERROR_HDR_RE.search(text):
+        body = _output_section(text, _ERROR_HDR_RE)
+        for line in body.splitlines():
+            s = line.strip().strip("`")
+            if s:
+                return "failed", s[:240]
+        return "failed", None
+    resp = _output_section(text, _RESP_HDR_RE)
+    if any(line.strip() == "[SILENT]" for line in resp.splitlines()):
+        return "silent", None
+    return "ok", None
+
+
+def _run_files(job_id: str) -> List[Tuple[str, Path]]:
+    """(ts, path) for each run-output file of a job, newest first."""
+    try:
+        job_dir = _job_output_dir(job_id)
+    except ValueError:
+        return []
+    if not job_dir.is_dir():
+        return []
+    recs: List[Tuple[str, Path]] = []
+    for f in job_dir.iterdir():
+        if not f.is_file():
+            continue
+        ts = _run_ts(f.name)
+        if ts is not None:
+            recs.append((ts, f))
+    recs.sort(key=lambda r: r[0], reverse=True)
+    return recs
+
+
+def list_job_runs(
+    job_id: str,
+    *,
+    days: Optional[int] = None,
+    limit: Optional[int] = None,
+    include_content: bool = False,
+) -> List[Dict[str, Any]]:
+    """Per-run outcome records for a cron job, newest first.
+
+    Each record: ``{ts, status, error}``. With ``include_content`` the full
+    output-file body is added as ``content`` (the click-through log). ``days``
+    filters to the trailing window; ``limit`` caps the count. Filenames are
+    naive local time (the same clock that named them), so the cutoff is compared
+    naive.
+    """
+    cutoff: Optional[str] = None
+    if days is not None:
+        cutoff = (_hermes_now().replace(tzinfo=None) - timedelta(days=days)).isoformat(
+            timespec="seconds"
+        )
+    out: List[Dict[str, Any]] = []
+    for ts, f in _run_files(job_id):
+        if cutoff is not None and ts < cutoff:
+            break  # newest-first: once older than the window, the rest are too
+        try:
+            text = f.read_text(errors="replace")
+        except OSError:
+            continue
+        status, error = _classify_output(text)
+        rec: Dict[str, Any] = {"ts": ts, "status": status, "error": error}
+        if include_content:
+            rec["content"] = text
+        out.append(rec)
+        if limit is not None and len(out) >= limit:
+            break
+    return out
 
 
 # =============================================================================

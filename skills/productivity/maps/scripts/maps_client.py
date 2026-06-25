@@ -378,10 +378,10 @@ def build_overpass_nearby(tag_key, tag_val, lat, lon, radius, limit,
         )
     body = "\n".join(body_lines)
     return (
-        f'[out:json][timeout:25];\n'
-        f'(\n'
+        '[out:json][timeout:25];\n'
+        '(\n'
         f'{body}\n'
-        f');\n'
+        ');\n'
         f'out center {limit};\n'
     )
 
@@ -408,10 +408,10 @@ def build_overpass_bbox(tag_key, tag_val, south, west, north, east, limit,
         )
     body = "\n".join(body_lines)
     return (
-        f'[out:json][timeout:25];\n'
-        f'(\n'
+        '[out:json][timeout:25];\n'
+        '(\n'
         f'{body}\n'
-        f');\n'
+        ');\n'
         f'out center {limit};\n'
     )
 
@@ -480,7 +480,7 @@ def parse_overpass_elements(elements, ref_lat=None, ref_lon=None):
             place["distance_m"] = round(dist_m, 1)
             # With a reference point we can also hand back a directions URL.
             place["directions_url"] = (
-                f"https://www.google.com/maps/dir/?api=1"
+                "https://www.google.com/maps/dir/?api=1"
                 f"&origin={ref_lat},{ref_lon}"
                 f"&destination={el_lat},{el_lon}"
             )
@@ -700,14 +700,14 @@ def cmd_distance(args):
     url = (
         f"{OSRM_BASE}/{profile}/"
         f"{o_lon},{o_lat};{d_lon},{d_lat}"
-        f"?overview=false&steps=false"
+        "?overview=false&steps=false"
     )
 
     osrm_data = http_get(url)
 
     if osrm_data.get("code") != "Ok":
         error_exit(
-            f"OSRM routing failed: "
+            "OSRM routing failed: "
             f"{osrm_data.get('message', osrm_data.get('code', 'unknown error'))}"
         )
 
@@ -787,14 +787,14 @@ def cmd_directions(args):
     url = (
         f"{OSRM_BASE}/{profile}/"
         f"{o_lon},{o_lat};{d_lon},{d_lat}"
-        f"?overview=false&steps=true"
+        "?overview=false&steps=true"
     )
 
     osrm_data = http_get(url)
 
     if osrm_data.get("code") != "Ok":
         error_exit(
-            f"OSRM routing failed: "
+            "OSRM routing failed: "
             f"{osrm_data.get('message', osrm_data.get('code', 'unknown error'))}"
         )
 

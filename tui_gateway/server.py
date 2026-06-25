@@ -2780,7 +2780,7 @@ def _probe_config_health(cfg: dict) -> str:
         warnings.append(
             f"config.yaml has empty section(s): {keys}. "
             f"Remove the line(s) or set them to `{{}}` — "
-            f"empty sections silently drop nested settings."
+            "empty sections silently drop nested settings."
         )
     display_cfg = cfg.get("display")
     agent_cfg = cfg.get("agent")
@@ -7616,7 +7616,7 @@ def _notification_poller_loop(
             _run_prompt_submit(rid, sid, session, text)
         except Exception as exc:
             print(
-                f"[tui_gateway] notification poller dispatch failed: "
+                "[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
@@ -7659,7 +7659,7 @@ def _notification_poller_loop(
             _run_prompt_submit(rid, sid, session, text)
         except Exception as exc:
             print(
-                f"[tui_gateway] notification poller dispatch failed: "
+                "[tui_gateway] notification poller dispatch failed: "
                 f"{type(exc).__name__}: {exc}",
                 file=sys.stderr,
             )
@@ -7850,9 +7850,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             # show the response and warn that it was
                             # not persisted.
                             print(
-                                f"[tui_gateway] prompt.submit: history_version mismatch "
+                                "[tui_gateway] prompt.submit: history_version mismatch "
                                 f"(expected={history_version} current={current_version}) — "
-                                f"agent output NOT written to session history",
+                                "agent output NOT written to session history",
                                 file=sys.stderr,
                             )
                             status_note = (
@@ -7954,7 +7954,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                                     goal_followup = cont_prompt
                 except Exception as _goal_exc:
                     print(
-                        f"[tui_gateway] goal continuation hook failed: "
+                        "[tui_gateway] goal continuation hook failed: "
                         f"{type(_goal_exc).__name__}: {_goal_exc}",
                         file=sys.stderr,
                     )
@@ -8029,7 +8029,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
                 with open(_CRASH_LOG, "a", encoding="utf-8") as f:
                     f.write(
-                        f"\n=== turn-dispatcher exception · "
+                        "\n=== turn-dispatcher exception · "
                         f"{time.strftime('%Y-%m-%d %H:%M:%S')} · sid={sid} ===\n"
                     )
                     f.write(trace)
@@ -8072,7 +8072,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 _run_prompt_submit(rid, sid, session, goal_followup)
             except Exception as _cont_exc:
                 print(
-                    f"[tui_gateway] goal continuation dispatch failed: "
+                    "[tui_gateway] goal continuation dispatch failed: "
                     f"{type(_cont_exc).__name__}: {_cont_exc}",
                     file=sys.stderr,
                 )
@@ -8096,7 +8096,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     _run_prompt_submit(rid, sid, session, synth)
                 except Exception as _n_exc:
                     print(
-                        f"[tui_gateway] completion notification dispatch failed: "
+                        "[tui_gateway] completion notification dispatch failed: "
                         f"{type(_n_exc).__name__}: {_n_exc}",
                         file=sys.stderr,
                     )
@@ -8104,7 +8104,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         session["running"] = False
         except Exception as _drain_exc:
             print(
-                f"[tui_gateway] completion queue drain failed: "
+                "[tui_gateway] completion queue drain failed: "
                 f"{type(_drain_exc).__name__}: {_drain_exc}",
                 file=sys.stderr,
             )
@@ -8425,7 +8425,7 @@ def _(rid, params: dict) -> dict:
         out_prefix = td_path / "page"
         argv = [
             "pdftoppm", "-png", "-r", "150",
-            "-f", str(first_page), "-l", str(last_page),
+            "-", str(first_page), "-l", str(last_page),
             str(pdf_path), str(out_prefix),
         ]
         try:
@@ -10979,7 +10979,7 @@ def _(rid, params: dict) -> dict:
                 rid,
                 4003,
                 f"{pconfig.name} uses {pconfig.auth_type} auth — "
-                f"run `hermes model` to configure",
+                "run `hermes model` to configure",
             )
         if not pconfig.api_key_env_vars:
             return _err(rid, 4004, f"no env var defined for {pconfig.name}")

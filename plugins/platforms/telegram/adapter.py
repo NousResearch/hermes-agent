@@ -215,6 +215,7 @@ try:
         Application,
         CommandHandler,
         CallbackQueryHandler,
+        InlineQueryHandler,
         MessageHandler as TelegramMessageHandler,
         ContextTypes,
         filters,
@@ -233,6 +234,7 @@ except ImportError:
     Application = Any
     CommandHandler = Any
     CallbackQueryHandler = Any
+    InlineQueryHandler = Any
     TelegramMessageHandler = Any
     HTTPXRequest = Any
     filters = None
@@ -577,6 +579,8 @@ class TelegramAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.TELEGRAM)
         self._app: Optional[Application] = None
         self._bot: Optional[Bot] = None
+        # Tool-side inline-query dispatch router (initialised in connect()).
+        self._inline_router: Optional[Any] = None
         self._webhook_mode: bool = False
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
@@ -3456,7 +3460,19 @@ class TelegramAdapter(BasePlatformAdapter):
             ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
-            
+
+            # Inline-query dispatch (the bot must have inline mode enabled in BotFather).
+            # The framework ships only the dispatch surface; concrete behaviour lives in
+            # user-space executors loaded from inline_executors/ by the router.
+            try:
+                from gateway.platforms.telegram_inline_router import TelegramInlineRouter
+                self._inline_router = TelegramInlineRouter(self._bot)
+                self._inline_router.discover_executors()
+                self._inline_router.bot_username = getattr(self._bot, "username", None)
+                self._app.add_handler(InlineQueryHandler(self._handle_inline_query))
+            except Exception as _inline_err:
+                logger.warning("[%s] inline-query dispatch not enabled: %s", self.name, _inline_err)
+
             # Start polling — retry initialize() for transient TLS resets.
             # Each attempt is capped by _init_timeout so a single unreachable
             # fallback-IP chain can't block startup indefinitely.
@@ -5618,6 +5634,32 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         except Exception:
             pass
+
+    async def _handle_inline_query(
+        self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
+    ) -> None:
+        """Dispatch an inline query to the tool-side router.
+
+        Thin wrapper: the router owns matching, executor lookup, result building
+        and the response deadline.  ``inline.enabled: false`` in the platform's
+        config.extra silences inline handling without unregistering the handler.
+        """
+        iq = getattr(update, "inline_query", None)
+        if not iq:
+            return
+        _inline_cfg = self.config.extra.get("inline", {}) if getattr(self.config, "extra", None) else {}
+        if isinstance(_inline_cfg, dict) and not _inline_cfg.get("enabled", True):
+            return
+        query = (iq.query or "").strip()
+        if not query or not self._inline_router:
+            await iq.answer([], cache_time=0)
+            return
+        try:
+            results = await self._inline_router.dispatch(iq.from_user.id, query)
+            await iq.answer(results or [], cache_time=0)
+        except Exception as exc:
+            logger.warning("[%s] inline dispatch error: %s", self.name, exc)
+            await iq.answer([], cache_time=0)
 
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"

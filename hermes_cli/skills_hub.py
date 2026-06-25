@@ -139,6 +139,198 @@ def _resolve_source_meta_and_bundle(identifier: str, sources):
     return meta, bundle, matched_source
 
 
+def _skill_inspect_slug(name: str) -> str:
+    """Normalize a bare skill name exactly like slash-command registration."""
+    slug = (name or "").strip().lower().replace(" ", "-").replace("_", "-")
+    slug = re.sub(r"[^a-z0-9-]", "", slug)
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    return slug
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _installed_skill_payload(
+    *,
+    skill_md: Path,
+    skill_name: str,
+    source_root: Optional[Path] = None,
+    source: str = "local",
+    disabled: bool = False,
+) -> Dict[str, Any]:
+    """Build the installed-skill preview payload for ``do_inspect``."""
+    from tools.skills_tool import _parse_frontmatter
+
+    content = skill_md.read_text(encoding="utf-8")
+    frontmatter, body = _parse_frontmatter(content)
+    description = str(frontmatter.get("description") or "")
+    if not description:
+        for line in body.strip().split("\n"):
+            line = line.strip()
+            if line and not line.startswith("#"):
+                description = line[:1024]
+                break
+
+    category = ""
+    relative_dir: Path | str = skill_md.parent
+    if source_root is not None:
+        try:
+            rel = skill_md.parent.relative_to(source_root)
+            category = rel.parts[0] if len(rel.parts) > 1 else ""
+            relative_dir = rel
+        except ValueError:
+            pass
+
+    return {
+        "name": skill_name,
+        "description": description,
+        "category": category,
+        "path": skill_md,
+        "skill_dir": skill_md.parent,
+        "relative_dir": str(relative_dir),
+        "content": content,
+        "source": source,
+        "disabled": disabled,
+    }
+
+
+def _find_disabled_skill_for_inspect(name: str) -> Optional[Dict[str, Any]]:
+    """Find an installed-but-disabled skill matching the runtime command name."""
+    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from tools.skills_tool import (
+        SKILLS_DIR,
+        _get_disabled_skill_names,
+        _parse_frontmatter,
+        skill_matches_environment,
+        skill_matches_platform,
+    )
+
+    target_slug = _skill_inspect_slug(name)
+    disabled_names = _get_disabled_skill_names()
+    if not target_slug or not disabled_names:
+        return None
+
+    dirs_to_scan: list[Path] = []
+    if SKILLS_DIR.exists():
+        dirs_to_scan.append(SKILLS_DIR)
+    dirs_to_scan.extend(get_external_skills_dirs())
+
+    for scan_dir in dirs_to_scan:
+        for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
+            try:
+                content = skill_md.read_text(encoding="utf-8")
+                frontmatter, _ = _parse_frontmatter(content)
+                if not skill_matches_platform(frontmatter):
+                    continue
+                if not skill_matches_environment(frontmatter):
+                    continue
+                skill_name = str(frontmatter.get("name") or skill_md.parent.name)
+                if skill_name not in disabled_names:
+                    continue
+                if _skill_inspect_slug(skill_name) != target_slug:
+                    continue
+                source = "local" if scan_dir == SKILLS_DIR else "external"
+                return _installed_skill_payload(
+                    skill_md=skill_md,
+                    skill_name=skill_name,
+                    source_root=scan_dir,
+                    source=source,
+                    disabled=True,
+                )
+            except (UnicodeDecodeError, PermissionError):
+                continue
+    return None
+
+
+def _find_installed_skill_for_inspect(name: str) -> Optional[Dict[str, Any]]:
+    """Return the installed runtime skill that a bare inspect name invokes.
+
+    The source of truth is the same slash-command map used by ``/review`` and
+    ``build_skill_invocation_message``.  This avoids a third, subtly different
+    skill discovery implementation: no parent-directory fallback, no duplicate
+    handling drift, and disabled skills do not silently fall through to hub
+    preview.
+    """
+    if not name or "/" in name:
+        return None
+
+    target_slug = _skill_inspect_slug(name)
+    if not target_slug:
+        return None
+
+    try:
+        from agent.skill_commands import scan_skill_commands
+        from tools.skills_tool import SKILLS_DIR
+        from agent.skill_utils import get_external_skills_dirs
+
+        commands = scan_skill_commands()
+        skill_info = commands.get(f"/{target_slug}")
+        if skill_info:
+            skill_md = Path(skill_info["skill_md_path"])
+            roots = [SKILLS_DIR, *get_external_skills_dirs()]
+            source_root = next((r for r in roots if _is_relative_to(skill_md, r)), None)
+            source = "local" if source_root == SKILLS_DIR else "external"
+            return _installed_skill_payload(
+                skill_md=skill_md,
+                skill_name=str(skill_info.get("name") or target_slug),
+                source_root=source_root,
+                source=source,
+            )
+
+        disabled = _find_disabled_skill_for_inspect(name)
+        if disabled:
+            return disabled
+    except Exception as exc:
+        return {"lookup_error": str(exc)}
+
+    return None
+
+
+def _print_installed_skill_inspect(installed: Dict[str, Any], console: Console) -> None:
+    """Render an installed skill preview for ``hermes skills inspect``."""
+    status = "disabled" if installed.get("disabled") else "enabled"
+    info_lines = [
+        f"[bold]Name:[/] {installed['name']}",
+        f"[bold]Description:[/] {installed.get('description') or ''}",
+        f"[bold]Source:[/] installed {installed.get('source') or 'local'}",
+        f"[bold]Status:[/] {status}",
+        f"[bold]Identifier:[/] {installed['name']}",
+        f"[bold]Path:[/] {installed['path']}",
+    ]
+    if installed.get("category"):
+        info_lines.append(f"[bold]Category:[/] {installed['category']}")
+
+    title = f"Installed skill: {installed['name']}"
+    if installed.get("disabled"):
+        title = f"Installed skill disabled: {installed['name']}"
+    console.print()
+    console.print(Panel("\n".join(info_lines), title=title))
+    if installed.get("disabled"):
+        console.print(
+            "[yellow]This installed skill is disabled for the active profile/platform, "
+            "so it is not available as a /skill command. Hub preview is not used as a silent fallback.[/]"
+        )
+    else:
+        console.print(
+            "[dim]This is the profile-local runtime skill used by /skill commands. "
+            "Use a full hub identifier to preview a hub skill with the same name.[/]"
+        )
+
+    lines = str(installed.get("content") or "").split("\n")
+    preview = "\n".join(lines[:50])
+    if len(lines) > 50:
+        preview += f"\n\n... ({len(lines) - 50} more lines)"
+    console.print(Panel(preview, title="SKILL.md Preview", subtitle="installed runtime skill"))
+    console.print()
+
+
 def _derive_category_from_install_path(install_path: str) -> str:
     path = Path(install_path)
     parent = str(path.parent)
@@ -745,10 +937,26 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
 
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
-    """Preview a skill's SKILL.md content without installing."""
+    """Preview a skill's SKILL.md content.
+
+    Bare names prefer installed runtime skills so ``hermes skills inspect foo``
+    matches the same slash-command target that ``/foo`` loads.  ``skill_view``
+    may still reject ambiguous bare names by design; full hub identifiers
+    (``owner/repo/skill``) preview the hub catalog directly.
+    """
     from tools.skills_hub import GitHubAuth, create_source_router
 
     c = console or _console
+
+    installed = _find_installed_skill_for_inspect(identifier) if "/" not in identifier else None
+    if installed is not None:
+        if installed.get("lookup_error"):
+            c.print(f"[yellow]Warning:[/] Could not inspect installed runtime skills: {installed['lookup_error']}")
+            c.print("[dim]Falling back to hub preview. Use a full hub identifier to make this explicit.[/]")
+        else:
+            _print_installed_skill_inspect(installed, c)
+            return
+
     auth = GitHubAuth()
     sources = create_source_router(auth)
 

@@ -542,7 +542,7 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Hermes-User-Id",
 }
 
 
@@ -1165,6 +1165,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
         fallback_model = GatewayRunner._load_fallback_model()
 
+        # Pass gateway_user_id into the constructor (not post-init mutation)
+        # so per-user memory provider scoping — initialised inside init_agent
+        # from agent._user_id — sees the correct identity. Post-construction
+        # assignment is too late: by then MemoryManager.initialize_all() has
+        # already run with user_id=None. Parity with every other gateway
+        # platform, which passes user_id=source.user_id to AIAgent.
+        # Empty/None leaves the prior member-fallback behaviour unchanged.
         agent = AIAgent(
             model=model,
             **runtime_kwargs,
@@ -1175,6 +1182,7 @@ class APIServerAdapter(BasePlatformAdapter):
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
             platform="api_server",
+            user_id=gateway_user_id,
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -1184,13 +1192,6 @@ class APIServerAdapter(BasePlatformAdapter):
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
         )
-        # Set the inbound sender identity so plugins that resolve the
-        # interlocutor from agent._user_id (parity with every other gateway
-        # platform, which passes user_id=source.user_id) work for the
-        # API-server platform too. Empty/None leaves the prior member-
-        # fallback behaviour unchanged.
-        if gateway_user_id:
-            agent._user_id = gateway_user_id
         return agent
 
     # ------------------------------------------------------------------

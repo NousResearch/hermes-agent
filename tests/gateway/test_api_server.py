@@ -374,10 +374,19 @@ class TestAdapterInit:
     def test_create_agent_sets_user_id_from_gateway_user_id(self, monkeypatch):
         """gateway_user_id must land on agent._user_id so the interlocutor
         resolution (system_prompt hook) can identify the inbound sender —
-        parity with every other gateway platform's user_id=source.user_id."""
+        parity with every other gateway platform's user_id=source.user_id.
+
+        The FakeAgent absorbs ``user_id`` from kwargs (mirroring the real
+        AIAgent contract) so the test verifies the constructor pathway —
+        which is what per-user memory provider scoping reads during init —
+        rather than a post-construction mutation that would land too late.
+        """
         class FakeAgent:
             def __init__(self, **kwargs):
-                pass
+                # Mirror the real AIAgent contract: user_id is set during
+                # init, which is what agent_init.init_agent reads to thread
+                # per-user scoping into MemoryManager.initialize_all(...).
+                self._user_id = kwargs.get("user_id")
 
         monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
         monkeypatch.setattr(

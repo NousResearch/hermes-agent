@@ -2651,6 +2651,45 @@ class TestProviderEntryApiKeyEnvAlias:
         assert normalized is not None
         assert "extra_body" in _VALID_CUSTOM_PROVIDER_FIELDS
         assert normalized["extra_body"] == entry["extra_body"]
+
+    def test_available_models_is_supported_schema(self):
+        """``available_models`` is an accepted hand-config alias for the model
+        list: it must be in the supported-field set, must not be flagged as an
+        unknown key, and must fold into the ``models`` view the runtime reads."""
+        import logging
+        from hermes_cli.config import (
+            _VALID_CUSTOM_PROVIDER_FIELDS,
+            _normalize_custom_provider_entry,
+        )
+        assert "available_models" in _VALID_CUSTOM_PROVIDER_FIELDS
+        entry = {
+            "name": "tokenplan",
+            "base_url": "https://api.vendor.example.com/v1",
+            "available_models": ["qwen3.7-max", "deepseek-v4-flash"],
+        }
+        records: list[logging.LogRecord] = []
+
+        class _Capture(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        logger = logging.getLogger("hermes_cli.config")
+        handler = _Capture()
+        logger.addHandler(handler)
+        try:
+            normalized = _normalize_custom_provider_entry(dict(entry), provider_key="tokenplan")
+        finally:
+            logger.removeHandler(handler)
+
+        assert normalized is not None
+        # The fold preserves the declared ids under ``models`` (dict shape).
+        assert set(normalized.get("models", {})) == {"qwen3.7-max", "deepseek-v4-flash"}
+        # ...and a supported key is never logged as "unknown config keys ignored".
+        assert not any(
+            "unknown config keys" in record.getMessage()
+            and "available_models" in record.getMessage()
+            for record in records
+        )
 # =============================================================================
 # Tencent TokenHub — API-key provider runtime resolution
 # =============================================================================

@@ -1079,6 +1079,21 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             tool_calls.append(tc_dict)
         msg["tool_calls"] = tool_calls
 
+    # Bit-pack (output, reasoning) token counts onto the assistant row.
+    # conversation_loop stashes the call's CanonicalUsage on agent._last_usage
+    # right after the response arrives (before this message is built/appended),
+    # so the value here is this turn's. Stored NEGATIVE per the codec's
+    # F=sign-bit convention; stripped from provider payloads in build_api_kwargs
+    # / the api_messages loop. Skipped when usage is unavailable (e.g. an
+    # interim message built before usage on a truncated stream).
+    _usage = getattr(agent, "_last_usage", None)
+    if _usage is not None:
+        from hermes_token_codec import pack_assistant_tokens
+        msg["token_count"] = pack_assistant_tokens(
+            getattr(_usage, "output_tokens", 0) or 0,
+            getattr(_usage, "reasoning_tokens", 0) or 0,
+        )
+
     return msg
 
 

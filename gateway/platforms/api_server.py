@@ -1416,7 +1416,20 @@ class APIServerAdapter(BasePlatformAdapter):
             "tool_name", "timestamp", "token_count", "finish_reason", "reasoning",
             "reasoning_content",
         )
-        return {key: message.get(key) for key in safe_keys if key in message}
+        resp = {key: message.get(key) for key in safe_keys if key in message}
+        # token_count is stored bit-packed (NEGATIVE for packed rows — see
+        # hermes_token_codec). Never leak the raw packed sentinel to API
+        # clients: decode it into per-bucket counts under `tokens`, and keep
+        # the scalar `token_count` field backward-compatible (legacy assistant
+        # output count) so existing consumers don't see a negative number.
+        if "token_count" in resp:
+            from hermes_token_codec import resolve_message_tokens
+            tokens = resolve_message_tokens(message.get("role"), message.get("token_count"))
+            resp["tokens"] = tokens
+            resp["token_count"] = (
+                tokens["output"] if message.get("role") == "assistant" else None
+            )
+        return resp
 
     async def _read_json_body(self, request: "web.Request") -> tuple[Dict[str, Any], Optional["web.Response"]]:
         try:

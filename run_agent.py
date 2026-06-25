@@ -1720,6 +1720,10 @@ class AIAgent:
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     timestamp=msg.get("timestamp"),
+                    # Bit-packed per-message token accounting (hermes_token_codec):
+                    # assistant rows carry (output, reasoning); user/tool prompt
+                    # rows carry (total_input, cache_read). Negative = packed.
+                    token_count=msg.get("token_count"),
                 )
                 flushed_ids.add(msg_id)
             self._last_flushed_db_idx = len(messages)

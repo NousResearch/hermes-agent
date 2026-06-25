@@ -793,6 +793,11 @@ def run_conversation(
                 api_msg.pop("finish_reason")
             # Strip internal thinking-prefill marker
             api_msg.pop("_thinking_prefill", None)
+            # Strip bit-packed per-message token accounting. token_count is an
+            # internal column (stored NEGATIVE for packed rows — see
+            # hermes_token_codec); it must never reach a provider payload,
+            # where it is an unknown field strict APIs reject.
+            api_msg.pop("token_count", None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields
@@ -1913,6 +1918,31 @@ def run_conversation(
                     prompt_tokens = canonical_usage.prompt_tokens
                     completion_tokens = canonical_usage.output_tokens
                     total_tokens = canonical_usage.total_tokens
+
+                    # Stash the whole CanonicalUsage so build_assistant_message
+                    # can bit-pack (output, reasoning) onto the assistant row it
+                    # is about to construct (see hermes_token_codec).
+                    agent._last_usage = canonical_usage
+
+                    # Attribute this call's input cost to the prompt-tail row —
+                    # the user/tool message that triggered the request. Pack
+                    # (total_input, cache_read) into its token_count. Guard on
+                    # role and on a non-packed existing value so we never clobber
+                    # an already-packed (negative) row. This mutates the live
+                    # `messages` list and JSON session log immediately; DB
+                    # persistence is best-effort and depends on the prompt-tail
+                    # row not having been flushed before this usage arrived
+                    # (the assistant row, packed pre-append, always persists).
+                    if messages:
+                        _tail = messages[-1]
+                        if isinstance(_tail, dict) and _tail.get("role") in ("user", "tool"):
+                            _tail_tc = _tail.get("token_count")
+                            if _tail_tc is None or _tail_tc >= 0:
+                                from hermes_token_codec import pack_input_tokens
+                                _tail["token_count"] = pack_input_tokens(
+                                    canonical_usage.prompt_tokens,
+                                    canonical_usage.cache_read_tokens,
+                                )
                     # Forward canonical token + cache buckets so context engines
                     # can make decisions on cache hit ratios / reasoning costs,
                     # not just legacy aggregate tokens. Legacy keys stay for

@@ -3,10 +3,11 @@
 When ``compression.in_place`` is True, ``compress_context()`` rewrites the
 message list and rebuilds the system prompt but keeps the SAME ``session_id``:
 no ``end_session``, no ``parent_session_id`` child row, no ``name #N`` title
-renumber, no flush-cursor reset. This eliminates the session-rotation bug
-cluster (#33618 /goal loss, #14238 lost response, #33907 orphans, #45117 search
-gaps, #42228 null cwd). When the flag is False (default), rotation behaves
-exactly as before.
+renumber. The DB flush cursor is aligned to the compacted rows so final
+same-turn persistence does not duplicate them. This eliminates the
+session-rotation bug cluster (#33618 /goal loss, #14238 lost response,
+#33907 orphans, #45117 search gaps, #42228 null cwd). When the flag is False
+(default), rotation behaves exactly as before.
 """
 
 import os
@@ -115,10 +116,12 @@ class TestInPlaceCompaction:
                 (sid,),
             ).fetchone()
             assert hit is not None
-            # Flush identity/cursor reset so next-turn appends diff against the
-            # compacted transcript (rebuilds the identity set on next flush).
-            assert agent._last_flushed_db_idx == 0
-            assert agent._flushed_db_message_ids == set()
+            # Flush identity/cursor now matches the compacted transcript so a
+            # same-turn final persistence does not append the summary again.
+            assert agent._last_flushed_db_idx == len(compressed)
+            assert agent._flushed_db_message_ids == {
+                id(msg) for msg in compressed if isinstance(msg, dict)
+            }
             # Rotation-independent in-place signal set for the gateway.
             assert agent._last_compaction_in_place is True
             # Live transcript actually shrank.
@@ -162,6 +165,33 @@ class TestInPlaceCompaction:
                 approx_tokens=100_000, system_message="sys",
             )
             assert calls["n"] == 0
+
+    def test_in_place_final_flush_does_not_duplicate_compacted_rows(self):
+        """Final turn persistence runs after auto-compaction in the same turn.
+
+        The compacted rows were already inserted by archive_and_compact(), so
+        the identity cursor must skip them on the later flush.
+        """
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "ip_final_flush"
+            _seed(db, sid, "flush")
+            agent = _make_agent(db, sid, in_place=True)
+            compressed, _ = compress_context(
+                agent, [{"role": "user", "content": "x"}] * 8,
+                approx_tokens=100_000, system_message="sys",
+            )
+
+            agent._flush_messages_to_session_db(compressed, None)
+
+            live_rows = db.get_messages_as_conversation(sid)
+            assert [m["content"] for m in live_rows] == [
+                "[CONTEXT COMPACTION] summary of prior turns",
+                "recent reply",
+            ]
 
     def test_rotation_still_preflushes(self):
         """Rotation MUST pre-flush so current-turn messages survive in the
@@ -211,10 +241,74 @@ class TestRotationStillDefault:
             ).fetchall()
             assert len(child) == 1
             assert child[0]["title"] == "my-research #2"
-            # Flush cursor reset for the new row.
-            assert agent._last_flushed_db_idx == 0
+            # The child row is durable immediately after rotation, before any
+            # later final-turn persistence has a chance to run.
+            child_messages = db.get_messages_as_conversation(agent.session_id)
+            assert [m["content"] for m in child_messages] == [
+                "[CONTEXT COMPACTION] summary of prior turns",
+                "recent reply",
+            ]
+            assert agent._last_flushed_db_idx == len(child_messages)
             # Rotation mode does NOT set the in-place signal.
             assert getattr(agent, "_last_compaction_in_place", False) is False
+
+    def test_rotation_final_flush_does_not_duplicate_compacted_rows(self):
+        """The child transcript is written at rotation, then flushed again on
+        normal turn finalization. The second flush must be a no-op for the
+        compacted rows.
+        """
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "rot_final_flush"
+            _seed(db, sid, "flush")
+            agent = _make_agent(db, sid, in_place=False)
+            compressed, _ = compress_context(
+                agent, [{"role": "user", "content": "x"}] * 8,
+                approx_tokens=100_000, system_message="sys",
+            )
+
+            agent._flush_messages_to_session_db(compressed, None)
+
+            child_rows = db.get_messages_as_conversation(agent.session_id)
+            assert [m["content"] for m in child_rows] == [
+                "[CONTEXT COMPACTION] summary of prior turns",
+                "recent reply",
+            ]
+
+    def test_rotation_partial_tail_flush_appends_tail_once(self):
+        """Manual partial compression reattaches a verbatim tail after
+        _compress_context() returns. The compacted head is already persisted;
+        the final flush should append only the new tail rows.
+        """
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "rot_tail_flush"
+            _seed(db, sid, "tail")
+            agent = _make_agent(db, sid, in_place=False)
+            compressed, _ = compress_context(
+                agent, [{"role": "user", "content": "x"}] * 8,
+                approx_tokens=100_000, system_message="sys",
+            )
+            tail = [
+                {"role": "user", "content": "tail question"},
+                {"role": "assistant", "content": "tail answer"},
+            ]
+
+            agent._flush_messages_to_session_db(compressed + tail, None)
+
+            child_rows = db.get_messages_as_conversation(agent.session_id)
+            assert [m["content"] for m in child_rows] == [
+                "[CONTEXT COMPACTION] summary of prior turns",
+                "recent reply",
+                "tail question",
+                "tail answer",
+            ]
 
 
 class TestInPlaceSignalForGateway:
@@ -313,4 +407,3 @@ class TestCompactedTurnsStaySearchable:
                 "ZEBRAWORD", role_filter=["user", "assistant"], include_inactive=True
             )
             assert len(recovered) == 1
-

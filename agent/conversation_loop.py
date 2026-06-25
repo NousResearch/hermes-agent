@@ -4077,6 +4077,11 @@ def run_conversation(
                         pass
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+                agent._checkpoint_session_progress(
+                    messages,
+                    conversation_history,
+                    reason="post_tool_execution",
+                )
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision

@@ -1015,6 +1015,59 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     assert "post-compression reply" in texts
 
 
+def test_session_resume_reuses_live_owner_after_unsynced_compression(monkeypatch):
+    """A running turn may rotate ``agent.session_id`` before the gateway syncs
+    ``session['session_key']``. Resuming the DB continuation during that window
+    must reattach to the live parent object, not build a second owner.
+    """
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "cwd": ""}
+
+        def get_session_by_title(self, _target):
+            return None
+
+        def resolve_resume_session_id(self, target):
+            return "cont_tip" if target == "parent_root" else target
+
+    live_agent = types.SimpleNamespace(
+        session_id="cont_tip",
+        model="test",
+        provider="test",
+    )
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    server._sessions["live-parent"] = _session(
+        agent=live_agent,
+        session_key="parent_root",
+        running=True,
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(
+        server,
+        "_fallback_session_info",
+        lambda _session: {"model": "test", "tools": {}, "skills": {}},
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.resume",
+                "params": {"session_id": "parent_root"},
+            }
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    assert resp["result"]["session_id"] == "live-parent"
+    assert resp["result"]["session_key"] == "cont_tip"
+    assert resp["result"]["running"] is True
+    assert resp["result"]["status"] == "working"
+
+
 def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     captured = {}
 
@@ -5835,6 +5888,48 @@ def test_prompt_submit_preserves_empty_response_without_error(monkeypatch):
     # Text stays empty — we did NOT fabricate an "Error:" string
     text = payload.get("text", "")
     assert text in {"", None}, f"expected empty text, got {text!r}"
+
+
+def test_prompt_submit_rejects_duplicate_live_continuation_owner(monkeypatch):
+    """If compression created a continuation DB row but the gateway session has
+    not synced its session_key yet, a resumed continuation must not accept a
+    second user turn while the original live owner is still running.
+    """
+
+    class _Agent:
+        def run_conversation(self, *args, **kwargs):  # pragma: no cover
+            raise AssertionError("duplicate owner should not run")
+
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    server._sessions["parent-sid"] = _session(
+        agent=types.SimpleNamespace(session_id="cont-tip"),
+        session_key="parent-root",
+        running=True,
+    )
+    server._sessions["cont-sid"] = _session(
+        agent=_Agent(),
+        session_key="cont-tip",
+        running=False,
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "cont-sid", "text": "new turn"},
+            }
+        )
+        duplicate_running = server._sessions["cont-sid"]["running"]
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    assert resp["error"]["code"] == 4009
+    assert resp["error"]["message"] == "session busy"
+    assert duplicate_running is False
 
 
 # ── active live TUI sessions ─────────────────────────────────────────

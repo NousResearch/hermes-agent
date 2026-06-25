@@ -1566,7 +1566,7 @@ def _cwd_for_session_key(session_key: str) -> str:
         return ""
     with _sessions_lock:
         for sess in list(_sessions.values()):
-            if sess.get("session_key") == session_key:
+            if session_key in _session_live_keys(sess):
                 return str(sess.get("cwd") or "")
     return ""
 
@@ -1583,7 +1583,7 @@ def _set_session_context(session_key: str, cwd: str | None = None) -> list:
         source = "tui"
         with _sessions_lock:
             for sess in list(_sessions.values()):
-                if sess.get("session_key") == session_key:
+                if session_key in _session_live_keys(sess):
                     source = _session_source(sess)
                     break
         return set_session_vars(session_key=session_key, source=source, cwd=resolved)
@@ -2816,6 +2816,33 @@ def _current_profile_name() -> str:
 DESKTOP_BACKEND_CONTRACT = 2
 
 
+def _session_agent_id(session: dict | None) -> str:
+    agent = (session or {}).get("agent")
+    if agent is None:
+        return ""
+    return str(getattr(agent, "session_id", None) or "").strip()
+
+
+def _session_stored_key(session: dict | None) -> str:
+    agent_id = _session_agent_id(session)
+    if agent_id:
+        return agent_id
+    return str((session or {}).get("session_key") or "").strip()
+
+
+def _session_live_keys(session: dict | None) -> tuple[str, ...]:
+    keys: list[str] = []
+    for value in (
+        (session or {}).get("session_key"),
+        _session_agent_id(session),
+        (session or {}).get("resume_session_id"),
+    ):
+        key = str(value or "").strip()
+        if key and key not in keys:
+            keys.append(key)
+    return tuple(keys)
+
+
 def _session_info(agent, session: dict | None = None) -> dict:
     if session is None:
         for candidate in _sessions.values():
@@ -2823,9 +2850,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
                 session = candidate
                 break
     cwd = _session_cwd(session)
-    session_key = str(
-        (session or {}).get("session_key") or getattr(agent, "session_id", "") or ""
-    )
+    session_key = _session_stored_key(session or {"agent": agent})
     cfg_personality = ((_load_cfg().get("display") or {}).get("personality") or "")
     personality = (session or {}).get("personality", cfg_personality)
     reasoning_config = getattr(agent, "reasoning_config", None)
@@ -5067,7 +5092,7 @@ def _session_live_title(session: dict, key: str) -> str:
 
 
 def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
-    key = _session_lookup_key(session, fallback=sid)
+    key = _session_stored_key(session) or str(session.get("session_key") or sid)
     agent = session.get("agent")
     history = list(session.get("history") or [])
     status = _session_live_status(sid, session)
@@ -5091,23 +5116,52 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
     }
 
 
-def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
-    agent = session.get("agent")
-    return str(
-        getattr(agent, "session_id", None)
-        or session.get("session_key")
-        or fallback
-        or ""
-    )
+def _live_session_match_score(session: dict, session_key: str) -> int:
+    score = 0
+    if _session_agent_id(session) == session_key:
+        score += 4
+    if session.get("running"):
+        score += 2
+    if not session.get("lazy"):
+        score += 1
+    return score
 
 
-def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
+def _session_owns_key_authoritatively(session: dict, session_key: str) -> bool:
+    return bool(session.get("running")) or _session_agent_id(session) == session_key
+
+
+def _find_live_session_by_key_locked(
+    session_key: str,
+    *,
+    exclude: dict | None = None,
+) -> tuple[str, dict] | None:
+    target = str(session_key or "").strip()
+    if not target:
+        return None
+    best: tuple[int, str, dict] | None = None
     for sid, session in list(_sessions.items()):
+        if session is exclude:
+            continue
         if session.get("_finalized"):
             continue
-        if _session_lookup_key(session, fallback=sid) == session_key:
-            return sid, session
-    return None
+        if target not in _session_live_keys(session):
+            continue
+        score = _live_session_match_score(session, target)
+        if best is None or score > best[0]:
+            best = (score, sid, session)
+    if best is None:
+        return None
+    return best[1], best[2]
+
+
+def _find_live_session_by_key(
+    session_key: str,
+    *,
+    exclude: dict | None = None,
+) -> tuple[str, dict] | None:
+    with _sessions_lock:
+        return _find_live_session_by_key_locked(session_key, exclude=exclude)
 
 
 def _fallback_session_info(session: dict) -> dict:
@@ -5143,13 +5197,14 @@ def _live_session_payload(
         )
         inflight = _inflight_snapshot(session)
         running = bool(session.get("running"))
+        key = _session_stored_key(session) or str(session.get("session_key") or sid)
     payload = {
         "info": _fallback_session_info(session),
         "message_count": len(history),
         "messages": _history_to_messages(history),
         "running": running,
         "session_id": sid,
-        "session_key": _session_lookup_key(session, fallback=sid),
+        "session_key": key,
         "started_at": float(session.get("created_at") or time.time()),
         "status": _session_live_status(sid, session),
     }
@@ -5249,7 +5304,11 @@ def _(rid, params: dict) -> dict:
             snapshot = list(_sessions.values())
     except Exception as e:
         return _err(rid, 5036, f"could not enumerate active sessions: {e}")
-    active = {s.get("session_key") for s in snapshot if s.get("session_key")}
+    active = {
+        key
+        for s in snapshot
+        for key in _session_live_keys(s)
+    }
     if target in active:
         return _err(rid, 4023, "cannot delete an active session")
     sessions_dir = get_hermes_home() / "sessions"
@@ -7454,36 +7513,48 @@ def _(rid, params: dict) -> dict:
     # or fallback moved the session transport to stdio.
     if (t := current_transport()) is not None:
         session["transport"] = t
-    with session["history_lock"]:
-        if session.get("running"):
-            return _err(rid, 4009, "session busy")
-        # A watch session's run lives in the PARENT turn, so its own running
-        # flag is False — without this, typing mid-run builds a second agent
-        # racing the in-flight child on the same stored session (interleaved
-        # transcript, stale fork). After the run completes, submitting is fine:
-        # the upgrade resumes the child's transcript as a normal conversation.
-        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
-            return _err(rid, 4009, "subagent still running — wait for it to finish")
-        if truncate_user_ordinal is not None:
-            try:
-                ordinal = int(truncate_user_ordinal)
-            except (TypeError, ValueError):
-                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
-            history = session.get("history", [])
-            user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
-            if ordinal >= len(user_indices):
-                return _err(rid, 4018, "target user message is no longer in session history")
-            truncated = history[: user_indices[ordinal]]
-            session["history"] = truncated
-            session["history_version"] = int(session.get("history_version", 0)) + 1
-            if (db := _get_db()) is not None:
+    with _sessions_lock:
+        live_key = _session_stored_key(session) or str(session.get("session_key") or "")
+        owner = _find_live_session_by_key_locked(live_key, exclude=session)
+        if owner is not None and _session_owns_key_authoritatively(owner[1], live_key):
+            _owner_sid, owner_session = owner
+            if owner_session.get("running"):
+                return _err(rid, 4009, "session busy")
+            return _err(
+                rid,
+                4009,
+                "session already active in another tab — switch to that live session",
+            )
+        with session["history_lock"]:
+            if session.get("running"):
+                return _err(rid, 4009, "session busy")
+            # A watch session's run lives in the PARENT turn, so its own running
+            # flag is False — without this, typing mid-run builds a second agent
+            # racing the in-flight child on the same stored session (interleaved
+            # transcript, stale fork). After the run completes, submitting is fine:
+            # the upgrade resumes the child's transcript as a normal conversation.
+            if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+                return _err(rid, 4009, "subagent still running — wait for it to finish")
+            if truncate_user_ordinal is not None:
                 try:
-                    db.replace_messages(session["session_key"], truncated)
-                except Exception as exc:
-                    print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
-        session["running"] = True
-        session["last_active"] = time.time()
-        _start_inflight_turn(session, text)
+                    ordinal = int(truncate_user_ordinal)
+                except (TypeError, ValueError):
+                    return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+                history = session.get("history", [])
+                user_indices = [i for i, m in enumerate(history) if m.get("role") == "user"]
+                if ordinal >= len(user_indices):
+                    return _err(rid, 4018, "target user message is no longer in session history")
+                truncated = history[: user_indices[ordinal]]
+                session["history"] = truncated
+                session["history_version"] = int(session.get("history_version", 0)) + 1
+                if (db := _get_db()) is not None:
+                    try:
+                        db.replace_messages(session["session_key"], truncated)
+                    except Exception as exc:
+                        print(f"[tui_gateway] prompt.submit: replace_messages failed: {exc}", file=sys.stderr)
+            session["running"] = True
+            session["last_active"] = time.time()
+            _start_inflight_turn(session, text)
 
     # Persist the DB row lazily, now that the user has actually sent a message.
     _ensure_session_db_row(session)
@@ -7511,34 +7582,36 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "streaming"})
 
 
-def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
-    """True if ``evt`` is owned by a *different* live session.
+def _notification_event_route(session: dict, evt: dict) -> str:
+    """Classify whether ``session`` may consume a queued runtime event.
 
-    Background-process events carry the ``session_key`` of the session that
-    started the process. Since all desktop sessions share one process-wide
-    completion queue, each poller must skip events it doesn't own so a
-    background job's completion surfaces in the session that launched it — not
-    whichever poller happened to dequeue first. Orphaned events (owner gone)
-    and global/system events (empty ``session_key``) return False so the
-    current poller still handles them rather than losing them.
+    Returns ``"handle"`` for events owned by this session, global events with
+    no owner, and events whose owner is no longer live. Returns ``"defer"``
+    for events owned by another live session so that owner's poller can handle
+    them.
     """
     evt_key = str(evt.get("session_key") or "")
     if not evt_key:
-        return False
-    if evt_key == str(session.get("session_key") or ""):
-        return False
-    try:
+        return "handle"
+    if evt_key in _session_live_keys(session):
         with _sessions_lock:
-            snapshot = list(_sessions.values())
-    except Exception:
-        # If we can't safely enumerate live sessions, fail open so we don't
-        # crash the poller thread or drop the event.
-        return False
+            other_owner = _find_live_session_by_key_locked(evt_key, exclude=session)
+        if (
+            other_owner is not None
+            and _session_owns_key_authoritatively(other_owner[1], evt_key)
+        ):
+            return "defer"
+        return "handle"
+    with _sessions_lock:
+        owner = _find_live_session_by_key_locked(evt_key, exclude=session)
+    if owner is not None:
+        return "defer"
+    return "handle"
 
-    return any(
-        s is not session and str(s.get("session_key") or "") == evt_key
-        for s in snapshot
-    )
+
+def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
+    """Compatibility wrapper used by older tests/callers."""
+    return _notification_event_route(session, evt) != "handle"
 
 
 def _notification_event_dedup_key(evt: dict) -> tuple:

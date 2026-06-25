@@ -1521,6 +1521,62 @@ class AIAgent:
         self._save_session_log(messages)
         self._flush_messages_to_session_db(messages, conversation_history)
 
+    def _checkpoint_session_progress(
+        self,
+        messages: List[Dict],
+        conversation_history: List[Dict] = None,
+        *,
+        reason: str = "tool_iteration",
+    ) -> None:
+        """Best-effort durable checkpoint for long in-flight tool loops.
+
+        ``_persist_session`` runs at turn start and finalization. Long TUI
+        coding turns can execute many assistant(tool_calls) + tool-result
+        iterations before finalization; if the desktop is rebuilt/restarted in
+        that window, resume sees only the first user row. This checkpoint writes
+        the valid prefix after each completed tool batch while preserving the
+        append de-dupe/identity semantics owned by
+        ``_flush_messages_to_session_db``.
+
+        Checkpoint failures must never interrupt the live turn: they are a
+        crash-resilience aid, not part of model/tool execution correctness.
+        """
+        session_id = getattr(self, "session_id", None) or "none"
+        try:
+            self._apply_persist_user_message_override(messages)
+            self._session_messages = messages
+        except Exception as exc:
+            logger.warning(
+                "Session progress checkpoint preparation failed "
+                "(session=%s, reason=%s): %s",
+                session_id,
+                reason,
+                exc,
+            )
+            return
+
+        try:
+            self._save_session_log(messages)
+        except Exception as exc:
+            logger.warning(
+                "Session progress JSON checkpoint failed "
+                "(session=%s, reason=%s): %s",
+                session_id,
+                reason,
+                exc,
+            )
+
+        try:
+            self._flush_messages_to_session_db(messages, conversation_history)
+        except Exception as exc:
+            logger.warning(
+                "Session progress DB checkpoint failed "
+                "(session=%s, reason=%s): %s",
+                session_id,
+                reason,
+                exc,
+            )
+
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
 
@@ -1579,7 +1635,7 @@ class AIAgent:
         from agent.agent_runtime_helpers import repair_message_sequence
         return repair_message_sequence(self, messages)
 
-    def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: Optional[List[Dict]] = None):
         """Persist any un-flushed messages to the SQLite session store.
 
         Uses per-session message identity tracking so repeated calls (from

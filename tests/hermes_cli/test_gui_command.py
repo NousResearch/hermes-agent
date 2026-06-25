@@ -877,3 +877,40 @@ def test_stop_desktop_build_lock_no_release_dir(tmp_path, monkeypatch):
     with patch("psutil.process_iter") as it:
         assert cli_main._stop_desktop_processes_locking_build(desktop_dir) == []
     it.assert_not_called()
+
+
+def test_force_adhoc_signing_disables_discovery_on_local_packaged_rebuild(monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    env = {}
+    assert cli_main._force_adhoc_macos_signing(env, source_mode=False) is True
+    assert env["CSC_IDENTITY_AUTO_DISCOVERY"] == "false"
+
+
+@pytest.mark.parametrize("platform", ["linux", "win32"])
+def test_force_adhoc_signing_noop_off_macos(monkeypatch, platform):
+    monkeypatch.setattr(cli_main.sys, "platform", platform)
+    env = {}
+    assert cli_main._force_adhoc_macos_signing(env, source_mode=False) is False
+    assert "CSC_IDENTITY_AUTO_DISCOVERY" not in env
+
+
+def test_force_adhoc_signing_noop_for_source_mode(monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    env = {}
+    assert cli_main._force_adhoc_macos_signing(env, source_mode=True) is False
+    assert "CSC_IDENTITY_AUTO_DISCOVERY" not in env
+
+
+@pytest.mark.parametrize("key", ["CSC_LINK", "APPLE_SIGNING_IDENTITY"])
+def test_force_adhoc_signing_preserves_real_identity(monkeypatch, key):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    env = {key: "secret"}
+    assert cli_main._force_adhoc_macos_signing(env, source_mode=False) is False
+    assert "CSC_IDENTITY_AUTO_DISCOVERY" not in env
+
+
+def test_force_adhoc_signing_respects_explicit_caller_flag(monkeypatch):
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    env = {"CSC_IDENTITY_AUTO_DISCOVERY": "true"}
+    assert cli_main._force_adhoc_macos_signing(env, source_mode=False) is False
+    assert env["CSC_IDENTITY_AUTO_DISCOVERY"] == "true"

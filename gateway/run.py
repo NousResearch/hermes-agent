@@ -15811,6 +15811,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_id_alt=getattr(source, "user_id_alt", None),
             )
             agent = None
+            # Agent whose cache entry we invalidate below due to a cross-process
+            # write. Its teardown is deferred until AFTER _agent_cache_lock is
+            # released (see post-lock block) so slow socket / sandbox / MCP close
+            # can't freeze the whole gateway event loop while the cache lock is
+            # held.
+            _stale_evicted_agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
 
@@ -15852,7 +15858,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             evicted = self._agent_cache.pop(session_key, None)
                             _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
                             if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
-                                self._cleanup_agent_resources(_ev_agent)
+                                # Defer teardown to AFTER the lock is released —
+                                # running _cleanup_agent_resources here holds
+                                # _agent_cache_lock across blocking socket /
+                                # sandbox / MCP teardown, which can freeze the
+                                # whole gateway event loop (every other session's
+                                # `with _cache_lock` blocks indefinitely). Mirrors
+                                # _evict_cached_agent / _enforce_agent_cache_cap,
+                                # which already offload cleanup off-lock.
+                                _stale_evicted_agent = _ev_agent
                         else:
                             agent = cached[0]
                             # Refresh LRU order so the cap enforcement evicts
@@ -15867,6 +15881,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # (cached agent may have been created with old config)
                             agent.max_iterations = max_iterations
                             logger.debug("Reusing cached agent for session %s", session_key)
+
+            # Tear down a cross-process-invalidated agent OUTSIDE the cache lock,
+            # on a daemon thread, so slow teardown (socket / sandbox / MCP close)
+            # can never block the event loop while _agent_cache_lock is held.
+            # This was the root cause of a full gateway freeze: cleanup ran under
+            # the lock, hung on socket teardown, and every subsequent
+            # `with _cache_lock` deadlocked the loop (2026-06-25).
+            if _stale_evicted_agent is not None:
+                try:
+                    threading.Thread(
+                        target=self._cleanup_agent_resources,
+                        args=(_stale_evicted_agent,),
+                        daemon=True,
+                        name=f"agent-xproc-evict-{str(session_key)[:20]}",
+                    ).start()
+                except Exception:
+                    # Interpreter shutdown or thread-spawn failure — best-effort
+                    # inline fallback (matches _evict_cached_agent).
+                    try:
+                        self._cleanup_agent_resources(_stale_evicted_agent)
+                    except Exception:
+                        pass
 
             if agent is None:
                 # Config changed or first message — create fresh agent

@@ -3444,9 +3444,9 @@ class BasePlatformAdapter(ABC):
                 await self.send(
                     chat_id=event.source.chat_id,
                     content=(
-                        f"Sorry, I encountered an error ({error_type}).\n"
+                        f"エラーが発生しました（{error_type}）。\n"
                         f"{error_detail}\n"
-                        "Try again or use /reset to start a fresh session."
+                        "もう一度送るか、/reset で新しく始めてください。"
                     ),
                     metadata=_thread_metadata,
                 )

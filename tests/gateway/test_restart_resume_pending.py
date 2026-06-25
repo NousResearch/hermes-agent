@@ -1066,7 +1066,7 @@ async def test_startup_auto_resume_skips_when_adapter_unavailable():
 
 
 @pytest.mark.asyncio
-async def test_restart_banner_uses_try_to_resume_wording():
+async def test_restart_banner_uses_best_effort_resume_wording():
     """The notification sent before drain should hedge the resume promise
     — the session-continuity fix is best-effort (stuck-loop counter can
     still escalate to suspended)."""
@@ -1078,8 +1078,10 @@ async def test_restart_banner_uses_try_to_resume_wording():
 
     assert len(adapter.sent) == 1
     msg = adapter.sent[0]
-    assert "restarting" in msg
-    assert "try to resume" in msg
+    assert "Gateway再起動中" in msg
+    assert "可能な範囲で続きから再開" in msg
+    assert "Gateway restarting" not in msg
+    assert "try to resume" not in msg
 
 
 @pytest.mark.asyncio
@@ -1095,8 +1097,8 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
     await runner._notify_active_sessions_of_shutdown()
 
     assert adapter.sent == [
-        "⚠️ Gateway restarting — Your current task will be interrupted. "
-        "Send any message after restart and I'll try to resume where you left off."
+        "⚠️ Gateway再起動中です。現在の作業は一度中断されます。"
+        "再起動後に何か送ると、可能な範囲で続きから再開します。"
     ]
 
 

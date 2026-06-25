@@ -113,18 +113,21 @@ class TestHintMessages:
     def test_busy_input_hint_gateway_interrupt(self):
         msg = busy_input_hint_gateway("interrupt")
         assert "/busy queue" in msg
-        assert "interrupted" in msg.lower()
+        assert "現在の作業を中断" in msg
+        assert "First-time tip" not in msg
 
     def test_busy_input_hint_gateway_queue(self):
         msg = busy_input_hint_gateway("queue")
         assert "/busy interrupt" in msg
-        assert "queued" in msg.lower()
+        assert "次の返答に回しました" in msg
+        assert "First-time tip" not in msg
 
     def test_busy_input_hint_gateway_steer(self):
         msg = busy_input_hint_gateway("steer")
         assert "/busy interrupt" in msg
         assert "/busy queue" in msg
-        assert "steer" in msg.lower()
+        assert "実行中の作業へ追加" in msg
+        assert "First-time tip" not in msg
 
     def test_busy_input_hint_cli_interrupt(self):
         msg = busy_input_hint_cli("interrupt")
@@ -143,6 +146,8 @@ class TestHintMessages:
     def test_tool_progress_hints_mention_verbose(self):
         assert "/verbose" in tool_progress_hint_gateway()
         assert "/verbose" in tool_progress_hint_cli()
+        assert "First-time tip" not in tool_progress_hint_gateway()
+        assert "作業状況" in tool_progress_hint_gateway()
 
     def test_hints_are_not_empty(self):
         for hint in (

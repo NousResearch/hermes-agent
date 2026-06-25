@@ -14,6 +14,22 @@ from gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
+def assert_no_english_gateway_notice(content: str):
+    forbidden = [
+        "Gateway shutting down",
+        "Gateway restarting",
+        "Gateway is restarting",
+        "Your current task",
+        "will be interrupted",
+        "Send any message",
+        "try to resume",
+        "queued for the next turn",
+        "not accepting",
+    ]
+    for fragment in forbidden:
+        assert fragment not in content
+
+
 @pytest.mark.asyncio
 async def test_restart_command_while_busy_requests_drain_without_interrupt(monkeypatch):
     # Ensure INVOCATION_ID is NOT set — systemd sets this in service mode,
@@ -68,7 +84,9 @@ async def test_drain_queue_mode_queues_follow_up_without_interrupt():
     assert session_key in adapter._pending_messages
     assert adapter._pending_messages[session_key].text == "follow up"
     assert not adapter._active_sessions[session_key].is_set()
-    assert any("queued for the next turn" in message for message in adapter.sent)
+    assert any("復旧後の次の返答に回しました" in message for message in adapter.sent)
+    for message in adapter.sent:
+        assert_no_english_gateway_notice(message)
 
 
 @pytest.mark.asyncio
@@ -86,7 +104,8 @@ async def test_draining_rejects_new_session_messages():
 
     result = await runner._handle_message(event)
 
-    assert result == "⏳ Gateway is restarting and is not accepting new work right now."
+    assert result == "⏳ Gateway再起動中のため、いまは新しい作業を受け付けられません。復旧後にもう一度送ってください。"
+    assert_no_english_gateway_notice(result)
 
 
 def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, monkeypatch):
@@ -200,13 +219,14 @@ async def test_shutdown_notification_sent_to_active_sessions():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 1
-    assert "shutting down" in adapter.sent[0]
-    assert "interrupted" in adapter.sent[0]
+    assert "Gateway停止中" in adapter.sent[0]
+    assert "現在の作業は一度中断されます" in adapter.sent[0]
+    assert_no_english_gateway_notice(adapter.sent[0])
 
 
 @pytest.mark.asyncio
 async def test_shutdown_notification_says_restarting_when_restart_requested():
-    """When _restart_requested is True, the message says 'restarting' and mentions /retry."""
+    """When _restart_requested is True, the message says restart in Japanese."""
     runner, adapter = make_restart_runner()
     runner._restart_requested = True
     session_key = "agent:main:telegram:dm:999"
@@ -215,8 +235,9 @@ async def test_shutdown_notification_says_restarting_when_restart_requested():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 1
-    assert "restarting" in adapter.sent[0]
-    assert "resume" in adapter.sent[0]
+    assert "Gateway再起動中" in adapter.sent[0]
+    assert "続きから再開" in adapter.sent[0]
+    assert_no_english_gateway_notice(adapter.sent[0])
 
 
 @pytest.mark.asyncio

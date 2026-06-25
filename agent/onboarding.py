@@ -40,22 +40,20 @@ def busy_input_hint_gateway(mode: str) -> str:
     """
     if mode == "queue":
         return (
-            "💡 First-time tip — I queued your message instead of interrupting. "
-            "Send `/busy interrupt` to make new messages stop the current task "
-            "immediately, or `/busy status` to check. This notice won't appear again."
+            "💡 初回ヒント: 今回の追加入力は、作業を中断せず次の返答に回しました。"
+            "新しいメッセージで今の作業をすぐ止めたい場合は `/busy interrupt`、"
+            "現在設定を確認する場合は `/busy status` を送ってください。この案内は次回から出ません。"
         )
     if mode == "steer":
         return (
-            "💡 First-time tip — I steered your message into the current run; "
-            "it will arrive after the next tool call instead of interrupting. "
-            "Send `/busy interrupt` or `/busy queue` to change this, or "
-            "`/busy status` to check. This notice won't appear again."
+            "💡 初回ヒント: 今回の追加入力は、作業を中断せず実行中の作業へ追加しました。"
+            "次のツール実行後に反映されます。設定を変える場合は `/busy interrupt` または "
+            "`/busy queue`、現在設定を確認する場合は `/busy status` を送ってください。この案内は次回から出ません。"
         )
     return (
-        "💡 First-time tip — I just interrupted my current task to answer you. "
-        "Send `/busy queue` to queue follow-ups for after the current task instead, "
-        "`/busy steer` to inject them mid-run without interrupting, or "
-        "`/busy status` to check. This notice won't appear again."
+        "💡 初回ヒント: 今回は返答するために現在の作業を中断しました。"
+        "追加入力を次の返答に回す場合は `/busy queue`、作業を止めず途中へ追加する場合は "
+        "`/busy steer`、現在設定を確認する場合は `/busy status` を送ってください。この案内は次回から出ません。"
     )
 
 
@@ -82,9 +80,9 @@ def busy_input_hint_cli(mode: str) -> str:
 
 def tool_progress_hint_gateway() -> str:
     return (
-        "💡 First-time tip — that tool took a while and I'm streaming every step. "
-        "If the progress messages feel noisy, send `/verbose` to cycle modes "
-        "(all → new → off). This notice won't appear again."
+        "💡 初回ヒント: 今のツール実行に時間がかかっているため、作業状況を表示しています。"
+        "表示が多い場合は `/verbose` を送ると表示量を切り替えられます"
+        "（all → new → off）。この案内は次回から出ません。"
     )
 
 

@@ -3502,10 +3502,10 @@ class DiscordAdapter(BasePlatformAdapter):
             # so a rejected invoker can receive an ephemeral rejection.
             await self._handle_thread_create_slash(interaction, name, message, auto_archive_duration)
 
-        @tree.command(name="queue", description="Queue a prompt for the next turn (doesn't interrupt)")
-        @discord.app_commands.describe(prompt="The prompt to queue")
+        @tree.command(name="queue", description="次の返答に回す（今の作業は中断しない）")
+        @discord.app_commands.describe(prompt="次の返答に回す内容")
         async def slash_queue(interaction: discord.Interaction, prompt: str):
-            await self._run_simple_slash(interaction, f"/queue {prompt}", "Queued for the next turn.")
+            await self._run_simple_slash(interaction, f"/queue {prompt}", "次の返答に回しました。")
 
         @tree.command(name="background", description="Run a prompt in the background")
         @discord.app_commands.describe(prompt="The prompt to run in the background")

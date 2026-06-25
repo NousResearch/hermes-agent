@@ -87,6 +87,25 @@ def _make_adapter(platform_val="telegram"):
     return adapter
 
 
+def _assert_no_english_user_status(content: str):
+    forbidden = [
+        "Interrupting current task",
+        "Queued for the next turn",
+        "Steered into current run",
+        "I'll respond",
+        "Your message",
+        "current task finishes",
+        "Gateway is restarting",
+        "Gateway restarting",
+        "running:",
+        "iteration ",
+        " min elapsed",
+        "First-time tip",
+    ]
+    for fragment in forbidden:
+        assert fragment not in content
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -152,7 +171,9 @@ class TestBusySessionAck:
         if not content and call_kwargs.args:
             # positional args
             content = str(call_kwargs)
-        assert "Interrupting" in content or "respond" in content
+        assert "現在の作業を中断しています" in content
+        assert "このあと返答します" in content
+        _assert_no_english_user_status(content)
         assert "/stop" not in content  # no need — we ARE interrupting
 
         # Verify agent interrupt was called
@@ -182,9 +203,9 @@ class TestBusySessionAck:
         adapter._send_with_retry.assert_called_once()
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
-        assert "respond once the current task finishes" in content
-        assert "Interrupting" not in content
+        assert "次の返答に回しました" in content
+        assert "今の作業が終わり次第" in content
+        _assert_no_english_user_status(content)
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):
@@ -215,8 +236,8 @@ class TestBusySessionAck:
         adapter._send_with_retry.assert_called_once()
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Steered" in content or "steer" in content.lower()
-        assert "Interrupting" not in content
+        assert "実行中の作業へ追加入力しました" in content
+        _assert_no_english_user_status(content)
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_rejects(self):
@@ -244,8 +265,8 @@ class TestBusySessionAck:
         # Ack uses queue-mode wording (not steer, not interrupt)
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
-        assert "Steered" not in content
+        assert "次の返答に回しました" in content
+        _assert_no_english_user_status(content)
 
     @pytest.mark.asyncio
     async def test_steer_mode_falls_back_to_queue_when_agent_pending(self):
@@ -269,7 +290,8 @@ class TestBusySessionAck:
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
+        assert "次の返答に回しました" in content
+        _assert_no_english_user_status(content)
 
     @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):
@@ -376,14 +398,16 @@ class TestBusySessionAck:
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content", "")
         assert "21/60" in content  # iteration
-        assert "terminal" in content  # current tool
-        assert "10 min" in content  # elapsed
+        assert "端末確認" in content  # current tool
+        assert "10分" in content  # elapsed
+        _assert_no_english_user_status(content)
 
     @pytest.mark.asyncio
     async def test_draining_still_works(self):
         """Draining case should still produce the drain-specific message."""
         runner, sentinel = _make_runner()
         runner._draining = True
+        runner._restart_requested = True
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
@@ -400,7 +424,8 @@ class TestBusySessionAck:
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content", "")
-        assert "restarting" in content
+        assert "Gateway再起動中" in content
+        _assert_no_english_user_status(content)
 
     @pytest.mark.asyncio
     async def test_pending_sentinel_no_interrupt(self):
@@ -472,10 +497,11 @@ class TestBusySessionOnboardingHint:
         content = call_kwargs.kwargs.get("content", "")
 
         # Normal ack body
-        assert "Interrupting" in content
+        assert "現在の作業を中断しています" in content
         # First-touch hint appended
-        assert "First-time tip" in content
+        assert "初回ヒント" in content
         assert "/busy queue" in content
+        _assert_no_english_user_status(content)
 
         # The flag is now persisted to tmp_path/config.yaml
         import yaml
@@ -520,9 +546,10 @@ class TestBusySessionOnboardingHint:
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content", "")
 
-        assert "Interrupting" in content
-        assert "First-time tip" not in content
+        assert "現在の作業を中断しています" in content
+        assert "初回ヒント" not in content
         assert "/busy queue" not in content
+        _assert_no_english_user_status(content)
 
     @pytest.mark.asyncio
     async def test_queue_mode_hint_points_to_interrupt(self, tmp_path, monkeypatch):
@@ -547,8 +574,9 @@ class TestBusySessionOnboardingHint:
             await runner._handle_active_session_busy_message(event, sk)
 
         content = adapter._send_with_retry.call_args.kwargs.get("content", "")
-        assert "Queued for the next turn" in content
-        assert "First-time tip" in content
+        assert "次の返答に回しました" in content
+        assert "初回ヒント" in content
         assert "/busy interrupt" in content
+        _assert_no_english_user_status(content)
         # Must NOT tell the user to /busy queue when they're already on queue.
         assert "/busy queue" not in content

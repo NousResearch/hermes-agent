@@ -1323,23 +1323,22 @@ def _normalize_empty_agent_response(
         ) or ("400" in error_str and history_len > 50)
         if is_context_failure:
             return (
-                "⚠️ Session too large for the model's context window.\n"
-                "Use /compact to compress the conversation, or "
-                "/reset to start fresh."
+                "⚠️ 会話量が多く、モデルが一度に扱える上限を超えています。\n"
+                "/compact で会話を圧縮するか、/reset で新しく始めてください。"
             )
         return (
-            f"The request failed: {str(error_detail)[:300]}\n"
-            "Try again or use /reset to start a fresh session."
+            f"リクエストに失敗しました: {str(error_detail)[:300]}\n"
+            "もう一度送るか、/reset で新しく始めてください。"
         )
 
     api_calls = int(agent_result.get("api_calls", 0) or 0)
     if api_calls > 0 and not agent_result.get("interrupted"):
         if agent_result.get("partial"):
             err = agent_result.get("error", "processing incomplete")
-            return f"⚠️ Processing stopped: {str(err)[:200]}. Try again."
+            return f"⚠️ 処理が途中で止まりました: {str(err)[:200]}。もう一度送ってください。"
         return (
-            "⚠️ Processing completed but no response was generated. "
-            "This may be a transient error — try sending your message again."
+            "⚠️ 処理は終わりましたが、返答を生成できませんでした。"
+            "一時的なエラーの可能性があるため、もう一度送ってください。"
         )
 
     return response
@@ -2295,6 +2294,44 @@ class GatewayRunner:
     def _status_action_gerund(self) -> str:
         return "restarting" if self._restart_requested else "shutting down"
 
+    def _status_action_label_ja(self) -> str:
+        return "再起動" if self._restart_requested else "停止"
+
+    def _status_action_progress_ja(self) -> str:
+        return "再起動中" if self._restart_requested else "停止中"
+
+    def _draining_busy_message(self, *, queued: bool, scope: str = "another_turn") -> str:
+        action = self._status_action_progress_ja()
+        if queued:
+            return f"⏳ Gateway{action}です。復旧後の次の返答に回しました。"
+        if scope == "new_work":
+            return f"⏳ Gateway{action}のため、いまは新しい作業を受け付けられません。復旧後にもう一度送ってください。"
+        return f"⏳ Gateway{action}のため、いまは別の作業を受け付けられません。復旧後にもう一度送ってください。"
+
+    @staticmethod
+    def _activity_tool_label_ja(tool_name: Any) -> str:
+        labels = {
+            "terminal": "端末確認",
+            "read_file": "ファイル確認",
+            "write_file": "ファイル更新",
+            "patch": "修正反映",
+            "search_files": "ファイル検索",
+            "skill_view": "スキル確認",
+            "skills_list": "スキル一覧確認",
+            "memory": "記憶更新",
+            "web_search": "Web検索",
+            "web_extract": "Web確認",
+            "browser_navigate": "ブラウザ確認",
+            "browser_click": "画面操作",
+            "browser_type": "入力操作",
+            "image_generate": "画像作成",
+            "execute_code": "コード確認",
+            "cronjob": "自動実行確認",
+            "todo": "タスク整理",
+        }
+        key = str(tool_name or "").strip()
+        return labels.get(key, key or "作業")
+
     def _queue_during_drain_enabled(self) -> bool:
         # Both "queue" and "steer" modes imply the user doesn't want messages
         # to be lost during restart — queue them for the newly-spawned gateway
@@ -2865,9 +2902,9 @@ class GatewayRunner:
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                message = self._draining_busy_message(queued=True)
             else:
-                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                message = self._draining_busy_message(queued=False)
 
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -2963,29 +3000,29 @@ class GatewayRunner:
                 if start_ts:
                     elapsed_min = int((now - start_ts) / 60)
                     if elapsed_min > 0:
-                        status_parts.append(f"{elapsed_min} min elapsed")
+                        status_parts.append(f"経過: {elapsed_min}分")
                 if max_iter:
-                    status_parts.append(f"iteration {iteration}/{max_iter}")
+                    status_parts.append(f"反復: {iteration}/{max_iter}")
                 if current_tool:
-                    status_parts.append(f"running: {current_tool}")
+                    status_parts.append(f"実行中: {self._activity_tool_label_ja(current_tool)}")
             except Exception:
                 pass
 
-        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        status_detail = f"（{'、'.join(status_parts)}）" if status_parts else ""
         if is_steer_mode:
             message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
+                f"⏩ 実行中の作業へ追加入力しました{status_detail}。"
+                f"次のツール実行後に反映されます。"
             )
         elif is_queue_mode:
             message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
+                f"⏳ 次の返答に回しました{status_detail}。"
+                f"今の作業が終わり次第、続けて返答します。"
             )
         else:
             message = (
-                f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
+                f"⚡ 現在の作業を中断しています{status_detail}。"
+                f"このあと返答します。"
             )
 
         # First-touch onboarding: the very first time a user sends a message
@@ -3084,14 +3121,13 @@ class GatewayRunner:
         """
         active = self._snapshot_running_agents()
 
-        action = "restarting" if self._restart_requested else "shutting down"
+        action = self._status_action_label_ja()
         hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            "現在の作業は一度中断されます。再起動後に何か送ると、可能な範囲で続きから再開します。"
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else "現在の作業は一度中断されます。"
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        msg = f"⚠️ Gateway{action}中です。{hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -6810,7 +6846,7 @@ class GatewayRunner:
             if event.get_command() in {"queue", "q"}:
                 queued_text = event.get_command_args().strip()
                 if not queued_text:
-                    return "Usage: /queue <prompt>"
+                    return "使い方: /queue <次の返答に回す内容>"
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     queued_event = MessageEvent(
@@ -6823,8 +6859,8 @@ class GatewayRunner:
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
                 if depth <= 1:
-                    return "Queued for the next turn."
-                return f"Queued for the next turn. ({depth} queued)"
+                    return "次の返答に回しました。"
+                return f"次の返答に回しました。（待機中: {depth}件）"
 
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
@@ -7025,10 +7061,8 @@ class GatewayRunner:
             if self._draining:
                 if self._queue_during_drain_enabled():
                     self._queue_or_replace_pending_event(_quick_key, event)
-                return (
-                    f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
-                    if self._queue_during_drain_enabled()
-                    else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                return self._draining_busy_message(
+                    queued=self._queue_during_drain_enabled()
                 )
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
@@ -7321,7 +7355,7 @@ class GatewayRunner:
             return await self._handle_voice_command(event)
 
         if self._draining:
-            return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+            return self._draining_busy_message(queued=False, scope="new_work")
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -9063,17 +9097,16 @@ class GatewayRunner:
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
                     return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                        "⚠️ 会話量が多く、モデルが一度に扱える上限を超えています。\n"
+                        "/compact で会話を圧縮するか、/reset で新しく始めてください。"
                     )
                 elif status_code == 400:
-                    status_hint = " The request was rejected by the API."
+                    status_hint = " API側でリクエストが拒否されました。"
             return (
-                f"Sorry, I encountered an error ({error_type}).\n"
+                f"エラーが発生しました（{error_type}）。\n"
                 f"{error_detail}\n"
                 f"{status_hint}"
-                "Try again or use /reset to start a fresh session."
+                "もう一度送るか、/reset で新しく始めてください。"
             )
         finally:
             # Restore session context variables to their pre-handler state
@@ -17571,25 +17604,20 @@ class GatewayRunner:
 
                 # Construct a user-facing message with diagnostic context.
                 _diag_lines = [
-                    f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls "
-                    f"or API responses."
+                    f"⏱️ {_timeout_mins}分間、ツール実行やAPI応答が止まっていたため作業を中断しました。"
                 ]
                 if _cur_tool:
                     _diag_lines.append(
-                        f"The agent appears stuck on tool `{_cur_tool}` "
-                        f"({_secs_ago:.0f}s since last activity, "
-                        f"iteration {_iter_n}/{_iter_max})."
+                        f"停止していた可能性がある処理: `{self._activity_tool_label_ja(_cur_tool)}`"
+                        f"（最終活動から {_secs_ago:.0f}秒、反復: {_iter_n}/{_iter_max}）。"
                     )
                 else:
                     _diag_lines.append(
-                        f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                        f"iteration {_iter_n}/{_iter_max}). "
-                        "The agent may have been waiting on an API response."
+                        f"最終活動: {_last_desc}（{_secs_ago:.0f}秒前、反復: {_iter_n}/{_iter_max}）。"
+                        "API応答待ちで止まっていた可能性があります。"
                     )
                 _diag_lines.append(
-                    "To increase the limit, set agent.gateway_timeout in config.yaml "
-                    "(value in seconds, 0 = no limit) and restart the gateway.\n"
-                    "Try again, or use /reset to start fresh."
+                    "必要ならもう一度送ってください。最初からやり直す場合は /reset を使ってください。"
                 )
 
                 response = {

@@ -12,7 +12,12 @@ import type { DesktopTheme, DesktopThemeTypography } from './types'
 export const EMOJI_FALLBACK =
   '"Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji", emoji'
 
+// CJK fonts are placed before Latin fonts so that full-width punctuation
+// (,。,？！…—【】《》) renders correctly in Chinese/Japanese/Korean text.
+// Without them, Latin fonts like SF Pro supply half-width glyphs for shared
+// punctuation codepoints and the CJK glyphs are never reached.
 const SYSTEM_SANS =
+  '"PingFang SC", "PingFang TC", "PingFang HK", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans CJK TC", ' +
   '"Segoe WPC", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", system-ui, sans-serif, ' +
   EMOJI_FALLBACK
 

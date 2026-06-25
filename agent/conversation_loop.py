@@ -572,6 +572,16 @@ def run_conversation(
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
+    # Self-escalation: load thinking config (dynamic ON/OFF toggle)
+    # See ~/self-escalation-implementation-plan.md
+    try:
+        from agent.self_escalation import load_thinking_config
+        _thinking_state = load_thinking_config()
+    except Exception as _se_err:
+        import logging as _se_log
+        _se_log.getLogger(__name__).debug("[self-escalation] Failed to load config: %s", _se_err)
+        _thinking_state = None
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.
@@ -798,8 +808,21 @@ def run_conversation(
         effective_system = active_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        # NOTE: thinking-mode instructions are NOT injected here anymore.
+        # They are appended as a user message at the END of api_messages
+        # (via inject_thinking_message below) to keep the system prompt
+        # byte-stable and preserve KV cache across turns on llama.cpp.
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
+
+        # Self-escalation: inject thinking-mode instructions as a trailing
+        # user message — NOT in system prompt (KV cache safety).
+        if _thinking_state is not None and _thinking_state.enabled:
+            try:
+                from agent.self_escalation import inject_thinking_message
+                inject_thinking_message(api_messages, _thinking_state)
+            except Exception:
+                pass
 
         # Inject ephemeral prefill messages right after the system prompt
         # but before conversation history. Same API-call-time-only pattern.
@@ -1005,6 +1028,13 @@ def run_conversation(
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
                 api_kwargs = agent._build_api_kwargs(api_messages)
+                # Self-escalation: inject chat_template_kwargs for thinking toggle
+                if _thinking_state is not None and _thinking_state.enabled:
+                    try:
+                        from agent.self_escalation import inject_thinking_kwargs
+                        api_kwargs = inject_thinking_kwargs(api_kwargs, _thinking_state, agent.provider)
+                    except Exception:
+                        pass
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
@@ -3808,6 +3838,41 @@ def run_conversation(
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
             
+            # Self-escalation: detect [ESCALATE_THINKING: true] and re-run with thinking ON
+            if _thinking_state is not None:
+                try:
+                    from agent.self_escalation import detect_escalation, escalate, strip_escalation_marker, extract_escalation_reason
+                    if detect_escalation(assistant_message.content or "", _thinking_state):
+                        # Extract reason BEFORE stripping markers
+                        escalation_reason = extract_escalation_reason(
+                            assistant_message.content or "", _thinking_state
+                        )
+                        if escalate(_thinking_state):
+                            # Store reason in state for user notification
+                            _thinking_state.escalation_reason = escalation_reason
+                            # Strip the escalation marker from content
+                            if assistant_message.content:
+                                assistant_message.content = strip_escalation_marker(
+                                    assistant_message.content, _thinking_state
+                                )
+                            logger.info(
+                                "[self-escalation] ESCALATION TRIGGERED: re-running iteration with thinking ON (reason: %s)",
+                                escalation_reason or "none",
+                            )
+                            if not agent.quiet_mode:
+                                if escalation_reason:
+                                    agent._vprint(f"{agent.log_prefix}🧠 Self-escalation ON: {escalation_reason}")
+                                else:
+                                    agent._vprint(f"{agent.log_prefix}🧠 Self-escalation: switching to thinking ON...")
+                            api_call_count -= 1  # Don't count this short iteration
+                            try:
+                                agent.iteration_budget.refund()
+                            except Exception:
+                                pass
+                            continue
+                except Exception as _se_err:
+                    logger.info("[self-escalation] Detection error: %s", _se_err)
+
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:
@@ -3832,6 +3897,20 @@ def run_conversation(
                 if invalid_tool_calls:
                     # Track retries for invalid tool calls
                     agent._invalid_tool_retries += 1
+
+                    # Auto-escalation: force thinking ON after consecutive tool errors
+                    if (agent._invalid_tool_retries >= 2
+                            and _thinking_state is not None
+                            and _thinking_state.enabled
+                            and not _thinking_state.active):
+                        try:
+                            from agent.self_escalation import escalate as _escalate_thinking
+                            if _escalate_thinking(_thinking_state):
+                                agent._buffer_vprint(
+                                    "🧠 Auto-escalation: tool errors detected → switching to thinking ON..."
+                                )
+                        except Exception as _auto_se:
+                            logger.debug("[self-escalation] Auto-escalation error: %s", _auto_se)
 
                     # Return helpful error to model — model can agent-correct next turn
                     available = ", ".join(sorted(agent.valid_tool_names))
@@ -3944,6 +4023,20 @@ def run_conversation(
 
                     # Track retries for invalid JSON arguments
                     agent._invalid_json_retries += 1
+
+                    # Auto-escalation: force thinking ON after consecutive JSON errors
+                    if (agent._invalid_json_retries >= 2
+                            and _thinking_state is not None
+                            and _thinking_state.enabled
+                            and not _thinking_state.active):
+                        try:
+                            from agent.self_escalation import escalate as _escalate_thinking
+                            if _escalate_thinking(_thinking_state):
+                                agent._buffer_vprint(
+                                    "🧠 Auto-escalation: JSON errors detected → switching to thinking ON..."
+                                )
+                        except Exception as _auto_se:
+                            logger.debug("[self-escalation] Auto-escalation error: %s", _auto_se)
 
                     tool_name, error_msg = invalid_json_args[0]
                     agent._buffer_vprint(f"⚠️  Invalid JSON in tool call arguments for '{tool_name}': {error_msg}")
@@ -4178,6 +4271,27 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
+                
+                # Self-escalation: prefix response with thinking activation reason
+                if (_thinking_state is not None 
+                        and _thinking_state.escalation_reason 
+                        and final_response):
+                    reason_prefix = f"*🧠 Thinking activé : {_thinking_state.escalation_reason}*\n\n"
+                    final_response = reason_prefix + final_response
+                
+                # Self-escalation: trace reasoning output in logs
+                if (_thinking_state is not None 
+                        and _thinking_state.active 
+                        and final_response):
+                    try:
+                        from agent.self_escalation import log_reasoning_trace
+                        log_reasoning_trace(final_response, _thinking_state)
+                    except Exception:
+                        pass
+                
+                # Self-escalation: reset for next user turn
+                if _thinking_state is not None:
+                    _thinking_state.reset()
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery

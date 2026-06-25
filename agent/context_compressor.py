@@ -570,7 +570,13 @@ def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) ->
             code_preview += "..."
         return f"[execute_code] `{code_preview}` ({line_count} lines output)"
 
-    if tool_name in {"skill_view", "skills_list", "skill_manage"}:
+    if tool_name == "skill_view":
+        name = args.get("name", "?")
+        if content_len > 5000:
+            return f"[skill_view] name={name} ({content_len:,} chars) [SKILL_PRUNED: content lost in compression; reload with skill_view(name='{name}')]"
+        return f"[skill_view] name={name} ({content_len:,} chars)"
+
+    if tool_name in {"skills_list", "skill_manage"}:
         name = args.get("name", "?")
         return f"[{tool_name}] name={name} ({content_len:,} chars)"
 
@@ -986,6 +992,167 @@ class ContextCompressor(ContextEngine):
     # ------------------------------------------------------------------
     # Tool output pruning (cheap pre-pass, no LLM call)
     # ------------------------------------------------------------------
+
+
+    # ------------------------------------------------------------------
+    # Pre-compression: prune stale skill_view results
+    # ------------------------------------------------------------------
+
+    def _prune_stale_skill_views(
+        self, messages: List[Dict[str, Any]], protect_tail_count: int,
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Prune skill_view results whose skills are no longer relevant.
+
+        Heuristic v2 (no LLM needed, more aggressive):
+        - Collect all skill_view results >10000 chars (not already pruned)
+        - Count ALL skill_view(name=...) calls across entire history
+        - Skills called only ONCE = stale (single-use, prunable)
+        - Skills called in the last 5 messages = actively used (protected)
+        - Skills called 2+ times = protected (reused)
+
+        Only prunes the tool_result content -- replaces it with a
+        [SKILL_PRUNED] placeholder. Preserves the tool_call (so the
+        history remains coherent).
+
+        Returns (pruned_messages, pruned_count).
+
+        This runs BEFORE _prune_old_tool_results (Phase 1) so that
+        the skill content does not contaminate the summariser input.
+        """
+        if not messages:
+            return messages, 0
+
+        # Pre-pass uses a smaller tail window than protect_tail_count.
+        # protect_tail_count=20 is for the full summariser; for pre-pass
+        # we only care if the skill was used in the very recent context.
+        prepass_tail = min(protect_tail_count, 5)
+
+        # Build index: tool_call_id -> (tool_name, arguments_json)
+        call_id_to_tool: Dict[str, tuple] = {}
+        for msg in messages:
+            if msg.get("role") == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    if isinstance(tc, dict):
+                        cid = tc.get("id", "")
+                        fn = tc.get("function", {})
+                        call_id_to_tool[cid] = (
+                            fn.get("name", "unknown"),
+                            fn.get("arguments", ""),
+                        )
+                    else:
+                        cid = getattr(tc, "id", "") or ""
+                        fn = getattr(tc, "function", None)
+                        name = getattr(fn, "name", "unknown") if fn else "unknown"
+                        args_str = getattr(fn, "arguments", "") if fn else ""
+                        call_id_to_tool[cid] = (name, args_str)
+
+        # Count skill_view calls across entire history + identify recent
+        skill_call_count: Dict[str, int] = {}
+        skill_recent_calls: set = set()
+        skill_mentioned_in_user_messages: set = set()
+        total = len(messages)
+        tail_start = max(0, total - prepass_tail)
+        # Gather user message texts from recent context for mention checking
+        recent_user_texts: list[str] = []
+        for i, msg in enumerate(messages):
+            if msg.get("role") != "user":
+                continue
+            if i < tail_start:
+                continue
+            cont = msg.get("content", "")
+            if isinstance(cont, str):
+                recent_user_texts.append(cont.lower())
+
+        for i, msg in enumerate(messages):
+            if msg.get("role") != "assistant":
+                continue
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                args_str = fn.get("arguments", "") if isinstance(fn, dict) else ""
+                if args_str and isinstance(args_str, str):
+                    try:
+                        args = json.loads(args_str)
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+                    tool_name = fn.get("name", "")
+                    if tool_name == "skill_view":
+                        name = args.get("name", "")
+                        if name:
+                            skill_call_count[name.lower()] = skill_call_count.get(name.lower(), 0) + 1
+                            if i >= tail_start:
+                                skill_recent_calls.add(name.lower())
+                            # Check if skill name is mentioned in recent user messages
+                            for user_text in recent_user_texts:
+                                if name.lower() in user_text:
+                                    skill_mentioned_in_user_messages.add(name.lower())
+                                    break
+
+        # Collect skill_view results >10000 chars (not already pruned)
+        skill_results: Dict[str, list] = {}
+        for i, msg in enumerate(messages):
+            if msg.get("role") != "tool":
+                continue
+            cont = msg.get("content", "")
+            if not isinstance(cont, str):
+                continue
+            if len(cont) < 10000:
+                continue
+            if "SKILL_PRUNED" in cont or cont.startswith("[skill_view]"):
+                continue
+            call_id = msg.get("tool_call_id", "")
+            tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+            if tool_name != "skill_view":
+                continue
+            try:
+                args = json.loads(tool_args) if tool_args else {}
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+            skill_name = args.get("name", "unknown")
+            skill_results.setdefault(skill_name, []).append((i, cont))
+
+        if not skill_results:
+            return messages, 0
+
+        # Stale = single-use skill NOT in recent tail.
+        # Protected = called 2+ times OR in last 5 messages.
+        stale_skills = []
+        for skill_name, results in skill_results.items():
+            name_lower = skill_name.lower()
+            if name_lower in skill_recent_calls:
+                continue  # Actively used in recent context
+            if skill_call_count.get(name_lower, 0) >= 2:
+                continue  # Reused skill, likely still relevant
+            if name_lower in skill_mentioned_in_user_messages:
+                continue  # Skill name mentioned in recent user messages
+            stale_skills.append((skill_name, results))
+
+        if not stale_skills:
+            return messages, 0
+
+        # Apply pruning
+        result = [m.copy() for m in messages]
+        pruned = 0
+        for skill_name, results in stale_skills:
+            for idx, original_content in results:
+                placeholder = (
+                    f"[skill_view] name={skill_name} "
+                    f"({len(original_content):,} chars) "
+                    f"[SKILL_PRUNED: content lost in compression; "
+                    f"reload with skill_view(name='{skill_name}')]"
+                )
+                result[idx] = {**result[idx], "content": placeholder}
+                pruned += 1
+
+        if pruned and not self.quiet_mode:
+            logger.info(
+                "Pre-pass v2: pruned %d single-use skill(s). "
+                "Protected: recent=%s, reused=%d skills",
+                pruned,
+                sorted(skill_recent_calls),
+                sum(1 for s in skill_call_count if skill_call_count[s] >= 2),
+            )
+
+        return result, pruned
 
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
@@ -1483,6 +1650,19 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         summary_budget = self._compute_summary_budget(turns_to_summarize)
         content_to_summarize = self._serialize_for_summary(turns_to_summarize)
 
+        # P2: Extract [SKILL_PRUNED] markers so the summarizer can't dilute them.
+        # The LLM summarizer paraphrases everything it receives — including our
+        # [SKILL_PRUNED] placeholders — turning them into vague prose like
+        # "some skills were loaded".  Preserve them by extracting before the LLM
+        # call and re-injecting after.  Fixes #32106 (Ghost Skill — summary loss).
+        _pruned_skill_names: list[str] = []
+        for m in re.finditer(
+            r"\[SKILL_PRUNED:.*?reload with skill_view\(name='([^']+)'\)",
+            content_to_summarize,
+        ):
+            if m.group(1) not in _pruned_skill_names:
+                _pruned_skill_names.append(m.group(1))
+
         # Current date for temporal anchoring (see ## Temporal Anchoring below).
         # Date-only granularity matches system_prompt.py:337 (PR #20451) and the
         # user's configured timezone via hermes_time.now(). The compaction summary
@@ -1603,6 +1783,11 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
 
+## Pruned Skills
+[If any [SKILL_PRUNED: ...reload with skill_view(...)] markers appear in the input,
+repeat each one verbatim here. Do NOT paraphrase, summarize, or describe them —
+copy the exact text. This is critical for the system Skill Safety Rule.]
+
 Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 {_temporal_anchoring_rule}
 Write only the summary body. Do not include any preamble or prefix."""
@@ -1689,6 +1874,35 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
+            # P2: Re-inject [SKILL_PRUNED] markers the LLM may have dropped.
+            # Even with prompt instructions, LLMs paraphrase verbatim markers.
+            # Defensive: append canonical markers so the system Skill Safety Rule
+            # can detect them.  Fixes #32106 (Ghost Skill — summary loss).
+            if _pruned_skill_names:
+                # The P1 Skill Safety Rule only triggers on [SKILL_PRUNED].
+                # Merely mentioning a skill name is not enough — the marker
+                # must survive.  Re-inject if the canonical marker is absent.
+                if "[SKILL_PRUNED]" not in summary:
+                    _ps = []
+                    for sn in _pruned_skill_names:
+                        _ps.append(
+                            f"[SKILL_PRUNED: content lost in compression; "
+                            f"reload with skill_view(name='{sn}')"
+                        )
+                    # Dedup note: across multiple compactions, the same skill
+                    # may appear as [SKILL_PRUNED] in head/tail/summary.
+                    # One reload is enough — the skill stays in context.
+                    summary += "\n## Pruned Skills\n" + "\n".join(_ps)
+                    summary += (
+                        "\n\n**Note:** The same skill may appear as [SKILL_PRUNED] "
+                        "multiple times across this summary and the protected "
+                        "messages above/below (successive compactions). "
+                        "Reloading a skill **once** is sufficient — it remains "
+                        "in context for the rest of the session. "
+                        "After reloading, **ignore any remaining [SKILL_PRUNED] markers "
+                        "for that skill** — they are historical artifacts from previous "
+                        "compactions and do not need further action."
+                    )
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
@@ -2419,6 +2633,40 @@ This compaction should PRIORITISE preserving all information related to the focu
             return messages
 
         display_tokens = current_tokens if current_tokens else self.last_prompt_tokens or estimate_messages_tokens_rough(messages)
+
+        # Pre-compression: prune stale skill_view results
+        # This runs BEFORE Phase 1 so stale skill content doesn't
+        # contaminate the summariser. If pruning brings tokens below
+        # threshold, we can skip the full compression entirely.
+        messages, skill_pruned = self._prune_stale_skill_views(
+            messages, protect_tail_count=self.protect_last_n,
+        )
+        if skill_pruned and not self.quiet_mode:
+            logger.info("Pre-compression: pruned %d stale skill(s)", skill_pruned)
+
+        # Check if pruning was enough — recalculate tokens after skill removal
+        post_prune_tokens = None
+        if skill_pruned and display_tokens:
+            try:
+                post_prune_tokens = estimate_messages_tokens_rough(messages)
+                # Add ~10% overhead for tool schemas (same as should_compress)
+                post_prune_with_schemas = int(post_prune_tokens * 1.1)
+                if post_prune_with_schemas < self.threshold_tokens and not force:
+                    logger.info(
+                        "Post-skill-pruning tokens (~%d) below threshold (%d) "
+                        "— skipping full compression. pruned=%d skills",
+                        post_prune_with_schemas, self.threshold_tokens, skill_pruned,
+                    )
+                    # Still run Phase 1 on remaining large tool results
+                    # (dedup, image strip), but we'll skip the summariser
+                    messages, _ = self._prune_old_tool_results(
+                        messages, protect_tail_count=self.protect_last_n,
+                        protect_tail_tokens=self.tail_token_budget,
+                    )
+                    return messages
+            except Exception as _e:
+                if not self.quiet_mode:
+                    logger.debug("Post-prune token recalc failed: %s", _e)
 
         # Phase 1: Prune old tool results (cheap, no LLM call)
         messages, pruned_count = self._prune_old_tool_results(

@@ -266,8 +266,34 @@ _SKILL_REVIEW_PROMPT = (
     "command, config step, env var to set) under an existing setup or "
     "troubleshooting skill — never 'this tool does not work' as a "
     "standalone constraint.\n\n"
-    "'Nothing to save.' is a real option but should NOT be the "
-    "default. If the session ran smoothly with no corrections and "
+    "=== Skill relevance audit (context pruning) ===\n\n"
+    "In addition to updating the library, evaluate which currently-loaded "
+    "skills are still relevant given how the conversation has evolved.\n\n"
+    "Look at every skill that was loaded earlier in the conversation via "
+    "skill_view. Consider the current topic of discussion — has the "
+    "conversation moved on from the domain that skill covers? If the skill "
+    "was loaded many turns ago and the conversation has clearly shifted "
+    "to a different subject, mark it as obsolete for pruning.\n\n"
+    "Rules:\n"
+    "  • Only recommend pruning skills that were loaded significantly "
+    "earlier in the conversation (5+ turns ago).\n"
+    "  • Do NOT recommend pruning skills still actively referenced by "
+    "the user or used in recent tool calls.\n"
+    "  • Do NOT recommend pruning skills whose domain is still relevant "
+    "to the current task even if not called recently.\n"
+    "  • Bundled skills and hub-installed skills should generally be "
+    "kept (they are part of the core knowledge base).\n\n"
+    "After your review, output a JSON block at the end of your reply:\n\n"
+    "```json\n"
+    "{\n"
+    "  \"prune\": [\"skill-name-1\", \"skill-name-2\"],\n"
+    "  \"keep\": [\"skill-name-3\"],\n"
+    "  \"reason\": \"Brief explanation of pruning decisions\"\n"
+    "}\n"
+    "```\n\n"
+    "If all skills remain relevant, output `\"prune\": []`.\n\n"
+    "'Nothing to save.' is a real option but should NOT be "
+    "the default. If the session ran smoothly with no corrections and "
     "produced no new technique, just say 'Nothing to save.' and stop. "
     "Otherwise, act."
 )
@@ -352,6 +378,20 @@ _COMBINED_REVIEW_PROMPT = (
     "command, config step, env var to set) under an existing setup or "
     "troubleshooting skill — never 'this tool does not work' as a "
     "standalone constraint.\n\n"
+    "=== Skill relevance audit (context pruning) ===\n\n"
+    "Evaluate which currently-loaded skills are still relevant given how "
+    "the conversation has evolved. Look at skills loaded earlier via "
+    "skill_view — has the conversation moved on from their domain? "
+    "If a skill was loaded 5+ turns ago and the topic clearly shifted, "
+    "mark it for pruning.\n\n"
+    "After your review, output a JSON block at the end:\n\n"
+    "```json\n"
+    "{\n"
+    "  \"prune\": [\"skill-name\"],\n"
+    "  \"keep\": [\"skill-name\"],\n"
+    "  \"reason\": \"Brief explanation\"\n"
+    "}\n"
+    "```\n\n"
     "Act on whichever of the two dimensions has real signal. If "
     "genuinely nothing stands out on either, say 'Nothing to save.' "
     "and stop — but don't reach for that conclusion as a default."
@@ -790,6 +830,33 @@ def _run_review_in_thread(
             notification_mode=getattr(agent, "memory_notifications", "on"),
         )
 
+        # Extract and apply skill-pruning verdict from the review agent's
+        # structured JSON output.  The verdict names skills to prune based
+        # on semantic relevance — the pre-pass v2 in the compressor still
+        # handles mechanical pruning; this is the sémantic layer.
+        try:
+            from agent.background_review import (
+                _extract_skill_prune_verdict,
+                apply_skill_prune_verdict,
+            )
+            skills_to_prune = _extract_skill_prune_verdict(review_messages)
+            if skills_to_prune:
+                pruned_count = apply_skill_prune_verdict(
+                    agent, messages_snapshot, skills_to_prune,
+                )
+                if pruned_count:
+                    prune_names = ", ".join(
+                        s[:24] for s in skills_to_prune[:3]
+                    )
+                    extra_note = (
+                        f"🧹 Context pruning: removed {pruned_count} "
+                        f"obsolete skill(s) ({prune_names}"
+                        f"{'…' if len(skills_to_prune) > 3 else ''})"
+                    )
+                    actions.append(extra_note)
+        except Exception:
+            pass  # Pruning verdict is best-effort
+
         if actions:
             summary = " · ".join(dict.fromkeys(actions))
             agent._safe_print(
@@ -864,11 +931,118 @@ def spawn_background_review_thread(
     return _target, prompt
 
 
+def _extract_skill_prune_verdict(
+    review_messages: List[Dict],
+) -> List[str]:
+    """Extract the skill-pruning verdict from the review agent's final reply.
+
+    Scans the last assistant message for a JSON block containing ``"prune"``
+    and returns the list of skill names to prune.
+
+    Returns an empty list if no verdict was found.
+    """
+    for msg in reversed(review_messages):
+        if msg.get("role") != "assistant":
+            continue
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            continue
+        # Look for a JSON block (```json ... ``` or bare JSON)
+        import re as _re
+        json_blocks = _re.findall(r'```(?:json)?\s*\n?(.*?)\n?```', content, _re.DOTALL)
+        if not json_blocks:
+            json_blocks = [content]  # try parsing the whole content as bare JSON
+        for block in json_blocks:
+            try:
+                data = json.loads(block.strip())
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(data, dict) and isinstance(data.get("prune"), list):
+                return [str(n) for n in data["prune"] if isinstance(n, str)]
+    return []
+
+
+def apply_skill_prune_verdict(
+    agent: Any,
+    messages: List[Dict[str, Any]],
+    skills_to_prune: List[str],
+) -> int:
+    """Replace in-session skill_view results with [SKILL_PRUNED] placeholders.
+
+    Walks the messages list and replaces the ``content`` of tool_result
+    messages that correspond to ``skill_view(name=<skill>)`` calls for any
+    ``<skill>`` in ``skills_to_prune``.  Only prunes results >10000 chars
+    to avoid touching already-truncated placeholders.
+
+    Returns the number of messages pruned.
+    """
+    if not skills_to_prune:
+        return 0
+
+    prune_lower = {s.lower() for s in skills_to_prune}
+
+    # Map tool_call_id -> (tool_name, arguments_json)
+    call_id_to_tool: Dict[str, tuple] = {}
+    for msg in messages:
+        if msg.get("role") == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                if isinstance(tc, dict):
+                    cid = tc.get("id", "")
+                    fn = tc.get("function", {})
+                    call_id_to_tool[cid] = (
+                        fn.get("name", "unknown"),
+                        fn.get("arguments", ""),
+                    )
+                else:
+                    cid = getattr(tc, "id", "") or ""
+                    fn = getattr(tc, "function", None)
+                    name = getattr(fn, "name", "unknown") if fn else "unknown"
+                    args_str = getattr(fn, "arguments", "") if fn else ""
+                    call_id_to_tool[cid] = (name, args_str)
+
+    pruned = 0
+    for msg in messages:
+        if msg.get("role") != "tool":
+            continue
+        cont = msg.get("content", "")
+        if not isinstance(cont, str) or len(cont) < 10000:
+            continue
+        if "[SKILL_PRUNED" in cont:
+            continue
+        call_id = msg.get("tool_call_id", "")
+        tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+        if tool_name != "skill_view":
+            continue
+        try:
+            args = json.loads(tool_args) if tool_args else {}
+        except (json.JSONDecodeError, TypeError):
+            args = {}
+        skill_name = args.get("name", "unknown")
+        if skill_name.lower() in prune_lower:
+            placeholder = (
+                f"[skill_view] name={skill_name} "
+                f"({len(cont):,} chars) "
+                f"[SKILL_PRUNED: content lost in compression; "
+                f"reload with skill_view(name='{skill_name}')]"
+            )
+            msg["content"] = placeholder
+            pruned += 1
+            if not getattr(agent, "quiet_mode", False):
+                logger.info(
+                    "Background review: pruned skill '%s' (%d chars) via relevance audit",
+                    skill_name,
+                    len(cont),
+                )
+
+    return pruned
+
+
 __all__ = [
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",
     "spawn_background_review_thread",
     "summarize_background_review_actions",
-    "build_memory_write_metadata",
+    "_extract_skill_prune_verdict",
+    "apply_skill_prune_verdict",
 ]

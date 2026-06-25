@@ -60,19 +60,15 @@ def test_get_codex_model_ids_falls_back_to_curated_defaults(tmp_path, monkeypatc
 def test_get_codex_model_ids_adds_forward_compat_models_from_templates(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.codex_models._fetch_models_from_api",
-        lambda access_token: ["gpt-5.3-codex"],
+        lambda access_token: ["gpt-5.5"],
     )
 
     models = get_codex_model_ids(access_token="codex-access-token")
 
-    # When live discovery only returns gpt-5.3-codex, forward-compat synthesis
-    # should surface gpt-5.5, gpt-5.4, gpt-5.4-mini, and gpt-5.3-codex-spark
-    # (each is templated off gpt-5.3-codex).
+    # When live discovery only returns gpt-5.5, forward-compat synthesis
+    # should surface gpt-5.3-codex-spark (templated off gpt-5.5).
     assert models == [
-        "gpt-5.3-codex",
         "gpt-5.5",
-        "gpt-5.4-mini",
-        "gpt-5.4",
         "gpt-5.3-codex-spark",
     ]
 

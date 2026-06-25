@@ -1278,6 +1278,16 @@ def switch_model(
     # Override rejection if model is in the user's saved provider config.
     # API /v1/models may not list cloud/aliased models even though the server supports them.
     if not validation.get("accepted"):
+        if validation.get("hard_reject"):
+            msg = validation.get("message", "Invalid model")
+            return ModelSwitchResult(
+                success=False,
+                new_model=new_model,
+                target_provider=target_provider,
+                provider_label=provider_label,
+                is_global=is_global,
+                error_message=msg,
+            )
         override = False
         if user_providers:
             # user_providers is a dict: {provider_slug: config_dict}

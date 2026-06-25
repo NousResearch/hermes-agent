@@ -303,6 +303,14 @@ DEFAULT_CONTEXT_LENGTHS = {
     # usable context window for Composer 2.5 on Grok Build (SuperGrok /
     # Premium+); /v1/responses additionally enforces a ~262144 input+output
     # budget, but the usable context (what we track here) is 200k.
+    # Grok Imagine models are media-generation backends, not viable main chat
+    # models. Keep their real small context windows here so startup/persisted
+    # config checks do not fall through to the generic "grok" chat fallback.
+    "grok-imagine-video-1.5-preview": 1024,
+    "grok-imagine-video-1.5-2026-05-30": 1024,
+    "grok-imagine-video": 1024,
+    "grok-imagine-image-quality": 8000,
+    "grok-imagine-image": 8000,
     "grok-composer": 200000,    # grok-composer-2.5-fast (Grok Build CLI)
     "grok-build-latest": 500000,  # alias of grok-4.5 (early access)
     "grok-build": 256000,       # grok-build-0.1

@@ -1155,6 +1155,34 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return False
 
+    def _content_is_pipe_table_primary(self, content: str) -> bool:
+        """True when pipe tables are the only rich construct in *content*.
+
+        Tables are auto-routed to ``sendRichMessage`` even when the full
+        ``rich_messages`` opt-in is off — MarkdownV2 has no table syntax and
+        the legacy path rewrites them into bullet lists, which reads like a
+        regression when users enable Telegram Topics and expect native tables.
+        Task lists, ``<details>``, and block math still require the full opt-in.
+        """
+        if not content or not any(
+            _TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()
+        ):
+            return False
+        if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
+            return False
+        if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
+            return False
+        if "$$" in content:
+            return False
+        return True
+
+    def _rich_delivery_enabled(self, content: str) -> bool:
+        """Whether rich delivery is allowed for this payload."""
+        return bool(
+            getattr(self, "_rich_messages_enabled", True)
+            or self._content_is_pipe_table_primary(content)
+        )
+
     def _rich_eligible(self, content: str) -> bool:
         """Capability/content eligibility for rich, ignoring ``expect_edits``.
 
@@ -1165,7 +1193,7 @@ class TelegramAdapter(BasePlatformAdapter):
         FINAL edit should still upgrade to rich when the content warrants it.
         """
         return bool(
-            getattr(self, "_rich_messages_enabled", True)
+            self._rich_delivery_enabled(content)
             and not getattr(self, "_rich_send_disabled", False)
             and content
             and content.strip()
@@ -1302,10 +1330,6 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             should_thread = self._should_thread_reply(reply_to_source, 0)
         reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
-        if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
-            # Refusing to send outside the requested DM topic — defer to the
-            # legacy path, which returns the canonical fail-loud SendResult.
-            return None
         thread_kwargs = self._thread_kwargs_for_send(
             chat_id,
             thread_id,
@@ -1313,6 +1337,13 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_id,
             reply_to_mode=self._reply_to_mode,
         )
+        if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
+            # Refusing to send outside the requested DM topic — defer to the
+            # legacy path, which returns the canonical fail-loud SendResult.
+            # Exception: synthetic/resumed topic sends that route via
+            # ``direct_messages_topic_id`` do not need a reply anchor.
+            if not thread_kwargs.get("direct_messages_topic_id"):
+                return None
         return reply_to_id, thread_kwargs
 
     async def _try_send_rich(
@@ -1426,6 +1457,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[SendResult]:
         """Edit an existing message in place as a rich message (Bot API 10.1).
 
@@ -1445,6 +1477,15 @@ class TelegramAdapter(BasePlatformAdapter):
             "message_id": int(message_id),
             "rich_message": self._rich_message_payload(content),
         }
+        thread_id = self._metadata_thread_id(metadata)
+        thread_kwargs = self._thread_kwargs_for_send(
+            chat_id,
+            thread_id,
+            metadata,
+            reply_to_message_id=None,
+            reply_to_mode=self._reply_to_mode,
+        )
+        payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         if getattr(self, "_disable_link_previews", False):
             payload["link_preview_options"] = {"is_disabled": True}
         try:
@@ -2969,7 +3010,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # chunks.  Falls back to the legacy edit path (overflow split included)
         # on capability/permanent rejection.
         if finalize and self._rich_eligible(content):
-            rich_result = await self._try_edit_rich(chat_id, message_id, content)
+            rich_result = await self._try_edit_rich(
+                chat_id, message_id, content, metadata=metadata,
+            )
             if rich_result is not None:
                 return rich_result
 

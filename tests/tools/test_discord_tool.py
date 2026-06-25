@@ -481,21 +481,37 @@ class TestPinUnpinDelete:
 # ---------------------------------------------------------------------------
 
 class TestCreateThread:
+    """create_thread discriminates forum vs text by CHANNEL TYPE.
+
+    For a non-anchored create_thread the handler first GETs the channel to
+    learn its type (15 == GUILD_FORUM), then POSTs the appropriate body. So
+    these tests drive ``_discord_request`` with a two-call side_effect:
+    [channel object, created thread].
+    """
+
     @patch("tools.discord_tool._discord_request")
     def test_create_standalone_thread(self, mock_req, monkeypatch):
+        """Non-forum channel (type 0) → text-thread path (type 11, no message)."""
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
-        mock_req.return_value = {"id": "800", "name": "New Thread"}
+        mock_req.side_effect = [
+            {"id": "11", "type": 0},               # GET channel
+            {"id": "800", "name": "New Thread"},   # POST thread
+        ]
         result = json.loads(discord_core(action="create_thread", channel_id="11", name="New Thread"))
         assert result["success"] is True
         assert result["thread_id"] == "800"
-        # Verify the API call
-        mock_req.assert_called_once_with(
-            "POST", "/channels/11/threads", "test-token",
-            body={"name": "New Thread", "auto_archive_duration": 1440, "type": 11},
-        )
+        # First call inspects the channel type.
+        assert mock_req.call_args_list[0].args == ("GET", "/channels/11", "test-token")
+        # Second call creates the text thread.
+        post_call = mock_req.call_args_list[1]
+        assert post_call.args == ("POST", "/channels/11/threads", "test-token")
+        assert post_call.kwargs["body"] == {
+            "name": "New Thread", "auto_archive_duration": 1440, "type": 11,
+        }
 
     @patch("tools.discord_tool._discord_request")
     def test_create_thread_from_message(self, mock_req, monkeypatch):
+        """Anchored create (message_id) is unambiguous — no channel pre-fetch."""
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
         mock_req.return_value = {"id": "801", "name": "Discussion"}
         result = json.loads(discord_core(
@@ -506,6 +522,162 @@ class TestCreateThread:
             "POST", "/channels/11/messages/1001/threads", "test-token",
             body={"name": "Discussion", "auto_archive_duration": 1440},
         )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_forum_post_with_applied_tags(self, mock_req, monkeypatch):
+        """Forum channel (type 15) with tags → message-object body + applied_tags,
+        and NO type:11 field."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "55", "type": 15},              # GET channel → forum
+            {"id": "900", "name": "Bug report"},   # POST thread
+        ]
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="55", name="Bug report",
+            applied_tags=["111", "222"], content="It broke",
+        ))
+        assert result["success"] is True
+        assert result["thread_id"] == "900"
+        post_call = mock_req.call_args_list[1]
+        assert post_call.args == ("POST", "/channels/55/threads", "test-token")
+        assert post_call.kwargs["body"] == {
+            "name": "Bug report",
+            "auto_archive_duration": 1440,
+            "message": {"content": "It broke"},
+            "applied_tags": ["111", "222"],
+        }
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_forum_post_without_tags(self, mock_req, monkeypatch):
+        """Regression: a TAGLESS forum post (type 15, no applied_tags) must
+        still use the message-object endpoint — a forum REJECTS the text-style
+        'Start Thread' call, so this is the previously-broken case. Content
+        falls back to the thread name; no applied_tags key, no type:11."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "55", "type": 15},          # GET channel → forum
+            {"id": "910", "name": "Topic"},    # POST thread
+        ]
+        result = json.loads(discord_core(
+            action="create_thread", channel_id="55", name="Topic",
+        ))
+        assert result["success"] is True
+        assert result["thread_id"] == "910"
+        body = mock_req.call_args_list[1].kwargs["body"]
+        assert body["message"] == {"content": "Topic"}   # defaulted to name
+        assert "applied_tags" not in body               # tags optional, none given
+        assert "type" not in body                       # not a text thread
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_forum_post_defaults_content_to_name(self, mock_req, monkeypatch):
+        """Forum post with tags but no content → content falls back to name."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "55", "type": 15},          # GET channel → forum
+            {"id": "901", "name": "Topic"},    # POST thread
+        ]
+        discord_core(
+            action="create_thread", channel_id="55", name="Topic",
+            applied_tags=["111"],
+        )
+        body = mock_req.call_args_list[1].kwargs["body"]
+        assert body["message"] == {"content": "Topic"}
+        assert body["applied_tags"] == ["111"]
+        assert "type" not in body
+
+    @patch("tools.discord_tool._discord_request")
+    def test_create_thread_text_channel_ignores_tags(self, mock_req, monkeypatch):
+        """Regression guard: a non-forum channel (type 0) always takes the text
+        path (type 11, no message object) — even if applied_tags is passed."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "11", "type": 0},           # GET channel → text
+            {"id": "802", "name": "Plain"},    # POST thread
+        ]
+        discord_core(action="create_thread", channel_id="11", name="Plain")
+        post_call = mock_req.call_args_list[1]
+        assert post_call.args == ("POST", "/channels/11/threads", "test-token")
+        body = post_call.kwargs["body"]
+        assert body == {"name": "Plain", "auto_archive_duration": 1440, "type": 11}
+        assert "message" not in body
+        assert "applied_tags" not in body
+
+
+# ---------------------------------------------------------------------------
+# Action: list_forum_tags
+# ---------------------------------------------------------------------------
+
+class TestListForumTags:
+    @patch("tools.discord_tool._discord_request")
+    def test_list_forum_tags(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {
+            "id": "55",
+            "type": 15,
+            "available_tags": [
+                {"id": "111", "name": "bug", "moderated": False, "emoji_id": None, "emoji_name": "🐛"},
+                {"id": "222", "name": "staff-only", "moderated": True, "emoji_id": "999", "emoji_name": None},
+            ],
+        }
+        result = json.loads(discord_core(action="list_forum_tags", channel_id="55"))
+        assert result["success"] is True
+        assert result["channel_id"] == "55"
+        assert result["available_tags"] == [
+            {"id": "111", "name": "bug", "emoji": "🐛", "moderated": False},
+            {"id": "222", "name": "staff-only", "emoji": "999", "moderated": True},
+        ]
+        mock_req.assert_called_once_with("GET", "/channels/55", "test-token")
+
+    @patch("tools.discord_tool._discord_request")
+    def test_list_forum_tags_no_tags(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "55", "type": 15}  # available_tags absent
+        result = json.loads(discord_core(action="list_forum_tags", channel_id="55"))
+        assert result["available_tags"] == []
+
+
+# ---------------------------------------------------------------------------
+# Action: set_thread_tags
+# ---------------------------------------------------------------------------
+
+class TestSetThreadTags:
+    @patch("tools.discord_tool._discord_request")
+    def test_set_thread_tags(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "900", "applied_tags": ["111", "222"]}
+        result = json.loads(discord_admin_handler(
+            action="set_thread_tags", channel_id="900", applied_tags=["111", "222"],
+        ))
+        assert result["success"] is True
+        assert result["thread_id"] == "900"
+        assert result["applied_tags"] == ["111", "222"]
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/900", "test-token",
+            body={"applied_tags": ["111", "222"]},
+        )
+
+    @patch("tools.discord_tool._discord_request")
+    def test_set_thread_tags_empty_clears(self, mock_req, monkeypatch):
+        """An empty applied_tags list is a valid 'clear all tags' request and
+        must not be rejected as a missing param."""
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = {"id": "900", "applied_tags": []}
+        result = json.loads(discord_admin_handler(
+            action="set_thread_tags", channel_id="900", applied_tags=[],
+        ))
+        assert "error" not in result
+        assert result["applied_tags"] == []
+        mock_req.assert_called_once_with(
+            "PATCH", "/channels/900", "test-token", body={"applied_tags": []},
+        )
+
+    def test_set_thread_tags_requires_channel_id(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_admin_handler(
+            action="set_thread_tags", applied_tags=["1"],
+        ))
+        assert "error" in result
+        assert "channel_id" in result["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -593,15 +765,19 @@ class TestRegistration:
         from tools.registry import registry
         entry = registry._tools["discord"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == {"fetch_messages", "search_members", "create_thread"}
+        assert actions == {
+            "fetch_messages", "search_members", "create_thread", "list_forum_tags",
+        }
+        assert actions == set(_CORE_ACTIONS.keys())
 
     def test_admin_schema_actions(self):
         """Admin static schema should list only admin actions."""
         from tools.registry import registry
         entry = registry._tools["discord_admin"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread"}
+        expected_admin = set(_ACTIONS.keys()) - set(_CORE_ACTIONS.keys())
         assert actions == expected_admin
+        assert "set_thread_tags" in actions
 
     def test_all_actions_covered(self):
         """Core + admin actions should cover all known actions."""
@@ -646,6 +822,28 @@ class TestRegistration:
         assert callable(entry.handler)
         entry_admin = registry._tools["discord_admin"]
         assert callable(entry_admin.handler)
+
+    def test_forum_tag_actions_in_correct_schemas(self):
+        """list_forum_tags is read-only → CORE; set_thread_tags mutates → ADMIN."""
+        from tools.registry import registry
+        core_actions = set(
+            registry._tools["discord"].schema["parameters"]["properties"]["action"]["enum"]
+        )
+        admin_actions = set(
+            registry._tools["discord_admin"].schema["parameters"]["properties"]["action"]["enum"]
+        )
+        assert "list_forum_tags" in core_actions
+        assert "list_forum_tags" not in admin_actions
+        assert "set_thread_tags" in admin_actions
+        assert "set_thread_tags" not in core_actions
+
+    def test_applied_tags_and_content_properties_present(self):
+        from tools.registry import registry
+        for tool_name in ("discord", "discord_admin"):
+            props = registry._tools[tool_name].schema["parameters"]["properties"]
+            assert props["applied_tags"]["type"] == "array"
+            assert props["applied_tags"]["items"] == {"type": "string"}
+            assert props["content"]["type"] == "string"
 
 
 # ---------------------------------------------------------------------------

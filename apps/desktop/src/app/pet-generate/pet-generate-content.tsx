@@ -1,10 +1,11 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { SETTINGS_ROUTE } from '@/app/routes'
 import { Alert, AlertDescription } from '@/components/ui/alert'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { GenerateButton } from '@/components/ui/generate-button'
 import { Input } from '@/components/ui/input'
@@ -20,6 +21,7 @@ import {
   $petGenPreview,
   $petGenRefImage,
   $petGenRefName,
+  $petGenRemixConfirmed,
   $petGenSelected,
   $petGenStage,
   $petGenStatus,
@@ -31,7 +33,8 @@ import {
   discardDrafts,
   discardHatched,
   generateDrafts,
-  hatchSelected
+  hatchSelected,
+  markRemixConfirmed
 } from '@/store/pet-generate'
 
 import { DraftGrid } from './components/draft-grid'
@@ -67,6 +70,9 @@ export function PetGenerateContent() {
   const refImage = useStore($petGenRefImage)
   const refName = useStore($petGenRefName)
   const fileRef = useRef<HTMLInputElement>(null)
+
+  // The draft awaiting the one-time "remix regenerates" confirmation.
+  const [remixPending, setRemixPending] = useState<{ dataUri: string } | null>(null)
 
   // Probe backend availability on open — and again whenever the content
   // remounts (e.g. after returning from the providers settings), so adding a
@@ -137,6 +143,29 @@ export function PetGenerateContent() {
   const runExample = (example: string) => {
     $petGenInput.set(example)
     void generateDrafts(requestGateway, { prompt: example })
+  }
+
+  // Branch a fresh draft round off an existing look by feeding it back in as the
+  // reference image. Keeps the user on step 2 with the same prompt, just grounded
+  // on the chosen draft.
+  const runRemix = (draft: { dataUri: string }) => {
+    void generateDrafts(requestGateway, { prompt: prompt.trim(), referenceImage: draft.dataUri })
+  }
+
+  // "Remix" affordance: regenerating is slow and replaces the current drafts, so
+  // warn once (then remember the acknowledgement) before kicking off the round.
+  const remixDraft = (draft: { dataUri: string }) => {
+    if (busy) {
+      return
+    }
+
+    if ($petGenRemixConfirmed.get()) {
+      runRemix(draft)
+
+      return
+    }
+
+    setRemixPending(draft)
   }
 
   // Hatch the selected draft. The user can pick one before the rest stream in —
@@ -283,11 +312,28 @@ export function PetGenerateContent() {
             hasDrafts={hasDrafts}
             onCancel={discardDrafts}
             onHatch={hatch}
+            onRemix={remixDraft}
             onSelect={index => $petGenSelected.set(index)}
             selected={selected}
           />
         )}
       </div>
+
+      <ConfirmDialog
+        confirmLabel={copy.remix}
+        description={copy.remixConfirmBody}
+        onClose={() => setRemixPending(null)}
+        onConfirm={() => {
+          const draft = remixPending
+          markRemixConfirmed()
+
+          if (draft) {
+            runRemix(draft)
+          }
+        }}
+        open={remixPending !== null}
+        title={copy.remixConfirmTitle}
+      />
     </>
   )
 }

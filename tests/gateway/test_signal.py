@@ -454,8 +454,8 @@ class TestSignalPhoneRedaction:
 # ---------------------------------------------------------------------------
 
 class TestSignalAuthorization:
-    def test_signal_in_allowlist_maps(self):
-        """Signal should be in the platform auth maps."""
+    @staticmethod
+    def _make_runner():
         from gateway.run import GatewayRunner
         from gateway.config import GatewayConfig
 
@@ -463,6 +463,26 @@ class TestSignalAuthorization:
         gw.config = GatewayConfig()
         gw.pairing_store = MagicMock()
         gw.pairing_store.is_approved.return_value = False
+        return gw
+
+    @staticmethod
+    def _group_source(group_id="group123", sender="+15559999999"):
+        """Mirror the source SignalAdapter builds for a group message:
+        chat_id is prefixed ``group:<id>`` while chat_id_alt holds the raw id."""
+        from gateway.session import SessionSource
+
+        return SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id=f"group:{group_id}",
+            chat_type="group",
+            user_id=sender,
+            user_name=sender,
+            chat_id_alt=group_id,
+        )
+
+    def test_signal_in_allowlist_maps(self):
+        """Signal should be in the platform auth maps."""
+        gw = self._make_runner()
 
         source = MagicMock()
         source.platform = Platform.SIGNAL
@@ -472,6 +492,38 @@ class TestSignalAuthorization:
         with patch.dict("os.environ", {}, clear=True):
             result = gw._is_user_authorized(source)
             assert result is False
+
+    def test_signal_group_authorized_by_group_allowlist(self):
+        """A group listed in SIGNAL_GROUP_ALLOWED_USERS authorizes its senders
+        even when they are not in SIGNAL_ALLOWED_USERS — parity with Telegram's
+        TELEGRAM_GROUP_ALLOWED_CHATS. The env var holds the raw group id, which
+        the adapter exposes via chat_id_alt (chat_id is ``group:<id>``)."""
+        gw = self._make_runner()
+        source = self._group_source(group_id="group123")
+
+        with patch.dict(
+            "os.environ", {"SIGNAL_GROUP_ALLOWED_USERS": "group123,group456"}, clear=True
+        ):
+            assert gw._is_user_authorized(source) is True
+
+    def test_signal_group_authorized_by_wildcard(self):
+        """SIGNAL_GROUP_ALLOWED_USERS='*' authorizes any group."""
+        gw = self._make_runner()
+        source = self._group_source(group_id="whatever-group")
+
+        with patch.dict("os.environ", {"SIGNAL_GROUP_ALLOWED_USERS": "*"}, clear=True):
+            assert gw._is_user_authorized(source) is True
+
+    def test_signal_group_not_in_allowlist_denied(self):
+        """A group absent from SIGNAL_GROUP_ALLOWED_USERS (and no other
+        allowlist) is not authorized — the fix must not fail open."""
+        gw = self._make_runner()
+        source = self._group_source(group_id="group999")
+
+        with patch.dict(
+            "os.environ", {"SIGNAL_GROUP_ALLOWED_USERS": "group123"}, clear=True
+        ):
+            assert gw._is_user_authorized(source) is False
 
 
 # ---------------------------------------------------------------------------

@@ -233,19 +233,21 @@ class GatewayAuthorizationMixin:
         user_id = source.user_id
 
         # Telegram (and similar) authorize entire group/forum/channel chats
-        # by chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS.
-        # That allowlist is chat-scoped, so it must work even when
-        # source.user_id is None — Telegram emits anonymous-admin posts,
-        # sender_chat traffic, and channel broadcasts with no `from_user`,
+        # by chat ID via TELEGRAM_GROUP_ALLOWED_CHATS / QQ_GROUP_ALLOWED_USERS /
+        # SIGNAL_GROUP_ALLOWED_USERS. That allowlist is chat-scoped, so it must
+        # work even when source.user_id is None — Telegram emits anonymous-admin
+        # posts, sender_chat traffic, and channel broadcasts with no `from_user`,
         # and an operator who explicitly listed the chat expects those to
         # be honored. Run this check before the no-user-id guard below so
         # documented behavior matches reality
         # (website/docs/reference/environment-variables.md,
-        # website/docs/user-guide/messaging/telegram.md).
+        # website/docs/user-guide/messaging/telegram.md,
+        # website/docs/user-guide/messaging/signal.md).
         if source.chat_type in {"group", "forum", "channel"} and source.chat_id:
             chat_allowlist_env = {
                 Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_CHATS",
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
+                Platform.SIGNAL: "SIGNAL_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
                 raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
@@ -255,7 +257,15 @@ class GatewayAuthorizationMixin:
                         for cid in raw_chat_allowlist.split(",")
                         if cid.strip()
                     }
-                    if "*" in allowed_group_ids or source.chat_id in allowed_group_ids:
+                    # Signal sets chat_id to "group:<id>" but keeps the raw
+                    # group id in chat_id_alt, and SIGNAL_GROUP_ALLOWED_USERS
+                    # lists those raw ids — so compare chat_id_alt too. Telegram
+                    # and QQBot leave chat_id_alt None, so this is a no-op for
+                    # them and their chat_id match is unchanged.
+                    candidate_chat_ids = {source.chat_id}
+                    if source.chat_id_alt:
+                        candidate_chat_ids.add(source.chat_id_alt)
+                    if "*" in allowed_group_ids or candidate_chat_ids & allowed_group_ids:
                         return True
 
         if not user_id:

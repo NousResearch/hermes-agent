@@ -1497,6 +1497,69 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     return due
 
 
+def prune_job_outputs(job_id: str, keep: int = 50) -> int:
+    """Remove all but the *keep* most recent output files for a cron job.
+
+    Output files are named ``<timestamp>.md`` by ``save_job_output`` and
+    sorted by their embedded UTC timestamp (descending).  Files beyond the
+    *keep* limit are deleted.  Zero-size or malformed timestamps sort last
+    so they are pruned first.
+
+    Pass ``keep=0`` to disable pruning entirely (keep all output files).
+
+    Returns:
+        Number of files deleted.
+    """
+    if keep <= 0:
+        # 0 or negative = no pruning (preserves historical behaviour).
+        return 0
+
+    try:
+        output_dir = _job_output_dir(job_id)
+    except ValueError:
+        logger.warning("prune_job_outputs: invalid job_id %r - skipping", job_id)
+        return 0
+
+    if not output_dir.is_dir():
+        return 0
+
+    try:
+        entries = sorted(
+            (
+                p
+                for p in output_dir.iterdir()
+                if p.is_file() and p.suffix == ".md" and not p.name.startswith(".")
+            ),
+            # Sort by the ISO-ish timestamp in filenames like
+            # ``2026-06-25_07-38-06.md`` descending, so the newest files
+            # come first.  Any file whose name does not start with a digit
+            # sorts last (lexicographic fallback) and is thus pruned first.
+            key=lambda p: p.stem if p.stem and p.stem[0].isdigit() else "0",
+            reverse=True,
+        )
+    except OSError:
+        return 0
+
+    if len(entries) <= keep:
+        return 0
+
+    to_remove = entries[keep:]
+    deleted = 0
+    for p in to_remove:
+        try:
+            p.unlink()
+            deleted += 1
+        except OSError as exc:
+            logger.warning("Failed to remove stale cron output %s: %s", p, exc)
+
+    if deleted:
+        logger.info(
+            "Pruned %d stale output file(s) for cron job %s (keep=%d)",
+            deleted, job_id, keep,
+        )
+    return deleted
+
+
 def save_job_output(job_id: str, output: str):
     """Save job output to file."""
     ensure_dirs()

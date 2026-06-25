@@ -236,7 +236,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, prune_job_outputs
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -2701,6 +2701,15 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         output_file = save_job_output(job["id"], output)
         if verbose:
             logger.info("Output saved to: %s", output_file)
+
+        # Prune old outputs.  Read keep from config (default 50), fall back
+        # to 50 if the config is missing or unavailable.
+        try:
+            cfg = load_config()
+            keep = (cfg.get("cron") or {}).get("keep_outputs", 50)
+        except Exception:
+            keep = 50
+        prune_job_outputs(job["id"], keep=keep)
 
         # Deliver the final response to the origin/target chat.
         # If the agent responded with [SILENT], skip delivery (but

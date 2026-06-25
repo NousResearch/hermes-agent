@@ -2412,6 +2412,10 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Number of most recent output files to keep per cron job.
+        # Older files are automatically pruned after each run.
+        # Set to 0 to keep all (no pruning - historical behaviour).
+        "keep_outputs": 50,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

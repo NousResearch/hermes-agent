@@ -214,6 +214,9 @@ _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
+_FEISHU_RECENT_MEDIA_TTL_SECONDS = 30 * 60         # allow text follow-ups to refer to a just-sent image
+_FEISHU_RECENT_MEDIA_MAX_CHATS = 256
+_FEISHU_RECENT_MEDIA_MAX_ITEMS_PER_CHAT = 4
 
 _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "approve_once": "once",
@@ -229,6 +232,11 @@ _APPROVAL_LABEL_MAP: Dict[str, str] = {
 }
 _FEISHU_BOT_MSG_TRACK_SIZE = 512                   # LRU size for tracking sent message IDs
 _FEISHU_REPLY_FALLBACK_CODES = frozenset({230011, 231003})  # reply target withdrawn/missing → create fallback
+
+_RECENT_IMAGE_REFERENCE_RE = re.compile(
+    r"(图片|照片|截图|这张图|那张图|上一张图|上张图|刚发.{0,8}图|图里|图中|看得到图|看得到图片|看得到照片|看得到截图|image|photo|screenshot)",
+    re.IGNORECASE,
+)
 
 # Feishu reactions render as prominent badges, unlike Discord/Telegram's
 # small footer emoji — a success badge on every message would add noise, so
@@ -1457,6 +1465,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
         self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
+        self._recent_media_by_context: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -3130,6 +3139,30 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "root_id", None)
             or None
         )
+
+        chat_id = getattr(message, "chat_id", "") or ""
+        if media_urls:
+            self._remember_recent_media(
+                chat_id=chat_id,
+                thread_id=thread_id,
+                message_id=message_id,
+                media_urls=media_urls,
+                media_types=media_types,
+            )
+        elif self._text_references_recent_image(text):
+            recent_urls, recent_types = self._recent_media_for_context(
+                chat_id=chat_id,
+                thread_id=thread_id,
+            )
+            if recent_urls:
+                media_urls.extend(recent_urls)
+                media_types.extend(recent_types)
+                logger.info(
+                    "[Feishu] Attached %d recent image(s) to text follow-up id=%s",
+                    len(recent_urls),
+                    message_id,
+                )
+
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
 
         sender_primary = (
@@ -3150,7 +3183,6 @@ class FeishuAdapter(BasePlatformAdapter):
             len(media_urls),
         )
 
-        chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id, is_bot=is_bot)
         source = self.build_source(
@@ -3263,6 +3295,89 @@ class FeishuAdapter(BasePlatformAdapter):
             len(event.media_urls),
         )
         await self._handle_message_with_guards(event)
+
+    @staticmethod
+    def _recent_media_context_key(chat_id: str, thread_id: Optional[str]) -> str:
+        return f"{chat_id or ''}:{thread_id or ''}"
+
+    @staticmethod
+    def _text_references_recent_image(text: str) -> bool:
+        if not text:
+            return False
+        return bool(_RECENT_IMAGE_REFERENCE_RE.search(text))
+
+    def _prune_recent_media_cache(self, now: Optional[float] = None) -> None:
+        now = time.time() if now is None else now
+        expired_keys: List[str] = []
+        for key, items in list(self._recent_media_by_context.items()):
+            kept = [item for item in items if now - float(item.get("ts", 0.0)) <= _FEISHU_RECENT_MEDIA_TTL_SECONDS]
+            if kept:
+                self._recent_media_by_context[key] = kept[-_FEISHU_RECENT_MEDIA_MAX_ITEMS_PER_CHAT:]
+            else:
+                expired_keys.append(key)
+        for key in expired_keys:
+            self._recent_media_by_context.pop(key, None)
+        while len(self._recent_media_by_context) > _FEISHU_RECENT_MEDIA_MAX_CHATS:
+            self._recent_media_by_context.popitem(last=False)
+
+    def _remember_recent_media(
+        self,
+        *,
+        chat_id: str,
+        thread_id: Optional[str],
+        message_id: str,
+        media_urls: List[str],
+        media_types: List[str],
+    ) -> None:
+        image_urls: List[str] = []
+        image_types: List[str] = []
+        for i, url in enumerate(media_urls):
+            media_type = media_types[i] if i < len(media_types) else ""
+            if media_type.startswith("image/"):
+                image_urls.append(url)
+                image_types.append(media_type)
+        if not image_urls:
+            return
+
+        self._prune_recent_media_cache()
+        now = time.time()
+        for key in {
+            self._recent_media_context_key(chat_id, thread_id),
+            self._recent_media_context_key(chat_id, None),
+        }:
+            items = self._recent_media_by_context.setdefault(key, [])
+            items.append(
+                {
+                    "ts": now,
+                    "message_id": message_id,
+                    "media_urls": list(image_urls),
+                    "media_types": list(image_types),
+                }
+            )
+            self._recent_media_by_context.move_to_end(key)
+            del items[:-_FEISHU_RECENT_MEDIA_MAX_ITEMS_PER_CHAT]
+
+    def _recent_media_for_context(
+        self,
+        *,
+        chat_id: str,
+        thread_id: Optional[str],
+    ) -> tuple[List[str], List[str]]:
+        self._prune_recent_media_cache()
+        for key in (
+            self._recent_media_context_key(chat_id, thread_id),
+            self._recent_media_context_key(chat_id, None),
+        ):
+            items = self._recent_media_by_context.get(key) or []
+            if not items:
+                continue
+            latest = items[-1]
+            urls = list(latest.get("media_urls") or [])
+            types = list(latest.get("media_types") or [])
+            if urls:
+                self._recent_media_by_context.move_to_end(key)
+                return urls, types
+        return [], []
 
     async def _download_remote_image(self, image_url: str) -> str:
         ext = self._guess_remote_extension(image_url, default=".jpg")

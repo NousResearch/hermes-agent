@@ -1320,6 +1320,71 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_text_follow_up_can_reference_recent_image(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._download_feishu_image = AsyncMock(return_value=("/tmp/feishu-image.png", "image/png"))
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(return_value={"name": "TileTrace 项目", "type": "group"})
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={
+                "user_id": "ou_user",
+                "user_name": "韩泽北",
+                "user_id_alt": None,
+            }
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id=None, union_id=None)
+
+        image_message = SimpleNamespace(
+            message_type="image",
+            content='{"image_key":"img_123"}',
+            message_id="om_image",
+            chat_id="oc_chat",
+            thread_id=None,
+            root_id=None,
+            parent_id=None,
+            upper_message_id=None,
+            mentions=[],
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data={},
+                message=image_message,
+                sender_id=sender_id,
+                chat_type="group",
+                message_id="om_image",
+            )
+        )
+
+        text_message = SimpleNamespace(
+            message_type="text",
+            content='{"text":"你看得到图片内容吗"}',
+            message_id="om_text",
+            chat_id="oc_chat",
+            thread_id=None,
+            root_id=None,
+            parent_id=None,
+            upper_message_id=None,
+            mentions=[],
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data={},
+                message=text_message,
+                sender_id=sender_id,
+                chat_type="group",
+                message_id="om_text",
+            )
+        )
+
+        follow_up_event = adapter._dispatch_inbound_event.await_args_list[-1].args[0]
+        self.assertEqual(follow_up_event.text, "你看得到图片内容吗")
+        self.assertEqual(follow_up_event.media_urls, ["/tmp/feishu-image.png"])
+        self.assertEqual(follow_up_event.media_types, ["image/png"])
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_extract_audio_message_downloads_and_caches(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

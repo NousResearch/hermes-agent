@@ -158,3 +158,42 @@ class TestSanitizeMessagesToolNames:
         assert messages[0]["tool_calls"][1]["function"]["name"] == "c_d"
         assert messages[1]["name"] == "a_b"
         assert messages[2]["name"] == "c_d"
+
+class TestConversationLoopIntegration:
+    """Regression: verify _sanitize_messages_tool_names is wired into run_conversation().
+
+    The helper-level tests above would still pass if the pre-request call were
+    removed or moved.  These structural checks catch that.
+    """
+
+    def test_sanitize_tool_names_called_in_run_conversation(self):
+        """_sanitize_messages_tool_names must be invoked inside run_conversation().
+
+        Uses inspect.getsource() so the test fails if the call is deleted.
+        """
+        import inspect
+        from agent.conversation_loop import run_conversation
+
+        src = inspect.getsource(run_conversation)
+        assert "_sanitize_messages_tool_names" in src, (
+            "_sanitize_messages_tool_names() call missing from run_conversation — "
+            "the pre-request sanitizer was removed or renamed"
+        )
+
+    def test_sanitize_tool_names_called_before_api_request(self):
+        """The sanitizer call must appear before the first API request marker.
+
+        Ensures the call isn't placed after the request is already sent.
+        """
+        import inspect
+        from agent.conversation_loop import run_conversation
+
+        src = inspect.getsource(run_conversation)
+        sanitize_pos = src.index("_sanitize_messages_tool_names")
+        # The API call happens after the request-size logging
+        request_marker = "estimate_messages_tokens_rough"
+        assert request_marker in src, "run_conversation structure changed"
+        assert sanitize_pos < src.index(request_marker), (
+            "_sanitize_messages_tool_names must be called before token estimation / API request"
+        )
+

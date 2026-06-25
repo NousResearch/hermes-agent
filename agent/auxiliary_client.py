@@ -101,6 +101,7 @@ class _OpenAIProxy:
 OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
+from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -3149,6 +3150,88 @@ def _try_main_agent_model_fallback(
     return client, resolved_model or main_model, label
 
 
+# ── Context-window screening for runtime fallback chains (issue #52392) ──
+#
+# When the runtime auxiliary fallback chain selects a candidate that is
+# reachable but has a context window smaller than the compression task
+# requires, the call errors out instead of continuing to the next, viable
+# candidate. The startup feasibility check in
+# ``agent.conversation_compression.check_compression_model_feasibility``
+# already filters too-small auxiliary models at startup, but the runtime
+# fallback chain (``_try_configured_fallback_chain`` and
+# ``_try_main_fallback_chain``) does not apply the same filter, so
+# compression can stop at the first alive door even if the room behind it
+# is too small.
+#
+# The helpers below screen each candidate by its effective context window
+# before it is returned. ``None`` results from ``get_model_context_length``
+# are passed through (we cannot prove a model is too small, so we do not
+# block it). This preserves the existing fallback surface for
+# unrecognised/custom models while closing the gap on the well-known ones.
+
+def _task_minimum_context_length(task: Optional[str]) -> Optional[int]:
+    """Return the minimum context length required for an auxiliary task.
+
+    Only ``compression`` carries an explicit minimum today (the same
+    ``MINIMUM_CONTEXT_LENGTH`` (64K) floor that
+    ``check_compression_model_feasibility`` already enforces at startup).
+    Other tasks (``vision``, ``title_generation``, ``web_extract``,
+    ``skills_hub``, ``mcp``, ``session_search``) return ``None`` — they
+    have no per-task context floor and the runtime chain must remain
+    permissive for them.
+
+    Returns ``None`` for an empty/``None`` task name so the helper is a
+    safe no-op when called from generic sites.
+    """
+    if not task:
+        return None
+    if task == "compression":
+        return MINIMUM_CONTEXT_LENGTH
+    return None
+
+
+def _candidate_context_window(
+    provider: str,
+    model: str,
+    base_url: str = "",
+    api_key: str = "",
+) -> Optional[int]:
+    """Resolve the effective context window for a fallback candidate.
+
+    Thin wrapper around :func:`agent.model_metadata.get_model_context_length`
+    that swallows probe failures (returns ``None``). Callers treat
+    ``None`` as "unknown — pass through" so the existing fallback
+    surface is preserved when the context-length resolver chain cannot
+    determine a value (custom endpoints, models not in the registry,
+    offline endpoints).
+
+    Best-effort, never raises — the runtime fallback chain must keep
+    moving even if the resolver hits a probe error.
+    """
+    if not model:
+        return None
+    try:
+        ctx = get_model_context_length(
+            model,
+            base_url=base_url,
+            api_key=api_key,
+            provider=provider,
+        )
+    except Exception as exc:
+        logger.debug(
+            "Auxiliary fallback: could not resolve context window for %s/%s: %s",
+            provider, model, exc,
+        )
+        return None
+    # ``get_model_context_length`` returns an int (with a 256K default
+    # fallback when nothing else matches). We still propagate ``None`` if
+    # a future change returns ``Optional[int]`` — being explicit is
+    # cheap and the test suite covers both shapes.
+    if isinstance(ctx, int) and ctx > 0:
+        return ctx
+    return None
+
+
 def _try_configured_fallback_chain(
     task: str,
     failed_provider: str,
@@ -3173,6 +3256,7 @@ def _try_configured_fallback_chain(
 
     skip = failed_provider.lower().strip()
     tried = []
+    min_ctx = _task_minimum_context_length(task)
 
     for i, entry in enumerate(chain):
         if not isinstance(entry, dict):
@@ -3190,6 +3274,20 @@ def _try_configured_fallback_chain(
             fb_client, resolved_model = None, None
 
         if fb_client is not None:
+            if min_ctx is not None and resolved_model:
+                fb_ctx = _candidate_context_window(
+                    fb_provider,
+                    resolved_model,
+                    base_url=str(entry.get("base_url") or ""),
+                    api_key=_fallback_entry_api_key(entry) or "",
+                )
+                if fb_ctx is not None and fb_ctx < min_ctx:
+                    logger.info(
+                        "Auxiliary %s: skipping %s (%s context=%d < min=%d), continuing chain",
+                        task, label, resolved_model, fb_ctx, min_ctx,
+                    )
+                    tried.append(f"{label} (context too small: {fb_ctx}<{min_ctx})")
+                    continue
             logger.info(
                 "Auxiliary %s: %s on %s — configured fallback to %s (%s)",
                 task, reason, failed_provider, label, resolved_model or fb_model or "default",
@@ -3285,6 +3383,7 @@ def _try_main_fallback_chain(
     main_norm = (_read_main_provider() or "").strip().lower()
     skip = {p for p in (failed_norm, main_norm, "auto") if p}
     tried: List[str] = []
+    min_ctx = _task_minimum_context_length(task)
 
     for i, entry in enumerate(chain):
         if not isinstance(entry, dict):
@@ -3308,6 +3407,20 @@ def _try_main_fallback_chain(
             logger.debug("Auxiliary %s: main fallback %s failed to resolve: %s", task or "call", label, exc)
             fb_client, resolved_model = None, None
         if fb_client is not None:
+            if min_ctx is not None:
+                fb_ctx = _candidate_context_window(
+                    fb_provider,
+                    resolved_model or fb_model,
+                    base_url=str(entry.get("base_url") or ""),
+                    api_key=_fallback_entry_api_key(entry) or "",
+                )
+                if fb_ctx is not None and fb_ctx < min_ctx:
+                    logger.info(
+                        "Auxiliary %s: skipping %s (context=%d < min=%d), continuing chain",
+                        task or "call", label, fb_ctx, min_ctx,
+                    )
+                    tried.append(f"{label} (context too small: {fb_ctx}<{min_ctx})")
+                    continue
             logger.info(
                 "Auxiliary %s: %s on %s — main fallback chain to %s (%s)",
                 task or "call", reason, failed_provider or "auto", label,

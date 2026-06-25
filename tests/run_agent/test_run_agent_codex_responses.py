@@ -2880,6 +2880,81 @@ def test_dump_api_request_debug_uses_chat_completions_url(monkeypatch, tmp_path)
     assert payload["request"]["url"] == "http://127.0.0.1:9208/v1/chat/completions"
 
 
+def test_dump_api_request_debug_redacts_secrets(monkeypatch, tmp_path):
+    """Request debug dumps must be safe to attach to bug reports."""
+    import json
+    import agent.redact as redact_mod
+
+    monkeypatch.setattr(redact_mod, "_REDACT_ENABLED", False)
+    agent = _build_agent(monkeypatch)
+    agent.logs_dir = tmp_path
+
+    prefixed_key = "sk-proj-" + ("a" * 40)
+    opaque_header_secret = "Bearer opaque-provider-token-without-known-prefix"
+    opaque_key_list_secret = "opaque-extra-body-key-without-known-prefix"
+    opaque_token_secret = "opaque-token-without-known-prefix"
+    opaque_cookie_secret = "opaque-session-cookie-without-known-prefix"
+    opaque_x_authorization_secret = "opaque-x-authorization-without-known-prefix"
+    error = SimpleNamespace(
+        status_code=401,
+        body={"api_key": prefixed_key},
+        response=SimpleNamespace(
+            status_code=401,
+            text=f"upstream rejected Authorization: Bearer {prefixed_key}",
+        ),
+    )
+
+    dump_file = agent._dump_api_request_debug(
+        {
+            "model": "gpt-5-codex",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"please echo {prefixed_key}",
+                }
+            ],
+            "extra_headers": {
+                "Authorization": opaque_header_secret,
+                "X-Authorization": opaque_x_authorization_secret,
+                "X-Trace": "trace-ok",
+            },
+            "extra_body": {
+                "api_key": [opaque_key_list_secret],
+                "client_secret": "plain-secret-value-without-known-prefix",
+                "max_tokens": 4096,
+                "nested": [f"github_pat_{'b' * 40}"],
+                "session_cookie": opaque_cookie_secret,
+                "token": opaque_token_secret,
+            },
+        },
+        reason="non_retryable_client_error",
+        error=error,
+    )
+
+    assert dump_file is not None
+    raw_dump = dump_file.read_text()
+    assert prefixed_key not in raw_dump
+    assert opaque_header_secret not in raw_dump
+    assert opaque_key_list_secret not in raw_dump
+    assert opaque_cookie_secret not in raw_dump
+    assert opaque_token_secret not in raw_dump
+    assert opaque_x_authorization_secret not in raw_dump
+    assert "plain-secret-value-without-known-prefix" not in raw_dump
+    assert f"github_pat_{'b' * 40}" not in raw_dump
+
+    payload = json.loads(raw_dump)
+    assert payload["request"]["headers"]["Authorization"] == "[REDACTED]"
+    assert payload["request"]["body"]["extra_headers"]["Authorization"] == "[REDACTED]"
+    assert payload["request"]["body"]["extra_headers"]["X-Authorization"] == "[REDACTED]"
+    assert payload["request"]["body"]["extra_headers"]["X-Trace"] == "trace-ok"
+    assert payload["request"]["body"]["extra_body"]["api_key"] == "[REDACTED]"
+    assert payload["request"]["body"]["extra_body"]["client_secret"] == "[REDACTED]"
+    assert payload["request"]["body"]["extra_body"]["max_tokens"] == 4096
+    assert payload["request"]["body"]["extra_body"]["session_cookie"] == "[REDACTED]"
+    assert payload["request"]["body"]["extra_body"]["token"] == "[REDACTED]"
+    assert "[REDACTED]" in payload["error"]["body"]["api_key"]
+
+
 def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, tmp_path, capsys):
     """Request debug dumps should redact secrets before disk/stdout output."""
     import json
@@ -2928,7 +3003,7 @@ def test_dump_api_request_debug_redacts_request_and_error_secrets(monkeypatch, t
         assert raw not in stdout_text
 
     payload = json.loads(dumped_text)
-    assert payload["request"]["headers"]["Authorization"].startswith("Bearer sk-ant-p...")
+    assert payload["request"]["headers"]["Authorization"] == "[REDACTED]"
     assert "***" in dumped_text or "..." in dumped_text
 
 

@@ -1591,6 +1591,62 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
     return None
 
 
+_REQUEST_DUMP_SENSITIVE_EXACT_KEYS = frozenset({
+    "authorization",
+    "proxy_authorization",
+    "cookie",
+    "set_cookie",
+    "x_api_key",
+    "api_key",
+    "apikey",
+    "token",
+    "bearer_token",
+    "session_token",
+    "csrf_token",
+    "jwt",
+})
+_REQUEST_DUMP_SENSITIVE_KEY_PARTS = (
+    "authorization",
+    "cookie",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "auth_token",
+    "api_key",
+    "apikey",
+    "secret",
+    "password",
+    "credential",
+    "private_key",
+)
+
+
+def _request_dump_key_is_sensitive(key: Any) -> bool:
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(key).lower()).strip("_")
+    if normalized in _REQUEST_DUMP_SENSITIVE_EXACT_KEYS:
+        return True
+    return any(part in normalized for part in _REQUEST_DUMP_SENSITIVE_KEY_PARTS)
+
+
+def _redact_request_dump_payload(value: Any, key: Any = None) -> Any:
+    """Redact secrets before persisting request debug dumps."""
+    if key is not None and _request_dump_key_is_sensitive(key):
+        return value if value is None or value == "" else "[REDACTED]"
+
+    if isinstance(value, dict):
+        return {
+            item_key: _redact_request_dump_payload(item_value, item_key)
+            for item_key, item_value in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_redact_request_dump_payload(item) for item in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+
+    from agent.redact import redact_sensitive_text
+    text = value if isinstance(value, str) else str(value)
+    return redact_sensitive_text(text, force=True)
+
 
 def dump_api_request_debug(
     agent,
@@ -1656,6 +1712,8 @@ def dump_api_request_debug(
 
             dump_payload["error"] = error_info
 
+        dump_payload = _redact_request_dump_payload(dump_payload)
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         # Sanitize the session ID into a traversal-free path segment — it can
         # originate from untrusted input (X-Hermes-Session-Id header), and an
@@ -1667,12 +1725,9 @@ def dump_api_request_debug(
         # full request body (system prompt, tool defs, context-embedded
         # values), and this path fires unconditionally on API errors — so it
         # otherwise lands any context-embedded secret in cleartext on disk.
-        # Run the serialized dump through the same scrubber used for logs/tool
-        # output, then hand the resulting payload back to the shared atomic
-        # JSON writer so request dumps keep the same write semantics as before.
-        from agent.redact import redact_sensitive_text
-        _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
-        _redacted_payload = json.loads(redact_sensitive_text(_serialized, force=True))
+        # Redact while the payload is still structured: regexing serialized
+        # JSON can corrupt string quoting when values contain header-like text.
+        _redacted_payload = dump_payload
         atomic_json_write(dump_file, _redacted_payload, default=str)
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")

@@ -5863,6 +5863,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_observe_unmentioned_group_message(self, message: Message) -> bool:
         """Return True when a group message should be stored but not dispatched."""
+        if self._is_own_message(message):
+            return False
         if not self._telegram_observe_unmentioned_group_messages():
             return False
         if not self._is_group_chat(message):
@@ -6132,6 +6134,23 @@ class TelegramAdapter(BasePlatformAdapter):
             adapter_name = getattr(self, "name", "telegram")
             logger.warning("[%s] Failed to observe Telegram group message: %s", adapter_name, exc)
 
+    def _is_own_message(self, message: Message) -> bool:
+        """Return True when the message was sent by this bot itself.
+
+        In some Telegram environments (groups, supergroups where the bot can
+        see its own messages), getUpdates returns the bot's own outgoing
+        messages as updates.  These must be filtered out so they are not
+        counted as incoming unread messages in the Hermes inbox.
+        """
+        if not self._bot:
+            return False
+        from_user = getattr(message, "from_user", None)
+        if from_user is None:
+            return False
+        bot_id = getattr(self._bot, "id", None)
+        user_id = getattr(from_user, "id", None)
+        return bot_id is not None and user_id is not None and bot_id == user_id
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules.
 
@@ -6154,6 +6173,13 @@ class TelegramAdapter(BasePlatformAdapter):
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
         """
+        # Filter out the bot's own messages (returned by getUpdates in some
+        # environments like groups/supergroups where the bot can see its own
+        # messages).  Without this, outbound messages are counted as incoming
+        # unread in the Hermes inbox (#52363).
+        if self._is_own_message(message):
+            return False
+
         if not self._is_group_chat(message):
             return True
 

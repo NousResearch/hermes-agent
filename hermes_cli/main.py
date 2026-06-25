@@ -5404,15 +5404,25 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
 
-def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
-    """Configure Electron's Linux SUID sandbox helper when required."""
+def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> str:
+    """Configure Electron's Linux SUID sandbox helper when required.
+
+    Returns one of:
+      "ok"        — sandbox is set up (or not needed), launch normally.
+      "missing"   — chrome-sandbox binary is absent; this is a real build error.
+      "no_sudo"   — sudo is required to set the SUID bit, but it cannot be
+                    obtained in this shell (no tty, no askpass, NOPASSWD not
+                    granted).  The caller may relaunch with --no-sandbox
+                    after warning the user, since the SUID helper is a
+                    defense-in-depth feature, not a security requirement.
+    """
     if sys.platform != "linux":
-        return True
+        return "ok"
 
     sandbox = packaged_executable.parent / "chrome-sandbox"
     if not sandbox.exists():
         print(f"✗ Hermes Desktop is missing Electron's Linux sandbox helper: {sandbox}")
-        return False
+        return "missing"
 
     # Reject symlinks — chown/chmod must not follow an attacker-controlled
     # link to an arbitrary path.  Use lstat() so we inspect the link itself
@@ -5421,25 +5431,34 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         sandbox_lstat = sandbox.lstat()
     except OSError:
         print(f"✗ Cannot stat Electron's Linux sandbox helper: {sandbox}")
-        return False
+        return "missing"
     if not stat.S_ISREG(sandbox_lstat.st_mode):
         print(f"✗ Electron's Linux sandbox helper is not a regular file: {sandbox}")
-        return False
+        return "missing"
 
     if sandbox_lstat.st_uid == 0 and stat.S_IMODE(sandbox_lstat.st_mode) == 0o4755:
-        return True
+        return "ok"
 
     sudo = shutil.which("sudo")
     if not sudo:
-        print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
-        return False
+        return "no_sudo"
+
+    # sudo -n (non-interactive) detects NOPASSWD/askpass availability without
+    # blocking on a password prompt.  If the user has configured NOPASSWD for
+    # the chown/chmod pair this succeeds; otherwise we know up-front that the
+    # real sudo call will hang or fail and we should fall back to --no-sandbox.
+    can_sudo = subprocess.run(
+        [sudo, "-n", "true"], check=False, capture_output=True
+    ).returncode == 0
+    if not can_sudo:
+        return "no_sudo"
 
     print("→ Configuring Electron Linux sandbox helper (sudo required)...")
     for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
         if subprocess.run(command, check=False).returncode != 0:
             print(f"✗ Failed to configure Electron's Linux sandbox helper: {sandbox}")
-            return False
-    return True
+            return "no_sudo"
+    return "ok"
 
 
 def cmd_gui(args: argparse.Namespace):
@@ -5622,11 +5641,25 @@ def cmd_gui(args: argparse.Namespace):
         print("  Expected an unpacked Electron app for the current OS.")
         sys.exit(1)
 
-    if not _desktop_linux_sandbox_fixup(packaged_executable):
+    sandbox_status = _desktop_linux_sandbox_fixup(packaged_executable)
+    if sandbox_status == "missing":
         sys.exit(1)
 
+    launch_args = [str(packaged_executable)]
+    if sandbox_status == "no_sudo":
+        print(
+            "⚠ Could not configure Electron's Linux SUID sandbox helper "
+            "(sudo unavailable in this shell).  Relaunching with --no-sandbox. "
+            "This is fine for personal use; the SUID helper is defense-in-depth."
+        )
+        launch_args.append("--no-sandbox")
+        # On hosts without a real GPU (RDP / VNC / headless Linux) Electron's
+        # GPU process crashes early under --no-sandbox and aborts launch.
+        # Force the software GL backend so the renderer can come up.
+        launch_args += ["--use-gl=swiftshader", "--disable-gpu-sandbox"]
+
     print(f"→ Launching packaged Hermes Desktop: {packaged_executable}")
-    launch_result = subprocess.run([str(packaged_executable)], cwd=desktop_dir, env=env, check=False)
+    launch_result = subprocess.run(launch_args, cwd=desktop_dir, env=env, check=False)
     sys.exit(launch_result.returncode)
 
 

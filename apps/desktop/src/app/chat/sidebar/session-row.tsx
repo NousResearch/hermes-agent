@@ -2,14 +2,18 @@ import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
 import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
+import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 import { $attentionSessionIds } from '@/store/session'
+import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
 
@@ -67,6 +71,11 @@ export function SidebarSessionRow({
   const title = sessionTitle(session)
   const age = formatAge(session.last_active || session.started_at, r)
   const handleLabel = `Reorder ${title}`
+  // A handed-off session's live source is local, but it originated on a
+  // messaging platform — surface that origin as a small badge so e.g. a
+  // Telegram thread continued here still reads as Telegram.
+  const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
+  const handoffLabel = handoffSource ? sessionSourceLabel(handoffSource) ?? handoffSource : null
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
@@ -87,7 +96,9 @@ export function SidebarSessionRow({
           'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
           isSelected && 'bg-(--ui-row-active-background)',
           isWorking && 'text-foreground',
-          dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
+          // Opaque surface while lifted so the dragged row erases what's under
+          // it (translucency let the rows below bleed through).
+          dragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
           className
         )}
         data-working={isWorking ? 'true' : undefined}
@@ -124,11 +135,15 @@ export function SidebarSessionRow({
               return
             }
 
-            if (event.metaKey || event.ctrlKey) {
+            // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
+            // window — the universal "open in a new window" gesture. Archive
+            // lives in the row's ⋯ and right-click menus. Falls through to a
+            // normal resume when standalone windows aren't available (web embed).
+            if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              onArchive()
+              void openSessionInNewWindow(session.id)
 
               return
             }
@@ -179,6 +194,15 @@ export function SidebarSessionRow({
               <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
             </span>
           )}
+          {handoffSource && handoffLabel ? (
+            <Tip label={r.handoffOrigin(handoffLabel)}>
+              <PlatformAvatar
+                className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
+                platformId={handoffSource}
+                platformName={handoffLabel}
+              />
+            </Tip>
+          ) : null}
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </span>

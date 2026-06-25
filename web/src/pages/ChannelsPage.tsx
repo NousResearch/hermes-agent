@@ -4,6 +4,7 @@ import {
   Check,
   CheckCircle2,
   ExternalLink,
+  Info,
   PlugZap,
   QrCode,
   Radio,
@@ -43,6 +44,7 @@ const STATE_BADGE: Record<
   connected: { tone: "success", label: "Connected" },
   pending_restart: { tone: "warning", label: "Restart to apply" },
   gateway_stopped: { tone: "warning", label: "Gateway stopped" },
+  startup_failed: { tone: "destructive", label: "Start failed" },
   disconnected: { tone: "warning", label: "Disconnected" },
   not_configured: { tone: "outline", label: "Not configured" },
   disabled: { tone: "secondary", label: "Disabled" },
@@ -54,6 +56,37 @@ function stateBadge(state: string) {
 }
 
 const TELEGRAM_USER_ID_RE = /^\d+$/;
+const SLACK_MEMBER_ID_RE = /^[UW][A-Z0-9]{2,}$/;
+const SLACK_TOKEN_PREFIXES: Record<string, string> = {
+  SLACK_BOT_TOKEN: "xoxb-",
+  SLACK_APP_TOKEN: "xapp-",
+};
+
+function validateMessagingEnvField(field: MessagingPlatformEnvVar, value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+
+  const expectedPrefix = SLACK_TOKEN_PREFIXES[field.key];
+  if (expectedPrefix && !trimmed.startsWith(expectedPrefix)) {
+    return `${field.prompt || field.key} must start with ${expectedPrefix}`;
+  }
+
+  if (field.key === "SLACK_ALLOWED_USERS") {
+    // Mirror the gateway's parse (gateway/platforms/slack.py): drop empty
+    // entries so a trailing/interior comma isn't rejected here. "*" is the
+    // allow-all wildcard the gateway honors.
+    const parts = trimmed
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const invalid = parts.find((part) => part !== "*" && !SLACK_MEMBER_ID_RE.test(part));
+    if (invalid) {
+      return `${invalid} does not look like a Slack member ID. Use IDs like U01ABC2DEF3.`;
+    }
+  }
+
+  return null;
+}
 
 function formatExpiry(expiresAt: string): string {
   const ms = Date.parse(expiresAt) - Date.now();
@@ -71,6 +104,10 @@ function isTerminalTelegramOnboardingError(error: unknown): boolean {
 
 export default function ChannelsPage() {
   const [platforms, setPlatforms] = useState<MessagingPlatform[]>([]);
+  const [envPath, setEnvPath] = useState("~/.hermes/.env");
+  const [gatewayStartCommand, setGatewayStartCommand] = useState(
+    "hermes gateway start",
+  );
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
@@ -78,8 +115,12 @@ export default function ChannelsPage() {
   // Config modal state
   const [editing, setEditing] = useState<MessagingPlatform | null>(null);
   const [draftEnv, setDraftEnv] = useState<Record<string, string>>({});
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
-  const closeEdit = useCallback(() => setEditing(null), []);
+  const closeEdit = useCallback(() => {
+    setEditing(null);
+    setFieldErrors({});
+  }, []);
   const editModalRef = useModalBehavior({ open: editing !== null, onClose: closeEdit });
 
   // Per-card busy + restart-needed tracking
@@ -93,7 +134,11 @@ export default function ChannelsPage() {
   const load = useCallback(() => {
     return api
       .getMessagingPlatforms()
-      .then((res) => setPlatforms(res.platforms))
+      .then((res) => {
+        setPlatforms(res.platforms);
+        setEnvPath(res.env_path || "~/.hermes/.env");
+        setGatewayStartCommand(res.gateway_start_command || "hermes gateway start");
+      })
       .catch((e) => showToast(`Error: ${e}`, "error"));
   }, [showToast]);
 
@@ -107,6 +152,7 @@ export default function ChannelsPage() {
       initial[v.key] = "";
     });
     setDraftEnv(initial);
+    setFieldErrors({});
     setEditing(platform);
   };
 
@@ -127,6 +173,16 @@ export default function ChannelsPage() {
     );
     if (missing.length > 0) {
       showToast(`${missing[0].prompt || missing[0].key} is required`, "error");
+      return;
+    }
+    const nextFieldErrors: Record<string, string> = {};
+    editing.env_vars.forEach((field) => {
+      const message = validateMessagingEnvField(field, draftEnv[field.key] || "");
+      if (message) nextFieldErrors[field.key] = message;
+    });
+    if (Object.keys(nextFieldErrors).length > 0) {
+      setFieldErrors(nextFieldErrors);
+      showToast("Fix the highlighted fields before saving.", "error");
       return;
     }
     setSaving(true);
@@ -253,7 +309,7 @@ export default function ChannelsPage() {
             <WifiOff className="h-4 w-4 shrink-0" />
             <span>
               The gateway is not running. Configure channels here, then start the
-              gateway with <code className="font-courier">hermes gateway start</code>{" "}
+              gateway with <code className="font-courier">{gatewayStartCommand}</code>{" "}
               (or the Restart button above).
             </span>
           </CardContent>
@@ -262,7 +318,7 @@ export default function ChannelsPage() {
 
       <p className="text-xs text-muted-foreground">
         {configured} of {platforms.length} channels configured. Credentials are
-        written to <code className="font-courier">~/.hermes/.env</code>; the
+        written to <code className="font-courier">{envPath}</code>; the
         gateway connects each enabled channel on its next restart.
       </p>
 
@@ -317,10 +373,22 @@ export default function ChannelsPage() {
               </p>
               {editing.env_vars.map((field: MessagingPlatformEnvVar) => (
                 <div className="grid gap-1.5" key={field.key}>
-                  <Label htmlFor={`field-${field.key}`}>
-                    {field.prompt || field.key}
-                    {field.required ? " *" : ""}
-                  </Label>
+                  <div className="flex items-center gap-1.5">
+                    <Label htmlFor={`field-${field.key}`}>
+                      {field.prompt || field.key}
+                      {field.required ? " *" : ""}
+                    </Label>
+                    {field.help && (
+                      <span
+                        aria-label={field.help}
+                        className="inline-flex text-muted-foreground hover:text-foreground"
+                        role="img"
+                        title={field.help}
+                      >
+                        <Info className="h-3.5 w-3.5" />
+                      </span>
+                    )}
+                  </div>
                   {field.description && (
                     <span className="text-xs text-muted-foreground">
                       {field.description}
@@ -335,10 +403,23 @@ export default function ChannelsPage() {
                         : field.key
                     }
                     value={draftEnv[field.key] ?? ""}
-                    onChange={(e) =>
-                      setDraftEnv((prev) => ({ ...prev, [field.key]: e.target.value }))
-                    }
+                    aria-invalid={Boolean(fieldErrors[field.key])}
+                    onChange={(e) => {
+                      const nextValue = e.target.value;
+                      setDraftEnv((prev) => ({ ...prev, [field.key]: nextValue }));
+                      setFieldErrors((prev) => {
+                        if (!prev[field.key]) return prev;
+                        const next = { ...prev };
+                        delete next[field.key];
+                        return next;
+                      });
+                    }}
                   />
+                  {fieldErrors[field.key] && (
+                    <span className="text-xs text-destructive">
+                      {fieldErrors[field.key]}
+                    </span>
+                  )}
                 </div>
               ))}
 
@@ -369,7 +450,7 @@ export default function ChannelsPage() {
           const StateIcon =
             platform.state === "connected"
               ? CheckCircle2
-              : platform.state === "fatal"
+              : platform.state === "fatal" || platform.state === "startup_failed"
                 ? AlertTriangle
                 : Radio;
           return (
@@ -382,7 +463,8 @@ export default function ChannelsPage() {
                         "h-5 w-5 shrink-0 mt-0.5",
                         platform.state === "connected"
                           ? "text-success"
-                          : platform.state === "fatal"
+                          : platform.state === "fatal" ||
+                              platform.state === "startup_failed"
                             ? "text-destructive"
                             : "text-muted-foreground",
                       )}
@@ -599,6 +681,32 @@ function TelegramOnboardingPanel({
     setNewAllowedId("");
   };
 
+  // restart_started only means the `hermes gateway restart` child spawned —
+  // not that the restart will succeed (e.g. systemd linger missing, service
+  // manager failure). Poll the action status briefly and surface a non-zero
+  // exit via the manual-restart banner. Note: in no-service installs the
+  // child becomes the foreground gateway and never exits, so "still running
+  // when the window closes" counts as success.
+  const watchRestartOutcome = async () => {
+    for (let i = 0; i < 20; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        const st = await api.getActionStatus("gateway-restart", 5);
+        if (st.running) continue;
+        if (st.exit_code !== 0 && st.exit_code !== null) {
+          onRestartNeeded();
+          showToast(
+            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            "error",
+          );
+        }
+        return;
+      } catch {
+        // transient fetch error; keep polling
+      }
+    }
+  };
+
   const apply = async () => {
     if (!setup) return;
     if (allowedIds.length === 0) {
@@ -608,19 +716,29 @@ function TelegramOnboardingPanel({
     setPhase("applying");
     setError("");
     try {
-      await api.applyTelegramOnboarding(setup.pairing_id, {
+      const result = await api.applyTelegramOnboarding(setup.pairing_id, {
         allowed_user_ids: allowedIds,
       });
       resetSetup();
-      showToast("Telegram saved", "success");
-      try {
-        await api.restartGateway();
-        showToast("Gateway restarting…", "success");
+      if (result.restart_started) {
+        showToast("Telegram saved; gateway restarting…", "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
-      } catch (restartError) {
+        void watchRestartOutcome();
+      } else if (result.restart_started === undefined && result.needs_restart) {
+        try {
+          await api.restartGateway();
+          showToast("Telegram saved; gateway restarting…", "success");
+          setRestartNeeded(false);
+          setTimeout(() => void onChanged(), 4000);
+        } catch (restartError) {
+          onRestartNeeded();
+          showToast(`Telegram saved; gateway restart failed: ${restartError}`, "error");
+        }
+      } else {
         onRestartNeeded();
-        showToast(`Telegram saved; restart failed: ${restartError}`, "error");
+        const detail = result.restart_error ? `: ${result.restart_error}` : "";
+        showToast(`Telegram saved; gateway restart failed${detail}`, "error");
       }
       await onChanged();
     } catch (applyError) {

@@ -83,6 +83,50 @@ def test_walks_from_middle_of_chain(db):
     assert db.resolve_resume_session_id("c") == "d"
 
 
+def test_follows_compression_tip_when_parent_retains_messages(db):
+    # The bug behind the desktop "I came back and the reply isn't there" report
+    # on large sessions: auto-compression ends the live session and forks a
+    # continuation child, but a long parent keeps its own flushed message rows.
+    # The empty-head walk below never redirects a non-empty head, so resuming
+    # the parent id reloaded the pre-compression transcript and the response
+    # generated *after* compression (which lives in the continuation) was
+    # missing. resolve_resume_session_id must follow the compression-tip chain
+    # forward even when the parent still has messages.
+    base = int(time.time()) - 10_000
+    db.create_session("root", source="cli")
+    db.append_message("root", role="user", content="pre-compression turn")
+    db.end_session("root", "compression")
+    db.create_session("cont", source="cli", parent_session_id="root")
+    db.append_message("cont", role="assistant", content="post-compression reply")
+    # Force deterministic ordering so the continuation's started_at is clearly
+    # at/after the parent's ended_at (the get_compression_tip discriminator).
+    conn = db._conn
+    assert conn is not None
+    conn.execute("UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = 'root'", (base, base + 50))
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'cont'", (base + 100,))
+    conn.commit()
+
+    assert db.resolve_resume_session_id("root") == "cont"
+
+
+def test_compression_tip_not_confused_with_delegation_child(db):
+    # A delegation/branch child is created while the parent is still live (the
+    # parent is NOT ended with end_reason='compression'), so resuming the
+    # parent must stay on the parent, not get hijacked into the subagent branch.
+    base = int(time.time()) - 10_000
+    db.create_session("conv", source="cli")
+    db.append_message("conv", role="user", content="parent turn")
+    db.create_session("subagent", source="cli", parent_session_id="conv")
+    db.append_message("subagent", role="assistant", content="delegated work")
+    conn = db._conn
+    assert conn is not None
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'conv'", (base,))
+    conn.execute("UPDATE sessions SET started_at = ? WHERE id = 'subagent'", (base + 100,))
+    conn.commit()
+
+    assert db.resolve_resume_session_id("conv") == "conv"
+
+
 def test_prefers_most_recent_child_when_fork_exists(db):
     # If a session was somehow forked (two children), pick the latest one.
     # In practice, compression only produces single-chain shape, but the helper

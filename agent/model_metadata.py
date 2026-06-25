@@ -5,6 +5,7 @@ and run_agent.py for pre-flight context checks.
 """
 
 import ipaddress
+import json
 import logging
 import os
 import re
@@ -16,7 +17,7 @@ from urllib.parse import urlparse
 import requests
 import yaml
 
-from utils import base_url_host_matches, base_url_hostname
+from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
 
@@ -111,6 +112,57 @@ _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 
+
+def _get_model_metadata_cache_path() -> Path:
+    """Return path to the OpenRouter model metadata disk cache."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "openrouter_model_metadata.json"
+
+
+def _model_metadata_disk_cache_age_seconds() -> Optional[float]:
+    """Return disk-cache age in seconds, or None if freshness is unknown."""
+    try:
+        cache_path = _get_model_metadata_cache_path()
+        if not cache_path.exists():
+            return None
+        age = time.time() - cache_path.stat().st_mtime
+        if age < 0:
+            return None
+        return age
+    except Exception:
+        return None
+
+
+def _load_model_metadata_disk_cache() -> Dict[str, Dict[str, Any]]:
+    """Load processed OpenRouter metadata cache from disk."""
+    try:
+        cache_path = _get_model_metadata_cache_path()
+        with cache_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            return {}
+        return {
+            str(key): value
+            for key, value in data.items()
+            if isinstance(value, dict)
+        }
+    except Exception as e:
+        logger.debug("Failed to load OpenRouter model metadata disk cache: %s", e)
+        return {}
+
+
+def _save_model_metadata_disk_cache(data: Dict[str, Dict[str, Any]]) -> None:
+    """Save processed OpenRouter metadata cache to disk atomically."""
+    try:
+        atomic_json_write(
+            _get_model_metadata_cache_path(),
+            data,
+            indent=0,
+            separators=(",", ":"),
+        )
+    except Exception as e:
+        logger.debug("Failed to save OpenRouter model metadata disk cache: %s", e)
+
 # Descending tiers for context length probing when the model is unknown.
 # We start at 256K (covers GPT-5.x, many current large-context models) and
 # step down on context-length errors until one works.  Tier[0] is also the
@@ -141,6 +193,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     # fuzzy-match collisions (e.g. "anthropic/claude-sonnet-4" is a
     # substring of "anthropic/claude-sonnet-4.6").
     # OpenRouter-prefixed models resolve via OpenRouter live API or models.dev.
+    "claude-fable-5": 1000000,
+    "claude-fable": 1000000,
     "claude-opus-4-8": 1000000,
     "claude-opus-4.8": 1000000,
     "claude-opus-4-7": 1000000,
@@ -207,7 +261,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     # https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000,
     "minimax": 204800,
-    # GLM
+    # GLM — GLM-5.2 ships with a 1M context window (verified empirically:
+    # needle-in-a-haystack retrieval at 789K prompt tokens succeeded with
+    # zero errors on api.z.ai/api/coding/paas/v4).  Older GLM models
+    # (5, 5.1, 5-turbo) are ~202K.  Longest-key-first substring matching
+    # ensures "glm-5.2" resolves to 1M while older variants still hit the
+    # generic 202K fallback.
+    "glm-5.2": 1_048_576,
     "glm": 202752,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
     # so these hardcoded fallbacks prevent Hermes from probing-down to
@@ -215,6 +275,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     # via a custom provider. Values sourced from models.dev (2026-04).
     # Keys use substring matching (longest-first), so e.g. "grok-4.20"
     # matches "grok-4.20-0309-reasoning" / "-non-reasoning" / "-multi-agent-0309".
+    # OAuth-only slug; absent from GET /v1/models. xAI publishes a 200k
+    # usable context window for Composer 2.5 on Grok Build (SuperGrok /
+    # Premium+); /v1/responses additionally enforces a ~262144 input+output
+    # budget, but the usable context (what we track here) is 200k.
+    "grok-composer": 200000,    # grok-composer-2.5-fast (Grok Build CLI)
     "grok-build": 256000,       # grok-build-0.1
     "grok-code-fast": 256000,   # grok-code-fast-1
     "grok-2-vision": 8192,      # grok-2-vision, -1212, -latest
@@ -625,6 +690,15 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
     if not force_refresh and _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
         return _model_metadata_cache
 
+    if not force_refresh:
+        disk_age = _model_metadata_disk_cache_age_seconds()
+        if disk_age is not None and disk_age < _MODEL_CACHE_TTL:
+            disk_cache = _load_model_metadata_disk_cache()
+            if disk_cache:
+                _model_metadata_cache = disk_cache
+                _model_metadata_cache_time = time.time() - disk_age
+                return _model_metadata_cache
+
     try:
         response = requests.get(OPENROUTER_MODELS_URL, timeout=10, verify=_resolve_requests_verify())
         response.raise_for_status()
@@ -646,12 +720,24 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
 
         _model_metadata_cache = cache
         _model_metadata_cache_time = time.time()
+        _save_model_metadata_disk_cache(cache)
         logger.debug("Fetched metadata for %s models from OpenRouter", len(cache))
         return cache
 
     except Exception as e:
         logger.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
-        return _model_metadata_cache or {}
+        if _model_metadata_cache:
+            return _model_metadata_cache
+        disk_cache = _load_model_metadata_disk_cache()
+        if disk_cache:
+            _model_metadata_cache = disk_cache
+            disk_age = _model_metadata_disk_cache_age_seconds()
+            if disk_age is not None:
+                _model_metadata_cache_time = time.time() - min(disk_age, _MODEL_CACHE_TTL)
+            else:
+                _model_metadata_cache_time = time.time() - _MODEL_CACHE_TTL + 1
+            return _model_metadata_cache
+        return {}
 
 
 def fetch_endpoint_model_metadata(
@@ -968,6 +1054,16 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         # OpenRouter/Nous phrasing of the same condition.
         "in the output" in error_lower
         and "maximum context length" in error_lower
+    ) or (
+        # LM Studio / llama.cpp / some OpenAI-compatible servers:
+        #   "This model's maximum context length is 65536 tokens. However, you
+        #    requested 65536 output tokens and your prompt contains 77409
+        #    characters ..."
+        # The "requested N output tokens" phrasing means the OUTPUT cap is the
+        # problem (the input itself fits) — reduce max_tokens, don't compress.
+        "maximum context length" in error_lower
+        and "requested" in error_lower
+        and "output tokens" in error_lower
     )
     if not is_output_cap_error:
         return None
@@ -996,6 +1092,22 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     )
     if _m_ctx and _m_parts:
         _available = int(_m_ctx.group(1)) - int(_m_parts.group(1)) - int(_m_parts.group(2))
+        if _available >= 1:
+            return _available
+
+    # LM Studio / llama.cpp style: context window is reported in tokens but the
+    # prompt size is reported in CHARACTERS, e.g.
+    #   "maximum context length is 65536 tokens ... your prompt contains 77409
+    #    characters ...".
+    # Estimate the input tokens conservatively (~3 chars/token, which
+    # over-reserves the input so the retried output cap stays safely inside the
+    # window) and leave the remainder of the window for output.
+    _m_ctx_tok = re.search(r'maximum context length is (\d+)\s*token', error_lower)
+    _m_chars = re.search(r'prompt contains (\d+)\s*character', error_lower)
+    if _m_ctx_tok and _m_chars:
+        _ctx = int(_m_ctx_tok.group(1))
+        _est_input = (int(_m_chars.group(1)) + 2) // 3
+        _available = _ctx - _est_input
         if _available >= 1:
             return _available
 
@@ -1784,10 +1896,43 @@ def get_model_context_length(
         if ctx is not None:
             save_context_length(model, base_url, ctx)
             return ctx
+    # 5f. OpenRouter live /models metadata — authoritative for OpenRouter-routed
+    # models. OpenRouter's catalog carries per-model context_length (e.g.
+    # anthropic/claude-fable-5 -> 1M) and refreshes as new slugs ship, so it
+    # must win over both models.dev (step 5g) and the hardcoded family catch-all
+    # (step 8). Before this branch, an OpenRouter selection set
+    # effective_provider="openrouter", which (a) made the models.dev lookup miss
+    # brand-new slugs and (b) skipped the step-6 OR fallback (gated on `not
+    # effective_provider`), so a fresh slug like claude-fable-5 fell through to
+    # the generic "claude": 200K entry and under-reported a 1M window. Mirrors
+    # the dedicated Nous/Copilot/GMI branches above.
+    if effective_provider == "openrouter":
+        metadata = fetch_model_metadata()
+        entry = metadata.get(model)
+        if entry:
+            or_ctx = entry.get("context_length")
+            # Guard against the known OpenRouter Kimi-family 32k underreport
+            # (same class the hardcoded overrides exist to mitigate).
+            if isinstance(or_ctx, int) and or_ctx > 0 and not (
+                or_ctx == 32768 and _model_name_suggests_kimi(model)
+            ):
+                return or_ctx
+
     if effective_provider:
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
+            # MiniMax M3: models.dev reports 512K but actual context is 1M.
+            # Prefer hardcoded catalog over stale probe value.
+            if _model_name_suggests_minimax_m3(model):
+                catalog = DEFAULT_CONTEXT_LENGTHS.get("minimax-m3")
+                if catalog and ctx < catalog:
+                    logger.info(
+                        "Rejecting models.dev context=%s for %r "
+                        "(MiniMax-M3 underreport); using hardcoded default %s",
+                        ctx, model, f"{catalog:,}",
+                    )
+                    ctx = catalog
             return ctx
 
     # 6. OpenRouter live API metadata — provider-unaware fallback.

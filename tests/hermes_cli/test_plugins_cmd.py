@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import shutil
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,6 +18,7 @@ from hermes_cli.plugins_cmd import (
     _repo_name_from_url,
     _resolve_git_executable,
     _resolve_git_url,
+    _resolve_subdir_within,
     _sanitize_plugin_name,
 )
 
@@ -97,35 +100,175 @@ class TestSanitizePluginName:
 
 
 class TestResolveGitUrl:
-    """Shorthand and full-URL resolution."""
+    """Shorthand and full-URL resolution, with optional subdirectory."""
 
     def test_owner_repo_shorthand(self):
-        url = _resolve_git_url("owner/repo")
+        url, subdir = _resolve_git_url("owner/repo")
         assert url == "https://github.com/owner/repo.git"
+        assert subdir is None
 
     def test_https_url_passthrough(self):
-        url = _resolve_git_url("https://github.com/x/y.git")
+        url, subdir = _resolve_git_url("https://github.com/x/y.git")
         assert url == "https://github.com/x/y.git"
+        assert subdir is None
 
     def test_ssh_url_passthrough(self):
-        url = _resolve_git_url("git@github.com:x/y.git")
+        url, subdir = _resolve_git_url("git@github.com:x/y.git")
         assert url == "git@github.com:x/y.git"
+        assert subdir is None
 
     def test_http_url_passthrough(self):
-        url = _resolve_git_url("http://example.com/repo.git")
+        url, subdir = _resolve_git_url("http://example.com/repo.git")
         assert url == "http://example.com/repo.git"
+        assert subdir is None
 
     def test_file_url_passthrough(self):
-        url = _resolve_git_url("file:///tmp/repo")
+        url, subdir = _resolve_git_url("file:///tmp/repo")
         assert url == "file:///tmp/repo"
+        assert subdir is None
 
     def test_invalid_single_word_raises(self):
         with pytest.raises(ValueError, match="Invalid plugin identifier"):
             _resolve_git_url("justoneword")
 
-    def test_invalid_three_parts_raises(self):
-        with pytest.raises(ValueError, match="Invalid plugin identifier"):
-            _resolve_git_url("a/b/c")
+    def test_shorthand_with_subdir(self):
+        url, subdir = _resolve_git_url("owner/repo/my-plugin")
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "my-plugin"
+
+    def test_shorthand_with_nested_subdir(self):
+        url, subdir = _resolve_git_url("owner/repo/path/to/plugin")
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "path/to/plugin"
+
+    def test_shorthand_with_subdir_trailing_slash(self):
+        url, subdir = _resolve_git_url("owner/repo/my-plugin/")
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "my-plugin"
+
+    def test_https_url_with_subdir(self):
+        url, subdir = _resolve_git_url("https://github.com/owner/repo.git/my-plugin")
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "my-plugin"
+
+    def test_https_url_with_nested_subdir(self):
+        url, subdir = _resolve_git_url(
+            "https://github.com/owner/repo.git/path/to/plugin"
+        )
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "path/to/plugin"
+
+    def test_url_with_fragment_subdir(self):
+        url, subdir = _resolve_git_url("https://github.com/owner/repo.git#my-plugin")
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == "my-plugin"
+
+    def test_file_url_with_fragment_subdir(self):
+        url, subdir = _resolve_git_url("file:///tmp/repo#path/to/plugin")
+        assert url == "file:///tmp/repo"
+        assert subdir == "path/to/plugin"
+
+    def test_ssh_url_with_fragment_subdir(self):
+        url, subdir = _resolve_git_url("git@github.com:owner/repo.git#sub")
+        assert url == "git@github.com:owner/repo.git"
+        assert subdir == "sub"
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "https://github.com/owner/repo/tree/main",
+            "https://github.com/owner/repo/blob/main/README.md",
+            "https://github.com/owner/repo/pull/123",
+            "https://github.com/owner/repo/commit/abc123def",
+            "https://github.com/owner/repo/releases/tag/v1.0",
+            "https://github.com/owner/repo/issues/42",
+        ],
+    )
+    def test_github_browser_url_normalized_to_repo(self, identifier):
+        url, subdir = _resolve_git_url(identifier)
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir is None
+
+    @pytest.mark.parametrize(
+        ("identifier", "expected_subdir"),
+        [
+            ("https://github.com/owner/repo/tree/main/plugins/foo", "plugins/foo"),
+            ("https://github.com/owner/repo/tree/feature-branch/plugin", "plugin"),
+            ("https://github.com/owner/repo/tree/main/plugins/foo?plain=1", "plugins/foo"),
+            ("https://github.com/owner/repo.git/tree/main/plugins/foo", "plugins/foo"),
+        ],
+    )
+    def test_github_tree_browser_url_preserves_subdir(self, identifier, expected_subdir):
+        url, subdir = _resolve_git_url(identifier)
+        assert url == "https://github.com/owner/repo.git"
+        assert subdir == expected_subdir
+
+    @pytest.mark.parametrize(
+        "identifier",
+        [
+            "https://github.com/owner/repo",
+            "https://github.com/owner/repo.git",
+            "https://github.com/owner",
+            "https://github.com/owner/repo/branches",
+            "https://github.com/owner//tree/main",
+            "https://gitlab.com/owner/repo/tree/main",
+            "git@github.com:owner/repo.git",
+            "file:///tmp/repo/tree/main",
+        ],
+    )
+    def test_non_browser_urls_passthrough(self, identifier):
+        url, subdir = _resolve_git_url(identifier)
+        assert url == identifier
+        assert subdir is None
+
+
+# ── _resolve_subdir_within ──────────────────────────────────────────────────
+
+
+class TestResolveSubdirWithin:
+    """Subdirectory resolution stays within the clone and rejects traversal."""
+
+    def test_valid_subdir(self, tmp_path):
+        (tmp_path / "my-plugin").mkdir()
+        result = _resolve_subdir_within(tmp_path, "my-plugin")
+        assert result == (tmp_path / "my-plugin").resolve()
+
+    def test_valid_nested_subdir(self, tmp_path):
+        (tmp_path / "a" / "b" / "c").mkdir(parents=True)
+        result = _resolve_subdir_within(tmp_path, "a/b/c")
+        assert result == (tmp_path / "a" / "b" / "c").resolve()
+
+    def test_rejects_dot_dot_escape(self, tmp_path):
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        (tmp_path / "secret").mkdir()
+        with pytest.raises(PluginOperationError, match="escapes the repository"):
+            _resolve_subdir_within(clone, "../secret")
+
+    def test_rejects_absolute_path_escape(self, tmp_path):
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        # An absolute path resolves outside the clone root.
+        with pytest.raises(PluginOperationError, match="escapes the repository"):
+            _resolve_subdir_within(clone, "/etc")
+
+    def test_rejects_symlink_escape(self, tmp_path):
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (clone / "link").symlink_to(outside)
+        with pytest.raises(PluginOperationError, match="escapes the repository"):
+            _resolve_subdir_within(clone, "link")
+
+    def test_rejects_missing_subdir(self, tmp_path):
+        with pytest.raises(PluginOperationError, match="does not exist"):
+            _resolve_subdir_within(tmp_path, "nope")
+
+    def test_rejects_file_not_dir(self, tmp_path):
+        (tmp_path / "afile").write_text("x")
+        with pytest.raises(PluginOperationError, match="not a directory"):
+            _resolve_subdir_within(tmp_path, "afile")
 
 
 # ── _resolve_git_executable ─────────────────────────────────────────────────
@@ -698,3 +841,90 @@ class TestNoAutoActivation:
         # The old code had: "Even with default config, check if a plugin registered one"
         # The fix removes this. Verify it's gone.
         assert "Even with default config, check if a plugin registered one" not in source
+
+
+# ── End-to-end subdirectory install ──────────────────────────────────────────
+
+
+class TestSubdirInstallE2E:
+    """Install a plugin that lives in a subdirectory of a real local git repo."""
+
+    @staticmethod
+    def _make_repo_with_subdir_plugin(repo_root: Path) -> None:
+        """Create a git repo where the plugin lives in ``./my-plugin/`` and the
+        repo root holds unrelated docs/tests."""
+        import subprocess as sp
+
+        repo_root.mkdir(parents=True, exist_ok=True)
+        # Root-level noise: docs + tests that should NOT be installed.
+        (repo_root / "README.md").write_text("# Monorepo docs\n")
+        (repo_root / "tests").mkdir()
+        (repo_root / "tests" / "test_x.py").write_text("def test_x():\n    pass\n")
+        # The actual plugin in a subdirectory.
+        plugin_dir = repo_root / "my-plugin"
+        plugin_dir.mkdir()
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: my-plugin\nmanifest_version: 1\ndescription: A subdir plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text("# plugin entry\n")
+
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
+        sp.run(
+            ["git", "commit", "-q", "-m", "init"],
+            cwd=repo_root,
+            check=True,
+            env=env,
+        )
+
+    def test_installs_only_the_subdir_plugin(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "monorepo"
+        self._make_repo_with_subdir_plugin(repo_root)
+
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        identifier = f"file://{repo_root}#my-plugin"
+        target, manifest, name = pc._install_plugin_core(identifier, force=False)
+
+        # Installed under the plugin's own name, not the repo name.
+        assert name == "my-plugin"
+        assert manifest.get("name") == "my-plugin"
+        assert target == (plugins_dir / "my-plugin").resolve()
+
+        # The plugin's files are present...
+        assert (target / "plugin.yaml").exists()
+        assert (target / "__init__.py").exists()
+        # ...and the repo-root noise is NOT.
+        assert not (target / "README.md").exists()
+        assert not (target / "tests").exists()
+
+    def test_missing_subdir_raises(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "monorepo"
+        self._make_repo_with_subdir_plugin(repo_root)
+
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        identifier = f"file://{repo_root}#does-not-exist"
+        with pytest.raises(PluginOperationError, match="does not exist"):
+            pc._install_plugin_core(identifier, force=False)

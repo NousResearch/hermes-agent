@@ -24,6 +24,7 @@ Mounting
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
 import socket
@@ -98,6 +99,19 @@ class WSTransport:
                 self._closed = True
                 return False
             fut.result(timeout=_WS_WRITE_TIMEOUT_S)
+            return not self._closed
+        except concurrent.futures.TimeoutError:  # builtin TimeoutError on 3.11+
+            # The event loop is stalled (GIL-heavy agent turn, delegation
+            # running N children), NOT the socket dead. The send coroutine is
+            # already scheduled and will flush once the loop breathes — latching
+            # _closed here permanently silenced live windows after one slow
+            # write (the "subagent window shows zero streaming" bug). Unblock
+            # the worker thread and keep the transport alive; _safe_send latches
+            # on a real socket error when the frame actually fails.
+            _log.warning(
+                "ws write slow (loop stalled >%ss) peer=%s — frame left in flight",
+                _WS_WRITE_TIMEOUT_S, self._peer,
+            )
             return not self._closed
         except Exception as exc:
             self._closed = True

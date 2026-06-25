@@ -131,6 +131,64 @@ def relay_route_keys() -> list[str]:
     return [k.strip() for k in raw.split(",") if k.strip()]
 
 
+def relay_instance_id() -> Optional[str]:
+    """Stable per-instance id this gateway forwards at provision (Phase 6 Unit α).
+
+    Binds the connector's ``gatewayId -> instanceId`` so the connector can route
+    inbound per-instance (not tenant-broadcast) once Phase 6 delivery lands. The
+    value is the NAS ``AgentInstance.id`` for a managed agent (NAS stamps
+    ``GATEWAY_RELAY_INSTANCE_ID`` into the container env, beside
+    ``GATEWAY_RELAY_URL``); a self-hosted operator may set it explicitly. It is
+    gateway-asserted but safely scoped: the org/tenant stays token-verified, so a
+    dishonest gateway can only bind ITS OWN tenant's instance — the same posture
+    as ``relay_endpoint()``. Absent -> the connector stores null and per-instance
+    routing simply has no binding for this connection yet (back-compat).
+
+    Env first (Docker/NAS), then ``gateway.relay_instance_id`` in config.yaml.
+    """
+    value = os.environ.get("GATEWAY_RELAY_INSTANCE_ID", "").strip()
+    if not value:
+        try:
+            from gateway.run import _load_gateway_config  # late import to avoid cycle
+
+            cfg = (_load_gateway_config().get("gateway") or {})
+            value = str(cfg.get("relay_instance_id", "") or "").strip()
+        except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+            value = ""
+    return value or None
+
+
+def relay_wake_url() -> Optional[str]:
+    """The gateway's WAKE URL, forwarded at provision (Phase 5 §5.2 wake PRIMITIVE).
+
+    A poke target the connector issues a payload-free GET to when a buffered-only
+    (going-idle) destination for this instance receives its first buffered event,
+    so a suspended gateway wakes, reconnects its relay WS, and drains its
+    delivery-leg backlog. The value's *source* differs by deployment but the code
+    path is uniform: a managed/NAS container has ``GATEWAY_RELAY_WAKE_URL`` stamped
+    in (NAS knows the Fly autostart / dashboard hostname); a self-hosted operator
+    sets it explicitly (or passes ``--wake-url`` to ``hermes gateway enroll``).
+
+    Gateway-asserted but safely scoped: the org/tenant stays token-verified, so a
+    dishonest gateway can only register a wake target for ITS OWN instance — the
+    same posture as ``relay_instance_id()`` / the retired ``relay_endpoint()``.
+    Absent -> the connector stores null and simply can't wake this instance
+    (buffering still works; the gateway drains whenever it next reconnects).
+
+    Env first (Docker/NAS), then ``gateway.relay_wake_url`` in config.yaml.
+    """
+    value = os.environ.get("GATEWAY_RELAY_WAKE_URL", "").strip()
+    if not value:
+        try:
+            from gateway.run import _load_gateway_config  # late import to avoid cycle
+
+            cfg = (_load_gateway_config().get("gateway") or {})
+            value = str(cfg.get("relay_wake_url", "") or "").strip()
+        except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+            value = ""
+    return value.rstrip("/") or None
+
+
 def _provision_url(relay_dial_url: str) -> str:
     """Map the ``ws(s)://…/relay`` dial URL to the ``http(s)://…/relay/provision`` POST URL."""
     raw = relay_dial_url.rstrip("/")
@@ -143,6 +201,100 @@ def _provision_url(relay_dial_url: str) -> str:
     return f"{raw}/relay/provision"
 
 
+def _policy_url(relay_dial_url: str) -> str:
+    """Map the ``ws(s)://…/relay`` dial URL to the ``http(s)://…/relay/policy`` POST URL.
+
+    Same host derivation as ``_provision_url``; the connector mounts the
+    relevance-policy update channel at ``/relay/policy`` (Phase 6 Unit ζ).
+    """
+    raw = relay_dial_url.rstrip("/")
+    if raw.startswith("ws://"):
+        raw = "http://" + raw[len("ws://"):]
+    elif raw.startswith("wss://"):
+        raw = "https://" + raw[len("wss://"):]
+    if raw.endswith("/relay"):
+        raw = raw[: -len("/relay")]
+    return f"{raw}/relay/policy"
+
+
+def relay_relevance_policy() -> Optional[dict]:
+    """Project this gateway's RELEVANCE config into the connector's generic vocabulary.
+
+    The connector's relevance gate (Phase 6 Unit ζ) reasons over a
+    platform-agnostic policy — ``requireAddress`` / ``freeResponseScopes`` /
+    ``allowOtherBots`` — NOT over Discord/Telegram words. This is the gateway
+    side of that contract: it reads the agent's existing relevance knobs and
+    emits the generic shape the connector stores per-instance.
+
+    Mapping (the connector vocabulary ← the gateway's existing config):
+      - ``requireAddress``     ← the platform's ``require_mention`` (the agent
+        only engages a non-owner message that @mentions it / replies to it).
+      - ``freeResponseScopes`` ← the platform's ``free_response_channels`` (the
+        channel/scope ids where ``require_mention`` is waived — same scope
+        vocabulary the connector's δ scope grants + ε floor use).
+      - ``allowOtherBots``     ← ``{PLATFORM}_ALLOW_BOTS`` in {"mentions","all"}
+        (whether bot-authored messages are admitted; default off).
+
+    Read from the relay platform's config block (the platform the connector
+    fronts, e.g. ``discord:``), falling back to the bridged top-level keys, then
+    the ``{PLATFORM}_*`` env. Returns the generic dict, or None when relay isn't
+    configured or the platform exposes no relevance knobs (⇒ the connector's
+    quiet default already matches, so there's nothing to declare).
+    """
+    platform, _bot_id = relay_platform_identity()
+    if not platform or platform == "relay":
+        # No concrete fronted platform resolved ⇒ nothing platform-specific to project.
+        return None
+
+    # Resolve the platform's config block + the bridged top-level keys.
+    require_mention = None
+    free_response: list[str] = []
+    try:
+        from gateway.run import _load_gateway_config  # late import to avoid cycle
+
+        cfg = _load_gateway_config() or {}
+        plat_cfg = cfg.get(platform)
+        if not isinstance(plat_cfg, dict):
+            plat_cfg = ((cfg.get("gateway") or {}).get("platforms") or {}).get(platform)
+        if not isinstance(plat_cfg, dict):
+            plat_cfg = (cfg.get("platforms") or {}).get(platform)
+        plat_cfg = plat_cfg if isinstance(plat_cfg, dict) else {}
+
+        if "require_mention" in plat_cfg:
+            require_mention = plat_cfg.get("require_mention")
+        elif cfg.get("require_mention") is not None:
+            require_mention = cfg.get("require_mention")
+
+        frc = plat_cfg.get("free_response_channels")
+        if frc is None:
+            frc = cfg.get("free_response_channels")
+        if isinstance(frc, (list, tuple)):
+            free_response = [str(c).strip() for c in frc if str(c).strip()]
+        elif isinstance(frc, str) and frc.strip():
+            free_response = [c.strip() for c in frc.split(",") if c.strip()]
+    except Exception:  # noqa: BLE001 - config absence/parse must never crash boot
+        pass
+
+    # allow_other_bots ← {PLATFORM}_ALLOW_BOTS in {"mentions","all"} (same gate as
+    # the gateway's own authz_mixin DISCORD_ALLOW_BOTS bypass).
+    allow_bots_env = os.environ.get(f"{platform.upper()}_ALLOW_BOTS", "").lower().strip()
+    allow_other_bots = allow_bots_env in {"mentions", "all"}
+
+    require_address = bool(require_mention) if require_mention is not None else False
+
+    # Nothing non-default to declare ⇒ let the connector keep its quiet default
+    # (matches absence-of-row semantics on the connector side).
+    if not require_address and not free_response and not allow_other_bots:
+        return None
+
+    return {
+        "platform": platform,
+        "requireAddress": require_address,
+        "freeResponseScopes": free_response,
+        "allowOtherBots": allow_other_bots,
+    }
+
+
 def _post_provision(
     *,
     provision_url: str,
@@ -152,6 +304,8 @@ def _post_provision(
     bot_id: str,
     gateway_endpoint: Optional[str],
     route_keys: list[str],
+    instance_id: Optional[str] = None,
+    wake_url: Optional[str] = None,
     timeout: float = 15.0,
 ) -> dict:
     """POST to the connector's ``/relay/provision`` and return the JSON body.
@@ -173,6 +327,14 @@ def _post_provision(
         "gatewayEndpoint": gateway_endpoint or "",
         "routeKeys": route_keys,
     }
+    # Only send instanceId when we actually have one — omitting it lets the
+    # connector store null (back-compat) rather than binding an empty string.
+    if instance_id:
+        body["instanceId"] = instance_id
+    # Same for the wake URL (Phase 5 §5.2): omit when absent so the connector
+    # stores null and simply can't wake this instance (buffering still works).
+    if wake_url:
+        body["wakeUrl"] = wake_url
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         provision_url,
@@ -277,6 +439,8 @@ def self_provision_relay() -> bool:
     gateway_id = os.environ.get("GATEWAY_RELAY_ID", "").strip() or f"gw-{host or 'hermes'}"
     endpoint = relay_endpoint()
     route_keys = relay_route_keys()
+    instance_id = relay_instance_id()
+    wake_url = relay_wake_url()
 
     try:
         result = _post_provision(
@@ -287,6 +451,8 @@ def self_provision_relay() -> bool:
             bot_id=bot_id,
             gateway_endpoint=endpoint,
             route_keys=route_keys,
+            instance_id=instance_id,
+            wake_url=wake_url,
         )
     except RuntimeError as exc:
         logger.warning("relay self-provision failed (%s); gateway will boot without relay auth", exc)
@@ -302,13 +468,111 @@ def self_provision_relay() -> bool:
     os.environ["GATEWAY_RELAY_DELIVERY_KEY"] = str(result.get("deliveryKey") or "")
     tenant = str(result.get("tenant") or "")
     logger.info(
-        "relay self-provisioned (gateway_id=%s tenant=%s routes=%d inbound=%s)",
+        "relay self-provisioned (gateway_id=%s tenant=%s routes=%d inbound=%s instance=%s wake=%s)",
         os.environ["GATEWAY_RELAY_ID"],
         tenant or "?",
         len(route_keys),
         "yes" if endpoint else "outbound-only",
+        instance_id or "unbound",
+        "yes" if wake_url else "none",
     )
     return True
+
+
+def _post_policy(*, policy_url: str, token: str, policy: dict, timeout: float = 15.0) -> int:
+    """POST the relevance policy to the connector's ``/relay/policy``; return the HTTP status.
+
+    Authenticated with the gateway's own per-gateway upgrade token (the SAME
+    bearer shape as the WS upgrade — ``make_upgrade_token``), so the connector
+    resolves ``{tenant, instanceId}`` from its stored secret record, never the
+    body. Raises RuntimeError on transport failure (the caller treats any
+    failure as non-fatal — relevance is an optimization, not a boot dependency).
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    data = json.dumps(policy).encode("utf-8")
+    req = urllib.request.Request(
+        policy_url,
+        data=data,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return int(resp.status)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code)
+    except urllib.error.URLError as exc:
+        raise RuntimeError(f"could not reach connector: {exc.reason}") from exc
+
+
+def send_relay_policy() -> bool:
+    """Declare this gateway's relevance policy to the connector (Phase 6 Unit ζ).
+
+    Runs at boot AFTER the per-gateway secret is resolved (self-provisioned or
+    pinned), projecting the agent's relevance config into the generic vocabulary
+    (``relay_relevance_policy``) and POSTing it to ``/relay/policy`` with the
+    gateway's own upgrade token. The connector stores it per-instance and the
+    relevance gate enforces it on delivery — so the SAME mention-gating /
+    free-response / allow-bots behavior the agent applies directly also governs
+    relay delivery, and excluded traffic never wakes a scaled-to-zero agent.
+
+    Self-healing: the agent is the source of truth and re-declares every boot
+    (mirrors the ``routeKeys`` upsert at provision). Idempotent — a full replace.
+
+    NEVER raises and NEVER blocks boot: relevance is an optimization layered on
+    the δ/ε authorization gate (which already protects isolation), so a failed
+    declaration just means the connector keeps the prior/quiet policy. Returns
+    True iff the connector accepted the policy (HTTP 200).
+    """
+    import logging
+
+    logger = logging.getLogger("gateway.relay")
+
+    dial_url = relay_url()
+    if not dial_url:
+        return False
+
+    gateway_id, secret = relay_connection_auth()
+    if not gateway_id or not secret:
+        # No resolved per-gateway secret (unenrolled / provision failed) ⇒ we
+        # can't authenticate the policy POST; skip quietly (the WS upgrade would
+        # be unauthenticated too, so there's no instance to attach a policy to).
+        return False
+
+    policy = relay_relevance_policy()
+    if policy is None:
+        # Nothing non-default to declare ⇒ the connector's quiet default already
+        # matches; don't write a redundant row.
+        logger.info("relay policy: no non-default relevance config to declare; using connector default")
+        return False
+
+    try:
+        from gateway.relay.auth import make_upgrade_token
+
+        token = make_upgrade_token(gateway_id, secret)
+        status = _post_policy(policy_url=_policy_url(dial_url), token=token, policy=policy)
+    except Exception as exc:  # noqa: BLE001 - boot must survive a policy-declare failure
+        logger.warning("relay policy declaration failed (%s); connector keeps prior/default policy", exc)
+        return False
+
+    if status == 200:
+        logger.info(
+            "relay policy declared (platform=%s require_address=%s free_scopes=%d allow_bots=%s)",
+            policy.get("platform"),
+            policy.get("requireAddress"),
+            len(policy.get("freeResponseScopes") or []),
+            policy.get("allowOtherBots"),
+        )
+        return True
+    logger.warning("relay policy declaration returned HTTP %s; connector keeps prior/default policy", status)
+    return False
 
 
 def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bool:
@@ -359,6 +623,11 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
                 bot_id,
                 gateway_id=gateway_id,
                 upgrade_secret=upgrade_secret,
+                # Phase 5 §5.3: re-dial + re-handshake after an unexpected socket
+                # close so a gateway that went idle/suspended re-establishes its
+                # relay socket — which triggers the connector's buffered-flip drain
+                # (the delivery-leg onResume) on the new handshake.
+                reconnect=True,
             )
         return RelayAdapter(config, placeholder, transport=transport)
 

@@ -775,6 +775,7 @@ class MatrixAdapter(BasePlatformAdapter):
     """Gateway adapter for Matrix (any homeserver)."""
 
     supports_code_blocks = True  # Matrix renders fenced code blocks (HTML/markdown)
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
     # Matrix clients commonly reserve typed "/" for client-local commands;
     # the adapter accepts "!command" as the alias that always reaches Hermes
@@ -3572,21 +3573,29 @@ class MatrixAdapter(BasePlatformAdapter):
         return None
 
     async def _get_room_member_count(self, room_id: str) -> Optional[int]:
+        # Tier 1: state_store (fast, cache-backed).
         state_store = (
             getattr(self._client, "state_store", None) if self._client else None
         )
-        if not state_store:
-            return None
-        try:
-            members = await state_store.get_members(room_id)
-        except Exception:
-            return None
-        if members is None:
-            return None
-        try:
-            return len(members)
-        except TypeError:
-            return None
+        if state_store:
+            try:
+                members = await state_store.get_members(room_id)
+                if members is not None:
+                    return len(members)
+            except Exception:
+                pass
+
+        # Tier 2: API fallback (direct server query) when the cache is empty.
+        client = getattr(self, "_client", None)
+        if client is not None and hasattr(client, "joined_members"):
+            try:
+                resp = await client.joined_members(room_id)
+                if getattr(resp, "members", None) is not None:
+                    return len(resp.members)
+            except Exception:
+                pass
+
+        return None
 
     async def _get_room_name(self, room_id: str) -> Optional[str]:
         if not self._client or not hasattr(self._client, "get_state_event"):
@@ -3673,8 +3682,23 @@ class MatrixAdapter(BasePlatformAdapter):
         member_count = await self._get_room_member_count(room_id)
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
-        conflict = bool(is_direct and has_explicit_name)
-        chat_type = "dm" if is_direct and not has_explicit_name else "room"
+        # member_count is the primary DM signal: <=2 members means this is
+        # necessarily a 1:1 conversation (or self-DM), regardless of m.direct
+        # or room name. Most Matrix clients auto-name DM rooms (e.g.
+        # "Alice & Bot"), so the old `not has_explicit_name` check
+        # misclassified virtually all client-created DMs as rooms. Falls back
+        # to the m.direct + name heuristic when the count is unavailable (e.g.
+        # state_store and API query both fail). A room that grew to 3+ members
+        # but is still in stale m.direct is correctly classified as a room.
+        is_likely_dm = (member_count is not None and member_count <= 2) or (
+            is_direct and not has_explicit_name
+        )
+        conflict = bool(
+            is_direct
+            and has_explicit_name
+            and (member_count is None or member_count > 2)
+        )
+        chat_type = "dm" if is_likely_dm else "room"
         display_name = room_name or canonical_alias or room_id
 
         identity = MatrixRoomIdentity(

@@ -272,8 +272,35 @@ def prompt_choice(question: str, choices: list, default: int = 0, description: s
             sys.exit(1)
 
 
+def is_noninteractive() -> bool:
+    """True when no human is available to answer a prompt.
+
+    The dashboard/desktop spawn CLI actions with ``stdin=DEVNULL`` and
+    ``HERMES_NONINTERACTIVE=1`` (see ``hermes_cli/web_server.py``). In that
+    context an ``input()`` raises ``EOFError`` immediately, so a prompt that
+    aborts on EOF kills the spawned action — this is what made the desktop
+    "restart gateway" fail when the Windows gateway service was not yet
+    installed (the start path asks "Install it now?" with no one to answer).
+    Honour the explicit env flag here so callers fall back to their default.
+    """
+    return os.environ.get("HERMES_NONINTERACTIVE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def prompt_yes_no(question: str, default: bool = True) -> bool:
-    """Prompt for yes/no. Ctrl+C exits, empty input returns default."""
+    """Prompt for yes/no. Ctrl+C exits, empty input returns default.
+
+    Non-interactive callers (``HERMES_NONINTERACTIVE=1`` or a closed/redirected
+    stdin) have no one to answer, so fall back to ``default`` instead of
+    aborting the whole process.
+    """
+    if is_noninteractive():
+        return default
+
     default_str = "Y/n" if default else "y/N"
 
     while True:
@@ -283,9 +310,15 @@ def prompt_yes_no(question: str, default: bool = True) -> bool:
                 .strip()
                 .lower()
             )
-        except (KeyboardInterrupt, EOFError):
+        except KeyboardInterrupt:
             print()
             sys.exit(1)
+        except EOFError:
+            # No stdin to read (closed/redirected, e.g. a spawned action with
+            # stdin=DEVNULL). Accept the default rather than exit so the caller
+            # can proceed unattended instead of failing the whole command.
+            print()
+            return default
 
         if not value:
             return default
@@ -1137,7 +1170,7 @@ def setup_terminal_backend(config: dict):
     print_header("Terminal Backend")
     print_info("Choose where Hermes runs shell commands and code.")
     print_info("This affects tool execution, file access, and isolation.")
-    print_info(f"   Guide: {_DOCS_BASE}/developer-guide/environments")
+    print_info(f"   Guide: {_DOCS_BASE}/user-guide/configuration#terminal-backend-configuration")
     print()
 
     current_backend = cfg_get(config, "terminal", "backend", default="local")

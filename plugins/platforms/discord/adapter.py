@@ -98,7 +98,7 @@ except ImportError:
 
 import sys
 from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
 
@@ -116,6 +116,8 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_document_from_bytes,
     SUPPORTED_DOCUMENT_TYPES,
+    _TEXT_INJECT_EXTENSIONS,
+    validate_inbound_media_size,
 )
 from tools.url_safety import is_safe_url
 
@@ -731,6 +733,7 @@ class DiscordAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
+    splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
     # Auto-disconnect from voice channel after this many seconds of inactivity
     VOICE_TIMEOUT = 300
@@ -1587,6 +1590,19 @@ class DiscordAdapter(BasePlatformAdapter):
             mutation_count += 1
             return result
 
+        # Delete obsolete commands FIRST to stay under Discord's 100-command
+        # limit. Discord rejects an upsert that would push the live total over
+        # 100 (error 30032), which silently breaks ALL slash commands. If a new
+        # command is created before the obsolete ones are removed, an app that
+        # is already at the cap momentarily exceeds it and the whole sync fails.
+        # Removing the no-longer-desired commands up front guarantees the live
+        # total never rises above the cap mid-sync.
+        obsolete_keys = set(existing_by_key.keys()) - set(desired_by_key.keys())
+        for key in obsolete_keys:
+            current = existing_by_key.pop(key)
+            await mutate(http.delete_global_command, app_id, current.id)
+            deleted += 1
+
         for key, desired in desired_by_key.items():
             current = existing_by_key.pop(key, None)
             if current is None:
@@ -1609,10 +1625,6 @@ class DiscordAdapter(BasePlatformAdapter):
 
             await mutate(http.edit_global_command, app_id, current.id, desired)
             updated += 1
-
-        for current in existing_by_key.values():
-            await mutate(http.delete_global_command, app_id, current.id)
-            deleted += 1
 
         return {
             "total": len(desired_payloads),
@@ -5052,19 +5064,32 @@ class DiscordAdapter(BasePlatformAdapter):
     # non-CDN URL into the ``att.url`` field. (issue #11345)
     # ------------------------------------------------------------------
 
-    async def _read_attachment_bytes(self, att) -> Optional[bytes]:
+    async def _read_attachment_bytes(
+        self,
+        att,
+        *,
+        media_type: str = "media",
+    ) -> Optional[bytes]:
         """Read an attachment via discord.py's authenticated bot session.
 
         Returns the raw bytes on success, or ``None`` if ``att`` doesn't
         expose a callable ``read()`` or the read itself fails. Callers
         should treat ``None`` as a signal to fall back to the URL-based
         downloaders.
+
+        Oversized attachments (per ``gateway.max_inbound_media_bytes``) raise
+        ``ValueError`` BEFORE the bytes are pulled into memory when Discord
+        reports the size up front, so a hostile upload can't OOM the gateway.
         """
+        attachment_size = getattr(att, "size", None)
+        if attachment_size:
+            validate_inbound_media_size(int(attachment_size), media_type=media_type)
+
         reader = getattr(att, "read", None)
         if reader is None or not callable(reader):
             return None
         try:
-            return await reader()
+            raw_bytes = await reader()
         except Exception as e:
             logger.warning(
                 "[Discord] Authenticated attachment read failed for %s: %s",
@@ -5072,6 +5097,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 e,
             )
             return None
+        validate_inbound_media_size(len(raw_bytes), media_type=media_type)
+        return raw_bytes
 
     async def _cache_discord_image(self, att, ext: str) -> str:
         """Cache a Discord image attachment to local disk.
@@ -5081,7 +5108,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Fallback: ``cache_image_from_url`` (plain httpx, SSRF-gated).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="image")
         if raw_bytes is not None:
             try:
                 return cache_image_from_bytes(raw_bytes, ext=ext)
@@ -5100,7 +5127,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Fallback: ``cache_audio_from_url`` (plain httpx, SSRF-gated).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="audio")
         if raw_bytes is not None:
             try:
                 return cache_audio_from_bytes(raw_bytes, ext=ext)
@@ -5122,7 +5149,7 @@ class DiscordAdapter(BasePlatformAdapter):
         for passing the returned bytes to ``cache_document_from_bytes``
         (and, where applicable, for injecting text content).
         """
-        raw_bytes = await self._read_attachment_bytes(att)
+        raw_bytes = await self._read_attachment_bytes(att, media_type="document")
         if raw_bytes is not None:
             return raw_bytes
 
@@ -5258,6 +5285,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
                     self._threads.mark(thread_id)
+                    # Pre-seed dedup: when _auto_create_thread creates a thread
+                    # via message.create_thread(), Discord fires a second
+                    # MESSAGE_CREATE event for the "thread starter message".
+                    # That starter message carries id == thread.id and may
+                    # arrive with type=default (not type=21/thread_starter_message),
+                    # so the type filter above does not catch it.  Marking the
+                    # thread id in the dedup cache now ensures that duplicate
+                    # event is dropped before it can trigger a second agent run.
+                    # Fixes #51057.
+                    self._dedup.is_duplicate(str(thread.id))
 
         referenced_attachments = []
         reference = getattr(message, "reference", None)
@@ -5272,8 +5309,9 @@ class DiscordAdapter(BasePlatformAdapter):
         if normalized_content.startswith("/"):
             msg_type = MessageType.COMMAND
         elif all_attachments:
-            _allow_any = self._discord_allow_any_attachment()
-            # Check attachment types
+            # Check attachment types. Any non-media attachment is treated as a
+            # DOCUMENT regardless of extension — authorization to message the
+            # agent is the gate, not the file type.
             for att in all_attachments:
                 if att.content_type:
                     if att.content_type.startswith("image/"):
@@ -5286,14 +5324,9 @@ class DiscordAdapter(BasePlatformAdapter):
                         else:
                             msg_type = MessageType.AUDIO
                     else:
-                        doc_ext = ""
-                        if att.filename:
-                            _, doc_ext = os.path.splitext(att.filename)
-                            doc_ext = doc_ext.lower()
-                        if doc_ext in SUPPORTED_DOCUMENT_TYPES or _allow_any:
-                            msg_type = MessageType.DOCUMENT
+                        msg_type = MessageType.DOCUMENT
                     break
-                elif _allow_any:
+                else:
                     # No content_type at all (rare — discord usually fills it
                     # in). Treat as a document so downstream pipelines surface
                     # the path to the agent.
@@ -5382,71 +5415,79 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not ext and content_type:
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(content_type, "")
-                allow_any_attachment = self._discord_allow_any_attachment()
                 in_allowlist = ext in SUPPORTED_DOCUMENT_TYPES
-                if not in_allowlist and not allow_any_attachment:
+                # Any file type is accepted — authorization to message the agent
+                # is the gate, not the file extension. Known types keep their
+                # precise MIME; unknown types fall back to the source content_type
+                # or octet-stream so the agent reaches for terminal tools.
+                max_doc_bytes = self._discord_max_attachment_bytes()
+                if max_doc_bytes and att.size and att.size > max_doc_bytes:
                     logger.warning(
-                        "[Discord] Unsupported document type '%s' (%s), skipping",
-                        ext or "unknown", content_type,
+                        "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
+                        att.size, max_doc_bytes, att.filename,
                     )
                 else:
-                    max_doc_bytes = self._discord_max_attachment_bytes()
-                    if max_doc_bytes and att.size and att.size > max_doc_bytes:
-                        logger.warning(
-                            "[Discord] Document too large (%s bytes > cap %s), skipping: %s",
-                            att.size, max_doc_bytes, att.filename,
+                    try:
+                        raw_bytes = await self._cache_discord_document(att, ext)
+                        cached_path = cache_document_from_bytes(
+                            raw_bytes, att.filename or f"document{ext or '.bin'}"
                         )
-                    else:
-                        try:
-                            raw_bytes = await self._cache_discord_document(att, ext)
-                            cached_path = cache_document_from_bytes(
-                                raw_bytes, att.filename or f"document{ext or '.bin'}"
+                        if in_allowlist:
+                            doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
+                        else:
+                            # Untyped file. Use the source content_type if
+                            # discord gave us one, otherwise fall back to
+                            # octet-stream so the agent knows it's binary and
+                            # reaches for terminal tools.
+                            doc_mime = (
+                                content_type
+                                if content_type and content_type != "unknown"
+                                else "application/octet-stream"
                             )
-                            if in_allowlist:
-                                doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
-                            else:
-                                # allow_any_attachment path: untyped file. Use the
-                                # source content_type if discord gave us one,
-                                # otherwise fall back to octet-stream so the agent
-                                # knows it's binary and reaches for terminal tools.
-                                doc_mime = (
-                                    content_type
-                                    if content_type and content_type != "unknown"
-                                    else "application/octet-stream"
-                                )
-                            media_urls.append(cached_path)
-                            media_types.append(doc_mime)
-                            logger.info(
-                                "[Discord] Cached user %s: %s",
-                                "document" if in_allowlist else "attachment",
-                                cached_path,
-                            )
-                            # Inject text content for plain-text documents (capped at 100 KB)
-                            MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if in_allowlist and ext in {".md", ".txt", ".log"} and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
-                                try:
-                                    text_content = raw_bytes.decode("utf-8")
-                                    display_name = att.filename or f"document{ext}"
-                                    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                                    injection = f"[Content of {display_name}]:\n{text_content}"
-                                    if pending_text_injection:
-                                        pending_text_injection = f"{pending_text_injection}\n\n{injection}"
-                                    else:
-                                        pending_text_injection = injection
-                                except UnicodeDecodeError:
-                                    pass
-                            # NOTE: for the allow_any_attachment path we deliberately
-                            # do NOT inject a path string here. ``gateway/run.py``
-                            # already detects DOCUMENT-typed events with
-                            # ``application/octet-stream`` MIME and emits a context
-                            # note with the sandbox-translated cache path via
-                            # ``to_agent_visible_cache_path()`` (important for
-                            # Docker/Modal terminal backends).
-                        except Exception as e:
-                            logger.warning(
-                                "[Discord] Failed to cache document %s: %s",
-                                att.filename, e, exc_info=True,
-                            )
+                        media_urls.append(cached_path)
+                        media_types.append(doc_mime)
+                        logger.info(
+                            "[Discord] Cached user %s: %s",
+                            "document" if in_allowlist else "attachment",
+                            cached_path,
+                        )
+                        # Inject text content for any text-readable document
+                        # Inject text content for text-readable documents
+                        # (capped at 100 KB). Gate on a text-like extension/MIME
+                        # — NOT a blind UTF-8 decode, since binary formats like
+                        # PDF/zip/docx can have decodable ASCII headers. Unknown
+                        # but clearly-textual types (text/* MIME or a known text
+                        # extension) are inlined too; everything else relies on
+                        # ``gateway/run.py`` to emit a path-pointing context note.
+                        MAX_TEXT_INJECT_BYTES = 100 * 1024
+                        _is_text = (
+                            ext in _TEXT_INJECT_EXTENSIONS
+                            or (content_type or "").startswith("text/")
+                        )
+                        if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            try:
+                                text_content = raw_bytes.decode("utf-8")
+                                display_name = att.filename or f"document{ext or '.txt'}"
+                                display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                                injection = f"[Content of {display_name}]:\n{text_content}"
+                                if pending_text_injection:
+                                    pending_text_injection = f"{pending_text_injection}\n\n{injection}"
+                                else:
+                                    pending_text_injection = injection
+                            except UnicodeDecodeError:
+                                pass
+                        # NOTE: for the untyped-attachment path we deliberately
+                        # do NOT inject a path string here. ``gateway/run.py``
+                        # already detects DOCUMENT-typed events with
+                        # ``application/octet-stream`` MIME and emits a context
+                        # note with the sandbox-translated cache path via
+                        # ``to_agent_visible_cache_path()`` (important for
+                        # Docker/Modal terminal backends).
+                    except Exception as e:
+                        logger.warning(
+                            "[Discord] Failed to cache document %s: %s",
+                            att.filename, e, exc_info=True,
+                        )
 
         # Use normalized_content (saved before auto-threading) instead of message.content,
         # to detect /slash commands in channel messages.
@@ -5668,7 +5709,8 @@ def _component_check_auth(
 
     Mirrors the gateway's external-surface authorization model: component
     button clicks must be explicitly authorized by a Discord user/role
-    allowlist, a global user allowlist, or an explicit allow-all flag.
+    allowlist, a global user allowlist, an explicit allow-all flag, or
+    the pairing store (``hermes pairing approve``).
 
     Behavior:
 
@@ -5678,6 +5720,7 @@ def _component_check_auth(
       - role allowlist set + interaction.user has no resolvable
         ``roles`` attribute (e.g. DM context with a role policy active)
         -> reject (fail closed)
+      - user is approved in the pairing store -> allow
       - otherwise -> reject
     """
     if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
@@ -5699,11 +5742,13 @@ def _component_check_auth(
     if user is None:
         return False
 
+    # Resolve user ID once for both allowlist and pairing checks.
+    try:
+        uid = str(user.id)
+    except AttributeError:
+        uid = ""
+
     if has_users:
-        try:
-            uid = str(user.id)
-        except AttributeError:
-            uid = ""
         if "*" in user_set or (uid and uid in user_set):
             return True
 
@@ -5721,6 +5766,18 @@ def _component_check_auth(
             return False
         if user_role_ids & role_set:
             return True
+
+    # Check pairing store — mirrors ``authz_mixin._check_authorization``
+    # so users approved via ``hermes pairing approve`` can interact with
+    # component buttons even without DISCORD_ALLOWED_USERS set.
+    if uid:
+        try:
+            from gateway.pairing import PairingStore
+            store = PairingStore()
+            if store.is_approved("discord", uid):
+                return True
+        except Exception:
+            pass
 
     return False
 

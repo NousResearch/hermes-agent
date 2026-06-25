@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from hermes_cli.config import (
     managed_error,
     read_raw_config,
     save_env_value,
+    write_platform_config_field,
 )
 
 # display_hermes_home is imported lazily at call sites to avoid ImportError
@@ -307,7 +309,11 @@ def _append_unique_pid(
     pids.append(pid)
 
 
-def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> list[int]:
+def _scan_gateway_pids(
+    exclude_pids: set[int],
+    all_profiles: bool = False,
+    include_restart_managers: bool = False,
+) -> list[int]:
     """Best-effort process-table scan for gateway PIDs.
 
     This supplements the profile-scoped PID file so status views can still spot
@@ -324,7 +330,10 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
     # scan no longer false-matches ``gateway status``/``dashboard`` siblings or
     # unrelated processes like ``python -m tui_gateway``. Lazy import mirrors the
     # circular-import avoidance used elsewhere in this module.
-    from gateway.status import looks_like_gateway_command_line
+    from gateway.status import (
+        looks_like_gateway_command_line,
+        looks_like_gateway_runtime_command_line,
+    )
     current_home = str(get_hermes_home().resolve())
     current_home_lc = current_home.lower()
     current_profile_arg = _profile_arg(current_home)
@@ -355,6 +364,11 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
         ):
             return False
         return True
+
+    def _matches_gateway_runtime(command: str) -> bool:
+        if looks_like_gateway_command_line(command):
+            return True
+        return include_restart_managers and looks_like_gateway_runtime_command_line(command)
 
     try:
         if is_windows():
@@ -419,7 +433,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
-                    if looks_like_gateway_command_line(current_cmd) and (
+                    if _matches_gateway_runtime(current_cmd) and (
                         all_profiles or _matches_current_profile(current_cmd)
                     ):
                         try:
@@ -444,7 +458,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                             with open(f"/proc/{pid}/cmdline", "rb") as _f:
                                 cmdline = _f.read().decode("utf-8", errors="replace")
                             cmdline = cmdline.replace("\x00", " ")
-                            if looks_like_gateway_command_line(cmdline) and (
+                            if _matches_gateway_runtime(cmdline) and (
                                 all_profiles or _matches_current_profile(cmdline)
                             ):
                                 _append_unique_pid(pids, pid, exclude_pids)
@@ -487,7 +501,7 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
 
                     if pid is None:
                         continue
-                    if looks_like_gateway_command_line(command) and (
+                    if _matches_gateway_runtime(command) and (
                         all_profiles or _matches_current_profile(command)
                     ):
                         _append_unique_pid(pids, pid, exclude_pids)
@@ -566,7 +580,15 @@ def find_gateway_pids(
             pass
     for pid in _get_service_pids():
         _append_unique_pid(pids, pid, _exclude)
-    for pid in _scan_gateway_pids(_exclude, all_profiles=all_profiles):
+    try:
+        include_restart_managers = not supports_systemd_services()
+    except Exception:
+        include_restart_managers = False
+    for pid in _scan_gateway_pids(
+        _exclude,
+        all_profiles=all_profiles,
+        include_restart_managers=include_restart_managers,
+    ):
         _append_unique_pid(pids, pid, _exclude)
     return pids
 
@@ -606,9 +628,71 @@ def _gateway_run_args_for_profile(profile: str) -> list[str]:
     return args
 
 
+def _capture_gateway_argv(pid: int) -> list[str] | None:
+    """Return the live argv of a running gateway process, or ``None``.
+
+    Used to respawn gateways that have no profile→PID-file mapping (e.g. a
+    Windows Scheduled Task running ``pythonw.exe -m hermes_cli.main gateway
+    run``). ``_pause_windows_gateways_for_update`` force-kills such gateways
+    before mutating the venv; without their original command line we cannot
+    bring them back, so we snapshot it here before the kill.
+
+    Best-effort: returns ``None`` if psutil is unavailable, the process is
+    gone, access is denied, or the argv doesn't look like a gateway command.
+    """
+    if pid <= 1:
+        return None
+    try:
+        import psutil  # type: ignore
+    except ImportError:
+        return None
+    try:
+        argv = list(psutil.Process(pid).cmdline() or [])
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return None
+    except Exception:
+        return None
+    if not argv:
+        return None
+    # Guard against snapshotting an unrelated process whose PID happened to be
+    # reported by the scan: only respawn things that actually look like a
+    # gateway run command line.
+    try:
+        from gateway.status import looks_like_gateway_command_line
+
+        if not looks_like_gateway_command_line(" ".join(argv)):
+            return None
+    except Exception:
+        pass
+    return argv
+
+
+def launch_detached_gateway_restart_by_cmdline(
+    old_pid: int, run_argv: list[str]
+) -> bool:
+    """Relaunch a gateway by replaying its captured command line after exit.
+
+    Companion to ``launch_detached_profile_gateway_restart`` for gateways that
+    have no profile→PID-file mapping (Scheduled-Task / manually-launched
+    ``gateway run`` whose HERMES_HOME or argv doesn't match a known profile).
+    Uses the identical detached-watcher mechanism; only the respawn argv
+    differs (the process's own argv instead of a profile-derived one).
+    """
+    if old_pid <= 0 or not run_argv:
+        return False
+    return _spawn_gateway_restart_watcher(old_pid, list(run_argv))
+
+
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     """Relaunch a manually-run profile gateway after its current PID exits."""
     if old_pid <= 0:
+        return False
+    return _spawn_gateway_restart_watcher(old_pid, _gateway_run_args_for_profile(profile))
+
+
+def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
+    """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits."""
+    if old_pid <= 0 or not run_argv:
         return False
 
     # The watcher is a tiny Python subprocess that polls the old PID and
@@ -695,7 +779,7 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
         "-c",
         watcher,
         str(old_pid),
-        *_gateway_run_args_for_profile(profile),
+        *run_argv,
     ]
 
     # Same platform-aware detach for the watcher process itself — so
@@ -1261,12 +1345,85 @@ def kill_gateway_processes(
     return killed
 
 
+def _reap_unsupervised_gateway_orphans() -> bool:
+    """Kill no-supervisor gateway orphans the pidfile/runtime record can't see.
+
+    On WSL/no-systemd hosts the manual restart fallback runs the gateway
+    in-process under a ``gateway restart`` argv (hermes_cli/gateway.py restart
+    branch → ``run_gateway()``). If its pidfile or runtime record goes missing
+    or stale, ``get_running_pid()`` returns ``None`` even though a live orphan
+    still holds the webhook port, so a follow-up restart stacks a duplicate on
+    the same port (#51325). This is a no-op on hosts WITH a service supervisor,
+    where a ``gateway restart`` argv is a transient management command, not the
+    running gateway — gating on ``supports_systemd_services()`` keeps the
+    orphan-aware scan from killing live management processes there.
+
+    Returns True if at least one orphan was reaped.
+    """
+    try:
+        if supports_systemd_services():
+            return False
+    except Exception:
+        return False
+
+    from gateway.status import _pid_exists, write_planned_stop_marker
+
+    own = {os.getpid()}
+    try:
+        # find_gateway_pids() includes no-supervisor `gateway restart` runtimes
+        # for the current profile when no systemd supervisor is present.
+        orphans = [p for p in find_gateway_pids(exclude_pids=own) if p and p > 0]
+    except Exception:
+        return False
+    if not orphans:
+        return False
+
+    reaped = False
+    for pid in orphans:
+        try:
+            write_planned_stop_marker(pid)
+        except Exception:
+            pass
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            print(f"⚠ Permission denied to kill orphaned gateway PID {pid}")
+            continue
+        reaped = True
+
+    # SIGTERM released the port in the field report but the orphan kept
+    # running until a follow-up SIGKILL — wait briefly, then force-kill
+    # any survivor so the replacement can bind the port cleanly.
+    deadline = time.monotonic() + 5.0
+    survivors = list(orphans)
+    while survivors and time.monotonic() < deadline:
+        survivors = [p for p in survivors if _pid_exists(p)]
+        if survivors:
+            time.sleep(0.2)
+    for pid in survivors:
+        try:
+            os.kill(pid, getattr(signal, "SIGKILL", signal.SIGTERM))
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+    return reaped
+
+
 def stop_profile_gateway() -> bool:
     """Stop only the gateway for the current profile (HERMES_HOME-scoped).
 
     Uses the PID file written by start_gateway(), so it only kills the
     gateway belonging to this profile — not gateways from other profiles.
     Returns True if a process was stopped, False if none was found.
+
+    On hosts without a service supervisor (e.g. WSL/no-systemd, where the
+    manual restart fallback runs the gateway in-process under a ``gateway
+    restart`` argv), the pidfile/runtime record can be missing or stale while
+    a live orphan still holds the webhook port. In that case fall back to the
+    orphan-aware process scan so the replacement reaps the prior instance
+    instead of stacking a duplicate on the same port (#51325).
     """
     try:
         from gateway.status import get_running_pid, remove_pid_file
@@ -1275,7 +1432,7 @@ def stop_profile_gateway() -> bool:
 
     pid = get_running_pid()
     if pid is None:
-        return False
+        return _reap_unsupervised_gateway_orphans()
 
     try:
         from gateway.status import write_planned_stop_marker
@@ -3734,6 +3891,16 @@ def launchd_restart():
             print("✓ Service restart requested")
             return
         if pid is not None:
+            # Announce the drain BEFORE waiting on it. This wait can run for
+            # the full drain budget (180s by default) while the old gateway
+            # finishes in-flight agent runs, and it streams into surfaces with
+            # no other feedback — the desktop updater's live output most of
+            # all, where a silent stop here reads as "update stuck" (#44515).
+            # Mirrors the systemd branch's "draining (up to Ns)..." line.
+            print(
+                f"→ Stopping gateway (PID {pid}) — draining in-flight runs "
+                f"(up to {drain_timeout:.0f}s)..."
+            )
             try:
                 terminate_pid(pid, force=False)
             except (ProcessLookupError, PermissionError, OSError):
@@ -4573,12 +4740,19 @@ def _runtime_health_lines() -> list[str]:
         lines.append(f"⚠ Last startup issue: {exit_reason}")
     elif gateway_state == "draining":
         action = "restart" if restart_requested else "shutdown"
-        count = int(active_agents or 0)
+        from gateway.status import parse_active_agents
+
+        count = parse_active_agents(active_agents)
         lines.append(f"⏳ Gateway draining for {action} ({count} active agent(s))")
     elif gateway_state == "stopped" and exit_reason:
         lines.append(f"⚠ Last shutdown reason: {exit_reason}")
 
     return lines
+
+
+def _set_platform_unauthorized_dm_behavior(platform_key: str, behavior: str) -> None:
+    """Persist a platform-specific unauthorized-DM policy in config.yaml."""
+    write_platform_config_field(platform_key, "unauthorized_dm_behavior", behavior, raw=True)
 
 
 def _setup_standard_platform(platform: dict):
@@ -4690,24 +4864,43 @@ def _setup_standard_platform(platform: dict):
             else:
                 # No allowlist — ask about open access vs DM pairing
                 print()
-                access_choices = [
-                    "Enable open access (anyone can message the bot)",
-                    "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
-                    "Skip for now (bot will deny all users until configured)",
-                ]
+                is_email = platform.get("key") == "email"
+                if is_email:
+                    access_choices = [
+                        "Enable open access (any email sender can message the bot)",
+                        "Use DM pairing (unknown email senders receive a pairing code)",
+                        "Keep unknown senders silent",
+                    ]
+                    default_access_idx = 2
+                else:
+                    access_choices = [
+                        "Enable open access (anyone can message the bot)",
+                        "Use DM pairing (unknown users request access, you approve with 'hermes pairing approve')",
+                        "Skip for now (bot will deny all users until configured)",
+                    ]
+                    default_access_idx = 1
                 access_idx = prompt_choice(
-                    "  How should unauthorized users be handled?", access_choices, 1
+                    "  How should unauthorized users be handled?",
+                    access_choices,
+                    default_access_idx,
                 )
                 if access_idx == 0:
-                    save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
+                    if is_email:
+                        save_env_value("EMAIL_ALLOW_ALL_USERS", "true")
+                    else:
+                        save_env_value("GATEWAY_ALLOW_ALL_USERS", "true")
                     print_warning("  Open access enabled — anyone can use your bot!")
                 elif access_idx == 1:
+                    if is_email:
+                        _set_platform_unauthorized_dm_behavior("email", "pair")
                     print_success(
                         "  DM pairing mode — users will receive a code to request access."
                     )
                     print_info(
                         "  Approve with: hermes pairing approve <platform> <code>"
                     )
+                elif is_email:
+                    print_success("  Unknown email senders will be ignored.")
                 else:
                     print_info(
                         "  Skipped — configure later with 'hermes gateway setup'"

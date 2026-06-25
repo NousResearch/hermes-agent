@@ -103,6 +103,32 @@ VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
+
+def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None:
+    """Fire a kanban lifecycle plugin hook, fully best-effort.
+
+    Called by the claim/complete/block transitions AFTER their write txn has
+    committed, so plugin code never runs while a SQLite write lock is held and
+    always observes durable board state. Any failure (plugins unavailable,
+    a plugin raising, import error) is swallowed — a misbehaving observer must
+    never break a board state transition.
+
+    ``profile_name`` is resolved from the active HERMES_HOME so dispatcher- and
+    worker-side hooks both carry the right profile without the caller plumbing
+    it through.
+    """
+    try:
+        from hermes_cli.plugins import invoke_hook
+        from hermes_cli.profiles import get_active_profile_name
+        try:
+            profile_name = get_active_profile_name()
+        except Exception:
+            profile_name = "default"
+        invoke_hook(event, task_id=task_id, profile_name=profile_name, **fields)
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
+
+
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
 # call ``heartbeat_claim(task_id)`` periodically. In practice most kanban
@@ -778,10 +804,9 @@ class Task:
     current_run_id: Optional[int] = None
     workflow_template_id: Optional[str] = None
     current_step_key: Optional[str] = None
-    # Force-loaded skills for the worker on this task (appended to the
-    # dispatcher's built-in `kanban-worker` via --skills). Stored as a
-    # JSON array of skill names. None = use only the defaults; empty
-    # list = explicitly no extra skills.
+    # Force-loaded skills for the worker on this task (passed via
+    # --skills). Stored as a JSON array of skill names. None = use only
+    # the defaults; empty list = explicitly no extra skills.
     skills: Optional[list] = None
     model_override: Optional[str] = None
     # Per-task override for the consecutive-failure circuit breaker.
@@ -1019,8 +1044,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     workflow_template_id TEXT,
     current_step_key     TEXT,
     -- Force-loaded skills for the worker on this task, stored as JSON.
-    -- Appended to the dispatcher's built-in `--skills kanban-worker`.
-    -- NULL or empty array = no extras.
+    -- Passed to the worker via `--skills`. NULL or empty array = no extras.
     skills               TEXT,
     -- Per-task model override. When set, the dispatcher passes -m <model>
     -- to the worker, overriding the profile's default model. NULL = use
@@ -1157,6 +1181,14 @@ _INIT_LOCK = threading.RLock()
 _SQLITE_HEADER = b"SQLite format 3\x00"
 DEFAULT_BUSY_TIMEOUT_MS = 120_000
 
+# Bounded acquire for the cross-process init lock (#36644). The original bare
+# blocking flock had no timeout, so a wedged holder blocked the dispatcher's
+# next-tick connect forever. We retry a non-blocking acquire up to this
+# deadline, polling at this interval, then proceed without the cross-process
+# lock (the in-process _INIT_LOCK + idempotent init remain the backstop).
+_INIT_LOCK_TIMEOUT_SECONDS = 10.0
+_INIT_LOCK_POLL_SECONDS = 0.05
+
 
 def _resolve_busy_timeout_ms() -> int:
     """Return the SQLite busy timeout for Kanban connections.
@@ -1201,43 +1233,163 @@ def _cross_process_init_lock(path: Path):
     lock keeps header validation, integrity probing, WAL activation, and
     additive migrations single-file/single-writer across the whole host while
     leaving normal post-init DB usage concurrent under SQLite WAL.
+
+    The acquire is **bounded** (issue #36644): the original bare blocking
+    ``flock(LOCK_EX)`` had no timeout, so a single process stalled inside the
+    critical section (or a stale lock held by a wedged worker) blocked every
+    other ``connect()`` — including the long-lived gateway dispatcher's
+    next-tick connect — forever, with no traceback and no recovery short of a
+    restart. We now retry a non-blocking acquire up to a deadline; on timeout
+    we log a WARNING and proceed WITHOUT the cross-process lock. That is safe:
+    the in-process ``_INIT_LOCK`` still serializes same-process threads, and
+    the init work itself is idempotent (``CREATE TABLE IF NOT EXISTS`` +
+    additive migrations), so the worst case of two processes racing first-init
+    is redundant work, not corruption. A bounded "proceed anyway" beats an
+    unbounded hang that silently stops the board.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".init.lock")
     handle = lock_path.open("a+b")
+    acquired = False
     try:
+        deadline = time.monotonic() + _INIT_LOCK_TIMEOUT_SECONDS
         if _IS_WINDOWS:
             import msvcrt
 
-            # Lock a single byte in the sidecar file. ``msvcrt.locking`` starts
-            # at the current file position, so seek explicitly before both
-            # lock and unlock.  The file is opened in append/read binary mode so
-            # it always exists but the byte-range lock is the synchronization
-            # primitive; no payload needs to be written.
-            handle.seek(0)
             locking = getattr(msvcrt, "locking")
-            lock_mode = getattr(msvcrt, "LK_LOCK")
-            locking(handle.fileno(), lock_mode, 1)
+            nb_lock = getattr(msvcrt, "LK_NBLCK")
+            while True:
+                try:
+                    handle.seek(0)
+                    locking(handle.fileno(), nb_lock, 1)
+                    acquired = True
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(_INIT_LOCK_POLL_SECONDS)
         else:
             import fcntl
 
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            while True:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquired = True
+                    break
+                except (BlockingIOError, OSError):
+                    if time.monotonic() >= deadline:
+                        break
+                    time.sleep(_INIT_LOCK_POLL_SECONDS)
+        if not acquired:
+            _log.warning(
+                "kanban init lock for %s not acquired within %.0fs — proceeding "
+                "without the cross-process lock (in-process lock + idempotent "
+                "init are the correctness backstop). A stuck holder is no longer "
+                "able to block this connect indefinitely (#36644).",
+                lock_path, _INIT_LOCK_TIMEOUT_SECONDS,
+            )
         yield
     finally:
         try:
-            if _IS_WINDOWS:
+            if acquired:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    locking = getattr(msvcrt, "locking")
+                    unlock_mode = getattr(msvcrt, "LK_UNLCK")
+                    locking(handle.fileno(), unlock_mode, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+@contextlib.contextmanager
+def _dispatch_tick_lock(db_path: Path):
+    """Non-blocking single-writer guard around one dispatcher tick.
+
+    Yields ``True`` when this process holds the board's dispatch lock and
+    may proceed with the tick, or ``False`` when another process already
+    holds it (the caller should skip the tick this round).
+
+    Motivation (issue #35240): a ``hermes gateway run --replace`` /
+    ``gateway restart`` invoked from a shell on a systemd/launchd host can
+    leave an orphan gateway whose dispatcher escapes the service cgroup,
+    survives ``systemctl restart``, and becomes a *second* long-lived
+    writer on the same ``kanban.db``. Two dispatchers that each believe
+    they own the file both pass SQLite ``busy_timeout`` and then race on
+    WAL frames — the documented root cause of multi-writer corruption.
+    The startup guard (``_guard_supervised_gateway_conflict``) blocks the
+    common way an orphan is born, but this lock is the defense-in-depth
+    that prevents two dispatchers from ever writing concurrently
+    *regardless of how the second one got there*.
+
+    The lock is **non-blocking** on purpose: the gateway's async watcher
+    must never stall on a held lock. A losing dispatcher simply skips its
+    tick (the winner is making progress on the same board), and tries
+    again next interval.
+
+    Board-scoped: the lock file is a ``.dispatch.lock`` sibling of the
+    board's ``kanban.db``, so unrelated boards tick independently. On
+    platforms without ``fcntl``/``msvcrt`` the guard degrades to a no-op
+    (yields ``True``) — single-writer enforcement is best-effort and the
+    orphan-dispatcher scenario is specific to POSIX service managers.
+    """
+    lock_path = db_path.with_name(db_path.name + ".dispatch.lock")
+    handle = None
+    acquired = False
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+        if _IS_WINDOWS:
+            try:
                 import msvcrt
 
                 handle.seek(0)
                 locking = getattr(msvcrt, "locking")
-                unlock_mode = getattr(msvcrt, "LK_UNLCK")
-                locking(handle.fileno(), unlock_mode, 1)
-            else:
+                # LK_NBLCK = non-blocking exclusive byte-range lock.
+                nb_lock = getattr(msvcrt, "LK_NBLCK")
+                locking(handle.fileno(), nb_lock, 1)
+                acquired = True
+            except (OSError, AttributeError):
+                acquired = False
+        else:
+            try:
                 import fcntl
 
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            handle.close()
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+            except (BlockingIOError, OSError):
+                acquired = False
+    except OSError:
+        # Could not even open the lock file (permissions, read-only FS).
+        # Degrade to a no-op so a probe failure never blocks dispatch.
+        acquired = True
+        handle = None
+    try:
+        yield acquired
+    finally:
+        if handle is not None:
+            try:
+                if acquired:
+                    if _IS_WINDOWS:
+                        import msvcrt
+
+                        handle.seek(0)
+                        locking = getattr(msvcrt, "locking")
+                        unlock_mode = getattr(msvcrt, "LK_UNLCK")
+                        locking(handle.fileno(), unlock_mode, 1)
+                    else:
+                        import fcntl
+
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except (OSError, AttributeError):
+                pass
+            finally:
+                handle.close()
 
 
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
@@ -1450,6 +1602,35 @@ def connect(
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Fast path: once THIS process has initialized this path, the expensive
+    # first-open work (header validation, integrity probe, schema + additive
+    # migrations) is already done and cached in _INITIALIZED_PATHS. Acquiring
+    # the cross-process init lock on every connect is what let a single stalled
+    # holder (e.g. an external `hermes kanban list` mid-integrity-probe) block
+    # the long-lived gateway dispatcher's next-tick connect() forever — an
+    # unbounded flock with no timeout, no LOCK_NB, no recovery (#36644). On the
+    # steady-state path there is nothing for the cross-process lock to protect
+    # (no schema/migration writes run), so skip it entirely and just open the
+    # connection with WAL/pragmas under the cheap in-process _INIT_LOCK.
+    resolved = str(path.resolve())
+    if resolved in _INITIALIZED_PATHS:
+        conn = _sqlite_connect(path)
+        try:
+            conn.row_factory = sqlite3.Row
+            with _INIT_LOCK:
+                from hermes_state import apply_wal_with_fallback
+                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
+                conn.execute("PRAGMA synchronous=FULL")
+                conn.execute("PRAGMA wal_autocheckpoint=100")
+                conn.execute("PRAGMA foreign_keys=ON")
+                conn.execute("PRAGMA secure_delete=ON")
+                conn.execute("PRAGMA cell_size_check=ON")
+        except Exception:
+            conn.close()
+            raise
+        return conn
+
     with _cross_process_init_lock(path):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
         # and other invalid-header cases without opening a sqlite connection.
@@ -1665,8 +1846,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         )
     if "skills" not in cols:
         # JSON array of skill names the dispatcher force-loads into the
-        # worker (additive to the built-in `kanban-worker`). NULL is fine
-        # for existing rows.
+        # worker via --skills. NULL is fine for existing rows.
         _add_column_if_missing(conn, "tasks", "skills", "skills TEXT")
 
     if "max_retries" not in cols:
@@ -2102,9 +2282,8 @@ def create_task(
 
     ``skills`` is an optional list of skill names to force-load into
     the worker when dispatched. Stored as JSON; the dispatcher passes
-    each name to ``hermes --skills ...`` alongside the built-in
-    ``kanban-worker``. Use this to pin a task to a specialist skill
-    (e.g. ``skills=["translation"]`` so the worker loads the
+    each name to ``hermes --skills ...``. Use this to pin a task to a
+    specialist skill (e.g. ``skills=["translation"]`` so the worker loads the
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
@@ -2165,7 +2344,7 @@ def create_task(
                 f"{quoted} {noun}, not skill name(s). "
                 "Put toolsets in the assignee profile's `toolsets:` config "
                 "instead of per-task skills. Skills are named skill bundles "
-                "(e.g. `kanban-worker`, `blogwatcher`); toolsets are runtime "
+                "(e.g. `blogwatcher`, `github-code-review`); toolsets are runtime "
                 "capabilities (e.g. `web`, `browser`, `terminal`)."
             )
         skills_list = cleaned
@@ -3090,7 +3269,15 @@ def claim_task(
             {"lock": lock, "expires": expires, "run_id": run_id},
             run_id=run_id,
         )
-        return get_task(conn, task_id)
+        claimed = get_task(conn, task_id)
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_claimed",
+        task_id,
+        board=get_current_board(),
+        assignee=claimed.assignee if claimed else None,
+        run_id=run_id,
+    )
+    return claimed
 
 
 def claim_review_task(
@@ -3756,6 +3943,15 @@ def complete_task(
     recompute_ready(conn)
     # Clean up the scratch workspace and any stale tmux session for the worker.
     _cleanup_workspace(conn, task_id)
+    _done_task = get_task(conn, task_id)
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_completed",
+        task_id,
+        board=get_current_board(),
+        assignee=_done_task.assignee if _done_task else None,
+        run_id=run_id,
+        summary=(summary if summary is not None else result),
+    )
     return True
 
 
@@ -4179,7 +4375,16 @@ def block_task(
                 summary=reason,
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
-        return True
+        _blocked_task = get_task(conn, task_id)
+    _fire_kanban_lifecycle_hook(
+        "kanban_task_blocked",
+        task_id,
+        board=get_current_board(),
+        assignee=_blocked_task.assignee if _blocked_task else None,
+        run_id=run_id,
+        reason=reason,
+    )
+    return True
 
 
 
@@ -4702,6 +4907,225 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 # Workspace resolution
 # ---------------------------------------------------------------------------
 
+def _git_toplevel(path: Path) -> Optional[Path]:
+    """Return the git toplevel containing ``path``, or ``None`` if not in a repo."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    out = (result.stdout or "").strip()
+    if not out:
+        return None
+    try:
+        return Path(out).expanduser().resolve()
+    except Exception:
+        return Path(out).expanduser()
+
+
+def _git_branch_exists(repo_root: Path, branch_name: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo_root), "show-ref", "--verify", f"refs/heads/{branch_name}"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def _git_common_dir(path: Path) -> Optional[Path]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    out = (result.stdout or "").strip()
+    if not out:
+        return None
+    return Path(out).expanduser().resolve(strict=False)
+
+
+def _git_dir(path: Path) -> Optional[Path]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--path-format=absolute", "--git-dir"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    out = (result.stdout or "").strip()
+    if not out:
+        return None
+    return Path(out).expanduser().resolve(strict=False)
+
+
+def _git_current_branch(path: Path) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "branch", "--show-current"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    branch = (result.stdout or "").strip()
+    return branch or None
+
+
+def _is_linked_worktree_checkout(path: Path) -> bool:
+    git_dir = _git_dir(path)
+    common_dir = _git_common_dir(path)
+    if git_dir is None or common_dir is None:
+        return False
+    return git_dir != common_dir
+
+
+def _nearest_existing_path(path: Path) -> Path:
+    current = path
+    while not current.exists() and current != current.parent:
+        current = current.parent
+    return current
+
+
+def _repo_root_for_worktree_target(path: Path) -> Optional[Path]:
+    current = _nearest_existing_path(path).resolve(strict=False)
+    while True:
+        repo_root = _git_toplevel(current)
+        if repo_root is not None:
+            return repo_root
+        if current == current.parent:
+            return None
+        current = current.parent
+
+
+def _ensure_git_worktree(repo_root: Path, target: Path, branch_name: str) -> None:
+    """Materialize ``target`` as a linked git worktree under ``repo_root``."""
+    target = target.expanduser()
+    repo_common = _git_common_dir(repo_root)
+    if target.exists() and repo_common is not None:
+        target_common = _git_common_dir(target)
+        if target_common == repo_common:
+            return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if _git_branch_exists(repo_root, branch_name):
+        cmd = ["git", "-C", str(repo_root), "worktree", "add", str(target), branch_name]
+    else:
+        cmd = [
+            "git", "-C", str(repo_root), "worktree", "add", "-b", branch_name,
+            str(target), "HEAD",
+        ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(
+            f"git worktree add failed for {target} on branch {branch_name}: {stderr}"
+        )
+
+
+def _resolve_worktree_workspace(
+    task: Task, *, board: Optional[str] = None
+) -> tuple[Path, str]:
+    """Resolve + materialize a linked git worktree for ``task``.
+
+    When ``task.workspace_path`` is unset, the anchor is the board's
+    ``default_workdir`` (a persistent project checkout). This keeps every
+    worktree task under a meaningful, board-owned repo — ``<repo>/.worktrees/
+    <task-id>`` — instead of silently landing under the dispatcher's current
+    working directory (which is whatever directory the gateway happened to be
+    launched from, e.g. the Hermes checkout). If no anchor is configured
+    anywhere, we fail loudly rather than guess.
+    """
+    branch_name = (task.branch_name or "").strip() or f"wt/{task.id}"
+    if not task.workspace_path:
+        # Anchor on the board's configured default_workdir, not Path.cwd().
+        # The dispatcher's CWD is incidental (gateway launch dir) and using it
+        # scatters worktrees under whatever repo the gateway started in.
+        board_slug = board if board else get_current_board()
+        board_default = (read_board_metadata(board_slug).get("default_workdir") or "").strip()
+        if not board_default:
+            raise ValueError(
+                f"task {task.id} has workspace_kind=worktree but no workspace_path, "
+                f"and board {board_slug!r} has no default_workdir set. Set a board "
+                "default workdir (a git repo) or create the task with "
+                "--workspace worktree:<absolute-repo-path>."
+            )
+        anchor = Path(board_default).expanduser()
+        if not anchor.is_absolute():
+            raise ValueError(
+                f"board {board_slug!r} default_workdir {board_default!r} is not "
+                "absolute; use an absolute path to a git repo"
+            )
+        repo_root = _git_toplevel(anchor)
+        if repo_root is None:
+            raise ValueError(
+                f"task {task.id} has workspace_kind=worktree but board "
+                f"{board_slug!r} default_workdir {board_default!r} is not inside a git repo"
+            )
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name)
+        return target, branch_name
+
+    requested = Path(task.workspace_path).expanduser()
+    if not requested.is_absolute():
+        raise ValueError(
+            f"task {task.id} has non-absolute worktree path "
+            f"{task.workspace_path!r}; use an absolute path"
+        )
+    requested_resolved = requested.resolve(strict=False)
+
+    if requested.exists() and _is_linked_worktree_checkout(requested):
+        actual_branch = _git_current_branch(requested)
+        return requested_resolved, actual_branch or branch_name
+
+    repo_root = _git_toplevel(requested)
+    if repo_root is not None and requested_resolved == repo_root:
+        target = repo_root / ".worktrees" / task.id
+        _ensure_git_worktree(repo_root, target, branch_name)
+        return target, branch_name
+
+    repo_root = _repo_root_for_worktree_target(requested.parent)
+    if repo_root is None:
+        raise ValueError(
+            f"task {task.id} worktree path {task.workspace_path!r} is not inside a git repo "
+            "and does not point at a git repo root"
+        )
+    _ensure_git_worktree(repo_root, requested, branch_name)
+    return requested, branch_name
+
+
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
@@ -4715,9 +5139,15 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
       resolves against the dispatcher's CWD instead of a meaningful
       root.  Users who want a kanban-root-relative workspace should
       compute the absolute path themselves.
-    - ``worktree``: a git worktree at ``workspace_path``.  Not created
-      automatically in v1 -- the kanban-worker skill documents
-      ``git worktree add`` as a worker-side step.  Returns the intended path.
+    - ``worktree``: a real linked git worktree. If ``workspace_path`` names
+      a repo root, Hermes treats it as an anchor and materializes a linked
+      worktree at ``<repo>/.worktrees/<task-id>``. If ``workspace_path`` names
+      a concrete target path, Hermes creates/reuses that linked worktree. With
+      no ``workspace_path``, Hermes anchors on the board's ``default_workdir``
+      and materializes ``<repo>/.worktrees/<task-id>`` per task; if no
+      ``default_workdir`` is configured it raises rather than guessing from the
+      dispatcher's CWD. When ``branch_name`` is empty, Hermes uses
+      ``wt/<task-id>``.
 
     Persist the resolved path back to the task row via ``set_workspace_path``
     so subsequent runs reuse the same directory.
@@ -4753,15 +5183,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
-        if not task.workspace_path:
-            # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
-            return Path.cwd() / ".worktrees" / task.id
-        p = Path(task.workspace_path).expanduser()
-        if not p.is_absolute():
-            raise ValueError(
-                f"task {task.id} has non-absolute worktree path "
-                f"{task.workspace_path!r}; use an absolute path"
-            )
+        p, _branch_name = _resolve_worktree_workspace(task, board=board)
         return p
     raise ValueError(f"unknown workspace_kind: {kind}")
 
@@ -4773,6 +5195,16 @@ def set_workspace_path(
         conn.execute(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
             (str(path), task_id),
+        )
+
+
+def set_branch_name(
+    conn: sqlite3.Connection, task_id: str, branch_name: str
+) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET branch_name = ? WHERE id = ?",
+            (str(branch_name), task_id),
         )
 
 
@@ -4930,6 +5362,12 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    skipped_locked: bool = False
+    """True when this tick was skipped because another process already held
+    the board's dispatch lock (issue #35240). A losing dispatcher does no
+    DB writes this tick — the lock holder is making progress on the same
+    board. This is the steady-state signal that a single-writer guard is
+    actively preventing two dispatchers from racing on ``kanban.db``."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5344,8 +5782,9 @@ def enforce_max_runtime(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running'",
-                (tid,),
+                "WHERE id = ? AND status = 'running' "
+                "  AND worker_pid = ? AND claim_lock IS ?",
+                (tid, pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
                 payload = {
@@ -5469,8 +5908,9 @@ def detect_stale_running(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
-                "WHERE id = ? AND status = 'running'",
-                (tid,),
+                "WHERE id = ? AND status = 'running' "
+                "  AND claim_lock IS ?",
+                (tid, row["claim_lock"]),
             )
             if cur.rowcount != 1:
                 continue
@@ -5642,8 +6082,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
-                "WHERE id = ? AND status = 'running'",
-                (row["id"],),
+                "WHERE id = ? AND status = 'running' "
+                "  AND worker_pid = ? AND claim_lock IS ?",
+                (row["id"], pid, row["claim_lock"]),
             )
             if cur.rowcount == 1:
                 # Rate-limited requeues are a clean release, not a crash —
@@ -6126,6 +6567,72 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
 ) -> DispatchResult:
+    """Run one dispatcher tick under the board's single-writer lock.
+
+    Thin wrapper around :func:`_dispatch_once_locked`. It acquires a
+    non-blocking, board-scoped dispatch lock (issue #35240) so that two
+    dispatchers pointed at the same ``kanban.db`` — e.g. the service-
+    managed gateway and a shell-spawned orphan that escaped the service
+    cgroup — can never run a reclaim/spawn/write tick concurrently and
+    race on WAL frames. The losing dispatcher returns an empty
+    ``DispatchResult`` with ``skipped_locked=True`` and does no DB writes;
+    the holder is already making progress on the same board.
+
+    The lock is keyed off the board's resolved DB path, so unrelated
+    boards tick in parallel. See :func:`_dispatch_tick_lock` for the
+    cross-process / cross-platform mechanics.
+    """
+    try:
+        db_path = kanban_db_path(board=board)
+    except Exception:
+        # Path resolution should never fail, but if it somehow does we
+        # must not lose the tick — fall through to an unguarded dispatch
+        # rather than dropping work.
+        return _dispatch_once_locked(
+            conn,
+            spawn_fn=spawn_fn,
+            ttl_seconds=ttl_seconds,
+            dry_run=dry_run,
+            max_spawn=max_spawn,
+            max_in_progress=max_in_progress,
+            failure_limit=failure_limit,
+            stale_timeout_seconds=stale_timeout_seconds,
+            board=board,
+            default_assignee=default_assignee,
+            max_in_progress_per_profile=max_in_progress_per_profile,
+        )
+    with _dispatch_tick_lock(db_path) as held:
+        if not held:
+            return DispatchResult(skipped_locked=True)
+        return _dispatch_once_locked(
+            conn,
+            spawn_fn=spawn_fn,
+            ttl_seconds=ttl_seconds,
+            dry_run=dry_run,
+            max_spawn=max_spawn,
+            max_in_progress=max_in_progress,
+            failure_limit=failure_limit,
+            stale_timeout_seconds=stale_timeout_seconds,
+            board=board,
+            default_assignee=default_assignee,
+            max_in_progress_per_profile=max_in_progress_per_profile,
+        )
+
+
+def _dispatch_once_locked(
+    conn: sqlite3.Connection,
+    *,
+    spawn_fn=None,
+    ttl_seconds: Optional[int] = None,
+    dry_run: bool = False,
+    max_spawn: Optional[int] = None,
+    max_in_progress: Optional[int] = None,
+    failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
+    stale_timeout_seconds: int = 0,
+    board: Optional[str] = None,
+    default_assignee: Optional[str] = None,
+    max_in_progress_per_profile: Optional[int] = None,
+) -> DispatchResult:
     """Run one dispatcher tick.
 
     Steps:
@@ -6373,7 +6880,11 @@ def dispatch_once(
         if claimed is None:
             continue
         try:
-            workspace = resolve_workspace(claimed, board=board)
+            resolved_branch_name = None
+            if claimed.workspace_kind == "worktree":
+                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+            else:
+                workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -6384,6 +6895,8 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
+        if claimed.workspace_kind == "worktree":
+            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
@@ -6459,7 +6972,11 @@ def dispatch_once(
         if claimed is None:
             continue
         try:
-            workspace = resolve_workspace(claimed, board=board)
+            resolved_branch_name = None
+            if claimed.workspace_kind == "worktree":
+                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
+            else:
+                workspace = resolve_workspace(claimed, board=board)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -6470,12 +6987,14 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
+        if claimed.workspace_kind == "worktree":
+            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        # Force-load sdlc-review skill for review agents.  The
-        # _default_spawn function already auto-loads kanban-worker, and
-        # appends task.skills via --skills.  Setting task.skills here
-        # means the review agent gets both kanban-worker (lifecycle)
-        # and sdlc-review (review logic: AC verification, merge, etc.).
+        # Force-load the sdlc-review skill for review agents — it carries
+        # the review logic (AC verification, merge, etc.). The mandatory
+        # kanban lifecycle is already injected into every worker's system
+        # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
+        # review agent needs.
         claimed.skills = ["sdlc-review"]
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
@@ -6700,41 +7219,6 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
-def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
-    """True if the bundled ``kanban-worker`` skill resolves for the home the
-    spawned worker will run under.
-
-    The dispatcher injects ``--skills kanban-worker`` into every worker. When
-    the worker activates a profile (``hermes -p <name>``), its ``SKILLS_DIR``
-    becomes ``<profile_home>/skills`` — which on many profiles does NOT contain
-    the bundled skill (it ships in the *default* root home, not every
-    profile-scoped skills dir). Preloading a missing skill is fatal at CLI
-    startup (``ValueError: Unknown skill(s): kanban-worker``), aborting the
-    worker before the agent loop runs. Gate the flag on actual resolvability;
-    the kanban lifecycle contract is still injected via ``KANBAN_GUIDANCE``, so
-    omitting the flag only drops the supplementary pattern library.
-    """
-    from pathlib import Path as _Path
-
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
-    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
-    skills_root = base / "skills"
-    if not skills_root.is_dir():
-        return False
-    # Canonical bundled location first (cheap), then a bounded scan for
-    # profiles that have it nested elsewhere.
-    if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
-        return True
-    try:
-        for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
-                return True
-    except OSError:
-        pass
-    return False
-
-
 def _worker_terminal_timeout_env(
     max_runtime_seconds: Optional[int],
     current_timeout: Optional[str],
@@ -6850,6 +7334,20 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Pin TERMINAL_CWD to the task's workspace so the worker's file tools and
+    # context-file loader anchor on the workspace, not whatever cwd the
+    # dispatching gateway happened to export. The worker subprocess is already
+    # launched with cwd=workspace, but TERMINAL_CWD takes precedence over the
+    # process cwd in both file_tools._resolve_base_dir (#41312 — relative
+    # write_file paths were landing in the gateway user's home) and
+    # build_context_files_prompt (#34619 — workers loaded the dispatching
+    # gateway's AGENTS.md instead of the task's). Setting it to the workspace
+    # fixes both: the workspace is where the task's work actually happens.
+    # Only pin a real, absolute directory — file_tools rejects relative /
+    # sentinel TERMINAL_CWD values, so a non-dir workspace must NOT be set
+    # here (leave the inherited value rather than write a meaningless one).
+    if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
+        env["TERMINAL_CWD"] = workspace
     if task.branch_name:
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
     if task.current_run_id is not None:
@@ -6903,32 +7401,14 @@ def _default_spawn(
         # profile-local worker sessions still register configured hooks.
         "--accept-hooks",
     ]
-    # Auto-load the kanban-worker skill so every dispatched worker
-    # has the pattern library (good summary/metadata shapes, retry
-    # diagnostics, block-reason examples) in its context, even if
-    # the profile hasn't wired it into skills config. The MANDATORY
-    # lifecycle is already in the system prompt via KANBAN_GUIDANCE;
-    # this skill is the deeper reference. Users can point a profile
-    # at a different/additional skill via config if they want —
-    # --skills is additive to the profile's default skill set.
-    #
-    # Only add the flag when the skill actually resolves for the home
-    # the worker runs under: the bundled skill is absent from many
-    # profile-scoped skills dirs, and preloading a missing skill is
-    # fatal at CLI startup. Omitting it is safe — the lifecycle
-    # contract still ships via KANBAN_GUIDANCE.
-    if _kanban_worker_skill_available(env.get("HERMES_HOME")):
-        cmd.extend(["--skills", "kanban-worker"])
     # Per-task force-loaded skills. Each name goes in its own
     # `--skills X` pair rather than a single comma-joined arg: the CLI
     # accepts both forms (action='append' + comma-split), but
     # per-name pairs are easier to read in `ps` output and avoid any
     # quoting ambiguity if a skill name ever contains unusual chars.
-    # Dedupe against the built-in so we don't double-load kanban-worker
-    # if a task author asks for it explicitly.
     if task.skills:
         for sk in task.skills:
-            if sk and sk != "kanban-worker":
+            if sk:
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])
@@ -7785,7 +8265,7 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
 def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return the latest non-null ``task_runs.summary`` for ``task_id``.
 
-    The kanban-worker skill writes its handoff to ``task_runs.summary``
+    The worker writes its handoff to ``task_runs.summary``
     via ``complete_task(summary=...)``; ``tasks.result`` is left empty
     unless the caller passes ``result=`` explicitly. Dashboards and CLI
     "show" views need this value to surface what a worker actually did

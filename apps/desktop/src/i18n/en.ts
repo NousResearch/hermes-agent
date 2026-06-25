@@ -57,6 +57,7 @@ export const en: Translations = {
       backgroundExitedDuringStartup: 'Hermes background process exited during startup.',
       backendStopped: 'Backend stopped',
       desktopBootFailed: 'Desktop boot failed',
+      gatewayConnectionLost: 'Lost connection to the gateway',
       gatewaySignInRequired: 'Gateway sign-in required',
       ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
     },
@@ -211,6 +212,7 @@ export const en: Translations = {
       'session.togglePin': 'Pin / unpin current session',
       'composer.focus': 'Focus composer',
       'composer.modelPicker': 'Open model picker',
+      'composer.voice': 'Start / stop voice conversation',
       'view.toggleSidebar': 'Toggle sessions sidebar',
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.showFiles': 'Show file browser',

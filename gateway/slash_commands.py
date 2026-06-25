@@ -3515,6 +3515,38 @@ class GatewaySlashCommandsMixin:
             lines.append("Complete your top-up in the browser — credits will appear in /credits shortly.")
         return "\n".join(lines)
 
+    async def _handle_tokens_command(self, event: MessageEvent) -> str:
+        """Handle /tokens [on|off|status] — toggle the per-message token footer.
+
+        When enabled, every reply in this chat gets a compact decoded
+        breakdown appended, e.g. ``📊 in:1520 out:234 reason:128 cache:890``.
+        The toggle is persisted per-chat (gateway_tokens_display.json), so it
+        survives restarts and need not be re-enabled each turn.
+        """
+        args = event.get_command_args().strip().lower()
+        key = self._tokens_key(event.source.platform, event.source.chat_id)
+        current = bool(self._tokens_display.get(key))
+
+        if args in {"on", "enable"}:
+            new_state = True
+        elif args in {"off", "disable"}:
+            new_state = False
+        elif args == "status":
+            return (
+                "📊 Per-message token display is ON for this chat."
+                if current
+                else "📊 Per-message token display is OFF. Use /tokens on to enable."
+            )
+        else:
+            # Bare /tokens toggles.
+            new_state = not current
+
+        self._tokens_display[key] = new_state
+        self._save_tokens_display()
+        if new_state:
+            return "📊 Per-message token display enabled — each reply now shows in/out/reason/cache."
+        return "📊 Per-message token display disabled."
+
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.
 

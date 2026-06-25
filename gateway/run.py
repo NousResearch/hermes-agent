@@ -2836,6 +2836,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Per-chat voice reply mode: "off" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
+        # Per-chat /tokens toggle: when True, append a decoded per-message
+        # token breakdown footer to each reply (platform-namespaced key).
+        self._tokens_display: Dict[str, bool] = self._load_tokens_display()
         # Recent voice transcripts per (guild,user) for duplicate suppression.
         # Protects against the same utterance being emitted twice by the voice
         # capture / STT pipeline, which otherwise produces a second delayed reply.
@@ -2988,6 +2991,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
+
+    _TOKENS_DISPLAY_PATH = _hermes_home / "gateway_tokens_display.json"
+
+    def _tokens_key(self, platform: Platform, chat_id: str) -> str:
+        """Platform-namespaced key for the per-chat /tokens toggle."""
+        return f"{platform.value}:{chat_id}"
+
+    def _load_tokens_display(self) -> Dict[str, bool]:
+        try:
+            data = json.loads(self._TOKENS_DISPLAY_PATH.read_text())
+        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        # Keep only prefixed keys with bool values.
+        return {
+            str(k): bool(v)
+            for k, v in data.items()
+            if isinstance(k, str) and ":" in str(k)
+        }
+
+    def _save_tokens_display(self) -> None:
+        try:
+            self._TOKENS_DISPLAY_PATH.parent.mkdir(parents=True, exist_ok=True)
+            self._TOKENS_DISPLAY_PATH.write_text(
+                json.dumps(self._tokens_display, indent=2)
+            )
+        except OSError as e:
+            logger.warning("Failed to save tokens display state: %s", e)
 
     def _set_adapter_auto_tts_disabled(self, adapter, chat_id: str, disabled: bool) -> None:
         """Update an adapter's in-memory auto-TTS suppression set if present."""
@@ -8868,6 +8900,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "usage":
             return await self._handle_usage_command(event)
 
+        if canonical == "tokens":
+            return await self._handle_tokens_command(event)
+
         if canonical == "credits":
             return await self._handle_credits_command(event)
 
@@ -10578,6 +10613,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
+
+            # Per-message token breakdown footer — gated by the /tokens toggle
+            # (per-chat, persisted). Decoded from the turn's bit-packed
+            # token_count. Skipped when streaming already delivered the body.
+            if response and not agent_result.get("already_sent") and not _intentional_silence:
+                try:
+                    if self._tokens_display.get(self._tokens_key(source.platform, source.chat_id)):
+                        from gateway.token_footer import build_token_line
+                        _tok_line = build_token_line(agent_result)
+                        if _tok_line:
+                            response = f"{response}\n\n{_tok_line}"
+                except Exception as _tok_err:
+                    logger.debug("token footer build failed: %s", _tok_err)
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {

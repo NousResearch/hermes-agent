@@ -1,15 +1,20 @@
 import os
+import asyncio
 from pathlib import Path
 from typing import Any
 
 import asyncpg
 import httpx
+import redis.asyncio as redis
 from fastapi import FastAPI, HTTPException
 
 
 app = FastAPI(title="Company Knowledge API", version="0.1.0")
 
 DATABASE_URL = os.environ["DATABASE_URL"]
+REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+INGEST_QUEUE_NAME = os.environ.get("INGEST_QUEUE_NAME", "second_brain:ingest_jobs")
+QUERY_WORKSPACE_CONCURRENCY = int(os.environ.get("QUERY_WORKSPACE_CONCURRENCY", "4"))
 LIGHTRAG_ROOT = Path(os.environ.get("LIGHTRAG_ROOT", "/data/lightrag"))
 DEPARTMENT_WORKSPACES = [
     "company_public",
@@ -35,6 +40,8 @@ LIGHTRAG_URLS = {
 @app.on_event("startup")
 async def startup() -> None:
     app.state.pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    app.state.redis = redis.from_url(REDIS_URL, decode_responses=True)
+    await ensure_runtime_schema()
     for workspace in DEPARTMENT_WORKSPACES:
         base = LIGHTRAG_ROOT / "workspaces" / workspace
         for child in ("docs", "kv_store", "vector_store", "graph_store"):
@@ -43,7 +50,28 @@ async def startup() -> None:
 
 @app.on_event("shutdown")
 async def shutdown() -> None:
+    await app.state.redis.aclose()
     await app.state.pool.close()
+
+
+async def ensure_runtime_schema() -> None:
+    async with app.state.pool.acquire() as conn:
+        await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS queued_at timestamptz")
+        await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS indexed_at timestamptz")
+        await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ingest_error text")
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS document_ingest_payloads (
+              document_id uuid PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+              workspace_slug text NOT NULL,
+              title text NOT NULL,
+              source_text text NOT NULL,
+              attempts integer NOT NULL DEFAULT 0,
+              created_at timestamptz NOT NULL DEFAULT now(),
+              updated_at timestamptz NOT NULL DEFAULT now()
+            )
+            """
+        )
 
 
 @app.get("/health")
@@ -86,12 +114,13 @@ async def query(payload: dict[str, Any]) -> dict[str, Any]:
     user_groups = payload.get("groups") or []
     allowed = allowed_workspaces(user_groups)
     headers = {"X-API-Key": LIGHTRAG_API_KEY} if LIGHTRAG_API_KEY else {}
-    answers = []
-    async with httpx.AsyncClient(timeout=180) as client:
-        for workspace in allowed:
-            base_url = LIGHTRAG_URLS.get(workspace)
-            if not base_url:
-                continue
+    semaphore = asyncio.Semaphore(max(1, QUERY_WORKSPACE_CONCURRENCY))
+
+    async def query_workspace(client: httpx.AsyncClient, workspace: str) -> dict[str, Any]:
+        base_url = LIGHTRAG_URLS.get(workspace)
+        if not base_url:
+            return {"workspace": workspace, "error": "workspace is not configured"}
+        async with semaphore:
             try:
                 response = await client.post(
                     f"{base_url}/query",
@@ -103,9 +132,12 @@ async def query(payload: dict[str, Any]) -> dict[str, Any]:
                     headers=headers,
                 )
                 response.raise_for_status()
-                answers.append({"workspace": workspace, "result": response.json()})
+                return {"workspace": workspace, "result": response.json()}
             except Exception as exc:
-                answers.append({"workspace": workspace, "error": str(exc)})
+                return {"workspace": workspace, "error": str(exc)}
+
+    async with httpx.AsyncClient(timeout=180) as client:
+        answers = await asyncio.gather(*(query_workspace(client, workspace) for workspace in allowed))
     return {
         "status": "ok",
         "query": payload.get("query"),
@@ -134,8 +166,8 @@ async def ingest_text(payload: dict[str, Any]) -> dict[str, Any]:
     async with app.state.pool.acquire() as conn:
         row = await conn.fetchrow(
             """
-            INSERT INTO documents (title, department_slug, classification, status)
-            VALUES ($1, $2, $3, 'indexed')
+            INSERT INTO documents (title, department_slug, classification, status, queued_at)
+            VALUES ($1, $2, $3, 'queued', now())
             RETURNING id
             """,
             title,
@@ -156,24 +188,59 @@ async def ingest_text(payload: dict[str, Any]) -> dict[str, Any]:
                 row["id"],
                 workspace_row["id"],
             )
-
-    headers = {"X-API-Key": LIGHTRAG_API_KEY} if LIGHTRAG_API_KEY else {}
-    async with httpx.AsyncClient(timeout=300) as client:
-        response = await client.post(
-            f"{LIGHTRAG_URLS[workspace]}/documents/text",
-            json={"text": source_text, "file_source": title},
-            headers=headers,
+        await conn.execute(
+            """
+            INSERT INTO document_ingest_payloads (document_id, workspace_slug, title, source_text)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (document_id) DO UPDATE
+            SET workspace_slug = EXCLUDED.workspace_slug,
+                title = EXCLUDED.title,
+                source_text = EXCLUDED.source_text,
+                updated_at = now()
+            """,
+            row["id"],
+            workspace,
+            title,
+            source_text,
         )
-        if response.is_error:
-            raise HTTPException(
-                status_code=response.status_code,
-                detail={"upstream": "lightrag", "body": response.text[:2000]},
-            )
-        lightrag_result = response.json()
+
+    await app.state.redis.rpush(INGEST_QUEUE_NAME, str(row["id"]))
 
     return {
-        "status": "indexed",
+        "status": "queued",
         "document_id": str(row["id"]),
         "workspace": workspace,
-        "lightrag": lightrag_result,
+        "queue": INGEST_QUEUE_NAME,
+    }
+
+
+@app.get("/documents/{document_id}")
+async def document_status(document_id: str) -> dict[str, Any]:
+    try:
+        async with app.state.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                SELECT id, title, department_slug, classification, status, queued_at,
+                       indexed_at, ingest_error, created_at
+                FROM documents
+                WHERE id = $1::uuid
+                """,
+                document_id,
+            )
+    except asyncpg.PostgresError as exc:
+        raise HTTPException(status_code=400, detail="invalid document id") from exc
+    if not row:
+        raise HTTPException(status_code=404, detail="document not found")
+    return {key: str(value) if key == "id" or hasattr(value, "isoformat") else value for key, value in dict(row).items()}
+
+
+@app.get("/queue/status")
+async def queue_status() -> dict[str, Any]:
+    async with app.state.pool.acquire() as conn:
+        rows = await conn.fetch("SELECT status, count(*) AS count FROM documents GROUP BY status ORDER BY status")
+    return {
+        "queue": INGEST_QUEUE_NAME,
+        "queue_depth": await app.state.redis.llen(INGEST_QUEUE_NAME),
+        "document_status_counts": {row["status"]: row["count"] for row in rows},
+        "worker_expected": True,
     }

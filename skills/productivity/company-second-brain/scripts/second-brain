@@ -205,6 +205,30 @@ def cmd_ingest_text(args: argparse.Namespace) -> None:
     print_json(request_json("POST", f"{config['base_url']}/api/documents/text", headers=auth_headers(config), body=body))
 
 
+def cmd_document_status(args: argparse.Namespace) -> None:
+    config = load_config()
+    print_json(
+        request_json(
+            "GET",
+            f"{config['base_url']}/api/documents/{args.document_id}",
+            headers=auth_headers(config, admin=True),
+            timeout=30,
+        )
+    )
+
+
+def cmd_queue_status(args: argparse.Namespace) -> None:
+    config = load_config()
+    print_json(
+        request_json(
+            "GET",
+            f"{config['base_url']}/api/queue/status",
+            headers=auth_headers(config, admin=True),
+            timeout=30,
+        )
+    )
+
+
 def cmd_snippet(args: argparse.Namespace) -> None:
     config = load_config()
     token = args.token or config.get("token") or "USER_TOKEN"
@@ -266,6 +290,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--visibility", default="department", choices=["company", "department"])
     p.add_argument("--classification", default="internal", choices=["public", "internal", "confidential", "restricted"])
     p.set_defaults(func=cmd_ingest_text)
+
+    p = sub.add_parser("document-status", help="Admin token only: show queued/indexing/indexed/failed status")
+    p.add_argument("document_id")
+    p.set_defaults(func=cmd_document_status)
+
+    p = sub.add_parser("queue-status", help="Admin token only: show ingest queue depth and document status counts")
+    p.set_defaults(func=cmd_queue_status)
 
     p = sub.add_parser("codex-snippet", help="Print an AGENTS.md/Codex setup snippet")
     p.add_argument("--token")

@@ -3,6 +3,9 @@ services:
     image: ollama/ollama:latest
     container_name: second-brain-ollama-embed
     restart: unless-stopped
+    cpus: ${OLLAMA_EMBED_CPUS:-1.0}
+    mem_limit: ${OLLAMA_EMBED_MEM_LIMIT:-3072m}
+    memswap_limit: ${OLLAMA_EMBED_MEMSWAP_LIMIT:-4096m}
     volumes:
       - ollama-data:/root/.ollama
     networks:
@@ -12,6 +15,9 @@ services:
     image: ghcr.io/hkuds/lightrag:latest
     container_name: second-brain-lightrag-company-public
     restart: unless-stopped
+    cpus: ${LIGHTRAG_CPUS:-1.0}
+    mem_limit: ${LIGHTRAG_MEM_LIMIT:-1536m}
+    memswap_limit: ${LIGHTRAG_MEMSWAP_LIMIT:-2048m}
     env_file: .env
     environment: &lightrag-env
       HOST: 0.0.0.0
@@ -115,6 +121,9 @@ services:
     build: ./services/company-ai-gateway
     container_name: second-brain-gateway
     restart: unless-stopped
+    cpus: ${GATEWAY_CPUS:-0.50}
+    mem_limit: ${GATEWAY_MEM_LIMIT:-512m}
+    memswap_limit: ${GATEWAY_MEMSWAP_LIMIT:-768m}
     env_file: .env
     environment:
       KNOWLEDGE_API_URL: http://knowledge-api:8010
@@ -145,9 +154,15 @@ services:
     build: ./services/knowledge-api
     container_name: second-brain-knowledge-api
     restart: unless-stopped
+    cpus: ${KNOWLEDGE_API_CPUS:-1.0}
+    mem_limit: ${KNOWLEDGE_API_MEM_LIMIT:-512m}
+    memswap_limit: ${KNOWLEDGE_API_MEMSWAP_LIMIT:-768m}
     env_file: .env
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      INGEST_QUEUE_NAME: ${INGEST_QUEUE_NAME:-second_brain:ingest_jobs}
+      QUERY_WORKSPACE_CONCURRENCY: ${QUERY_WORKSPACE_CONCURRENCY:-4}
       LIGHTRAG_ROOT: /data/lightrag
       LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY}
       LIGHTRAG_COMPANY_PUBLIC_URL: http://lightrag-company-public:9621
@@ -183,10 +198,59 @@ services:
     networks:
       - second-brain
 
+  knowledge-worker:
+    build: ./services/knowledge-api
+    container_name: second-brain-knowledge-worker
+    restart: unless-stopped
+    command: ["python", "worker.py"]
+    cpus: ${KNOWLEDGE_WORKER_CPUS:-1.0}
+    mem_limit: ${KNOWLEDGE_WORKER_MEM_LIMIT:-512m}
+    memswap_limit: ${KNOWLEDGE_WORKER_MEMSWAP_LIMIT:-768m}
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      REDIS_URL: redis://redis:6379/0
+      INGEST_QUEUE_NAME: ${INGEST_QUEUE_NAME:-second_brain:ingest_jobs}
+      INGEST_WORKER_CONCURRENCY: ${INGEST_WORKER_CONCURRENCY:-2}
+      INGEST_MAX_ATTEMPTS: ${INGEST_MAX_ATTEMPTS:-3}
+      INGEST_RETRY_BACKOFF_SECONDS: ${INGEST_RETRY_BACKOFF_SECONDS:-10}
+      LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY}
+      LIGHTRAG_COMPANY_PUBLIC_URL: http://lightrag-company-public:9621
+      LIGHTRAG_COMPANY_INTERNAL_URL: http://lightrag-company-internal:9621
+      LIGHTRAG_DEPARTMENT_MARKETING_URL: http://lightrag-marketing:9621
+      LIGHTRAG_DEPARTMENT_FINANCIAL_URL: http://lightrag-financial:9621
+      LIGHTRAG_DEPARTMENT_HR_URL: http://lightrag-hr:9621
+      LIGHTRAG_DEPARTMENT_ENGINEERING_URL: http://lightrag-engineering:9621
+      LIGHTRAG_DEPARTMENT_C_LEVEL_URL: http://lightrag-c-level:9621
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      lightrag-company-public:
+        condition: service_started
+      lightrag-company-internal:
+        condition: service_started
+      lightrag-marketing:
+        condition: service_started
+      lightrag-financial:
+        condition: service_started
+      lightrag-hr:
+        condition: service_started
+      lightrag-engineering:
+        condition: service_started
+      lightrag-c-level:
+        condition: service_started
+    networks:
+      - second-brain
+
   postgres:
     image: pgvector/pgvector:pg16
     container_name: second-brain-postgres
     restart: unless-stopped
+    cpus: ${POSTGRES_CPUS:-0.75}
+    mem_limit: ${POSTGRES_MEM_LIMIT:-1024m}
+    memswap_limit: ${POSTGRES_MEMSWAP_LIMIT:-1536m}
     env_file: .env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
@@ -207,6 +271,9 @@ services:
     image: redis:7-alpine
     container_name: second-brain-redis
     restart: unless-stopped
+    cpus: ${REDIS_CPUS:-0.25}
+    mem_limit: ${REDIS_MEM_LIMIT:-256m}
+    memswap_limit: ${REDIS_MEMSWAP_LIMIT:-384m}
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redis-data:/data
@@ -217,6 +284,9 @@ services:
     image: minio/minio:latest
     container_name: second-brain-minio
     restart: unless-stopped
+    cpus: ${MINIO_CPUS:-0.50}
+    mem_limit: ${MINIO_MEM_LIMIT:-512m}
+    memswap_limit: ${MINIO_MEMSWAP_LIMIT:-768m}
     env_file: .env
     command: ["server", "/data", "--console-address", ":9001"]
     environment:

@@ -141,7 +141,8 @@ company_all
 
 ## Ingest Text
 
-Admin token only:
+Admin token only. Ingest is asynchronous: the API returns `queued`, then
+`knowledge-worker` indexes the document into LightRAG in the background.
 
 ```bash
 ~/.hermes/skills/productivity/company-second-brain/scripts/second-brain ingest-text \
@@ -151,6 +152,18 @@ Admin token only:
   --classification internal \
   --file ./document.md
 ```
+
+Check status after upload:
+
+```bash
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain document-status DOCUMENT_ID
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain queue-status
+```
+
+Treat a document as large when extracted text is over 1MB, source file is over
+10MB, PDF/DOCX is over 50 pages, or it likely creates more than 200 chunks. For
+large documents, extract and clean text first, split into stable sections, then
+upload sections separately.
 
 Allowed departments:
 

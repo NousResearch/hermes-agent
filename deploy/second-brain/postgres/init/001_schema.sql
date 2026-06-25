@@ -41,6 +41,9 @@ CREATE TABLE IF NOT EXISTS documents (
   checksum text,
   version integer NOT NULL DEFAULT 1,
   status text NOT NULL DEFAULT 'pending_classification',
+  queued_at timestamptz,
+  indexed_at timestamptz,
+  ingest_error text,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
@@ -56,6 +59,16 @@ CREATE TABLE IF NOT EXISTS document_workspace_membership (
   document_id uuid NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   workspace_id uuid NOT NULL REFERENCES rag_workspaces(id) ON DELETE CASCADE,
   PRIMARY KEY (document_id, workspace_id)
+);
+
+CREATE TABLE IF NOT EXISTS document_ingest_payloads (
+  document_id uuid PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+  workspace_slug text NOT NULL,
+  title text NOT NULL,
+  source_text text NOT NULL,
+  attempts integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS audit_events (

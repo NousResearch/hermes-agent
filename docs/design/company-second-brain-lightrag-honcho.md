@@ -1508,3 +1508,32 @@ Config:
 5. Keep LightRAG internal-only.
 6. Rotate OLLAMA_CLOUD_API_KEY and HONCHO_API_KEY if exposed.
 ```
+
+## Runtime Upgrade Notes
+
+The runtime includes three operational upgrades beyond the initial MVP:
+
+1. Query fan-out is parallel inside `knowledge-api`.
+   - `QUERY_WORKSPACE_CONCURRENCY` controls how many LightRAG workspaces are queried at once.
+   - Default: `4`.
+   - Parallel fan-out helps when LightRAG/LLM capacity is available. If the shared embedding service or remote LLM provider becomes the bottleneck, lower this value for more stable latency.
+2. Document ingestion is asynchronous.
+   - Gateway/admin upload returns `status: queued` and a `document_id`.
+   - `knowledge-worker` consumes Redis queue `INGEST_QUEUE_NAME` and sends documents to the routed LightRAG workspace.
+   - Document status values are `queued`, `indexing`, `indexed`, and `failed`.
+   - Admin can check `GET /api/documents/{document_id}` and `GET /api/queue/status`.
+3. Resource guardrails are configured in Compose.
+   - LightRAG, gateway, API, worker, Postgres, Redis, MinIO, and Ollama embedding services have CPU/RAM/memswap settings.
+   - Small VPS hosts should run `deploy/second-brain/scripts/configure-host-swap.sh 6G` once to create host swap.
+
+Large-document rule of thumb:
+
+- extracted text over 1MB
+- source file over 10MB
+- PDF/DOCX over 50 pages
+- likely more than 200 chunks
+- OCR-heavy, table-heavy, or repeated-boilerplate document
+
+For large documents, extract and clean text first, split into stable sections,
+then upload sections separately. Do not rely on one huge LightRAG insert for
+production ingestion.

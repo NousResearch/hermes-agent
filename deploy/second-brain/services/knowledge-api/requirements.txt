@@ -1,4 +1,5 @@
 asyncpg==0.31.0
 fastapi==0.124.4
 httpx==0.28.1
+redis==5.2.1
 uvicorn[standard]==0.38.0

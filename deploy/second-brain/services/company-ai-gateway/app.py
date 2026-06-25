@@ -22,6 +22,7 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 ADMIN_SSH_TARGET = os.environ.get("ADMIN_SSH_TARGET", "root@YOUR_SERVER_IP")
 DEPLOY_ROOT = os.environ.get("DEPLOY_ROOT", "/opt/second-brain")
 INSTALL_ASSET_VERSION = os.environ.get("SECOND_BRAIN_INSTALL_VERSION", "20260624-generic")
+MAX_TEXT_UPLOAD_BYTES = int(os.environ.get("MAX_TEXT_UPLOAD_BYTES", str(10 * 1024 * 1024)))
 
 
 def resolve_public_base_url() -> str:
@@ -488,7 +489,7 @@ async def admin_page() -> str:
 
     <section>
       <h2>5. Upload tài liệu</h2>
-      <p>CLI ingest file text-friendly hoặc gọi API multipart. Phân vùng bằng <code>visibility</code> và <code>department</code>.</p>
+      <p>CLI ingest file text-friendly hoặc gọi API multipart. Upload trả <code>queued</code>, worker sẽ index nền vào LightRAG.</p>
       <pre><code>second-brain ingest-text \\
   --file ./marketing-plan.md \\
   --title "Marketing Plan Q3" \\
@@ -502,8 +503,11 @@ curl -X POST {PUBLIC_BASE_URL}/api/documents/file \\
   -F "title=Marketing Plan Q3" \\
   -F "department=marketing" \\
   -F "visibility=department" \\
-  -F "classification=internal"</code></pre>
-      <p class="note">MVP nhận tốt txt, md, csv, json, html. PDF/DOCX nên thêm parser riêng trước khi dùng production.</p>
+  -F "classification=internal"
+
+second-brain document-status DOCUMENT_ID
+second-brain queue-status</code></pre>
+      <p class="note">Tài liệu lớn: text trên 1MB, file trên 10MB, PDF/DOCX trên 50 trang, hoặc ước tính trên 200 chunks. Với nhóm này nên extract, làm sạch, chia section rồi upload.</p>
     </section>
 
     <section>
@@ -523,8 +527,8 @@ docker compose up -d --build</code></pre>
       <h2>7. Nâng cấp và handoff</h2>
       <pre><code>cd {DEPLOY_ROOT}
 docker compose ps
-docker compose logs -f company-ai-gateway knowledge-api
-docker compose up -d --build company-ai-gateway knowledge-api</code></pre>
+docker compose logs -f company-ai-gateway knowledge-api knowledge-worker
+docker compose up -d --build company-ai-gateway knowledge-api knowledge-worker</code></pre>
       <p class="note">Tải spec/handoff cho agent khác tại <a href="/download/admin-handoff.md">/download/admin-handoff.md</a>.</p>
     </section>
   </main>
@@ -656,7 +660,7 @@ async def query(
         payload = dict(payload)
         payload["groups"] = auth.get("groups", [])
         payload["actor_email"] = auth.get("email")
-    async with httpx.AsyncClient(timeout=60) as client:
+    async with httpx.AsyncClient(timeout=180) as client:
         response = await client.post(f"{KNOWLEDGE_API_URL}/query", json=payload)
         response.raise_for_status()
         return response.json()
@@ -691,8 +695,8 @@ async def ingest_file(
     if auth.get("role") != "admin":
         raise HTTPException(status_code=403, detail="admin role required")
     data = await file.read()
-    if len(data) > 5 * 1024 * 1024:
-        raise HTTPException(status_code=413, detail="file is too large for MVP upload limit")
+    if len(data) > MAX_TEXT_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail=f"file is too large for upload limit: {MAX_TEXT_UPLOAD_BYTES} bytes")
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError as exc:
@@ -709,6 +713,35 @@ async def ingest_file(
     }
     async with httpx.AsyncClient(timeout=180) as client:
         response = await client.post(f"{KNOWLEDGE_API_URL}/documents/text", json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
+@app.get("/api/documents/{document_id}")
+async def document_status(
+    document_id: str,
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> Any:
+    auth = require_auth(x_api_key, authorization)
+    if auth.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(f"{KNOWLEDGE_API_URL}/documents/{document_id}")
+        response.raise_for_status()
+        return response.json()
+
+
+@app.get("/api/queue/status")
+async def queue_status(
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> Any:
+    auth = require_auth(x_api_key, authorization)
+    if auth.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(f"{KNOWLEDGE_API_URL}/queue/status")
         response.raise_for_status()
         return response.json()
 

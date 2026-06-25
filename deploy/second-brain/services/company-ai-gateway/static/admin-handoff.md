@@ -22,6 +22,7 @@ Do not expose `.env` or admin keys on public pages.
 
 - company-ai-gateway: public FastAPI gateway behind Traefik
 - knowledge-api: internal RAG routing and ingestion API
+- knowledge-worker: background Redis queue consumer that indexes documents into LightRAG
 - lightrag-company-public
 - lightrag-company-internal
 - lightrag-marketing
@@ -166,11 +167,44 @@ curl -X POST __PUBLIC_BASE_URL__/api/documents/file \
 
 MVP upload supports UTF-8 text files. Extract PDF/DOCX to text before upload, or add parser support in the gateway.
 
+Uploads are asynchronous. `ingest-text` and `/api/documents/file` return `status: queued` and a `document_id`; `knowledge-worker` then indexes the document in the background.
+
+Check one document:
+
+```bash
+second-brain document-status DOCUMENT_ID
+```
+
+Check queue depth and document status counts:
+
+```bash
+second-brain queue-status
+```
+
+Document statuses:
+
+- `queued`: accepted and waiting for worker
+- `indexing`: worker is sending the document to LightRAG
+- `indexed`: LightRAG accepted the document
+- `failed`: max retries reached; inspect `ingest_error`
+
+Treat a document as large when extracted text is over 1MB, source file is over 10MB, PDF/DOCX is over 50 pages, or the document likely creates more than 200 chunks. For large documents, extract text first, clean boilerplate, split into stable sections, then upload sections.
+
 ## Query
 
 ```bash
 second-brain query "tom tat tai lieu marketing"
 ```
+
+Gateway query fan-out runs in parallel across allowed workspaces. Tune concurrency with:
+
+```text
+QUERY_WORKSPACE_CONCURRENCY=4
+```
+
+Parallel fan-out helps when LightRAG/LLM capacity is available. If the shared
+embedding service or remote LLM provider becomes the bottleneck, lower this
+value for more stable latency.
 
 Raw API:
 
@@ -223,12 +257,13 @@ Local source of truth:
 Build the skill bundle:
 
 ```bash
-tar --no-xattrs -czf deploy/second-brain/dist/company-second-brain-skill.tar.gz \
-  -C skills/productivity company-second-brain
-cp deploy/second-brain/dist/company-second-brain-skill.tar.gz \
-  deploy/second-brain/services/company-ai-gateway/static/company-second-brain-skill.tar.gz
-cp deploy/second-brain/install-company-second-brain-skill.sh \
-  deploy/second-brain/services/company-ai-gateway/static/install-company-second-brain-skill.sh
+deploy/second-brain/scripts/build-install-assets.sh
+```
+
+On small VPS hosts, configure 4-8GB host swap once:
+
+```bash
+sudo deploy/second-brain/scripts/configure-host-swap.sh 6G
 ```
 
 Deploy:
@@ -242,9 +277,11 @@ ssh __ADMIN_SSH_TARGET__ '
   tar -xzf /tmp/second-brain-deploy.tgz -C /opt
   find __DEPLOY_ROOT__ -name "._*" -delete
   chmod +x __DEPLOY_ROOT__/install-company-second-brain-skill.sh
+  chmod +x __DEPLOY_ROOT__/scripts/build-install-assets.sh
+  chmod +x __DEPLOY_ROOT__/scripts/configure-host-swap.sh
   chmod +x __DEPLOY_ROOT__/services/company-ai-gateway/static/install-company-second-brain-skill.sh
   cd __DEPLOY_ROOT__
-  docker compose up -d --build company-ai-gateway knowledge-api
+  docker compose up -d --build company-ai-gateway knowledge-api knowledge-worker
 '
 ```
 
@@ -255,6 +292,7 @@ curl -fsSL __PUBLIC_BASE_URL__/health
 curl -fsSL __PUBLIC_BASE_URL__/install | head
 curl -fsSL __PUBLIC_BASE_URL__/admin | head
 curl -fsSIL __PUBLIC_BASE_URL__/download/company-second-brain-skill.tar.gz
+curl -fsSL __PUBLIC_BASE_URL__/api/queue/status -H "X-API-Key: PASTE_GATEWAY_API_KEY"
 ```
 
 Use a department user token:
@@ -263,6 +301,15 @@ Use a department user token:
 second-brain me
 second-brain workspaces
 second-brain query "toi co the xem tai lieu nao?"
+```
+
+Check runtime services:
+
+```bash
+cd __DEPLOY_ROOT__
+docker compose ps
+docker compose logs -f knowledge-worker
+swapon --show
 ```
 
 ## Production Gaps

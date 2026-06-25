@@ -4,8 +4,10 @@ This package deploys a multi-department second brain using:
 
 - Company AI Gateway: public FastAPI entrypoint for auth, install pages, token creation, and upload.
 - Knowledge API: internal router for LightRAG workspaces.
+- Knowledge Worker: background Redis queue consumer for document ingestion.
 - LightRAG: one workspace per company/department boundary.
-- Postgres: metadata and workspace registry.
+- Postgres: metadata, workspace registry, and ingest job payloads.
+- Redis: durable-ish ingest queue with append-only persistence.
 - Ollama embedding service.
 - Optional Honcho memory integration hook via `HONCHO_API_KEY`.
 
@@ -38,13 +40,20 @@ This package deploys a multi-department second brain using:
    ./scripts/build-install-assets.sh
    ```
 
-4. Start the stack:
+4. Configure host swap on small VPS hosts. A 4-8GB swap file is recommended for
+   4 vCPU / 16GB RAM deployments running multiple LightRAG containers.
+
+   ```bash
+   sudo ./scripts/configure-host-swap.sh 6G
+   ```
+
+5. Start the stack:
 
    ```bash
    docker compose up -d --build
    ```
 
-5. Open:
+6. Open:
 
    ```text
    https://second-brain.your-company.com/install
@@ -103,7 +112,45 @@ curl -X POST https://second-brain.your-company.com/api/documents/file \
   -F "classification=internal"
 ```
 
+Uploads are queued. The API returns `status: queued` plus a `document_id`; the
+`knowledge-worker` container indexes the document into the routed LightRAG
+workspace in the background.
+
+Check a single document:
+
+```bash
+second-brain document-status DOCUMENT_ID
+```
+
+Check queue depth and status counts:
+
+```bash
+second-brain queue-status
+```
+
 MVP file upload supports UTF-8 text files. Add PDF/DOCX extraction before production document ingestion.
+
+## Query Performance
+
+Gateway query fan-out is parallelized across allowed LightRAG workspaces and
+bounded by `QUERY_WORKSPACE_CONCURRENCY`. The default is `4`. Tune this value:
+parallel fan-out helps when LightRAG/LLM capacity is available, but a single
+shared embedding service or remote LLM rate limit can make lower concurrency
+more stable.
+
+## Large Document Thresholds
+
+Treat a document as "large" when any of these are true:
+
+- extracted text is over 1MB
+- source file is over 10MB
+- PDF/DOCX is over 50 pages
+- document likely creates more than 200 chunks
+- document includes many tables, OCR text, or repeated boilerplate
+
+For large documents, extract and clean text first, split into sections, and
+upload sections with stable titles. Do not push large PDF/DOCX binaries directly
+until a parser/chunker pipeline is added.
 
 ## Agent Handoff
 

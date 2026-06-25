@@ -53,7 +53,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_API_URL = "https://api.hindsight.vectorize.io"
 _DEFAULT_LOCAL_URL = "http://localhost:8888"
 # Keep in sync with tools/lazy_deps.py ("memory.hindsight") and plugin.yaml.
-_MIN_CLIENT_VERSION = "0.6.1"
+_MIN_ALL_VERSION = "0.7.2"
+_HINDSIGHT_DEPENDENCY = f"hindsight-all=={_MIN_ALL_VERSION}"
+_HINDSIGHT_DISTRIBUTION = "hindsight-all"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
@@ -791,8 +793,8 @@ class HindsightMemoryProvider(MemoryProvider):
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
-        cloud_dep = f"hindsight-client>={_MIN_CLIENT_VERSION}"
-        local_dep = "hindsight-all"
+        cloud_dep = _HINDSIGHT_DEPENDENCY
+        local_dep = _HINDSIGHT_DEPENDENCY
         if mode == "local_embedded":
             deps_to_install = [local_dep]
         elif mode == "local_external":
@@ -1211,14 +1213,14 @@ class HindsightMemoryProvider(MemoryProvider):
         start_ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self._document_id = f"{self._session_id}-{start_ts}"
 
-        # Check client version and auto-upgrade if needed
+        # Check bundled runtime version and auto-upgrade if needed.
         try:
             from importlib.metadata import version as pkg_version
             from packaging.version import Version
-            installed = pkg_version("hindsight-client")
-            if Version(installed) < Version(_MIN_CLIENT_VERSION):
-                logger.warning("hindsight-client %s is outdated (need >=%s), attempting upgrade...",
-                               installed, _MIN_CLIENT_VERSION)
+            installed = pkg_version(_HINDSIGHT_DISTRIBUTION)
+            if Version(installed) < Version(_MIN_ALL_VERSION):
+                logger.warning("%s %s is outdated (need >=%s), attempting upgrade...",
+                               _HINDSIGHT_DISTRIBUTION, installed, _MIN_ALL_VERSION)
                 import shutil
                 import subprocess
                 import sys
@@ -1227,16 +1229,16 @@ class HindsightMemoryProvider(MemoryProvider):
                     try:
                         subprocess.run(
                             [uv_path, "pip", "install", "--python", sys.executable,
-                             "--quiet", "--upgrade", f"hindsight-client>={_MIN_CLIENT_VERSION}"],
+                             "--quiet", "--upgrade", _HINDSIGHT_DEPENDENCY],
                             check=True, timeout=120, capture_output=True,
                             stdin=subprocess.DEVNULL,
                         )
-                        logger.info("hindsight-client upgraded to >=%s", _MIN_CLIENT_VERSION)
+                        logger.info("%s upgraded to >=%s", _HINDSIGHT_DISTRIBUTION, _MIN_ALL_VERSION)
                     except Exception as e:
-                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install 'hindsight-client>=%s'",
-                                       e, _MIN_CLIENT_VERSION)
+                        logger.warning("Auto-upgrade failed: %s. Run: uv pip install '%s'",
+                                       e, _HINDSIGHT_DEPENDENCY)
                 else:
-                    logger.warning("uv not found. Run: pip install 'hindsight-client>=%s'", _MIN_CLIENT_VERSION)
+                    logger.warning("uv not found. Run: pip install '%s'", _HINDSIGHT_DEPENDENCY)
         except Exception:
             pass  # packaging not available or other issue — proceed anyway
 
@@ -1356,7 +1358,7 @@ class HindsightMemoryProvider(MemoryProvider):
         _client_version = "unknown"
         try:
             from importlib.metadata import version as pkg_version
-            _client_version = pkg_version("hindsight-client")
+            _client_version = pkg_version(_HINDSIGHT_DISTRIBUTION)
         except Exception:
             pass
         logger.info("Hindsight initialized: mode=%s, api_url=%s, bank=%s, budget=%s, memory_mode=%s, prefetch_method=%s, client=%s",

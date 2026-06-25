@@ -142,6 +142,6 @@ Available in `hybrid` and `tools` memory modes:
 | `HINDSIGHT_BUDGET` | Override recall budget |
 | `HINDSIGHT_MODE` | Override mode (`cloud`, `local_embedded`, `local_external`) |
 
-## Client Version
+## Dependency Version
 
-Requires `hindsight-client >= 0.6.1`. The plugin auto-upgrades on session start if an older version is detected.
+Requires `hindsight-all == 0.7.2` for the bundled embedded mode so the Hindsight runtime and embedded daemon modules are available.

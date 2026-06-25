@@ -10,10 +10,13 @@ import os
 import re
 import stat
 import sys
+import tomllib
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import yaml
 
 from hermes_cli.memory_setup import _CANCELLED
 from plugins.memory.hindsight import (
@@ -21,6 +24,8 @@ from plugins.memory.hindsight import (
     RECALL_SCHEMA,
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
+    _HINDSIGHT_DEPENDENCY,
+    _HINDSIGHT_DISTRIBUTION,
     _load_config,
     _build_embedded_profile_env,
     _normalize_observation_scopes,
@@ -28,6 +33,9 @@ from plugins.memory.hindsight import (
     _resolve_bank_id_template,
     _sanitize_bank_segment,
 )
+from tools.lazy_deps import LAZY_DEPS
+
+ROOT = Path(__file__).resolve().parents[3]
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +260,34 @@ def test_normalize_observation_scopes_list_of_lists():
         ["user:alice"],
         ["team:eng"],
     ]
+
+
+def test_hindsight_dependency_metadata_installs_embedded_runtime():
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    hindsight_extra = pyproject["project"]["optional-dependencies"]["hindsight"]
+
+    manifest = yaml.safe_load(
+        (ROOT / "plugins" / "memory" / "hindsight" / "plugin.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    manifest_deps = manifest["pip_dependencies"]
+
+    assert hindsight_extra == ["hindsight-all==0.7.2"]
+    assert manifest_deps == hindsight_extra
+    assert LAZY_DEPS["memory.hindsight"] == tuple(hindsight_extra)
+    assert _HINDSIGHT_DEPENDENCY == hindsight_extra[0]
+    assert _HINDSIGHT_DISTRIBUTION == "hindsight-all"
+    assert "hindsight-client==0.6.1" not in hindsight_extra
+    assert "hindsight-client==0.6.1" not in manifest_deps
+
+    lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
+    packages = {package["name"]: package for package in lock["package"]}
+    hindsight_all_deps = {
+        dep["name"]
+        for dep in packages["hindsight-all"]["dependencies"]
+    }
+    assert "hindsight-client" in hindsight_all_deps
 
 
 # ---------------------------------------------------------------------------

@@ -382,6 +382,8 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
   const u = t.updates
   const label = u.stages[apply.stage as DesktopUpdateStage] ?? u.stages.idle
   const body = isBackend ? u.applyingBodyBackend : u.applyingBody
+  const currentMessage = apply.message.trim()
+  const recentLog = apply.log.slice(-4)
 
   const percent =
     typeof apply.percent === 'number' && Number.isFinite(apply.percent)
@@ -397,6 +399,12 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
         <DialogDescription className="text-center text-sm">
           {body}
         </DialogDescription>
+
+        {currentMessage ? (
+          <p className="max-w-lg break-words text-center text-xs leading-5 text-muted-foreground">
+            {currentMessage}
+          </p>
+        ) : null}
       </div>
 
       <div className="h-2 overflow-hidden rounded-full bg-muted">
@@ -408,6 +416,16 @@ function ApplyingView({ apply, isBackend }: { apply: UpdateApplyState; isBackend
           style={percent !== null ? { width: `${percent}%` } : undefined}
         />
       </div>
+
+      {recentLog.length > 1 ? (
+        <div className="max-h-24 overflow-hidden rounded-md border border-border/70 bg-muted/35 px-3 py-2 text-left font-mono text-[11px] leading-4 text-muted-foreground">
+          {recentLog.map((entry, index) => (
+            <div className="truncate" key={`${entry.at}-${index}`}>
+              {entry.message}
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       <p className="text-center text-xs text-muted-foreground">{u.applyingClose}</p>
     </div>

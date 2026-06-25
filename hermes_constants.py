@@ -934,6 +934,44 @@ def get_env_path() -> Path:
 # ─── Network Preferences ─────────────────────────────────────────────────────
 
 
+# Cached result of the per-process IPv6 reachability probe (None = not run yet).
+_IPV6_ROUTE_ALIVE = None  # Optional[bool]
+
+
+def ipv6_route_alive() -> bool:
+    """Return True if the host has a usable global IPv6 route.
+
+    Performs a UDP ``connect()`` to a global IPv6 address. For UDP this only
+    selects a route and source address — *no packet is sent* — so it is instant
+    and reliably distinguishes "IPv6 works" from the broken-but-configured case
+    (a v6 address with no working route, which makes AAAA-first name resolution
+    hang for the full TCP connect timeout). The result is cached for the life
+    of the process.
+    """
+    global _IPV6_ROUTE_ALIVE
+    if _IPV6_ROUTE_ALIVE is not None:
+        return _IPV6_ROUTE_ALIVE
+
+    import socket
+
+    alive = False
+    if getattr(socket, "has_ipv6", False):
+        try:
+            probe = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            try:
+                probe.settimeout(0.5)
+                # 2001:4860:4860::8888 = Google Public DNS (a stable global addr)
+                probe.connect(("2001:4860:4860::8888", 53))
+                alive = True
+            finally:
+                probe.close()
+        except OSError:
+            alive = False
+
+    _IPV6_ROUTE_ALIVE = alive
+    return alive
+
+
 def apply_ipv4_preference(force: bool = False) -> None:
     """Monkey-patch ``socket.getaddrinfo`` to prefer IPv4 connections.
 
@@ -948,12 +986,24 @@ def apply_ipv4_preference(force: bool = False) -> None:
     original unfiltered resolution so pure-IPv6 hosts still work.
 
     Safe to call multiple times — only patches once.
-    Set ``network.force_ipv4: true`` in ``config.yaml`` to enable.
-    """
-    if not force:
-        return
 
+    With *force* False, the patch is applied automatically only when the host's
+    IPv6 route is dead (see ``ipv6_route_alive``); a healthy IPv6 stack is left
+    untouched. Set ``network.force_ipv4: true`` in ``config.yaml`` to force it
+    on unconditionally (and skip the probe).
+    """
     import socket
+    import logging
+
+    if not force:
+        # No explicit force: auto-enable only when IPv6 is configured-but-dead.
+        if ipv6_route_alive():
+            return
+        logging.getLogger(__name__).warning(
+            "IPv6 route appears dead — enabling IPv4-preferred DNS resolution "
+            "to avoid connection hangs. Set network.force_ipv4 in config.yaml "
+            "to make this explicit (and skip the probe)."
+        )
 
     # Guard against double-patching
     if getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False):

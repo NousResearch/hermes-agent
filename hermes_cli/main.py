@@ -581,15 +581,15 @@ except Exception:
     pass  # best-effort — don't crash the CLI if logging setup fails
 
 # Apply IPv4 preference early, before any HTTP clients are created.
-# We already determined whether to force IPv4 from the raw yaml read above —
-# this just calls the toggle without a redundant load_config() round trip.
-if _FORCE_IPV4_EARLY:
-    try:
-        from hermes_constants import apply_ipv4_preference as _apply_ipv4
+# force=True when network.force_ipv4 is set (from the raw yaml read above);
+# otherwise the helper auto-enables IPv4 preference only when this host's IPv6
+# route is dead (no-op on healthy dual-stack hosts).
+try:
+    from hermes_constants import apply_ipv4_preference as _apply_ipv4
 
-        _apply_ipv4(force=True)
-    except Exception:
-        pass  # best-effort — don't crash if hermes_constants not importable yet
+    _apply_ipv4(force=_FORCE_IPV4_EARLY)
+except Exception:
+    pass  # best-effort — don't crash if hermes_constants not importable yet
 
 import logging
 import threading

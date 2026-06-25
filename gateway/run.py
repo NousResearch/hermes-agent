@@ -1681,12 +1681,14 @@ if _config_path.exists():
             file=sys.stderr,
         )
 
-# Apply IPv4 preference if configured (before any HTTP clients are created).
+# Apply IPv4 preference (before any HTTP clients are created). force=True when
+# network.force_ipv4 is set; otherwise the helper auto-enables only when this
+# host's IPv6 route is dead (no-op on healthy dual-stack hosts).
 try:
     from hermes_constants import apply_ipv4_preference
     _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
-    if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
-        apply_ipv4_preference(force=True)
+    _force_ipv4 = bool(isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"))
+    apply_ipv4_preference(force=_force_ipv4)
 except Exception as _bootstrap_exc:
     print(f"  Warning: IPv4 preference application failed: {_bootstrap_exc}", file=sys.stderr)
 

@@ -16,19 +16,54 @@ class TestApplyIPv4Preference:
     """Tests for apply_ipv4_preference()."""
 
     def setup_method(self):
-        """Save the original getaddrinfo before each test."""
+        """Save the original getaddrinfo + reset the IPv6 probe cache."""
+        import hermes_constants
         self._original = socket.getaddrinfo
+        hermes_constants._IPV6_ROUTE_ALIVE = None
 
     def teardown_method(self):
-        """Restore the original getaddrinfo after each test."""
+        """Restore the original getaddrinfo + reset the IPv6 probe cache."""
+        import hermes_constants
         socket.getaddrinfo = self._original
+        hermes_constants._IPV6_ROUTE_ALIVE = None
 
-    def test_noop_when_force_false(self):
-        """No patch when force=False."""
-        from hermes_constants import apply_ipv4_preference
+    def test_noop_when_force_false_and_ipv6_alive(self, monkeypatch):
+        """No patch when force=False and the host's IPv6 route is healthy."""
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "ipv6_route_alive", lambda: True)
         original = socket.getaddrinfo
-        apply_ipv4_preference(force=False)
+        hermes_constants.apply_ipv4_preference(force=False)
         assert socket.getaddrinfo is original
+
+    def test_auto_enables_when_ipv6_dead(self, monkeypatch, caplog):
+        """force=False auto-patches AND warns when the IPv6 route is dead."""
+        import hermes_constants
+        monkeypatch.setattr(hermes_constants, "ipv6_route_alive", lambda: False)
+        original = socket.getaddrinfo
+        with caplog.at_level("WARNING", logger="hermes_constants"):
+            hermes_constants.apply_ipv4_preference(force=False)
+        assert socket.getaddrinfo is not original
+        assert getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False) is True
+        assert any("IPv6 route appears dead" in r.getMessage() for r in caplog.records)
+
+    def test_force_true_skips_the_probe(self, monkeypatch):
+        """force=True patches unconditionally, without probing IPv6."""
+        import hermes_constants
+
+        def _boom():
+            raise AssertionError("ipv6_route_alive must not run when force=True")
+
+        monkeypatch.setattr(hermes_constants, "ipv6_route_alive", _boom)
+        hermes_constants.apply_ipv4_preference(force=True)
+        assert getattr(socket.getaddrinfo, "_hermes_ipv4_patched", False) is True
+
+    def test_ipv6_route_alive_returns_bool_and_caches(self):
+        """The probe returns a bool and caches its result for the process."""
+        import hermes_constants
+        hermes_constants._IPV6_ROUTE_ALIVE = None
+        result = hermes_constants.ipv6_route_alive()
+        assert isinstance(result, bool)
+        assert hermes_constants._IPV6_ROUTE_ALIVE is result
 
     def test_patches_getaddrinfo_when_forced(self):
         """Patches socket.getaddrinfo when force=True."""

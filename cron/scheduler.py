@@ -2757,12 +2757,14 @@ def run_job(
                 "default with `hermes model <name>`."
             )
 
-        # Apply IPv4 preference if configured.
+        # Apply IPv4 preference. force=True when network.force_ipv4 is set;
+        # otherwise the helper auto-enables only when IPv6 is dead (the probe
+        # result is cached per-process, so this per-job call is cheap).
         try:
             from hermes_constants import apply_ipv4_preference
             _net_cfg = _cfg.get("network", {})
-            if isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"):
-                apply_ipv4_preference(force=True)
+            _force_ipv4 = bool(isinstance(_net_cfg, dict) and _net_cfg.get("force_ipv4"))
+            apply_ipv4_preference(force=_force_ipv4)
         except Exception:
             pass
 

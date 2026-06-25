@@ -394,6 +394,54 @@ class TestInstall:
         assert not (plan.target_dir / "skills" / ".future-runtime").exists()
         assert (plan.target_dir / "skills" / "demo" / ".authored-hidden").read_text() == "keep"
 
+    def test_force_install_preserves_existing_dir_when_new_copy_fails(self, profile_env, monkeypatch):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="target")
+        skill = plan.target_dir / "skills" / "demo" / "SKILL.md"
+        skill.write_text("old skill\n")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("new skill\n")
+        original_copytree = shutil.copytree
+
+        def fail_skill_root_copy(src, dst, *args, **kwargs):
+            if Path(src).name == "demo":
+                raise OSError("[WinError 145] The directory is not empty")
+            return original_copytree(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(
+            "hermes_cli.profile_distribution.shutil.copytree",
+            fail_skill_root_copy,
+        )
+
+        with pytest.raises(OSError, match="WinError 145"):
+            install_distribution(str(staged), name="target", force=True)
+
+        assert skill.read_text() == "old skill\n"
+
+    def test_force_install_succeeds_when_old_dir_cleanup_fails(self, profile_env, monkeypatch):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="target")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("new skill\n")
+        original_rmtree = shutil.rmtree
+
+        def fail_old_backup_cleanup(path, *args, **kwargs):
+            if "hermes-dist-old" in str(path):
+                raise OSError("[WinError 145] The directory is not empty")
+            return original_rmtree(path, *args, **kwargs)
+
+        monkeypatch.setattr(
+            "hermes_cli.profile_distribution.shutil.rmtree",
+            fail_old_backup_cleanup,
+        )
+        monkeypatch.setattr("hermes_cli.profile_distribution.time.sleep", lambda *_args: None)
+
+        plan = install_distribution(str(staged), name="target", force=True)
+
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text() == "new skill\n"
+
+    def test_install_rejects_default_name(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        with pytest.raises(DistributionError, match="Cannot install"):
+            install_distribution(str(staged), name="default")
 
     def test_install_rejects_non_distribution_directory(self, profile_env, tmp_path):
         bogus = tmp_path / "bogus_dir"

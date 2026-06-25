@@ -65,6 +65,9 @@ def _bootstrap(monkeypatch, tmp_path):
     )
     runner.session_store.load_transcript.return_value = []
     runner.session_store.append_to_transcript = MagicMock()
+    # Mock has_platform_message_id to return False so the dedupe guard
+    # (#47237) in gateway/run.py does not skip the append_to_transcript call.
+    runner.session_store.has_platform_message_id.return_value = False
     runner.session_store.update_session = MagicMock()
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)

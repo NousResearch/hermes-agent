@@ -2370,7 +2370,7 @@ class AIAgent:
 
         except Exception as e:
             if self.verbose_logging:
-                logging.warning(f"Failed to save session log: {e}")
+                logging.warning("Failed to save session log: %s", e)
 
 
     def interrupt(self, message: str = None) -> None:

@@ -927,9 +927,9 @@ def run_conversation(
         
         # Log request details if verbose
         if agent.verbose_logging:
-            logging.debug(f"API Request - Model: {agent.model}, Messages: {len(messages)}, Tools: {len(agent.tools) if agent.tools else 0}")
-            logging.debug(f"Last message role: {messages[-1]['role'] if messages else 'none'}")
-            logging.debug(f"Total message size: ~{approx_tokens:,} tokens")
+            logging.debug("API Request - Model: %s, Messages: %s, Tools: %s", agent.model, len(messages), len(agent.tools) if agent.tools else 0)
+            logging.debug("Last message role: %s", messages[-1]['role'] if messages else 'none')
+            logging.debug("Total message size: ~%s tokens", approx_tokens)
         
         api_start_time = time.time()
         retry_count = 0
@@ -1177,7 +1177,7 @@ def run_conversation(
                 if agent.verbose_logging:
                     # Log response with provider info if available
                     resp_model = getattr(response, 'model', 'N/A') if response else 'N/A'
-                    logging.debug(f"API Response received - Model: {resp_model}, Usage: {response.usage if hasattr(response, 'usage') else 'N/A'}")
+                    logging.debug("API Response received - Model: %s, Usage: %s", resp_model, response.usage if hasattr(response, 'usage') else 'N/A')
                 
                 # Validate response shape before proceeding
                 response_invalid = False
@@ -1320,7 +1320,7 @@ def run_conversation(
                         # Log all response attributes for debugging
                         resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
                         if agent.verbose_logging:
-                            logging.debug(f"Response attributes for invalid response: {resp_attrs}")
+                            logging.debug("Response attributes for invalid response: %s", resp_attrs)
                     
                     # Extract error code from response for contextual diagnostics
                     _resp_error_code = None
@@ -1921,7 +1921,7 @@ def run_conversation(
                             )
                     
                     if agent.verbose_logging:
-                        logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
+                        logging.debug("Token usage: prompt=%s, completion=%s, total=%s", usage_dict['prompt_tokens'], usage_dict['completion_tokens'], usage_dict['total_tokens'])
                     
                     # Surface cache hit stats for any provider that reports
                     # them — not just those where we inject cache_control
@@ -3815,7 +3815,7 @@ def run_conversation(
                 
                 if agent.verbose_logging:
                     for tc in assistant_message.tool_calls:
-                        logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
+                        logging.debug("Tool call: %s with args: %s...", tc.function.name, tc.function.arguments[:200])
                 
                 # Validate tool call names - detect model hallucinations
                 # Repair mismatched tool names before validating

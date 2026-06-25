@@ -1857,28 +1857,55 @@ except Exception:
 
 function Set-PathVariable {
     Write-Info "Setting up hermes command..."
-    
+
     if ($NoVenv) {
-        $hermesBin = "$InstallDir"
+        $pathEntry = "$InstallDir"
     } else {
-        $hermesBin = "$InstallDir\venv\Scripts"
+        $venvScriptsDir = "$InstallDir\venv\Scripts"
+        $pathEntry = Join-Path $HermesHome "bin"
+        $shimPath = Join-Path $pathEntry "hermes.cmd"
+        $shimBody = @(
+            "@echo off",
+            "set `"PYTHONPATH=`"",
+            "set `"PYTHONHOME=`"",
+            "set `"HERMES_HOME=$HermesHome`"",
+            "`"$InstallDir\venv\Scripts\hermes.exe`" %*"
+        ) -join "`r`n"
+
+        New-Item -ItemType Directory -Path $pathEntry -Force | Out-Null
+        Set-Content -Path $shimPath -Value $shimBody -Encoding ASCII
     }
-    
-    # Add the venv Scripts dir to user PATH so hermes is globally available
-    # On Windows, the hermes.exe in venv\Scripts\ has the venv Python baked in
+
+    # Keep Hermes launchers globally available without exposing the whole venv
+    # Scripts dir, which also shadows bare python/pip for unrelated projects.
     $currentPath = [Environment]::GetEnvironmentVariable("Path", "User")
-    
-    if ($currentPath -notlike "*$hermesBin*") {
-        [Environment]::SetEnvironmentVariable(
-            "Path",
-            "$hermesBin;$currentPath",
-            "User"
-        )
-        Write-Success "Added to user PATH: $hermesBin"
+    $pathItems = if ($currentPath) { $currentPath -split ";" } else { @() }
+    $changed = $false
+
+    if (-not $NoVenv) {
+        $filtered = @()
+        foreach ($entry in $pathItems) {
+            if ($entry -eq $venvScriptsDir) {
+                $changed = $true
+                continue
+            }
+            $filtered += $entry
+        }
+        $pathItems = $filtered
+    }
+
+    if ($pathItems -notcontains $pathEntry) {
+        $pathItems = @($pathEntry) + $pathItems
+        $changed = $true
+    }
+
+    if ($changed) {
+        [Environment]::SetEnvironmentVariable("Path", ($pathItems -join ";"), "User")
+        Write-Success "Added to user PATH: $pathEntry"
     } else {
         Write-Info "PATH already configured"
     }
-    
+
     # Set HERMES_HOME so the Python code finds config/data in the right place.
     # Only needed on Windows where we install to %LOCALAPPDATA%\hermes instead
     # of the Unix default ~/.hermes
@@ -1888,10 +1915,15 @@ function Set-PathVariable {
         Write-Success "Set HERMES_HOME=$HermesHome"
     }
     $env:HERMES_HOME = $HermesHome
-    
+
     # Update current session
-    $env:Path = "$hermesBin;$env:Path"
-    
+    $sessionPathItems = if ($env:Path) { $env:Path -split ";" } else { @() }
+    if (-not $NoVenv) {
+        $sessionPathItems = @($sessionPathItems | Where-Object { $_ -and $_ -ne $venvScriptsDir })
+    }
+    $sessionPathItems = @($pathEntry) + @($sessionPathItems | Where-Object { $_ -and $_ -ne $pathEntry })
+    $env:Path = $sessionPathItems -join ";"
+
     Write-Success "hermes command ready"
 }
 

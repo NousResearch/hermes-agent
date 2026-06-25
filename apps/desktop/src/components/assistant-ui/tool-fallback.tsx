@@ -33,6 +33,7 @@ import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/sto
 import { PendingToolApproval } from './tool-approval'
 import {
   buildToolView,
+  clampForDisplay,
   cleanVisibleText,
   countDiffLineStats,
   inlineDiffFromResult,
@@ -104,7 +105,7 @@ function rawTechnicalTrace(args: unknown, result: unknown): string {
     })
     .filter(Boolean)
 
-  return parts.join('\n')
+  return clampForDisplay(parts.join('\n'))
 }
 
 function statusGlyph(status: ToolStatus, copy: ToolStatusCopy): ReactNode {
@@ -220,13 +221,25 @@ function ToolEntry({ part }: ToolEntryProps) {
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
   const toolViewMode = useStore($toolViewMode)
-  const disclosureId = `tool-entry:${messageId}:${toolPartDisclosureId(part)}`
+
+  // `ToolFallback` rebuilds the `part` wrapper each render, defeating the memos
+  // below and re-running buildToolView (full JSON.stringify of result) on every
+  // stream delta — the freeze on big `/learn` runs. Re-derive a stable part from
+  // the referentially-stable args/result so the memos hold across deltas.
+  const { args, isError, result, toolCallId, toolName } = part
+
+  const stablePart = useMemo<ToolPart>(
+    () => ({ args, isError, result, toolCallId, toolName, type: 'tool-call' }),
+    [args, isError, result, toolCallId, toolName]
+  )
+
+  const disclosureId = `tool-entry:${messageId}:${toolPartDisclosureId(stablePart)}`
   const dismissed = useStore($toolRowDismissed(disclosureId))
-  const isPending = messageRunning && part.result === undefined
+  const isPending = messageRunning && result === undefined
   const liveDiffs = useStore($toolInlineDiffs)
-  const sideDiff = part.toolCallId ? liveDiffs[part.toolCallId] || '' : ''
-  const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(part.result)
-  const isFileEdit = isFileEditTool(part.toolName)
+  const sideDiff = toolCallId ? liveDiffs[toolCallId] || '' : ''
+  const inlineDiff = stripInlineDiffChrome(sideDiff) || inlineDiffFromResult(result)
+  const isFileEdit = isFileEditTool(toolName)
   const defaultOpen = Boolean(inlineDiff)
   const open = useDisclosureOpen(disclosureId, defaultOpen)
   const canDismiss = !isPending && !embedded
@@ -237,13 +250,14 @@ function ToolEntry({ part }: ToolEntryProps) {
   const enterRef = useEnterAnimation(messageRunning && !embedded, `tool-entry:${disclosureId}`)
   const elapsed = useElapsedSeconds(isPending, `tool:${disclosureId}`)
 
-  // Stale parts (no result, but message stopped running) get a synthetic
-  // empty result so buildToolView treats them as completed-no-output.
+  // Stale parts (no result, but message stopped running) get a synthetic empty
+  // result so buildToolView treats them as completed-no-output. Keyed on
+  // stablePart so it recomputes only when this tool's data changes.
   const view = useMemo(() => {
-    const p = !isPending && part.result === undefined ? { ...part, result: {} } : part
+    const p = !isPending && result === undefined ? { ...stablePart, result: {} } : stablePart
 
     return buildToolView(p, inlineDiff)
-  }, [inlineDiff, isPending, part])
+  }, [inlineDiff, isPending, result, stablePart])
 
   // Surface a previewable artifact (HTML file / localhost URL) as a compact link
   // in the composer status stack rather than a bulky inline card. Uses the same
@@ -313,7 +327,9 @@ function ToolEntry({ part }: ToolEntryProps) {
     view.imageUrl || view.inlineDiff || showDetail || hasSearchHits || toolViewMode === 'technical'
   )
 
-  const copyAction = useMemo(() => toolCopyPayload(part, view), [part, view])
+  // copyAction reads the uncapped view.detail; clampForDisplay below only bounds
+  // what's painted, so the row's Copy button still yields the full output.
+  const copyAction = useMemo(() => toolCopyPayload(stablePart, view), [stablePart, view])
 
   const diffStats = useMemo(
     () => (isFileEdit && view.inlineDiff ? countDiffLineStats(view.inlineDiff) : null),
@@ -466,7 +482,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                         detailSections.summary && 'mt-1.5'
                       )}
                     >
-                      {detailSections.body}
+                      {clampForDisplay(detailSections.body)}
                     </pre>
                   )}
                 </div>
@@ -481,7 +497,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                   <div className="space-y-0.5">
                     {view.stderr && <p className={TOOL_SECTION_LABEL_CLASS}>stdout</p>}
                     <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
-                      {view.rendersAnsi ? <AnsiText text={view.stdout} /> : view.stdout}
+                      {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.stdout)} /> : clampForDisplay(view.stdout)}
                     </pre>
                   </div>
                 )}
@@ -494,7 +510,7 @@ function ToolEntry({ part }: ToolEntryProps) {
                         'whitespace-pre-wrap wrap-anywhere text-(--ui-text-tertiary)'
                       )}
                     >
-                      {view.rendersAnsi ? <AnsiText text={view.stderr} /> : view.stderr}
+                      {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.stderr)} /> : clampForDisplay(view.stderr)}
                     </pre>
                   </div>
                 )}
@@ -504,10 +520,10 @@ function ToolEntry({ part }: ToolEntryProps) {
                 {view.detailLabel && <p className={TOOL_SECTION_LABEL_CLASS}>{view.detailLabel}</p>}
                 {renderDetailAsCode ? (
                   <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
-                    {view.rendersAnsi ? <AnsiText text={view.detail} /> : view.detail}
+                    {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.detail)} /> : clampForDisplay(view.detail)}
                   </pre>
                 ) : (
-                  <CompactMarkdown className={cn(TOOL_SECTION_SURFACE_CLASS, 'wrap-anywhere')} text={view.detail} />
+                  <CompactMarkdown className={cn(TOOL_SECTION_SURFACE_CLASS, 'wrap-anywhere')} text={clampForDisplay(view.detail)} />
                 )}
               </div>
             ))}

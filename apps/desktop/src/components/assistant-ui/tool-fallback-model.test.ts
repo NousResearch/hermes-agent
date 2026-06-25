@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest'
 
 import {
   buildToolView,
+  clampForDisplay,
   countDiffLineStats,
   inlineDiffFromResult,
+  MAX_TOOL_RENDER_CHARS,
   type ToolPart
 } from './tool-fallback-model'
 
@@ -107,6 +109,36 @@ describe('buildToolView file edit diffs', () => {
     expect(view.title).toBe('demo.ts')
     expect(view.subtitle).toBe('src/demo.ts')
     expect(view.detail).toBe('')
+  })
+})
+
+describe('clampForDisplay', () => {
+  it('passes short payloads through untouched', () => {
+    expect(clampForDisplay('hello')).toBe('hello')
+    expect(clampForDisplay('x'.repeat(MAX_TOOL_RENDER_CHARS))).toHaveLength(MAX_TOOL_RENDER_CHARS)
+  })
+
+  it('truncates oversized payloads and reports the omitted count', () => {
+    const oversized = 'x'.repeat(MAX_TOOL_RENDER_CHARS + 5_000)
+    const clamped = clampForDisplay(oversized)
+
+    expect(clamped.length).toBeLessThan(oversized.length)
+    expect(clamped.startsWith('x'.repeat(MAX_TOOL_RENDER_CHARS))).toBe(true)
+    expect(clamped).toContain('5,000 more characters truncated')
+    expect(clamped).toContain('Copy')
+  })
+})
+
+// A large tool result (e.g. a 100KB read_file during a `/learn` run) must not
+// be serialized into the rendered rawResult at full size — that JSON.stringify
+// payload is what floods the renderer when many rows stack up.
+describe('buildToolView caps serialized result size', () => {
+  it('clamps rawResult for an oversized result', () => {
+    const huge = 'y'.repeat(MAX_TOOL_RENDER_CHARS * 3)
+    const view = buildToolView(part({ result: { content: huge }, toolName: 'read_file' }), '')
+
+    expect(view.rawResult.length).toBeLessThanOrEqual(MAX_TOOL_RENDER_CHARS + 200)
+    expect(view.rawResult).toContain('truncated')
   })
 })
 

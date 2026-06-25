@@ -238,8 +238,26 @@ function contextValue(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
 
+// Each tool result is server-capped (~100KB), but a turn over a big directory
+// stacks many rows; painting/serializing them all floods the renderer (freeze,
+// then OOM). Clamp every inline-painted payload to a bounded slice — the row's
+// Copy button still reads the uncapped `view.detail` for the full output.
+export const MAX_TOOL_RENDER_CHARS = 20_000
+
+export function clampForDisplay(value: string, max = MAX_TOOL_RENDER_CHARS): string {
+  if (value.length <= max) {
+    return value
+  }
+
+  const omitted = value.length - max
+
+  return `${value.slice(0, max)}\n\n… ${omitted.toLocaleString()} more characters truncated — use Copy for the full output.`
+}
+
 function prettyJson(value: unknown): string {
-  return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+  const raw = typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+
+  return clampForDisplay(raw ?? '')
 }
 
 function parseMaybeObject(value: unknown): Record<string, unknown> {

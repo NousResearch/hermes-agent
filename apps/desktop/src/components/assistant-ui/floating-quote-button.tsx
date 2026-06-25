@@ -66,7 +66,7 @@ export function FloatingQuoteButton() {
     const buttonHeight = 32
     const buttonHalfWidth = 16
     const top = rect.top - viewportRect.top - buttonHeight - BUTTON_OFFSET
-    const left = rect.left + rect.width / 2 - viewportRect.top - buttonHalfWidth
+    const left = rect.left + rect.width / 2 - viewportRect.left - buttonHalfWidth
 
     setPosition({
       top: Math.max(top, 4),

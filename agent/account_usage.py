@@ -467,10 +467,10 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     payload = response.json() or {}
     account = payload.get("account") or {}
     account_email = (
-        str(payload.get("account_email") or account.get("email") or "").strip() or None
+        str(payload.get("account_email") or payload.get("email") or account.get("email") or "").strip() or None
     )
     if not account_id:
-        account_id = str(payload.get("account_id") or account.get("id") or "").strip() or None
+        account_id = str(payload.get("account_id") or payload.get("user_id") or account.get("id") or "").strip() or None
     if not account_label:
         account_label = str(
             payload.get("account_label")

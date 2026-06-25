@@ -1970,6 +1970,11 @@ def _convert_assistant_message(m: Dict[str, Any]) -> Dict[str, Any]:
             "name": fn.get("name", ""),
             "input": parsed_args,
         })
+    if isinstance(m.get("cache_control"), dict):
+        for block in reversed(blocks):
+            if isinstance(block, dict) and block.get("type") in {"text", "tool_use"}:
+                block.setdefault("cache_control", dict(m["cache_control"]))
+                break
     # Kimi's /coding endpoint (Anthropic protocol) requires assistant
     # tool-call messages to carry reasoning_content when thinking is
     # enabled server-side.  Preserve it as a thinking block so Kimi

@@ -323,12 +323,12 @@ def _handle_send(args):
             else:
                 return json.dumps({
                     "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                    f"Use send_message(action='list') to see available targets."
+                    "Use send_message(action='list') to see available targets."
                 })
         except Exception:
             return json.dumps({
                 "error": f"Could not resolve '{target_ref}' on {platform_name}. "
-                f"Try using a numeric channel ID instead."
+                "Try using a numeric channel ID instead."
             })
 
     from tools.interrupt import is_interrupted
@@ -698,7 +698,7 @@ async def _send_via_adapter(
         return {
             "error": (
                 f"Plugin standalone send for '{platform_name}' returned an "
-                f"invalid result: expected a dict with 'success' or 'error' "
+                "invalid result: expected a dict with 'success' or 'error' "
                 f"keys, got {type(result).__name__}"
             )
         }
@@ -706,9 +706,9 @@ async def _send_via_adapter(
     return {
         "error": (
             f"No live adapter for platform '{platform_name}'. Is the gateway "
-            f"running with this platform connected? For out-of-process delivery "
-            f"(e.g. cron in a separate process), the platform plugin must "
-            f"register a standalone_sender_fn on its PlatformEntry."
+            "running with this platform connected? For out-of-process delivery "
+            "(e.g. cron in a separate process), the platform plugin must "
+            "register a standalone_sender_fn on its PlatformEntry."
         )
     }
 
@@ -900,7 +900,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                "send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -1406,7 +1406,7 @@ async def _send_signal(extra, chat_id, message, media_files=None):
         if failed_batches and len(failed_batches) == len(att_batches):
             return _error(
                 f"Signal: every batch ({len(att_batches)}) hit rate limit; "
-                f"no attachments delivered"
+                "no attachments delivered"
             )
 
         result = {"success": True, "platform": "signal", "chat_id": _display_chat_id("signal", chat_id)}
@@ -1605,7 +1605,7 @@ async def _send_qqbot(pconfig, chat_id, message):
             token_data = token_resp.json()
             access_token = token_data.get("access_token")
             if not access_token:
-                return _error(f"QQBot: no access_token in response")
+                return _error("QQBot: no access_token in response")
 
             # Step 2: Send message via REST
             # QQ Bot API has separate endpoints for channels, C2C, and groups.

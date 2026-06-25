@@ -206,16 +206,16 @@ def format_nous_portal_entitlement_message(
     if account_info is None:
         return (
             f"Hermes could not verify your Nous Portal entitlement, so {capability} "
-            f"is unavailable. Run `hermes model` to refresh your login, or check "
+            "is unavailable. Run `hermes model` to refresh your login, or check "
             f"billing at {billing_url}."
         )
 
     if not account_info.logged_in:
         if account_info.inference_credential_present:
             return (
-                f"Nous inference credentials are configured, but Hermes cannot verify "
+                "Nous inference credentials are configured, but Hermes cannot verify "
                 f"your Nous Portal paid access for {capability}. Log in with "
-                f"`hermes model` to enable Portal-managed features. Billing and "
+                "`hermes model` to enable Portal-managed features. Billing and "
                 f"credits are managed at {billing_url}."
             )
         return (
@@ -226,7 +226,7 @@ def format_nous_portal_entitlement_message(
     if account_info.paid_service_access is None:
         detail = (
             f"Hermes could not verify your Nous Portal paid access, so {capability} "
-            f"is unavailable."
+            "is unavailable."
         )
         if account_info.error:
             detail += f" Account lookup failed: {account_info.error}."
@@ -239,9 +239,9 @@ def format_nous_portal_entitlement_message(
     reason = access.reason if access else None
     if reason == "account_missing":
         return (
-            f"Hermes could not find a Nous Portal account or organisation for this "
+            "Hermes could not find a Nous Portal account or organisation for this "
             f"login, so {capability} is unavailable. Run `hermes model` to "
-            f"authenticate again; if the problem persists, contact Nous support."
+            "authenticate again; if the problem persists, contact Nous support."
         )
 
     if reason == "no_usable_credits" or account_info.paid_service_access is False:
@@ -251,7 +251,7 @@ def format_nous_portal_entitlement_message(
         return message
 
     return (
-        f"Your Nous Portal account does not currently have paid service access, "
+        "Your Nous Portal account does not currently have paid service access, "
         f"so {capability} is unavailable. Add credits or update billing at {billing_url}."
     )
 
@@ -277,14 +277,14 @@ def _no_paid_access_message(
 
     if has_active_subscription and active_subscription_is_paid is False:
         return (
-            f"Your current Nous Portal plan does not include paid service access, "
+            "Your current Nous Portal plan does not include paid service access, "
             f"so {capability} is unavailable. Upgrade or add credits at {billing_url}."
         )
 
     if has_active_subscription is False:
         credit_detail = _credit_detail(total_usable, subscription_credits, purchased_credits)
         return (
-            f"Your Nous Portal account has no active subscription or usable credits"
+            "Your Nous Portal account has no active subscription or usable credits"
             f"{credit_detail}, so {capability} is unavailable. Subscribe or add credits "
             f"at {billing_url}."
         )

@@ -206,17 +206,17 @@ def _browser_cdp_via_supervisor(
     except Exception as exc:  # pragma: no cover — defensive
         return tool_error(
             f"CDP supervisor is not available: {exc}. frame_id routing requires "
-            f"a running supervisor attached via /browser connect or an active "
-            f"Browserbase session."
+            "a running supervisor attached via /browser connect or an active "
+            "Browserbase session."
         )
 
     supervisor = SUPERVISOR_REGISTRY.get(task_id)
     if supervisor is None:
         return tool_error(
             f"No CDP supervisor is attached for task={task_id!r}. Call "
-            f"browser_navigate or /browser connect first so the supervisor "
-            f"can attach. Once attached, browser_snapshot will populate "
-            f"frame_tree with frame_ids you can pass here."
+            "browser_navigate or /browser connect first so the supervisor "
+            "can attach. Once attached, browser_snapshot will populate "
+            "frame_tree with frame_ids you can pass here."
         )
 
     snap = supervisor.snapshot()
@@ -240,7 +240,7 @@ def _browser_cdp_via_supervisor(
     if frame_info is None:
         return tool_error(
             f"frame_id {frame_id!r} not found in supervisor state. "
-            f"Call browser_snapshot to see current frame_tree."
+            "Call browser_snapshot to see current frame_tree."
         )
 
     child_sid = frame_info.get("session_id")
@@ -250,10 +250,10 @@ def _browser_cdp_via_supervisor(
         # agent can still use contentWindow/contentDocument from the parent.
         return tool_error(
             f"frame_id {frame_id!r} is not an out-of-process iframe (no "
-            f"dedicated CDP session). For same-origin iframes, use "
+            "dedicated CDP session). For same-origin iframes, use "
             f"`browser_cdp(method='Runtime.evaluate', params={{'expression': "
-            f"\"document.querySelector('iframe').contentDocument.title\"}})` "
-            f"at the top-level page instead."
+            "\"document.querySelector('iframe').contentDocument.title\"}})` "
+            "at the top-level page instead."
         )
 
     # Dispatch onto the supervisor's loop.

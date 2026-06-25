@@ -266,7 +266,7 @@ def cua_driver_update_nudge() -> Optional[str]:
     current = state.get("current_version") or "?"
     return (
         f"cua-driver {latest} is available (you have {current}); "
-        f"update with `hermes computer-use install --upgrade`."
+        "update with `hermes computer-use install --upgrade`."
     )
 
 
@@ -1070,11 +1070,11 @@ class CuaDriverBackend(ComputerUseBackend):
                     elements=[], app="",
                     window_title=(
                         f"<no desktop/shell window found for app={app!r}; "
-                        f"cua-driver captures one window at a time and exposes "
-                        f"no whole-virtual-desktop or per-monitor capture. "
-                        f"Call list_apps / capture(app='<AppName>') to target a "
-                        f"specific window instead. On Windows the taskbar is "
-                        f"'Shell_TrayWnd' and the desktop is 'Progman'.>"
+                        "cua-driver captures one window at a time and exposes "
+                        "no whole-virtual-desktop or per-monitor capture. "
+                        "Call list_apps / capture(app='<AppName>') to target a "
+                        "specific window instead. On Windows the taskbar is "
+                        "'Shell_TrayWnd' and the desktop is 'Progman'.>"
                     ),
                     png_bytes_len=0,
                 )
@@ -1097,9 +1097,9 @@ class CuaDriverBackend(ComputerUseBackend):
                     elements=[], app="",
                     window_title=(
                         f"<no on-screen window matched app={app!r}; "
-                        f"call list_apps to see available app names "
-                        f"(macOS reports localized names, e.g. '計算機' "
-                        f"instead of 'Calculator')>"
+                        "call list_apps to see available app names "
+                        "(macOS reports localized names, e.g. '計算機' "
+                        "instead of 'Calculator')>"
                     ),
                     png_bytes_len=0,
                 )

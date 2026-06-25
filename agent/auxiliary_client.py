@@ -5259,8 +5259,8 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned invalid response "
             f"(type={response_type}): {response_preview!r}. "
-            f"Expected object with .choices[0].message — check provider "
-            f"adapter or custom endpoint compatibility."
+            "Expected object with .choices[0].message — check provider "
+            "adapter or custom endpoint compatibility."
         ) from exc
     return response
 
@@ -5330,7 +5330,7 @@ def call_llm(
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
-                f"Run: hermes setup"
+                "Run: hermes setup"
             )
         resolved_provider = effective_provider or resolved_provider
     else:
@@ -5351,7 +5351,7 @@ def call_llm(
                 raise RuntimeError(
                     f"Provider '{_explicit}' is set in config.yaml but no API key "
                     f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                    f"variable, or switch to a different provider with `hermes model`."
+                    "variable, or switch to a different provider with `hermes model`."
                 )
             # For auto/custom with no credentials, try the full auto chain
             # rather than hardcoding OpenRouter (which may be depleted).
@@ -5365,7 +5365,7 @@ def call_llm(
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
-                f"Run: hermes setup")
+                "Run: hermes setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
 
@@ -5839,7 +5839,7 @@ async def async_call_llm(
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
-                f"Run: hermes setup"
+                "Run: hermes setup"
             )
         resolved_provider = effective_provider or resolved_provider
     else:
@@ -5857,7 +5857,7 @@ async def async_call_llm(
                 raise RuntimeError(
                     f"Provider '{_explicit}' is set in config.yaml but no API key "
                     f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                    f"variable, or switch to a different provider with `hermes model`."
+                    "variable, or switch to a different provider with `hermes model`."
                 )
             if not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
@@ -5866,7 +5866,7 @@ async def async_call_llm(
         if client is None:
             raise RuntimeError(
                 f"No LLM provider configured for task={task} provider={resolved_provider}. "
-                f"Run: hermes setup")
+                "Run: hermes setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
 

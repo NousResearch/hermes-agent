@@ -1086,6 +1086,36 @@ def _safe_getcwd() -> str:
         return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
 
 
+# Path prefixes that identify a *host* working directory which cannot exist
+# inside a container sandbox. Covers POSIX user dirs and Windows drive paths
+# (``C:\Users\...`` / ``C:/Users/...``) — the latter is how a Windows host's
+# cwd looks when it leaks toward a Linux container's ``-w`` flag.
+_HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
+
+_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
+
+
+def _is_unusable_container_cwd(cwd: str) -> bool:
+    """Return True if *cwd* is a host/relative path that won't work as the
+    working directory inside a container sandbox.
+
+    A container's cwd must be an absolute path that exists *inside* the
+    sandbox (e.g. ``/workspace`` or ``/root``). A host path (``/home/user``,
+    ``C:\\Users\\me``) or a relative path (``.``, ``src/``) is meaningless to
+    ``docker run -w`` and makes the container fail to start (exit 125).
+    """
+    if not cwd:
+        return False
+    if any(cwd.startswith(p) for p in _HOST_CWD_PREFIXES):
+        return True
+    # Relative paths (".", "src/") can't be a container workdir either. Windows
+    # drive paths are absolute on Windows but os.path.isabs() is False on a
+    # POSIX host, so they're already caught by the prefix check above.
+    if not os.path.isabs(cwd):
+        return True
+    return False
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
@@ -1138,21 +1168,18 @@ def _get_env_config() -> Dict[str, Any]:
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
-    host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
     if env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
-            any(candidate.startswith(p) for p in host_prefixes)
+            any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
             or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in {"modal", "docker", "singularity", "daytona"} and cwd:
+    elif env_type in _CONTAINER_BACKENDS and cwd:
         # Host paths and relative paths that won't work inside containers
-        is_host_path = any(cwd.startswith(p) for p in host_prefixes)
-        is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
-        if (is_host_path or is_relative) and cwd != default_cwd:
+        if _is_unusable_container_cwd(cwd) and cwd != default_cwd:
             logger.info("Ignoring TERMINAL_CWD=%r for %s backend "
                         "(host/relative path won't work in sandbox). Using %r instead.",
                         cwd, env_type, default_cwd)
@@ -1845,6 +1872,7 @@ def terminal_tool(
     background: bool = False,
     timeout: Optional[int] = None,
     task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     force: bool = False,
     workdir: Optional[str] = None,
     pty: bool = False,
@@ -1859,6 +1887,7 @@ def terminal_tool(
         background: Whether to run in background (default: False)
         timeout: Command timeout in seconds (default: from config)
         task_id: Unique identifier for environment isolation (optional)
+        session_id: Conversation/session identifier for durable observability
         force: If True, skip dangerous command check (use after user confirms)
         workdir: Working directory for this command (optional, uses session cwd if not set)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
@@ -1925,6 +1954,25 @@ def terminal_tool(
             image = ""
 
         cwd = overrides.get("cwd") or config["cwd"]
+        # A per-task cwd override (registered by the gateway/TUI for workspace
+        # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
+        # config["cwd"] was already sanitized for container backends in
+        # _get_env_config() while the override is raw. On a container backend a
+        # raw host path (e.g. a Windows desktop session's C:\Users\<user>, or a
+        # POSIX /home/<user>) reaches `docker run -w <host-path>` and the
+        # container fails to start (exit 125). Re-apply the same host/relative
+        # path guard to the *resolved* cwd so the override can't bypass it.
+        # Valid in-container override paths (RL/benchmark sandboxes that set
+        # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
+        # through untouched.
+        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+            if cwd != config["cwd"]:
+                logger.info(
+                    "Ignoring host/relative cwd override %r for %s backend "
+                    "(won't exist in sandbox). Using %r instead.",
+                    cwd, env_type, config["cwd"],
+                )
+            cwd = config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
 
@@ -2395,16 +2443,18 @@ def terminal_tool(
             max_retries = 3
             retry_count = 0
             result = None
+            command_cwd = None
             
             while retry_count <= max_retries:
                 try:
+                    command_cwd = _resolve_command_cwd(
+                        workdir=workdir,
+                        env=env,
+                        default_cwd=cwd,
+                    )
                     execute_kwargs = {
                         "timeout": effective_timeout,
-                        "cwd": _resolve_command_cwd(
-                            workdir=workdir,
-                            env=env,
-                            default_cwd=cwd,
-                        ),
+                        "cwd": command_cwd,
                     }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
@@ -2495,6 +2545,25 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
+            try:
+                from agent.verification_evidence import record_terminal_result
+
+                evidence = record_terminal_result(
+                    command=command,
+                    cwd=command_cwd,
+                    session_id=session_id or task_id or effective_task_id or "default",
+                    exit_code=returncode,
+                    output=output,
+                )
+                if evidence:
+                    result_dict["verification_evidence"] = {
+                        "status": evidence.get("status"),
+                        "kind": evidence.get("kind"),
+                        "scope": evidence.get("scope"),
+                        "canonical_command": evidence.get("canonical_command"),
+                    }
+            except Exception:
+                logger.debug("verification evidence recording failed", exc_info=True)
             if approval_note:
                 result_dict["approval"] = approval_note
             if exit_note:
@@ -2728,6 +2797,7 @@ def _handle_terminal(args, **kw):
         background=args.get("background", False),
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
+        session_id=kw.get("session_id"),
         workdir=args.get("workdir"),
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),

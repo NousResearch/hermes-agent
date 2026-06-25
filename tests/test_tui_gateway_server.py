@@ -6139,6 +6139,65 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
     assert resp["result"]["session_id"] is None
 
 
+# ── verification.status ──────────────────────────────────────────────
+
+
+def test_verification_status_returns_recorded_evidence(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "package.json").write_text(
+        json.dumps({"scripts": {"test": "vitest"}}),
+        encoding="utf-8",
+    )
+    (project / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    try:
+        from agent.verification_evidence import record_terminal_result
+
+        record_terminal_result(
+            command="pnpm run test",
+            cwd=project,
+            session_id="sid",
+            exit_code=0,
+            output="green",
+        )
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "verification.status",
+                "params": {"cwd": str(project), "session_id": "sid"},
+            }
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    verification = resp["result"]["verification"]
+    assert verification["status"] == "passed"
+    assert verification["evidence"]["canonical_command"] == "pnpm run test"
+    assert verification["evidence"]["scope"] == "full"
+
+
+def test_verification_status_outside_workspace_is_not_applicable(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "verification.status",
+                "params": {"cwd": str(tmp_path), "session_id": "sid"},
+            }
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    assert resp["result"]["verification"]["status"] == "not_applicable"
+
+
 # ── browser.manage ───────────────────────────────────────────────────
 
 

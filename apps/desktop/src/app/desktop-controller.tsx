@@ -108,6 +108,7 @@ import { useKeybinds } from './hooks/use-keybinds'
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from './layout-constants'
 import { ModelPickerOverlay } from './model-picker-overlay'
 import { ModelVisibilityOverlay } from './model-visibility-overlay'
+import { PetGenerateOverlay } from './pet-generate/pet-generate-overlay'
 import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
@@ -1028,6 +1029,7 @@ export function DesktopController() {
       <GatewayConnectingOverlay />
       <BootFailureOverlay />
       <CommandPalette />
+      <PetGenerateOverlay />
       <SessionSwitcher />
 
       {settingsOpen && (

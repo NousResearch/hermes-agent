@@ -63,7 +63,11 @@ class TestCustomProvidersValidation:
         """Properly formatted custom_providers should produce no issues."""
         issues = validate_config_structure({
             "custom_providers": [
-                {"name": "gemini", "base_url": "https://example.com/v1"},
+                {
+                    "name": "gemini",
+                    "base_url": "https://example.com/v1",
+                    "available_models": ["gemini-test"],
+                },
             ],
             "model": {"provider": "custom", "default": "test"},
         })

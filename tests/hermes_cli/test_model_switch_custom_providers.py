@@ -283,6 +283,53 @@ def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     assert result.api_key == "no-key-required"
 
 
+def test_switch_model_accepts_available_models_for_named_custom_provider(monkeypatch):
+    """``--provider <custom name>`` accepts models declared via available_models."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {
+            "api_key": "no-key-required",
+            "base_url": "https://token-plan.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.validate_requested_model",
+        lambda *a, **k: {
+            "accepted": False,
+            "persist": False,
+            "recognized": False,
+            "message": "not listed",
+        },
+    )
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="deepseek-v4-flash",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        current_base_url="https://chatgpt.com/backend-api/codex",
+        current_api_key="",
+        explicit_provider="tokenplan",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "tokenplan",
+                "base_url": "https://token-plan.example/v1",
+                "model": "qwen3.7-plus",
+                "available_models": ["qwen3.7-plus", "deepseek-v4-flash"],
+            }
+        ],
+    )
+
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:tokenplan"
+    assert result.provider_label == "tokenplan"
+    assert result.new_model == "deepseek-v4-flash"
+    assert result.base_url == "https://token-plan.example/v1"
+
+
 def test_list_groups_same_name_custom_providers_into_one_row(monkeypatch):
     """Multiple custom_providers entries sharing a name should produce one row
     with all models collected, not N duplicate rows."""

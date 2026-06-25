@@ -5206,6 +5206,8 @@ def _normalize_custom_provider_entry(
         normalized["model"] = model_name.strip()
 
     models = entry.get("models")
+    if not models:
+        models = entry.get("available_models")
     if isinstance(models, dict) and models:
         normalized["models"] = models
     elif isinstance(models, list) and models:
@@ -5656,6 +5658,7 @@ _KNOWN_ROOT_KEYS = frozenset(DEFAULT_CONFIG.keys()) | _EXTRA_KNOWN_ROOT_KEYS
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
+    "available_models",
     "context_length", "rate_limit_delay", "extra_body",
     "ssl_ca_cert", "ssl_verify",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py

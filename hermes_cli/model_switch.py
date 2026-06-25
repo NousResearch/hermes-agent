@@ -900,6 +900,22 @@ def resolve_display_context_length(
 # Configured-provider detection for typed model names
 # ---------------------------------------------------------------------------
 
+_DECLARED_MODEL_KEYS = ("models", "available_models", "model", "default_model")
+
+
+def _match_declared_model(value, target: str) -> Optional[str]:
+    """Return the configured model id in ``value`` matching ``target`` (an
+    already-lowercased name), else None.
+
+    Delegates extraction to :func:`_declared_model_ids` so every supported
+    config shape — scalar, dict-keyed, list-of-strings, and list-of-dicts with
+    ``id``/``name`` — is handled in one place.
+    """
+    for model_id in _declared_model_ids(value):
+        if model_id.lower() == target:
+            return model_id
+    return None
+
 
 def _configured_provider_matches(
     model_name: str,
@@ -926,22 +942,14 @@ def _configured_provider_matches(
         return {}
     target = model_name.strip().lower()
 
-    def _match(value) -> Optional[str]:
-        """Canonical id if ``value`` (a model collection or scalar) declares
-        ``target``, else None."""
-        for model_id in _declared_model_ids(value):
-            if model_id.lower() == target:
-                return model_id
-        return None
-
     matches: dict[str, str] = {}
 
     if isinstance(user_providers, dict):
         for slug, cfg in user_providers.items():
             if not isinstance(slug, str) or not isinstance(cfg, dict):
                 continue
-            for key in ("models", "model", "default_model"):
-                hit = _match(cfg.get(key))
+            for key in _DECLARED_MODEL_KEYS:
+                hit = _match_declared_model(cfg.get(key), target)
                 if hit:
                     matches[slug] = hit
                     break
@@ -956,13 +964,48 @@ def _configured_provider_matches(
             slug = f"custom:{name}"
             if slug in matches:
                 continue
-            for key in ("models", "model", "default_model"):
-                hit = _match(entry.get(key))
+            for key in _DECLARED_MODEL_KEYS:
+                hit = _match_declared_model(entry.get(key), target)
                 if hit:
                     matches[slug] = hit
                     break
 
     return matches
+
+
+def _parse_configured_provider_model_input(
+    raw_input: str,
+    user_providers: Optional[dict],
+    custom_providers: Optional[list],
+) -> Optional[tuple[str, str]]:
+    """Parse ``provider:model`` only for configured providers.
+
+    Generic colon syntax is intentionally not part of the public ``/model``
+    contract because many provider model ids use colon suffixes.  A left-hand
+    side that resolves to a user-configured provider is unambiguous, though, so
+    accept that form for hand-configured gateway providers.
+    """
+    stripped = str(raw_input or "").strip()
+    if ":" not in stripped:
+        return None
+
+    candidates: list[tuple[str, str]] = []
+    if stripped.lower().startswith("custom:"):
+        first, second, rest = stripped.partition(":")
+        custom_name, sep, model = rest.partition(":")
+        if sep and custom_name.strip() and model.strip():
+            candidates.append((f"{first}:{custom_name.strip()}", model.strip()))
+
+    provider, sep, model = stripped.partition(":")
+    if sep and provider.strip() and model.strip():
+        candidates.append((provider.strip(), model.strip()))
+
+    for provider_name, model_name in candidates:
+        pdef = resolve_provider_full(provider_name, user_providers, custom_providers)
+        if pdef is not None and pdef.source == "user-config":
+            return (pdef.id, model_name)
+
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -1029,6 +1072,15 @@ def switch_model(
     new_model = raw_input.strip()
     target_provider = current_provider
     resolved_moa_preset = False
+
+    if not explicit_provider:
+        configured_pair = _parse_configured_provider_model_input(
+            new_model,
+            user_providers,
+            custom_providers,
+        )
+        if configured_pair:
+            explicit_provider, new_model = configured_pair
 
     # =================================================================
     # PATH A: Explicit --provider given
@@ -1473,12 +1525,16 @@ def switch_model(
         if user_providers:
             from hermes_cli.config import is_provider_enabled
             # user_providers is a dict: {provider_slug: config_dict}
+            _new_model_lower = new_model.strip().lower()
             for slug, cfg in user_providers.items():
                 if not is_provider_enabled(cfg):
                     continue
                 if slug == target_provider:
-                    if new_model in _declared_model_ids(cfg.get("models", {})):
-                        override = True
+                    for key in _DECLARED_MODEL_KEYS:
+                        if _match_declared_model(cfg.get(key), _new_model_lower):
+                            override = True
+                            break
+                    if override:
                         break
         # Also check custom_providers list — models declared there should be accepted
         # even if the remote /v1/models endpoint doesn't list them.
@@ -1491,14 +1547,12 @@ def switch_model(
                 entry_slug = f"custom:{entry_name}" if entry_name else ""
                 entry_url = entry.get("base_url", "")
                 if entry_slug == target_provider or entry_url == base_url:
-                    # Check if the requested model matches the entry's model
-                    entry_model = entry.get("model", "")
-                    entry_models = entry.get("models", {})
-                    if new_model == entry_model:
-                        override = True
-                        break
-                    if new_model in _declared_model_ids(entry_models):
-                        override = True
+                    # Check if the requested model matches a declared model.
+                    for key in _DECLARED_MODEL_KEYS:
+                        if _match_declared_model(entry.get(key), new_model.strip().lower()):
+                            override = True
+                            break
+                    if override:
                         break
         if override:
             validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
@@ -2331,13 +2385,15 @@ def list_authenticated_providers(
             # Build models list from both default_model and full models array.
             # Hermes writes ``models:`` as a dict keyed by model id, but older
             # or hand-edited configs may use strings or ``[{id: ...}]`` rows —
-            # _declared_model_ids() owns that contract.
+            # _declared_model_ids() owns that contract. ``available_models``
+            # is an accepted alias for the same list.
             entry_models: list = []
             if default_model:
                 entry_models.append(default_model)
-            for model_id in _declared_model_ids(ep_cfg.get("models", [])):
-                if model_id not in entry_models:
-                    entry_models.append(model_id)
+            for key in ("models", "available_models"):
+                for model_id in _declared_model_ids(ep_cfg.get(key, [])):
+                    if model_id not in entry_models:
+                        entry_models.append(model_id)
 
             if group_key not in ep_groups:
                 # Strip per-model suffix so "Palantir Claude 4.7 Opus" becomes
@@ -2628,12 +2684,14 @@ def list_authenticated_providers(
             if default_model and default_model not in groups[group_key]["models"]:
                 groups[group_key]["models"].append(default_model)
 
-            declared_models = _declared_model_ids(entry.get("models", {}))
-            if declared_models:
-                groups[group_key]["has_explicit_models"] = True
-            for model_id in declared_models:
-                if model_id not in groups[group_key]["models"]:
-                    groups[group_key]["models"].append(model_id)
+            # ``available_models`` is an accepted alias for the ``models`` list.
+            for key in ("models", "available_models"):
+                declared_models = _declared_model_ids(entry.get(key, {}))
+                if declared_models:
+                    groups[group_key]["has_explicit_models"] = True
+                for model_id in declared_models:
+                    if model_id not in groups[group_key]["models"]:
+                        groups[group_key]["models"].append(model_id)
 
         _section4_emitted_slugs: set = set()
         _current_base_url_group_count = sum(

@@ -124,6 +124,67 @@ def test_typed_configured_model_routes_to_custom_provider():
     assert result.new_model == "qwen3.5-4b"
 
 
+def test_typed_available_models_routes_to_custom_provider():
+    """Hand-edited ``available_models`` lists also declare routable models."""
+    custom_providers = [
+        {
+            "name": "tokenplan",
+            "base_url": "https://token-plan.example/v1",
+            "model": "qwen3.7-plus",
+            "available_models": ["qwen3.7-plus", "deepseek-v4-flash"],
+        }
+    ]
+    result = _run_switch(
+        raw_input="deepseek-v4-flash",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        custom_providers=custom_providers,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:tokenplan"
+    assert result.new_model == "deepseek-v4-flash"
+
+
+def test_configured_provider_colon_input_routes_to_custom_provider():
+    """``provider:model`` is accepted when provider is user-configured."""
+    custom_providers = [
+        {
+            "name": "tokenplan",
+            "base_url": "https://token-plan.example/v1",
+            "available_models": ["deepseek-v4-flash"],
+        }
+    ]
+    result = _run_switch(
+        raw_input="tokenplan:deepseek-v4-flash",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        custom_providers=custom_providers,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:tokenplan"
+    assert result.new_model == "deepseek-v4-flash"
+
+
+def test_configured_custom_prefix_colon_input_routes_to_custom_provider():
+    """``custom:name:model`` keeps the custom provider name together."""
+    custom_providers = [
+        {
+            "name": "tokenplan",
+            "base_url": "https://token-plan.example/v1",
+            "available_models": ["qwen3.7-max"],
+        }
+    ]
+    result = _run_switch(
+        raw_input="custom:tokenplan:qwen3.7-max",
+        current_provider="openai-codex",
+        current_model="gpt-5.4",
+        custom_providers=custom_providers,
+    )
+    assert result.success is True, result.error_message
+    assert result.target_provider == "custom:tokenplan"
+    assert result.new_model == "qwen3.7-max"
+
+
 def test_current_provider_declaring_model_is_not_rerouted():
     """Precedence rule 4: if the current provider declares the model, keep it —
     even when another configured provider also declares the same id (so this

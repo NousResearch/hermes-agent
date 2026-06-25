@@ -31,16 +31,40 @@ from gateway.whatsapp_identity import (
 class GatewayAuthorizationMixin:
     """User/chat authorization methods for ``GatewayRunner``."""
 
+    def _adapter_authorization_is_upstream(self, platform: Optional[Platform]) -> bool:
+        """Whether the adapter for *platform* delegates authz to a trusted upstream.
+
+        Mirrors ``BasePlatformAdapter.authorization_is_upstream``. The relay
+        adapter sets this True: the Team Gateway connector authenticates the
+        gateway's WS and resolves owner-only author bindings before delivering,
+        so an inbound relay event is already authorized as this instance's bound
+        user. Unlike ``_adapter_enforces_own_access_policy`` (a LOCAL config
+        policy the gateway mirrors only when it's an allowlist), this is an
+        UPSTREAM decision the gateway honors directly. Defaults to ``False`` when
+        the adapter is unknown or doesn't expose the flag.
+        """
+        if not platform:
+            return False
+        adapters = getattr(self, "adapters", None)
+        if not adapters:
+            return False
+        adapter = adapters.get(platform)
+        if adapter is None:
+            return False
+        return bool(getattr(adapter, "authorization_is_upstream", False))
+
     def _adapter_enforces_own_access_policy(self, platform: Optional[Platform]) -> bool:
         """Whether the adapter for *platform* gates access at intake itself.
 
         Mirrors ``BasePlatformAdapter.enforces_own_access_policy``. Adapters
         such as WeCom, Weixin, Yuanbao, QQBot, and WhatsApp evaluate their
         documented ``dm_policy`` / ``group_policy`` / ``allow_from`` config before a
-        message is dispatched to the gateway, so a message that reaches
-        ``_is_user_authorized`` has already been authorized by the adapter.
-        Defaults to ``False`` when the adapter is unknown or doesn't expose
-        the flag.
+        message is dispatched to the gateway. The flag alone is NOT "already
+        authorized": these adapters default to ``open``, which forwards every
+        sender, so ``_is_user_authorized`` only trusts the adapter when its
+        effective policy for the chat type is an actual ``allowlist`` restriction
+        (see that method). Defaults to ``False`` when the adapter is unknown or
+        doesn't expose the flag.
         """
         if not platform:
             return False
@@ -65,10 +89,11 @@ class GatewayAuthorizationMixin:
         env var is not always bridged back into ``config.extra``) — and falls
         back to ``config.extra`` for bare runners built without a live adapter.
 
-        Used by ``_is_user_authorized`` to carve ``dm_policy: pairing`` out of
-        the adapter-trust shortcut: in pairing mode the adapter forwards the DM
-        so the gateway can run its pairing handshake, so "reached the gateway"
-        must not be read as "authorized".
+        Used by ``_is_user_authorized`` to decide whether an own-policy adapter
+        actually restricted DM senders to a configured allowlist (trustworthy)
+        or merely forwarded everyone under ``dm_policy: open`` / for a pairing
+        handshake (not authorization). "Reached the gateway" only carries an
+        authorization signal in the ``allowlist`` case.
         """
         if not platform:
             return ""
@@ -86,6 +111,89 @@ class GatewayAuthorizationMixin:
             if isinstance(extra, dict):
                 policy = extra.get("dm_policy")
         return str(policy or "").strip().lower()
+
+    def _adapter_group_policy(self, platform: Optional[Platform]) -> str:
+        """Best-effort read of an own-policy adapter's effective group policy.
+
+        Mirror of ``_adapter_dm_policy`` for group / forum / channel traffic:
+        returns the lowercased ``group_policy`` (``"open"`` / ``"allowlist"`` /
+        ``"disabled"``) for *platform*, or ``""`` when unknown. Prefers the live
+        adapter's resolved ``_group_policy`` and falls back to ``config.extra``
+        for bare runners built without a live adapter.
+
+        Used by ``_is_user_authorized`` to decide whether an own-policy adapter
+        restricted group senders to a configured allowlist (trustworthy) or
+        forwarded the whole channel under ``group_policy: open`` (not
+        authorization).
+        """
+        if not platform:
+            return ""
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(platform)
+        policy = getattr(adapter, "_group_policy", None) if adapter is not None else None
+        if policy is None:
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(platform)
+                if config is not None and hasattr(config, "platforms")
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                policy = extra.get("group_policy")
+        return str(policy or "").strip().lower()
+
+    def _adapter_group_has_sender_allowlist(
+        self,
+        platform: Optional[Platform],
+        chat_id: Optional[str],
+    ) -> bool:
+        """Whether a per-group sender allowlist gated this group message.
+
+        WeCom supports ``groups.<group_id>.allow_from`` on top of the top-level
+        ``group_policy``. A group may be open at the chat level while still
+        restricting which senders inside that group can invoke Hermes. If such a
+        message reached the gateway, the adapter already checked that sender
+        allowlist, so it is a trustworthy intake decision rather than the
+        fail-open ``group_policy: open`` case.
+        """
+        if not platform or not chat_id:
+            return False
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(platform)
+        groups = getattr(adapter, "_groups", None) if adapter is not None else None
+        if groups is None:
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(platform)
+                if config is not None and hasattr(config, "platforms")
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                groups = extra.get("groups")
+        if not isinstance(groups, dict):
+            return False
+
+        chat_id_str = str(chat_id)
+        group_cfg = groups.get(chat_id_str)
+        if not isinstance(group_cfg, dict):
+            lowered = chat_id_str.lower()
+            for key, value in groups.items():
+                if isinstance(key, str) and key.lower() == lowered and isinstance(value, dict):
+                    group_cfg = value
+                    break
+        if not isinstance(group_cfg, dict):
+            group_cfg = groups.get("*")
+        if not isinstance(group_cfg, dict):
+            return False
+
+        sender_allow = group_cfg.get("allow_from") or group_cfg.get("allowFrom")
+        if isinstance(sender_allow, str):
+            return bool(sender_allow.strip())
+        if isinstance(sender_allow, (list, tuple, set)):
+            return any(str(item).strip() for item in sender_allow)
+        return False
 
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
@@ -105,6 +213,38 @@ class GatewayAuthorizationMixin:
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
         if source.platform in {Platform.HOMEASSISTANT, Platform.WEBHOOK}:
+            return True
+
+        # Relay (and any adapter whose authorization is enforced by a trusted
+        # authenticated upstream): the Team Gateway connector authenticates this
+        # gateway's WS with a per-instance secret and resolves owner-only author
+        # bindings BEFORE delivering, so an inbound relay event was already
+        # authorized as this instance's bound user (the author id is the one the
+        # connector observed, never gateway-asserted). There is no local
+        # RELAY_ALLOWED_USERS env allowlist to consult, and default-denying for
+        # its absence is the bug this branch fixes. This is delegation to a
+        # trusted upstream, NOT a fail-open: it fires only for an event that was
+        # actually delivered over the authenticated relay WS (the transport
+        # stamps ``delivered_via_upstream_relay``), or whose platform's adapter
+        # explicitly declares ``authorization_is_upstream=True``; every direct
+        # network-exposed adapter leaves the flag False and its events unmarked,
+        # so the env-allowlist default-deny below still applies unchanged.
+        #
+        # The delivery marker is the PRIMARY signal: a relay *message* inbound
+        # carries the UNDERLYING platform (``source.platform`` == discord/…),
+        # NOT ``Platform.RELAY``, because that's what session-keying and egress
+        # need — so keying authz off ``source.platform`` would miss (the relay
+        # adapter is registered under ``Platform.RELAY``) and default-deny the
+        # user ("Unauthorized user <id> on discord"). The adapter-flag check is
+        # retained for events whose ``source.platform`` IS ``Platform.RELAY``
+        # (e.g. the interaction-passthrough path).
+        # ``is True`` (not just truthiness): the marker is a real bool on a
+        # SessionSource, and an explicit identity check refuses to authorize a
+        # non-bool stand-in (e.g. a MagicMock attribute auto-vivifies truthy in
+        # tests) — defensive against accidental fail-open.
+        if source.delivered_via_upstream_relay is True or self._adapter_authorization_is_upstream(
+            source.platform
+        ):
             return True
 
         user_id = source.user_id
@@ -142,6 +282,7 @@ class GatewayAuthorizationMixin:
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+            Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
             Platform.EMAIL: "EMAIL_ALLOWED_USERS",
@@ -168,6 +309,7 @@ class GatewayAuthorizationMixin:
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
+            Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
             Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
@@ -207,6 +349,14 @@ class GatewayAuthorizationMixin:
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
             return True
 
+        # Adapter-verified role auth: the Discord adapter already confirmed the
+        # user holds a role in DISCORD_ALLOWED_ROLES before dispatching the message.
+        # Compare with ``is True`` so the real bool field authorizes while a
+        # MagicMock source (test fixtures using ``object.__new__`` runners with
+        # mock sources) does not auto-truthy through this gate (see pitfall #13).
+        if getattr(source, "role_authorized", False) is True:
+            return True
+
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
             if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
@@ -227,27 +377,40 @@ class GatewayAuthorizationMixin:
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
 
         if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
-            # No env allowlists configured. Adapters that own their own
+            # No env allowlist configured. Adapters that own their own
             # config-driven access policy (dm_policy / group_policy /
-            # allow_from / group_allow_from) already gated this message at
-            # intake — it would not have reached the gateway otherwise — so
-            # honor that decision instead of falling through to the
-            # env-only default-deny below, which would silently break
-            # `dm_policy: open` and config-only allowlists. (#34515)
+            # allow_from / group_allow_from) gate access at intake, so for those
+            # platforms we can honor the adapter's decision instead of the
+            # env-only default-deny below -- but ONLY when that decision was an
+            # actual allowlist restriction.
+            #
+            # The adapters default dm_policy / group_policy to "open", which
+            # forwards EVERY sender. Reading "reached the gateway" as
+            # authorization in that case would admit the whole external network
+            # with no operator-configured allowlist -- the fail-open SECURITY.md
+            # §2.6 forbids ("an allowlist is required for every enabled
+            # network-exposed adapter ... code paths that fail open when no
+            # allowlist is configured are code bugs"). "disabled" never
+            # forwards, and "pairing" forwards unpaired DMs only so the gateway
+            # can run its pairing handshake (the pairing-store check above
+            # already denied this sender). So trust the adapter only when its
+            # effective policy for THIS chat type is "allowlist"; for "open" /
+            # "pairing" / anything else, fall through to default-deny, where
+            # GATEWAY_ALLOW_ALL_USERS, the per-platform {PLATFORM}_ALLOW_ALL_USERS
+            # flag (checked above), and the pairing flow remain the explicit
+            # opt-ins to broader access. (#34515 follow-up: trusting "open" was a
+            # fail-open.)
             if self._adapter_enforces_own_access_policy(source.platform):
-                # Exception: `dm_policy: pairing` does NOT authorize at intake.
-                # The adapter forwards the DM precisely so the gateway can run
-                # its pairing handshake (issue a code, consult the pairing
-                # store). The pairing-store approval check above already ran and
-                # returned False for this sender, so blanket-trusting the
-                # adapter here would silently turn pairing mode into open
-                # access. Fall through to default-deny so the unpaired sender is
-                # offered a pairing code instead. (Pairing is DM-only; group
-                # traffic keeps the adapter-trust path.)
-                if not (
-                    source.chat_type == "dm"
-                    and self._adapter_dm_policy(source.platform) == "pairing"
-                ):
+                if source.chat_type in {"group", "forum", "channel"}:
+                    effective_policy = self._adapter_group_policy(source.platform)
+                    if self._adapter_group_has_sender_allowlist(
+                        source.platform,
+                        source.chat_id,
+                    ):
+                        return True
+                else:
+                    effective_policy = self._adapter_dm_policy(source.platform)
+                if effective_policy == "allowlist":
                     return True
             # No allowlists configured -- check global allow-all flag
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
@@ -348,14 +511,19 @@ class GatewayAuthorizationMixin:
 
         Resolution order:
         1. Explicit per-platform ``unauthorized_dm_behavior`` in config — always wins.
-        2. Explicit global ``unauthorized_dm_behavior`` in config — wins when no per-platform.
-        3. When an allowlist (``PLATFORM_ALLOWED_USERS``,
+        2. Email defaults to ``"ignore"`` unless explicitly opted into
+           pairing. Inboxes may contain arbitrary unread human messages, so
+           replying with pairing codes is not a safe platform default.
+        3. Explicit global ``unauthorized_dm_behavior`` in config — wins for
+           chat-shaped platforms when no per-platform override is set.
+        4. When an adapter-level DM policy opts into pairing or silent drop, honor it.
+        5. When an allowlist (``PLATFORM_ALLOWED_USERS``,
            ``PLATFORM_GROUP_ALLOWED_USERS`` / ``PLATFORM_GROUP_ALLOWED_CHATS``,
            or ``GATEWAY_ALLOWED_USERS``) is configured, default to ``"ignore"`` —
            the allowlist signals that the owner has deliberately restricted
            access; spamming unknown contacts with pairing codes is both noisy
            and a potential info-leak. (#9337)
-        4. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
+        6. No allowlist and no explicit config → ``"pair"`` (open-gateway default).
         """
         config = getattr(self, "config", None)
 
@@ -365,6 +533,14 @@ class GatewayAuthorizationMixin:
             if platform_cfg and "unauthorized_dm_behavior" in getattr(platform_cfg, "extra", {}):
                 # Operator explicitly configured behavior for this platform — respect it.
                 return config.get_unauthorized_dm_behavior(platform)
+
+        # Email is inbox-shaped, not chat-shaped: an agent mailbox may contain
+        # unrelated unread human email. Require an explicit per-platform
+        # ``unauthorized_dm_behavior: pair`` opt-in before replying to unknown
+        # senders with pairing codes. Keep this before the global fallback to
+        # match GatewayConfig.get_unauthorized_dm_behavior().
+        if platform == Platform.EMAIL:
+            return "ignore"
 
         # Check for an explicit global config override.
         if config and hasattr(config, "unauthorized_dm_behavior"):
@@ -393,6 +569,7 @@ class GatewayAuthorizationMixin:
                 Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
                 Platform.DISCORD:  "DISCORD_ALLOWED_USERS",
                 Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+                Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOWED_USERS",
                 Platform.SLACK:    "SLACK_ALLOWED_USERS",
                 Platform.SIGNAL:   "SIGNAL_ALLOWED_USERS",
                 Platform.EMAIL:    "EMAIL_ALLOWED_USERS",

@@ -351,13 +351,29 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         "lobehub": 500, "browse-sh": 500,
     }
 
-    with c.status("[bold]Fetching skills from registries..."):
+    with c.status("[bold]Fetching skills from registries...") as status:
+        # Live progress: tick off each source as it resolves so the wait is
+        # visible instead of a frozen spinner. parallel_search_sources invokes
+        # this callback from the collecting thread as each source completes;
+        # the page itself is still rendered once, after the correctly-merged
+        # and trust-sorted result set is final (browse's ordering contract is
+        # computed over the whole set, so we never render a half-sorted page).
+        _done: List[str] = []
+
+        def _on_source_done(sid: str, count: int) -> None:
+            _done.append(f"{sid} ({count})")
+            status.update(
+                "[bold]Fetching skills from registries...[/]  "
+                f"[dim]done: {', '.join(_done)}[/]"
+            )
+
         all_results, source_counts, timed_out = parallel_search_sources(
             sources,
             query="",
             per_source_limits=_PER_SOURCE_LIMIT,
             source_filter=source,
             overall_timeout=30,
+            on_source_done=_on_source_done,
         )
 
     if not all_results:
@@ -674,6 +690,47 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
+
+    # Blueprint detection: if the installed skill declares a
+    # metadata.hermes.blueprint block, it is a runnable automation. Register it as
+    # a Suggested Cron Job rather than auto-scheduling — installing never
+    # silently creates a recurring job; the user accepts it via /suggestions.
+    # This is the single surface every automation proposal flows through.
+    try:
+        from tools.blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
+
+        try:
+            spec = blueprint_spec_for_installed(bundle.name)
+        except BlueprintError as _rec_err:
+            c.print(f"[yellow]Blueprint block present but invalid:[/] {_rec_err}\n")
+            spec = None
+        if spec is not None:
+            registered = register_blueprint_suggestion(spec)
+            if registered is not None:
+                c.print(
+                    f"[bold cyan]Blueprint:[/] '{bundle.name}' is an automation "
+                    f"(schedule [bold]{spec.schedule}[/])."
+                )
+                c.print(
+                    "[dim]Added to your suggestions — run[/] [bold]/suggestions[/] "
+                    "[dim]to schedule or dismiss it.[/]\n"
+                )
+            else:
+                # Dropped: already offered/dismissed (latched) or the pending
+                # list is at its cap. Say so instead of silently doing nothing —
+                # the user can still schedule it by hand.
+                c.print(
+                    f"[bold cyan]Blueprint:[/] '{bundle.name}' is an automation "
+                    f"(schedule [bold]{spec.schedule}[/]), but it wasn't added to "
+                    "your suggestions (already offered/dismissed, or the pending "
+                    "list is full — run [bold]/suggestions[/] to review)."
+                )
+                c.print(
+                    "[dim]You can still schedule it any time by asking the agent "
+                    "or via[/] [bold]hermes cron add[/][dim].[/]\n"
+                )
+    except Exception:  # pragma: no cover - blueprint detection is best-effort
+        pass
 
     if invalidate_cache:
         # Invalidate the skills prompt cache so the new skill appears immediately
@@ -1090,6 +1147,73 @@ def do_reset(name: str, restore: bool = False,
     else:
         c.print("[dim]Change will take effect in your next session.[/]")
         c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
+
+
+def do_list_modified(console: Optional[Console] = None,
+                     as_json: bool = False) -> None:
+    """List bundled skills the user has edited (which `hermes update` keeps)."""
+    from tools.skills_sync import list_user_modified_bundled_skills
+
+    c = console or _console
+    modified = list_user_modified_bundled_skills()
+
+    if as_json:
+        import json
+
+        c.print(json.dumps([m["name"] for m in modified]))
+        return
+
+    if not modified:
+        c.print("[dim]No user-modified bundled skills — everything tracks upstream.[/]\n")
+        return
+
+    c.print(f"\n[bold]{len(modified)} user-modified bundled skill(s)[/] "
+            "[dim](kept as-is by `hermes update`):[/]")
+    for entry in modified:
+        c.print(f"  [yellow]~[/] {entry['name']}")
+    c.print()
+    c.print("[dim]See changes:   hermes skills diff <name>[/]")
+    c.print("[dim]Resume updates: hermes skills reset <name>          (keep your copy, re-baseline)[/]")
+    c.print("[dim]Revert to stock: hermes skills reset <name> --restore[/]\n")
+
+
+def do_diff(name: str, console: Optional[Console] = None) -> None:
+    """Show how the user's copy of a bundled skill differs from the stock version."""
+    from tools.skills_sync import diff_bundled_skill
+
+    c = console or _console
+    result = diff_bundled_skill(name)
+
+    if not result["ok"]:
+        c.print(f"[bold red]Error:[/] {result['message']}\n")
+        return
+
+    if not result["modified"]:
+        c.print(f"[green]{result['message']}[/]\n")
+        return
+
+    c.print(f"\n[bold]{result['message']}[/]\n")
+    for entry in result["diffs"]:
+        status = entry["status"]
+        if status == "modified":
+            # Render the unified diff with light coloring.
+            for line in entry["diff"].splitlines():
+                if line.startswith("+") and not line.startswith("+++"):
+                    c.print(f"[green]{line}[/]")
+                elif line.startswith("-") and not line.startswith("---"):
+                    c.print(f"[red]{line}[/]")
+                elif line.startswith("@@"):
+                    c.print(f"[cyan]{line}[/]")
+                else:
+                    c.print(line, highlight=False)
+        elif status == "added":
+            c.print(f"[green]+ only in your copy:[/] {entry['path']}")
+        elif status == "removed":
+            c.print(f"[red]- only in stock:[/] {entry['path']}")
+        else:  # binary
+            c.print(f"[yellow]~ {entry['path']}:[/] binary file differs")
+    c.print()
+    c.print(f"[dim]Revert with: hermes skills reset {name} --restore[/]\n")
 
 
 def do_opt_out(remove: bool = False,
@@ -1567,6 +1691,10 @@ def skills_command(args) -> None:
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
+    elif action == "list-modified":
+        do_list_modified(as_json=getattr(args, "json", False))
+    elif action == "diff":
+        do_diff(args.name)
     elif action == "opt-out":
         do_opt_out(remove=getattr(args, "remove", False),
                    skip_confirm=getattr(args, "yes", False))
@@ -1597,7 +1725,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|list-modified|diff|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1769,6 +1897,15 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_reset(name, restore=restore, console=c, skip_confirm=True,
                  invalidate_cache=invalidate_cache)
 
+    elif action in {"list-modified", "modified"}:
+        do_list_modified(console=c, as_json="--json" in args)
+
+    elif action == "diff":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills diff <name>\n")
+            return
+        do_diff(args[0], console=c)
+
     elif action == "publish":
         if not args:
             c.print("[bold red]Usage:[/] /skills publish <skill-path> [--to github] [--repo owner/repo]\n")
@@ -1826,6 +1963,8 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
+        "  [cyan]list-modified[/]               List bundled skills you've edited (kept by update)\n"
+        "  [cyan]diff[/] <name>                 Diff your copy of a bundled skill vs the stock version\n"
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"

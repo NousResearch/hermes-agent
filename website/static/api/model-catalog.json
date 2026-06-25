@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-16T18:04:33Z",
+  "updated_at": "2026-06-26T10:00:00Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -142,6 +142,10 @@
         },
         {
           "id": "inclusionai/ring-2.6-1t:free",
+          "description": "free"
+        },
+        {
+          "id": "google/gemma-4-31b-it:free",
           "description": "free"
         }
       ]

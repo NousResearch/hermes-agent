@@ -517,6 +517,11 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
+    # Optional external object-storage publishing for outbound MEDIA delivery.
+    # Default off: no files leave the platform adapter unless the operator opts
+    # in. The dict is copied into each PlatformConfig.extra so adapters can
+    # decide locally whether to upload generated media before sending.
+    media_delivery: Dict[str, Any] = field(default_factory=dict)
     # Drop outbound "silence narration" messages (e.g. *(silent)*, 🔇, a bare
     # ".") pre-send. These are model hallucinations emitted when a persona has
     # nothing actionable to say; in bot-to-bot channels they mirror back and
@@ -648,6 +653,7 @@ class GatewayConfig:
             "quick_commands": self.quick_commands,
             "sessions_dir": str(self.sessions_dir),
             "always_log_local": self.always_log_local,
+            "media_delivery": self.media_delivery,
             "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
@@ -735,6 +741,7 @@ class GatewayConfig:
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
+            media_delivery=data.get("media_delivery", {}) if isinstance(data.get("media_delivery", {}), dict) else {},
             filter_silence_narration=_coerce_bool(
                 data.get("filter_silence_narration"), True
             ),
@@ -875,6 +882,10 @@ def load_gateway_config() -> GatewayConfig:
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]
+
+            media_delivery_cfg = yaml_cfg.get("media_delivery")
+            if isinstance(media_delivery_cfg, dict):
+                gw_data["media_delivery"] = media_delivery_cfg
 
             if "filter_silence_narration" in yaml_cfg:
                 gw_data["filter_silence_narration"] = yaml_cfg[
@@ -1140,6 +1151,13 @@ def load_gateway_config() -> GatewayConfig:
 
     # Override with environment variables
     _apply_env_overrides(config)
+
+    # Make global media_delivery settings available to platform adapters via
+    # PlatformConfig.extra. Keep platform-local overrides intact. Run after env
+    # overrides so platforms created from env-only credentials receive it too.
+    if isinstance(config.media_delivery, dict) and config.media_delivery:
+        for _platform_cfg in config.platforms.values():
+            _platform_cfg.extra.setdefault("media_delivery", config.media_delivery)
     
     # --- Validate loaded values ---
     _validate_gateway_config(config)

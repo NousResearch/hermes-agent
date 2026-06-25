@@ -83,6 +83,46 @@ Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a refer
 
 For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).
 
+## Outbound Media Delivery
+
+By default, Hermes sends `MEDIA:/path/to/file` outputs through each platform's native attachment API. You can opt in to external object-storage publishing when a platform's attachment channel is unreliable or size-limited. The first supported provider is Cloudflare R2.
+
+This feature is **off by default**. If `media_delivery.external_upload.enabled` is absent or `false`, adapters keep their existing native attachment behavior.
+
+```yaml
+media_delivery:
+  external_upload:
+    enabled: false                 # default: do not publish externally
+    provider: r2
+    mode: link_on_failure          # link_first | link_on_failure | attach_and_link
+    images: true
+    videos: true
+    audio: false
+    documents: false
+    size_threshold_mb: 8           # only publish files >= this size (0 = all enabled kinds)
+    remote_prefix: hermes/media/%Y/%m/%d/
+    verify: true                   # HEAD/GET the public URL before sending it
+
+    # Non-secret settings may live here:
+    public_base_url: https://media.example.com
+    bucket: hermes-media
+
+    # Secrets can be referenced from environment variables instead of committed:
+    account_id: ${CLOUDFLARE_ACCOUNT_ID}
+    access_key_id: ${CLOUDFLARE_R2_ACCESS_KEY_ID}
+    secret_access_key: ${CLOUDFLARE_R2_SECRET_ACCESS_KEY}
+```
+
+Modes:
+
+- `link_first` — upload first and send links instead of native attachments.
+- `link_on_failure` — try native attachments first, then publish and send a link if the attachment upload fails.
+- `attach_and_link` — send the native attachment and also post a durable external link when upload succeeds.
+
+:::warning Public URL boundary
+External media URLs may be publicly reachable depending on your storage/domain settings. Use this for generated images, reports, and non-sensitive artifacts. Do not enable automatic publishing for private documents, credentials, financial records, identity documents, or internal screenshots unless your bucket/domain has appropriate access control.
+:::
+
 ### Provider Timeouts
 
 You can set `providers.<id>.request_timeout_seconds` for a provider-wide request timeout, plus `providers.<id>.models.<model>.timeout_seconds` for a model-specific override. Applies to the primary turn client on every transport (OpenAI-wire, native Anthropic, Anthropic-compatible), the fallback chain, rebuilds after credential rotation, and (for OpenAI-wire) the per-request timeout kwarg — so the configured value wins over the legacy `HERMES_API_TIMEOUT` env var.

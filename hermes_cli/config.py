@@ -2481,6 +2481,31 @@ DEFAULT_CONFIG = {
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
+    # Gateway outbound media publishing. Default-off: platform adapters keep
+    # using native attachment delivery unless operators opt in to external
+    # object storage such as Cloudflare R2.
+    "media_delivery": {
+        "external_upload": {
+            "enabled": False,
+            "provider": "r2",
+            "mode": "link_on_failure",
+            "images": True,
+            "videos": True,
+            "audio": False,
+            "documents": False,
+            "size_threshold_mb": 8,
+            "remote_prefix": "hermes/media/%Y/%m/%d/",
+            "verify": True,
+            "public_base_url": "",
+            "bucket": "",
+            "account_id": "",
+            "access_key_id": "",
+            "secret_access_key": "",
+            "api_token": "",
+            "wrangler": False,
+        },
+    },
+
     "code_execution": {
         # Execution mode:
         #   project (default) — scripts run in the session's working directory

@@ -120,6 +120,12 @@ from gateway.platforms.base import (
     validate_inbound_media_size,
 )
 from tools.url_safety import is_safe_url
+from gateway.media_publisher import (
+    PublishedMedia,
+    external_media_config_for,
+    format_published_media_message,
+    publish_media_files,
+)
 
 
 async def _wait_for_ready_or_bot_exit(
@@ -1938,6 +1944,28 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def _send_published_media_links(
+        self,
+        chat_id: str,
+        published: List[PublishedMedia],
+        caption: Optional[str] = None,
+        heading: str = "Media",
+    ) -> SendResult:
+        """Send already-published media URLs as a Discord text message."""
+        message = format_published_media_message(published, heading=heading)
+        if caption:
+            message = f"{caption.strip()}\n{message}" if message else caption.strip()
+        return await self.send(chat_id, message or "Media uploaded")
+
+    async def _maybe_publish_media_file(
+        self,
+        file_path: str,
+        media_kind: str,
+    ) -> Optional[PublishedMedia]:
+        """Publish a local MEDIA file when external upload is configured."""
+        published = await publish_media_files(self, [file_path], media_kind=media_kind)
+        return published[0] if published else None
+
     async def _send_file_attachment(
         self,
         chat_id: str,
@@ -2000,6 +2028,28 @@ class DiscordAdapter(BasePlatformAdapter):
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
             return
 
+
+        media_cfg = external_media_config_for(self, "images")
+        if media_cfg.enabled and media_cfg.mode == "link_first":
+            local_paths: List[str] = []
+            captions: List[str] = []
+            for image_url, alt_text in images:
+                if alt_text:
+                    captions.append(alt_text)
+                if image_url.startswith("file://"):
+                    local_paths.append(_unquote(image_url[7:]))
+            if local_paths:
+                try:
+                    published = await publish_media_files(self, local_paths, media_kind="images")
+                    if published:
+                        caption = captions[0] if captions else None
+                        await self._send_published_media_links(chat_id, published, caption, heading="Images")
+                        # Send non-local URL images through the existing path below.
+                        images = [(u, a) for (u, a) in images if not u.startswith("file://")]
+                        if not images:
+                            return
+                except Exception as e:
+                    logger.warning("[%s] External multi-image upload failed; falling back to Discord attachments: %s", self.name, e)
         try:
             channel = self._client.get_channel(int(chat_id))
             if not channel:
@@ -3051,12 +3101,39 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a local image file natively as a Discord file attachment."""
+        """Send a local image file, optionally via configured external storage."""
+        media_cfg = external_media_config_for(self, "images")
+        if media_cfg.enabled and media_cfg.mode == "link_first":
+            try:
+                published = await self._maybe_publish_media_file(image_path, "images")
+                if published:
+                    return await self._send_published_media_links(chat_id, [published], caption, heading="Image")
+            except Exception as e:
+                logger.warning("[%s] External image upload failed; falling back to Discord attachment: %s", self.name, e)
+
         try:
-            return await self._send_file_attachment(chat_id, image_path, caption)
+            result = await self._send_file_attachment(chat_id, image_path, caption)
+            if result.success:
+                if media_cfg.enabled and media_cfg.mode == "attach_and_link":
+                    try:
+                        published = await self._maybe_publish_media_file(image_path, "images")
+                        if published:
+                            await self._send_published_media_links(chat_id, [published], None, heading="Image link")
+                    except Exception as e:
+                        logger.warning("[%s] External image upload after attachment failed: %s", self.name, e)
+                return result
+            raise RuntimeError(result.error or "Discord attachment send failed")
         except FileNotFoundError:
             return SendResult(success=False, error=f"Image file not found: {image_path}")
         except Exception as e:  # pragma: no cover - defensive logging
+            if media_cfg.enabled and media_cfg.mode in {"link_on_failure", "attach_and_link"}:
+                try:
+                    published = await self._maybe_publish_media_file(image_path, "images")
+                    if published:
+                        logger.info("[%s] Discord image attachment failed; sent external media link instead", self.name)
+                        return await self._send_published_media_links(chat_id, [published], caption, heading="Image")
+                except Exception as upload_err:
+                    logger.error("[%s] External image fallback upload failed: %s", self.name, upload_err, exc_info=True)
             logger.error("[%s] Failed to send local image, falling back to base adapter: %s", self.name, e, exc_info=True)
             return await super().send_image_file(chat_id, image_path, caption, reply_to, metadata=metadata)
 
@@ -3216,12 +3293,30 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send a local video file natively as a Discord attachment."""
+        """Send a local video file, optionally via configured external storage."""
+        media_cfg = external_media_config_for(self, "videos")
+        if media_cfg.enabled and media_cfg.mode == "link_first":
+            try:
+                published = await self._maybe_publish_media_file(video_path, "videos")
+                if published:
+                    return await self._send_published_media_links(chat_id, [published], caption, heading="Video")
+            except Exception as e:
+                logger.warning("[%s] External video upload failed; falling back to Discord attachment: %s", self.name, e)
         try:
-            return await self._send_file_attachment(chat_id, video_path, caption)
+            result = await self._send_file_attachment(chat_id, video_path, caption)
+            if result.success:
+                return result
+            raise RuntimeError(result.error or "Discord attachment send failed")
         except FileNotFoundError:
             return SendResult(success=False, error=f"Video file not found: {video_path}")
         except Exception as e:  # pragma: no cover - defensive logging
+            if media_cfg.enabled and media_cfg.mode in {"link_on_failure", "attach_and_link"}:
+                try:
+                    published = await self._maybe_publish_media_file(video_path, "videos")
+                    if published:
+                        return await self._send_published_media_links(chat_id, [published], caption, heading="Video")
+                except Exception as upload_err:
+                    logger.error("[%s] External video fallback upload failed: %s", self.name, upload_err, exc_info=True)
             logger.error("[%s] Failed to send local video, falling back to base adapter: %s", self.name, e, exc_info=True)
             return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
 
@@ -3234,12 +3329,30 @@ class DiscordAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send an arbitrary file natively as a Discord attachment."""
+        """Send an arbitrary file, optionally via configured external storage."""
+        media_cfg = external_media_config_for(self, "documents")
+        if media_cfg.enabled and media_cfg.mode == "link_first":
+            try:
+                published = await self._maybe_publish_media_file(file_path, "documents")
+                if published:
+                    return await self._send_published_media_links(chat_id, [published], caption, heading="File")
+            except Exception as e:
+                logger.warning("[%s] External document upload failed; falling back to Discord attachment: %s", self.name, e)
         try:
-            return await self._send_file_attachment(chat_id, file_path, caption, file_name=file_name)
+            result = await self._send_file_attachment(chat_id, file_path, caption, file_name=file_name)
+            if result.success:
+                return result
+            raise RuntimeError(result.error or "Discord attachment send failed")
         except FileNotFoundError:
             return SendResult(success=False, error=f"File not found: {file_path}")
         except Exception as e:  # pragma: no cover - defensive logging
+            if media_cfg.enabled and media_cfg.mode in {"link_on_failure", "attach_and_link"}:
+                try:
+                    published = await self._maybe_publish_media_file(file_path, "documents")
+                    if published:
+                        return await self._send_published_media_links(chat_id, [published], caption, heading="File")
+                except Exception as upload_err:
+                    logger.error("[%s] External document fallback upload failed: %s", self.name, upload_err, exc_info=True)
             logger.error("[%s] Failed to send document, falling back to base adapter: %s", self.name, e, exc_info=True)
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 

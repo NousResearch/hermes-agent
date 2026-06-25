@@ -2170,14 +2170,21 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         os.environ["TERMINAL_CWD"] = _job_workdir
         logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
 
+    _cron_scope_tok = None
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
-        from dotenv import load_dotenv
-        try:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
-        except UnicodeDecodeError:
-            load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
+        # In multiplex mode, skip load_dotenv() — writing one profile's .env
+        # into the process-global os.environ would pollute concurrent requests
+        # from other profiles.  Credentials are already available via the scope
+        # installed below (build_profile_secret_scope).
+        from agent.secret_scope import is_multiplex_active as _is_multiplex_active
+        if not _is_multiplex_active():
+            from dotenv import load_dotenv
+            try:
+                load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="utf-8")
+            except UnicodeDecodeError:
+                load_dotenv(str(_get_hermes_home() / ".env"), override=True, encoding="latin-1")
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:
@@ -2291,6 +2298,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             format_runtime_provider_error,
         )
         from hermes_cli.auth import AuthError
+        from agent.secret_scope import (
+            build_profile_secret_scope,
+            set_secret_scope,
+            reset_secret_scope,
+        )
+        _cron_scope_tok = set_secret_scope(build_profile_secret_scope(_get_hermes_home()))
         try:
             # Do not inject HERMES_INFERENCE_PROVIDER here. resolve_runtime_provider()
             # already prefers persisted config over stale shell/env overrides when
@@ -2627,6 +2640,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
+        if _cron_scope_tok is not None:
+            reset_secret_scope(_cron_scope_tok)
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
         # only ever mutate it when the job has a workdir; see the setup block
         # at the top of run_job for the serialization guarantee.

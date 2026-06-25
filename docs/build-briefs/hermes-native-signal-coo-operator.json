@@ -1,0 +1,826 @@
+{
+  "version": "1.0.0",
+  "brief_id": "HERMES_NATIVE_SIGNAL_COO_OPERATOR_BRIEF",
+  "prd_id": "HERMES_NATIVE_SIGNAL_COO_OPERATOR_PRD",
+  "generated_at": "2026-06-24",
+  "source_decisions": {
+    "coo_name": "Torben",
+    "coo_voice": "direct decisive operator; open to feedback; structured version of Eric's own thinking",
+    "primary_interface": "one Signal thread",
+    "runtime_direction": "Hermes-native Signal operator with hidden sub-operators",
+    "openclaw_position": "out of scope for the new architecture; previous bridge artifacts are references only; legacy resident services should be stopped or explicitly allowlisted during reset cleanup",
+    "first_executable_slice": "EA",
+    "first_30_day_autonomy": "B/C for EA and GTM by default; EA can execute explicitly approved or narrowly pre-authorized mutations after the approval workflow exists",
+    "finance_exception": "hard-limited live trading is in scope because the user explicitly accepts risk and starts with about 1000 USD; options and margin are first-iteration requirements subject to broker eligibility and risk gates",
+    "ea_reference": "EA must use core Juno patterns from /Users/ericfreeman/.openclaw/workspace/floki-agent/downloads/juno-home-chief-of-staff-v1.0.0-20260619",
+    "model_routing": "Use OpenAI Codex OAuth as the default Torben/EA/Finance/orchestration lane. Use Grok only for Magnus/GTM/X-native research, review, and social content workflows.",
+    "secrets_position": "Torben runtime auth should prefer OAuth/provider-native registrations and registered MCP sessions; 1Password is optional bootstrap for non-OAuth static values, and repo config may contain op:// references but never resolved provider secret values",
+    "memory_position": "local action ledger and conversation memory are critical path; GBrain must prove value in a bakeoff before staying in the critical path"
+  },
+  "applicability_manifest": {
+    "version": "1.0.0",
+    "task_classification": "architecture_reset",
+    "task_classification_confidence": 0.94,
+    "classification_evidence": [
+      "The existing OpenClaw/Hermes bridge is being superseded by a Hermes-native Signal product direction.",
+      "The request defines a new single-interface COO operator with three hidden operating arms.",
+      "The first implementation slice should prove conversation memory and reply-to-action continuity before broad automation."
+    ],
+    "change_surface": {
+      "new_attack_surface": true,
+      "runtime_path_change": true,
+      "service_boundary_change": true,
+      "external_integration": true,
+      "persistent_storage": true,
+      "api_change": false,
+      "data_format_change": true,
+      "auth_change": true,
+      "perf_sensitive": false,
+      "user_facing_operation": true
+    },
+    "claim_provenance": {
+      "supported": [
+        {
+          "claim": "Hermes has a Signal platform adapter available.",
+          "evidence": "gateway/platforms/signal.py connects to signal-cli HTTP mode using SIGNAL_HTTP_URL and SIGNAL_ACCOUNT."
+        },
+        {
+          "claim": "Existing profile crons currently skew toward no-agent local or OpenClaw delivery.",
+          "evidence": "Live profile job inventory showed Floki 6 enabled jobs, Magnus 26 enabled jobs, Ratatosk 18 enabled jobs, with many no_agent scripts and openclaw delivery targets."
+        },
+        {
+          "claim": "Robinhood Agentic Trading is a plausible live-execution target.",
+          "evidence": "Robinhood documents agent connection through an MCP server and a funded agentic account with activity visible in app."
+        },
+        {
+          "claim": "Monarch Money MCP is a plausible personal finance data and action-planning target.",
+          "evidence": "MCP Market lists account, transaction, budget, cashflow, analytics, and transaction management features for Monarch Money."
+        }
+      ],
+      "unsupported": [
+        {
+          "claim": "GBrain provides enough value to justify critical-path memory.",
+          "reason": "User does not currently see value; must be proven against local action ledger."
+        },
+        {
+          "claim": "Existing Floki/Magnus/Ratatosk modules are production-ready for direct reuse.",
+          "reason": "User explicitly wants net-new architecture and only selective reuse when evidence shows a component works."
+        }
+      ],
+      "contradicted": [
+        {
+          "claim": "Static deterministic cron decisions are sufficient.",
+          "reason": "User reports this failed across profiles and requires LLM-driven judgment under constraints."
+        }
+      ]
+    },
+    "contamination": {
+      "flags": [],
+      "needs_clarification": [
+        "Confirm exact Signal identity and thread to repurpose before implementation.",
+        "Confirm the first live trading kill-switch values beyond the approximate 1000 USD starting capital."
+      ],
+      "scope_boundary": "This brief scopes the new Hermes-native Signal COO product. It includes OAuth/MCP-native auth setup, optional 1Password static-secret bootstrap, and host-service cleanup as reset prerequisites, but does not delete source repos or migrate live credentials without an explicit allowlist."
+    },
+    "section_policy": [
+      {
+        "section_name": "5_security_review",
+        "status": "active",
+        "reason": "Signal, email/calendar, social APIs, broker APIs, and personal finance data are all sensitive."
+      },
+      {
+        "section_name": "6_observability_slo",
+        "status": "active",
+        "reason": "A single operator must be debuggable from action ledger, reply context, broker events, and Signal delivery records."
+      },
+      {
+        "section_name": "11_validation_plan",
+        "status": "active",
+        "reason": "The reset only counts if reply context and staged actions are proven with deterministic tests before live use."
+      }
+    ],
+    "verification_spec": {
+      "primary_verifier": {
+        "type": "test",
+        "target": "python3 -m pytest -q tests/hermes_cli/test_signal_coo_operator.py tests/hermes_cli/test_signal_action_ledger.py tests/hermes_cli/test_signal_ea_slice.py",
+        "expected_pre_change": "fail",
+        "expected_post_change": "pass",
+        "rationale": "The first slice must prove one Signal thread, reply context resolution, local action memory, and EA staged actions.",
+        "target_files": [
+          "hermes_cli/signal_coo/operator.py",
+          "hermes_cli/signal_coo/action_ledger.py",
+          "hermes_cli/signal_coo/router.py",
+          "tests/hermes_cli/test_signal_coo_operator.py",
+          "tests/hermes_cli/test_signal_action_ledger.py",
+          "tests/hermes_cli/test_signal_ea_slice.py"
+        ],
+        "expected_failure_mode": "Tests do not exist and Hermes has no Torben COO operator or reply action ledger yet."
+      },
+      "secondary_verifiers": [
+        {
+          "type": "test",
+          "target": "python3 -m pytest -q tests/gateway/test_signal.py tests/gateway/test_signal_format.py",
+          "expected_post_change": "pass",
+          "rationale": "The Hermes-native Signal adapter must keep its existing send/format contract."
+        },
+        {
+          "type": "manual_canary",
+          "target": "Send one Torben EA brief to the configured Signal thread, reply to its action handle, and verify the follow-up loads the original context.",
+          "expected_post_change": "pass",
+          "rationale": "The user's core complaint is that replies are currently contextless."
+        }
+      ],
+      "must_fail_before_change": true,
+      "must_be_deterministic": true,
+      "scope_note": "Do not implement broker credentials, social publishing, or OpenClaw decommissioning in the first verifier."
+    }
+  },
+  "sections": {
+    "1_context": {
+      "summary": "Build Torben, a Hermes-native COO operator exposed through one Signal thread. Torben manages three hidden operating arms: EA, GTM, and Finance. The product replaces the OpenClaw bridge direction for this use case.",
+      "problem": "The current system produces cron reports but does not preserve conversational working memory. Replies are not reliably scoped to the original report/action, which makes the system require more work instead of reducing work.",
+      "product_principle": "Crons wake LLM workflows. Static code collects evidence, validates constraints, records action memory, and blocks unsafe actions. LLMs reason, rank, draft, propose, and decide when to interrupt.",
+      "definition_of_done": "The user has one Signal thread where Torben coordinates EA, GTM, and Finance work, remembers the context behind its own messages, stages or executes only within the allowed autonomy level, and improves performance over time against each scope's goals."
+    },
+    "2_scope_and_constraints": {
+      "in_scope": [
+        "Define all three operating scopes: EA, GTM, Finance.",
+        "Implement EA as the first executable slice.",
+        "Create one Signal-facing Torben identity with decisive, direct, structured voice.",
+        "Configure Torben default reasoning on OpenAI while routing Magnus/GTM/X-native work to Grok.",
+        "Persist local conversation memory and action ledger for every outbound action handle.",
+        "Route replies back to the original action, source evidence, scope, and allowed next actions.",
+        "Treat existing Floki, Magnus, and Ratatosk code as references unless a component is specifically proven working.",
+        "Evaluate GBrain as an optional memory assist after local ledger behavior is proven.",
+        "Include Monarch Money MCP in Finance for personal finance visibility, cashflow analysis, budgeting, and savings/expense action proposals."
+      ],
+      "out_of_scope": [
+        "OpenClaw bridge repair or continuation as the product architecture.",
+        "Source repo deletion as part of compute cleanup.",
+        "Reusing Heimdall/OpenClaw routing semantics as runtime requirements.",
+        "Unbounded EA external mutations without explicit approval, narrow pre-authorization, promotion gates, action ledger entries, and provider verification.",
+        "Automatic GTM publishing in the first 30 days.",
+        "Unlimited trading, transfers, withdrawals, credential mutation, or account-link mutation.",
+        "Using GBrain as mandatory infrastructure before it proves measurable value."
+      ],
+      "constraints": [
+        "One Signal thread is the user-facing interface.",
+        "Sub-operators are hidden implementation details, not separate user-facing channels.",
+        "Every outbound message that expects a reply must include an action handle.",
+        "Every reply must resolve to a scope, prior message, evidence bundle, and allowed next actions.",
+        "LLM output must be structured, validated, and safety-checked before delivery or execution.",
+        "External actions require a policy gate and an audit ledger entry.",
+        "Financial live execution starts with about 1000 USD total capital and must have hard stop-loss and kill-switch rules."
+      ]
+    },
+    "3_repo_findings": [
+      "Hermes already has a Signal platform adapter at gateway/platforms/signal.py using signal-cli HTTP mode.",
+      "Hermes setup metadata lists Signal as a platform requiring SIGNAL_HTTP_URL and SIGNAL_ACCOUNT.",
+      "Cron delivery accepts signal as a target, but current active profiles mostly deliver to openclaw or local.",
+      "Floki has six enabled jobs; enabled jobs are no_agent and split between local and openclaw delivery.",
+      "Magnus has twenty-six enabled jobs; many are no_agent and fifteen enabled jobs currently deliver openclaw.",
+      "Ratatosk has eighteen enabled jobs; fourteen enabled jobs currently deliver openclaw.",
+      "Representative enabled jobs show many scripts with prompt_len=0, which matches the user's complaint that static jobs are making too many decisions.",
+      "Magnus and Ratatosk have existing ADLC and contract documents that should be treated as references, not inherited architecture.",
+      "The OpenClaw bridge work should be kept out of the critical path for this reset."
+    ],
+    "4_architecture": {
+      "target_shape": "Signal -> Torben COO -> conversation memory/action ledger -> scope router -> EA/GTM/Finance sub-operator -> constrained LLM decision envelope -> validated staged action or Signal response.",
+      "ascii": [
+        "Signal thread",
+        "  -> Torben COO operator",
+        "     -> action ledger + conversation memory",
+        "     -> scope router",
+        "        -> EA operator",
+        "        -> GTM operator",
+        "        -> Finance operator",
+        "     -> tool/data connectors",
+        "     -> constrained LLM decision envelope",
+        "     -> Signal response with action handle"
+      ],
+      "memory_model": {
+        "local_action_ledger": "Required for v0. Stores outbound message id, action handle, scope, source evidence ids, allowed next actions, status, and resolution.",
+        "conversation_memory": "Required for v0. Stores compact thread state and user preferences needed for the next reply.",
+        "gbrain": "Optional after bakeoff. Keep only if it improves reply resolution, cross-session recall, or source discovery versus local ledger."
+      },
+      "sub_operators": {
+        "ea": "Personal operations arm. Handles daily brief, email triage, calendar prep, reminders, family follow-up, action memory, and operational day structure.",
+        "gtm": "Public profile arm. Researches themes, drafts LinkedIn/X posts in founder plus Magnus voice, learns from engagement, and builds the user's thought leadership and GTM engine.",
+        "finance": "Capital allocation arm. Uses Robinhood Agentic MCP for hard-limited live trading, market research, position monitoring, ROI tracking, and Monarch Money MCP for broader personal finance visibility and savings/expense proposals."
+      }
+    },
+    "5_security_review": {
+      "high_risk_surfaces": [
+        "Signal thread identity and inbound authorization.",
+        "Gmail and Google Calendar data.",
+        "LinkedIn and X account access.",
+        "Robinhood Agentic MCP live trading authority.",
+        "Gemini or other exchange credentials if later added.",
+        "Monarch Money account, transaction, budget, and cashflow data."
+      ],
+      "required_controls": [
+        "Credential setup is separate from this brief and must not be embedded in repo files.",
+        "OpenAI Codex OAuth is the default model auth path for Torben, EA, Finance, policy, memory, and orchestration.",
+        "xAI/Grok credentials are scoped to Magnus/GTM/X-native search and review, not global Torben reasoning.",
+        "Torben runtime auth must prefer OAuth/provider-native registrations and registered MCP sessions.",
+        "1Password CLI through op run, op read, op inject, or 1Password Environments is optional bootstrap only for integrations that still require static secret injection.",
+        "Repo config may contain op:// references but not resolved secret values.",
+        "LaunchAgent plists must not contain provider tokens.",
+        "If optional 1Password launchd bootstrap is selected, the service account token is the only allowed machine bootstrap secret and must live outside the repo, preferably macOS Keychain or another explicit secret store.",
+        "Legacy .env files are migration inputs only and must not be used as Torben fallback secret sources.",
+        "Broker credentials and personal finance credentials must use least privilege and revocable sessions.",
+        "Finance live execution must run in a dedicated funded account or equivalent budget boundary where possible.",
+        "No transfers, withdrawals, credentials changes, or account-link changes are allowed in v0.",
+        "Options and margin are first-iteration requirements but must be blocked until account/tool eligibility, risk caps, kill switch, and broker review/audit paths exist.",
+        "Every broker order must record prompt, evidence, policy decision, risk limit, order payload hash, broker response hash, and resulting position state.",
+        "Monarch actions are initially advisory or local-stage only: analyze spending, propose cuts, draft budget actions, and identify savings opportunities.",
+        "EA actions initially stage drafts or local tasks; Gmail send/archive/delete and Calendar create/update/delete require explicit approval until promoted.",
+        "GTM actions initially draft complete posts; publishing requires explicit approval until promoted."
+      ],
+      "threats": [
+        {
+          "threat": "A stale Signal reply executes the wrong action.",
+          "likelihood": "medium",
+          "impact": "high",
+          "mitigation": "Action handles expire, bind to one scope, and require ledger status checks before any follow-up."
+        },
+        {
+          "threat": "LLM overclaims that an external action happened.",
+          "likelihood": "medium",
+          "impact": "medium",
+          "mitigation": "Only static executor code can mark external action complete after provider response verification."
+        },
+        {
+          "threat": "Finance operator exceeds user risk tolerance.",
+          "likelihood": "medium",
+          "impact": "critical",
+          "mitigation": "Hard capital budget, per-order cap, daily loss cap, weekly loss cap, kill switch, and audit report are required before live execution."
+        }
+      ]
+    },
+    "6_observability_slo": {
+      "slo": [
+        "Every Signal reply that references an action handle resolves to the correct ledger row or returns a safe clarification.",
+        "Every staged external action has a traceable source evidence bundle and policy decision.",
+        "Every financial live order has a post-trade ledger entry within one minute of broker response.",
+        "Every daily EA brief records what changed, what needs a decision, what was staged, and what remains unresolved."
+      ],
+      "logs_and_artifacts": [
+        "Local action ledger JSONL or SQLite table.",
+        "Conversation memory compaction artifact.",
+        "Per-scope decision envelopes.",
+        "EA daily brief artifacts.",
+        "GTM draft and performance artifacts.",
+        "Finance risk and order audit artifacts.",
+        "GBrain bakeoff report if tested."
+      ],
+      "debug_questions": [
+        "What did Torben tell the user?",
+        "What action handle did the user reply to?",
+        "Which scope owned the action?",
+        "What source evidence did the LLM see?",
+        "What did static policy allow or block?",
+        "What external action, if any, was staged or executed?"
+      ]
+    },
+    "7_execution_plan": [
+      "1. Build the Torben COO scope and memory model without touching live credentials.",
+      "1a. Add the 1Password runtime secret map and host cleanup allowlist before any live Torben canary.",
+      "2. Implement the local action ledger and Signal reply resolver with deterministic tests.",
+      "3. Implement the EA first slice: daily brief, email triage, calendar prep, reminder/family follow-up, action memory, and day structure.",
+      "4. Run the first live Signal canary: Torben sends one EA brief, user replies, and Torben continues with the correct source context.",
+      "5. Define GTM and Finance connectors behind disabled or mock-backed capability flags.",
+      "6. Add GBrain bakeoff after local memory works.",
+      "7. Add Finance live-execution hard-limit contract before any Robinhood Agentic MCP order path.",
+      "8. Add GTM research-and-draft workflow before any social publishing workflow."
+    ],
+    "8_task_tickets": [
+      {
+        "task_id": "HERMES_COO_001",
+        "title": "Build Torben Signal COO memory core",
+        "objective": "Create the Hermes-native Torben operator core with one Signal interface, local action ledger, reply context resolver, and sub-operator routing skeleton.",
+        "task_classification": "architecture_reset",
+        "scope": [
+          "Create Torben operator module.",
+          "Create local action ledger model.",
+          "Create reply context resolver.",
+          "Create router for EA, GTM, and Finance scopes.",
+          "Add tests proving replies resolve to the original action context."
+        ],
+        "out_of_scope": [
+          "Live broker orders.",
+          "Social publishing.",
+          "OpenClaw source repo deletion.",
+          "GBrain critical-path integration."
+        ],
+        "dependencies": [
+          "Hermes Signal adapter remains available.",
+          "Signal identity/thread selected before live canary."
+        ],
+        "acceptance_criteria": [
+          {
+            "id": "AC-HERMES-COO-001-01",
+            "given": "Torben sends a Signal message with an action handle",
+            "when": "the user replies with that action handle",
+            "then": "Hermes resolves the reply to the original scope, evidence ids, message id, and allowed next actions",
+            "measurable_post_condition": "test_signal_action_ledger.py passes and asserts context equality"
+          },
+          {
+            "id": "AC-HERMES-COO-001-02",
+            "given": "a reply references an expired or unknown action handle",
+            "when": "the reply resolver runs",
+            "then": "Torben asks a clarification and does not stage or execute external actions",
+            "measurable_post_condition": "unknown/expired handle test passes with no executor call"
+          }
+        ],
+        "anti_slop_rules": [
+          "No TODO/FIXME/PLACEHOLDER in shipped code or repo-facing artifacts.",
+          "No stub functions or placeholder branches satisfy completion.",
+          "No `todo!()`, `unimplemented!()`, `NotImplementedError`, `pass`, or commented-out placeholder code in shipped paths.",
+          "Every new config field, entry point, route, provider, and handler is wired and runtime-real or removed.",
+          "Acceptance criteria cannot be satisfied by scaffolding-only or partial-wiring output."
+        ],
+        "implementation_notes": [
+          "Prefer SQLite or JSONL for the v0 local action ledger; choose the format that existing Hermes patterns support best.",
+          "Do not import OpenClaw runtime semantics into this module.",
+          "Use Torben as the user-facing name unless the user overrides before implementation."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "test",
+            "target": "python3 -m pytest -q tests/hermes_cli/test_signal_coo_operator.py tests/hermes_cli/test_signal_action_ledger.py",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "rationale": "The COO memory core does not exist before this task.",
+            "target_files": [
+              "hermes_cli/signal_coo/operator.py",
+              "hermes_cli/signal_coo/action_ledger.py",
+              "hermes_cli/signal_coo/router.py",
+              "tests/hermes_cli/test_signal_coo_operator.py",
+              "tests/hermes_cli/test_signal_action_ledger.py"
+            ],
+            "expected_failure_mode": "Missing Torben modules and tests."
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": true,
+          "must_be_deterministic": true
+        },
+        "contracts": [
+          "One Signal interface.",
+          "Every actionable outbound message gets an action handle.",
+          "Replies cannot execute without ledger context."
+        ],
+        "failure_modes": [
+          "Reply context is lost and the user has to restate the problem.",
+          "Action handle resolves to the wrong scope.",
+          "A stale reply stages an unsafe action."
+        ],
+        "observability": [
+          "Persist action handle, scope, evidence ids, status, created_at, expires_at, and resolution record."
+        ],
+        "tests": [
+          "tests/hermes_cli/test_signal_coo_operator.py",
+          "tests/hermes_cli/test_signal_action_ledger.py"
+        ],
+        "security_impact": [
+          "Signal inbound replies become operational commands; authorization and stale-action handling must be fail-closed."
+        ],
+        "bpe_classification": "type_1",
+        "owner": "hermes-runtime",
+        "files_to_modify": [
+          "hermes_cli/send_cmd.py",
+          "gateway/platforms/signal.py"
+        ],
+        "files_to_create": [
+          "hermes_cli/signal_coo/operator.py",
+          "hermes_cli/signal_coo/action_ledger.py",
+          "hermes_cli/signal_coo/router.py",
+          "tests/hermes_cli/test_signal_coo_operator.py",
+          "tests/hermes_cli/test_signal_action_ledger.py"
+        ],
+        "reference_impl": "Hermes Signal adapter and existing cron delivery context patterns"
+      },
+      {
+        "task_id": "HERMES_COO_002",
+        "title": "Implement EA first slice",
+        "objective": "Implement the first Torben sub-operator for daily operations: daily brief, email triage, calendar prep, reminders/family follow-up, action memory, and day structure.",
+        "task_classification": "feature",
+        "scope": [
+          "Collect bounded Gmail and Calendar evidence through existing safe paths.",
+          "Generate a decision-first daily brief.",
+          "Stage email/calendar/reminder actions for approval.",
+          "Preserve reply context for each staged action.",
+          "Support family follow-up and ADHD day-structure prompts."
+        ],
+        "out_of_scope": [
+          "Sending email without approval.",
+          "Archiving, deleting, labeling, or marking email without approval.",
+          "Creating, editing, or deleting calendar events without approval.",
+          "External task-system mutation without approval or narrow pre-authorization."
+        ],
+        "dependencies": [
+          "HERMES_COO_001 action ledger and reply resolver.",
+          "Core Juno daily-brief, inbox-triage, open-loop, decision-packet, and approval-rule patterns must be used; existing Floki evidence collection can be referenced but not blindly reused."
+        ],
+        "acceptance_criteria": [
+          {
+            "id": "AC-HERMES-COO-002-01",
+            "given": "email, calendar, reminder, and family follow-up evidence exists",
+            "when": "the EA slice generates the daily brief",
+            "then": "Torben sends a decision-first brief with recommended next actions and action handles",
+            "measurable_post_condition": "test_signal_ea_slice.py asserts decisions, evidence ids, and handles"
+          },
+          {
+            "id": "AC-HERMES-COO-002-02",
+            "given": "the user replies to an EA action handle",
+            "when": "Torben continues the conversation",
+            "then": "the response includes the original source context and does not ask the user to restate it",
+            "measurable_post_condition": "reply continuation fixture passes without re-prompting for already-known context"
+          }
+        ],
+        "anti_slop_rules": [
+          "No TODO/FIXME/PLACEHOLDER in shipped code or repo-facing artifacts.",
+          "No stub functions or placeholder branches satisfy completion.",
+          "No `todo!()`, `unimplemented!()`, `NotImplementedError`, `pass`, or commented-out placeholder code in shipped paths.",
+          "Every new config field, entry point, route, provider, and handler is wired and runtime-real or removed.",
+          "Acceptance criteria cannot be satisfied by scaffolding-only or partial-wiring output."
+        ],
+        "implementation_notes": [
+          "Use LLM judgment for ranking and recommendation; use static code for source collection and validation.",
+          "Output must not be a roundup; first screen must tell the user what decision is needed.",
+          "Include explicit mutation_count=0 until approved or pre-authorized external actions are implemented."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "test",
+            "target": "python3 -m pytest -q tests/hermes_cli/test_signal_ea_slice.py",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "rationale": "The EA first slice must be proven with fixtures before live Signal use.",
+            "target_files": [
+              "hermes_cli/signal_coo/ea.py",
+              "tests/hermes_cli/test_signal_ea_slice.py"
+            ],
+            "expected_failure_mode": "EA slice module and fixtures do not exist."
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": true,
+          "must_be_deterministic": true
+        },
+        "contracts": [
+          "EA can draft and stage in first 30 days.",
+          "EA cannot externally mutate Gmail, Calendar, tasks, or contacts without explicit approval or narrow pre-authorization."
+        ],
+        "failure_modes": [
+          "Daily brief becomes a static report instead of a decision surface.",
+          "LLM invents context not present in evidence.",
+          "Reply loses context and requires repeated user work."
+        ],
+        "observability": [
+          "Persist brief artifact, evidence ids, generated action handles, selected recommendation, and blocked actions."
+        ],
+        "tests": [
+          "tests/hermes_cli/test_signal_ea_slice.py"
+        ],
+        "security_impact": [
+          "EA sees personal email/calendar/family context; prompt context must be bounded and secret-safe."
+        ],
+        "bpe_classification": "type_1",
+        "owner": "ea-suboperator",
+        "files_to_modify": [],
+        "files_to_create": [
+          "hermes_cli/signal_coo/ea.py",
+          "tests/hermes_cli/test_signal_ea_slice.py"
+        ],
+        "reference_impl": "Juno home chief-of-staff bundle as required EA product reference; Floki report contracts as references only"
+      },
+      {
+        "task_id": "HERMES_COO_003",
+        "title": "Define GTM sub-operator scope",
+        "objective": "Define the GTM arm that researches and drafts complete LinkedIn/X posts in the user's founder voice plus Magnus-style sharpness, with engagement learning over time.",
+        "task_classification": "feature",
+        "scope": [
+          "Research article and thought-piece opportunities.",
+          "Draft complete posts for LinkedIn and X for approval.",
+          "Use founder voice plus Magnus: sharp, crass when useful, direct, memorable, high-conviction.",
+          "Collect engagement from X/LinkedIn APIs and browser automation.",
+          "Maintain a performance loop that learns what compounds presence and supports the user's businesses."
+        ],
+        "out_of_scope": [
+          "Automatic publishing in the first 30 days.",
+          "Public replies, DMs, likes, reposts, or scheduling without explicit approval.",
+          "Generic brand-safe corporate voice."
+        ],
+        "dependencies": [
+          "HERMES_COO_001 action ledger.",
+          "Platform API/browser automation credentials and policy gates.",
+          "Magnus documents and code may be referenced for voice and content workflows."
+        ],
+        "acceptance_criteria": [
+          {
+            "id": "AC-HERMES-COO-003-01",
+            "given": "a source research bundle and prior engagement metrics",
+            "when": "the GTM sub-operator drafts a post",
+            "then": "the draft includes thesis, audience, platform, why now, risk, and approval handle",
+            "measurable_post_condition": "future GTM fixture asserts complete post envelope and no publish call"
+          }
+        ],
+        "anti_slop_rules": [
+          "No TODO/FIXME/PLACEHOLDER in shipped code or repo-facing artifacts.",
+          "No stub functions or placeholder branches satisfy completion.",
+          "No `todo!()`, `unimplemented!()`, `NotImplementedError`, `pass`, or commented-out placeholder code in shipped paths.",
+          "Every new config field, entry point, route, provider, and handler is wired and runtime-real or removed.",
+          "Acceptance criteria cannot be satisfied by scaffolding-only or partial-wiring output."
+        ],
+        "implementation_notes": [
+          "This task is scope definition for the reset brief; implementation follows after EA proves the memory loop.",
+          "The GTM operator should optimize for public profile compounding, not one-off content generation."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "test",
+            "target": "python3 -m pytest -q tests/hermes_cli/test_signal_gtm_scope.py",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "rationale": "The GTM scope must have a deterministic draft envelope before implementation.",
+            "target_files": [
+              "hermes_cli/signal_coo/gtm.py",
+              "tests/hermes_cli/test_signal_gtm_scope.py"
+            ],
+            "expected_failure_mode": "GTM sub-operator scope and tests do not exist."
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": true,
+          "must_be_deterministic": true
+        },
+        "contracts": [
+          "Research and complete drafts are allowed.",
+          "Publishing and engagement actions require explicit approval until promoted."
+        ],
+        "failure_modes": [
+          "The content becomes generic AI brand prose.",
+          "Engagement loop optimizes vanity metrics instead of qualified audience growth.",
+          "The operator posts or replies publicly before approval."
+        ],
+        "observability": [
+          "Persist draft, source ids, voice rubric score, platform target, engagement hypothesis, and approval status."
+        ],
+        "tests": [
+          "tests/hermes_cli/test_signal_gtm_scope.py"
+        ],
+        "security_impact": [
+          "Social account write access must remain approval-gated until separately promoted."
+        ],
+        "bpe_classification": "type_2",
+        "owner": "gtm-suboperator",
+        "files_to_modify": [],
+        "files_to_create": [
+          "hermes_cli/signal_coo/gtm.py",
+          "tests/hermes_cli/test_signal_gtm_scope.py"
+        ],
+        "reference_impl": "Magnus content workflow and report contracts as references only"
+      },
+      {
+        "task_id": "HERMES_COO_004",
+        "title": "Define Finance sub-operator with hard-limited live trading and Monarch personal finance",
+        "objective": "Define the Finance arm that uses Robinhood Agentic MCP for hard-limited live trading and Monarch Money MCP for broader personal finance insight and action proposals.",
+        "task_classification": "feature",
+        "scope": [
+          "Start with about 1000 USD live trading budget.",
+          "Use Robinhood Agentic MCP as the first broker execution path.",
+          "Research alpha, trends, technical analysis, positions, performance, and ROI.",
+          "Allow hard-limited live trading after risk policy and kill switch are implemented.",
+          "Integrate Monarch Money MCP for accounts, transactions, budgets, cashflow, spending analysis, savings opportunities, and proposed personal finance actions.",
+          "Keep Monarch changes advisory or staged until explicit approval policies exist."
+        ],
+        "out_of_scope": [
+          "Unlimited live trading.",
+          "Unlimited trading, transfers, withdrawals, credential changes, or account-link changes.",
+          "Margin or options execution before account/tool eligibility, risk caps, kill switch, and broker audit paths are implemented.",
+          "Live futures execution before a supported broker/tool path and futures-specific risk policy exist.",
+          "Using Monarch to move money or modify financial accounts without explicit policy approval.",
+          "Gemini exchange execution in v0 unless separately scoped."
+        ],
+        "dependencies": [
+          "HERMES_COO_001 action ledger.",
+          "Finance risk contract with capital, max position, max daily loss, max weekly loss, allowed assets, and kill switch.",
+          "Robinhood Agentic MCP account setup outside repo.",
+          "Monarch MCP credential/session setup outside repo."
+        ],
+        "acceptance_criteria": [
+          {
+            "id": "AC-HERMES-COO-004-01",
+            "given": "a proposed live trade exceeds any configured risk limit",
+            "when": "the finance policy gate evaluates it",
+            "then": "the order is blocked and Torben explains the exact failed limit",
+            "measurable_post_condition": "future finance risk fixture blocks the order and records no broker call"
+          },
+          {
+            "id": "AC-HERMES-COO-004-02",
+            "given": "Monarch cashflow data shows a savings opportunity",
+            "when": "the finance operator prepares a personal finance action",
+            "then": "Torben stages a recommendation with evidence and does not mutate financial accounts",
+            "measurable_post_condition": "future Monarch fixture produces a staged recommendation only"
+          }
+        ],
+        "anti_slop_rules": [
+          "No TODO/FIXME/PLACEHOLDER in shipped code or repo-facing artifacts.",
+          "No stub functions or placeholder branches satisfy completion.",
+          "No `todo!()`, `unimplemented!()`, `NotImplementedError`, `pass`, or commented-out placeholder code in shipped paths.",
+          "Every new config field, entry point, route, provider, and handler is wired and runtime-real or removed.",
+          "Acceptance criteria cannot be satisfied by scaffolding-only or partial-wiring output."
+        ],
+        "implementation_notes": [
+          "Finance is the only v0 scope allowed to reach D-level autonomy, and only inside hard risk limits.",
+          "Robinhood Agentic MCP is first priority; Gemini exchange work is deferred unless explicitly re-added.",
+          "Monarch belongs to broader financial operations, budgeting, savings, and spend management, not order execution."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "test",
+            "target": "python3 -m pytest -q tests/hermes_cli/test_signal_finance_scope.py",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "rationale": "The Finance scope must fail closed before any live execution path exists.",
+            "target_files": [
+              "hermes_cli/signal_coo/finance.py",
+              "tests/hermes_cli/test_signal_finance_scope.py"
+            ],
+            "expected_failure_mode": "Finance sub-operator scope and tests do not exist."
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": true,
+          "must_be_deterministic": true
+        },
+        "contracts": [
+          "Initial live budget is about 1000 USD.",
+          "Every live order must satisfy capital, position, daily loss, weekly loss, and asset allowlist controls.",
+          "Monarch Money MCP can inform personal finance recommendations; mutations require explicit later promotion."
+        ],
+        "failure_modes": [
+          "LLM places a trade without risk policy approval.",
+          "Position sizing exceeds user budget.",
+          "Personal finance data leaks into prompts or logs.",
+          "Monarch is treated as an execution surface before policy exists."
+        ],
+        "observability": [
+          "Persist risk decision, trade thesis, order payload hash, broker response hash, position state, ROI metrics, Monarch evidence ids, and personal finance recommendations."
+        ],
+        "tests": [
+          "tests/hermes_cli/test_signal_finance_scope.py"
+        ],
+        "security_impact": [
+          "This scope can lose money and expose sensitive financial data; all execution must be least-privilege, auditable, and kill-switchable."
+        ],
+        "bpe_classification": "type_1",
+        "owner": "finance-suboperator",
+        "files_to_modify": [],
+        "files_to_create": [
+          "hermes_cli/signal_coo/finance.py",
+          "tests/hermes_cli/test_signal_finance_scope.py"
+        ],
+        "reference_impl": "Ratatosk risk controls and trading reports as references only"
+      },
+      {
+        "task_id": "HERMES_COO_005",
+        "title": "Run GBrain value bakeoff",
+        "objective": "Decide whether GBrain should remain in the Torben critical path by comparing it against the local action ledger and conversation memory.",
+        "task_classification": "evaluation",
+        "scope": [
+          "Create a replay fixture of Signal replies requiring prior context.",
+          "Run local ledger only.",
+          "Run local ledger plus GBrain recall.",
+          "Score correctness, latency, noise, and user-visible usefulness.",
+          "Keep GBrain only if it improves reply resolution or recall."
+        ],
+        "out_of_scope": [
+          "Making GBrain mandatory before EA first slice works.",
+          "Using GBrain as a substitute for action ledger."
+        ],
+        "dependencies": [
+          "HERMES_COO_001 local action ledger.",
+          "Representative reply fixtures from EA, GTM, and Finance."
+        ],
+        "acceptance_criteria": [
+          {
+            "id": "AC-HERMES-COO-005-01",
+            "given": "a replay set of prior Signal replies",
+            "when": "local-only and GBrain-assisted resolution are compared",
+            "then": "the report recommends keep or remove with measured evidence",
+            "measurable_post_condition": "gbrain bakeoff report exists with accuracy, latency, noise, and recommendation"
+          }
+        ],
+        "anti_slop_rules": [
+          "No TODO/FIXME/PLACEHOLDER in shipped code or repo-facing artifacts.",
+          "No stub functions or placeholder branches satisfy completion.",
+          "No `todo!()`, `unimplemented!()`, `NotImplementedError`, `pass`, or commented-out placeholder code in shipped paths.",
+          "Every new config field, entry point, route, provider, and handler is wired and runtime-real or removed.",
+          "Acceptance criteria cannot be satisfied by scaffolding-only or partial-wiring output."
+        ],
+        "implementation_notes": [
+          "The user's current intuition is that GBrain may not be adding value.",
+          "Do not keep GBrain because it exists; keep it only if the bakeoff shows better user outcomes."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "test",
+            "target": "python3 -m pytest -q tests/hermes_cli/test_signal_gbrain_bakeoff.py",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "rationale": "GBrain value should be measured rather than assumed.",
+            "target_files": [
+              "hermes_cli/signal_coo/gbrain_bakeoff.py",
+              "tests/hermes_cli/test_signal_gbrain_bakeoff.py"
+            ],
+            "expected_failure_mode": "GBrain bakeoff module and tests do not exist."
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": true,
+          "must_be_deterministic": true
+        },
+        "contracts": [
+          "Local action ledger remains authoritative.",
+          "GBrain can assist recall but cannot replace action-handle resolution."
+        ],
+        "failure_modes": [
+          "GBrain returns semantically related but wrong context.",
+          "GBrain adds latency or noise without improving reply resolution.",
+          "The system becomes dependent on an optional service before local behavior works."
+        ],
+        "observability": [
+          "Persist bakeoff inputs, local-only result, GBrain-assisted result, score, latency, and final recommendation."
+        ],
+        "tests": [
+          "tests/hermes_cli/test_signal_gbrain_bakeoff.py"
+        ],
+        "security_impact": [
+          "Only payload-minimized fixtures should be used in GBrain bakeoff artifacts unless explicit data classification allows more."
+        ],
+        "bpe_classification": "type_2",
+        "owner": "memory-subsystem",
+        "files_to_modify": [],
+        "files_to_create": [
+          "hermes_cli/signal_coo/gbrain_bakeoff.py",
+          "tests/hermes_cli/test_signal_gbrain_bakeoff.py"
+        ],
+        "reference_impl": "Existing GBrain/OpenClaw usage only as prior art"
+      }
+    ],
+    "9_risks": [
+      "The reset can sprawl if EA, GTM, Finance, GBrain, and trading are implemented at once.",
+      "Finance live trading can lose the entire initial allocation or more if limits are wrong.",
+      "A single Signal interface can become noisy unless Torben has strong interruption policy.",
+      "LLM-driven judgment can hallucinate, overclaim execution, or ignore constraints unless validation is strict.",
+      "Reusing old modules can re-import the cron-report failure mode.",
+      "Monarch personal finance integration can expose sensitive transaction and budget data if prompt/log boundaries are weak."
+    ],
+    "10_rollout": [
+      "Phase 0: Persist this scope brief and get user approval.",
+      "Phase 0a: Configure OAuth/MCP-native Torben runtime auth, keep 1Password as optional static-secret bootstrap, and stop/disable obsolete resident OpenClaw/Hermes/GBrain/profile services except an explicit allowlist.",
+      "Phase 1: Implement Torben memory core and EA first slice with fixture tests.",
+      "Phase 2: Run one live Signal canary with no external mutations.",
+      "Phase 3: Promote EA to draft/stage approvals after reply context is proven.",
+      "Phase 4: Add GTM draft workflow and engagement ingestion.",
+      "Phase 5: Add Finance risk contract, Robinhood Agentic MCP read/limited trade path with equity/options/margin gates, and Monarch staged action path.",
+      "Phase 6: Run GBrain bakeoff and keep/remove it from architecture.",
+      "Phase 7: Consider higher autonomy per scope only after performance and safety evidence."
+    ],
+    "11_validation_plan": [
+      "Validate this build brief shape with Swelfare ADLC validate_build_brief_shape.",
+      "Validate OAuth/MCP-native runtime auth policy with onepassword_bootstrap=optional.",
+      "Validate optional 1Password CLI availability only when a selected integration still requires static secret injection.",
+      "Validate Torben op wrapper fails closed when selected and required op:// references are missing.",
+      "Validate LaunchAgent plists and repo config do not contain resolved provider tokens.",
+      "Validate legacy host services are stopped or allowlisted before live Torben canary.",
+      "Run primary Torben COO memory tests and ensure they fail before implementation.",
+      "Run Signal adapter regression tests.",
+      "Run EA fixture tests before live Signal canary.",
+      "Run one live Signal canary only after fixture tests pass.",
+      "Require separate finance risk tests before any live Robinhood Agentic MCP order.",
+      "Require separate GTM approval tests before any LinkedIn/X publish path.",
+      "Require Monarch prompt/log redaction tests before connecting live personal finance data."
+    ],
+    "12_skill_trigger_configuration": [
+      {
+        "trigger": "Implementing Torben memory core or EA first slice",
+        "skill": "investigate",
+        "action": "Use root-cause discipline for existing Hermes Signal and delivery behavior before patching runtime code."
+      },
+      {
+        "trigger": "Any browser-rendered Signal/GTM interface QA",
+        "skill": "qa",
+        "action": "Run live QA only after fixture tests pass."
+      },
+      {
+        "trigger": "Any live trading or credential work",
+        "skill": "careful",
+        "action": "Require explicit safety review, hard limits, and rollback before touching broker credentials or live orders."
+      },
+      {
+        "trigger": "Shipping the reset",
+        "skill": "ship",
+        "action": "Run review, tests, docs sync, and PR workflow rather than landing from a dirty workspace."
+      }
+    ]
+  }
+}

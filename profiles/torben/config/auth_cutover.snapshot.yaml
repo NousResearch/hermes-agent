@@ -1,0 +1,40 @@
+version: 2026-06-25
+strategy: oauth_mcp_native_first
+runtime_env_allowed_keys:
+  - SIGNAL_ACCOUNT
+  - SIGNAL_HTTP_URL
+providers:
+  default:
+    scope: torben_ea_finance_orchestration
+    provider: openai-codex
+    auth: hermes_oauth_store
+  gtm:
+    scope: magnus_social_x
+    provider: xai-oauth
+    auth: hermes_oauth_store
+  google:
+    scope: gmail_calendar
+    auth: per_account_oauth_token_files
+mcp_servers:
+  robinhood-agentic-mcp:
+    url: https://agent.robinhood.com/mcp/trading
+    auth: oauth
+    enabled: true
+    live_status: authenticated
+  monarch-money-mcp:
+    url: https://api.monarch.com/mcp
+    auth: oauth
+    enabled: true
+    live_status: authenticated
+noise_policy:
+  cron_wrap_response: false
+  notify_on: actionable_or_failed_only
+disallowed_runtime_env_keys:
+  - OPENAI_API_KEY
+  - GOOGLE_TOKEN_JSON
+  - GOOGLE_CLIENT_SECRET_JSON
+  - ROBINHOOD_AGENTIC_MCP_TOKEN
+  - MONARCH_EMAIL
+  - MONARCH_PASSWORD
+  - X_API_ACCESS_TOKEN
+  - X_API_REFRESH_TOKEN

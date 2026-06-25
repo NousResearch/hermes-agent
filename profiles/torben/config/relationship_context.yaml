@@ -1,0 +1,147 @@
+people:
+  - name: Kim Moore
+    aliases:
+      - Kim Moore
+      - Kim from U&I
+      - Kim U&I
+    role: investor
+    importance: high
+    surface_when:
+      - direct_ask
+      - scheduling
+      - funding_context
+    notes: Investor relationship Eric wants to maintain.
+  - name: Jordan Freeman
+    aliases:
+      - Jordan Freeman
+    role: spouse
+    importance: critical
+    surface_when:
+      - direct_ask
+      - family_admin
+      - calendar_or_logistics
+    notes: Eric's wife. Do not use the word wife as a generic trigger.
+  - name: Christie
+    aliases:
+      - Christie
+      - Christie Mckenna
+      - Christie McKenna
+    role: son_teacher
+    importance: high
+    surface_when:
+      - childcare
+      - school
+      - direct_ask
+    notes: Judah's teacher; school and childcare logistics matter. Eric wants Christie emails flagged because they often contain Judah/daycare logistics, but they often do not need a response. Surface concrete prep/signature/packing/policy asks clearly; do not imply a reply is needed unless the email explicitly asks for one.
+  - name: Rose
+    aliases:
+      - Rose
+    role: friend_family
+    importance: medium
+    surface_when:
+      - direct_ask
+      - family_admin
+      - health_or_logistics
+    notes: Friend's mother; single-name matches require sender identity, not body keywords.
+  - name: Tom Santero
+    aliases:
+      - Tom Santero
+      - tom@sixmarkets.io
+    role: magellan_relationship
+    importance: high
+    surface_when:
+      - scheduling
+      - direct_ask
+      - customer_or_partner_context
+    notes: Important Magellan relationship; surface concrete scheduling, reply, or relationship follow-up.
+  - name: Dan Hostetler
+    aliases:
+      - Dan Hostetler
+      - Daniel Hostetler
+      - dan@heyhumm.ai
+      - dan@version1.io
+    role: magellan_customer_or_partner
+    importance: high
+    surface_when:
+      - direct_ask
+      - security_review
+      - customer_or_partner_context
+      - scheduling
+    notes: Important Magellan Pen Testing thread; surface concrete asks and reply-needed updates.
+source_rules:
+  alphasights.com:
+    relationship: expert-network
+    surface_only_when:
+      - availability_request
+      - call_request
+      - confirmed_call
+    suppress_when:
+      - survey_only
+      - closed_notice
+      - invoice
+      - payment_or_thank_you
+    notes: Do not surface every AlphaSights email. Eric only cares when they want a call or need availability.
+  boardy.ai:
+    relationship: intro-network
+    surface_only_when:
+      - direct_intro_thread
+    digest_cadence: twice_daily
+    deferred_intro_targets:
+      - name: David Whalen
+        organization: DataTribe
+        handle: GTM-20260625-001
+        status: deferred_until_deck_ready
+        notes: Eric said this is someone we definitely want, but later. Wait until the Interralis deck is ready before greenlighting or replying to Boardy; do not repeat as an immediate yes/no.
+    notes: Direct Boardy Intro/reach-out threads are potential GTM signal, not automatic yeses. Surface them in realtime only when someone directly reaches out, there is clear relationship fit, no obvious day-job sensitivity/conflict, and there is a concrete scheduling, reply, or relationship next move. If fit is ambiguous, recommend hold or ask Eric. Other Boardy mail belongs in the twice-daily Boardy brief. Honor deferred_intro_targets and do not re-ask on parked intros until their condition is satisfied.
+  docusign.net:
+    relationship: legal-admin-signature
+    surface_only_when:
+      - signature_request
+      - document_action
+      - completion_confirmation
+    notes: DocuSign is usually admin/legal/insurance signal. Signature requests are realtime; completed documents can go to daily context unless paired with a concrete next step.
+  bulletpitch.com:
+    relationship: suppress
+    lane: suppress_rollup
+    suppress_when:
+      - investment_promo
+      - marketing_deadline
+      - newsletter_general
+    notes: Eric said Bulletpitch is garbage and not needed.
+  github.com:
+    relationship: developer-notification
+    lane: suppress_rollup
+    suppress_when:
+      - ci_failure
+      - general_pr_update
+      - workflow_notification
+    notes: GitHub CI failures and general PR updates are noise for the EA brief unless Eric promotes a specific repository or security-relevant source.
+  cloudseclist.com:
+    relationship: priority-security-newsletter
+    lane: daily_brief
+    notes: Marco at CloudSecList should be summarized for concrete security, AI, tool, and research links.
+  awssecuritydigest.com:
+    relationship: priority-security-newsletter
+    lane: daily_brief
+    notes: Daniel Grzelak / AWS Security Digest belongs in the security morning brief when there is a concrete issue or link.
+  console.dev:
+    relationship: priority-devtools-newsletter
+    lane: daily_brief
+    notes: Console.dev should be scanned for developer tools, repos, betas, and workflow leverage.
+  vulnu.mattjay.com:
+    relationship: priority-security-newsletter
+    lane: daily_brief
+    notes: Matt Johansen / Vulnerable U should be summarized for security research, tooling, and practitioner signal.
+  mail.beehiiv.com:
+    relationship: newsletter-platform
+    lane: daily_brief_when_sender_matches
+    sender_allowlist:
+      - unsupervised-learning@mail.beehiiv.com
+    notes: Include Daniel Miessler / Unsupervised Learning; do not promote all Beehiiv senders by domain alone.
+principles:
+  - Use sender identity, relationship, and intent before keywords.
+  - A body word like wife is not evidence. Known contact context is evidence.
+  - Unknown important contacts should become learn-contact candidates instead of brittle rules.
+  - "Route into three lanes: realtime, daily brief, and suppress/roll-up."
+  - Deadline language only matters for admin, finance, legal, scheduling, relationship, customer/funding, or known-source mail; retail/promo urgency language is noise.
+  - The LLM synthesis layer decides final surfacing from evidence; deterministic code only prepares bounded context.

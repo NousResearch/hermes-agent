@@ -41,6 +41,9 @@ _MCP_PRESETS: Dict[str, Dict[str, Any]] = {
 }
 
 
+MCP_LOGIN_CONNECT_TIMEOUT_SECONDS = 300
+
+
 # ─── UI Helpers ───────────────────────────────────────────────────────────────
 
 def _info(text: str):
@@ -711,7 +714,11 @@ def cmd_mcp_login(args):
 
     # Probe triggers the OAuth flow (browser redirect + callback capture).
     try:
-        tools = _probe_single_server(name, server_config)
+        tools = _probe_single_server(
+            name,
+            server_config,
+            connect_timeout=MCP_LOGIN_CONNECT_TIMEOUT_SECONDS,
+        )
         # A clean probe is NOT proof of authentication. Some MCP servers
         # (notably Google's official Drive server) serve initialize +
         # tools/list WITHOUT auth, so the probe lists tools even when the

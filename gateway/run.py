@@ -8891,6 +8891,102 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
         return source
 
+    async def _maybe_handle_torben_gtm_reply(
+        self,
+        *,
+        event,
+        source,
+        session_entry,
+        history,
+        persist_user_message: str | None,
+        persist_user_timestamp,
+    ):
+        if getattr(source, "platform", None) != Platform.SIGNAL:
+            return None
+        raw_text = str(getattr(event, "text", None) or "").strip()
+        if not raw_text:
+            return None
+        ledger_path = _hermes_home / "state" / "torben-action-ledger.json"
+        if not ledger_path.exists():
+            return None
+        try:
+            from hermes_cli.signal_coo import ActionLedger, route_gtm_radar_reply
+
+            result = route_gtm_radar_reply(
+                ledger=ActionLedger(ledger_path),
+                reply_text=raw_text,
+                output_dir=_hermes_home / "state" / "gtm-content-packages",
+                approved_by="signal-reply",
+            )
+        except Exception:
+            logger.debug("Torben GTM reply router failed before handling", exc_info=True)
+            return None
+        if not result.handled:
+            return None
+
+        response_text = result.text or "Torben staged the GTM reply. Nothing was posted or sent.\n"
+        adapter = self.adapters.get(source.platform)
+        if adapter and source.chat_id:
+            try:
+                await adapter.send(
+                    source.chat_id,
+                    response_text,
+                    metadata=self._thread_metadata_for_source(
+                        source,
+                        self._reply_anchor_for_event(event),
+                    ),
+                )
+            except Exception:
+                logger.warning("Failed to send Torben GTM reply acknowledgement", exc_info=True)
+
+        ts = time.time()
+        user_entry = {
+            "role": "user",
+            "content": persist_user_message if persist_user_message is not None else raw_text,
+            "timestamp": persist_user_timestamp if persist_user_timestamp is not None else ts,
+        }
+        if getattr(event, "message_id", None):
+            user_entry["message_id"] = str(event.message_id)
+        try:
+            if not history:
+                self.session_store.append_to_transcript(
+                    session_entry.session_id,
+                    {
+                        "role": "session_meta",
+                        "tools": [],
+                        "model": _resolve_gateway_model(),
+                        "platform": source.platform.value if source.platform else "",
+                        "timestamp": ts,
+                    },
+                )
+            self.session_store.append_to_transcript(session_entry.session_id, user_entry)
+            self.session_store.append_to_transcript(
+                session_entry.session_id,
+                {
+                    "role": "assistant",
+                    "content": response_text,
+                    "timestamp": ts,
+                },
+            )
+            self.session_store.update_session(
+                session_entry.session_key,
+                last_prompt_tokens=0,
+            )
+        except Exception:
+            logger.debug("Failed to persist Torben GTM reply router transcript", exc_info=True)
+        logger.info(
+            "torben gtm reply routed: status=%s package=%s refs=%s",
+            result.status,
+            result.package_action.handle if result.package_action else "",
+            ",".join(action.handle for action in result.referenced_actions),
+        )
+        return {
+            "success": True,
+            "final_response": response_text,
+            "api_calls": 0,
+            "torben_gtm_reply_router": result.to_dict(),
+        }
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -9615,6 +9711,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text = _clean_message_text
         except Exception as _ts_err:
             logger.debug("Message timestamp injection failed (non-fatal): %s", _ts_err)
+
+        _torben_gtm_result = await self._maybe_handle_torben_gtm_reply(
+            event=event,
+            source=source,
+            session_entry=session_entry,
+            history=history,
+            persist_user_message=persist_user_message,
+            persist_user_timestamp=persist_user_timestamp,
+        )
+        if _torben_gtm_result is not None:
+            return _torben_gtm_result
 
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the

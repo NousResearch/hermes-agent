@@ -1,0 +1,169 @@
+{
+  "version": "1.0.0",
+  "brief_id": "TORBEN_MAGNUS_GTM_OPERATING_LOOP",
+  "generated_at": "2026-06-25",
+  "status": "active_reset_brief",
+  "owner": "Torben",
+  "sub_operator": "Magnus",
+  "source_decisions": {
+    "primary_interface": "One Signal thread with Torben as the user-facing operator.",
+    "runtime_boundary": "Torben owns scheduling, Signal delivery, dedupe, action handles, and reply routing. Magnus owns GTM source research, ranking, drafting engines, and approval-package evidence.",
+    "model_routing": "Use Grok/xAI for Magnus GTM research, X Search, social review, and GTM drafting. Use OpenAI/Codex only when explicitly generating or editing long-form content or code.",
+    "cron_policy": "Crons wake bounded LLM workflows. Static code may collect evidence, cap budget, validate outputs, and enforce no-mutation boundaries, but must not be the decision maker for GTM signal.",
+    "noise_policy": "Successful no-op maintenance is silent. Signal only receives actionable findings, approval-ready drafts, direct reply opportunities, or failures that need operator attention.",
+    "public_action_policy": "Public posting, replies, likes, reposts, follows, DMs, scheduling, and browser automation remain blocked until explicit approval and a public-action guard path exists."
+  },
+  "definition_of_done": "Torben reliably surfaces timely, deduped, link-backed GTM signal and approval-ready content packages through one Signal thread, while Magnus continuously improves topic selection, content quality, reply opportunities, and timing from performance evidence without unattended public mutations.",
+  "loops": {
+    "gtm_intelligence_loop": {
+      "purpose": "Find what Eric should know and act on before the topic is stale.",
+      "sources": [
+        "arXiv papers on security, AI security, agents, MCP, evals, observability, and AI engineering leverage",
+        "security news sources including THN-style vulnerabilities, TTPs, hardening, threat hunting, and tool releases",
+        "YC, HN, GitHub, vendor research, and builder discourse",
+        "Grok/X Search discourse for what practitioners are arguing about or amplifying",
+        "EA newsletter extraction artifacts from security, AI, founder, and tool newsletters"
+      ],
+      "outputs": [
+        "1-3 actionable signals per run",
+        "2-3 sentence summary for each selected item",
+        "source link and evidence quality",
+        "why this matters to Eric's brand, businesses, or operating leverage",
+        "recommended route: learn, monitor, short post, reply, thread, or longform",
+        "visual direction when the topic is content-worthy"
+      ],
+      "acceptance": [
+        "No duplicate finding should re-alert unless there is a materially new angle.",
+        "X discourse can shape angle and timing but must not be the only factual source for strong claims.",
+        "If the source refresh fails, Torben surfaces one actionable failure instead of a normal brief."
+      ]
+    },
+    "gtm_content_creation_loop": {
+      "purpose": "Turn accepted intelligence into approval-ready founder-led content.",
+      "outputs": [
+        "LinkedIn post drafts",
+        "X single-post drafts",
+        "X thread drafts",
+        "long-form article briefs and full drafts",
+        "image, diagram, icon, and visual asset prompts",
+        "platform-specific context explaining why the draft should exist"
+      ],
+      "voice": "Founder voice paired with Magnus: sharp, direct, crass when useful, high-conviction, memorable, and practical without generic AI slop.",
+      "acceptance": [
+        "Every package includes the source evidence, thesis, target audience, visual plan, approval options, and public_action_status=blocked_until_approval.",
+        "No package can be posted or scheduled by cron."
+      ]
+    },
+    "gtm_optimization_engagement_loop": {
+      "purpose": "Use audience behavior and live discourse to improve what Magnus finds and drafts next.",
+      "inputs": [
+        "X and LinkedIn engagement metrics",
+        "reply/comment opportunities",
+        "approval, hold, revise, and rejection outcomes",
+        "topic saturation and repeated-angle suppression",
+        "manual feedback from Signal replies"
+      ],
+      "outputs": [
+        "timely reply recommendations with exact copy and context",
+        "topic, hook, format, and timing recommendations",
+        "watchlist adjustments",
+        "negative memory for rejected or stale topics"
+      ],
+      "acceptance": [
+        "Near-real-time response discovery uses deterministic prefilters plus Grok on only the highest-potential candidates.",
+        "Token use is capped by budget and relevance thresholds.",
+        "Recommendations are approval-gated and never become unattended replies."
+      ]
+    }
+  },
+  "implementation_gates": [
+    {
+      "gate": "GTM-0",
+      "name": "Baseline and runtime ownership",
+      "status": "observed",
+      "current_evidence": [
+        "Torben gateway is running and owns the Signal thread.",
+        "Magnus gateway is not running, so Magnus cron jobs are not the reliable scheduler.",
+        "Torben and Magnus xai-oauth profile auth are available for Grok/xAI paths.",
+        "Latest Torben GTM adapter artifact suppressed duplicate findings instead of sending repeat chat noise."
+      ]
+    },
+    {
+      "gate": "GTM-1",
+      "name": "Torben-owned GTM radar source refresh",
+      "status": "in_progress",
+      "change": "Modify torben_gtm_radar.py so each non-preview Torben run refreshes the Magnus radar before adapting findings to Signal.",
+      "acceptance": [
+        "Torben no longer depends on a separate running Magnus gateway for the GTM radar.",
+        "Refresh uses the Magnus profile home and xAI/Grok-capable environment.",
+        "Successful no-new-finding runs remain silent.",
+        "Refresh failure wakes Torben with a failure message and public_actions_taken=0.",
+        "Preview mode does not mutate Magnus seen ledgers, Torben action ledger, or delivered-finding state."
+      ]
+    },
+    {
+      "gate": "GTM-2",
+      "name": "Source breadth and newsletter bridge",
+      "status": "planned",
+      "change": "Feed EA newsletter extraction artifacts and additional security/AI/GitHub sources into the GTM radar.",
+      "acceptance": [
+        "Previous-day newsletter stories and tools can become GTM findings with links and dedupe keys.",
+        "arXiv scan runs often enough to teach Eric and feed content, not just twice weekly.",
+        "Security, security+AI, and AI-engineering leverage pillars are all represented."
+      ]
+    },
+    {
+      "gate": "GTM-3",
+      "name": "Timely engagement radar",
+      "status": "planned",
+      "change": "Run a bounded X/LinkedIn engagement scout through Torben with Grok drafting only for high-scoring candidates.",
+      "acceptance": [
+        "Mention/reply opportunities are checked frequently enough to matter.",
+        "Broad watchlist searches are batched to avoid token and API burn.",
+        "Signal receives only the best reply opportunities with context, exact draft, and approval options.",
+        "No public reply is sent from cron."
+      ]
+    },
+    {
+      "gate": "GTM-4",
+      "name": "Approval and distribution package",
+      "status": "planned",
+      "change": "Connect approved content packages to X/LinkedIn/Postiz or browser automation behind explicit approval.",
+      "acceptance": [
+        "Approval commands resolve to the original evidence and exact draft.",
+        "Publishing paths record audit metadata and platform response.",
+        "Scheduling remains blocked until approval and guard checks pass."
+      ]
+    },
+    {
+      "gate": "GTM-5",
+      "name": "Performance optimization loop",
+      "status": "planned",
+      "change": "Feed engagement outcomes back into topic selection, hooks, cadence, and watchlists.",
+      "acceptance": [
+        "Accepted, rejected, revised, and high-performing drafts change future ranking.",
+        "Repeated weak angles are suppressed.",
+        "Torben can explain what changed and why."
+      ]
+    }
+  ],
+  "verification": {
+    "focused_tests": [
+      "python -m py_compile profiles/torben/scripts/torben_gtm_radar.py hermes_cli/signal_coo/gtm_radar_adapter.py hermes_cli/signal_coo/gtm_reply_router.py hermes_cli/signal_coo/gtm_grok_writer.py",
+      "python -m pytest tests/test_signal_coo.py tests/gateway/test_torben_gtm_reply_router.py tests/test_torben_gtm_radar_script.py -q",
+      "git diff --check -- profiles/torben/scripts/torben_gtm_radar.py docs/build-briefs/torben-magnus-gtm-operating-loop.json tests/test_torben_gtm_radar_script.py"
+    ],
+    "live_canaries": [
+      "Torben preview run: does not refresh or mutate unless TORBEN_GTM_REFRESH_MAGNUS_PREVIEW=1.",
+      "Magnus refresh smoke: produces JSON, public_actions_taken=0, external_mutations=0.",
+      "Torben adapter latest artifact: wakeAgent=false when all findings are duplicate, with source_refresh metadata after live refresh."
+    ]
+  },
+  "open_boundaries": [
+    "Do not re-enable legacy Magnus OpenClaw jobs.",
+    "Do not turn response discovery into unattended public replies.",
+    "Do not burn Grok tokens on low-scoring broad scans.",
+    "Do not send normal cron success reports into Signal.",
+    "Do not treat browser automation as ready for public posting until approval, audit, and rollback paths exist."
+  ]
+}

@@ -714,9 +714,15 @@ class TestMcpLogin:
             },
         })
         # Probe returns tools even though auth never completed.
+        seen = {}
+
+        def mock_probe(name, cfg, connect_timeout=None):
+            seen["connect_timeout"] = connect_timeout
+            return [("search_files", "d"), ("read_file_content", "d")]
+
         monkeypatch.setattr(
             "hermes_cli.mcp_config._probe_single_server",
-            lambda name, cfg: [("search_files", "d"), ("read_file_content", "d")],
+            mock_probe,
         )
         # No token file is created → _oauth_tokens_present() returns False.
         from hermes_cli.mcp_config import cmd_mcp_login
@@ -727,6 +733,7 @@ class TestMcpLogin:
         assert "no OAuth token was obtained" in out
         assert "Authenticated" not in out
         assert "client_id" in out
+        assert seen["connect_timeout"] == 300
 
     def test_login_genuine_success_with_token(self, tmp_path, capsys, monkeypatch):
         """Probe lists tools AND a token exists → report real success."""
@@ -738,7 +745,8 @@ class TestMcpLogin:
         # cmd_mcp_login wipes tokens before probing, then the real OAuth flow
         # writes a fresh token during the probe. Simulate that: the mocked
         # probe drops a token file, mirroring a successful authorization.
-        def mock_probe(name, cfg):
+        def mock_probe(name, cfg, connect_timeout=None):
+            assert connect_timeout == 300
             token_dir.mkdir(exist_ok=True)
             (token_dir / "realserver.json").write_text('{"access_token": "x"}')
             return [("a", "d"), ("b", "d"), ("c", "d")]

@@ -1,0 +1,4 @@
+{
+    "system": "You are an AI systems researcher improving autonomous coding agents.",
+    "task_description": "You are given experiment.py which simulates a Hermes-like tool-calling loop (success_rate, mean_latency, retry_pressure). Modify policy knobs or scheduling heuristics to raise success_rate while keeping mean_latency low. Preserve the CLI `python experiment.py --out_dir=run_i`."
+}

@@ -200,6 +200,12 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "mcp==1.26.0",
         "starlette==1.3.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
     ),
+    # Sakana AI-Scientist: llm.py import surface (aider via ai_scientist_deps).
+    "tool.ai_scientist": (
+        "backoff==2.2.1",
+        "anthropic==0.87.0",
+        "google-generativeai==0.8.6",
+    ),
 }
 
 

@@ -1541,7 +1541,7 @@ async def evolve(req: EvolveRequest) -> dict:
 
 class ScientistRunRequest(BaseModel):
     topic: str = ""
-    template: str = "nanoGPT"
+    template: str = "nanoGPT_lite"
     num_ideas: int = 3
     run_experiment: bool = False
     model: str = "ollama/qwen-hakua-core:latest"

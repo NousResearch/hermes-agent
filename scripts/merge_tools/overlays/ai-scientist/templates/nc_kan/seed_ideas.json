@@ -1,0 +1,18 @@
+[
+    {
+        "Name": "kan_depth_sweep",
+        "Title": "Depth vs Neural Collapse in KAN-Inspired Probes",
+        "Experiment": "Add a configurable hidden depth in experiment.py and sweep 1-3 KAN layers. Track how nc_ratio and accuracy trade off across depths.",
+        "Interestingness": 8,
+        "Feasibility": 7,
+        "Novelty": 7
+    },
+    {
+        "Name": "orthonormal_last_layer",
+        "Title": "Orthonormal Last-Layer Constraints for Faster Collapse",
+        "Experiment": "Project classifier weights to the Stiefel manifold each step and compare nc_ratio against the baseline probe.",
+        "Interestingness": 7,
+        "Feasibility": 6,
+        "Novelty": 8
+    }
+]

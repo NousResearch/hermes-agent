@@ -1,0 +1,18 @@
+[
+    {
+        "Name": "adaptive_retry_budget",
+        "Title": "Difficulty-Aware Retry Budgeting for Tool-Calling Agents",
+        "Experiment": "Scale retry_budget by estimated task difficulty inside experiment.py and compare success_rate vs mean_latency.",
+        "Interestingness": 8,
+        "Feasibility": 8,
+        "Novelty": 6
+    },
+    {
+        "Name": "context_aware_precision",
+        "Title": "Context Window Aware Tool Precision Calibration",
+        "Experiment": "Couple tool_precision to context_window so longer contexts reduce hallucinated tool args; measure success_rate improvements.",
+        "Interestingness": 7,
+        "Feasibility": 7,
+        "Novelty": 7
+    }
+]

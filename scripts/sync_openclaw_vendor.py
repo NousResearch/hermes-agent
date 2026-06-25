@@ -12,6 +12,10 @@ Usage:
   py -3 scripts/sync_openclaw_vendor.py --dry-run
   py -3 scripts/sync_openclaw_vendor.py --execute
   py -3 scripts/sync_openclaw_vendor.py --execute --port-cli-tools
+
+For SakanaAI/AI-Scientist (upstream fetch + local template overlay), use:
+  py -3 scripts/sync_ai_scientist_vendor.py --dry-run
+  py -3 scripts/sync_ai_scientist_vendor.py --execute
 """
 
 from __future__ import annotations

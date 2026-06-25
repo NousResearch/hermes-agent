@@ -5,6 +5,22 @@
 requires = ["setuptools>=77.0,<83"]
 build-backend = "setuptools.build_meta"
 
+[tool.uv]
+# aider-chat pins many exact versions below Hermes security floors.
+# Overrides keep [ai-scientist] resolvable; aider works at runtime with these.
+override-dependencies = [
+  "urllib3>=2.7.0,<3",
+  "rich>=14.3.3,<15",
+  "requests>=2.33.0,<3",
+  "python-dotenv>=1.2.2,<2",
+  "openai>=2.24.0,<3",
+  "pydantic>=2.13.4,<3",
+  "pydantic-core>=2.46.4,<3",
+  "certifi>=2026.5.20",
+  "pygments>=2.20.0,<3",
+  "pillow>=12.2.0",
+]
+
 [project]
 name = "hermes-agent"
 version = "0.17.0"
@@ -245,6 +261,16 @@ openclaw-voice = [
   "soundfile==0.13.1",
 ]
 rl = []  # Temporarily empty: atroposlib pulls unpatched nltk (CVE-2026-54293).
+# Sakana AI-Scientist live runs (launch_scientist + llm.py import surface).
+# aider-chat is installed separately (see tools/ai_scientist_deps.py) because its
+# PyPI metadata pins conflict with Hermes security floors; uv override-dependencies
+# in [tool.uv] allow `uv pip install aider-chat==0.86.2` at runtime.
+# Install: uv sync --extra ai-scientist && uv pip install aider-chat==0.86.2
+ai-scientist = [
+  "backoff==2.2.1",
+  "anthropic==0.87.0",
+  "google-generativeai==0.8.6",
+]
 bedrock = ["boto3==1.42.89"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [

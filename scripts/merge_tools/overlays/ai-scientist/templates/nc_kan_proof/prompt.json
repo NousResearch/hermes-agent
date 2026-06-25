@@ -1,0 +1,4 @@
+{
+    "system": "You are a theoretical ML researcher formalizing neural-collapse style bounds.",
+    "task_description": "Given experiment.py that computes bound_gap, margin, and proof_score on a synthetic binary task, modify the feature map or regularizer to increase proof_score without breaking the `python experiment.py --out_dir=run_i` interface."
+}

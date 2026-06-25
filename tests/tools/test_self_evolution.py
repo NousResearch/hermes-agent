@@ -17,9 +17,11 @@ def test_ai_scientist_tool_registration():
 
 def test_ai_scientist_requires_initialized_submodule(monkeypatch, tmp_path):
     monkeypatch.setattr(ai_scientist_tool, "AI_SCIENTIST_ENTRYPOINT", tmp_path / "launch_scientist.py")
+    monkeypatch.setattr(ai_scientist_tool, "AI_SCIENTIST_LAUNCHER", tmp_path / "launcher.py")
     assert ai_scientist_tool.check_ai_scientist_available() is False
 
     (tmp_path / "launch_scientist.py").write_text("", encoding="utf-8")
+    (tmp_path / "launcher.py").write_text("", encoding="utf-8")
     assert ai_scientist_tool.check_ai_scientist_available() is True
 
 def test_shinka_requires_initialized_submodule(monkeypatch, tmp_path):
@@ -45,12 +47,41 @@ def test_shinka_run_dispatch(mock_run):
     assert mock_run.call_args.kwargs["env"]["CUDA_VISIBLE_DEVICES"] == "0"
 
 @patch("subprocess.run")
-def test_ai_scientist_research_dispatch(mock_run):
+def test_ai_scientist_research_dispatch(mock_run, monkeypatch, tmp_path):
     mock_run.return_value = MagicMock(returncode=0, stdout="Research completed", stderr="")
-    
-    result_json = ai_scientist_research(experiment="test_exp", num_ideas=1, task_id="test_session")
+    entry = tmp_path / "launch_scientist.py"
+    launcher = tmp_path / "ai_scientist_launcher.py"
+    entry.write_text("# stub", encoding="utf-8")
+    launcher.write_text("# stub", encoding="utf-8")
+    monkeypatch.setattr(ai_scientist_tool, "AI_SCIENTIST_DIR", tmp_path)
+    monkeypatch.setattr(ai_scientist_tool, "AI_SCIENTIST_ENTRYPOINT", entry)
+    monkeypatch.setattr(ai_scientist_tool, "AI_SCIENTIST_LAUNCHER", launcher)
+    monkeypatch.setattr(
+        ai_scientist_tool,
+        "resolve_ai_scientist_run_config",
+        lambda model=None: {
+            "sakana_model": "gpt-4o-mini",
+            "overlay": {"OPENAI_API_KEY": "test"},
+            "has_credentials": True,
+            "provider_id": "openai-codex",
+            "routing": "openai_shim",
+        },
+    )
+    monkeypatch.setattr(ai_scientist_tool, "ensure_ai_scientist_deps", lambda **kwargs: None)
+    monkeypatch.setattr(
+        ai_scientist_tool,
+        "build_ai_scientist_env",
+        lambda **kwargs: {"OPENAI_API_KEY": "test", "CUDA_VISIBLE_DEVICES": "0"},
+    )
+
+    result_json = ai_scientist_research(experiment="nanoGPT_lite", num_ideas=1, task_id="test_session")
     result = json.loads(result_json)
-    
+
     assert result["success"] is True
     mock_run.assert_called_once()
-    assert "launch_scientist.py" in mock_run.call_args.args[0]
+    cmd = mock_run.call_args.args[0]
+    assert any("ai_scientist_launcher.py" in str(part) for part in cmd)
+    assert "--skip-novelty-check" in cmd
+    assert "--experiment" in cmd and "nanoGPT_lite" in cmd
+    env = mock_run.call_args.kwargs.get("env") or {}
+    assert isinstance(env, dict)

@@ -1,0 +1,31 @@
+{
+  "description": "AI-Scientist vendor sync: SakanaAI/AI-Scientist upstream base + local fork overlays.",
+  "upstream_url": "https://github.com/SakanaAI/AI-Scientist.git",
+  "upstream_ref": "main",
+  "vendor_target": "vendor/openclaw-mirror/AI-Scientist",
+  "overlay_source": "scripts/merge_tools/overlays/ai-scientist",
+  "preserve_paths": [
+    "templates/nc_kan/**",
+    "templates/hermes_self_evolve/**",
+    "templates/nc_kan_proof/**",
+    "_overlay/**",
+    "HERMES_OVERLAY.md"
+  ],
+  "skip_dir_names": [
+    "__pycache__",
+    ".git",
+    "node_modules",
+    ".venv",
+    "dist",
+    ".pytest_cache",
+    "results",
+    "_results"
+  ],
+  "skip_globs": [
+    "**/*.log",
+    "**/.DS_Store",
+    "**/run_*/**",
+    "results/**",
+    "_results/**"
+  ]
+}

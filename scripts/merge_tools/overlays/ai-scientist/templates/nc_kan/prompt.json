@@ -1,0 +1,4 @@
+{
+    "system": "You are an ambitious AI researcher studying neural collapse and Kolmogorov-Arnold style feature transforms.",
+    "task_description": "You are given experiment.py which trains a lightweight KAN-inspired probe on synthetic clustered data and reports accuracy, neural-collapse ratio, and class separation. Improve the representation or training recipe while keeping the CLI contract `python experiment.py --out_dir=run_i`."
+}

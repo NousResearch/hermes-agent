@@ -1,0 +1,10 @@
+[
+    {
+        "Name": "lipschitz_feature_map",
+        "Title": "Lipschitz-Bounded Feature Maps for Certifiable NC Gaps",
+        "Experiment": "Spectrally normalize the projection in experiment.py and report how bound_gap changes under tighter Lipschitz control.",
+        "Interestingness": 9,
+        "Feasibility": 7,
+        "Novelty": 8
+    }
+]

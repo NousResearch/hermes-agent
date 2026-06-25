@@ -48,10 +48,29 @@ Safe auth check: `box users:get me --json`. Do **not** use `box configure:enviro
 
 ## Service account content model
 
-The CCG service account has its **own folder tree** (starts empty). It cannot see a managed user's "My Box" unless:
+The CCG service account has its **own folder tree** (starts empty). It cannot see a managed user's "My Box" unless you grant access.
 
-1. **Hermes workspace (recommended)** — upload to or create folders under the service account root (`folder id 0`), or
-2. **Collaboration** — a user invites the service account email (from `box users:get me`) to their folder, or
+### Find the service account email
+
+After the app is **authorized**, Box creates a service account user. Find its email:
+
+- **Developer Console** — open your app → **General Settings** tab → **Service Account** section. Format: `AutomationUser_<app-id>_…@boxdevedition.com` ([User Types docs](https://developer.box.com/platform/user-types#service-account)).
+- **CLI** — `box users:get me --json --fields id,name,login` → `login` field.
+
+### Invite the service account to folders
+
+In the Box web app: open the folder → **Invite People** → paste the service account email → assign **Viewer**, **Editor**, or **Co-owner** as needed. Collaborate the **parent** folder when Hermes needs the whole subtree.
+
+Via CLI (when you already have access to the folder):
+
+```bash
+box collaborations:create <FOLDER_ID> AutomationUser_...@boxdevedition.com editor --json
+```
+
+### Access patterns
+
+1. **Shared folders (recommended for existing content)** — user invites the service account email to team/personal folders Hermes should use.
+2. **Hermes workspace** — upload to or create folders under the service account root (`folder id 0`).
 3. **User impersonation (advanced)** — enable **App + Enterprise Access** and **Generate User Access Tokens** in Developer Console, re-authorize the app, then:
    ```bash
    box configure:environments:add /path/to/ccg-config.json --ccg-auth --ccg-user USER_ID --name hermes-as-user --set-as-current

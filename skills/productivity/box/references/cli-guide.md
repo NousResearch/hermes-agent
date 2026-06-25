@@ -38,6 +38,12 @@ box folders:create <PARENT_ID> "Project-Alpha" --json
 box files:upload ./report.pdf --parent-id <FOLDER_ID> --json
 box files:download <FILE_ID> ./report.pdf
 
+# Edit (metadata + content)
+box files:update <FILE_ID> --name "Q1-Report.pdf" --description "Final" --json
+box files:versions:upload <FILE_ID> ./report-v2.pdf --json
+box files:upload ./report-v2.pdf --parent-id <FOLDER_ID> --overwrite --json
+box files:move <FILE_ID> <NEW_PARENT_ID> --json
+
 # Share
 box shared-links:create <FILE_ID> file --access company --json
 box collaborations:create <FOLDER_ID> user@example.com editor --json

@@ -10,7 +10,7 @@ prerequisites:
   commands: [box]
 metadata:
   hermes:
-    tags: [Box, Productivity, CLI, CCG, Content, Search, SDK]
+    tags: [Box, Productivity, CLI, API, Content, Files, SDK]
     homepage: https://developer.box.com/guides/cli
 ---
 
@@ -20,7 +20,7 @@ Hermes operates Box as a **service account** via Client Credentials Grant (CCG).
 
 ## When to Use
 
-- Upload, download, move, or organize files and folders
+- Upload, download, edit(rename, new version), move, or organize files and folders
 - Search content, run metadata queries, or use Box AI
 - Bulk reorganize folders or batch-tag metadata
 - Create webhooks or poll events for automation
@@ -36,7 +36,9 @@ Hermes operates Box as a **service account** via Client Credentials Grant (CCG).
    box configure:environments:add /path/to/ccg-config.json --ccg-auth --name hermes --set-as-current
    ```
 
-Free developer (Individual) accounts auto-authorize CCG apps. Production enterprise orgs may require admin approval.
+Free developer accounts auto-authorize CCG apps. Enterprise plans may require admin approval.
+
+5. **Folder access** — the service account only sees its own empty root until you share content with it. After the app is **authorized**, invite the service account to every folder Hermes should use (see Step 0 below).
 
 ## How to Run
 
@@ -48,12 +50,40 @@ Run via `terminal`:
 box users:get me --json --fields id,name,login
 ```
 
-Record the service account **id**, **name**, and **login**. If auth fails, walk through `references/auth-and-setup.md` before any other Box work.
+Record the service account **id**, **name**, and **login** (`login` is the service account email). If auth fails, walk through `references/auth-and-setup.md` before any other Box work.
+
+#### Grant Hermes access to existing folders
+
+The CCG service account is a separate Box user. It **cannot** see files in your personal or team folders until you collaborate it in.
+
+**Find the service account email** (pick one):
+
+| Source | Where |
+| --- | --- |
+| Developer Console | Open your app → **General Settings** tab → **Service Account** section (shown after the app is authorized). Email looks like `AutomationUser_<app-id>_…@boxdevedition.com`. |
+| Box CLI | `login` field from `box users:get me` above |
+
+**Invite the service account** (tell the user to do this in the Box web app — not via Hermes chat secrets):
+
+1. In [Box](https://app.box.com), open the folder Hermes should access (or the parent folder).
+2. Click **Invite People** (or **Share** → **Invite Collaborators**).
+3. Paste the **service account email** from the table above.
+4. Choose a role: **Viewer** (read/search), **Editor** (upload/move/edit), or **Co-owner** (manage collaborators — only if needed).
+5. Repeat for each top-level folder Hermes needs; subfolders inherit access.
+
+Alternatively, an Editor on the folder can add the collaborator via CLI:
+
+```bash
+box collaborations:create <FOLDER_ID> <SERVICE_ACCOUNT_EMAIL> editor --json
+```
+
+**Before any search, move, or download on user-owned content:** confirm the target folder is shared with the service account. If operations return 404 or empty search, ask the user to complete the invite step first.
 
 Confirm where target content lives:
 
-- **Hermes workspace** — folder owned by or shared with the service account (recommended)
-- **User folder** — invite the service account as collaborator, or configure `--ccg-user` (see auth reference)
+- **Shared folder** — user invited the service account (most common for existing content)
+- **Hermes workspace** — content under the service account root (`folder id 0`) — upload/create here when Hermes owns the files
+- **User impersonation (advanced)** — `--ccg-user` (see `references/auth-and-setup.md`)
 
 ### Route the request
 
@@ -63,7 +93,7 @@ Confirm where target content lives:
 | Application code (SDK, OAuth in app) | `references/sdk-development.md` |
 | Setup, CCG, actors, workspace | `references/auth-and-setup.md` |
 | CLI patterns, `box request`, `--fields` | `references/cli-guide.md` |
-| Files, folders, links, collaborations | `references/content-workflows.md` |
+| Files, folders, links, collaborations, edit/version | `references/content-workflows.md` |
 | Search, metadata-query, Box AI | `references/search-and-ai.md` |
 | Batch moves, folder trees | `references/bulk-operations.md` |
 | Webhooks, events | `references/webhooks-and-events.md` |
@@ -87,6 +117,9 @@ box folders:get 0 --json --fields id,name,item_collection
 box folders:items <FOLDER_ID> --json --max-items 50 --fields id,name,type
 box search "invoice" --json --limit 10
 box files:upload ./file.pdf --parent-id <FOLDER_ID> --json
+box files:update <FILE_ID> --name "renamed.pdf" --json
+box files:versions:upload <FILE_ID> ./updated.pdf --json
+box files:upload ./updated.pdf --parent-id <FOLDER_ID> --overwrite --json
 box folders:create <PARENT_ID> "Hermes-Inbox" --json
 box shared-links:create <FILE_ID> file --access company --json
 box request GET /files/<ID> --json
@@ -104,11 +137,12 @@ box request GET /files/<ID> --json
 ## Pitfalls
 
 - **Serial CLI only** — never run concurrent `box` processes against the same environment.
-- **Empty service account tree** — default CCG actor sees only its own folders until content is uploaded or shared to it.
+- **No folder invite** — Hermes returns 404 or empty search for content you can see in the Box UI; invite the service account email from **General Settings** (Developer Console) or `box users:get me` → `login`.
 - **Wrong actor** — many 404s are permission/actor mismatches, not missing objects.
 - **No secrets in chat** — guide users to `~/.hermes/.env`; never echo client secrets or tokens.
 - **Box AI pacing** — space AI calls 1–2 seconds apart; prefer AI over downloading file bodies when possible.
-- **Auth method locked** — CCG apps cannot switch to OAuth/JWT without creating a new app.
+- **Editor role required** — rename, upload new versions, and move need **Editor** (or higher) collaboration on the folder, not Viewer.
+- **Office/Google in-browser edit** — `.docx` / Google Docs editing in Box Preview (Open With) is a **human UI** flow; Hermes uses download → local edit → upload new version for file content changes.
 
 ## Verification
 

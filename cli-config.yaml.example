@@ -46,6 +46,22 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
+  # ── Model allowlist (optional) ────────────────────────────────────────────
+  # Restrict which models the in-session `/model` command may switch to. When
+  # set, `/model` only offers these in its picker/list and refuses a switch to
+  # anything else (typed name, alias, or --provider auto-detect — checked on the
+  # resolved model). Leave unset/empty for no restriction (the default).
+  # Useful for a shared/hosted bot where an operator wants hires to switch only
+  # between a curated, tool-capable set. Entries must be the EXACT catalog model
+  # id that `/model` shows (not a short alias), matched case-insensitively; an
+  # alias entry is still refused on typed input but won't surface in the picker.
+  # This does NOT change `default` above, and it governs the in-session `/model`
+  # command (local operator surfaces are out of scope).
+  #
+  # allowlist:
+  #   - "anthropic/claude-opus-4.6"
+  #   - "google/gemini-2.5-flash-lite"
+
   # Azure Foundry keyless auth example:
   # provider: "azure-foundry"
   # base_url: "https://<resource>.openai.azure.com/openai/v1"

@@ -37,6 +37,7 @@ gateway:
     capabilities_label:     "Képességek: {capabilities}"
     prompt_caching_enabled: "Prompt-gyorsítótárazás: bekapcsolva"
     warning_prefix:         "Figyelmeztetés: {warning}"
+    not_allowed:            "`{model}` nincs rajta ennek a botnak az engedélyezett modelljei listáján. Engedélyezett: {allowed}"
     saved_global:           "Mentve a config.yaml fájlba (`--global`)"
     session_only_hint:      "_(csak ehhez a munkamenethez — add hozzá a `--global` opciót a megőrzéshez)_"
     current_label:          "Aktuális: `{model}` ezen: {provider}"

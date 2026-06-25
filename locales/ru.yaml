@@ -37,6 +37,7 @@ gateway:
     capabilities_label:     "Возможности: {capabilities}"
     prompt_caching_enabled: "Кеширование промптов: включено"
     warning_prefix:         "Предупреждение: {warning}"
+    not_allowed:            "`{model}` отсутствует в списке разрешённых моделей этого бота. Разрешённые: {allowed}"
     saved_global:           "Сохранено в config.yaml (`--global`)"
     session_only_hint:      "_(только для этого сеанса — добавьте `--global`, чтобы сохранить)_"
     current_label:          "Текущая: `{model}` на {provider}"

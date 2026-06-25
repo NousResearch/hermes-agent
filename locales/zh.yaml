@@ -37,6 +37,7 @@ gateway:
     capabilities_label:     "能力：{capabilities}"
     prompt_caching_enabled: "提示词缓存：已启用"
     warning_prefix:         "警告：{warning}"
+    not_allowed:            "`{model}` 不在此机器人的允许模型列表中。允许的模型：{allowed}"
     saved_global:           "已保存到 config.yaml（`--global`）"
     session_only_hint:      "_（仅本次会话有效 — 添加 `--global` 可永久保存）_"
     current_label:          "当前：`{model}`（{provider}）"

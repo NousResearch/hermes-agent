@@ -108,21 +108,34 @@ def check_slack_requirements() -> bool:
 
 
 def _extract_text_from_slack_blocks(blocks: list) -> str:
-    """Extract readable text from Slack Block Kit blocks, including quoted/forwarded content.
+    """Extract readable text from Slack Block Kit blocks.
 
     Slack's modern WYSIWYG composer sends messages with a ``blocks`` array
     containing ``rich_text`` elements. When a user forwards or quotes another
     message, the quoted content appears as nested ``rich_text_quote`` elements
     that are *not* included in the plain ``text`` field of the event.
 
-    This helper walks the rich-text tree recursively and returns readable lines,
-    preserving quotes, list items, and preformatted blocks so the agent can see
-    forwarded/quoted content instead of only the lossy plain-text field.
+    Grafana/Alertmanager and other Slack apps often post bot messages with an
+    empty top-level ``text`` field and put the human-visible content in Block
+    Kit ``section``/``fields`` objects, sometimes nested inside an attachment.
+
+    This helper walks the Block Kit / rich-text tree and returns readable
+    lines, preserving quotes, list items, preformatted blocks, sections, fields,
+    headers, and context text so the agent sees the same useful payload that a
+    human sees in Slack instead of a lossy or empty ``text`` field.
     """
     if not blocks:
         return ""
 
     parts: list[str] = []
+
+    def _render_text_object(value: Any) -> str:
+        """Render Slack mrkdwn/plain_text objects and scalar fallbacks."""
+        if isinstance(value, dict):
+            return str(value.get("text", "") or "")
+        if isinstance(value, str):
+            return value
+        return ""
 
     def _render_inline_elements(elements: list) -> str:
         """Render inline elements (text, link, channel, user, emoji, etc.)."""
@@ -196,8 +209,32 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
                     _append_line(rendered, quote_depth=quote_depth, bullet=bullet)
 
     for block in blocks:
-        if (block or {}).get("type") == "rich_text":
+        block = block or {}
+        block_type = block.get("type")
+        if block_type == "rich_text":
             _walk_elements(block.get("elements", []))
+        elif block_type in {"section", "header"}:
+            _append_line(_render_text_object(block.get("text")))
+            for field in block.get("fields") or []:
+                _append_line(_render_text_object(field))
+        elif block_type == "context":
+            rendered = []
+            for element in block.get("elements") or []:
+                if isinstance(element, dict) and element.get("type") in {"mrkdwn", "plain_text"}:
+                    text_obj = _render_text_object(element)
+                else:
+                    text_obj = _render_inline_elements([element]) if isinstance(element, dict) else ""
+                if text_obj:
+                    rendered.append(text_obj)
+            if rendered:
+                _append_line(" ".join(rendered))
+        elif block_type in {"input", "actions"}:
+            label = _render_text_object(block.get("label"))
+            if label:
+                _append_line(label)
+            for element in block.get("elements") or []:
+                if isinstance(element, dict):
+                    _append_line(_render_text_object(element.get("text")))
 
     return "\n".join(parts)
 
@@ -2351,6 +2388,8 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
+        channel_id_for_routing = event.get("channel", "")
+
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
         event_ts = event.get("ts", "")
         if event_ts and self._dedup.is_duplicate(event_ts):
@@ -2361,21 +2400,32 @@ class SlackAdapter(BasePlatformAdapter):
         #   "mentions" — accept bot messages only when they @mention us
         #   "all"      — accept all bot messages (except our own)
         if event.get("bot_id") or event.get("subtype") == "bot_message":
-            allow_bots = self.config.extra.get("allow_bots", "")
-            if not allow_bots:
-                allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
-            allow_bots = str(allow_bots).lower().strip()
-            if allow_bots == "none":
-                return
-            elif allow_bots == "mentions":
-                text_check = event.get("text", "")
-                if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
-                    return
-            # "all" falls through to process the message
-            # Always ignore our own messages to prevent echo loops
+            # Always ignore our own messages to prevent echo loops.
+            # Slack bot events normally include the bot user id in ``user``;
+            # keep this guard before any free-response/allow_bots bypass.
             msg_user = event.get("user", "")
             if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
                 return
+
+            # ``free_response_channels`` is an explicit opt-in to process every
+            # message in that channel. Alerting integrations commonly post as
+            # Slack bots and do not @mention Hermes, so treating this channel
+            # allowlist as a bot-message allowlist lets on-call/alert channels
+            # trigger immediately while preserving the safe default elsewhere.
+            if channel_id_for_routing in self._slack_free_response_channels():
+                pass
+            else:
+                allow_bots = self.config.extra.get("allow_bots", "")
+                if not allow_bots:
+                    allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
+                allow_bots = str(allow_bots).lower().strip()
+                if allow_bots == "none":
+                    return
+                elif allow_bots == "mentions":
+                    text_check = event.get("text", "")
+                    if self._bot_user_id and f"<@{self._bot_user_id}>" not in text_check:
+                        return
+                # "all" falls through to process the message
 
         # Ignore message edits and deletions
         subtype = event.get("subtype")
@@ -2447,6 +2497,20 @@ class SlackAdapter(BasePlatformAdapter):
                 att_text = att.get("text", "")
                 att_footer = att.get("footer", "")
                 att_fallback = att.get("fallback", "")
+                att_blocks_text = _extract_text_from_slack_blocks(att.get("blocks") or [])
+                att_fields: list[str] = []
+                for field in att.get("fields") or []:
+                    if not isinstance(field, dict):
+                        continue
+                    field_title = str(field.get("title", "") or "").strip()
+                    field_value = str(field.get("value", "") or "").strip()
+                    if field_title and field_value:
+                        att_fields.append(f"{field_title}: {field_value}")
+                    elif field_value:
+                        att_fields.append(field_value)
+                    elif field_title:
+                        att_fields.append(field_title)
+                att_fields_text = "\n".join(att_fields)
 
                 # Skip message-type attachments (e.g. Slack bot messages with
                 # is_msg_unfurl) to avoid echoing our own content.
@@ -2463,8 +2527,18 @@ class SlackAdapter(BasePlatformAdapter):
                 else:
                     header = None
 
-                # Prefer preview text, fall back to fallback description.
-                body = att_text or att_fallback or ""
+                # Prefer rich preview text and Block Kit/attachment fields;
+                # fall back to Slack's plain fallback when no structured body
+                # exists. Alerting apps often keep the actual payload in
+                # attachment-level blocks/fields while top-level text is empty.
+                body_parts: list[str] = []
+                for candidate in (att_text, att_blocks_text, att_fields_text):
+                    candidate = (candidate or "").strip()
+                    if candidate and candidate not in body_parts:
+                        body_parts.append(candidate)
+                if not body_parts and att_fallback:
+                    body_parts.append(att_fallback.strip())
+                body = "\n".join(body_parts)
                 if body:
                     body = body.strip()
                     if len(body) > 500:

@@ -4,8 +4,9 @@ Tests for Slack mention gating (require_mention / free_response_channels).
 Follows the same pattern as test_whatsapp_group_gating.py.
 """
 
+import asyncio
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import Platform, PlatformConfig
 
@@ -43,7 +44,7 @@ _ensure_slack_mock()
 import plugins.platforms.slack.adapter as _slack_mod
 _slack_mod.SLACK_AVAILABLE = True
 
-from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter, _extract_text_from_slack_blocks  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +75,31 @@ def _make_adapter(require_mention=None, strict_mention=None, free_response_chann
     adapter.config = PlatformConfig(enabled=True, extra=extra)
     adapter._bot_user_id = BOT_USER_ID
     adapter._team_bot_user_ids = {}
+    return adapter
+
+
+def _prepare_adapter_for_handle(adapter):
+    """Populate attrs used by _handle_slack_message without opening Slack."""
+    adapter._dedup = MagicMock()
+    adapter._dedup.is_duplicate.return_value = False
+    adapter._bot_message_ts = set()
+    adapter._mentioned_threads = set()
+    adapter._MENTIONED_THREADS_MAX = 5000
+    adapter._channel_team = {}
+    adapter._assistant_thread_index = {}
+    adapter._assistant_session_index = {}
+    adapter._thread_context_cache = {}
+    adapter._reacting_message_ids = set()
+    adapter._resolve_user_name = AsyncMock(return_value="Alert Bot")
+    adapter._fetch_thread_context = AsyncMock(return_value="")
+    adapter._fetch_thread_parent_text = AsyncMock(return_value="")
+    adapter._has_active_session_for_thread = MagicMock(return_value=False)
+    adapter._captured_messages = []
+
+    async def _capture_message(msg_event):
+        adapter._captured_messages.append(msg_event)
+
+    adapter.handle_message = _capture_message
     return adapter
 
 
@@ -235,6 +261,101 @@ def test_free_response_channels_int_list():
     adapter = _make_adapter(free_response_channels=[1491973769726791812, 99999])
     result = adapter._slack_free_response_channels()
     assert result == {"1491973769726791812", "99999"}
+
+
+def test_extracts_text_from_block_kit_sections_fields_and_context():
+    blocks = [
+        {"type": "header", "text": {"type": "plain_text", "text": "FIRING alert"}},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "*High CPU throttling*"},
+            "fields": [
+                {"type": "mrkdwn", "text": "*namespace:* sdm-dev"},
+                {"type": "mrkdwn", "text": "*pod:* sdm-backend-abc"},
+            ],
+        },
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": "StartsAt: 2026-06-25T00:00:00Z"}],
+        },
+    ]
+
+    rendered = _extract_text_from_slack_blocks(blocks)
+
+    assert "FIRING alert" in rendered
+    assert "High CPU throttling" in rendered
+    assert "namespace" in rendered
+    assert "sdm-backend-abc" in rendered
+    assert "StartsAt" in rendered
+
+
+def test_free_response_channel_processes_bot_message_with_empty_text_and_blocks():
+    adapter = _prepare_adapter_for_handle(
+        _make_adapter(require_mention=True, free_response_channels=[CHANNEL_ID])
+    )
+
+    event = {
+        "type": "message",
+        "subtype": "bot_message",
+        "bot_id": "B_EXTERNAL_ALERT",
+        "user": "U_EXTERNAL_BOT",
+        "channel": CHANNEL_ID,
+        "channel_type": "channel",
+        "team": "T1",
+        "ts": "1710000000.000100",
+        "text": "",
+        "blocks": [
+            {"type": "section", "text": {"type": "mrkdwn", "text": "*FIRING*: CPUThrottlingHigh"}},
+            {"type": "section", "fields": [{"type": "mrkdwn", "text": "*service_name:* sdm-backend"}]},
+        ],
+    }
+
+    asyncio.run(adapter._handle_slack_message(event))
+
+    captured = getattr(adapter, "_captured_messages")
+    assert len(captured) == 1
+    msg_event = captured[0]
+    assert "CPUThrottlingHigh" in msg_event.text
+    assert "sdm-backend" in msg_event.text
+
+
+def test_free_response_channel_processes_bot_message_with_attachment_blocks():
+    adapter = _prepare_adapter_for_handle(
+        _make_adapter(require_mention=True, free_response_channels=[CHANNEL_ID])
+    )
+
+    event = {
+        "type": "message",
+        "subtype": "bot_message",
+        "bot_id": "B_EXTERNAL_ALERT",
+        "user": "U_EXTERNAL_BOT",
+        "channel": CHANNEL_ID,
+        "channel_type": "channel",
+        "team": "T1",
+        "ts": "1710000000.000200",
+        "text": "",
+        "attachments": [
+            {
+                "color": "danger",
+                "title": "Grafana Alert",
+                "blocks": [
+                    {"type": "section", "text": {"type": "mrkdwn", "text": "*FIRING*: RedisDLQ"}},
+                    {"type": "context", "elements": [{"type": "mrkdwn", "text": "env=dev"}]},
+                ],
+                "fields": [{"title": "service", "value": "sdm-backend"}],
+            }
+        ],
+    }
+
+    asyncio.run(adapter._handle_slack_message(event))
+
+    captured = getattr(adapter, "_captured_messages")
+    assert len(captured) == 1
+    msg_event = captured[0]
+    assert "Grafana Alert" in msg_event.text
+    assert "RedisDLQ" in msg_event.text
+    assert "env=dev" in msg_event.text
+    assert "service: sdm-backend" in msg_event.text
 
 
 # ---------------------------------------------------------------------------

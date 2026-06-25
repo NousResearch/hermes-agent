@@ -4536,6 +4536,19 @@ class BasePlatformAdapter(ABC):
 
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
+
+            # The agent/command handler has finished and the next visible action
+            # is final response delivery (or silence/queue handoff).  Stop the
+            # typing refresh *before* sending the final message, not only in the
+            # finally cleanup after delivery.  Platforms such as Discord have no
+            # explicit "typing stop" endpoint; a late refresh that lands just
+            # before the final send can leave the client showing "bot is typing"
+            # for the platform TTL after the answer has already appeared.  This
+            # boundary also closes the race where a handler-level stop_typing()
+            # (GatewayRunner does one after _run_agent()) is immediately undone
+            # by the still-running base refresh loop before _send_with_retry().
+            await _stop_typing_task()
+
             is_ephemeral_response = isinstance(response, EphemeralReply)
 
             # Slash-command handlers may return an EphemeralReply sentinel to

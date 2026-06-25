@@ -6518,10 +6518,15 @@ class TelegramAdapter(BasePlatformAdapter):
         # directly so no local file path resolution is needed.
         _is_url = local_path.startswith("http://") or local_path.startswith("https://")
 
-        # MEDIA:-tagged files are already host-translated by the gateway delivery loop
-        # (BasePlatformAdapter.translate_docker_*).  Direct send_voice/send_document calls
-        # bypass that, so translate the single path here via the same shared helper.
-        _resolved_path = local_path if _is_url else self.translate_docker_local_paths([local_path])[0]
+        # MEDIA:-tagged files are already host-translated by the gateway delivery loop.
+        # Direct send_voice/send_document calls bypass that, so translate the single path
+        # here when the shared Docker-path helper is available (ships separately); without
+        # it, fall back to the path as-is — correct for non-Docker and host-path media.
+        _translate = getattr(self, "translate_docker_local_paths", None)
+        if _is_url or not callable(_translate):
+            _resolved_path = local_path
+        else:
+            _resolved_path = _translate([local_path])[0]
 
         _chat_id_str = str(chat_id)
         # Cache lookup BEFORE the existence check: on a follow-up "post it here" turn the

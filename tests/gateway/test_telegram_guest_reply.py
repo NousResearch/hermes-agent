@@ -117,10 +117,6 @@ def _make_adapter(TelegramAdapter):
     a._guest_pending_media = {}
     a._guest_file_id_cache = {}
     a._guest_message_texts = {}
-    # Docker→host path translation is provided by BasePlatformAdapter (PR #47716),
-    # a stated prerequisite of this PR. Stub it to identity so guest-media tests run
-    # without that base method present on this branch.
-    a.translate_docker_local_paths = lambda paths: list(paths)
     return a
 
 

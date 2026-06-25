@@ -142,7 +142,7 @@ def test_own_policy_allowlist_authorized_without_env_allowlist(monkeypatch, plat
     """
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
-        platforms={platform: PlatformConfig(enabled=True, extra={"dm_policy": "allowlist"})}
+        platforms={platform: PlatformConfig(enabled=True, extra={"dm_policy": "allowlist", "allow_from": ["some-user"]})}
     )
     runner, _adapter = _make_runner(platform, config, enforces=True)
 
@@ -188,7 +188,7 @@ def test_own_policy_allowlist_authorized_for_group_chat(monkeypatch, platform):
     """A config-only ``group_policy: allowlist`` is trusted for group traffic."""
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
-        platforms={platform: PlatformConfig(enabled=True, extra={"group_policy": "allowlist"})}
+        platforms={platform: PlatformConfig(enabled=True, extra={"group_policy": "allowlist", "group_allow_from": ["some-chat"]})}
     )
     runner, _adapter = _make_runner(platform, config, enforces=True)
 
@@ -363,7 +363,7 @@ def test_pairing_dm_policy_group_chat_still_trusted(monkeypatch):
     config = GatewayConfig(
         platforms={
             Platform.WECOM: PlatformConfig(
-                enabled=True, extra={"dm_policy": "pairing", "group_policy": "allowlist"}
+                enabled=True, extra={"dm_policy": "pairing", "group_policy": "allowlist", "group_allow_from": ["some-chat"]}
             )
         }
     )
@@ -406,3 +406,16 @@ def test_unauthorized_dm_behavior_open_policy_keeps_default(monkeypatch):
 
     # No allowlist + no restrictive policy → open-gateway pairing default.
     assert runner._get_unauthorized_dm_behavior(Platform.WECOM) == "pair"
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_empty_allowlist_fails_closed(monkeypatch, platform):
+    """An empty or absent allowlist under allowlist policy fails closed (denies access)."""
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        platforms={platform: PlatformConfig(enabled=True, extra={"dm_policy": "allowlist"})}
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    # Since no allow_from/allowlist is configured, _is_user_authorized must deny.
+    assert runner._is_user_authorized(_source(platform)) is False

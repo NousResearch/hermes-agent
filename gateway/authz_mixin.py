@@ -195,6 +195,66 @@ class GatewayAuthorizationMixin:
             return any(str(item).strip() for item in sender_allow)
         return False
 
+    def _adapter_has_dm_allowlist(self, platform: Optional[Platform]) -> bool:
+        """Whether the own-policy adapter has a non-empty DM caller allowlist.
+        
+        This prevents failing open when allowlist policy is active but no allowlist
+        is configured.
+        """
+        if not platform:
+            return False
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(platform)
+        if adapter is not None:
+            allow_from = getattr(adapter, "_allow_from", None) or getattr(adapter, "dm_allow_from", None)
+            if allow_from and any(str(item).strip() for item in allow_from):
+                return True
+        config = getattr(self, "config", None)
+        platform_cfg = (
+            config.platforms.get(platform)
+            if config is not None and hasattr(config, "platforms")
+            else None
+        )
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+        if isinstance(extra, dict):
+            for key in ("allow_from", "allowFrom", "dm_allow_from", "dmAllowFrom"):
+                val = extra.get(key)
+                if isinstance(val, str) and val.strip():
+                    return True
+                if isinstance(val, (list, tuple, set)) and any(str(item).strip() for item in val):
+                    return True
+        return False
+
+    def _adapter_has_group_allowlist(self, platform: Optional[Platform]) -> bool:
+        """Whether the own-policy adapter has a non-empty group caller allowlist.
+        
+        This prevents failing open when allowlist policy is active but no allowlist
+        is configured.
+        """
+        if not platform:
+            return False
+        adapters = getattr(self, "adapters", None) or {}
+        adapter = adapters.get(platform)
+        if adapter is not None:
+            allow_from = getattr(adapter, "_group_allow_from", None) or getattr(adapter, "group_allow_from", None)
+            if allow_from and any(str(item).strip() for item in allow_from):
+                return True
+        config = getattr(self, "config", None)
+        platform_cfg = (
+            config.platforms.get(platform)
+            if config is not None and hasattr(config, "platforms")
+            else None
+        )
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+        if isinstance(extra, dict):
+            for key in ("group_allow_from", "groupAllowFrom"):
+                val = extra.get(key)
+                if isinstance(val, str) and val.strip():
+                    return True
+                if isinstance(val, (list, tuple, set)) and any(str(item).strip() for item in val):
+                    return True
+        return False
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -408,11 +468,13 @@ class GatewayAuthorizationMixin:
                         source.chat_id,
                     ):
                         return True
+                    if effective_policy == "allowlist" and self._adapter_has_group_allowlist(source.platform):
+                        return True
                 else:
                     effective_policy = self._adapter_dm_policy(source.platform)
-                if effective_policy == "allowlist":
-                    return True
-            # No allowlists configured -- check global allow-all flag
+                    if effective_policy == "allowlist" and self._adapter_has_dm_allowlist(source.platform):
+                        return True
+            # No allowlists configured - check global allow-all flag
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
         # Telegram can optionally authorize group traffic by chat ID.

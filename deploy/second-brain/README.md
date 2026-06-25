@@ -86,6 +86,32 @@ Send a normal employee or agent only:
 - the `/install` URL
 - their bearer token
 
+Copy-paste this prompt to any agent or IDE with a macOS/Linux/WSL terminal:
+
+```text
+Bạn là agent được cấp quyền truy cập Company Second Brain.
+
+Gateway: https://second-brain.your-company.com
+Token: USER_TOKEN
+
+Hãy cài skill/CLI và kết nối:
+curl -fsSL https://second-brain.your-company.com/install.sh -o install-company-second-brain.sh
+bash install-company-second-brain.sh
+
+Khi installer hỏi token, dán token ở trên.
+Token có thể ở dạng raw JWT, "Bearer ...", hoặc "Authorization: Bearer ...".
+
+Sau đó chạy:
+second-brain me
+second-brain workspaces
+second-brain query "toi co the xem tai lieu nao?"
+
+Khi cần hỏi tài liệu công ty, dùng:
+second-brain query "CAU_HOI"
+
+Quyền user thường chỉ là workspace company_public. Không hỏi admin key.
+```
+
 User setup:
 
 ```bash
@@ -151,6 +177,30 @@ second-brain admin-token-create \
   --group role_admin \
   --admin \
   --expires-days 365
+```
+
+Copy-paste this prompt to an admin agent:
+
+```text
+Bạn là admin-agent được cấp quyền vận hành Company Second Brain.
+
+Gateway: https://second-brain.your-company.com
+Token: ADMIN_TOKEN
+
+Hãy cài skill/CLI và kết nối:
+curl -fsSL https://second-brain.your-company.com/install.sh -o install-company-second-brain.sh
+bash install-company-second-brain.sh
+
+Khi installer hỏi token, dán admin token ở trên.
+Token có thể ở dạng raw JWT, "Bearer ...", hoặc "Authorization: Bearer ...".
+
+Sau đó chạy:
+second-brain me
+second-brain workspaces
+second-brain query "kiem tra quyen truy cap admin"
+
+Admin token query được company_public và department_c_level.
+Chỉ dùng GATEWAY_API_KEY trên máy admin tin cậy khi cần tạo token mới hoặc cấu hình hệ thống.
 ```
 
 Send normal users only:

@@ -57,6 +57,13 @@ if [[ -z "$TOKEN" ]]; then
   exit 1
 fi
 
+TOKEN="$(printf '%s' "$TOKEN" | sed -E 's/^[[:space:]]*(Authorization:[[:space:]]*)?[Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+//; s/[[:space:]]+$//')"
+
+if [[ -z "$TOKEN" ]]; then
+  echo "Token is required to connect." >&2
+  exit 1
+fi
+
 "$SKILL_ROOT/scripts/second-brain" connect --base-url "$BASE_URL" --token "$TOKEN"
 
 cat <<EOF

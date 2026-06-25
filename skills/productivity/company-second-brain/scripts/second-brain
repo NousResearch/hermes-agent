@@ -21,13 +21,22 @@ CONFIG_DIR = Path.home() / ".second-brain"
 CONFIG_PATH = CONFIG_DIR / "config.json"
 
 
+def normalize_token(token: str | None) -> str:
+    value = (token or "").strip()
+    if value.lower().startswith("bearer "):
+        return value.split(None, 1)[1].strip()
+    if value.lower().startswith("authorization: bearer "):
+        return value.split(None, 2)[2].strip()
+    return value
+
+
 def load_config() -> dict:
     config = {}
     if CONFIG_PATH.exists():
         config = json.loads(CONFIG_PATH.read_text())
     config["base_url"] = os.environ.get("SECOND_BRAIN_BASE_URL", config.get("base_url", DEFAULT_BASE_URL)).rstrip("/")
     config["admin_key"] = os.environ.get("SECOND_BRAIN_ADMIN_KEY", config.get("admin_key", ""))
-    config["token"] = os.environ.get("SECOND_BRAIN_TOKEN", config.get("token", ""))
+    config["token"] = normalize_token(os.environ.get("SECOND_BRAIN_TOKEN", config.get("token", "")))
     return config
 
 
@@ -117,7 +126,7 @@ def cmd_config(args: argparse.Namespace) -> None:
     if args.admin_key:
         config["admin_key"] = args.admin_key
     if args.token:
-        config["token"] = args.token
+        config["token"] = normalize_token(args.token)
     save_config(config)
     print_json({
         "base_url": config.get("base_url"),
@@ -132,7 +141,7 @@ def cmd_connect(args: argparse.Namespace) -> None:
     if args.base_url:
         config["base_url"] = args.base_url.rstrip("/")
     if args.token:
-        config["token"] = args.token
+        config["token"] = normalize_token(args.token)
     if not config.get("token"):
         raise SystemExit("Missing token. Run `second-brain connect --token USER_TOKEN`.")
     save_config(config)

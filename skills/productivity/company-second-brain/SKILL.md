@@ -77,6 +77,16 @@ Old department groups are ignored by the gateway for query routing.
 Use this flow for a normal employee, agent, or IDE user. They only need the
 gateway URL and their bearer token. Never ask them for the admin key.
 
+If an admin pasted a setup prompt, extract:
+
+```text
+Gateway: __PUBLIC_BASE_URL__
+Token: USER_TOKEN
+```
+
+The token may be raw JWT, `Bearer ...`, or `Authorization: Bearer ...`; the CLI
+normalizes it.
+
 Install/connect:
 
 ```bash
@@ -139,6 +149,16 @@ The gateway derives access from the bearer token. Do not ask the user to provide
 
 Use this flow for operators. Admin commands require `GATEWAY_API_KEY` or an
 admin bearer token. Do not send `GATEWAY_API_KEY` to employees.
+
+Admin-agent copy-paste setup should provide:
+
+```text
+Gateway: __PUBLIC_BASE_URL__
+Token: ADMIN_TOKEN
+```
+
+Use the admin bearer token for C-Level query access. Use `GATEWAY_API_KEY` only
+on trusted admin machines when creating tokens or changing system configuration.
 
 Configure admin key:
 

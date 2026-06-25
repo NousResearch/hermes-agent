@@ -358,6 +358,35 @@ async def install_page() -> str:
       </div>
     </header>
 
+    <section>
+      <h2>Prompt copy cho agent</h2>
+      <p>Admin chỉ cần thay <code>USER_TOKEN</code> bằng token đã tạo rồi gửi nguyên khối này cho bất kỳ agent hoặc IDE nào có terminal macOS/Linux/WSL.</p>
+      <pre><code>Bạn là agent được cấp quyền truy cập Company Second Brain.
+
+Gateway: {PUBLIC_BASE_URL}
+Token: USER_TOKEN
+
+Hãy cài skill/CLI và kết nối theo các bước sau:
+
+1. Chạy lệnh cài đặt:
+curl -fsSL {PUBLIC_BASE_URL}/install.sh -o install-company-second-brain.sh
+bash install-company-second-brain.sh
+
+2. Khi installer hỏi token, dán token ở trên.
+   Nếu token được gửi dạng "Bearer ..." hoặc "Authorization: Bearer ..." thì vẫn dùng được.
+
+3. Xác minh kết nối:
+second-brain me
+second-brain workspaces
+second-brain query "toi co the xem tai lieu nao?"
+
+4. Sau khi xác minh xong, khi cần hỏi tài liệu công ty thì dùng:
+second-brain query "CAU_HOI"
+
+Quyền truy cập của user thường chỉ là workspace company_public.
+Không yêu cầu admin key, không tự cấu hình source, không upload tài liệu nếu token không phải admin.</code></pre>
+    </section>
+
     <div class="grid">
       <section>
         <h2>Cài nhanh</h2>
@@ -502,7 +531,52 @@ async def admin_page() -> str:
     </div>
 
     <section>
-      <h2>5. Upload tài liệu</h2>
+      <h2>5. Prompt gửi cho agent/IDE</h2>
+      <p>Sau khi tạo token, thay <code>USER_TOKEN</code> hoặc <code>ADMIN_TOKEN</code> rồi gửi nguyên khối phù hợp cho agent. Token có thể dán dạng raw JWT, <code>Bearer ...</code>, hoặc <code>Authorization: Bearer ...</code>.</p>
+      <pre><code># Mẫu gửi cho nhân sự hoặc agent thường
+Bạn là agent được cấp quyền truy cập Company Second Brain.
+
+Gateway: {PUBLIC_BASE_URL}
+Token: USER_TOKEN
+
+Hãy cài skill/CLI và kết nối:
+curl -fsSL {PUBLIC_BASE_URL}/install.sh -o install-company-second-brain.sh
+bash install-company-second-brain.sh
+
+Khi installer hỏi token, dán token ở trên.
+Sau đó chạy:
+second-brain me
+second-brain workspaces
+second-brain query "toi co the xem tai lieu nao?"
+
+Khi cần hỏi tài liệu công ty, dùng:
+second-brain query "CAU_HOI"
+
+Quyền của token thường chỉ đọc workspace company_public. Không hỏi admin key.
+
+
+# Mẫu gửi cho admin-agent
+Bạn là admin-agent được cấp quyền vận hành Company Second Brain.
+
+Gateway: {PUBLIC_BASE_URL}
+Token: ADMIN_TOKEN
+
+Hãy cài skill/CLI và kết nối:
+curl -fsSL {PUBLIC_BASE_URL}/install.sh -o install-company-second-brain.sh
+bash install-company-second-brain.sh
+
+Khi installer hỏi token, dán admin token ở trên.
+Sau đó chạy:
+second-brain me
+second-brain workspaces
+second-brain query "kiem tra quyen truy cap admin"
+
+Admin token có thể query company_public và department_c_level.
+Chỉ dùng admin key trên máy admin tin cậy khi cần tạo token mới hoặc cấu hình hệ thống.</code></pre>
+    </section>
+
+    <section>
+      <h2>6. Upload tài liệu</h2>
       <p>CLI ingest file text-friendly hoặc gọi API multipart. Upload trả <code>queued</code>, worker sẽ index nền vào LightRAG.</p>
       <pre><code>second-brain ingest-text \\
   --file ./company-handbook.md \\
@@ -527,7 +601,7 @@ second-brain queue-status</code></pre>
     </section>
 
     <section>
-      <h2>6. Nguồn tự động: Notion và Drive public</h2>
+      <h2>7. Nguồn tự động: Notion và Drive public</h2>
       <p>Admin cấu hình source một lần, worker sẽ scan theo chu kỳ. Có thể chạy manual scan bất kỳ lúc nào.</p>
       <pre><code>second-brain source-create \\
   --type notion \\
@@ -552,7 +626,7 @@ second-brain source-update SOURCE_ID --interval-minutes 1440 --reset-schedule</c
     </section>
 
     <section>
-      <h2>7. Mở rộng workspace sau MVP</h2>
+      <h2>8. Mở rộng workspace sau MVP</h2>
       <ul>
         <li>MVP hiện tại chỉ chạy 2 LightRAG: <code>company_public</code> và <code>department_c_level</code>.</li>
         <li>Muốn thêm phòng ban riêng thì thêm service LightRAG mới, URL trong <code>knowledge-api</code>, row <code>rag_workspaces</code>, và policy gateway.</li>
@@ -563,7 +637,7 @@ docker compose up -d --build --remove-orphans company-ai-gateway knowledge-api k
     </section>
 
     <section>
-      <h2>8. Nâng cấp và handoff</h2>
+      <h2>9. Nâng cấp và handoff</h2>
       <pre><code>cd {DEPLOY_ROOT}
 docker compose ps
 docker compose logs -f company-ai-gateway knowledge-api knowledge-worker

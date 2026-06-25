@@ -8,7 +8,8 @@ const {
   buildDesktopBackendEnv,
   buildDesktopBackendPath,
   normalizeHermesHomeRoot,
-  pathEnvKey
+  pathEnvKey,
+  userLocalBinFromHome
 } = require('./backend-env.cjs')
 
 test('desktop backend PATH adds Hermes-managed bins and missing POSIX sane entries', () => {
@@ -23,6 +24,8 @@ test('desktop backend PATH adds Hermes-managed bins and missing POSIX sane entri
   const entries = result.split(':')
   assert.equal(entries[0], '/Users/test/.hermes/node/bin')
   assert.equal(entries[1], '/Users/test/.hermes/hermes-agent/venv/bin')
+  assert.equal(entries[2], '/Users/test/.local/bin')
+  assert.ok(entries.indexOf('/Users/test/.local/bin') < entries.indexOf('/usr/bin'))
   assert.ok(entries.includes('/opt/homebrew/bin'), 'Apple Silicon Homebrew bin is added')
   assert.ok(entries.includes('/opt/homebrew/sbin'), 'Apple Silicon Homebrew sbin is added')
   assert.ok(entries.includes('/usr/local/sbin'), 'missing standard sbin is added')
@@ -49,12 +52,25 @@ test('desktop backend PATH preserves first occurrence and avoids duplicates', ()
   )
 })
 
+test('desktop backend PATH derives user local bin from HOME before profile-scoped Hermes homes', () => {
+  assert.equal(
+    userLocalBinFromHome({
+      homeDir: '/Users/test',
+      hermesHome: '/Users/test/.hermes/profiles/work',
+      platform: 'darwin',
+      pathModule: path.posix
+    }),
+    '/Users/test/.local/bin'
+  )
+})
+
 test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () => {
   const env = buildDesktopBackendEnv({
     hermesHome: '/Users/test/.hermes',
     pythonPathEntries: ['/repo/hermes-agent'],
     venvRoot: '/Users/test/.hermes/hermes-agent/venv',
     currentEnv: {
+      HOME: '/Users/test',
       PATH: '/usr/bin:/bin',
       PYTHONPATH: '/existing/pythonpath'
     },
@@ -63,7 +79,7 @@ test('buildDesktopBackendEnv extends PYTHONPATH and backend PATH together', () =
   })
 
   assert.equal(env.PYTHONPATH, '/repo/hermes-agent:/existing/pythonpath')
-  assert.ok(env.PATH.startsWith('/Users/test/.hermes/node/bin:/Users/test/.hermes/hermes-agent/venv/bin:'))
+  assert.ok(env.PATH.startsWith('/Users/test/.hermes/node/bin:/Users/test/.hermes/hermes-agent/venv/bin:/Users/test/.local/bin:'))
   assert.ok(env.PATH.includes('/opt/homebrew/bin'))
 })
 

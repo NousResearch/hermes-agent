@@ -1256,6 +1256,9 @@ def init_agent(
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
                 if agent._memory_manager.providers:
+                    agent._memory_manager._auto_inject_recall_enabled = (
+                        agent._memory_auto_inject_recall
+                    )
                     _init_kwargs = {
                         "session_id": agent.session_id,
                         "platform": platform or "cli",

@@ -135,6 +135,40 @@ def _conn(board: Optional[str] = None):
     return kanban_db.connect(board=board)
 
 
+def _is_db_corruption(exc: BaseException) -> bool:
+    """True when *exc* indicates a corrupt/malformed board database.
+
+    A single corrupt board must not 500 the whole Kanban panel, so callers
+    convert this into a per-board ``503``/unhealthy flag and keep serving the
+    other boards. Covers both the eager guard
+    (:class:`kanban_db.KanbanDbCorruptError`, raised on connect) and the lazy
+    ``sqlite3`` "malformed image" errors a query raises when it hits a damaged
+    index or page on a board the per-process health cache already trusted.
+    """
+    if isinstance(exc, kanban_db.KanbanDbCorruptError):
+        return True
+    if isinstance(exc, sqlite3.DatabaseError):
+        msg = str(exc).lower()
+        return any(
+            token in msg
+            for token in ("malformed", "disk image", "is corrupt", "not a database")
+        )
+    return False
+
+
+def _board_corrupt_detail(board: Optional[str]) -> dict:
+    """Structured ``HTTPException`` detail for a corrupt board."""
+    slug = board or kanban_db.get_current_board()
+    return {
+        "code": "board_db_corrupt",
+        "board": slug,
+        "message": (
+            f"Kanban board {slug!r} database is corrupted and needs recovery; "
+            "other boards are unaffected."
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Serialization helpers
 # ---------------------------------------------------------------------------
@@ -397,8 +431,9 @@ def get_board(
     ``current`` pointer → ``default``).
     """
     board = _resolve_board(board)
-    conn = _conn(board=board)
+    conn = None
     try:
+        conn = _conn(board=board)
         tasks = kanban_db.list_tasks(
             conn,
             tenant=tenant,
@@ -506,8 +541,21 @@ def get_board(
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }
+    except kanban_db.KanbanDbCorruptError as exc:
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_board_corrupt_detail(board),
+        ) from exc
+    except sqlite3.DatabaseError as exc:
+        if not _is_db_corruption(exc):
+            raise
+        raise HTTPException(
+            status_code=http_status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=_board_corrupt_detail(board),
+        ) from exc
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1990,35 +2038,59 @@ class RenameBoardBody(BaseModel):
     description: Optional[str] = None
     icon: Optional[str] = None
     color: Optional[str] = None
+    archived: Optional[bool] = None
 
 
 def _board_counts(slug: str) -> dict[str, int]:
-    """Return ``{status: count}`` for a board. Safe on an empty DB."""
-    try:
-        path = kanban_db.kanban_db_path(board=slug)
-        if not path.exists():
-            return {}
-        conn = kanban_db.connect(board=slug)
-        try:
-            rows = conn.execute(
-                "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
-            ).fetchall()
-            return {r["status"]: int(r["n"]) for r in rows}
-        finally:
-            conn.close()
-    except Exception:
+    """Return ``{status: count}`` for a board. ``{}`` for an empty/missing DB.
+
+    Raises on a corrupt DB (``kanban_db.KanbanDbCorruptError`` or a malformed
+    ``sqlite3.DatabaseError``) so the caller can flag the board as unhealthy
+    instead of silently rendering a damaged board as empty.
+    """
+    path = kanban_db.kanban_db_path(board=slug)
+    if not path.exists():
         return {}
+    conn = kanban_db.connect(board=slug)
+    try:
+        rows = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM tasks GROUP BY status"
+        ).fetchall()
+        return {r["status"]: int(r["n"]) for r in rows}
+    finally:
+        conn.close()
 
 
 @router.get("/boards")
 def list_boards(include_archived: bool = Query(False)):
-    """Return every board on disk with task counts and the active slug."""
+    """Return every board on disk with task counts and the active slug.
+
+    Resilient to a single corrupt board: a board whose DB is malformed is
+    flagged ``healthy=False`` (with ``error="board_db_corrupt"``) rather than
+    failing the whole list, so the picker keeps working and the dashboard can
+    show which board needs recovery.
+    """
     boards = kanban_db.list_boards(include_archived=include_archived)
     current = kanban_db.get_current_board()
     for b in boards:
         b["is_current"] = (b["slug"] == current)
-        b["counts"] = _board_counts(b["slug"])
-        b["total"] = sum(b["counts"].values())
+        # Resilient to a single corrupt board: a malformed DB on one board must
+        # not 500 the whole picker. Flag it unhealthy and keep going so the rest
+        # stay usable and the UI can surface which board needs recovery.
+        try:
+            b["counts"] = _board_counts(b["slug"])
+            b["total"] = sum(b["counts"].values())
+            b["healthy"] = True
+        except Exception as exc:
+            b["counts"] = {}
+            b["total"] = 0
+            b["healthy"] = False
+            if _is_db_corruption(exc):
+                b["error"] = "board_db_corrupt"
+            else:
+                log.warning(
+                    "kanban /boards: counts failed for board %s: %s", b["slug"], exc,
+                )
     return {"boards": boards, "current": current}
 
 
@@ -2058,17 +2130,36 @@ def rename_board(slug: str, payload: RenameBoardBody):
         description=payload.description,
         icon=payload.icon,
         color=payload.color,
+        archived=payload.archived,
     )
     return {"board": meta}
 
 
 @router.delete("/boards/{slug}")
 def delete_board(slug: str, delete: bool = Query(False, description="Hard-delete instead of archive")):
-    """Archive (default) or hard-delete a board."""
+    """Archive (default) or hard-delete a board.
+
+    Archive is a REVERSIBLE metadata flag (``archived=true``) that hides the
+    board from the picker (it reappears under "Show archived" and is undone via
+    PATCH ``archived=false``). It deliberately does NOT move the board
+    directory: a moved board is auto-re-created the next time any read (e.g. the
+    dashboard polling the still-selected board) calls ``connect()`` /
+    ``init_db()``, so the board would reappear despite being "archived". Keeping
+    the directory in place and flagging it archived is what ``include_archived``
+    / the "Show archived" toggle already expect. Hard-delete (``?delete=true``)
+    removes the board outright.
+    """
     try:
-        res = kanban_db.remove_board(slug, archive=not delete)
+        normed = kanban_db._normalize_board_slug(slug)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    if not normed or not kanban_db.board_exists(normed):
+        raise HTTPException(status_code=404, detail=f"board {slug!r} does not exist")
+    if delete:
+        res = kanban_db.remove_board(normed, archive=False)
+    else:
+        kanban_db.write_board_metadata(normed, archived=True)
+        res = {"slug": normed, "action": "archived"}
     return {"result": res, "current": kanban_db.get_current_board()}
 
 

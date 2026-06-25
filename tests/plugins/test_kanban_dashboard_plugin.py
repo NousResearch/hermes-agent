@@ -2265,3 +2265,108 @@ def test_dashboard_failed_card_highlight_class_exists():
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
     assert "failedIds" in js
+
+
+# ---------------------------------------------------------------------------
+# Resilience: one corrupt board must not take down the whole Kanban panel.
+# Regression for the recurring dashboard "500: Internal Server Error" when a
+# single board's SQLite DB went malformed (it 500'd the entire panel).
+# ---------------------------------------------------------------------------
+
+
+def test_get_board_corrupt_db_returns_503_not_500(client, monkeypatch):
+    """Viewing a board whose DB is corrupt returns a clean per-board 503,
+    not an unhandled 500 that makes the whole dashboard look dead."""
+    real_connect = kb.connect
+
+    def fake_connect(*args, board=None, **kw):
+        if board == "corruptboard":
+            raise kb.KanbanDbCorruptError(
+                Path("/tmp/x/kanban.db"),
+                None,
+                "integrity_check returned 'wrong # of entries in index idx_events_task'",
+            )
+        return real_connect(*args, board=board, **kw)
+
+    monkeypatch.setattr(kb, "connect", fake_connect)
+    monkeypatch.setattr(kb, "board_exists", lambda s: True)
+
+    r = client.get("/api/plugins/kanban/board?board=corruptboard")
+    assert r.status_code == 503
+    detail = r.json()["detail"]
+    assert detail["code"] == "board_db_corrupt"
+    assert detail["board"] == "corruptboard"
+
+
+def test_boards_list_survives_one_corrupt_board(client, monkeypatch):
+    """/boards lists healthy boards and flags the corrupt one as unhealthy,
+    never failing the whole picker."""
+    # A healthy board with a task.
+    good = kb.connect(board="goodboard")
+    try:
+        kb.create_task(good, title="still-works")
+    finally:
+        good.close()
+    # A board that exists on disk but whose DB is corrupt.
+    kb.connect(board="corruptboard").close()
+
+    real_connect = kb.connect
+
+    def fake_connect(*args, board=None, **kw):
+        if board == "corruptboard":
+            raise kb.KanbanDbCorruptError(Path("/tmp/x/kanban.db"), None, "malformed")
+        return real_connect(*args, board=board, **kw)
+
+    monkeypatch.setattr(kb, "connect", fake_connect)
+
+    r = client.get("/api/plugins/kanban/boards?include_archived=true")
+    assert r.status_code == 200  # the list itself never 500s
+    boards = {b["slug"]: b for b in r.json()["boards"]}
+
+    assert boards["goodboard"]["healthy"] is True
+    assert boards["goodboard"]["total"] >= 1
+    assert boards["corruptboard"]["healthy"] is False
+    assert boards["corruptboard"].get("error") == "board_db_corrupt"
+    assert boards["corruptboard"]["counts"] == {}
+
+
+# ---------------------------------------------------------------------------
+# Archiving a board must be a sticky, reversible flag — not a directory move
+# that auto-resurrects on the next read. Regression for: archived board keeps
+# reappearing in the picker.
+# ---------------------------------------------------------------------------
+
+
+def test_archive_board_is_sticky_flag_and_survives_reads(client):
+    # create a board
+    r = client.post("/api/plugins/kanban/boards", json={"slug": "toarchive", "name": "To Archive"})
+    assert r.status_code == 200
+
+    # archive it (the dashboard "Archive" action: DELETE ?delete=false)
+    r = client.delete("/api/plugins/kanban/boards/toarchive")
+    assert r.status_code == 200
+    assert r.json()["result"].get("action") == "archived"
+
+    # hidden from the default picker, visible only under "Show archived"
+    picker = {b["slug"] for b in client.get("/api/plugins/kanban/boards").json()["boards"]}
+    assert "toarchive" not in picker
+    witharch = {b["slug"]: b for b in client.get("/api/plugins/kanban/boards?include_archived=true").json()["boards"]}
+    assert witharch.get("toarchive", {}).get("archived") is True
+
+    # reading the board (as the dashboard does when it's the selected board)
+    # must NOT resurrect it as a fresh un-archived board
+    assert client.get("/api/plugins/kanban/board?board=toarchive").status_code == 200
+    picker_after = {b["slug"] for b in client.get("/api/plugins/kanban/boards").json()["boards"]}
+    assert "toarchive" not in picker_after  # still archived after a read
+
+    # un-archive via PATCH archived=false brings it back
+    r = client.patch("/api/plugins/kanban/boards/toarchive", json={"archived": False})
+    assert r.status_code == 200
+    assert "toarchive" in {b["slug"] for b in client.get("/api/plugins/kanban/boards").json()["boards"]}
+
+
+def test_hard_delete_board_still_removes(client):
+    client.post("/api/plugins/kanban/boards", json={"slug": "todelete", "name": "To Delete"})
+    r = client.delete("/api/plugins/kanban/boards/todelete?delete=true")
+    assert r.status_code == 200
+    assert "todelete" not in {b["slug"] for b in client.get("/api/plugins/kanban/boards?include_archived=true").json()["boards"]}

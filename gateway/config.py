@@ -854,6 +854,12 @@ def load_gateway_config() -> GatewayConfig:
             # other session-scope flags above).
             if "multiplex_profiles" in yaml_cfg:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
+            elif "multiplex_profiles" not in gw_data:
+                # Also honor gateway.multiplex_profiles written by
+                # ``hermes config set gateway.multiplex_profiles true``.
+                _gw_section = yaml_cfg.get("gateway")
+                if isinstance(_gw_section, dict) and "multiplex_profiles" in _gw_section:
+                    gw_data["multiplex_profiles"] = _gw_section["multiplex_profiles"]
 
             gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:

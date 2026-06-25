@@ -8249,6 +8249,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_gateway_status()
         elif canonical == "status":
             self._show_session_status()
+        elif canonical == "egress":
+            from hermes_cli.proxy_cli import format_status_text
+
+            self._console_print(format_status_text(), highlight=False, markup=False)
         elif canonical == "statusbar":
             self._status_bar_visible = not self._status_bar_visible
             state = "visible" if self._status_bar_visible else "hidden"

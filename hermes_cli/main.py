@@ -11586,7 +11586,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
-        "dump", "fallback", "gateway", "hooks", "import", "insights",
+        "dump", "egress", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
         "project", "proxy",
@@ -12199,6 +12199,37 @@ def main():
         return 0
 
     secrets_parser.set_defaults(func=_dispatch_secrets)
+
+    # =========================================================================
+    # egress command — iron-proxy outbound credential-injection firewall
+    # =========================================================================
+    # NOTE: this is the OUTBOUND egress firewall (ironsh/iron-proxy).
+    # `hermes proxy` (defined elsewhere in this file) is a separate INBOUND
+    # OAuth-aggregator reverse proxy.  Different direction, different purpose.
+    egress_parser = subparsers.add_parser(
+        "egress",
+        help="Manage the iron-proxy egress credential-injection firewall",
+        description=(
+            "Manage iron-proxy, the optional TLS-intercepting egress firewall "
+            "that swaps proxy tokens for real API credentials before outbound "
+            "requests leave a sandbox.  Disabled by default.  See: "
+            "https://hermes-agent.nousresearch.com/docs/user-guide/egress/iron-proxy"
+        ),
+    )
+
+    from hermes_cli import proxy_cli as _proxy_cli
+    _proxy_cli.register_cli(egress_parser)
+
+    def _dispatch_egress(args):  # noqa: ANN001
+        # The egress subparser uses dest='egress_command' to stay disjoint
+        # from the inbound OAuth ``hermes proxy`` subparser (dest='proxy_command').
+        sub = getattr(args, "egress_command", None)
+        if sub is not None and hasattr(args, "func") and args.func is not _dispatch_egress:
+            return args.func(args)
+        egress_parser.print_help()
+        return 0
+
+    egress_parser.set_defaults(func=_dispatch_egress)
 
     # =========================================================================
     # migrate command
@@ -13284,9 +13315,15 @@ def main():
         cmd_chat(args)
         return
 
-    # Execute the command
+    # Execute the command.  Propagate the handler's return code as the
+    # process exit code so subcommands that signal failure (e.g.
+    # ``hermes egress start`` refusing because of fail_on_uncovered_
+    # providers) actually exit non-zero.  Handlers that return None
+    # are treated as success (exit 0).
     if hasattr(args, "func"):
-        args.func(args)
+        rc = args.func(args)
+        if isinstance(rc, int) and rc != 0:
+            sys.exit(rc)
     else:
         parser.print_help()
 

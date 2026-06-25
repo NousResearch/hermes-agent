@@ -8064,6 +8064,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner and _cmd_def_inner.name == "restart":
                 return await self._handle_restart_command(event)
 
+            if _cmd_def_inner and _cmd_def_inner.name == "egress":
+                from hermes_cli.proxy_cli import format_status_text
+
+                return format_status_text()
+
             # /stop must hard-kill the session when an agent is running.
             # A soft interrupt (agent.interrupt()) doesn't help when the agent
             # is truly hung — the executor thread is blocked and never checks
@@ -8525,6 +8530,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "egress":
+            from hermes_cli.proxy_cli import format_status_text
+
+            return format_status_text()
 
         if canonical == "agents":
             return await self._handle_agents_command(event)

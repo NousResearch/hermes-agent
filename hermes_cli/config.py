@@ -2972,6 +2972,68 @@ DEFAULT_CONFIG = {
         "cua_telemetry": False,
     },
 
+    # =========================================================================
+    # Egress credential-injection proxy (iron-proxy)
+    # =========================================================================
+    # When enabled, outbound traffic from remote terminal sandboxes (Docker
+    # today; Modal/SSH in follow-ups) is routed through a managed iron-proxy
+    # subprocess.  The sandbox sees opaque proxy tokens; iron-proxy swaps in
+    # real API credentials at the egress boundary.  Compromising the sandbox
+    # leaks tokens that only work behind the configured trusted proxy boundary
+    # (CA private key + proxy endpoint integrity are part of that boundary).
+    #
+    # Configure with `hermes egress setup`.  Disabled by default — the rest of
+    # Hermes works exactly as before with `enabled: false`.
+    "proxy": {
+        # Master switch.  When false, iron-proxy is never started, no docker
+        # mounts are added, no binaries are auto-installed — feature is a
+        # complete no-op.
+        "enabled": False,
+        # Tunnel listener port.  Sandboxes get `HTTPS_PROXY=http://<host>:<port>`.
+        # 9090 is the default; collide-aware setup wizard can reassign.
+        "tunnel_port": 9090,
+        # Auto-download the pinned iron-proxy binary into ~/.hermes/bin/ on
+        # first use.  When false, you must place `iron-proxy` on PATH yourself.
+        "auto_install": True,
+        # Where iron-proxy looks up the real upstream secrets at egress time.
+        # "env"        — process env (default; what bitwarden integration
+        #                already populates if you use it)
+        # "bitwarden"  — refetch via `bws secret list` on each proxy restart;
+        #                rotation in the Bitwarden web app propagates without
+        #                touching .env (requires `secrets.bitwarden.enabled`).
+        "credential_source": "env",
+        # When true, the Docker backend refuses to start a sandbox if the
+        # proxy is enabled but not running.  False = fall back to direct
+        # outbound with real credentials in the sandbox (the legacy posture).
+        "enforce_on_docker": True,
+        # When true, `hermes egress start` refuses to start if any provider
+        # env var is set that the proxy cannot strip (Anthropic native
+        # `x-api-key`, Azure OpenAI api-key, Gemini x-goog-api-key).
+        # These LLM-specific credentials would otherwise leak into the
+        # sandbox bypassing the proxy.  Generic cloud creds (AWS_*,
+        # GOOGLE_APPLICATION_CREDENTIALS) are warned about but never
+        # block.  Defaults to false because false positives (operator has
+        # the env set but doesn't actually use that provider) are common.
+        "fail_on_uncovered_providers": False,
+        # When credential_source is bitwarden but the BWS access token /
+        # project_id is missing OR the bws fetch returns no values for
+        # mapped providers, the daemon raises by default.  Set this to
+        # True to opt back in to the legacy "silently fall back to host
+        # env" behaviour — useful for migrations where the operator wants
+        # to switch credential_source to bitwarden but hasn't fully wired
+        # BWS yet.  Defaults to false (strict).
+        "allow_env_fallback": False,
+        # SSRF deny list applied to outbound traffic.  Omit / leave empty
+        # to use the safe default: loopback, link-local (incl. cloud
+        # metadata IPs at 169.254.169.254), and RFC1918.  Set to an
+        # explicit ``[]`` to opt out entirely (only sensible in hermetic
+        # tests that need to reach a loopback upstream).
+        "upstream_deny_cidrs": None,
+        # Extra allowed upstream hosts beyond the bundled defaults (which
+        # cover OpenRouter, OpenAI, Anthropic, Google, xAI, Mistral, Groq,
+        # Together, DeepSeek, Nous).  Wildcards (`*.foo.com`) are supported.
+        "extra_allowed_hosts": [],
+    },
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 30,

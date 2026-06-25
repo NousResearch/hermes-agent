@@ -39,11 +39,13 @@ def _make_dummy_env(**kwargs):
         persistent_filesystem=kwargs.get("persistent_filesystem", False),
         task_id=kwargs.get("task_id", "test-task"),
         volumes=kwargs.get("volumes", []),
+        forward_env=kwargs.get("forward_env"),
         network=kwargs.get("network", True),
         host_cwd=kwargs.get("host_cwd"),
         auto_mount_cwd=kwargs.get("auto_mount_cwd", False),
         env=kwargs.get("env"),
         run_as_host_user=kwargs.get("run_as_host_user", False),
+        extra_args=kwargs.get("extra_args", []),
         persist_across_processes=kwargs.get("persist_across_processes", True),
     )
 
@@ -354,6 +356,52 @@ def test_docker_env_appears_in_run_command(monkeypatch):
     run_args_str = " ".join(run_args)
     assert "SSH_AUTH_SOCK=/run/user/1000/ssh-agent.sock" in run_args_str
     assert "GNUPGHOME=/root/.gnupg" in run_args_str
+
+
+def _node_options_from_run(calls):
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    args = run_calls[0][0]
+    for i, a in enumerate(args):
+        if a == "-e" and i + 1 < len(args) and args[i + 1].startswith("NODE_OPTIONS="):
+            return args[i + 1].split("=", 1)[1]
+    return None
+
+
+def test_egress_node_options_overrides_conflicting_ca_flag(monkeypatch):
+    """maxpetrusenko P1: a conflicting docker_env NODE_OPTIONS CA-mode flag
+    (--use-bundled-ca) must be replaced by the egress-required --use-openssl-ca,
+    not left to survive alongside it (final Node trust would depend on order)."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env, "_egress_proxy_args_for_docker",
+        lambda: ([], {"_HERMES_EGRESS_NODE_OPTIONS_APPEND": "--use-openssl-ca"}, []),
+    )
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(env={"NODE_OPTIONS": "--max-old-space-size=8192 --use-bundled-ca"})
+
+    node_opts = (_node_options_from_run(calls) or "").split()
+    assert "--use-openssl-ca" in node_opts, "egress CA flag must be present"
+    assert "--use-bundled-ca" not in node_opts, "conflicting CA flag must be stripped"
+    # Operator's unrelated tuning must be preserved.
+    assert "--max-old-space-size=8192" in node_opts
+
+
+def test_egress_node_options_preserves_operator_tuning(monkeypatch):
+    """Non-conflicting operator NODE_OPTIONS survive the egress append-merge."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env, "_egress_proxy_args_for_docker",
+        lambda: ([], {"_HERMES_EGRESS_NODE_OPTIONS_APPEND": "--use-openssl-ca"}, []),
+    )
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(env={"NODE_OPTIONS": "--max-old-space-size=4096"})
+
+    node_opts = (_node_options_from_run(calls) or "").split()
+    assert "--use-openssl-ca" in node_opts
+    assert "--max-old-space-size=4096" in node_opts
 
 
 def test_docker_env_appears_in_init_env_args(monkeypatch):
@@ -673,6 +721,7 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-agent": "1",
         "hermes-task-id": "abc",
         "hermes-profile": "default",
+        "hermes-egress": "off",
     }
 
 
@@ -704,8 +753,13 @@ def _mock_subprocess_run_with_reuse(monkeypatch, ps_state: str | None,
             if sub == "ps":
                 if ps_state is None:
                     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                # 3-field format: ID, State, EgressLabel.  When egress_label
+                # is "off" the code parses all three fields; <no value> means
+                # the container has no egress label, which is acceptable.
                 return subprocess.CompletedProcess(
-                    cmd, 0, stdout=f"reused-cid\t{ps_state}\n", stderr="",
+                    cmd, 0,
+                    stdout=f"reused-cid\t{ps_state}\t<no value>\n",
+                    stderr="",
                 )
             if sub == "start":
                 if not start_succeeds:
@@ -746,6 +800,95 @@ def test_reuse_attaches_to_running_container_without_docker_run(monkeypatch):
     assert not start_invocations, (
         f"docker start should be skipped when container already running, got: {start_invocations}"
     )
+
+
+def test_egress_enabled_does_not_reuse_pre_egress_container(monkeypatch):
+    """A container created before egress was enabled lacks the proxy env vars
+    and CA mount.  Reusing it would silently bypass the credential firewall."""
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: (
+            ["-v", "/tmp/ca:/etc/ssl/certs/hermes-egress-ca.crt:ro"],
+            {"HTTPS_PROXY": "http://host.docker.internal:9090"},
+            ["--add-host", "host.docker.internal:host-gateway"],
+        ),
+    )
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            sub = cmd[1]
+            if sub == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+            if sub == "ps":
+                # Simulate an old pre-egress container: without the egress label
+                # filter it would match; with the filter Docker returns no match.
+                assert any(str(part).startswith("label=hermes-egress=") for part in cmd)
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if sub == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(task_id="reuse-egress")
+
+    assert env._container_id == "fresh-cid"
+    run_invocations = [
+        c for c in calls
+        if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"
+    ]
+    assert run_invocations, "egress-enabled containers require a fresh docker run"
+
+
+def test_forward_env_provider_key_collision_refuses_under_egress(monkeypatch):
+    """docker_forward_env is explicit, but it still must not smuggle real
+    provider keys into an enforced egress sandbox."""
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-real")
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: (
+            [],
+            {
+                "HTTPS_PROXY": "http://host.docker.internal:9090",
+                "OPENROUTER_API_KEY": "hermes-proxy-openrouter-token",
+                "HERMES_PROXY_TOKEN_OPENROUTER_API_KEY": "hermes-proxy-openrouter-token",
+            },
+            [],
+        ),
+    )
+    _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docker_forward_env.*OPENROUTER_API_KEY"):
+        _make_dummy_env(forward_env=["OPENROUTER_API_KEY"])
+
+
+def test_extra_args_proxy_override_refuses_under_egress(monkeypatch):
+    """docker_extra_args are appended after Hermes args, so egress enforcement
+    must reject critical overrides before Docker sees them."""
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env,
+        "_egress_proxy_args_for_docker",
+        lambda: (
+            [],
+            {"HTTPS_PROXY": "http://host.docker.internal:9090"},
+            [],
+        ),
+    )
+    _mock_subprocess_run(monkeypatch)
+
+    with pytest.raises(RuntimeError, match="docker_extra_args.*HTTPS_PROXY"):
+        _make_dummy_env(extra_args=["-e", "HTTPS_PROXY="])
 
 
 def test_reuse_starts_stopped_container_before_attaching(monkeypatch):
@@ -902,10 +1045,11 @@ def test_find_reusable_container_prefers_running_over_stopped(monkeypatch):
             if cmd[1] == "version":
                 return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
             if cmd[1] == "ps":
-                # Two matches: stopped first, running second.
+                # Two matches: stopped first, running second.  3-field format
+                # with absent egress label for the "off" path.
                 return subprocess.CompletedProcess(
                     cmd, 0,
-                    stdout="stopped-cid\texited\nrunning-cid\trunning\n",
+                    stdout="stopped-cid\texited\t<no value>\nrunning-cid\trunning\t<no value>\n",
                     stderr="",
                 )
         return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
@@ -915,6 +1059,71 @@ def test_find_reusable_container_prefers_running_over_stopped(monkeypatch):
     env = _make_dummy_env(task_id="dup-match")
     assert env._container_id == "running-cid", (
         f"running container should win over stopped duplicate, got {env._container_id!r}"
+    )
+
+
+def test_find_reusable_handles_empty_label_string(monkeypatch):
+    """Docker CLI v29.5.3 returns an empty string (NOT ``<no value>``)
+    for absent labels.  The trailing tab produces ``cid\\trunning\\t\\n``;
+    we must not strip the trailing tab or the three-field parser drops the
+    container.  Regression test for the egilewski review on #48073."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            if cmd[1] == "ps":
+                # Docker v29.5.3: absent label → empty string, trailing tab
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout="safe-cid\trunning\t\n",
+                    stderr="",
+                )
+        return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(task_id="empty-label")
+    assert env._container_id == "safe-cid", (
+        f"container with empty-string label should be reused, got {env._container_id!r}"
+    )
+
+
+def test_reuse_off_rejects_non_off_egress_container(monkeypatch):
+    """When egress is off, a container that still has hermes-egress=on
+    (e.g. from before ``hermes egress disable``) must be rejected and a
+    fresh container created.  The post-filter protects against silently
+    reusing a container with baked-in proxy env and CA mounts."""
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "default")
+
+    def _run(cmd, **kwargs):
+        if isinstance(cmd, list) and len(cmd) >= 2:
+            if cmd[1] == "version":
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            if cmd[1] == "ps":
+                # Return a container with hermes-egress=on.  With egress=off
+                # the three-field format includes the label; the post-filter
+                # must skip this entry.
+                return subprocess.CompletedProcess(
+                    cmd, 0,
+                    stdout="stale-cid\trunning\ton\n",
+                    stderr="",
+                )
+            if cmd[1] == "run":
+                return subprocess.CompletedProcess(cmd, 0, stdout="fresh-cid\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    env = _make_dummy_env(task_id="egress-off-reject")
+    # Should fall through to fresh container because the stale one has
+    # hermes-egress=on.
+    assert env._container_id == "fresh-cid", (
+        f"expected fresh container, got {env._container_id!r}"
     )
 
 

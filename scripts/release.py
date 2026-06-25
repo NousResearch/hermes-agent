@@ -876,6 +876,7 @@ AUTHOR_MAP = {
     "252620095+briandevans@users.noreply.github.com": "briandevans",
     "incharge.automation@gmail.com": "inchargeautomation-lab",
     "danielrpike9@gmail.com": "Bartok9",
+    "kuangmi@deeparchi.com": "kuangmi-bit",
     "96944678+ymylive@users.noreply.github.com": "sweetcornna",
     "laflamme@illinoisalumni.org": "briancl2",
     "skozyuk@cruxexperts.com": "CruxExperts",

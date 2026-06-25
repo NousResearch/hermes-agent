@@ -985,6 +985,7 @@ export const zh: Translations = {
       namePlaceholder: '给宠物起个名字',
       staleBackend: '请更新 Hermes 以生成宠物。',
       backgroundHint: '你可以关闭此窗口——完成后 Hermes 会通知你。',
+      slowProviderHint: '这可能最多需要 5 分钟。',
       genericError: '生成失败——请重试或选择一个建议。',
       referenceImageTooLarge: '参考图过大。请使用小于 16 MB 的图片。',
       referenceImageInvalid: '无法读取该参考图。请尝试 PNG、JPG、WebP 或 GIF。',

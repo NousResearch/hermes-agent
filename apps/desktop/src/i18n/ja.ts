@@ -917,6 +917,7 @@ export const ja = defineLocale({
       namePlaceholder: 'ペットに名前を付ける',
       staleBackend: 'ペットを生成するには Hermes を更新してください。',
       backgroundHint: 'このウィンドウは閉じても大丈夫です。完了したら Hermes が通知します。',
+      slowProviderHint: 'これには最大5分かかることがあります。',
       genericError: '生成に失敗しました。もう一度試すか、候補を選んでください。',
       referenceImageTooLarge: '参照画像が大きすぎます。16 MB 未満の画像を使ってください。',
       referenceImageInvalid: '参照画像を読み込めませんでした。PNG/JPG/WebP/GIF を試してください。',

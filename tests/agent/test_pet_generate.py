@@ -52,6 +52,21 @@ def test_extract_strip_frames_keys_out_solid_background():
     assert frames[0].getpixel((0, 0))[3] == 0
 
 
+def test_remove_background_defringes_antialiased_edge():
+    # The contaminated antialiased ring where sprite meets backdrop survives the
+    # key (it's a blend, too far from pure magenta). Defringe shaves that 1px ring:
+    # the keyed silhouette comes back eroded ~1px on every side, core intact.
+    img = Image.new("RGBA", (200, 200), (255, 0, 255, 255))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((50, 50, 149, 149), fill=(40, 200, 60, 255))  # 100x100 green
+    keyed = atlas.remove_background(img)
+    bbox = keyed.getbbox()
+    assert bbox is not None
+    w, h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    assert 96 <= w <= 99 and 96 <= h <= 99  # ~1px shaved per side
+    assert keyed.getpixel((100, 100))[3] > 0  # core intact
+
+
 def test_remove_background_clears_trapped_chroma_pocket():
     # Green body enclosing a magenta pocket (the "pink between the arm" case):
     # the pocket isn't border-reachable, so it must be cleared by interior seeding.
@@ -104,6 +119,47 @@ def test_extract_strip_frames_drops_small_side_lobes_from_adjacent_frames():
     right_edge_mass = sum(1 for x in range(frame.width - 36, frame.width) for y in range(frame.height) if alpha.getpixel((x, y)) > 16)
     assert left_edge_mass == 0
     assert right_edge_mass == 0
+
+
+def test_extract_strip_frames_drops_detached_slot_effects():
+    img = Image.new("RGBA", (atlas.CELL_WIDTH, atlas.CELL_HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.ellipse((72, 54, 148, 172), fill=(70, 190, 70, 255))  # subject
+    draw.polygon([(10, 76), (16, 84), (24, 78), (18, 88)], fill=(255, 255, 160, 255))  # sparkle
+
+    frame = atlas.extract_strip_frames(img, 1, method="components", fit=False)[0]
+    bbox = frame.getbbox()
+    assert bbox is not None
+    assert bbox[0] > 40  # detached sparkle was removed
+
+
+def test_extract_strip_frames_requires_slot_padding_in_strict_mode():
+    img = Image.new("RGBA", (atlas.CELL_WIDTH * 2, atlas.CELL_HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    # Frame 0 touches the top edge; strict mode should reject the row so the
+    # caller regenerates instead of accepting a clipped pet frame.
+    draw.rectangle((40, 0, 120, 130), fill=(70, 190, 70, 255))
+    draw.rectangle((atlas.CELL_WIDTH + 40, 40, atlas.CELL_WIDTH + 120, 170), fill=(70, 190, 70, 255))
+
+    with pytest.raises(ValueError):
+        atlas.extract_strip_frames(img, 2, method="components", fit=False)
+
+
+def test_extract_strip_frames_rejects_multi_pose_frame_outlier():
+    frames = []
+    for _ in range(3):
+        frame = Image.new("RGBA", (atlas.CELL_WIDTH, atlas.CELL_HEIGHT), (0, 0, 0, 0))
+        ImageDraw.Draw(frame).rectangle((82, 120, 108, 178), fill=(220, 240, 255, 255))
+        frames.append(frame)
+
+    bad = Image.new("RGBA", (atlas.CELL_WIDTH, atlas.CELL_HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(bad)
+    for x in (10, 50, 90, 130, 166):
+        draw.rectangle((x, 124, x + 12, 172), fill=(220, 240, 255, 255))
+    frames.append(bad)
+
+    with pytest.raises(ValueError, match="multiple separated subjects"):
+        atlas._validate_extracted_frames(frames, 4)
 
 
 def test_extract_strip_frames_uses_real_gutters_when_spacing_is_uneven():
@@ -181,6 +237,35 @@ def test_validate_atlas_rejects_rgb_residue():
     result = atlas.validate_atlas(sheet)
     assert not result["ok"]
     assert any("residue" in e for e in result["errors"])
+
+
+def test_validate_atlas_rejects_postage_stamp_sprite():
+    sheet = Image.new("RGBA", (atlas.ATLAS_WIDTH, atlas.ATLAS_HEIGHT), (0, 0, 0, 0))
+    frame = Image.new("RGBA", (atlas.CELL_WIDTH, atlas.CELL_HEIGHT), (0, 0, 0, 0))
+    ImageDraw.Draw(frame).rectangle((86, 174, 106, 201), fill=(220, 240, 255, 255))
+
+    for _state, row, count in atlas.ROW_SPECS:
+        for col in range(count):
+            sheet.alpha_composite(frame, (col * atlas.CELL_WIDTH, row * atlas.CELL_HEIGHT))
+
+    result = atlas.validate_atlas(sheet)
+
+    assert not result["ok"]
+    assert any("too small" in e for e in result["errors"])
+
+
+def test_validate_atlas_rejects_one_collapsed_state_row():
+    frames = _frames_for_all_states()
+    tiny = Image.new("RGBA", (atlas.CELL_WIDTH, atlas.CELL_HEIGHT), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(tiny)
+    draw.rectangle((90, 150, 106, 199), fill=(220, 240, 255, 255))
+    frames["failed"] = [tiny.copy() for _ in range(atlas.FRAME_COUNTS["failed"])]
+
+    sheet = atlas.compose_atlas(frames)
+    result = atlas.validate_atlas(sheet)
+
+    assert not result["ok"]
+    assert any("appears collapsed" in e and "failed" in e for e in result["errors"])
 
 
 def test_validate_atlas_warns_on_empty_state():
@@ -463,9 +548,12 @@ def test_list_sprite_providers_marks_default(monkeypatch):
     listed = imagegen.list_sprite_providers()
     names = {p["name"] for p in listed}
     assert names == {"openai", "nous"}
-    # Every entry carries display metadata, and exactly one is the default.
-    assert all(p["label"] and "note" in p for p in listed)
+    # Every entry carries a display label (no quality note — all backends are equal).
+    assert all(p["label"] for p in listed)
+    assert all("note" not in p for p in listed)
     assert [p["name"] for p in listed if p["default"]] == ["openai"]
+    # Listed in preference order: Nous Portal before OpenAI.
+    assert [p["name"] for p in listed] == ["nous", "openai"]
 
 
 def test_generate_retries_without_transparent_background(monkeypatch, tmp_path):

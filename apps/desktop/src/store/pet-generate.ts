@@ -6,8 +6,6 @@ import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { type PetInfo } from '@/store/pet'
 import { applyAdoptedPet, type GatewayRequest } from '@/store/pet-gallery'
-import { $activeSessionId } from '@/store/session'
-
 /**
  * Feature store for the "generate a pet" flow (Cmd-K → Pets → Generate).
  *
@@ -111,8 +109,6 @@ export const $petGenAvailable = atom<boolean | null>(null)
 export interface PetGenProvider {
   name: string
   label: string
-  /** One-line speed/quality tradeoff note. */
-  note: string
   /** Whether this is the backend's default pick (no override needed). */
   default: boolean
 }
@@ -227,7 +223,10 @@ function notifyPetGenDone(title: string, message: string, kind: 'error' | 'succe
   }
 
   notify({ kind, title, message, action: { label: 'View', onClick: openPetGenerate } })
-  dispatchNativeNotification({ kind: 'backgroundDone', title, body: message, sessionId: $activeSessionId.get() })
+  // Pet generation isn't tied to a chat session — mark it global so the OS
+  // notification fires whenever the user is away, even with no active session
+  // (the common case: generating from the command center with no conversation).
+  dispatchNativeNotification({ kind: 'backgroundDone', title, body: message, global: true })
 }
 
 interface GenerateOptions {

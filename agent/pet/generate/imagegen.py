@@ -14,27 +14,38 @@ producing an ungrounded, drifting pet.
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-# Providers that can ground generation on a reference image.
-# openrouter / nous reach Gemini Flash Image (and friends) over the
-# OpenRouter-compatible chat-completions image protocol, which accepts
-# reference images for grounding. Nous Portal proxies OpenRouter, so both
-# qualify.
-_REF_CAPABLE = ("openai", "openai-codex", "krea", "openrouter", "nous")
+# Providers that can ground generation on a reference image, in preference order
+# (Nous Portal → OpenAI → OpenRouter → …). OpenRouter/Nous run a quality-first
+# model chain and may fall back depending on account access and endpoint behavior,
+# so fidelity can vary by configured backend + model availability.
+_REF_CAPABLE = ("nous", "openai", "openai-codex", "openrouter", "krea")
 
-# Friendly label + one-line speed/quality note per reference-capable provider,
-# surfaced in the desktop pet-gen picker so users can trade speed for fidelity.
-_PROVIDER_META: dict[str, dict[str, str]] = {
-    "nous": {"label": "Nous Portal", "note": "Fast, balanced quality"},
-    "openrouter": {"label": "OpenRouter", "note": "Fastest — Gemini Flash Image"},
-    "openai": {"label": "OpenAI", "note": "Highest fidelity, slower"},
-    "openai-codex": {"label": "OpenAI (Codex)", "note": "Highest fidelity, slower"},
-    "krea": {"label": "Krea", "note": "Stylized, style-reference grounding"},
+# Friendly display label per reference-capable provider, surfaced in the desktop
+# pet-gen picker.
+_PROVIDER_LABELS: dict[str, str] = {
+    "nous": "Nous Portal",
+    "openrouter": "OpenRouter",
+    "openai": "OpenAI",
+    "openai-codex": "OpenAI (Codex)",
+    "krea": "Krea",
 }
+
+
+def _forced_provider_from_env() -> str | None:
+    """Optional QA override to force a pet-gen backend.
+
+    `HERMES_PET_IMAGE_PROVIDER=<name>` (e.g. `openrouter`) bypasses the normal
+    active/default provider resolution for pet generation only. Unknown values are
+    ignored so existing users are unaffected.
+    """
+    forced = os.environ.get("HERMES_PET_IMAGE_PROVIDER", "").strip().lower()
+    return forced if forced in _REF_CAPABLE else None
 
 
 class GenerationError(RuntimeError):
@@ -70,6 +81,14 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
     """
     _discover()
     from agent.image_gen_registry import get_active_provider, get_provider
+
+    # QA override: force one provider for pet-gen iteration regardless of the
+    # globally active image_gen backend.
+    forced = _forced_provider_from_env()
+    if forced:
+        chosen = get_provider(forced)
+        if chosen is not None and chosen.is_available():
+            return SpriteProvider(name=forced, provider=chosen, supports_references=True)
 
     # An explicit user pick wins when it's reference-capable and has credentials;
     # otherwise we ignore it and fall through to the normal resolution.
@@ -110,10 +129,11 @@ def resolve_provider(*, require_references: bool = True, prefer: str | None = No
 def list_sprite_providers() -> list[dict]:
     """The reference-capable providers available to pick for pet generation.
 
-    Returns ``[{name, label, note, default}]`` for every ref-capable provider the
-    user actually has credentials for, marking the one :func:`resolve_provider`
-    would choose with no explicit preference. Empty when none is configured (the
-    picker hides itself). Best-effort: discovery hiccups yield an empty list.
+    Returns ``[{name, label, default}]`` for every ref-capable provider the user
+    actually has credentials for, in preference order, marking the one
+    :func:`resolve_provider` would choose with no explicit preference. Empty when
+    none is configured (the picker hides itself). Best-effort: discovery hiccups
+    yield an empty list.
     """
     _discover()
     from agent.image_gen_registry import get_provider
@@ -128,12 +148,10 @@ def list_sprite_providers() -> list[dict]:
         provider = get_provider(name)
         if provider is None or not provider.is_available():
             continue
-        meta = _PROVIDER_META.get(name, {})
         out.append(
             {
                 "name": name,
-                "label": meta.get("label", name),
-                "note": meta.get("note", ""),
+                "label": _PROVIDER_LABELS.get(name, name),
                 "default": name == default_name,
             }
         )

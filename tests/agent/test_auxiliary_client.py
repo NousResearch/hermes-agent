@@ -1885,6 +1885,44 @@ class TestAuxiliaryFallbackLayering:
 
         assert main_client.chat.completions.create.called
 
+    def test_explicit_provider_rate_limit_triggers_fallback(self, monkeypatch):
+        """429 rate-limit on an explicit provider must trigger fallback (not be ignored).
+
+        Regression test for #52228: rate limits were excluded from
+        ``is_capacity_error``, so explicit-provider auxiliary calls never
+        fell back on 429 — only auto-provider calls did.
+        """
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        rate_err = Exception("Rate limit exceeded, try again in 60 seconds")
+        rate_err.status_code = 429
+        primary_client.chat.completions.create.side_effect = rate_err
+
+        fallback_client = MagicMock()
+        fallback_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from fallback chain"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openai-codex", "gpt-5.5", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_client, "deepseek-v4-pro", "fallback_chain[0](opencode-go)")) as mock_chain, \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback") as mock_main:
+            result = call_llm(
+                task="kanban_decomposer",
+                messages=[{"role": "user", "content": "decompose this"}],
+            )
+
+        # Fallback chain MUST be tried for rate-limit on explicit provider
+        mock_chain.assert_called()
+        assert fallback_client.chat.completions.create.called
+        # Main agent fallback should NOT be needed when chain succeeds
+        mock_main.assert_not_called()
+
+
     def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
         """When chain AND main model both fail, a user-visible warning fires before re-raise."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

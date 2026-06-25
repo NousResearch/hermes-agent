@@ -9542,7 +9542,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             ]
 
                             if len(_hyg_msgs) >= 4:
-                                _hyg_session_db = getattr(self.session_store, "_db", None)
                                 _hyg_agent = AIAgent(
                                     **_hyg_runtime,
                                     model=_hyg_model,
@@ -9551,15 +9550,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
-                                    session_db=_hyg_session_db,
+                                    session_db=self._session_db,
                                 )
                                 try:
                                     # The hygiene agent rotates the session
                                     # forward to a continuation id that becomes
                                     # the gateway session's live row. It must
-                                    # never finalize on close() (today it has no
-                                    # session_db so close() no-ops, but this
-                                    # guards a future where one is wired in).
+                                    # never finalize on close() — close() would
+                                    # end the newly rotated session the gateway
+                                    # entry now points at.
                                     _hyg_agent._end_session_on_close = False
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 

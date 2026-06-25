@@ -2810,12 +2810,6 @@ class GatewaySlashCommandsMixin:
                     partial = False
                     head = msgs
 
-            # Pass session_db so the temp agent can persist its session
-            # rotation to the database. Without it, compress_context computes
-            # the compressed messages in memory but never writes them to the
-            # session store — the next user message reloads the full original
-            # transcript and the apparent compression is lost (#fix/compress-gateway-persistence).
-            _tmp_session_db = getattr(self.session_store, "_db", None)
             tmp_agent = AIAgent(
                 **runtime_kwargs,
                 model=model,
@@ -2824,7 +2818,7 @@ class GatewaySlashCommandsMixin:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
-                session_db=_tmp_session_db,
+                session_db=self._session_db,
             )
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None

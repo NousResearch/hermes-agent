@@ -336,6 +336,146 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     ]
 
 
+def test_session_resume_defer_build_returns_transcript_without_blocking(server, monkeypatch):
+    """``defer_build: true`` (desktop cold resume) must return the full display
+    transcript immediately and register an upgradable live session WITHOUT
+    building the agent on the response path — that eager build is the
+    multi-second switch latency."""
+
+    target = "20260409_010101_abc123"
+
+    class _DB:
+        def get_session(self, _sid):
+            return {
+                "id": target,
+                "model": "vendor/cool-model",
+                "model_config": {"provider": "vendor"},
+            }
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, sid):
+            return sid
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "yo"},
+            ]
+
+    builds: list = []
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    # The response path must never call _make_agent; route the deferred timer
+    # through a recorder so a 50ms fire can't build (or crash) under the test.
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no eager build"))
+    )
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: builds.append(sid))
+    monkeypatch.setattr(server, "_schedule_session_cap_enforcement", lambda: None)
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "defer_build": True},
+        }
+    )
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["resumed"] == target
+    assert result["session_key"] == target
+    assert result["message_count"] == 2
+    assert result["messages"] == [
+        {"role": "user", "text": "hello"},
+        {"role": "assistant", "text": "yo"},
+    ]
+    # Lazy info contract (same shape session.create returns), with the session's
+    # persisted model/provider restored rather than the global default.
+    assert result["info"]["lazy"] is True
+    assert result["info"]["model"] == "vendor/cool-model"
+    assert result["info"]["provider"] == "vendor"
+    assert result["info"]["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
+
+    sid = result["session_id"]
+    session = server._sessions[sid]
+    # Registered but not built: agent is None and the resume key is carried so a
+    # later prompt.submit / _sess() upgrade continues THIS stored conversation.
+    assert session["agent"] is None
+    assert session["resume_session_id"] == target
+    assert not session["agent_ready"].is_set()
+    # Not a watch spectator: a normal deferred resume is a real session.
+    assert not session.get("lazy")
+    # The persisted runtime identity is stashed for the deferred build so it
+    # can't drop the provider ("No LLM provider configured").
+    assert session["resume_runtime_overrides"]["model_override"]["model"] == "vendor/cool-model"
+    assert server._find_live_session_by_key(target) == (sid, session)
+
+
+def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
+    """The LRU cap frees the least-recently-active DETACHED sessions when over
+    the limit, and never a live-transport / running / mid-build one."""
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_live_sessions": 2})
+    evicted: list[str] = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id", lambda sid, end_reason=None: evicted.append(sid)
+    )
+
+    def _ready() -> threading.Event:
+        ev = threading.Event()
+        ev.set()
+        return ev
+
+    detached = server._detached_ws_transport
+    live = object()  # no _closed attr -> live transport, never evictable
+
+    server._sessions.clear()
+    server._sessions.update(
+        {
+            "old_detached": {"transport": detached, "last_active": 100.0, "agent_ready": _ready()},
+            "new_detached": {"transport": detached, "last_active": 300.0, "agent_ready": _ready()},
+            "running_detached": {
+                "transport": detached,
+                "last_active": 50.0,
+                "running": True,
+                "agent_ready": _ready(),
+            },
+            "focused_live": {"transport": live, "last_active": 200.0, "agent_ready": _ready()},
+        }
+    )
+
+    server._enforce_session_cap()
+
+    # 4 sessions, cap 2 -> evict 2. Only detached+idle+built are eligible, oldest
+    # first; the running one and the live-transport one are exempt.
+    assert evicted == ["old_detached", "new_detached"]
+
+
+def test_enforce_session_cap_disabled_is_noop(server, monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_live_sessions": 0})
+    evicted: list[str] = []
+    monkeypatch.setattr(
+        server, "_close_session_by_id", lambda sid, end_reason=None: evicted.append(sid)
+    )
+    server._sessions.clear()
+    server._sessions.update(
+        {
+            f"s{i}": {"transport": server._detached_ws_transport, "last_active": float(i)}
+            for i in range(5)
+        }
+    )
+
+    server._enforce_session_cap()
+
+    assert evicted == []
+
+
 def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
     """A user message persisted with list-shaped multimodal content used to
     crash session resume with ``'list' object has no attribute 'strip'``."""

@@ -706,7 +706,12 @@ export function useSessionActions({
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
-          ...(watchWindow ? { lazy: true } : {}),
+          // Watch windows attach lazily (live mirror); every other cold resume
+          // asks the backend to DEFER the agent build so the RPC returns the
+          // transcript immediately instead of blocking the switch on
+          // _make_agent (MCP discovery / prompt build). The agent pre-warms in
+          // the background and the prefetch above paints the transcript.
+          ...(watchWindow ? { lazy: true } : { defer_build: true }),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
         // The rejection is consumed by the `await` below; this guard only
@@ -754,7 +759,18 @@ export function useSessionActions({
                 return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
               })()
 
-        const messagesForView = preserveLocalAssistantErrors(preferredMessages, currentMessages)
+        // When the prefetch already painted these exact messages (the common
+        // cold-resume path), `preferredMessages` IS the live `$messages` array.
+        // Re-running preserveLocalAssistantErrors there would build a 1000-entry
+        // Map and map the whole transcript into a throwaway array on every
+        // switch — pure main-thread cost on the hot path (the downstream
+        // sameMessageList guard already drops the publish, so it buys nothing).
+        // The prefetch branch already merged local assistant errors when it
+        // built `localSnapshot`, so reuse the ref instead.
+        const messagesForView =
+          preferredMessages === currentMessages
+            ? currentMessages
+            : preserveLocalAssistantErrors(preferredMessages, currentMessages)
 
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id

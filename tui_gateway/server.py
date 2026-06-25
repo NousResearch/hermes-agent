@@ -741,6 +741,79 @@ def _reap_idle_sessions() -> None:
         victims = [sid for sid, s in _sessions.items() if _session_is_evictable(sid, s, now)]
     for sid in victims:
         _close_session_by_id(sid, end_reason="idle_timeout")
+    _enforce_session_cap()
+
+
+# Soft LRU cap on in-memory sessions. The 6h TTL reaper above only frees
+# sessions that have been idle for hours; a heavy user who reconnects often
+# accumulates detached sessions (the report's ``detached_sessions=5``) whose
+# agents sit resident for the full TTL. The cap evicts the least-recently-active
+# DETACHED sessions sooner so live agents don't pile up under memory pressure.
+# Default-on but provably safe: it only touches sessions with no live client
+# (reopening re-resumes them from the DB) and never a running / pending /
+# mid-build / live-transport one. 0/null disables.
+def _max_live_sessions() -> int:
+    try:
+        from hermes_cli.active_sessions import coerce_max_concurrent_sessions
+
+        cfg = _load_cfg() or {}
+        raw = cfg.get("max_live_sessions")
+        if raw is None:
+            gateway_cfg = cfg.get("gateway")
+            if isinstance(gateway_cfg, dict):
+                raw = gateway_cfg.get("max_live_sessions")
+        coerced = coerce_max_concurrent_sessions(raw, key="max_live_sessions")
+        return int(coerced) if coerced else 0
+    except Exception:
+        return 0
+
+
+def _session_is_lru_evictable(sid: str, session: dict) -> bool:
+    # Same hard exemptions as the TTL reaper (never evict a session mid-turn,
+    # awaiting input, or still building), but WITHOUT the hours-scale age gate:
+    # a detached session is eligible the moment it loses its client.
+    if session.get("running") or _session_pending_kind(sid):
+        return False
+    ready = session.get("agent_ready")
+    if ready is not None and not ready.is_set() and not session.get("lazy"):
+        return False
+    return _transport_is_dead(session.get("transport"))
+
+
+def _enforce_session_cap() -> None:
+    cap = _max_live_sessions()
+    if cap <= 0:
+        return
+    with _sessions_lock:
+        total = len(_sessions)
+        if total <= cap:
+            return
+        evictable = [
+            (sid, s) for sid, s in _sessions.items() if _session_is_lru_evictable(sid, s)
+        ]
+    # Oldest-touched first; only evict down to the cap (live/focused sessions on
+    # a live transport are never eligible, so we may stop short of the cap).
+    evictable.sort(key=lambda kv: float(kv[1].get("last_active") or 0.0))
+    overflow = total - cap
+    for sid, _s in evictable[:overflow]:
+        _close_session_by_id(sid, end_reason="lru_evict")
+
+
+def _schedule_session_cap_enforcement() -> None:
+    """Run the LRU sweep off the response path (eviction can call agent.close)."""
+    try:
+        timer = threading.Timer(0.1, lambda: _safe_enforce_session_cap())
+        timer.daemon = True
+        timer.start()
+    except Exception:
+        pass
+
+
+def _safe_enforce_session_cap() -> None:
+    try:
+        _enforce_session_cap()
+    except Exception:
+        logger.debug("session cap enforcement failed", exc_info=True)
 
 
 def _start_idle_reaper() -> None:
@@ -1111,15 +1184,24 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 kw = {"session_db": session_db}
                 if resume_sid := current.get("resume_session_id"):
                     kw["session_id"] = resume_sid
-                # Model/effort/fast the desktop picked for a brand-new chat ride
-                # in as per-session overrides so the first build uses them
-                # directly (no global config, no build-then-switch).
-                if override := current.get("model_override"):
-                    kw["model_override"] = override
-                if (reasoning := current.get("create_reasoning_override")) is not None:
-                    kw["reasoning_config_override"] = reasoning
-                if (tier := current.get("create_service_tier_override")) is not None:
-                    kw["service_tier_override"] = tier
+                resume_overrides = current.get("resume_runtime_overrides")
+                if isinstance(resume_overrides, dict) and resume_overrides:
+                    # Cold deferred resume: restore the full persisted runtime
+                    # identity (model/provider/base_url/api_mode/reasoning/tier)
+                    # exactly as the eager resume path's _stored_session_runtime_
+                    # overrides splat did, so a deferred build can't drop the
+                    # provider and fail with "No LLM provider configured".
+                    kw.update(resume_overrides)
+                else:
+                    # Model/effort/fast the desktop picked for a brand-new chat
+                    # ride in as per-session overrides so the first build uses
+                    # them directly (no global config, no build-then-switch).
+                    if override := current.get("model_override"):
+                        kw["model_override"] = override
+                    if (reasoning := current.get("create_reasoning_override")) is not None:
+                        kw["reasoning_config_override"] = reasoning
+                    if (tier := current.get("create_service_tier_override")) is not None:
+                        kw["service_tier_override"] = tier
                 agent = _make_agent(sid, key, **kw)
             finally:
                 _clear_session_context(tokens)
@@ -4602,6 +4684,8 @@ def _(rid, params: dict) -> dict:
     build_timer = threading.Timer(0.05, _deferred_build)
     build_timer.daemon = True
     build_timer.start()
+    # A new live session just landed; trim detached idle ones over the cap.
+    _schedule_session_cap_enforcement()
 
     return _ok(
         rid,
@@ -4957,6 +5041,135 @@ def _(rid, params: dict) -> dict:
                 "session_key": target,
                 "started_at": now,
                 "status": "streaming" if child_running else "idle",
+            },
+        )
+
+    # Deferred build (desktop cold resume): register the live session and read
+    # its stored transcript WITHOUT building the agent on the response path.
+    # _make_agent can block for seconds (MCP discovery, prompt/skill build,
+    # AIAgent construction), and the desktop awaits this RPC before it paints
+    # the chat — so the eager build below is the bulk of the multi-second
+    # "switching sessions is frozen" latency. We return the full display
+    # transcript immediately and pre-warm the agent on a short timer (the same
+    # deferred-build contract session.create uses); _sess() also builds on
+    # demand if the first prompt beats the timer. Distinct from the lazy/watch
+    # branch above: a normal resume restores the full ancestor history and the
+    # session's persisted runtime identity, and is a real (upgradable) session,
+    # not a never-built spectator window.
+    if is_truthy_value(params.get("defer_build", False)):
+        sid = uuid.uuid4().hex[:8]
+        lease, limit_message = _claim_active_session_slot(target, live_session_id=sid)
+        if limit_message is not None:
+            return _err(rid, 4090, limit_message)
+        try:
+            db.reopen_session(target)
+            history = db.get_messages_as_conversation(target)
+            display_history = db.get_messages_as_conversation(
+                target, include_ancestors=True
+            )
+        except Exception as e:
+            if lease is not None:
+                lease.release()
+            return _err(rid, 5000, f"resume failed: {e}")
+        display_history_prefix = display_history[
+            : max(0, len(display_history) - len(history))
+        ]
+        messages = _history_to_messages(display_history)
+        # Restore the model/provider/reasoning/tier this chat actually used so
+        # the deferred build (and the immediate info payload) match the eager
+        # path — without these a deferred build drops the provider and resume
+        # fails with "No LLM provider configured".
+        stored_runtime_overrides = _stored_session_runtime_overrides(found) or {}
+        cwd = profile_resume_cwd or os.getenv("TERMINAL_CWD", os.getcwd())
+        now = time.time()
+        source = str(params.get("source") or "tui").strip() or "tui"
+        with _session_resume_lock:
+            live = _find_live_session_by_key(target)
+            if live is not None:
+                if lease is not None:
+                    lease.release()
+                return _ok(rid, _reuse_live_payload(*live))
+            with _sessions_lock:
+                _sessions[sid] = {
+                    "agent": None,
+                    "agent_error": None,
+                    "agent_ready": threading.Event(),
+                    "attached_images": [],
+                    "close_on_disconnect": is_truthy_value(
+                        params.get("close_on_disconnect", False)
+                    ),
+                    "active_session_lease": lease,
+                    "cols": cols,
+                    "created_at": now,
+                    "display_history_prefix": display_history_prefix,
+                    "edit_snapshots": {},
+                    "explicit_cwd": False,
+                    "history": history,
+                    "history_lock": threading.Lock(),
+                    "history_version": 0,
+                    "image_counter": 0,
+                    "cwd": cwd,
+                    "inflight_turn": None,
+                    "last_active": now,
+                    "model_override": stored_runtime_overrides.get("model_override"),
+                    "pending_title": None,
+                    "profile_home": str(profile_home) if profile_home is not None else None,
+                    "resume_session_id": target,
+                    "resume_runtime_overrides": stored_runtime_overrides or None,
+                    "running": False,
+                    "session_key": target,
+                    "show_reasoning": _load_show_reasoning(),
+                    "source": source,
+                    "slash_worker": None,
+                    "tool_progress_mode": _load_tool_progress_mode(),
+                    "tool_started_at": {},
+                    "transport": current_transport() or _stdio_transport,
+                }
+                _register_session_cwd(_sessions[sid])
+
+        def _deferred_build() -> None:
+            session = _sessions.get(sid)
+            if session is not None:
+                _start_agent_build(sid, session)
+
+        build_timer = threading.Timer(0.05, _deferred_build)
+        build_timer.daemon = True
+        build_timer.start()
+        # A new live session just landed; trim detached idle ones over the cap.
+        _schedule_session_cap_enforcement()
+
+        model_override = stored_runtime_overrides.get("model_override")
+        resumed_model = ""
+        if isinstance(model_override, dict):
+            resumed_model = str(model_override.get("model") or "").strip()
+        elif isinstance(model_override, str):
+            resumed_model = model_override.strip()
+        info = {
+            "cwd": cwd,
+            "branch": _git_branch_for_cwd(cwd),
+            "model": resumed_model or _resolve_model(),
+            "tools": {},
+            "skills": {},
+            "lazy": True,
+            "desktop_contract": DESKTOP_BACKEND_CONTRACT,
+            "profile_name": _current_profile_name(),
+        }
+        provider_override = stored_runtime_overrides.get("provider_override")
+        if provider_override:
+            info["provider"] = provider_override
+        return _ok(
+            rid,
+            {
+                "session_id": sid,
+                "resumed": target,
+                "message_count": len(messages),
+                "messages": messages,
+                "info": info,
+                "inflight": None,
+                "running": False,
+                "session_key": target,
+                "started_at": now,
+                "status": "idle",
             },
         )
 

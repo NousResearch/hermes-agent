@@ -256,4 +256,29 @@ describe('resumeSession failure recovery', () => {
 
     expect($resumeFailedSessionId.get()).toBeNull()
   })
+
+  it('asks the backend to DEFER the agent build on a normal cold resume', async () => {
+    // The switch-latency fix: a non-watch cold resume tells the gateway to
+    // return the transcript immediately and build the agent in the background,
+    // rather than blocking the RPC (and the whole switch) on _make_agent.
+    let resumeParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        resumeParams = params
+
+        return { session_id: 'runtime-1', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    await runResume(requestGateway)
+
+    expect(resumeParams).toMatchObject({ defer_build: true })
+    // Watch-window lazy attach is the OTHER mode; a normal resume isn't lazy.
+    expect(resumeParams).not.toHaveProperty('lazy')
+  })
 })

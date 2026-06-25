@@ -10215,6 +10215,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 print(f"  🔧 {len(new_tools)} tool(s) available from {len(connected_servers)} server(s)")
 
+            # Explicit reload: pick up MCP servers the user ENABLED in config
+            # this session. self.enabled_toolsets was resolved once at
+            # startup; merge in any now-connected server names (unless the
+            # user pinned `all`/`*`, which already includes everything) so a
+            # freshly-added server isn't filtered out. This must happen even
+            # before the first agent is initialized because _init_agent passes
+            # self.enabled_toolsets directly to AIAgent.
+            enabled_override = None
+            et = self.enabled_toolsets
+            if et and "all" not in et and "*" not in et:
+                merged = list(et)
+                for _name in sorted(connected_servers):
+                    if _name not in merged:
+                        merged.append(_name)
+                enabled_override = merged
+                self.enabled_toolsets = enabled_override
+
             # Refresh the agent's tool list so the model can call new tools.
             # Route through the shared helper so this CLI /reload-mcp path stays
             # in lockstep with the TUI RPC / gateway reload / late-binding paths
@@ -10222,28 +10239,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # memory-provider and context-engine tools survive the rebuild).
             if self.agent is not None:
                 from tools.mcp_tool import refresh_agent_mcp_tools
-                # Explicit reload: pick up MCP servers the user ENABLED in config
-                # this session. self.enabled_toolsets was resolved once at
-                # startup; merge in any now-connected server names (unless the
-                # user pinned `all`/`*`, which already includes everything) so a
-                # freshly-added server isn't filtered out. Mirrors startup, where
-                # MCP server names are part of enabled_toolsets (see __init__).
-                enabled_override = None
-                et = self.enabled_toolsets
-                if et and "all" not in et and "*" not in et:
-                    merged = list(et)
-                    for _name in sorted(connected_servers):
-                        if _name not in merged:
-                            merged.append(_name)
-                    enabled_override = merged
                 refresh_agent_mcp_tools(
                     self.agent,
                     enabled_override=enabled_override,
                     quiet_mode=True,
                 )
-                # Keep the CLI's own list in sync with what the agent now uses.
-                if enabled_override is not None:
-                    self.enabled_toolsets = enabled_override
 
             # Inject a message at the END of conversation history so the
             # model knows tools changed.  Appended after all existing
@@ -10273,7 +10273,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except Exception:
                     pass  # Best-effort
 
-            print(f"  ✅ Agent updated — {len(self.agent.tools if self.agent else [])} tool(s) available")
+            if self.agent is not None:
+                print(f"  ✅ Agent updated — {len(self.agent.tools or [])} tool(s) available")
+            else:
+                print(
+                    f"  ✅ MCP registry updated — {len(new_tools)} MCP tool(s) available; "
+                    "queued for next agent initialization"
+                )
 
         except Exception as e:
             print(f"  ❌ MCP reload failed: {e}")

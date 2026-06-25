@@ -597,6 +597,28 @@ CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+
+-- Persistent in-flight tracking for async background delegations.
+-- Survives gateway restarts so the startup sweep can:
+--   (a) mark stale rows (older than TTL) as 'timeout', and
+--   (b) log fresh rows that were interrupted mid-flight.
+-- GC runs on each gateway tick and deletes terminal rows older than 24 h.
+CREATE TABLE IF NOT EXISTS shadow_clone_tasks (
+    delegation_id   TEXT PRIMARY KEY,
+    session_key     TEXT NOT NULL,
+    kanban_ticket_id TEXT,          -- NULL when not using shadow-clone Kanban mode
+    goal            TEXT,
+    status          TEXT NOT NULL DEFAULT 'running',
+                                    -- 'running' | 'completed' | 'failed' | 'timeout'
+                                    -- | 'error' | 'cancelled' | 'timed_out' | 'interrupted'
+    dispatched_at   REAL NOT NULL,  -- unix timestamp (time.time())
+    completed_at    REAL,
+    result_json     TEXT,           -- JSON-encoded result (truncated to 8 KB)
+    routing_meta    TEXT            -- JSON-encoded routing metadata
+);
+
+CREATE INDEX IF NOT EXISTS idx_sct_status        ON shadow_clone_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_sct_dispatched_at ON shadow_clone_tasks(dispatched_at);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -5101,3 +5123,171 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
+
+    # ── Shadow clone persistent tracking ──────────────────────────────────────
+
+    def insert_shadow_clone_task(
+        self,
+        *,
+        delegation_id: str,
+        session_key: str,
+        goal: Optional[str] = None,
+        kanban_ticket_id: Optional[str] = None,
+        routing_meta: Optional[str] = None,
+        dispatched_at: Optional[float] = None,
+    ) -> None:
+        """Persist a new shadow-clone task (status='running').
+
+        Uses INSERT OR IGNORE so re-delivery or duplicate dispatch calls
+        are harmless (idempotent).  ``routing_meta`` should be a
+        pre-serialised JSON string (or None).
+        """
+        import time as _time
+
+        def _do(conn):
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO shadow_clone_tasks
+                    (delegation_id, session_key, goal, kanban_ticket_id,
+                     routing_meta, status, dispatched_at)
+                VALUES (?, ?, ?, ?, ?, 'running', ?)
+                """,
+                (
+                    delegation_id,
+                    session_key,
+                    (goal or "")[:500],
+                    kanban_ticket_id,
+                    routing_meta,
+                    dispatched_at if dispatched_at is not None else _time.time(),
+                ),
+            )
+
+        self._execute_write(_do)
+
+    def update_shadow_clone_task(
+        self,
+        delegation_id: str,
+        *,
+        status: str,
+        result_json: Optional[str] = None,
+        completed_at: Optional[float] = None,
+        routing_meta: Optional[str] = None,
+    ) -> None:
+        """Update status (and optionally result) of an existing shadow-clone task.
+
+        Uses COALESCE guards so a routing-only update never overwrites an already-
+        stored ``result_json``.  Swallows errors gracefully — the in-memory
+        completion event is always enqueued regardless of this write's outcome.
+        """
+        import time as _time
+
+        def _do(conn):
+            conn.execute(
+                """
+                UPDATE shadow_clone_tasks
+                SET status = ?,
+                    result_json = COALESCE(?, result_json),
+                    completed_at = COALESCE(?, completed_at),
+                    routing_meta = COALESCE(?, routing_meta)
+                WHERE delegation_id = ?
+                """,
+                (
+                    status,
+                    result_json,
+                    completed_at if completed_at is not None else _time.time(),
+                    routing_meta,
+                    delegation_id,
+                ),
+            )
+
+        try:
+            self._execute_write(_do)
+        except Exception as _e:
+            logger.warning(
+                "shadow_clone update_task failed for %s: %s", delegation_id, _e
+            )
+
+    def gc_shadow_clone_tasks(self, retain_hours: float = 24) -> int:
+        """Delete terminal shadow-clone rows older than ``retain_hours``.
+
+        Terminal statuses: completed, error, cancelled, timed_out, timeout,
+        interrupted.  Running rows are never deleted.
+
+        Returns
+        -------
+        int
+            Number of rows deleted.
+        """
+        import time as _time
+
+        cutoff = _time.time() - retain_hours * 3600
+        deleted: list[int] = [0]
+
+        def _do(conn):
+            cur = conn.execute(
+                """
+                DELETE FROM shadow_clone_tasks
+                WHERE status IN (
+                    'completed', 'failed', 'error', 'cancelled',
+                    'timed_out', 'timeout', 'interrupted'
+                )
+                AND completed_at IS NOT NULL
+                AND completed_at < ?
+                """,
+                (cutoff,),
+            )
+            deleted[0] = cur.rowcount
+
+        try:
+            self._execute_write(_do)
+        except Exception as _e:
+            logger.warning("gc_shadow_clone_tasks failed: %s", _e)
+        return deleted[0]
+
+    def recover_inflight_shadow_clone_tasks(
+        self, ttl_seconds: float = 7200
+    ) -> list:
+        """Return rows whose status is 'running' and mark stale ones 'timeout'.
+
+        Called at gateway startup to recover tasks that were dispatched before
+        the previous shutdown.  Rows dispatched within ``ttl_seconds`` are
+        returned as-is (still considered live).  Rows older than the TTL are
+        marked 'timeout' in place and included in the returned list with their
+        updated status so the caller can emit recovery notifications.
+
+        Returns
+        -------
+        list[dict]
+            All rows that were 'running' at call time (after TTL promotion).
+        """
+        import time as _time
+
+        cutoff = _time.time() - ttl_seconds
+        rows: list = []
+
+        def _do(conn):
+            cur = conn.execute(
+                "SELECT delegation_id, session_key, goal, kanban_ticket_id, "
+                "routing_meta, status, result_json, dispatched_at, completed_at "
+                "FROM shadow_clone_tasks WHERE status = 'running'"
+            )
+            fetched = cur.fetchall()
+            cols = [d[0] for d in cur.description]
+            stale_ids = []
+            for raw in fetched:
+                row = dict(zip(cols, raw))
+                da = row.get("dispatched_at") or 0.0
+                if da < cutoff:
+                    row["status"] = "timeout"
+                    stale_ids.append(row["delegation_id"])
+                rows.append(row)
+            if stale_ids:
+                placeholders = ",".join("?" * len(stale_ids))
+                conn.execute(
+                    f"UPDATE shadow_clone_tasks SET status = 'timeout', "
+                    f"completed_at = ? WHERE delegation_id IN ({placeholders})",
+                    [_time.time(), *stale_ids],
+                )
+
+        self._execute_write(_do)
+        return rows

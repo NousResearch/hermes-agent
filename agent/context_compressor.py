@@ -2627,13 +2627,14 @@ This compaction should PRIORITISE preserving all information related to the focu
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False, aggressive: bool = False) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
           1. Prune old tool results (cheap pre-pass, no LLM call)
           2. Protect head messages (system prompt + first exchange)
           3. Find tail boundary by token budget (~20K tokens of recent context)
+             or by message count (protect_last_n) when aggressive=True
           4. Summarize middle turns with structured LLM prompt
           5. On re-compression, iteratively update the previous summary
 
@@ -2648,6 +2649,11 @@ This compaction should PRIORITISE preserving all information related to the focu
             force: If True, clear any active summary-failure cooldown before
                 running so a manual ``/compress`` can retry immediately after
                 an auto-compression abort.  Auto-compress callers pass False.
+            aggressive: If True, use message-count-based tail protection
+                (protect_last_n) instead of the default token-budget tail.
+                Designed for agent-requested compression during idle/poll
+                loops where the agent knows it can safely compress most
+                context away.
         """
         # Reset per-call summary failure state — callers inspect these fields
         # after compress() returns to decide whether to surface a warning.
@@ -2698,8 +2704,22 @@ This compaction should PRIORITISE preserving all information related to the focu
         compress_start = self._protect_head_size(messages)
         compress_start = self._align_boundary_forward(messages, compress_start)
 
-        # Use token-budget tail protection instead of fixed message count
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        # Use token-budget tail protection instead of fixed message count.
+        # Agent-requested compression can opt into a more aggressive, fixed
+        # message-count tail when the model knows it is entering an idle/poll
+        # loop and can safely summarize more of the transcript.
+        if aggressive:
+            tail_count = max(3, min(self.protect_last_n, _MAX_TAIL_MESSAGE_FLOOR))
+            compress_end = max(compress_start + 1, len(messages) - tail_count)
+            compress_end = self._align_boundary_backward(messages, compress_end)
+            if not self.quiet_mode:
+                logger.info(
+                    "Aggressive compression tail=%d messages (protect_last_n=%d)",
+                    tail_count,
+                    self.protect_last_n,
+                )
+        else:
+            compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
 
         if compress_start >= compress_end:
             # No compressable window — the entire transcript fits within

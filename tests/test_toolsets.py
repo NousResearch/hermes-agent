@@ -230,6 +230,26 @@ class TestToolsetConsistency:
         assert len(core) > 20, f"Suspiciously small shared core: {len(core)} tools"
 
 
+    def test_context_usage_is_opt_in_not_core(self):
+        assert set(resolve_toolset("context_usage")) == {
+            "context_status",
+            "request_compression",
+        }
+        for platform in [
+            "hermes-cli",
+            "hermes-telegram",
+            "hermes-discord",
+            "hermes-whatsapp",
+            "hermes-slack",
+            "hermes-signal",
+            "hermes-homeassistant",
+        ]:
+            tools = set(resolve_toolset(platform))
+            assert "context_status" not in tools
+            assert "request_compression" not in tools
+
+
+
 class TestPluginToolsets:
     def test_get_all_toolsets_includes_plugin_toolset(self, monkeypatch):
         reg = ToolRegistry()

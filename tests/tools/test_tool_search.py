@@ -106,6 +106,13 @@ class TestClassification:
         for name in BRIDGE_TOOL_NAMES:
             assert not is_deferrable_tool_name(name)
 
+    def test_context_usage_tools_are_visible_when_opted_in(self):
+        import tools.context_usage_tool  # noqa: F401 - registers context_usage tools
+        from tools.tool_search import is_deferrable_tool_name
+
+        assert not is_deferrable_tool_name("context_status")
+        assert not is_deferrable_tool_name("request_compression")
+
     def test_unknown_tool_not_deferrable(self):
         """Defensive: a tool name we cannot resolve to a registry entry must
         not be claimed as deferrable. This protects against the OpenClaw

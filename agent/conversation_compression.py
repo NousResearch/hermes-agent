@@ -400,6 +400,7 @@ def compress_context(
     task_id: str = "default",
     focus_topic: Optional[str] = None,
     force: bool = False,
+    aggressive: bool = False,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -416,6 +417,9 @@ def compress_context(
             by the manual ``/compress`` slash command so users can retry
             immediately after an auto-compress abort.  Auto-compress
             callers use the default ``False``.
+        aggressive: If True, use message-count-based tail protection
+            (protect_last_n) instead of the default token-budget tail.
+            Intended for agent-requested compression during idle/poll loops.
 
     Returns:
         ``(compressed_messages, new_system_prompt)`` tuple.  When
@@ -580,15 +584,26 @@ def compress_context(
             pass
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
+        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force, aggressive=aggressive)
     except TypeError:
-        # Plugin context engine with strict signature that doesn't accept
-        # focus_topic / force — fall back to calling without them.
+        # Plugin context engine with a strict pre-aggressive signature: retry
+        # with the older focus_topic/force kwargs before falling all the way
+        # back to the minimal historical call shape.
         try:
-            compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
-        except BaseException:
-            _release_lock()
-            raise
+            compressed = agent.context_compressor.compress(
+                messages,
+                current_tokens=approx_tokens,
+                focus_topic=focus_topic,
+                force=force,
+            )
+        except TypeError:
+            # Plugin context engine with strict signature that doesn't accept
+            # focus_topic / force — fall back to calling without them.
+            try:
+                compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
+            except BaseException:
+                _release_lock()
+                raise
     except BaseException:
         # ANY exception during compress() must release the lock so the
         # session isn't permanently blocked from future compression.

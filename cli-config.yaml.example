@@ -434,6 +434,17 @@ compression:
   # head messages, matching the pre-feature behaviour.
   protect_first_n: 3
 
+  # Whether the agent can request compression itself via the
+  # request_compression tool (default: false).  When enabled, the model can
+  # compact the live tool-loop context before long idle/poll phases.  This is
+  # lossy, so keep it off unless you want the agent to manage its own context.
+  allow_agent_trigger: false
+
+  # Optional minimum context usage (0.0 - 1.0) below which agent-triggered
+  # compression requests are rejected unless the tool call passes force=true.
+  # Only relevant when allow_agent_trigger is true.
+  # agent_suggest_threshold: 0.50
+
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
 

@@ -4531,6 +4531,16 @@ def run_conversation(
 
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
+                if getattr(agent, "_request_compression_applied", False):
+                    agent._request_compression_applied = False
+                    # request_compression mutates the live `messages` list and
+                    # may rotate the session id. Clear the original caller
+                    # history baseline so persistence/CLI state rebases on the
+                    # compacted transcript rather than treating dropped turns as
+                    # still-current history.
+                    conversation_history = None
+                    active_system_prompt = getattr(agent, "_cached_system_prompt", None) or active_system_prompt
+
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
                     _turn_exit_reason = "guardrail_halt"

@@ -46,6 +46,12 @@ TOOL_CALL_NAME = "tool_call"
 
 BRIDGE_TOOL_NAMES = frozenset({TOOL_SEARCH_NAME, TOOL_DESCRIBE_NAME, TOOL_CALL_NAME})
 
+# Opt-in runtime-control toolsets that must remain directly model-callable once
+# enabled. ``request_compression`` needs the live agent tool-loop context
+# (messages, current tool_call_id), which the generic ``tool_call`` bridge does
+# not carry through ``model_tools.handle_function_call``.
+ALWAYS_VISIBLE_TOOLSETS = frozenset({"context_usage"})
+
 # When estimating tokens from char count without a real tokenizer, this is
 # the cheap rule of thumb that's stable across providers. Roughly 4 chars
 # per token for English+JSON. Underestimating leads to false negatives
@@ -177,6 +183,8 @@ def is_deferrable_tool_name(name: str) -> bool:
         from tools.registry import registry
         entry = registry.get_entry(name)
         if entry is None:
+            return False
+        if entry.toolset in ALWAYS_VISIBLE_TOOLSETS:
             return False
         if entry.toolset.startswith("mcp-"):
             return True

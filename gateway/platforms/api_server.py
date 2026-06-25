@@ -1289,6 +1289,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "analytics_provider_quotas": {"method": "GET", "path": "/api/analytics/provider-quotas"},
                 "analytics_usage_rates": {"method": "GET", "path": "/api/analytics/usage-rates"},
                 "analytics_token_trends": {"method": "GET", "path": "/api/analytics/token-trends"},
+                "analytics_cost_estimate": {"method": "GET", "path": "/api/analytics/cost-estimate"},
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
@@ -1743,6 +1744,39 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({
             "window": window, "bucket_seconds": bucket, "generated_at": now, **trends,
         })
+
+    async def _handle_analytics_cost_estimate(self, request: "web.Request") -> "web.Response":
+        """GET /api/analytics/cost-estimate?window=1h|24h|7d|30d.
+
+        Per-model cost over the window, broken down by price tier
+        (input/output/cache) from each model's published pricing, with a
+        daily/monthly projection. Falls back to the stored estimated_cost_usd
+        for models without known pricing (flagged via has_unpriced_models).
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        wr = self._analytics_window_seconds(request)
+        if isinstance(wr, web.Response):
+            return wr
+        window, seconds = wr
+
+        from agent.analytics import compute_cost_estimate
+        from agent.usage_pricing import get_pricing_entry
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        now = time.time()
+        groups = db.get_session_cost_aggregates(now - seconds)
+
+        def _lookup(model, provider, base_url):
+            if not model:
+                return None
+            return get_pricing_entry(model, provider=provider, base_url=base_url)
+
+        estimate = compute_cost_estimate(groups, seconds, _lookup)
+        return web.json_response({"window": window, "generated_at": now, **estimate})
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/fork — branch via current SessionDB primitives."""
@@ -4629,6 +4663,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/api/analytics/provider-quotas", self._handle_analytics_provider_quotas)
             self._app.router.add_get("/api/analytics/usage-rates", self._handle_analytics_usage_rates)
             self._app.router.add_get("/api/analytics/token-trends", self._handle_analytics_token_trends)
+            self._app.router.add_get("/api/analytics/cost-estimate", self._handle_analytics_cost_estimate)
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)

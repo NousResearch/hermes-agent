@@ -1949,6 +1949,81 @@ class TestAuxiliaryFallbackLayering:
             "all fallbacks exhausted" in r.message for r in caplog.records
         ), f"Expected exhaustion warning, got: {[r.message for r in caplog.records]}"
 
+    def test_explicit_provider_no_client_uses_configured_chain_before_error(self, monkeypatch):
+        """Missing primary credentials should still honor auxiliary fallback_chain."""
+        chain_client = MagicMock()
+        chain_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from configured chain"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("ollama-cloud", "deepseek-v4-flash:cloud", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(chain_client, "gpt-5.4-mini", "fallback_chain[0](openai-codex)")) as mock_chain:
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert chain_client.chat.completions.create.called
+        assert result.choices[0].message.content == "from configured chain"
+        mock_chain.assert_called_once_with(
+            "compression",
+            "ollama-cloud",
+            reason="provider unavailable",
+        )
+
+    def test_explicit_provider_no_client_without_chain_keeps_clear_error(self, monkeypatch):
+        """No fallback configured: keep the existing actionable missing-key error."""
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(None, None)), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("ollama-cloud", "deepseek-v4-flash:cloud", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")) as mock_chain:
+            with pytest.raises(RuntimeError, match="Provider 'ollama-cloud'.*no API key"):
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "hello"}],
+                )
+
+        mock_chain.assert_called_once_with(
+            "compression",
+            "ollama-cloud",
+            reason="provider unavailable",
+        )
+
+    def test_fallback_entry_openai_codex_uses_oauth_pool_without_inline_key(self):
+        """Configured Codex fallback resolves through Hermes auth / credential pool."""
+        from agent.auxiliary_client import _resolve_fallback_entry
+
+        pool_entry = MagicMock()
+        pool_entry.id = "codex-pool-1"
+        pool_entry.runtime_api_key = "codex-oauth-token"
+        pool_entry.access_token = "codex-oauth-token"
+        pool_entry.runtime_base_url = "https://chatgpt.com/backend-api/codex"
+
+        real_client = MagicMock()
+        real_client.api_key = "codex-oauth-token"
+        real_client.base_url = "https://chatgpt.com/backend-api/codex"
+
+        with patch("agent.auxiliary_client._select_pool_entry",
+                   return_value=(True, pool_entry)), \
+             patch("agent.auxiliary_client._read_codex_access_token",
+                   side_effect=AssertionError("should use pool token")), \
+             patch("agent.auxiliary_client.OpenAI", return_value=real_client) as mock_openai:
+            client, model = _resolve_fallback_entry({
+                "provider": "openai-codex",
+                "model": "gpt-5.4-mini",
+            })
+
+        assert client is not None
+        assert model == "gpt-5.4-mini"
+        mock_openai.assert_called_once()
+        assert mock_openai.call_args.kwargs["api_key"] == "codex-oauth-token"
+
 
 class TestTryMainAgentModelFallback:
     """_try_main_agent_model_fallback resolves the user's main provider+model as a safety net."""

@@ -3205,6 +3205,28 @@ def _try_configured_fallback_chain(
     return None, None, ""
 
 
+def _try_configured_fallback_for_unavailable_client(
+    task: Optional[str],
+    failed_provider: str,
+) -> Tuple[Optional[Any], Optional[str], str]:
+    """Try task fallback_chain when an explicit aux provider cannot build.
+
+    This covers the "no client" case before any request is sent: missing
+    raw env key, unavailable OAuth/pool credentials, or provider resolver
+    returning ``(None, None)``.  It deliberately stops at the configured
+    per-task fallback chain; the main-agent model remains the last-resort
+    runtime fallback for request-time capacity errors.
+    """
+    explicit = (failed_provider or "").strip().lower()
+    if not task or not explicit or explicit in {"auto"}:
+        return None, None, ""
+    return _try_configured_fallback_chain(
+        task,
+        explicit,
+        reason="provider unavailable",
+    )
+
+
 def _fallback_entry_api_key(entry: Dict[str, Any]) -> Optional[str]:
     """Resolve inline or env-backed API key from a fallback-chain entry."""
     explicit = str(entry.get("api_key") or "").strip()
@@ -5346,21 +5368,30 @@ def call_llm(
         )
         if client is None:
             # When the user explicitly chose a non-OpenRouter provider but no
-            # credentials were found, fail fast instead of silently routing
-            # through OpenRouter (which causes confusing 404s).
+            # credentials were found, honor the task fallback_chain before
+            # raising.  Missing raw env keys are recoverable for auxiliary
+            # tasks because fallback entries may use OAuth / credential-pool
+            # auth (for example openai-codex).
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
-                raise RuntimeError(
-                    f"Provider '{_explicit}' is set in config.yaml but no API key "
-                    f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                    f"variable, or switch to a different provider with `hermes model`."
+                fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
+                    task, _explicit,
                 )
+                if fb_client is not None:
+                    client, final_model = fb_client, fb_model
+                    resolved_provider = fb_label or resolved_provider
+                else:
+                    raise RuntimeError(
+                        f"Provider '{_explicit}' is set in config.yaml but no API key "
+                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                        f"variable, or switch to a different provider with `hermes model`."
+                    )
             # For auto/custom with no credentials, try the full auto chain
             # rather than hardcoding OpenRouter (which may be depleted).
             # Pass model=None so each provider uses its own default —
             # resolved_model may be an OpenRouter-format slug that doesn't
             # work on other providers.
-            if not resolved_base_url:
+            if client is None and not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client("auto", main_runtime=main_runtime, task=task)
@@ -5858,12 +5889,21 @@ async def async_call_llm(
         if client is None:
             _explicit = (resolved_provider or "").strip().lower()
             if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
-                raise RuntimeError(
-                    f"Provider '{_explicit}' is set in config.yaml but no API key "
-                    f"was found. Set the {_explicit.upper()}_API_KEY environment "
-                    f"variable, or switch to a different provider with `hermes model`."
+                fb_client, fb_model, fb_label = _try_configured_fallback_for_unavailable_client(
+                    task, _explicit,
                 )
-            if not resolved_base_url:
+                if fb_client is not None:
+                    client, final_model = _to_async_client(
+                        fb_client, fb_model or "", is_vision=(task == "vision")
+                    )
+                    resolved_provider = fb_label or resolved_provider
+                else:
+                    raise RuntimeError(
+                        f"Provider '{_explicit}' is set in config.yaml but no API key "
+                        f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                        f"variable, or switch to a different provider with `hermes model`."
+                    )
+            if client is None and not resolved_base_url:
                 logger.info("Auxiliary %s: provider %s unavailable, trying auto-detection chain",
                             task or "call", resolved_provider)
                 client, final_model = _get_cached_client("auto", async_mode=True, main_runtime=main_runtime, task=task)

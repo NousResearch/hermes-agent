@@ -2470,7 +2470,7 @@ def _is_payment_error(exc: Exception) -> bool:
     # but sometimes wrap them in 429 or other codes.
     # Daily quota exhaustion from Bedrock, Vertex AI, and similar providers
     # uses different language but is semantically identical to credit exhaustion.
-    if status in {402, 404, 429, None}:
+    if status in {402, 403, 404, 429, None}:
         if any(kw in err_lower for kw in (
             "credits", "insufficient funds",
             "can only afford", "billing",
@@ -2479,6 +2479,8 @@ def _is_payment_error(exc: Exception) -> bool:
             "balance_depleted", "no usable credits",
             "model_not_supported_on_free_tier",
             "not available on the free tier",
+            "requires a subscription", "upgrade for access",
+            "upgrade for higher limits", "reached your session usage limit",
             # Daily / monthly / weekly quota exhaustion keywords
             "quota exceeded", "quota_exceeded",
             "too many tokens per day", "daily limit",

@@ -221,6 +221,11 @@ _last_screenshot_cleanup_by_dir: dict[str, float] = {}
 # Default timeout for browser commands (seconds)
 DEFAULT_COMMAND_TIMEOUT = 30
 
+# Floor for ``open`` (navigate) — cold daemon + first Chromium launch can exceed
+# the generic command_timeout on slow or library-starved Linux hosts.
+MIN_OPEN_TIMEOUT = 60
+MIN_FIRST_OPEN_TIMEOUT = 120
+
 # Max tokens for snapshot content before summarization
 SNAPSHOT_SUMMARIZE_THRESHOLD = 8000
 
@@ -254,6 +259,92 @@ def _get_command_timeout() -> int:
         logger.debug("Could not read command_timeout from config: %s", e)
     _cached_command_timeout = result
     return result
+
+
+def _get_open_command_timeout(*, first_open: bool = False) -> int:
+    """Timeout for agent-browser ``open`` (navigation / daemon cold start)."""
+    base = _get_command_timeout()
+    floor = MIN_FIRST_OPEN_TIMEOUT if first_open else MIN_OPEN_TIMEOUT
+    return max(base, floor)
+
+
+def _needs_chromium_sandbox_bypass() -> bool:
+    """Return True when Chromium needs --no-sandbox to start reliably."""
+    if hasattr(os, "geteuid") and os.geteuid() == 0:
+        return True
+    if _running_in_docker():
+        return True
+    userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+    try:
+        with open(userns_restrict, encoding="utf-8") as f:
+            if f.read().strip() == "1":
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _read_command_output_files(stdout_path: str, stderr_path: str) -> tuple[str, str]:
+    """Best-effort read of agent-browser stdout/stderr temp files."""
+    stdout = stderr = ""
+    for path, slot in ((stdout_path, "stdout"), (stderr_path, "stderr")):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read().strip()
+        except OSError:
+            continue
+        if slot == "stdout":
+            stdout = text
+        else:
+            stderr = text
+    return stdout, stderr
+
+
+def _unlink_command_output_files(*paths: str) -> None:
+    for path in paths:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _format_browser_timeout_error(
+    command: str,
+    timeout: int,
+    stdout: str,
+    stderr: str,
+) -> str:
+    """Build an actionable timeout message from captured daemon output."""
+    parts = [f"Command timed out after {timeout} seconds"]
+    detail = (stderr or stdout or "").strip()
+    if detail:
+        parts.append(detail[:1500])
+
+    combined = f"{stderr}\n{stdout}".lower()
+    hints: list[str] = []
+    if "sandbox" in combined or "no usable sandbox" in combined:
+        hints.append(
+            "Chromium sandbox launch failed. Set AGENT_BROWSER_ARGS="
+            "'--no-sandbox,--disable-dev-shm-usage' in your environment, "
+            "or run: npx agent-browser install --with-deps"
+        )
+    elif command == "open" and _is_local_mode():
+        if _running_in_docker():
+            hints.append(
+                "The browser daemon may still be starting or Chromium may be "
+                "missing. Pull the latest image: "
+                "docker pull ghcr.io/nousresearch/hermes-agent:latest"
+            )
+        else:
+            hints.append(
+                "The browser daemon may still be starting, or Chromium may be "
+                "missing system libraries. Install/repair with: "
+                "npx agent-browser install --with-deps "
+                "(or: npx playwright install --with-deps chromium)"
+            )
+    if hints:
+        parts.extend(hints)
+    return "\n".join(parts)
 
 
 def _get_vision_model() -> Optional[str]:
@@ -2187,24 +2278,11 @@ def _run_browser_command(
             "AGENT_BROWSER_ARGS" not in browser_env
             and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
         ):
-            _needs_sandbox_bypass = False
-            if hasattr(os, "geteuid") and os.geteuid() == 0:
-                _needs_sandbox_bypass = True
-                logger.debug("browser: running as root — injecting --no-sandbox")
-            else:
-                # Detect AppArmor user namespace restrictions (Ubuntu 23.10+)
-                _userns_restrict = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
-                try:
-                    with open(_userns_restrict, encoding="utf-8") as _f:
-                        if _f.read().strip() == "1":
-                            _needs_sandbox_bypass = True
-                            logger.debug(
-                                "browser: AppArmor userns restrictions detected — "
-                                "injecting --no-sandbox"
-                            )
-                except OSError:
-                    pass
-            if _needs_sandbox_bypass:
+            if _needs_chromium_sandbox_bypass():
+                logger.debug(
+                    "browser: sandbox bypass needed (root/docker/AppArmor userns) — "
+                    "injecting --no-sandbox"
+                )
                 browser_env["AGENT_BROWSER_ARGS"] = (
                     "--no-sandbox,--disable-dev-shm-usage"
                 )
@@ -2252,9 +2330,20 @@ def _run_browser_command(
         except subprocess.TimeoutExpired:
             proc.kill()
             proc.wait()
+            stdout, stderr = _read_command_output_files(stdout_path, stderr_path)
+            _unlink_command_output_files(stdout_path, stderr_path)
+            if stderr and stderr.strip():
+                logger.warning(
+                    "browser '%s' stderr after timeout: %s",
+                    command,
+                    stderr.strip()[:500],
+                )
             logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
                            command, timeout, task_id, task_socket_dir)
-            result = {"success": False, "error": f"Command timed out after {timeout} seconds"}
+            result = {
+                "success": False,
+                "error": _format_browser_timeout_error(command, timeout, stdout, stderr),
+            }
             # Fall through to fallback check below
         else:
             with open(stdout_path, "r", encoding="utf-8") as f:
@@ -2554,7 +2643,12 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         session_info["_first_nav"] = False
         _maybe_start_recording(nav_session_key)
 
-    result = _run_browser_command(nav_session_key, "open", [url], timeout=max(_get_command_timeout(), 60))
+    result = _run_browser_command(
+        nav_session_key,
+        "open",
+        [url],
+        timeout=_get_open_command_timeout(first_open=is_first_nav),
+    )
 
     # Remember which session served this nav so snapshot/click/fill/...
     # on the same task_id hit it (critical when hybrid routing has both a

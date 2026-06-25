@@ -2189,6 +2189,7 @@ export const ja = defineLocale({
         reading: '読み取り中',
         opened: 'オープン済み',
         opening: 'オープン中',
+        failedToOpen: 'オープン失敗',
         searched: '検索完了',
         searching: '検索中',
         ran: '実行完了',

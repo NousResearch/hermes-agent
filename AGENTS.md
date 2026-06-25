@@ -925,10 +925,10 @@ violate them.
    `.env.example` versions are usually stale and edits outside the
    skill's own block must be dropped during salvage.
 
-The full salvage / modernization checklist for external skill PRs
-lives in the `hermes-agent-dev` skill at
-`references/new-skill-pr-salvage.md` — load it before polishing
-contributor skill PRs.
+For in-repo skill authoring (frontmatter rules, validator contract,
+where SKILL.md files belong in the source tree), load the
+`hermes-agent-skill-authoring` skill at
+`skills/software-development/hermes-agent-skill-authoring/SKILL.md`.
 
 ---
 
@@ -939,11 +939,13 @@ Each platform's adapter picks a base toolset (e.g. Telegram uses
 `"messaging"`); `_HERMES_CORE_TOOLS` is the default bundle most
 platforms inherit from.
 
-Current toolset keys: `browser`, `clarify`, `code_execution`, `cronjob`,
-`debugging`, `delegation`, `discord`, `discord_admin`, `feishu_doc`,
-`feishu_drive`, `file`, `homeassistant`, `image_gen`, `kanban`, `memory`,
-`messaging`, `moa`, `rl`, `safe`, `search`, `session_search`, `skills`,
-`spotify`, `terminal`, `todo`, `tts`, `video`, `vision`, `web`, `yuanbao`.
+Current toolset keys: `browser`, `clarify`, `code_execution`,
+`computer_use`, `context_engine`, `cronjob`, `debugging`, `delegation`,
+`discord`, `discord_admin`, `feishu_doc`, `feishu_drive`, `file`,
+`homeassistant`, `image_gen`, `kanban`, `memory`, `messaging`, `moa`,
+`safe`, `search`, `session_search`, `skills`, `spotify`, `terminal`,
+`todo`, `tts`, `video`, `video_gen`, `vision`, `web`, `x_search`,
+`yuanbao`.
 
 Enable/disable per platform via `hermes tools` (the curses UI) or the
 `tools.<platform>.enabled` / `tools.<platform>.disabled` lists in

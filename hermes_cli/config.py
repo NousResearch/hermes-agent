@@ -2872,6 +2872,32 @@ DEFAULT_CONFIG = {
             # `hermes secrets bitwarden setup`.
             "server_url": "",
         },
+        "protonpass": {
+            # Master switch.  When false, pass-cli is never invoked — same as
+            # not having this section at all.
+            "enabled": False,
+            # Mapping of env-var name -> pass://vault/item/field reference.
+            # Resolved at startup and injected into os.environ.  Entries whose
+            # name isn't a valid env-var name, or whose value isn't a pass://
+            # reference, are skipped with a warning.
+            "env": {},
+            # Name of the env var holding the Proton Pass personal access
+            # token.  Used to (re)establish a `pass-cli` session when one isn't
+            # already present.  This is the one bootstrap secret; it lives in
+            # ~/.hermes/.env (or your shell) and never in config.yaml.
+            "personal_access_token_env": "PROTON_PASS_PERSONAL_ACCESS_TOKEN",
+            # Absolute path to pass-cli.  When set it is used verbatim and PATH
+            # is NOT consulted.  Empty means resolve `pass-cli` from PATH.
+            "binary_path": "",
+            # Seconds to cache resolved secrets in-process and on disk.  0
+            # disables both cache layers (nothing is written to disk).
+            "cache_ttl_seconds": 300,
+            # When True, resolved values overwrite existing env vars.  Default
+            # True because the point of a central store is rotation — if .env
+            # had the final say, rotating in Proton Pass wouldn't take effect
+            # until you also cleared the matching .env line.
+            "override_existing": True,
+        },
     },
 
     # Paste collapse thresholds (TUI + CLI).
@@ -2908,7 +2934,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 30,
+    "_config_version": 31,
 }
 
 # =============================================================================
@@ -5228,6 +5254,27 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 print(
                     "  ✓ Seeded curator.consolidate: false "
                     "(LLM consolidation is now opt-in; pruning stays on)"
+                )
+
+    # ── Version 30 → 31: seed secrets.protonpass (Proton Pass source) ──
+    # The runtime deep-merge already supplies the default disabled section, but
+    # seed it so the new backend is visible/editable in config.yaml alongside
+    # secrets.bitwarden. Only add it when a secrets section exists and lacks it
+    # — never clobber a value the user already set.
+    if current_ver < 31:
+        config = read_raw_config()
+        raw_secrets = config.get("secrets")
+        if isinstance(raw_secrets, dict) and "protonpass" not in raw_secrets:
+            raw_secrets["protonpass"] = copy.deepcopy(
+                DEFAULT_CONFIG["secrets"]["protonpass"]
+            )
+            config["secrets"] = raw_secrets
+            save_config(config)
+            results["config_added"].append("secrets.protonpass (disabled)")
+            if not quiet:
+                print(
+                    "  ✓ Seeded secrets.protonpass (Proton Pass pass:// source, "
+                    "disabled by default)"
                 )
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──

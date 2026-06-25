@@ -173,3 +173,91 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
     env_loader.reset_secret_source_cache()
     env_loader._apply_external_secret_sources(tmp_path)
     assert call_count["n"] == 2
+
+
+def test_format_secret_source_suffix_protonpass_uses_proper_name():
+    env_loader._SECRET_SOURCES["ANTHROPIC_API_KEY"] = "protonpass"
+    assert (
+        env_loader.format_secret_source_suffix("ANTHROPIC_API_KEY")
+        == " (from Proton Pass)"
+    )
+
+
+def test_apply_external_secret_sources_records_protonpass_origin(tmp_path, monkeypatch):
+    """End-to-end: applied Proton Pass keys land in ``_SECRET_SOURCES``."""
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n"
+        "  protonpass:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      ANTHROPIC_API_KEY: pass://Private/Anthropic/credential\n",
+        encoding="utf-8",
+    )
+
+    from agent.secret_sources.protonpass import FetchResult
+
+    def _fake_apply(**_kwargs):
+        return FetchResult(
+            secrets={"ANTHROPIC_API_KEY": "sk-ant-test"},
+            applied=["ANTHROPIC_API_KEY"],
+        )
+
+    import agent.secret_sources.protonpass as pp_module
+
+    monkeypatch.setattr(pp_module, "apply_protonpass_secrets", _fake_apply)
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert env_loader.get_secret_source("ANTHROPIC_API_KEY") == "protonpass"
+    assert (
+        env_loader.format_secret_source_suffix("ANTHROPIC_API_KEY")
+        == " (from Proton Pass)"
+    )
+
+
+def test_apply_external_secret_sources_runs_protonpass_even_if_bitwarden_disabled(
+    tmp_path, monkeypatch
+):
+    """A disabled Bitwarden section must not short-circuit Proton Pass.
+
+    This is the regression guard for the refactor that split the single
+    inlined Bitwarden block into per-backend handlers: the old early
+    ``return`` on ``bitwarden.enabled == false`` would have skipped every
+    other source.
+    """
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "secrets:\n"
+        "  bitwarden:\n"
+        "    enabled: false\n"
+        "  protonpass:\n"
+        "    enabled: true\n"
+        "    env:\n"
+        "      OPENAI_API_KEY: pass://Private/OpenAI/api key\n",
+        encoding="utf-8",
+    )
+
+    from agent.secret_sources.protonpass import FetchResult
+
+    called = {"n": 0}
+
+    def _fake_apply(**_kwargs):
+        called["n"] += 1
+        return FetchResult(
+            secrets={"OPENAI_API_KEY": "sk-test"},
+            applied=["OPENAI_API_KEY"],
+        )
+
+    import agent.secret_sources.protonpass as pp_module
+
+    monkeypatch.setattr(pp_module, "apply_protonpass_secrets", _fake_apply)
+
+    env_loader._apply_external_secret_sources(tmp_path)
+
+    assert called["n"] == 1
+    assert env_loader.get_secret_source("OPENAI_API_KEY") == "protonpass"

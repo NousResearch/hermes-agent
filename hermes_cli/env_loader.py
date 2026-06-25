@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 from utils import atomic_replace
+
+logger = logging.getLogger(__name__)
 
 
 # Env var name suffixes that indicate credential values.  These are the
@@ -78,6 +81,8 @@ def format_secret_source_suffix(env_var: str) -> str:
         return ""
     if source == "bitwarden":
         return " (from Bitwarden)"
+    if source == "protonpass":
+        return " (from Proton Pass)"
     # Generic fallback — future-proofing for additional secret sources
     # (e.g. 1Password, HashiCorp Vault) without having to update every
     # call site.
@@ -307,8 +312,22 @@ def _apply_external_secret_sources(home_path: Path) -> None:
     except Exception:  # noqa: BLE001 — config errors must not block startup
         return
 
-    bw_cfg = (cfg or {}).get("bitwarden") or {}
-    if not bw_cfg.get("enabled"):
+    if not isinstance(cfg, dict):
+        return
+
+    # Each backend runs inside its own broad guard: a failure in one source (a
+    # crash, or a malformed config section) must neither abort startup nor stop
+    # the other sources from loading.
+    for apply_backend in (_apply_bitwarden, _apply_protonpass):
+        try:
+            apply_backend(cfg, home_path)
+        except Exception:  # noqa: BLE001 — secret-source failures never block startup
+            logger.debug("%s failed", apply_backend.__name__, exc_info=True)
+
+
+def _apply_bitwarden(cfg: dict, home_path: Path) -> None:
+    bw_cfg = cfg.get("bitwarden") or {}
+    if not isinstance(bw_cfg, dict) or not bw_cfg.get("enabled"):
         return
 
     try:
@@ -321,39 +340,77 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
         project_id=bw_cfg.get("project_id", ""),
         override_existing=bool(bw_cfg.get("override_existing", False)),
-        cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
+        cache_ttl_seconds=_coerce_ttl(bw_cfg.get("cache_ttl_seconds", 300)),
         auto_install=bool(bw_cfg.get("auto_install", True)),
         server_url=str(bw_cfg.get("server_url", "") or "").strip(),
         home_path=home_path,
     )
+    _record_secret_source_result("bitwarden", "Bitwarden Secrets Manager", result)
 
+
+def _apply_protonpass(cfg: dict, home_path: Path) -> None:
+    pp_cfg = cfg.get("protonpass") or {}
+    if not isinstance(pp_cfg, dict) or not pp_cfg.get("enabled"):
+        return
+
+    try:
+        from agent.secret_sources.protonpass import apply_protonpass_secrets
+    except ImportError:
+        return
+
+    env_map = pp_cfg.get("env")
+    env_map = env_map if isinstance(env_map, dict) else {}
+    result = apply_protonpass_secrets(
+        enabled=True,
+        env=env_map,
+        personal_access_token_env=pp_cfg.get(
+            "personal_access_token_env", "PROTON_PASS_PERSONAL_ACCESS_TOKEN"
+        ),
+        binary_path=str(pp_cfg.get("binary_path", "") or "").strip(),
+        override_existing=bool(pp_cfg.get("override_existing", True)),
+        cache_ttl_seconds=_coerce_ttl(pp_cfg.get("cache_ttl_seconds", 300)),
+        home_path=home_path,
+    )
+    _record_secret_source_result("protonpass", "Proton Pass", result)
+
+
+def _coerce_ttl(value: object, default: float = 300) -> float:
+    """Coerce a config TTL to float without ever raising.
+
+    A stray ``cache_ttl_seconds: "abc"`` (or a YAML list) must not crash
+    startup — fall back to the default instead.
+    """
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+
+
+def _record_secret_source_result(label: str, display: str, result) -> None:
+    """Record applied keys + print a one-line status for a backend result.
+
+    Centralized so every backend labels its origin identically — the setup /
+    ``hermes model`` flows read ``_SECRET_SOURCES`` to show e.g.
+    "(from Proton Pass)" next to a detected credential instead of an
+    unexplained "credentials ✓".
+    """
     if result.applied:
-        # Re-run the ASCII sanitization pass: BSM values are user-supplied
-        # and might have the same copy-paste corruption as a manually
-        # edited .env (see #6843).
+        # Re-run the ASCII sanitization pass: externally-sourced values are
+        # user-supplied and might have the same copy-paste corruption as a
+        # manually edited .env (see #6843).
         _sanitize_loaded_credentials()
-        # Remember where these came from so the setup / `hermes model`
-        # flows can label detected credentials with "(from Bitwarden)" —
-        # otherwise users see "credentials ✓" with no hint that the value
-        # came from BSM rather than .env.
         for name in result.applied:
-            _SECRET_SOURCES[name] = "bitwarden"
+            _SECRET_SOURCES[name] = label
         print(
-            f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
+            f"  {display}: applied {len(result.applied)} "
             f"secret{'s' if len(result.applied) != 1 else ''} "
             f"({', '.join(sorted(result.applied))})",
             file=sys.stderr,
         )
     if result.error:
-        print(
-            f"  Bitwarden Secrets Manager: {result.error}",
-            file=sys.stderr,
-        )
+        print(f"  {display}: {result.error}", file=sys.stderr)
     for warn in result.warnings:
-        print(
-            f"  Bitwarden Secrets Manager: {warn}",
-            file=sys.stderr,
-        )
+        print(f"  {display}: {warn}", file=sys.stderr)
 
 
 def _load_secrets_config(home_path: Path) -> dict:

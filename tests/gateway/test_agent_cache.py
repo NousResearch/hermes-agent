@@ -1719,6 +1719,78 @@ class TestCrossProcessInvalidationLockDiscipline:
     provider shutdown, async client teardown).
     """
 
+    def test_evict_stale_returns_agent_when_stale(self, tmp_path):
+        """_evict_stale_cross_process_agent returns the agent on count mismatch."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        db.append_message("s1", role="user", content="hi")
+        runner = _make_runner()
+        runner._session_db = db
+
+        _row = db.get_session("s1")
+        stale_count = _row.get("message_count", 0) if _row else 0
+        fake_agent = MagicMock()
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (fake_agent, "sig", stale_count)
+
+        # Simulate a cross-process write.
+        db.append_message("s1", role="user", content="from dashboard")
+        db.append_message("s1", role="assistant", content="reply")
+
+        _current = db.get_session("s1").get("message_count", 0)
+        evicted = runner._evict_stale_cross_process_agent(
+            "telegram:s1", _current, sig="sig",
+        )
+        assert evicted is fake_agent
+        assert "telegram:s1" not in runner._agent_cache
+
+    def test_evict_stale_returns_none_when_current(self, tmp_path):
+        """_evict_stale_cross_process_agent returns None when counts match."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        db.append_message("s1", role="user", content="hi")
+        runner = _make_runner()
+        runner._session_db = db
+
+        _row = db.get_session("s1")
+        count = _row.get("message_count", 0) if _row else 0
+        fake_agent = MagicMock()
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (fake_agent, "sig", count)
+
+        evicted = runner._evict_stale_cross_process_agent(
+            "telegram:s1", count, sig="sig",
+        )
+        assert evicted is None
+        assert "telegram:s1" in runner._agent_cache
+
+    def test_evict_stale_returns_none_on_sig_mismatch(self, tmp_path):
+        """When sig doesn't match, the helper skips (config-change path)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        db.append_message("s1", role="user", content="hi")
+        runner = _make_runner()
+        runner._session_db = db
+
+        _row = db.get_session("s1")
+        count = _row.get("message_count", 0) if _row else 0
+        fake_agent = MagicMock()
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (fake_agent, "old-sig", count)
+
+        db.append_message("s1", role="user", content="from dashboard")
+        _current = db.get_session("s1").get("message_count", 0)
+        evicted = runner._evict_stale_cross_process_agent(
+            "telegram:s1", _current, sig="new-sig",
+        )
+        assert evicted is None
+
     def test_cleanup_called_outside_lock(self, tmp_path):
         """_cleanup_agent_resources must NOT be called while the lock is held."""
         from hermes_state import SessionDB
@@ -1753,27 +1825,11 @@ class TestCrossProcessInvalidationLockDiscipline:
 
         runner._cleanup_agent_resources = spy_cleanup
 
-        # Now exercise the cross-process invalidation path.
-        # We need to simulate the production code path that checks
-        # message_count and invalidates.  The production code is inside
-        # _handle_message_with_agent which is too complex to call directly,
-        # so we replicate the exact guard logic:
+        # Exercise the production helper directly.
         _current_msg_count = db.get_session("s1").get("message_count", 0)
-        _cache = runner._agent_cache
-        _cache_lock = runner._agent_cache_lock
-        _ev_agent = None
-
-        with _cache_lock:
-            cached = _cache.get("telegram:s1")
-            if cached and cached[1] == "sig":
-                _cached_mc = cached[2] if len(cached) > 2 else None
-                if (
-                    _cached_mc is not None
-                    and _current_msg_count is not None
-                    and _current_msg_count != _cached_mc
-                ):
-                    evicted = _cache.pop("telegram:s1", None)
-                    _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+        _ev_agent = runner._evict_stale_cross_process_agent(
+            "telegram:s1", _current_msg_count, sig="sig",
+        )
 
         # Cleanup OUTSIDE the lock — this is the fix.
         if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:

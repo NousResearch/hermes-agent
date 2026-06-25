@@ -13849,6 +13849,53 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if release_running_state:
             self._release_running_agent_state(session_key)
 
+    def _evict_stale_cross_process_agent(
+        self,
+        session_key: str,
+        current_msg_count: Optional[int],
+        *,
+        sig: Optional[str] = None,
+    ) -> Optional[Any]:
+        """Check cross-process coherence and evict a stale cached agent.
+
+        The cross-process guard (#45966) compares the session's on-disk
+        ``message_count`` against the count snapshotted when the agent was
+        cached.  On mismatch, the cached agent is popped so a fresh one
+        rebuilds from the DB transcript.
+
+        When *sig* is given, the cache entry's signature must also match
+        (a changed sig means the config changed, handled by the normal
+        rebuild path — not a cross-process issue).
+
+        Returns the evicted agent (caller must clean up *outside* the lock)
+        or ``None`` when the cache is current or absent.
+        """
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        _cache = getattr(self, "_agent_cache", None)
+        if not _cache_lock or _cache is None:
+            return None
+        with _cache_lock:
+            cached = _cache.get(session_key)
+            if not cached or len(cached) < 3:
+                return None
+            if sig is not None and cached[1] != sig:
+                return None
+            _cached_mc = cached[2]
+            if (
+                _cached_mc is not None
+                and current_msg_count is not None
+                and current_msg_count != _cached_mc
+            ):
+                logger.info(
+                    "Agent cache invalidated for session %s: "
+                    "message_count changed (%s -> %s), "
+                    "possible cross-process write",
+                    session_key, _cached_mc, current_msg_count,
+                )
+                evicted = _cache.pop(session_key, None)
+                return evicted[0] if isinstance(evicted, tuple) and evicted else None
+        return None
+
     def _refresh_agent_cache_message_count(
         self, session_key: str, session_id: Optional[str]
     ) -> None:
@@ -15555,29 +15602,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
 
             if _cache_lock and _cache is not None:
-                _ev_agent = None
-                with _cache_lock:
-                    cached = _cache.get(session_key)
-                    if cached and cached[1] == _sig:
-                        # cached[2] is the message_count at cache time;
-                        # stale when a second process appended rows.
-                        _cached_mc = cached[2] if len(cached) > 2 else None
-                        if (
-                            _cached_mc is not None
-                            and _current_msg_count is not None
-                            and _current_msg_count != _cached_mc
-                        ):
-                            # Cross-process write detected — discard stale
-                            # agent so it rebuilds from fresh DB transcript.
-                            logger.info(
-                                "Agent cache invalidated for session %s: "
-                                "message_count changed (%s -> %s), "
-                                "possible cross-process write",
-                                session_key, _cached_mc, _current_msg_count,
-                            )
-                            evicted = self._agent_cache.pop(session_key, None)
-                            _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
-                        else:
+                _ev_agent = self._evict_stale_cross_process_agent(
+                    session_key, _current_msg_count, sig=_sig,
+                )
+                if _ev_agent is None:
+                    # Cache is current — try to reuse the agent.
+                    with _cache_lock:
+                        cached = _cache.get(session_key)
+                        if cached and cached[1] == _sig:
                             agent = cached[0]
                             # Refresh LRU order so the cap enforcement evicts
                             # truly-oldest entries, not the one we just used.

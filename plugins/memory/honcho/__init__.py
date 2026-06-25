@@ -673,8 +673,19 @@ class HonchoMemoryProvider(MemoryProvider):
             return ""
 
         if not self._session_ready():
+            # Session init runs in a background daemon thread (kept off the
+            # startup path so a slow/unreachable Honcho can't block agent
+            # construction). On turn 1 of a fresh process that thread may not
+            # have finished yet. Rather than return empty immediately — which
+            # denied turn-1 context entirely whenever init crossed the ~100ms
+            # spawn window — wait a bounded time for it to complete so the
+            # peer card can still be injected on the first message.
             self._start_session_init_background()
-            return ""
+            _init_thread = self._init_thread
+            if _init_thread is not None:
+                _init_thread.join(timeout=self._FIRST_TURN_BASE_TIMEOUT)
+            if not self._session_ready():
+                return ""
 
         # B5: injection_frequency — if "first-turn" and past first turn, return empty.
         # _turn_count is 1-indexed (first user message = 1), so > 1 means "past first".
@@ -688,21 +699,61 @@ class HonchoMemoryProvider(MemoryProvider):
         parts = []
 
         # ----- Layer 1: Base context (representation + card) -----
-        # First fetch is asynchronous: a slow Honcho backend must not block the
-        # first response. Serve empty context now and consume the background
-        # result on a later turn.
+        # Base context is pure retrieval (no LLM): representation + peer card +
+        # session summary. On the FIRST fetch (cache is None, i.e. turn 1 of a
+        # session) we fetch it SYNCHRONOUSLY with a short bound so the peer card
+        # is injected immediately. Firing it async and popping in the same call
+        # always lost the race on turn 1 (background thread can't finish inside
+        # one synchronous pass), which is why new sessions saw zero context
+        # until turn 2. Subsequent turns consume the background-refreshed result
+        # primed by queue_prefetch() at the end of the previous turn.
         with self._base_context_lock:
-            if self._base_context_cache is None:
+            _first_base_fetch = self._base_context_cache is None
+            if _first_base_fetch:
                 self._base_context_cache = ""
                 self._last_context_turn = self._turn_count
-                try:
-                    self._manager.prefetch_context(self._session_key, query or None)
-                except Exception as e:
-                    logger.debug("Honcho base context prefetch failed: %s", e)
             base_context = self._base_context_cache
 
-        # Check if background context prefetch has a fresher result
-        if self._manager:
+        if _first_base_fetch and self._manager:
+            # Synchronous, bounded fetch so turn 1 gets the peer card now.
+            _ctx_holder: dict[str, dict] = {}
+
+            def _fetch_base() -> None:
+                try:
+                    _ctx_holder["ctx"] = self._manager.get_prefetch_context(
+                        self._session_key, query or None
+                    ) or {}
+                except Exception as e:
+                    logger.debug("Honcho first-turn base context failed: %s", e)
+
+            _bt = threading.Thread(
+                target=_fetch_base, daemon=True, name="honcho-base-first"
+            )
+            _bt.start()
+            # Bound the synchronous wait by the smaller of the base timeout and
+            # any configured request timeout, so a deliberately tight
+            # config.timeout (fail-fast deployments, tests) is still honored.
+            _base_wait = self._FIRST_TURN_BASE_TIMEOUT
+            if self._config and self._config.timeout:
+                _base_wait = min(_base_wait, self._config.timeout)
+            _bt.join(timeout=_base_wait)
+            _ctx = _ctx_holder.get("ctx")
+            if _ctx:
+                formatted = self._format_first_turn_context(_ctx)
+                if formatted:
+                    with self._base_context_lock:
+                        self._base_context_cache = formatted
+                    base_context = formatted
+            elif _bt.is_alive():
+                logger.debug(
+                    "Honcho first-turn base context still running after %.1fs — "
+                    "will surface on next turn", self._FIRST_TURN_BASE_TIMEOUT,
+                )
+
+        # Check if a background context prefetch (primed last turn) has a
+        # fresher result. On turn 1 this is normally empty; turn 2+ consumes
+        # the result queued by queue_prefetch().
+        if not _first_base_fetch and self._manager:
             fresh_ctx = self._manager.pop_context_result(self._session_key)
             if fresh_ctx:
                 formatted = self._format_first_turn_context(fresh_ctx)
@@ -728,45 +779,68 @@ class HonchoMemoryProvider(MemoryProvider):
         if _prewarm_landed and self._last_dialectic_turn == -999:
             self._last_dialectic_turn = self._turn_count
 
+        _did_first_turn_wait = False
         if self._last_dialectic_turn == -999 and query:
-            _first_turn_timeout = (
-                self._config.timeout if self._config and self._config.timeout else 8.0
-            )
-            _fired_at = self._turn_count
+            _did_first_turn_wait = True
+            # A dialectic prewarm thread is fired at session init with an
+            # equivalent query. If it's still running, do NOT fire a second
+            # .chat() here — that was duplicate work that also blocked the
+            # first response. Briefly wait for the in-flight prewarm to land;
+            # if it doesn't, let it surface on a later turn via _prefetch_result.
+            # First-turn dialectic wait. Decoupled from a LARGE config.timeout
+            # (a 60s host timeout must not block the first response for 60s),
+            # but still bounded by a TIGHT config.timeout when one is set
+            # (fail-fast deployments / tests). See _FIRST_TURN_DIALECTIC_CAP.
+            _dia_wait = self._FIRST_TURN_DIALECTIC_CAP
+            if self._config and self._config.timeout:
+                _dia_wait = min(_dia_wait, self._config.timeout)
+            if self._thread_is_live():
+                _live = self._prefetch_thread
+                if _live is not None:
+                    _live.join(timeout=_dia_wait)
+            else:
+                _first_turn_timeout = _dia_wait
+                _fired_at = self._turn_count
 
-            def _run_first_turn() -> None:
-                try:
-                    r = self._run_dialectic_depth(query)
-                except Exception as exc:
-                    logger.debug("Honcho first-turn dialectic failed: %s", exc)
-                    self._dialectic_empty_streak += 1
-                    return
-                if r and r.strip():
-                    with self._prefetch_lock:
-                        self._prefetch_result = r
-                        self._prefetch_result_fired_at = _fired_at
-                    # Advance cadence only on a non-empty result so the next
-                    # turn retries when the call returned nothing.
-                    self._last_dialectic_turn = _fired_at
-                    self._dialectic_empty_streak = 0
-                else:
-                    self._dialectic_empty_streak += 1
+                def _run_first_turn() -> None:
+                    try:
+                        r = self._run_dialectic_depth(query)
+                    except Exception as exc:
+                        logger.debug("Honcho first-turn dialectic failed: %s", exc)
+                        self._dialectic_empty_streak += 1
+                        return
+                    if r and r.strip():
+                        with self._prefetch_lock:
+                            self._prefetch_result = r
+                            self._prefetch_result_fired_at = _fired_at
+                        # Advance cadence only on a non-empty result so the next
+                        # turn retries when the call returned nothing.
+                        self._last_dialectic_turn = _fired_at
+                        self._dialectic_empty_streak = 0
+                    else:
+                        self._dialectic_empty_streak += 1
 
-            self._prefetch_thread_started_at = time.monotonic()
-            first_turn_thread = threading.Thread(
-                target=_run_first_turn, daemon=True, name="honcho-prefetch-first"
-            )
-            first_turn_thread.start()
-            self._prefetch_thread = first_turn_thread
-            self._prefetch_thread.join(timeout=_first_turn_timeout)
-            if self._prefetch_thread.is_alive():
+                self._prefetch_thread_started_at = time.monotonic()
+                first_turn_thread = threading.Thread(
+                    target=_run_first_turn, daemon=True, name="honcho-prefetch-first"
+                )
+                first_turn_thread.start()
+                self._prefetch_thread = first_turn_thread
+                self._prefetch_thread.join(timeout=_first_turn_timeout)
+            if self._prefetch_thread and self._prefetch_thread.is_alive():
                 logger.debug(
                     "Honcho first-turn dialectic still running after %.1fs — "
                     "will surface on next turn",
-                    _first_turn_timeout,
+                    self._FIRST_TURN_DIALECTIC_CAP,
                 )
 
-        if self._prefetch_thread and self._prefetch_thread.is_alive():
+        # Turn 2+ consumes the result primed by queue_prefetch() last turn —
+        # give a near-finished thread a brief moment. On turn 1 we already
+        # waited above (_did_first_turn_wait); waiting again here just
+        # re-blocks on the same slow in-flight dialectic with no chance of it
+        # landing, so skip the redundant join.
+        if (not _did_first_turn_wait and self._prefetch_thread
+                and self._prefetch_thread.is_alive()):
             self._prefetch_thread.join(timeout=3.0)
         with self._prefetch_lock:
             dialectic_result = self._prefetch_result
@@ -922,6 +996,22 @@ class HonchoMemoryProvider(MemoryProvider):
     # Cap on the empty-streak backoff so a persistently silent backend
     # eventually settles on a ceiling instead of unbounded widening.
     _BACKOFF_MAX = 8
+    # First-turn base-context fetch bound. Base context (representation +
+    # peer card) is pure retrieval with no LLM call (~400-600ms locally), so
+    # turn 1 can afford to wait for it synchronously and inject the peer card
+    # immediately instead of returning an empty block that only fills from
+    # turn 2. A short bound keeps a slow/unreachable backend from blocking the
+    # first response.
+    _FIRST_TURN_BASE_TIMEOUT = 3.0
+    # First-turn dialectic grace. The dialectic is the slow LLM path
+    # (multi-pass .chat(), often 20s+ at depth 3) and must stay decoupled from
+    # config.timeout: once the host-block timeout is honored (e.g. 60s),
+    # reusing it here would block the first response for the full request
+    # timeout. Turn 1's value is the base context (peer card), fetched
+    # synchronously above; the dialectic only needs an opportunistic grace to
+    # catch a near-finished prewarm. If it doesn't land in this window it
+    # surfaces on turn 2 via _prefetch_result — no benefit to blocking longer.
+    _FIRST_TURN_DIALECTIC_CAP = 2.0
 
     def _thread_is_live(self) -> bool:
         """Thread-alive guard that treats threads older than the stale
@@ -1077,15 +1167,31 @@ class HonchoMemoryProvider(MemoryProvider):
         results: list[str] = []
 
         for i in range(self._dialectic_depth):
+            # Only non-empty prior results are usable context for dependent
+            # passes. A pass can return "" (e.g. a reasoning model that spends
+            # its whole token budget thinking and emits no content). Feeding
+            # that blank forward produced prompts like "Given this initial
+            # assessment:\n\n\n\nWhat gaps remain..." with an empty body — the
+            # empty-spot symptom seen in Honcho request logs.
+            prior_results = [r for r in results if r and r.strip()]
             if i == 0:
-                prompt = self._build_dialectic_prompt(0, results, is_cold)
+                prompt = self._build_dialectic_prompt(0, prior_results, is_cold)
             else:
                 # Skip further passes if prior pass delivered strong signal
-                if results and self._signal_sufficient(results[-1]):
+                if prior_results and self._signal_sufficient(prior_results[-1]):
                     logger.debug("Honcho dialectic depth %d: pass %d skipped, prior signal sufficient",
                                  self._dialectic_depth, i)
                     break
-                prompt = self._build_dialectic_prompt(i, results, is_cold)
+                if not prior_results:
+                    # Every prior pass returned empty — a dependent prompt would
+                    # carry a blank assessment. Re-issue the pass-0 base prompt
+                    # instead so this pass starts fresh rather than referencing
+                    # nothing.
+                    logger.debug("Honcho dialectic depth %d: pass %d has no non-empty prior — "
+                                 "falling back to base prompt", self._dialectic_depth, i)
+                    prompt = self._build_dialectic_prompt(0, prior_results, is_cold)
+                else:
+                    prompt = self._build_dialectic_prompt(i, prior_results, is_cold)
 
             level = self._resolve_pass_level(i, query=query)
             logger.debug("Honcho dialectic depth %d: pass %d, level=%s, cold=%s",

@@ -707,7 +707,7 @@ services.hermes-agent.settings.plugins.enabled = [
 ```
 
 :::note
-构建时冲突检查可防止插件包覆盖核心 hermes 依赖。如果插件提供了封闭 venv 中已有的包，`nixos-rebuild` 会以明确的错误失败。
+插件可以安全地依赖 hermes 封闭 venv 中已有的包（如 `requests`、`numpy`）。构建时，任何与核心包重复的插件依赖会自动从封闭 venv 解析，并从插件 `PYTHONPATH` 中省略，因此核心经过测试的版本始终优先。构建会为每个被过滤的依赖打印一条 `warning:` 行。只有真正仅属于插件的包才会被添加到 `PYTHONPATH`。
 :::
 
 ---

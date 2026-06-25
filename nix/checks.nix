@@ -302,6 +302,44 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Verify extraPythonPackages collision filtering (build succeeds,
+        # overlapping deps omitted from PYTHONPATH, plugin-only deps kept)
+        extra-python-packages-collision-filter = let
+          # requests is in the [all] dependency group, hence in sealed venv
+          dupPkg = pkgs.python312Packages.requests;
+          # pyfiglet is NOT in core, so it must survive the filter
+          uniqPkg = pkgs.python312Packages.pyfiglet;
+          hermesWithMixed = hermes-agent.override {
+            extraPythonPackages = [ dupPkg uniqPkg ];
+          };
+        in pkgs.runCommand "hermes-extra-python-packages-collision-filter" { } ''
+          set -e
+          echo "=== Checking extraPythonPackages collision filtering ==="
+
+          # Build must succeed (previously would exit 1 on collision)
+          echo "PASS: build succeeded with overlapping dependency"
+
+          # Base package still clean
+          if grep -q "PYTHONPATH" ${hermes-agent}/bin/hermes; then
+            echo "FAIL: base package should not have PYTHONPATH"; exit 1
+          fi
+          echo "PASS: base package clean"
+
+          # Overlapping package (requests) must NOT appear in wrapper PYTHONPATH
+          if grep -q "${dupPkg}" ${hermesWithMixed}/bin/hermes; then
+            echo "FAIL: overlapping package (requests) should be filtered from PYTHONPATH"; exit 1
+          fi
+          echo "PASS: overlapping package filtered from PYTHONPATH"
+
+          # Non-overlapping package (pyfiglet) MUST appear in wrapper PYTHONPATH
+          grep -q "${uniqPkg}" ${hermesWithMixed}/bin/hermes ||             (echo "FAIL: non-overlapping package (pyfiglet) missing from PYTHONPATH"; exit 1)
+          echo "PASS: non-overlapping package present in PYTHONPATH"
+
+          echo "=== All extraPythonPackages collision filter checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # Verify extraDependencyGroups passes through to python.nix
         extra-dependency-groups = let
           hermesWithGroups = hermes-agent.override {

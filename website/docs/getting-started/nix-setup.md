@@ -752,7 +752,7 @@ services.hermes-agent.settings.plugins.enabled = [
 ```
 
 :::note
-A build-time collision check prevents plugin packages from shadowing core hermes dependencies. If a plugin provides a package already in the sealed venv, `nixos-rebuild` fails with a clear error.
+Plugins may safely depend on packages already in hermes's sealed venv (e.g. `requests`, `numpy`). At build time, any plugin dependency that duplicates a core package is automatically resolved from the sealed venv and omitted from the plugin `PYTHONPATH`, so core's tested version always wins. The build prints a `warning:` line for each dependency it filters. Only genuinely plugin-only packages are added to `PYTHONPATH`.
 :::
 
 ---

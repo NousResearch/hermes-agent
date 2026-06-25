@@ -507,6 +507,12 @@
           These are pip-packaged plugins that register via the
           hermes_agent.plugins entry-point group. Each package must be built
           with the same Python interpreter as hermes (python312).
+
+          At build time, any dependency that already exists in hermes's
+          sealed venv is automatically resolved from core and omitted from
+          the plugin PYTHONPATH (core's tested version wins). The build
+          emits a warning for each filtered dependency. Only genuinely
+          plugin-only packages are added to PYTHONPATH.
         '';
         example = literalExpression ''
           [

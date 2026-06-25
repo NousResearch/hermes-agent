@@ -15110,20 +15110,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if not adapter:
                 return
 
-            # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
-                while not progress_queue.empty():
-                    try:
-                        progress_queue.get_nowait()
-                    except Exception:
-                        break
-                return
+            # Non-editing platforms (WeChat, QQ, Signal, etc.) can't edit
+            # messages, so each progress update must be sent as a separate
+            # new message.  Initialize can_edit dynamically so the existing
+            # fallback path (new message per update) activates correctly.
+            _adapter_supports_edit = (
+                type(adapter).edit_message is not BasePlatformAdapter.edit_message
+            )
 
-            progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
-            progress_msg_id = None   # ID of the current progress message to edit
-            can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+            progress_lines = []      # Accumulated tool lines
+            progress_msg_id = None   # ID of the progress message to edit
+            can_edit = _adapter_supports_edit  # False → each update is a new message
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 

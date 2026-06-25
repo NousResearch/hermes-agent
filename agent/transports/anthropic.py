@@ -13,8 +13,10 @@ from agent.transports.types import NormalizedResponse
 # ── Text-embedded tool-call salvage (issue: opus-4-8 antml: prefix drop) ──
 # Anthropic OAuth turns tool calls into structured ``tool_use`` blocks ONLY
 # when the model emits the namespaced ``antml:invoke`` markup correctly.
-# Some Claude builds (observed: opus-4-8) intermittently drop the ``antml:``
-# namespace prefix and emit a bare ``<invoke name="...">`` block instead.
+# Some Claude builds (observed: opus-4-8) intermittently drop either the
+# ``antml:`` namespace prefix (emitting bare ``<invoke name="...">``) or the
+# opening angle bracket on the outer invoke tag (emitting
+# ``antml:invoke name="...">`` while keeping the closing ``</invoke>``).
 # The API can't recognise it, so it comes back as a plain ``text`` block with
 # ``stop_reason="end_turn"`` and NO ``tool_use`` — the agent loop then treats
 # the turn as a final answer and halts WITHOUT running the tool.
@@ -22,9 +24,11 @@ from agent.transports.types import NormalizedResponse
 # These regexes recover a *complete* invoke block (closing tag required) from
 # assistant text so the transport can re-promote it to a real tool call.
 # Both the namespaced (``antml:invoke``) and bare (``invoke``) spellings are
-# matched, as are self-closing and value-bearing parameters.
+# matched, and the opening-tag angle bracket is optional only when the
+# namespace is still present. Plain prose like ``invoke name="..."`` is not
+# salvaged.
 _SALVAGE_INVOKE_RE = re.compile(
-    r"<(?:antml:)?invoke\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</(?:antml:)?invoke\s*>",
+    r"(?:<(?:antml:)?|antml:)invoke\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</(?:antml:)?invoke\s*>",
     re.DOTALL | re.IGNORECASE,
 )
 _SALVAGE_PARAM_RE = re.compile(

@@ -41,6 +41,10 @@ def _inv(name, body, ns=False):
     return f"{_LT}{pre}invoke name=\"{name}\"{_GT}{body}{_LT}{_SL}{pre}invoke{_GT}"
 
 
+def _inv_missing_open_angle(name, body):
+    return f"{_NS}invoke name=\"{name}\"{_GT}{body}{_LT}{_SL}invoke{_GT}"
+
+
 def _param(name, val, ns=False):
     pre = _NS if ns else ""
     return f"{_LT}{pre}parameter name=\"{name}\"{_GT}{val}{_LT}{_SL}{pre}parameter{_GT}"
@@ -68,6 +72,30 @@ class TestSalvageFromText:
         assert calls[0]["name"] == "terminal"
         assert calls[0]["arguments"] == {"command": "ls -la"}
         assert cleaned == ""
+
+    def test_namespaced_invoke_missing_open_angle_salvaged(self):
+        # Regression: opus-4-8 can drop only the outer opening '<', leaving
+        # ``antml:invoke ...>`` plus a complete closing ``</invoke>``.
+        text = "call\n\n" + _inv_missing_open_angle(
+            "mcp__browser_vision",
+            _param("question", "Check the OMC slide."),
+        )
+        calls, cleaned = salvage_tool_calls_from_text(text)
+        assert len(calls) == 1
+        assert calls[0]["name"] == "mcp__browser_vision"
+        assert calls[0]["arguments"] == {"question": "Check the OMC slide."}
+        assert "antml:invoke" not in cleaned
+        assert cleaned.strip() == "call"
+
+    def test_plain_invoke_without_angle_or_namespace_not_salvaged(self):
+        text = (
+            "The phrase invoke name=\"terminal\"> is just prose, even if "
+            + _LT + _SL + "invoke" + _GT
+            + " appears later."
+        )
+        calls, cleaned = salvage_tool_calls_from_text(text)
+        assert calls == []
+        assert cleaned == text
 
     def test_multiple_params_with_type_coercion(self):
         body = (
@@ -178,6 +206,27 @@ class TestNormalizeResponseSalvage:
         # Raw markup scrubbed from user-visible content.
         assert nr.content is None or "invoke" not in nr.content
         assert nr.content is None or "Let me read it." in nr.content
+
+    def test_missing_open_angle_in_text_promoted_to_tool_call(self, transport):
+        """Edge repro: ``antml:invoke`` text with no opening '<' still runs."""
+        leaked = "call\n\n" + _inv_missing_open_angle(
+            "mcp__browser_vision",
+            _param("question", "Check the OMC slide."),
+        )
+        r = SimpleNamespace(
+            content=[SimpleNamespace(type="text", text=leaked)],
+            stop_reason="end_turn",
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+            model="claude-opus-4-8",
+        )
+        nr = transport.normalize_response(r)
+        assert nr.tool_calls is not None
+        assert len(nr.tool_calls) == 1
+        tc = nr.tool_calls[0]
+        assert tc.name == "mcp__browser_vision"
+        assert json.loads(tc.arguments) == {"question": "Check the OMC slide."}
+        assert nr.finish_reason == "tool_calls"
+        assert nr.content is None or "antml:invoke" not in nr.content
 
     def test_structured_tool_use_unaffected(self, transport):
         """Healthy path: a real tool_use block is untouched by salvage."""

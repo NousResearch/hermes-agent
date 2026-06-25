@@ -466,6 +466,17 @@ export function setSessionAttention(sessionId: string | null | undefined, needsI
   }
 }
 
+// Blocking mid-turn prompts (sudo/secret) set needsInput on the runtime session.
+// When the overlay resolves — submit or backdrop cancel — clear it immediately
+// so the sidebar badge does not linger until the next tool.complete.
+export const $blockingPromptResolvedRuntimeId = atom<string | null>(null)
+
+export function notifyBlockingPromptResolved(runtimeSessionId: string | null | undefined) {
+  if (runtimeSessionId) {
+    $blockingPromptResolvedRuntimeId.set(runtimeSessionId)
+  }
+}
+
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {
   if (!sessionId) {
     return

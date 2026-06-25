@@ -19,6 +19,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import { notifyBlockingPromptResolved } from '@/store/session'
 import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } from '@/store/prompts'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
@@ -68,6 +69,7 @@ function SudoDialog() {
         })
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
+        notifyBlockingPromptResolved(request.sessionId)
       } catch (error) {
         notifyError(error, copy.sudoSendFailed)
         setSubmitting(false)
@@ -104,7 +106,14 @@ function SudoDialog() {
       <DialogContent showCloseButton={false}>
         <DialogHeader>
           <DialogTitle icon={Lock}>{copy.sudoTitle}</DialogTitle>
-          <DialogDescription>{copy.sudoDesc}</DialogDescription>
+          <DialogDescription>
+            {copy.sudoDesc}
+            {request.command ? (
+              <code className="mt-2 block max-h-24 overflow-y-auto rounded-md bg-muted/60 px-2 py-1.5 font-mono text-[length:var(--conversation-tool-font-size)] text-foreground break-all">
+                {request.command}
+              </code>
+            ) : null}
+          </DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-3" onSubmit={onSubmit}>
@@ -164,6 +173,7 @@ function SecretDialog() {
         })
         triggerHaptic('submit')
         clearSecretRequest(request.sessionId, request.requestId)
+        notifyBlockingPromptResolved(request.sessionId)
       } catch (error) {
         notifyError(error, copy.secretSendFailed)
         setSubmitting(false)

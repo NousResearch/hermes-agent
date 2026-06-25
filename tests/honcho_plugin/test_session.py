@@ -247,55 +247,70 @@ class TestPeerLookupHelpers:
         assert result == ["Role: user"]
         assistant_peer.set_card.assert_called_once_with(["Role: user"], target=session.user_peer_id)
 
-    def test_search_context_uses_assistant_perspective_with_target(self):
+    def test_search_context_uses_peer_perspective_message_search(self):
+        """honcho_search must do cross-session message search scoped to the
+        target peer via the peer_perspective filter — not dump the
+        representation. Regression guard for the representation-dump bug."""
         mgr, session = self._make_cached_manager()
-        assistant_peer = MagicMock()
-        assistant_peer.context.return_value = SimpleNamespace(
-            representation="Robert runs neuralancer",
-            peer_card=["Location: Melbourne"],
-        )
-        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+        honcho_client = MagicMock()
+        honcho_client.search.return_value = [
+            SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-old", id="m1"),
+            SimpleNamespace(content="I founded neuralancer in 2019", peer_id="robert", session_id="s-old", id="m2"),
+        ]
+        mgr._honcho = honcho_client
 
         result = mgr.search_context(session.key, "neuralancer")
 
+        # Returns the actual message content, ranked.
         assert "Robert runs neuralancer" in result
-        assert "- Location: Melbourne" in result
-        assistant_peer.context.assert_called_once_with(
-            target=session.user_peer_id,
-            search_query="neuralancer",
-        )
+        assert "neuralancer in 2019" in result
+        # Scoped to the target (user) peer's sessions, all authors.
+        honcho_client.search.assert_called_once()
+        _args, kwargs = honcho_client.search.call_args
+        assert kwargs["filters"] == {"peer_perspective": session.user_peer_id}
+        # Assistant-authored messages are labeled so the model can tell
+        # user-stated facts from assistant-derived ones.
+        assert "[assistant" in result
 
-    def test_search_context_unified_mode_uses_user_self_context(self):
+    def test_search_context_explicit_ai_peer_searches_ai_perspective(self):
         mgr, session = self._make_cached_manager()
-        mgr._ai_observe_others = False
-        user_peer = MagicMock()
-        user_peer.context.return_value = SimpleNamespace(
-            representation="Unified self context",
-            peer_card=["Name: Robert"],
-        )
-        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
-
-        result = mgr.search_context(session.key, "self")
-
-        assert "Unified self context" in result
-        user_peer.context.assert_called_once_with(search_query="self")
-
-    def test_search_context_accepts_explicit_ai_peer_id(self):
-        mgr, session = self._make_cached_manager()
-        ai_peer = MagicMock()
-        ai_peer.context.return_value = SimpleNamespace(
-            representation="Assistant self context",
-            peer_card=["Role: Assistant"],
-        )
-        mgr._get_or_create_peer = MagicMock(return_value=ai_peer)
+        honcho_client = MagicMock()
+        honcho_client.search.return_value = [
+            SimpleNamespace(content="Assistant note", peer_id="hermes", session_id="s1", id="m1"),
+        ]
+        mgr._honcho = honcho_client
 
         result = mgr.search_context(session.key, "assistant", peer=session.assistant_peer_id)
 
-        assert "Assistant self context" in result
-        ai_peer.context.assert_called_once_with(
-            target=session.assistant_peer_id,
-            search_query="assistant",
-        )
+        assert "Assistant note" in result
+        _args, kwargs = honcho_client.search.call_args
+        assert kwargs["filters"] == {"peer_perspective": session.assistant_peer_id}
+
+    def test_search_context_empty_query_returns_empty(self):
+        mgr, session = self._make_cached_manager()
+        honcho_client = MagicMock()
+        mgr._honcho = honcho_client
+
+        assert mgr.search_context(session.key, "   ") == ""
+        honcho_client.search.assert_not_called()
+
+    def test_search_context_falls_back_to_peer_search_on_filter_error(self):
+        """If the workspace search with peer_perspective raises (older Honcho),
+        fall back to peer-authored search rather than returning nothing."""
+        mgr, session = self._make_cached_manager()
+        honcho_client = MagicMock()
+        honcho_client.search.side_effect = RuntimeError("peer_perspective unsupported")
+        mgr._honcho = honcho_client
+        peer_obj = MagicMock()
+        peer_obj.search.return_value = [
+            SimpleNamespace(content="fallback hit", peer_id="robert", session_id="s1", id="m1"),
+        ]
+        mgr._get_or_create_peer = MagicMock(return_value=peer_obj)
+
+        result = mgr.search_context(session.key, "anything")
+
+        assert "fallback hit" in result
+        peer_obj.search.assert_called_once()
 
     def test_get_prefetch_context_fetches_user_and_ai_from_peer_api(self):
         mgr, session = self._make_cached_manager()

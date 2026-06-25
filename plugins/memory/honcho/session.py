@@ -1110,43 +1110,94 @@ class HonchoSessionManager:
         peer: str = "user",
     ) -> str:
         """
-        Semantic search over Honcho session context.
+        Hybrid (semantic + keyword) message search over a peer's history.
 
-        Returns raw excerpts ranked by relevance to the query. No LLM
-        reasoning — cheaper and faster than dialectic_query. Good for
-        factual lookups where the model will do its own synthesis.
+        Calls Honcho's workspace message-search endpoint with a
+        ``peer_perspective`` filter, which returns RRF-ranked raw message
+        snippets drawn from every session the peer was a member of (scoped
+        by their join/leave windows). This is the cross-session factual
+        recall primitive: it finds what was actually *said* — including
+        messages authored by the assistant about the peer — rather than
+        dumping the standing representation.
+
+        No LLM reasoning is involved — cheaper and faster than
+        ``dialectic_query``. Good for factual lookups where the model will
+        do its own synthesis over the returned excerpts.
 
         Args:
-            session_key: Session to search against.
-            query: Search query for semantic matching.
-            max_tokens: Token budget for returned content.
-            peer: Peer alias or explicit peer ID to search about.
+            session_key: Session whose workspace/peer scope to search within.
+            query: Search query (hybrid semantic + full-text).
+            max_tokens: Approximate budget for returned content. Snippets are
+                accumulated until this budget (≈4 chars/token) is exhausted.
+            peer: Peer alias or explicit peer ID whose sessions to search.
 
         Returns:
-            Relevant context excerpts as a string, or empty string if none.
+            Ranked message excerpts as a formatted string, or empty string
+            if none found.
         """
         session = self._cache.get(session_key)
         if not session:
             return ""
 
-        try:
-            observer_peer_id, target = self._resolve_observer_target(session, peer)
+        # Resolve the peer whose message history we scope the search to.
+        # We deliberately use the *target* peer (the human by default) for the
+        # peer_perspective filter so the search spans every session that peer
+        # participated in, across all authors — not just messages they wrote.
+        peer_id = self._resolve_peer_id(session, peer)
 
-            ctx = self._fetch_peer_context(
-                observer_peer_id,
-                search_query=query,
-                target=target,
-            )
-            parts = []
-            if ctx["representation"]:
-                parts.append(ctx["representation"])
-            card = ctx["card"] or []
-            if card:
-                parts.append("\n".join(f"- {f}" for f in card))
-            return "\n\n".join(parts)
-        except Exception as e:
-            logger.debug("Honcho search_context failed: %s", e)
+        # Honcho caps query length for the embedding model; keep well under it.
+        q = (query or "").strip()
+        if not q:
             return ""
+        if len(q) > 4000:
+            q = q[:4000]
+
+        # Convert the token budget into an approximate result count + char cap.
+        # ~4 chars/token; assume a useful snippet is a few hundred chars.
+        char_budget = max(200, int(max_tokens) * 4)
+        limit = max(3, min(20, char_budget // 300))
+
+        try:
+            messages = self.honcho.search(
+                q,
+                filters={"peer_perspective": peer_id},
+                limit=limit,
+            )
+        except Exception as e:
+            logger.debug("Honcho message search failed (peer_perspective=%s): %s", peer_id, e)
+            # Fall back to peer-authored search if the perspective filter is
+            # unsupported by the running Honcho version.
+            try:
+                peer_obj = self._get_or_create_peer(peer_id)
+                messages = peer_obj.search(q, limit=limit)
+            except Exception as e2:
+                logger.debug("Honcho peer search fallback also failed: %s", e2)
+                return ""
+
+        if not messages:
+            return ""
+
+        # Format ranked snippets, honoring the char budget. Label the author
+        # so the model can tell user-stated facts from assistant-derived ones.
+        assistant_id = session.assistant_peer_id
+        lines: list[str] = []
+        used = 0
+        for m in messages:
+            content = (getattr(m, "content", "") or "").strip()
+            if not content:
+                continue
+            author = getattr(m, "peer_id", "") or "unknown"
+            who = "assistant" if author == assistant_id else author
+            sess = getattr(m, "session_id", "") or ""
+            # Trim individual snippets so one long message can't eat the budget.
+            snippet = content[:1200]
+            entry = f"[{who}{f' · {sess}' if sess else ''}] {snippet}"
+            if used + len(entry) > char_budget and lines:
+                break
+            lines.append(entry)
+            used += len(entry)
+
+        return "\n\n".join(lines)
 
     def create_conclusion(self, session_key: str, content: str, peer: str = "user") -> bool:
         """Write a conclusion about a target peer back to Honcho.

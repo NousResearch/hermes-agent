@@ -1118,7 +1118,16 @@ class AIAgent:
           1. ``providers.<id>.models.<model>.stale_timeout_seconds``
           2. ``providers.<id>.stale_timeout_seconds``
           3. ``HERMES_API_CALL_STALE_TIMEOUT`` env var
-          4. 90.0s default (time-to-first-byte for non-streaming / Codex
+          4. Reasoning-model floor (Nemotron 3 Ultra, OpenAI o1/o3,
+             Anthropic Opus 4.x thinking, DeepSeek R1, Qwen QwQ, xAI
+             Grok reasoning, etc.) — auto-mitigation for known
+             reasoning models whose cloud gateways idle-kill before
+             the model's thinking phase ends.  ``uses_implicit_default``
+             is False here so the local-endpoint short-circuit in
+             ``_compute_non_stream_stale_timeout`` does not disable
+             stale detection for users running reasoning models on a
+             local NIM endpoint.
+          5. 90.0s default (time-to-first-byte for non-streaming / Codex
              internal-streaming requests; lowered from 300s in May 2026 so
              fallback providers kick in faster when upstream providers
              stall).  The detector still scales up for large contexts in
@@ -1136,6 +1145,11 @@ class AIAgent:
         env_timeout = os.getenv("HERMES_API_CALL_STALE_TIMEOUT")
         if env_timeout is not None:
             return float(env_timeout), False
+
+        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+        reasoning_floor = get_reasoning_stale_timeout_floor(self.model)
+        if reasoning_floor is not None:
+            return reasoning_floor, False
 
         return 90.0, True
 

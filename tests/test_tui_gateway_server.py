@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import subprocess
@@ -6698,6 +6699,100 @@ def test_file_attach_falls_back_to_hermes_home_when_workspace_is_read_only(monke
         )
         assert ctx.blocked is False
         assert "hello world" in ctx.message
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_falls_back_on_read_only_filesystem_oserror(monkeypatch, tmp_path):
+    workspace = tmp_path / "readonly-workspace"
+    workspace.mkdir()
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    blocked_root = workspace / ".hermes" / "desktop-attachments"
+    original_mkdir = Path.mkdir
+
+    def fake_mkdir(self, *args, **kwargs):
+        if self == blocked_root:
+            raise OSError(errno.EROFS, "Read-only file system", str(self))
+        return original_mkdir(self, *args, **kwargs)
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+    monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8=",
+                },
+            }
+        )
+
+        stored = Path(resp["result"]["path"])
+        assert resp["result"]["attached"] is True
+        assert stored.is_relative_to(hermes_home.resolve() / "desktop-attachments")
+        assert stored.read_text(encoding="utf-8") == "hello"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_falls_back_when_workspace_attachment_write_is_denied(monkeypatch, tmp_path):
+    workspace = tmp_path / "readonly-workspace"
+    workspace.mkdir()
+    blocked_root = workspace / ".hermes" / "desktop-attachments"
+    blocked_root.mkdir(parents=True)
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    original_write_bytes = Path.write_bytes
+
+    def fake_write_bytes(self, data):
+        try:
+            self.relative_to(blocked_root)
+        except ValueError:
+            return original_write_bytes(self, data)
+        raise PermissionError("workspace attachment dir is read-only")
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    server._sessions["sid"] = _session(cwd=str(workspace))
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+    monkeypatch.setattr(Path, "write_bytes", fake_write_bytes)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8=",
+                },
+            }
+        )
+
+        stored = Path(resp["result"]["path"])
+        assert resp["result"]["attached"] is True
+        assert stored.is_relative_to(hermes_home.resolve() / "desktop-attachments")
+        assert stored.read_text(encoding="utf-8") == "hello"
+        assert not (blocked_root / "report.txt").exists()
     finally:
         server._sessions.pop("sid", None)
 

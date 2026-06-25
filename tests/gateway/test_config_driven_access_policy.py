@@ -268,6 +268,22 @@ def test_pairing_dm_intake_denies_blank_principal(
     assert getattr(adapter, intake_helper)(blank_sender) is False
 
 
+@pytest.mark.parametrize("blank_sender", ["", "   ", None])
+def test_yuanbao_pairing_dm_intake_denies_blank_principal(monkeypatch, blank_sender):
+    """Yuanbao pairing intake must not forward senderless C2C callbacks."""
+    _clear_auth_env(monkeypatch)
+    from gateway.platforms.yuanbao import AccessPolicy
+
+    policy = AccessPolicy(
+        dm_policy="pairing",
+        dm_allow_from=[],
+        group_policy="pairing",
+        group_allow_from=[],
+    )
+    assert policy.is_dm_intake_allowed(blank_sender) is False
+    assert policy.is_dm_intake_allowed("user-1") is True
+
+
 @pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
 def test_pairing_group_policy_not_blanket_authorized(monkeypatch, platform):
     """Default ``group_policy: pairing`` must not authorize unknown group senders."""

@@ -610,6 +610,23 @@ class TestAccessGuardMiddleware:
         await AccessGuardMiddleware()(ctx, next_fn)
         next_fn.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("blank_sender", ["", "   ", None])
+    async def test_pairing_blank_dm_blocked(self, monkeypatch, blank_sender):
+        """AccessGuardMiddleware blocks pairing DMs with blank sender principals."""
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        adapter = make_adapter()
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing", dm_allow_from=[],
+            group_policy="pairing", group_allow_from=[],
+        )
+        ctx = make_ctx(adapter=adapter, chat_type="dm", from_account=blank_sender)
+        next_fn = AsyncMock()
+
+        await AccessGuardMiddleware()(ctx, next_fn)
+        next_fn.assert_not_awaited()
+
 
 class TestAccessPolicy:
     def test_open_group_requires_opt_in(self, monkeypatch):
@@ -646,6 +663,25 @@ class TestAccessPolicy:
             group_policy="typo", group_allow_from=[],
         )
         assert policy.is_group_allowed("unknown-group") is False
+
+    @pytest.mark.parametrize("blank_sender", ["", "   ", None])
+    def test_pairing_dm_intake_denies_blank_principal(self, monkeypatch, blank_sender):
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        policy = AccessPolicy(
+            dm_policy="pairing", dm_allow_from=[],
+            group_policy="pairing", group_allow_from=[],
+        )
+        assert policy.is_dm_intake_allowed(blank_sender) is False
+
+    def test_pairing_dm_intake_allows_non_blank_principal(self, monkeypatch):
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        policy = AccessPolicy(
+            dm_policy="pairing", dm_allow_from=[],
+            group_policy="pairing", group_allow_from=[],
+        )
+        assert policy.is_dm_intake_allowed("user-1") is True
 
 
 class TestAutoSetHomeMiddleware:
@@ -997,6 +1033,36 @@ class TestPipelineIntegration:
         assert ctx.chat_id == "direct:alice"
         assert "Hello bot!" in ctx.raw_text
         assert ctx.source is not None
+
+    @pytest.mark.asyncio
+    async def test_pairing_blank_sender_stops_at_access_guard(self, monkeypatch):
+        """Whitespace-only C2C senders must not pass pairing intake into dispatch."""
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        adapter = make_adapter()
+        adapter._bot_id = "bot_123"
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing", dm_allow_from=[],
+            group_policy="pairing", group_allow_from=[],
+        )
+        adapter.handle_message = AsyncMock()
+
+        push_data = make_json_push(
+            from_account="   ",
+            to_account="bot_123",
+            text="Hello bot!",
+            msg_id="msg-blank-001",
+        )
+
+        ctx = InboundContext(adapter=adapter, raw_frames=[push_data])
+        pipeline = InboundPipelineBuilder.build()
+        await pipeline.execute(ctx)
+
+        assert ctx.from_account == "   "
+        assert ctx.chat_type == "dm"
+        assert ctx.chat_id == "direct:   "
+        assert ctx.source is None
+        adapter.handle_message.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_self_message_filtered(self):

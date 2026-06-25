@@ -1562,10 +1562,13 @@ class AccessPolicy:
 
     def is_dm_intake_allowed(self, sender_id: str) -> bool:
         """Whether a DM may reach gateway intake (pairing handshake path)."""
+        principal = str(sender_id or "").strip()
+        if not principal:
+            return False
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return sender_id.strip() in self._dm_allow_from
+            return principal in self._dm_allow_from
         if self._dm_policy == "pairing":
             return True
         if self._dm_policy == "open":

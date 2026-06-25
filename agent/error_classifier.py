@@ -717,6 +717,27 @@ def classify_api_error(
 
     is_disconnect = any(p in error_msg for p in _SERVER_DISCONNECT_PATTERNS)
     if is_disconnect and not status_code:
+        # Reasoning models (o1/o3, DeepSeek R1, Nemotron, Grok reasoning,
+        # QwQ, etc.) can think for minutes before producing tokens.  A
+        # transport disconnect during thinking is almost always an upstream
+        # proxy idle-kill, NOT a real context overflow.  Classifying it as
+        # context_overflow triggers destructive compression on a phantom
+        # error.  Route to timeout instead so retries/fallback can handle it.
+        _model_lower = (model or "").lower()
+        _reasoning_prefixes = (
+            "o1", "o3", "o4",
+            "deepseek-r", "deepseek-reasoner",
+            "nemotron",
+            "qwq", "qwen3",
+            "grok-4",
+        )
+        _is_reasoning = any(
+            _model_lower.startswith(p) or f"/{p}" in _model_lower
+            for p in _reasoning_prefixes
+        )
+        if _is_reasoning:
+            return _result(FailoverReason.timeout, retryable=True)
+
         # Absolute token/message-count thresholds are only a proxy for smaller
         # context windows.  Large-context sessions can have hundreds of
         # messages while still being far below their actual token budget.

@@ -210,7 +210,9 @@ export function PetGenerateContent() {
                 generating={generating}
                 generatingLabel={t.common.cancel}
                 label={copy.generate}
-                onCancel={cancelGenerate}
+                // Inline cancel should match step-2 cancel semantics: abort and
+                // return to step 1 (prompt retained for quick tweaks).
+                onCancel={discardDrafts}
                 onGenerate={generate}
               />
             </div>

@@ -371,6 +371,91 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["max_iterations"] == 200
 
+    def test_create_agent_sets_user_id_from_gateway_user_id(self, monkeypatch):
+        """gateway_user_id must land on agent._user_id so the interlocutor
+        resolution (system_prompt hook) can identify the inbound sender —
+        parity with every other gateway platform's user_id=source.user_id."""
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                pass
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": "openai", "base_url": "https://example.test/v1", "api_mode": "chat_completions"},
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "gpt-5")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: {}))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 100)
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        agent = adapter._create_agent(session_id="api-session", gateway_user_id="donald")
+        assert agent._user_id == "donald"
+
+        # Absent gateway_user_id leaves the agent without an imposed _user_id
+        # (member-fallback behaviour preserved).
+        agent2 = adapter._create_agent(session_id="api-session")
+        assert getattr(agent2, "_user_id", None) is None
+
+
+# ---------------------------------------------------------------------------
+# X-Hermes-User-Id header parsing (sender identity / interlocutor resolution)
+# ---------------------------------------------------------------------------
+
+
+class TestUserIdHeader:
+    def _adapter(self, api_key=None):
+        cfg = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(cfg)
+        adapter._api_key = api_key
+        return adapter
+
+    def _request(self, headers):
+        class FakeRequest:
+            def __init__(self, headers):
+                self.headers = headers
+        return FakeRequest(headers)
+
+    def test_absent_header_returns_none_no_error(self):
+        adapter = self._adapter(api_key="secret")
+        uid, err = adapter._parse_user_id_header(self._request({}))
+        assert uid is None and err is None
+
+    def test_rejected_without_api_key(self):
+        # Accepting a caller-supplied sender identity is an impersonation
+        # surface; without API_SERVER_KEY it must be rejected, not trusted.
+        adapter = self._adapter(api_key=None)
+        uid, err = adapter._parse_user_id_header(self._request({"X-Hermes-User-Id": "donald"}))
+        assert uid is None
+        assert err is not None
+        assert err.status == 403
+
+    def test_valid_header_with_api_key(self):
+        adapter = self._adapter(api_key="secret")
+        uid, err = adapter._parse_user_id_header(self._request({"X-Hermes-User-Id": "  donald  "}))
+        assert uid == "donald"
+        assert err is None
+
+    def test_control_chars_rejected(self):
+        adapter = self._adapter(api_key="secret")
+        uid, err = adapter._parse_user_id_header(self._request({"X-Hermes-User-Id": "don\nald"}))
+        assert uid is None
+        assert err is not None
+        assert err.status == 400
+
+    def test_too_long_rejected(self):
+        adapter = self._adapter(api_key="secret")
+        long_id = "x" * 300
+        uid, err = adapter._parse_user_id_header(self._request({"X-Hermes-User-Id": long_id}))
+        assert uid is None
+        assert err is not None
+        assert err.status == 400
+
 
 # ---------------------------------------------------------------------------
 # Auth checking

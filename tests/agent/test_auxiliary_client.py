@@ -4198,3 +4198,257 @@ class TestAuxiliaryMaxTokensParam:
         ):
             assert auxiliary_max_tokens_param(4096, model="") == {"max_tokens": 4096}
             assert auxiliary_max_tokens_param(4096, model=None) == {"max_tokens": 4096}
+
+
+# ── Regression tests for issue #52392 ─────────────────────────────────────
+# Compression fallback chain currently picks the first reachable candidate
+# without checking whether the candidate's context window is large enough.
+# When the chosen candidate is reachable but too small for the compression
+# task, the call errors out instead of continuing through the chain.
+
+class TestCompressionFallbackContextFilter:
+    """Aux fallback chains must skip candidates whose context window is
+    smaller than the task minimum, then continue to the next candidate.
+
+    Layer coverage:
+      L2: _try_configured_fallback_chain skips too-small candidates
+      L3: _try_main_fallback_chain skips too-small candidates
+      L4: candidates with unknown context (None) are passed through
+      L5: backward compat — first viable candidate still wins
+    """
+
+    @staticmethod
+    def _make_chain_entry(provider, model, base_url="https://example.com/v1",
+                          api_key="k"):
+        return {
+            "provider": provider,
+            "model": model,
+            "base_url": base_url,
+            "api_key": api_key,
+        }
+
+    def _mock_resolve(self, entry):
+        """Mock _resolve_fallback_entry to return a (client, model) per entry."""
+        client = MagicMock()
+        client.base_url = entry.get("base_url", "")
+        return client, entry["model"]
+
+    # ── L2: configured fallback chain ─────────────────────────────────
+
+    def test_configured_chain_skips_too_small_candidate_for_compression(self, monkeypatch):
+        """When entry[0] is reachable but too small and entry[1] is large enough,
+        _try_configured_fallback_chain must return entry[1], not entry[0]."""
+        from agent.auxiliary_client import (
+            _try_configured_fallback_chain,
+        )
+
+        small_client = MagicMock(name="small_client")
+        large_client = MagicMock(name="large_client")
+        entries = [
+            self._make_chain_entry("small-provider", "tiny-8k"),
+            self._make_chain_entry("big-provider", "huge-1m"),
+        ]
+
+        def fake_resolve(entry):
+            if entry is entries[0]:
+                return small_client, "tiny-8k"
+            return large_client, "huge-1m"
+
+        # tiny-8k resolves to 8K (below 64K floor); huge-1m resolves to 1M
+        def fake_ctx(model, base_url="", api_key="", **kwargs):
+            return {"tiny-8k": 8192, "huge-1m": 1_048_576}.get(model, 256_000)
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=fake_resolve), \
+             patch("agent.auxiliary_client.get_model_context_length",
+                   side_effect=fake_ctx):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression", failed_provider="auto")
+
+        assert client is large_client, (
+            f"Expected large_client (1M context), got {client}. "
+            "L2 bug: chain returned the first reachable candidate without "
+            "screening by context window.")
+        assert model == "huge-1m"
+        assert "big-provider" in label
+
+    def test_configured_chain_continues_after_skipping_too_small(self, monkeypatch):
+        """When all small candidates are skipped and only the last is large enough,
+        the chain still returns it (does not stop after first filter)."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        small_client_a = MagicMock(name="small_a")
+        small_client_b = MagicMock(name="small_b")
+        large_client = MagicMock(name="large")
+        entries = [
+            self._make_chain_entry("p1", "small-a-32k"),
+            self._make_chain_entry("p2", "small-b-48k"),
+            self._make_chain_entry("p3", "large-512k"),
+        ]
+
+        def fake_resolve(entry):
+            if entry is entries[0]:
+                return small_client_a, "small-a-32k"
+            if entry is entries[1]:
+                return small_client_b, "small-b-48k"
+            return large_client, "large-512k"
+
+        def fake_ctx(model, base_url="", api_key="", **kwargs):
+            return {"small-a-32k": 32_000,
+                    "small-b-48k": 48_000,
+                    "large-512k": 512_000}.get(model, 256_000)
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=fake_resolve), \
+             patch("agent.auxiliary_client.get_model_context_length",
+                   side_effect=fake_ctx):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression", failed_provider="auto")
+
+        assert client is large_client
+        assert model == "large-512k"
+
+    # ── L3: main fallback chain ────────────────────────────────────────
+
+    def test_main_chain_skips_too_small_candidate_for_compression(self, monkeypatch):
+        """Same behaviour for the top-level main-agent fallback chain."""
+        from agent.auxiliary_client import (
+            _try_main_fallback_chain,
+        )
+
+        small_client = MagicMock(name="small_main")
+        large_client = MagicMock(name="large_main")
+
+        # Mock load_config + get_fallback_chain to return our controlled chain
+        chain = [
+            self._make_chain_entry("p-small", "tiny-16k"),
+            self._make_chain_entry("p-large", "huge-1m"),
+        ]
+
+        def fake_resolve(entry):
+            if entry is chain[0]:
+                return small_client, "tiny-16k"
+            return large_client, "huge-1m"
+
+        def fake_ctx(model, base_url="", api_key="", **kwargs):
+            return {"tiny-16k": 16_384, "huge-1m": 1_048_576}.get(model, 256_000)
+
+        monkeypatch.setattr(
+            "hermes_cli.fallback_config.get_fallback_chain",
+            lambda cfg: chain,
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=fake_resolve), \
+             patch("agent.auxiliary_client.get_model_context_length",
+                   side_effect=fake_ctx), \
+             patch("agent.auxiliary_client._is_provider_unhealthy",
+                   return_value=False):
+            client, model, label = _try_main_fallback_chain(
+                task="compression", failed_provider="auto")
+
+        assert client is large_client, (
+            f"Expected large_client (1M), got {client}. "
+            "L3 bug: main chain returned the first reachable candidate "
+            "without screening by context window.")
+        assert model == "huge-1m"
+
+    # ── L4: unknown context passthrough ────────────────────────────────
+
+    def test_configured_chain_passes_through_unknown_context(self, monkeypatch):
+        """When get_model_context_length returns None (cannot probe),
+        the candidate is NOT filtered — the existing behaviour of using
+        the default 256K fallback in the resolver chain is preserved."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        unknown_client = MagicMock(name="unknown_client")
+        entries = [self._make_chain_entry("unknown-provider", "unprobed-model")]
+
+        def fake_resolve(entry):
+            return unknown_client, "unprobed-model"
+
+        def fake_ctx(model, base_url="", api_key="", **kwargs):
+            return None  # cannot determine context length
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "compression" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=fake_resolve), \
+             patch("agent.auxiliary_client.get_model_context_length",
+                   side_effect=fake_ctx):
+            client, model, label = _try_configured_fallback_chain(
+                task="compression", failed_provider="auto")
+
+        assert client is unknown_client, (
+            "L4 bug: candidates with unknown context must be passed through, "
+            "not blocked. Being unsure is not the same as being too small.")
+        assert model == "unprobed-model"
+
+    # ── L5: backward compat — non-compression tasks unchanged ──────────
+
+    def test_non_compression_task_does_not_filter_by_context(self, monkeypatch):
+        """For tasks without a context floor (e.g. title_generation, vision),
+        the chain behaviour is unchanged: first reachable candidate wins."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        small_client = MagicMock(name="small")
+        entries = [self._make_chain_entry("p", "tiny-4k")]
+
+        def fake_resolve(entry):
+            return small_client, "tiny-4k"
+
+        def fake_ctx(model, base_url="", api_key="", **kwargs):
+            return 4_096  # small — but title_generation has no floor
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: {"fallback_chain": entries} if task == "title_generation" else {},
+        )
+
+        with patch("agent.auxiliary_client._resolve_fallback_entry",
+                   side_effect=fake_resolve), \
+             patch("agent.auxiliary_client.get_model_context_length",
+                   side_effect=fake_ctx):
+            client, model, label = _try_configured_fallback_chain(
+                task="title_generation", failed_provider="auto")
+
+        assert client is small_client, (
+            "L5 regression: non-compression tasks must not be filtered "
+            "by context window. The first reachable candidate should win.")
+        assert model == "tiny-4k"
+
+    # ── End-to-end: configured chain skips too-small for vision too ──
+    # vision has its own implicit context requirements; test that the
+    # compression-specific filter does NOT affect vision chains.
+
+    def test_compression_task_uses_minimum_context_constant(self):
+        """The task minimum for compression must equal MINIMUM_CONTEXT_LENGTH
+        so the runtime fallback stays consistent with the startup feasibility
+        check in agent/conversation_compression.py."""
+        from agent.auxiliary_client import _task_minimum_context_length
+        from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+
+        assert _task_minimum_context_length("compression") == MINIMUM_CONTEXT_LENGTH
+        # Non-compression tasks have no minimum (None)
+        assert _task_minimum_context_length("vision") is None
+        assert _task_minimum_context_length("title_generation") is None
+        assert _task_minimum_context_length("web_extract") is None
+        assert _task_minimum_context_length("skills_hub") is None
+        assert _task_minimum_context_length("mcp") is None
+        assert _task_minimum_context_length("session_search") is None
+        # Empty / unknown tasks have no minimum
+        assert _task_minimum_context_length("") is None
+        assert _task_minimum_context_length(None) is None

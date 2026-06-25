@@ -885,6 +885,35 @@ class TestFindAliasForProfile:
         (wrapper_dir / "pip").write_text("#!/bin/sh\nexec python -m pip \"$@\"\n")
         assert find_alias_for_profile("steve") is None
 
+    def test_skips_large_files_without_reading(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "darwin")
+        from pathlib import Path
+
+        from hermes_cli.profiles import (
+            _MAX_WRAPPER_BYTES,
+            _get_wrapper_dir,
+            create_wrapper_script,
+            find_alias_for_profile,
+        )
+
+        wrapper_dir = _get_wrapper_dir()
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        create_wrapper_script("steve")
+        big = wrapper_dir / "codex"
+        big.write_bytes(b"\x00" * (_MAX_WRAPPER_BYTES + 1))
+
+        read_paths = []
+        original_read_text = Path.read_text
+
+        def spy_read_text(self, *args, **kwargs):
+            read_paths.append(Path(self))
+            return original_read_text(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "read_text", spy_read_text)
+
+        assert find_alias_for_profile("steve") == "steve"
+        assert big not in read_paths
+
     def test_custom_alias_on_windows(self, profile_env, monkeypatch):
         monkeypatch.setattr("sys.platform", "win32")
         from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile

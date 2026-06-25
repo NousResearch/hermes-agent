@@ -391,6 +391,12 @@ def _is_wrapper_dir_in_path() -> bool:
     return wrapper_dir in os.environ.get("PATH", "").split(os.pathsep)
 
 
+# Wrapper scripts are a couple of lines of shell (POSIX) or .bat (Windows), so
+# they are always tiny. Skip larger files before reading: ~/.local/bin often
+# also holds unrelated extensionless CLI binaries.
+_MAX_WRAPPER_BYTES = 64 * 1024
+
+
 def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[Path]:
     """Create a shell wrapper script at ~/.local/bin/<name>.
 
@@ -445,7 +451,10 @@ def remove_wrapper_script(name: str) -> bool:
     for wrapper_path in candidates:
         if wrapper_path.exists():
             try:
-                # Verify it's our wrapper before removing
+                # Verify it's our wrapper before removing. A profile can share a
+                # name with an unrelated large binary, which is never ours.
+                if wrapper_path.stat().st_size > _MAX_WRAPPER_BYTES:
+                    continue
                 content = wrapper_path.read_text()
                 if "hermes -p" in content:
                     wrapper_path.unlink()
@@ -515,6 +524,11 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
         if is_windows and entry.suffix != ".bat":
             continue
         if not is_windows and entry.suffix:
+            continue
+        try:
+            if entry.stat().st_size > _MAX_WRAPPER_BYTES:
+                continue
+        except OSError:
             continue
         try:
             content = entry.read_text()

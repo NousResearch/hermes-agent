@@ -1225,6 +1225,49 @@ class TestTrivialPromptHeuristic:
         assert provider._manager.prefetch_context.call_count == 0
         assert provider._manager.dialectic_query.call_count == 0
 
+    def test_trivial_prompt_injects_ready_pending_dialectic(self):
+        """Regression: a dialectic result fired at the end of the prior turn and
+        primed for THIS turn must still be injected when this turn's prompt is
+        trivial — not stranded by the trivial early-return and later silently
+        discarded as stale. Option A: trivial turns consume + inject a ready,
+        non-stale pending result (but spend no new work)."""
+        provider = self._make_provider()
+        provider._session_key = "test"
+        provider._base_context_cache = ""  # isolate the supplement path
+        provider._dialectic_cadence = 4
+        provider._turn_count = 2
+        # Simulate: queue_prefetch fired the dialectic at end of turn 1.
+        provider._last_dialectic_turn = 1
+        with provider._prefetch_lock:
+            provider._prefetch_result = "PENDING_DIALECTIC"
+            provider._prefetch_result_fired_at = 1
+
+        injected = provider.prefetch("ok")
+
+        assert "PENDING_DIALECTIC" in injected
+        # And it was consumed, not left to go stale.
+        with provider._prefetch_lock:
+            assert provider._prefetch_result == ""
+
+    def test_trivial_prompt_discards_stale_pending_dialectic(self):
+        """A pending result older than cadence × multiplier must still be
+        discarded on a trivial turn — the fix must not resurrect stale content."""
+        provider = self._make_provider()
+        provider._session_key = "test"
+        provider._base_context_cache = ""
+        provider._dialectic_cadence = 4  # stale_limit = 4 * 2 = 8
+        provider._last_dialectic_turn = 1
+        provider._turn_count = 1 + 4 * provider._STALE_RESULT_MULTIPLIER + 1  # 10 → stale
+        with provider._prefetch_lock:
+            provider._prefetch_result = "STALE_DIALECTIC"
+            provider._prefetch_result_fired_at = 1
+
+        injected = provider.prefetch("ok")
+
+        assert injected == ""
+        with provider._prefetch_lock:
+            assert provider._prefetch_result == ""
+
 
 class TestDialecticCadenceAdvancesOnSuccess:
     """Cadence tracker advances only when the dialectic call returns a

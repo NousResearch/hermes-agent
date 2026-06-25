@@ -36,6 +36,8 @@ from typing import Any, Optional
 from agent.redact import redact_sensitive_text
 from tools.registry import registry, tool_error
 from hermes_cli.config import cfg_get, load_config
+from tools.kanban_gate import gate_pre_check  # AP-4031+AP-4032
+from tools.kanban_dispatch_gate import dispatch_gate_pre_check  # AP-4033
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +131,20 @@ def _stamp_worker_session_metadata(
     stamped = dict(metadata or {})
     stamped["worker_session_id"] = session_id
     return stamped
+
+
+def _lookup_task_for_gate(tid: str):
+    """AP-4031: task lookup used by the gate pre-check. Returns the
+    task row (with .assignee attribute) or None. Implemented as a thin
+    wrapper over _connect + kb.get_task so the gate module does not
+    import hermes_cli.kanban_db directly (keeps tools/kanban_gate.py
+    free of internal dependencies).
+    """
+    kb, conn = _connect()
+    try:
+        return kb.get_task(conn, tid)
+    finally:
+        conn.close()
 
 
 def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
@@ -562,6 +578,16 @@ def _handle_complete(args: dict, **kw) -> str:
             f"metadata must be an object/dict, got {type(metadata).__name__}"
         )
     metadata = _stamp_worker_session_metadata(tid, metadata)
+    # AP-4031+AP-4032: mechanical kanban-complete gate. Ships disabled
+    # (HERMES_KANBAN_GATE_REQUIRED=0 default per BC-9); when enabled,
+    # refuses non-wags cards without a gate_signature evidence entry.
+    # Operator override via gate_skip_reason + gate_skip_actor metadata.
+    # See docs/migration-notes/ap-4031-kanban-gate-2026-06-24.md.
+    gate_err = gate_pre_check(
+        tid, metadata or {}, lambda t: _lookup_task_for_gate(t)
+    )
+    if gate_err:
+        return tool_error(gate_err)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -807,6 +833,20 @@ def _handle_create(args: dict, **kw) -> str:
                     if _self_task is not None and _self_task.workspace_kind:
                         workspace_kind = _self_task.workspace_kind
                         workspace_path = _self_task.workspace_path
+            # AP-4033: mechanical kanban-create dispatch gate. Ships
+            # disabled (HERMES_KANBAN_DISPATCH_GATE=0 default per BC-9);
+            # when enabled, refuses unless the caller's HERMES_PROFILE
+            # is in HERMES_KANBAN_DISPATCHERS (default ['operator']) or
+            # the card metadata carries a dispatch_override + reason for
+            # the 3-branch verifier. See docs/migration-notes/
+            # ap-4033-kanban-dispatch-2026-06-24.md.
+            dispatch_gate_err = dispatch_gate_pre_check(
+                card_metadata=args.get("metadata") or {},
+                caller_profile=os.environ.get("HERMES_PROFILE", "").strip() or None,
+                has_dispatch_entry=False,  # new card; no prior entry exists
+            )
+            if dispatch_gate_err:
+                return tool_error(dispatch_gate_err)
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),

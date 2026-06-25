@@ -182,3 +182,44 @@ def test_text_response_on_last_allowed_call_is_completed():
     )
     assert result["final_response"] == "final report"
     assert result["completed"] is True
+
+
+def test_company_os_route_prefix_survives_tool_turn_final_answer():
+    agent = _StubAgent(raise_in=())
+    messages = [
+        {
+            "role": "user",
+            "content": (
+                "[Company OS route injection]\n"
+                "Company OS 路由：domain=money.services; "
+                "workflow=service_delivery_loop; gates=external_send\n"
+                "[End Company OS route injection]\n\n"
+                "帮我报价"
+            ),
+        },
+        {"role": "assistant", "content": "我先确认几个问题"},
+        {"role": "tool", "tool_call_id": "c1", "content": "用户选择默认方案"},
+        {"role": "assistant", "content": "这是最终报价方案"},
+    ]
+    result = finalize_turn(
+        agent,
+        final_response="这是最终报价方案",
+        api_call_count=2,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-1",
+        user_message=messages[0]["content"],
+        original_user_message="帮我报价",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    route_line = (
+        "Company OS 路由：domain=money.services; "
+        "workflow=service_delivery_loop; gates=external_send"
+    )
+    assert result["final_response"].startswith(route_line)
+    assert messages[-1]["content"].startswith(route_line)

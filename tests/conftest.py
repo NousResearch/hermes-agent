@@ -200,6 +200,18 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
     "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
+    # Company OS action guard opt-in. Tests that touch the guard set this
+    # in process env; if it leaks into a later test, the cron path or
+    # send_message_tool will start blocking deliveries that the test
+    # expected to succeed, masking the real assertion.
+    "COMPANY_OS_REQUIRE_APPROVAL",
+    # Cron auto-delivery env vars (set per test in test_scheduler.py and
+    # the cron-delivery-approval tests; without explicit cleanup they
+    # leak into unrelated tests that expect the auto-deliver target to
+    # be empty).
+    "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+    "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+    "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
     # Kanban path/board pins must never leak from a developer shell or
     # dispatched worker into tests; otherwise tests can write fake tasks to
     # the real ~/.hermes/kanban.db instead of the per-test HERMES_HOME.
@@ -392,6 +404,35 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # the generic credential-shaped env-var filter above.
     monkeypatch.delenv("GMI_API_KEY", raising=False)
     monkeypatch.delenv("GMI_BASE_URL", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_cron_session_contextvars():
+    """Reset cron auto-deliver ContextVars after each test.
+
+    ``gateway.session_context`` exposes
+    ``_CRON_AUTO_DELIVER_{PLATFORM,CHAT_ID,THREAD_ID}`` ContextVars that
+    are normally seeded only by the cron runtime, but unit tests that
+    exercise cron delivery can populate them via ``set_session_vars``.
+    They are not cleared by ``clear_session_vars`` (which only resets
+    the user-facing session vars), so without this fixture a value set
+    in test A leaks into test B's view of the cron target and breaks
+    assertions like ``test_cron_duplicate_target_is_skipped_and_explained``
+    that depend on an empty default.
+    """
+    yield
+    try:
+        from gateway.session_context import (
+            _CRON_AUTO_DELIVER_PLATFORM,
+            _CRON_AUTO_DELIVER_CHAT_ID,
+            _CRON_AUTO_DELIVER_THREAD_ID,
+            _UNSET,
+        )
+        _CRON_AUTO_DELIVER_PLATFORM.set(_UNSET)
+        _CRON_AUTO_DELIVER_CHAT_ID.set(_UNSET)
+        _CRON_AUTO_DELIVER_THREAD_ID.set(_UNSET)
+    except Exception:
+        pass
 
 
 # Backward-compat alias — old tests reference this fixture name. Keep it

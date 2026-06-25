@@ -35,6 +35,7 @@ import shlex
 import site
 import sys
 import signal
+import subprocess
 import tempfile
 import threading
 import time
@@ -8511,6 +8512,238 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # missed the leftover real agent — locking the session out forever (#28686).
             self._release_running_agent_state(_quick_key)
 
+    def _company_os_platform_name(self, source: SessionSource) -> str:
+        platform = getattr(source, "platform", None)
+        return platform.value if hasattr(platform, "value") else str(platform or "")
+
+    def _should_company_os_route_message(self, message_text: str, source: SessionSource) -> bool:
+        """Return True when a Telegram user turn should enter Wanshou Company OS."""
+        if self._company_os_platform_name(source) != "telegram":
+            return False
+        text = (message_text or "").strip()
+        if not text:
+            return False
+        lowered = text.lower()
+        if text.startswith("/") or lowered.startswith("[company os route injection]"):
+            return False
+        if text.startswith("Company OS 路由"):
+            return False
+
+        casual_messages = {
+            "你好", "您好", "hi", "hello", "hey", "在吗", "在不在",
+            "谢谢", "多谢", "ok", "好的", "好", "嗯", "收到",
+        }
+        if lowered in casual_messages or (len(text) <= 8 and lowered.rstrip("？?!.。") in casual_messages):
+            return False
+
+        work_keywords = (
+            "客户", "接单", "报价", "交付", "方案", "合同", "需求", "产品",
+            "mvp", "saas", "创业", "工具", "股票", "个股", "财报", "行情",
+            "持仓", "复盘", "买入", "卖出", "走势", "研判", "投资", "交易",
+            "图片", "海报", "封面", "视频",
+            "视觉", "小说", "大纲", "人设", "章节", "世界观", "精读", "文档",
+            "飞书", "github", "搜索", "调研", "hermes", "telegram", "mcp",
+            "profile", "gateway", "配置", "部署", "修复", "优化", "审计",
+            "company os", "wanshou", "治理", "风控", "风险", "合规", "验收",
+            "运行态", "健康检查",
+        )
+        return any(keyword in lowered for keyword in work_keywords)
+
+    @staticmethod
+    def _parse_company_os_route_output(route_output: str) -> Dict[str, Any]:
+        parsed: Dict[str, Any] = {
+            "run_id": "",
+            "mcp_profile_id": "",
+            "domain_id": "",
+            "workflow_id": "",
+            "review_gates": [],
+            "hard_confirmation_required": False,
+            "task_id": "",
+            "approval_id": "",
+        }
+        try:
+            import yaml as _company_os_yaml
+            data = _company_os_yaml.safe_load(route_output) or {}
+            if isinstance(data, dict):
+                route = data.get("route", data)
+                task = data.get("task", {})
+                approval = data.get("approval", {})
+                parsed["run_id"] = str(data.get("run_id", "") or "")
+                parsed["mcp_profile_id"] = str(data.get("mcp_profile_id", "") or "")
+                if isinstance(route, dict):
+                    parsed["domain_id"] = str(route.get("domain_id", "") or "")
+                    parsed["workflow_id"] = str(route.get("workflow_id", "") or "")
+                    gates = route.get("review_gates", [])
+                    parsed["review_gates"] = [str(gate) for gate in gates] if isinstance(gates, list) else []
+                    gate_plan = route.get("gate_plan", {})
+                    if isinstance(gate_plan, dict):
+                        parsed["hard_confirmation_required"] = bool(
+                            gate_plan.get("hard_confirmation_required", False)
+                        )
+                if isinstance(task, dict):
+                    parsed["task_id"] = str(task.get("task_id", "") or "")
+                if isinstance(approval, dict):
+                    parsed["approval_id"] = str(approval.get("approval_id", "") or "")
+                if any(parsed.values()):
+                    return parsed
+        except Exception:
+            pass
+
+        current_key = ""
+        for raw_line in (route_output or "").splitlines():
+            line = raw_line.rstrip()
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("- ") and current_key == "review_gates":
+                parsed["review_gates"].append(stripped[2:].strip())
+                continue
+            if ":" not in stripped:
+                continue
+            key, value = stripped.split(":", 1)
+            current_key = key.strip()
+            if current_key in {"run_id", "mcp_profile_id", "domain_id", "workflow_id"}:
+                parsed[current_key] = value.strip()
+            elif current_key in {"task_id", "approval_id"}:
+                parsed[current_key] = value.strip()
+            elif current_key == "review_gates":
+                parsed["review_gates"] = []
+            elif current_key == "hard_confirmation_required":
+                parsed["hard_confirmation_required"] = value.strip().lower() in {"1", "true", "yes", "on"}
+        return parsed
+
+    def _build_company_os_route_injection_payload(self, message_text: str, source: SessionSource, route_output: Optional[str] = None) -> Dict[str, Any]:
+        """Inject the Wanshou Company OS route prefix into a Telegram message.
+
+        ``route_output`` is the raw YAML string returned by
+        ``company_os control-envelope``. When None (the normal call site)
+        we run the subprocess here. Tests can pass a synthetic YAML
+        string to exercise the parsing + formatting paths without
+        touching the live router.
+        """
+        if route_output is None:
+            script_path = Path.home() / ".hermes" / "company-os" / "scripts" / "company_os.py"
+            if not script_path.exists():
+                logger.debug("Company OS router missing at %s", script_path)
+                return {"message_text": message_text, "approval_id": "", "hard_gate_required": False}
+            try:
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(script_path),
+                        "control-envelope",
+                        message_text,
+                        "--source",
+                        "telegram",
+                        "--record",
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=6,
+                    check=False,
+                )
+            except Exception as exc:
+                logger.warning("Company OS route command failed before execution: %s", exc)
+                return {"message_text": message_text, "approval_id": "", "hard_gate_required": False}
+            if proc.returncode != 0 or not (proc.stdout or "").strip():
+                logger.warning(
+                    "Company OS route command failed: returncode=%s stderr=%s",
+                    proc.returncode,
+                    (proc.stderr or "").strip()[:500],
+                )
+                return {"message_text": message_text, "approval_id": "", "hard_gate_required": False}
+            route_output = proc.stdout.strip()
+        route = self._parse_company_os_route_output(route_output)
+        run_id = route.get("run_id") or ""
+        mcp_profile_id = route.get("mcp_profile_id") or ""
+        domain_id = route.get("domain_id") or "unknown"
+        workflow_id = route.get("workflow_id") or "unknown"
+        task_id = route.get("task_id") or "unknown"
+        approval_id = route.get("approval_id") or ""
+        gates = route.get("review_gates") or []
+        gate_text = ",".join(gates) if gates else "none"
+        hard_gate_required = bool(route.get("hard_confirmation_required", False))
+        visible_line = (
+            f"Company OS 路由：domain={domain_id}; "
+            f"workflow={workflow_id}; task={task_id}; gates={gate_text}"
+            f"{'; approval=' + approval_id if approval_id else ''}"
+            f"{'; hard_gate=required' if hard_gate_required else ''}"
+        )
+        hard_gate_instruction = ""
+        if hard_gate_required:
+            hard_gate_instruction = (
+                "HARD_GATE_REQUIRED: Do not perform blocked external, financial, "
+                "customer-data, paid-service, or investment actions until Wanshou "
+                "explicitly confirms in Telegram. If an approval_id is present, refer "
+                "to that local Company OS approval record. You may continue with research, "
+                "drafting, risk framing, and internal planning.\n\n"
+            )
+        # Distinguish hard-gate routes in the gateway log so the operator
+        # can audit which inbound Telegram messages triggered a hard-gate
+        # route and which proceeded under research-only mode.
+        log_level = "HARD_GATE" if hard_gate_required else "soft_route"
+        logger.info(
+            "Company OS route injected: platform=%s chat=%s level=%s domain=%s workflow=%s gates=%s approval_id=%s",
+            self._company_os_platform_name(source),
+            getattr(source, "chat_id", "") or "",
+            log_level,
+            domain_id,
+            workflow_id,
+            gate_text,
+            approval_id or "-",
+        )
+        injected_message = (
+            "[Company OS route injection]\n"
+            "The gateway already executed the local Wanshou AI Company OS router for this Telegram message. "
+            "You MUST follow this route result. Start the user-facing answer with exactly this visible line:\n"
+            f"{visible_line}\n\n"
+            f"{hard_gate_instruction}"
+            "Raw local route result:\n"
+            "```yaml\n"
+            f"{route_output}\n"
+            "```\n"
+            "[End Company OS route injection]\n\n"
+            f"{message_text}"
+        )
+        return {
+            "message_text": injected_message,
+            "approval_id": approval_id,
+            "hard_gate_required": hard_gate_required,
+            "run_id": run_id,
+            "domain_id": "" if domain_id == "unknown" else domain_id,
+            "mcp_profile_id": mcp_profile_id,
+        }
+
+    def _build_company_os_route_injection(self, message_text: str, source: SessionSource, route_output: Optional[str] = None) -> str:
+        payload = self._build_company_os_route_injection_payload(message_text, source, route_output=route_output)
+        return str(payload.get("message_text", message_text))
+
+    async def _maybe_inject_company_os_route(
+        self,
+        *,
+        message_text: str,
+        source: SessionSource,
+    ) -> str:
+        if not self._should_company_os_route_message(message_text, source):
+            return message_text
+        payload = await asyncio.to_thread(
+            self._build_company_os_route_injection_payload,
+            message_text,
+            source,
+        )
+        try:
+            from gateway.session_context import set_company_os_route_context
+            set_company_os_route_context(
+                approval_id=str(payload.get("approval_id", "") or ""),
+                hard_gate_required=bool(payload.get("hard_gate_required", False)),
+                run_id=str(payload.get("run_id", "") or ""),
+                domain_id=str(payload.get("domain_id", "") or ""),
+                profile_id=str(payload.get("mcp_profile_id", "") or ""),
+            )
+        except Exception:
+            pass
+        return str(payload.get("message_text", message_text))
+
     async def _prepare_inbound_message_text(
         self,
         *,
@@ -9556,6 +9789,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text = _clean_message_text
         except Exception as _ts_err:
             logger.debug("Message timestamp injection failed (non-fatal): %s", _ts_err)
+
+        try:
+            message_text = await self._maybe_inject_company_os_route(
+                message_text=message_text,
+                source=source,
+            )
+        except Exception as _company_os_err:
+            logger.debug("Company OS route injection failed (non-fatal): %s", _company_os_err)
 
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the

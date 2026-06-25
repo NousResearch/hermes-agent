@@ -11,8 +11,11 @@ import logging
 import os
 import re
 import ssl
+import subprocess
+import sys
 import time
 from email.utils import formatdate
+from pathlib import Path
 
 from agent.redact import redact_sensitive_text
 
@@ -73,6 +76,112 @@ _GENERIC_SECRET_ASSIGN_RE = re.compile(
     r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
+_COMPANY_OS_SCRIPT = Path.home() / ".hermes/company-os/scripts/company_os.py"
+_COMPANY_OS_SCRIPTS_DIR = _COMPANY_OS_SCRIPT.parent
+
+
+def _send_message_guard_trace(
+    *,
+    event: str,
+    target: str,
+    approval_id: str,
+    tool: str,
+    decision: str,
+    latency_ms: float = 0.0,
+    error: str = "",
+    extra: dict | None = None,
+) -> None:
+    """Append a send_message-guard trace line to the Company OS trace log.
+
+    Best-effort — failures here must never block an actual send. We import
+    lazily because tools/send_message_tool.py is imported at startup by
+    many call sites that do not have the Company OS runtime on PYTHONPATH.
+    """
+    try:
+        sys.path.insert(0, str(_COMPANY_OS_SCRIPTS_DIR))
+        import traces  # type: ignore  # local module
+        traces.trace_event(
+            event,
+            approval_id=approval_id,
+            tool=tool,
+            decision=decision,
+            latency_ms=latency_ms,
+            error=error,
+            extra={"target": target, **(extra or {})},
+        )
+    except Exception:
+        # Trace failure is non-fatal.
+        pass
+
+
+def _send_message_guard_payload_digest(
+    *,
+    target: str,
+    message: str,
+    media_files,
+) -> str:
+    """Compute the payload digest the guard requires for external_send.
+
+    The digest is ``sha256(target + message + sorted(media))`` so the
+    caller cannot bypass approval by changing any of those three inputs.
+    Returns the empty string when the helper cannot be imported (the
+    guard still works, it just cannot enforce payload-level binding).
+    """
+    try:
+        sys.path.insert(0, str(_COMPANY_OS_SCRIPTS_DIR))
+        import company_os  # type: ignore  # local module
+        return company_os.payload_digest_of(
+            {
+                "target": str(target or ""),
+                "message": str(message or ""),
+                "media": sorted(str(m or "") for m in (media_files or []) if m),
+            }
+        )
+    except Exception:
+        return ""
+
+
+def _send_message_guard_policy_check(
+    *,
+    target: str,
+    channel: str,
+    approval_id: str,
+    payload_digest: str,
+    capabilities=None,
+) -> str | None:
+    """Run the policy engine in-process before the action-check subprocess.
+
+    Returns ``None`` when the action may proceed (policy said ``allow``
+    or ``requires_approval``). Returns an error string when the policy
+    hard-blocked the send — the guard should surface that to the model.
+    """
+    try:
+        sys.path.insert(0, str(_COMPANY_OS_SCRIPTS_DIR))
+        import policy_engine  # type: ignore  # local module
+        engine = policy_engine.load_engine()
+        decision = engine.decide(
+            policy_engine.PolicyRequest(
+                subject=approval_id or "send_message_tool",
+                channel=channel or "telegram",
+                domain="",
+                action="external_send",
+                resource=target or "",
+                payload_digest=payload_digest or "",
+                context={
+                    "capabilities": list(capabilities or ["write", "execute"]),
+                },
+            )
+        )
+    except Exception as exc:
+        # If the catalog is unreachable we fall through to the normal
+        # approval-gated subprocess path.
+        return None
+    if decision.decision == "block":
+        return (
+            f"BLOCKED by Company OS policy_engine rule "
+            f"{decision.matched_policy!r}: {decision.reason}"
+        )
+    return None
 
 
 def _sanitize_error_text(text) -> str:
@@ -171,6 +280,10 @@ SEND_MESSAGE_SCHEMA = {
             "message_id": {
                 "type": "string",
                 "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
+            },
+            "approval_id": {
+                "type": "string",
+                "description": "Company OS approval_id for guarded external sends. Required when COMPANY_OS_REQUIRE_APPROVAL=1."
             }
         },
         "required": []
@@ -408,6 +521,17 @@ def _handle_send(args):
     if duplicate_skip:
         return json.dumps(duplicate_skip)
 
+    guard_error = _check_company_os_action_guard(
+        args,
+        platform_name,
+        chat_id,
+        thread_id=thread_id,
+        message_text=message,
+        media_files=args.get("media"),
+    )
+    if guard_error:
+        return json.dumps(guard_error)
+
     # Slack: resolve user IDs (U...) to DM channel IDs via conversations.open
     if platform_name == "slack" and chat_id and chat_id.startswith("U"):
         try:
@@ -616,6 +740,196 @@ def _maybe_skip_cron_duplicate_send(platform_name: str, chat_id: str, thread_id:
             "your final response instead, or use a different target if you want an additional message."
         ),
     }
+
+
+def _company_os_approval_required(args: dict) -> bool:
+    """Return whether Company OS approval must be checked for this send."""
+    if str(args.get("approval_id", "")).strip():
+        return True
+    try:
+        from gateway.session_context import (
+            company_os_hard_gate_required,
+            get_company_os_approval_id,
+        )
+        if get_company_os_approval_id().strip() or company_os_hard_gate_required():
+            return True
+    except Exception:
+        pass
+    return os.environ.get("COMPANY_OS_REQUIRE_APPROVAL", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _check_company_os_action_guard(
+    args: dict,
+    platform_name: str,
+    chat_id: str,
+    *,
+    thread_id: str | None = None,
+    message_text: str = "",
+    media_files=None,
+):
+    """Block external sends unless Company OS approves the action contract.
+
+    The guard runs in two stages:
+
+    1. **policy_engine pre-check** — a cheap in-process call that hard-blocks
+       sends the policy catalog forbids (e.g. a Telegram send to a vendor
+       chat the policy denies unconditionally). This is the first thing the
+       guard does so an obviously-bad send never reaches the subprocess.
+    2. **action-check subprocess** — the v2 governance contract that
+       validates the approval's (action, target, payload_digest) binding,
+       expiry, and one-time-use semantics.
+
+    ``payload_digest`` is computed from the *actual* outgoing
+    ``(target, message, media)`` so the approval cannot be reused for a
+    different message body.
+    """
+    if not _company_os_approval_required(args):
+        return None
+
+    approval_id = str(args.get("approval_id", "")).strip()
+    if not approval_id:
+        try:
+            from gateway.session_context import get_company_os_approval_id
+            approval_id = get_company_os_approval_id().strip()
+        except Exception:
+            approval_id = ""
+    if not approval_id:
+        if os.environ.get("COMPANY_OS_REQUIRE_APPROVAL", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return _error(
+                "BLOCKED: COMPANY_OS_REQUIRE_APPROVAL is on, but approval_id was not provided"
+            )
+        return _error(
+            "BLOCKED: Company OS approval is required, but approval_id was not provided"
+        )
+
+    target = f"{platform_name}:{chat_id}"
+    if thread_id is not None:
+        target += f":{thread_id}"
+
+    payload_digest = _send_message_guard_payload_digest(
+        target=target,
+        message=str(message_text or args.get("message", "") or ""),
+        media_files=media_files,
+    )
+
+    policy_block = _send_message_guard_policy_check(
+        target=target,
+        channel=platform_name,
+        approval_id=approval_id,
+        payload_digest=payload_digest,
+        capabilities=["write", "execute"],
+    )
+    if policy_block:
+        _send_message_guard_trace(
+            event="send_message_guard",
+            target=target,
+            approval_id=approval_id,
+            tool="send_message",
+            decision="blocked",
+            error=policy_block,
+            extra={"platform_name": platform_name, "thread_id": thread_id, "stage": "policy_engine"},
+        )
+        return _error(policy_block)
+
+    cmd = [
+        sys.executable,
+        str(_COMPANY_OS_SCRIPT),
+        "action-check",
+        "--approval-id",
+        approval_id,
+        "--action",
+        "external_send",
+        "--target",
+        target,
+        "--source",
+        "send_message_tool",
+        "--payload-digest",
+        payload_digest,
+        "--record",
+    ]
+    # Pass the active run_id if a session context exposes one so the
+    # action-check trace lands in the same run-*.jsonl file as the
+    # control-envelope trace that originated this conversation turn.
+    try:
+        from gateway.session_context import get_company_os_run_id  # type: ignore
+        active_run_id = get_company_os_run_id().strip()
+        if active_run_id:
+            cmd.extend(["--run-id", active_run_id])
+    except Exception:
+        pass
+    # Channel + domain so the in-process policy check inside action-check
+    # sees the same context as the guard.
+    cmd.extend(["--channel", platform_name])
+    try:
+        from gateway.session_context import get_company_os_domain_id  # type: ignore
+        active_domain = get_company_os_domain_id().strip()
+        if active_domain:
+            cmd.extend(["--domain", active_domain])
+    except Exception:
+        pass
+    import time as _time
+    t0 = _time.monotonic()
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
+    except Exception as exc:
+        _send_message_guard_trace(
+            event="send_message_guard",
+            target=target,
+            approval_id=approval_id,
+            tool="send_message",
+            decision="blocked",
+            latency_ms=(_time.monotonic() - t0) * 1000.0,
+            error=f"subprocess_failed: {exc}",
+            extra={"platform_name": platform_name, "payload_digest": payload_digest},
+        )
+        return _error(f"BLOCKED by Company OS approval guard: {exc}")
+
+    elapsed_ms = (_time.monotonic() - t0) * 1000.0
+    if result.returncode != 0:
+        detail = (result.stdout or result.stderr or "").strip()
+        if not detail:
+            detail = f"action-check exited with code {result.returncode}"
+        _send_message_guard_trace(
+            event="send_message_guard",
+            target=target,
+            approval_id=approval_id,
+            tool="send_message",
+            decision="blocked",
+            latency_ms=elapsed_ms,
+            error=detail,
+            extra={
+                "platform_name": platform_name,
+                "thread_id": thread_id,
+                "returncode": result.returncode,
+                "payload_digest": payload_digest,
+            },
+        )
+        return _error(f"BLOCKED by Company OS approval guard:\n{detail}")
+
+    _send_message_guard_trace(
+        event="send_message_guard",
+        target=target,
+        approval_id=approval_id,
+        tool="send_message",
+        decision="allowed",
+        latency_ms=elapsed_ms,
+        extra={
+            "platform_name": platform_name,
+            "thread_id": thread_id,
+            "payload_digest": payload_digest,
+        },
+    )
+    return None
 
 
 async def _send_via_adapter(

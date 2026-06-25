@@ -62,6 +62,15 @@ _SESSION_ID: ContextVar = ContextVar("HERMES_SESSION_ID", default=_UNSET)
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
 
+# Company OS route metadata for the current inbound turn. The gateway writes
+# this after running the local router; guarded outbound tools can then reuse
+# the generated approval_id without relying on the model to copy it into args.
+_COMPANY_OS_APPROVAL_ID: ContextVar = ContextVar("HERMES_COMPANY_OS_APPROVAL_ID", default=_UNSET)
+_COMPANY_OS_HARD_GATE_REQUIRED: ContextVar = ContextVar("HERMES_COMPANY_OS_HARD_GATE_REQUIRED", default=_UNSET)
+_COMPANY_OS_RUN_ID: ContextVar = ContextVar("HERMES_COMPANY_OS_RUN_ID", default=_UNSET)
+_COMPANY_OS_DOMAIN_ID: ContextVar = ContextVar("HERMES_COMPANY_OS_DOMAIN_ID", default=_UNSET)
+_COMPANY_OS_PROFILE_ID: ContextVar = ContextVar("HERMES_COMPANY_OS_PROFILE_ID", default=_UNSET)
+
 # Whether the current session's delivery channel can route an ASYNC completion
 # back to the agent AFTER the current turn ends (i.e. wake a fresh turn).
 #
@@ -161,6 +170,11 @@ def set_session_vars(
         _SESSION_KEY.set(session_key),
         _SESSION_ID.set(session_id),
         _SESSION_MESSAGE_ID.set(message_id),
+        _COMPANY_OS_APPROVAL_ID.set(""),
+        _COMPANY_OS_HARD_GATE_REQUIRED.set(False),
+        _COMPANY_OS_RUN_ID.set(""),
+        _COMPANY_OS_DOMAIN_ID.set(""),
+        _COMPANY_OS_PROFILE_ID.set(""),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
     try:
@@ -194,6 +208,11 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_KEY,
         _SESSION_ID,
         _SESSION_MESSAGE_ID,
+        _COMPANY_OS_APPROVAL_ID,
+        _COMPANY_OS_HARD_GATE_REQUIRED,
+        _COMPANY_OS_RUN_ID,
+        _COMPANY_OS_DOMAIN_ID,
+        _COMPANY_OS_PROFILE_ID,
     ):
         var.set("")
     # Reset async-delivery capability to the "never set" sentinel rather than a
@@ -233,6 +252,86 @@ def get_session_env(name: str, default: str = "") -> str:
             return value
     # Fall back to os.environ for CLI, cron, and test compatibility
     return os.getenv(name, default)
+
+
+def set_company_os_route_context(
+    approval_id: str = "",
+    hard_gate_required: bool = False,
+    *,
+    run_id: str = "",
+    domain_id: str = "",
+    profile_id: str = "",
+) -> None:
+    _COMPANY_OS_APPROVAL_ID.set(str(approval_id or "").strip())
+    _COMPANY_OS_HARD_GATE_REQUIRED.set(bool(hard_gate_required))
+    if run_id:
+        _COMPANY_OS_RUN_ID.set(str(run_id).strip())
+    if domain_id:
+        _COMPANY_OS_DOMAIN_ID.set(str(domain_id).strip())
+    if profile_id:
+        _COMPANY_OS_PROFILE_ID.set(str(profile_id).strip())
+
+
+def clear_company_os_route_context() -> None:
+    """Clear every Company OS route context var.
+
+    The v2 governance layer added ``run_id``, ``domain_id`` and
+    ``profile_id`` to the context. They must be reset together with
+    ``approval_id`` and ``hard_gate_required`` so a stale profile from
+    one conversation does not silently filter tools for the next.
+    """
+    _COMPANY_OS_APPROVAL_ID.set("")
+    _COMPANY_OS_HARD_GATE_REQUIRED.set("")
+    _COMPANY_OS_RUN_ID.set("")
+    _COMPANY_OS_DOMAIN_ID.set("")
+    _COMPANY_OS_PROFILE_ID.set("")
+
+
+def get_company_os_approval_id(default: str = "") -> str:
+    import os
+
+    value = _COMPANY_OS_APPROVAL_ID.get()
+    if value is not _UNSET:
+        return str(value or "")
+    return os.getenv("HERMES_COMPANY_OS_APPROVAL_ID", default)
+
+
+def company_os_hard_gate_required() -> bool:
+    import os
+
+    value = _COMPANY_OS_HARD_GATE_REQUIRED.get()
+    if value is _UNSET:
+        value = os.getenv("HERMES_COMPANY_OS_HARD_GATE_REQUIRED", "")
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_company_os_run_id(default: str = "") -> str:
+    import os
+
+    value = _COMPANY_OS_RUN_ID.get()
+    if value is not _UNSET:
+        return str(value or "")
+    return os.getenv("HERMES_COMPANY_OS_RUN_ID", default)
+
+
+def get_company_os_domain_id(default: str = "") -> str:
+    import os
+
+    value = _COMPANY_OS_DOMAIN_ID.get()
+    if value is not _UNSET:
+        return str(value or "")
+    return os.getenv("HERMES_COMPANY_OS_DOMAIN_ID", default)
+
+
+def get_company_os_profile_id(default: str = "") -> str:
+    import os
+
+    value = _COMPANY_OS_PROFILE_ID.get()
+    if value is not _UNSET:
+        return str(value or "")
+    return os.getenv("HERMES_COMPANY_OS_PROFILE_ID", default)
 
 
 def async_delivery_supported() -> bool:

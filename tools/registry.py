@@ -18,6 +18,8 @@ import ast
 import importlib
 import json
 import logging
+import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -72,6 +74,82 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
         except Exception as e:
             logger.warning("Could not import tool module %s: %s", mod_name, e)
     return imported
+
+
+# ---------------------------------------------------------------------------
+# Company OS MCP profile hook
+#
+# The gateway may route an inbound message through Company OS control
+# envelopes which carry an ``mcp_profile_id`` field. When such a profile
+# is active, the registry restricts ``get_definitions`` to the tools the
+# profile permits (typically read-only for Telegram). This keeps the
+# MiniMax-M3 / Telegram gateway main path unchanged while layering
+# governance on top.
+#
+# The hook is opt-in: callers pass ``mcp_profile=`` explicitly, or it is
+# resolved lazily from the active Company OS run context.
+# ---------------------------------------------------------------------------
+
+
+def resolve_active_mcp_profile():
+    """Return the active Company OS McpProfile, or None if unavailable."""
+    try:
+        from tools.company_os_mcp_bridge import (  # type: ignore
+            resolve_active_profile,
+            resolve_profile_for_domain,
+        )
+        return resolve_active_profile()
+    except Exception:
+        try:
+            # The bridge module lives under ~/.hermes/company-os/scripts/,
+            # which may not be on sys.path. Try a direct import by file.
+            import importlib.util as _ilu
+            import os as _os
+            bridge = (
+                _os.path.expanduser("~/.hermes/company-os/scripts/")
+                + "hermes_mcp_bridge.py"
+            )
+            if not _os.path.exists(bridge):
+                return None
+            spec = _ilu.spec_from_file_location("company_os_mcp_bridge", bridge)
+            if spec is None or spec.loader is None:
+                return None
+            mod = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            if hasattr(mod, "resolve_active_profile"):
+                return mod.resolve_active_profile()
+            return mod.resolve_profile_for_domain("")
+        except Exception:
+            return None
+
+
+def _apply_mcp_profile_filter(
+    tool_names: Set[str],
+    mcp_profile,
+) -> Set[str]:
+    """Drop tool names not allowed by the active Company OS MCP profile."""
+    if mcp_profile is None:
+        return tool_names
+    try:
+        from tools.company_os_mcp_bridge import filter_tool_names_by_profile  # type: ignore
+    except Exception:
+        import importlib.util as _ilu
+        import os as _os
+        bridge = (
+            _os.path.expanduser("~/.hermes/company-os/scripts/")
+            + "hermes_mcp_bridge.py"
+        )
+        if not _os.path.exists(bridge):
+            return tool_names
+        spec = _ilu.spec_from_file_location("company_os_mcp_bridge", bridge)
+        if spec is None or spec.loader is None:
+            return tool_names
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        filtered = mod.filter_tool_names_by_profile(tool_names, mcp_profile)
+    else:
+        filtered = filter_tool_names_by_profile(tool_names, mcp_profile)
+    return set(filtered)
 
 
 class ToolEntry:
@@ -334,7 +412,7 @@ class ToolRegistry:
     # Schema retrieval
     # ------------------------------------------------------------------
 
-    def get_definitions(self, tool_names: Set[str], quiet: bool = False) -> List[dict]:
+    def get_definitions(self, tool_names: Set[str], quiet: bool = False, *, mcp_profile=None) -> List[dict]:
         """Return OpenAI-format tool schemas for the requested tool names.
 
         Only tools whose ``check_fn()`` returns True (or have no check_fn)
@@ -344,11 +422,31 @@ class ToolRegistry:
         etc.); TTL chosen so env-var changes (``hermes tools enable foo``)
         still take effect in near-real-time without forcing a full cache
         flush on every call.
+
+        ``mcp_profile`` is the optional Company OS McpProfile returned by
+        :func:`resolve_active_mcp_profile`. When provided, tool names that
+        the profile does not allow are filtered out before any further
+        resolution happens, so the model never sees them. Passing
+        ``None`` (the default) preserves the existing behaviour — the
+        MiniMax-M3 / Telegram gateway main path is unaffected when no
+        profile is active.
         """
+        # Apply Company OS MCP profile filter before any check_fn / schema
+        # work so a profile-restricted conversation never even pays the
+        # cost of resolving filtered tools.
+        if mcp_profile is None:
+            mcp_profile = resolve_active_mcp_profile()
+        if mcp_profile is not None:
+            try:
+                tool_names = _apply_mcp_profile_filter(tool_names, mcp_profile)
+            except Exception as exc:
+                if not quiet:
+                    logger.debug("MCP profile filter failed: %s", exc)
+
         result = []
-        # Per-call cache on top of the 30 s TTL — handles repeat probes of the
-        # same check_fn within one definitions pass without re-reading the
-        # TTL clock.
+        # Per-call cache on top of the 30 s TTL — handles repeat probes of
+        # the same check_fn within one definitions pass without re-reading
+        # the TTL clock.
         check_results: Dict[Callable, bool] = {}
         entries_by_name = {entry.name: entry for entry in self._snapshot_entries()}
         for name in sorted(tool_names):
@@ -387,13 +485,157 @@ class ToolRegistry:
     # Dispatch
     # ------------------------------------------------------------------
 
+    def pre_dispatch_hook(
+        self, name: str, args: dict, **kwargs
+    ) -> "str | None":
+        """Run governance hooks before a tool is dispatched.
+
+        Returns an error string when the call must be blocked; ``None``
+        when the call may proceed. The hook is opt-in: only tools whose
+        ``toolset`` starts with ``"mcp-"`` are checked, and even then
+        the check is skipped when no Company OS context is active.
+
+        The hook deliberately runs in-process — no subprocess — so the
+        MCP tool surface stays responsive. Failures inside the hook
+        itself are swallowed and the call is allowed through (the
+        gateway's send_message guard and the action-check subprocess
+        still provide defense-in-depth).
+        """
+        try:
+            entry = self.get_entry(name)
+        except Exception:
+            return None
+        if entry is None:
+            return None
+        if not str(getattr(entry, "toolset", "")).startswith("mcp-"):
+            return None
+        profile = resolve_active_mcp_profile()
+        if profile is None:
+            # No Company OS session active — gate is silent.
+            return None
+
+        try:
+            bridge_dir = os.path.expanduser("~/.hermes/company-os/scripts/")
+            if bridge_dir not in sys.path:
+                sys.path.insert(0, bridge_dir)
+            import company_os  # type: ignore
+            import mcp_profiles  # type: ignore
+            import policy_engine  # type: ignore
+        except Exception:
+            return "BLOCKED by Company OS MCP guard: governance modules unavailable"
+
+        target = f"{entry.toolset}:{name}"
+        raw_args = dict(args or {})
+        try:
+            hashed_args = mcp_profiles.hash_sensitive_args(raw_args)
+        except Exception:
+            hashed_args = {}
+        try:
+            payload_digest = company_os.payload_digest_of(
+                {"toolset": entry.toolset, "tool": name, "args": hashed_args}
+            )
+        except Exception:
+            payload_digest = ""
+
+        capabilities = ["read", "search", "fetch"] if getattr(profile, "read_only", False) else [
+            "write",
+            "execute",
+            "shell",
+            "fs_write",
+            "fs_delete",
+        ]
+
+        try:
+            allowed_by_profile, reason = profile.check_capability_rules(target, raw_args)
+        except Exception:
+            allowed_by_profile, reason = True, ""
+        if not allowed_by_profile:
+            return f"BLOCKED by Company OS MCP profile {profile.id!r}: {reason}"
+
+        approval_id = str(raw_args.get("approval_id", "") or "").strip()
+        run_id = ""
+        domain_id = str(raw_args.get("domain", "") or "").strip()
+        try:
+            from gateway.session_context import (
+                get_company_os_approval_id,
+                get_company_os_domain_id,
+                get_company_os_run_id,
+            )
+            approval_id = approval_id or get_company_os_approval_id().strip()
+            domain_id = domain_id or get_company_os_domain_id().strip()
+            run_id = get_company_os_run_id().strip()
+        except Exception:
+            pass
+
+        try:
+            engine = policy_engine.load_engine()
+            decision = engine.decide(
+                policy_engine.PolicyRequest(
+                    subject=str(args.get("subject", "mcp_dispatch")),
+                    channel=str(args.get("channel", "mcp") or "mcp"),
+                    domain=domain_id,
+                    action="mcp_tool_call",
+                    resource=target,
+                    payload_digest=payload_digest,
+                    context={"capabilities": capabilities},
+                )
+            )
+        except Exception:
+            return "BLOCKED by Company OS MCP guard: policy engine unavailable"
+        if decision.decision == "block":
+            return (
+                f"BLOCKED by Company OS policy_engine rule "
+                f"{decision.matched_policy!r}: {decision.reason}"
+            )
+        if decision.decision == "requires_approval":
+            if not approval_id:
+                return (
+                    "BLOCKED by Company OS MCP guard: mcp_tool_call requires "
+                    f"{decision.approval_level} approval for {target}"
+                )
+            try:
+                check = company_os.check_action_allowed(
+                    approval_id=approval_id,
+                    action="mcp_tool_call",
+                    target=target,
+                    payload_digest=payload_digest,
+                    record=True,
+                    run_id=run_id or None,
+                    subject=str(args.get("subject", "mcp_dispatch")),
+                    channel=str(args.get("channel", "mcp") or "mcp"),
+                    domain=domain_id,
+                    capabilities=capabilities,
+                )
+            except Exception as exc:
+                return f"BLOCKED by Company OS MCP guard: action-check failed: {exc}"
+            if not check.get("allowed"):
+                return (
+                    "BLOCKED by Company OS MCP guard: "
+                    f"{check.get('reason', 'approval_required')}"
+                )
+        return None
+
     def dispatch(self, name: str, args: dict, **kwargs) -> str:
         """Execute a tool handler by name.
 
         * Async handlers are bridged automatically via ``_run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
+        * Company OS governance hooks (policy_engine pre-dispatch) are
+          consulted first; blocking hooks short-circuit the dispatch
+          and return an error string.
         """
+        # Company OS governance: opt-in pre-dispatch hook. The hook is
+        # a no-op when no Company OS session is active, so the existing
+        # MiniMax-M3 / Telegram gateway main path is unchanged.
+        try:
+            hook_block = self.pre_dispatch_hook(name, args, **kwargs)
+            if hook_block:
+                return json.dumps({"error": hook_block})
+        except Exception as _hook_exc:
+            # A broken hook must never break tool dispatch.
+            logger.debug("pre_dispatch_hook raised: %s", _hook_exc)
+
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})

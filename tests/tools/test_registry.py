@@ -544,3 +544,58 @@ class TestThreadSafety:
         toolsets = result_holder["value"]
         assert "gated" in toolsets
         assert toolsets["gated"]["available"] is True
+
+
+def test_company_os_mcp_requires_approval_blocks_without_approval():
+    from gateway.session_context import (
+        clear_company_os_route_context,
+        set_company_os_route_context,
+    )
+
+    reg = ToolRegistry()
+    reg.register(
+        name="run_shell",
+        toolset="mcp-playwright",
+        schema=_make_schema("run_shell"),
+        handler=_dummy_handler,
+    )
+
+    set_company_os_route_context(
+        run_id="run-test",
+        domain_id="platform.governance",
+        profile_id="ops_guarded",
+    )
+    try:
+        result = json.loads(reg.dispatch("run_shell", {"command": "echo hi"}))
+    finally:
+        clear_company_os_route_context()
+
+    assert "error" in result
+    assert "approval" in result["error"]
+
+
+def test_company_os_mcp_read_only_profile_allows_read_tool():
+    from gateway.session_context import (
+        clear_company_os_route_context,
+        set_company_os_route_context,
+    )
+
+    reg = ToolRegistry()
+    reg.register(
+        name="web_search",
+        toolset="mcp-MiniMax",
+        schema=_make_schema("web_search"),
+        handler=_dummy_handler,
+    )
+
+    set_company_os_route_context(
+        run_id="run-test",
+        domain_id="knowledge.research",
+        profile_id="research",
+    )
+    try:
+        result = json.loads(reg.dispatch("web_search", {"query": "Hermes"}))
+    finally:
+        clear_company_os_route_context()
+
+    assert result == {"ok": True}

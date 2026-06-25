@@ -27,6 +27,42 @@ import os
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 
 
+def _extract_company_os_route_line(user_message) -> str:
+    """Return the deterministic gateway-injected Company OS route line, if any."""
+    if not isinstance(user_message, str):
+        return ""
+    if "[Company OS route injection]" not in user_message:
+        return ""
+    for line in user_message.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Company OS 路由："):
+            return stripped
+    return ""
+
+
+def _ensure_company_os_route_prefix(final_response, user_message, messages) -> str:
+    route_line = _extract_company_os_route_line(user_message)
+    if not route_line:
+        return final_response
+    response_text = str(final_response or "").strip()
+    if not response_text:
+        prefixed = route_line
+    elif response_text.startswith(route_line):
+        prefixed = str(final_response)
+    else:
+        prefixed = f"{route_line}\n\n{response_text}"
+
+    for msg in reversed(messages or []):
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant" and not msg.get("tool_calls"):
+            content = str(msg.get("content") or "").strip()
+            if content and not content.startswith(route_line):
+                msg["content"] = prefixed
+            break
+    return prefixed
+
+
 def finalize_turn(
     agent,
     *,
@@ -159,6 +195,18 @@ def finalize_turn(
     except Exception as _cleanup_err:
         _cleanup_errors.append(f"cleanup_task_resources: {_cleanup_err}")
         logger.error("finalize_turn: _cleanup_task_resources failed: %s", _cleanup_err, exc_info=True)
+
+    # Company OS gateway routing is deterministic and should remain visible even
+    # when the model takes a tool turn before its final answer.
+    try:
+        if final_response and not interrupted:
+            final_response = _ensure_company_os_route_prefix(
+                final_response,
+                user_message,
+                messages,
+            )
+    except Exception as _route_err:
+        logger.debug("Company OS final route prefix failed: %s", _route_err)
 
     # Persist session to both JSON log and SQLite only after private retry
     # scaffolding has been removed. Otherwise a later user "continue" turn

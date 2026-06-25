@@ -764,6 +764,31 @@ def _confirm_adapter_delivery(send_result) -> bool:
     return bool(getattr(send_result, "success"))
 
 
+def _resolve_cron_approval(job: dict) -> tuple[Optional[str], bool]:
+    """Resolve whether this cron job must clear the Company OS action guard.
+
+    Returns ``(approval_id, require_approval)``. The guard is engaged when:
+
+    * the job explicitly carries ``delivery_approval_id``; the value is
+      passed through to ``send_message_tool``; or
+    * the operator sets ``COMPANY_OS_REQUIRE_APPROVAL=1`` on the cron
+      process, in which case every job must carry an ``approval_id`` and
+      any job without one is blocked at the guard.
+
+    Without either opt-in, the existing fast path (live adapter then
+    standalone) is preserved and ``require_approval`` is ``False``.
+    """
+    approval_id = (job.get("delivery_approval_id") or "").strip() or None
+    if approval_id:
+        return approval_id, True
+    env_flag = os.getenv("COMPANY_OS_REQUIRE_APPROVAL", "").strip().lower() in {"1", "true", "yes", "on"}
+    if env_flag:
+        # The action guard will reject jobs without an explicit
+        # ``approval_id``; the cron path only needs to opt in.
+        return None, True
+    return None, False
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -835,7 +860,80 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
 
+    cron_approval_id, cron_require_approval = _resolve_cron_approval(job)
+
+    # Audit line: every cron delivery records the policy decision so the
+    # operator can later tell which jobs were ungoverned (fast path) vs
+    # approval-gated (action contract). Written to the cron job's own
+    # log; surfaces in the gateway log and can be grep'd.
+    if cron_require_approval and cron_approval_id:
+        audit_policy = "approval_gated"
+        audit_id = cron_approval_id
+    elif cron_require_approval:
+        audit_policy = "approval_required_but_missing"
+        audit_id = ""
+    else:
+        audit_policy = "fast_path_ungoverned"
+        audit_id = ""
+    logger.info(
+        "Job '%s': delivery_policy=%s approval_id=%s targets=%d",
+        job["id"], audit_policy, audit_id or "-", len(targets),
+    )
+
     delivery_errors = []
+
+    if cron_require_approval:
+        # When the operator has opted a job (or all cron jobs, via env var)
+        # into the Company OS action contract, route every target through
+        # the public send_message_tool entry point so the action guard fires
+        # before any platform send.  No live-adapter shortcut, no standalone
+        # fallback: every outbound byte must clear approval first.
+        from tools.send_message_tool import send_message_tool
+
+        for target in targets:
+            platform_name = target["platform"]
+            chat_id = target["chat_id"]
+            thread_id = target.get("thread_id")
+            target_label = f"{platform_name}:{chat_id}"
+            if thread_id is not None:
+                target_label += f":{thread_id}"
+
+            tool_args = {
+                "action": "send",
+                "target": target_label,
+                "message": delivery_content,
+            }
+            if cron_approval_id:
+                tool_args["approval_id"] = cron_approval_id
+
+            try:
+                tool_payload = send_message_tool(tool_args)
+            except Exception as exc:
+                msg = f"send_message_tool raised for {target_label}: {exc}"
+                logger.error("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+
+            try:
+                tool_result = json.loads(tool_payload) if isinstance(tool_payload, str) else tool_payload
+            except (TypeError, ValueError) as exc:
+                msg = f"send_message_tool returned non-JSON for {target_label}: {exc}"
+                logger.error("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+
+            if not tool_result.get("success"):
+                detail = tool_result.get("error") or tool_result.get("note") or "unknown"
+                msg = f"delivery blocked by Company OS guard: {detail}"
+                logger.error("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+
+            logger.info("Job '%s': delivered to %s via Company OS guard", job["id"], target_label)
+
+        if delivery_errors:
+            return "; ".join(delivery_errors)
+        return None
 
     for target in targets:
         platform_name = target["platform"]

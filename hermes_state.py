@@ -613,23 +613,27 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content
 );
 
+-- Friend doc 11 (PR #35826): exclude role='tool' messages from FTS
+-- indexing. Tool messages are short + structured + rarely searched;
+-- indexing them causes write amplification, WAL bloat, and CPU burn.
+
 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
-    );
+    INSERT INTO messages_fts(rowid, content)
+        SELECT new.id, COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        WHERE new.role != 'tool';
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.id;
+    DELETE FROM messages_fts WHERE rowid = old.id AND old.role != 'tool';
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
-    DELETE FROM messages_fts WHERE rowid = old.id;
-    INSERT INTO messages_fts(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
-    );
+    -- Use SELECT...WHERE for partial-update safety (one side may be tool).
+    DELETE FROM messages_fts
+        WHERE rowid = old.id AND old.role != 'tool';
+    INSERT INTO messages_fts(rowid, content)
+        SELECT new.id, COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        WHERE new.role != 'tool';
 END;
 """
 
@@ -643,23 +647,24 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     tokenize='trigram'
 );
 
+-- Same tool-exclusion fix as FTS_SQL above (PR #35826).
+
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
-    );
+    INSERT INTO messages_fts_trigram(rowid, content)
+        SELECT new.id, COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        WHERE new.role != 'tool';
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages BEGIN
-    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+    DELETE FROM messages_fts_trigram WHERE rowid = old.id AND old.role != 'tool';
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
-    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
-        new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
-    );
+    DELETE FROM messages_fts_trigram
+        WHERE rowid = old.id AND old.role != 'tool';
+    INSERT INTO messages_fts_trigram(rowid, content)
+        SELECT new.id, COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        WHERE new.role != 'tool';
 END;
 """
 

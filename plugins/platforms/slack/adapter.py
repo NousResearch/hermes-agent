@@ -2578,10 +2578,15 @@ class SlackAdapter(BasePlatformAdapter):
         #   3. The message is in a thread where the bot was previously @mentioned, OR
         #   4. There's an existing session for this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
-        routing_text = original_text or ""
+        # Check both flat text and blocks text for mentions — Block Kit
+        # messages may have the @mention only in blocks, not in the flat
+        # text field (#52387).
+        blocks = event.get("blocks")
+        blocks_text = _extract_text_from_slack_blocks(blocks) if blocks else ""
+        mention_text = (original_text or "") + ("\n" + blocks_text if blocks_text else "")
         is_mentioned = bool(
-            (bot_uid and f"<@{bot_uid}>" in routing_text)
-            or self._slack_message_matches_mention_patterns(routing_text)
+            (bot_uid and f"<@{bot_uid}>" in mention_text)
+            or self._slack_message_matches_mention_patterns(mention_text)
         )
         event_thread_ts = event.get("thread_ts")
         is_thread_reply = bool(event_thread_ts and event_thread_ts != ts)

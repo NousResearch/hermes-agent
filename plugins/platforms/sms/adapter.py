@@ -359,12 +359,20 @@ class SmsAdapter(BasePlatformAdapter):
             user_id=from_number,
             user_name=from_number,
         )
+
+        # Resolve per-channel prompt (supports "*" wildcard as default for all SMS).
+        from gateway.platforms.base import resolve_channel_prompt
+        _channel_prompt = resolve_channel_prompt(self.config.extra, from_number)
+        if _channel_prompt is None:
+            _channel_prompt = resolve_channel_prompt(self.config.extra, "*")
+
         event = MessageEvent(
             text=text,
             message_type=MessageType.TEXT,
             source=source,
             raw_message=form,
             message_id=message_sid,
+            channel_prompt=_channel_prompt,
         )
 
         # Non-blocking: Twilio expects a fast response

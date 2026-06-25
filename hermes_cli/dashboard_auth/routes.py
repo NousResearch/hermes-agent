@@ -339,7 +339,10 @@ async def auth_callback(
     # cookie is server-set so this is defence in depth, but a regression
     # that lets attacker-controlled bytes into the cookie would otherwise
     # produce an open redirect.
-    landing = _validate_post_login_target(next_from_cookie) or "/"
+    prefix = _prefix(request)
+    landing = _externalize_post_login_target(
+        _validate_post_login_target(next_from_cookie) or "/", prefix
+    )
     resp = RedirectResponse(url=landing, status_code=302)
     set_session_cookies(
         resp,
@@ -385,6 +388,22 @@ def _validate_post_login_target(raw: str) -> str:
     if decoded == "/api" or decoded.startswith("/api/"):
         return ""
     return decoded
+
+
+def _externalize_post_login_target(target: str, prefix: str) -> str:
+    """Prepend *prefix* to *target* when behind a reverse proxy.
+
+    When the dashboard is mounted at a sub-path (e.g. ``/hermes``) via
+    ``X-Forwarded-Prefix``, a bare ``/`` landing must become ``/hermes/``
+    so the browser stays inside the mount.  Paths that already carry the
+    prefix are returned unchanged.
+    """
+    prefix = prefix.rstrip("/")
+    if not target or not prefix:
+        return target
+    if target == prefix or target.startswith(f"{prefix}/"):
+        return target
+    return f"{prefix}{target}"
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +539,10 @@ async def auth_password_login(request: Request, body: _PasswordLoginBody):
     )
 
     expires_in = max(60, session.expires_at - int(time.time()))
-    landing = _validate_post_login_target(body.next) or "/"
+    prefix = _prefix(request)
+    landing = _externalize_post_login_target(
+        _validate_post_login_target(body.next) or "/", prefix
+    )
     resp = JSONResponse({"ok": True, "next": landing})
     set_session_cookies(
         resp,

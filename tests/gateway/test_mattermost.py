@@ -1034,3 +1034,239 @@ async def test_mattermost_dm_post_does_not_seed_thread_root():
     msg_event = adapter.handle_message.call_args[0][0]
     assert msg_event.source.thread_id is None
     assert msg_event.source.message_id == "dm_post_123"
+
+
+# ---------------------------------------------------------------------------
+# Thread auto-follow (Slack parity)
+# ---------------------------------------------------------------------------
+
+
+class TestMattermostThreadAutoResponse:
+    """Tests for the Slack-parity thread-follow feature.
+
+    After the bot is @mentioned in a non-DM channel, follow-up messages in
+    that same thread must be processed WITHOUT requiring a re-mention, unless
+    strict_mention=true is set.
+    """
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter._reply_mode = "thread"
+        self.adapter.handle_message = AsyncMock()
+
+    def _make_event(
+        self,
+        message,
+        post_id="post_root",
+        root_id=None,
+        channel_type="O",
+        channel_id="chan_456",
+    ):
+        post_data = {
+            "id": post_id,
+            "user_id": "user_123",
+            "channel_id": channel_id,
+            "message": message,
+        }
+        if root_id is not None:
+            post_data["root_id"] = root_id
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": channel_type,
+                "sender_name": "@alice",
+            },
+        }
+
+    # 1. Mention registers the thread.
+    @pytest.mark.asyncio
+    async def test_mention_registers_thread(self):
+        """After an @mention in an 'O' channel, thread_id lands in _mentioned_threads."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            os.environ.pop("MATTERMOST_STRICT_MENTION", None)
+            await self.adapter._handle_ws_event(
+                self._make_event("@hermes-bot hello", post_id="root_post_1")
+            )
+        assert "root_post_1" in self.adapter._mentioned_threads
+
+    # 2. Follow-up without mention in a mentioned thread IS processed.
+    @pytest.mark.asyncio
+    async def test_followup_in_mentioned_thread_is_processed(self):
+        """Second message in the same thread (no mention) must reach handle_message."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            os.environ.pop("MATTERMOST_STRICT_MENTION", None)
+            # First: @mention on the root post.
+            await self.adapter._handle_ws_event(
+                self._make_event("@hermes-bot hello", post_id="root_post_2")
+            )
+            self.adapter.handle_message.reset_mock()
+            # Second: reply in the same thread, no mention.
+            await self.adapter._handle_ws_event(
+                self._make_event(
+                    "follow-up without mention",
+                    post_id="reply_post_2",
+                    root_id="root_post_2",
+                )
+            )
+        assert self.adapter.handle_message.called
+
+    # 3. Follow-up in an UNRELATED thread without mention is dropped.
+    @pytest.mark.asyncio
+    async def test_followup_in_unrelated_thread_is_dropped(self):
+        """Reply in a different thread without mention must NOT reach handle_message."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            os.environ.pop("MATTERMOST_STRICT_MENTION", None)
+            # Mention thread A.
+            await self.adapter._handle_ws_event(
+                self._make_event("@hermes-bot hello", post_id="root_thread_a")
+            )
+            self.adapter.handle_message.reset_mock()
+            # Reply in thread B (different root_id).
+            await self.adapter._handle_ws_event(
+                self._make_event(
+                    "message in other thread",
+                    post_id="reply_in_b",
+                    root_id="root_thread_b",
+                )
+            )
+        assert not self.adapter.handle_message.called
+
+    # 4. strict_mention=true disables auto-follow.
+    @pytest.mark.asyncio
+    async def test_strict_mention_disables_auto_follow(self):
+        """With MATTERMOST_STRICT_MENTION=true, follow-ups without mention are dropped,
+        and @mention does NOT register the thread."""
+        with patch.dict(
+            os.environ,
+            {"MATTERMOST_STRICT_MENTION": "true"},
+            clear=False,
+        ):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            # @mention — should respond but NOT register the thread.
+            await self.adapter._handle_ws_event(
+                self._make_event("@hermes-bot hello", post_id="strict_root")
+            )
+            assert self.adapter.handle_message.called
+            assert "strict_root" not in self.adapter._mentioned_threads
+
+            self.adapter.handle_message.reset_mock()
+            # Follow-up in that thread without mention — must be dropped.
+            await self.adapter._handle_ws_event(
+                self._make_event(
+                    "follow-up without mention",
+                    post_id="strict_reply",
+                    root_id="strict_root",
+                )
+            )
+        assert not self.adapter.handle_message.called
+
+    # 4b. strict_mention via config.extra (not env var).
+    @pytest.mark.asyncio
+    async def test_strict_mention_via_config_extra(self):
+        """strict_mention=True in config.extra also disables auto-follow."""
+        from plugins.platforms.mattermost.adapter import MattermostAdapter
+        config = PlatformConfig(
+            enabled=True,
+            token="test-token",
+            extra={"url": "https://mm.example.com", "strict_mention": True},
+        )
+        adapter = MattermostAdapter(config)
+        adapter._bot_user_id = "bot_user_id"
+        adapter._bot_username = "hermes-bot"
+        adapter._reply_mode = "thread"
+        adapter.handle_message = AsyncMock()
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            os.environ.pop("MATTERMOST_STRICT_MENTION", None)
+
+            # @mention should go through but not register thread.
+            await adapter._handle_ws_event(
+                self._make_event("@hermes-bot hello", post_id="cfg_root")
+            )
+            assert adapter.handle_message.called
+            assert "cfg_root" not in adapter._mentioned_threads
+
+            adapter.handle_message.reset_mock()
+            # Follow-up without mention — must be dropped.
+            await adapter._handle_ws_event(
+                self._make_event(
+                    "follow-up",
+                    post_id="cfg_reply",
+                    root_id="cfg_root",
+                )
+            )
+        assert not adapter.handle_message.called
+
+    # 5. _has_active_session_for_thread key matches real flow for public "O" channel.
+    def test_session_key_matches_real_flow_for_public_channel(self):
+        """The key built by _has_active_session_for_thread must be byte-identical
+        to the key build_source produces for an 'O' (public) channel, i.e. with
+        chat_type='channel'.  A hardcoded 'group' key would NOT match (the
+        original bug) — this test proves the map is used.
+        """
+        from gateway.session import SessionSource, build_session_key
+        from gateway.config import Platform
+
+        channel_id = "public_chan_xyz"
+        thread_id = "thread_999"
+        channel_type_raw = "O"  # public channel
+
+        # Build the key that the real message flow produces.
+        real_source = SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id=channel_id,
+            chat_type="channel",  # _CHANNEL_TYPE_MAP["O"] == "channel"
+            user_id=None,
+            thread_id=thread_id,
+        )
+        real_key = build_session_key(
+            real_source,
+            group_sessions_per_user=True,
+            thread_sessions_per_user=False,
+        )
+
+        # Build what a hardcoded "group" key would look like (the OLD bug).
+        buggy_source = SessionSource(
+            platform=Platform.MATTERMOST,
+            chat_id=channel_id,
+            chat_type="group",  # ← incorrect for "O" channel
+            user_id=None,
+            thread_id=thread_id,
+        )
+        buggy_key = build_session_key(
+            buggy_source,
+            group_sessions_per_user=True,
+            thread_sessions_per_user=False,
+        )
+
+        # Seed a fake session store with the REAL key.
+        fake_store = MagicMock()
+        fake_store.config = MagicMock()
+        fake_store.config.group_sessions_per_user = True
+        fake_store.config.thread_sessions_per_user = False
+        fake_store._ensure_loaded = MagicMock()
+        fake_store._entries = {real_key: object()}
+
+        self.adapter._session_store = fake_store
+
+        # The correct lookup (using _CHANNEL_TYPE_MAP) must succeed.
+        assert self.adapter._has_active_session_for_thread(
+            channel_id=channel_id,
+            thread_id=thread_id,
+            channel_type_raw=channel_type_raw,
+        ) is True
+
+        # Prove the buggy hardcoded key would NOT have matched — the test that
+        # would have caught the original silent no-op.
+        assert real_key != buggy_key, (
+            "Sanity: real key and buggy key must differ for this test to be meaningful"
+        )
+        assert buggy_key not in fake_store._entries
+

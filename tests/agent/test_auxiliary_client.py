@@ -1781,6 +1781,11 @@ class TestAuxiliaryFallbackLayering:
         exc.status_code = 402
         return exc
 
+    def _make_rate_limit_err(self):
+        exc = Exception("Rate limit exceeded, try again in 60 seconds")
+        exc.status_code = 429
+        return exc
+
     def test_auto_provider_uses_task_then_main_chain_before_builtin_chain(self, monkeypatch):
         """Auto aux call failures try per-task then top-level fallback before built-ins."""
         primary_client = MagicMock()
@@ -1843,6 +1848,36 @@ class TestAuxiliaryFallbackLayering:
         # Main agent fallback should NOT have been consulted — chain succeeded first
         main_called.assert_not_called()
 
+    def test_explicit_provider_rate_limit_uses_configured_chain_first(self, monkeypatch):
+        """Explicit-provider 429s should use the configured chain before main fallback."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_rate_limit_err()
+
+        chain_client = MagicMock()
+        chain_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from configured chain"))
+        ])
+
+        main_called = MagicMock()
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "glm-4v-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("glm", "glm-4v-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(chain_client, "gpt-4o-mini", "fallback_chain[0](openai)")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   side_effect=main_called):
+            result = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert chain_client.chat.completions.create.called
+        main_called.assert_not_called()
+
     def test_explicit_provider_falls_back_to_main_when_chain_exhausted(self, monkeypatch):
         """If configured fallback_chain returns nothing, main agent model is tried next."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -1895,6 +1930,40 @@ class TestAuxiliaryFallbackLayering:
         assert any(
             "all fallbacks exhausted" in r.message for r in caplog.records
         ), f"Expected exhaustion warning, got: {[r.message for r in caplog.records]}"
+
+    @pytest.mark.asyncio
+    async def test_async_explicit_provider_rate_limit_uses_configured_chain_first(self, monkeypatch):
+        """Async explicit-provider 429s should use the configured chain before main fallback."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(side_effect=self._make_rate_limit_err())
+
+        fallback_sync_client = MagicMock()
+        fallback_async_client = MagicMock()
+        fallback_async_client.chat.completions.create = AsyncMock(return_value=MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from configured chain"))
+        ]))
+
+        main_called = MagicMock()
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "glm-4v-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("glm", "glm-4v-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(fallback_sync_client, "gpt-4o-mini", "fallback_chain[0](openai)")), \
+             patch("agent.auxiliary_client._to_async_client",
+                   return_value=(fallback_async_client, "gpt-4o-mini")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   side_effect=main_called):
+            result = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert fallback_async_client.chat.completions.create.called
+        main_called.assert_not_called()
 
 
 class TestTryMainAgentModelFallback:

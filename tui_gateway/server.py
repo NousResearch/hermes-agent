@@ -4392,6 +4392,88 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
+def _enqueue_prompt(session: dict, text: Any, transport: Any) -> None:
+    """Stash a message to run as the very next turn once the live one ends.
+
+    Used when a prompt arrives mid-turn (see ``_handle_busy_submit``). A single
+    slot is kept; a second arrival is merged (lossless, mirroring the
+    consecutive-user merge in ``repair_message_sequence``) so nothing the user
+    typed is dropped. ``transport`` is pinned so the drained turn streams back to
+    the client that sent it even if the session transport is rebound meanwhile.
+    """
+    existing = session.get("queued_prompt")
+    if (
+        existing
+        and isinstance(existing.get("text"), str)
+        and isinstance(text, str)
+    ):
+        prev = existing["text"]
+        text = f"{prev}\n\n{text}" if prev and text else (prev or text)
+    session["queued_prompt"] = {"text": text, "transport": transport}
+
+
+def _handle_busy_submit(rid, sid: str, session: dict, text: Any, transport: Any) -> dict:
+    """Apply the ``display.busy_input_mode`` policy to a prompt that lands while
+    a turn is in flight, instead of rejecting it with ``session busy``.
+
+    The old rejection forced clients into a deadline-bounded busy-retry that
+    silently dropped the send when turn teardown outlived the deadline (e.g. a
+    slow, non-interruptible tool like ``web_search`` running when the user hits
+    stop). The message is instead queued to run as the next turn — and, for the
+    default ``interrupt`` policy, the live turn is interrupted so it winds down
+    promptly. Drained in ``run``'s tail (see ``_run_prompt_submit``).
+
+    Modes: ``interrupt`` (default) → interrupt + queue; ``queue`` → queue
+    without interrupting; ``steer`` → inject into the live turn if accepted,
+    else queue.
+    """
+    mode = _load_busy_input_mode()
+    agent = session.get("agent")
+    if mode == "steer" and agent is not None and hasattr(agent, "steer"):
+        try:
+            if agent.steer(text):
+                session["last_active"] = time.time()
+                return _ok(rid, {"status": "steered"})
+        except Exception:
+            pass  # fall through to queue
+    if mode != "queue" and agent is not None and hasattr(agent, "interrupt"):
+        try:
+            agent.interrupt()
+        except Exception:
+            pass
+    _enqueue_prompt(session, text, transport)
+    session["last_active"] = time.time()
+    return _ok(rid, {"status": "queued"})
+
+
+def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
+    """Fire a queued next-turn prompt if one is waiting and the session is idle.
+
+    Returns True if a queued prompt was dispatched (the caller should then skip
+    lower-priority follow-ups this cycle — the user's message wins). Mirrors the
+    claim-under-lock pattern used by the goal-continuation re-fire.
+    """
+    with session["history_lock"]:
+        queued = session.get("queued_prompt")
+        if not queued or session.get("running"):
+            return False
+        session["queued_prompt"] = None
+        session["running"] = True
+        if queued.get("transport") is not None:
+            session["transport"] = queued["transport"]
+    try:
+        _run_prompt_submit(rid, sid, session, queued["text"])
+    except Exception as exc:
+        print(
+            f"[tui_gateway] queued prompt dispatch failed: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        with session["history_lock"]:
+            session["running"] = False
+    return True
+
+
 def _inflight_snapshot(session: dict) -> dict | None:
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
@@ -7456,7 +7538,11 @@ def _(rid, params: dict) -> dict:
         session["transport"] = t
     with session["history_lock"]:
         if session.get("running"):
-            return _err(rid, 4009, "session busy")
+            # Don't reject a mid-turn prompt — queue it (and, by default,
+            # interrupt the live turn) so it runs as the next turn. See
+            # _handle_busy_submit for why the old "session busy" rejection
+            # dropped messages when teardown outlived the client's retry window.
+            return _handle_busy_submit(rid, sid, session, text, t or session.get("transport"))
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
         # racing the in-flight child on the same stored session (interleaved
@@ -8077,6 +8163,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
             _emit("session.info", sid, _session_info(agent, session))
+
+        # A user prompt that arrived mid-turn (interrupt + queue) wins over
+        # every auto follow-up below — drain it first and skip them this cycle;
+        # the goal judge / notifications re-evaluate at the end of that turn.
+        if _drain_queued_prompt(rid, sid, session):
+            return
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the

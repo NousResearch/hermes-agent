@@ -706,6 +706,11 @@ export function useSessionActions({
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
+          // Watch windows attach lazily (live mirror). Every other cold resume
+          // gets the gateway's default deferred build: the RPC returns the
+          // transcript immediately instead of blocking the switch on _make_agent
+          // (MCP discovery / prompt build), and the agent pre-warms in the
+          // background while the prefetch above paints the transcript.
           ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
@@ -754,7 +759,13 @@ export function useSessionActions({
                 return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
               })()
 
-        const messagesForView = preserveLocalAssistantErrors(preferredMessages, currentMessages)
+        // Prefetch-hit fast path: `preferredMessages` IS the live `$messages`
+        // array (already error-merged when `localSnapshot` was built), so reuse
+        // the ref instead of rebuilding a throwaway transcript+Map every switch.
+        const messagesForView =
+          preferredMessages === currentMessages
+            ? currentMessages
+            : preserveLocalAssistantErrors(preferredMessages, currentMessages)
 
         setActiveSessionId(resumed.session_id)
         activeSessionIdRef.current = resumed.session_id

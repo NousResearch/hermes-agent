@@ -3369,11 +3369,13 @@ def _aux_select_for_task(task: str) -> None:
     inside the aux picker — users set up new providers through the normal
     ``hermes model`` flow, then route aux tasks to them here.
     """
-    from hermes_cli.config import load_config
+    from hermes_cli.config import get_compatible_custom_providers, load_config
     from hermes_cli.model_switch import list_authenticated_providers
 
     cfg = load_config()
     aux = cfg.get("auxiliary", {}) if isinstance(cfg.get("auxiliary"), dict) else {}
+    user_providers = cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+    custom_providers = get_compatible_custom_providers(cfg)
     task_cfg = aux.get(task, {}) if isinstance(aux.get(task), dict) else {}
     current_provider = str(task_cfg.get("provider") or "auto").strip() or "auto"
     current_model = str(task_cfg.get("model") or "").strip()
@@ -3387,6 +3389,8 @@ def _aux_select_for_task(task: str) -> None:
             current_provider=current_provider,
             current_model=current_model,
             current_base_url=current_base_url,
+            user_providers=user_providers,
+            custom_providers=custom_providers,
         )
     except Exception as exc:
         print(f"Could not detect authenticated providers: {exc}")

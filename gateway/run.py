@@ -1417,6 +1417,7 @@ from contextlib import contextmanager as _contextmanager
 # dashboard's pre-write validation enforces the same policy.
 from gateway.config import (
     PORT_BINDING_PLATFORM_VALUES as _PORT_BINDING_PLATFORM_VALUES,
+    platform_binds_port as _platform_binds_port,
 )
 
 
@@ -8802,7 +8803,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         port_binding_platforms = sorted(
             platform.value
             for platform, platform_config in profile_cfg.platforms.items()
-            if platform_config.enabled and platform.value in _PORT_BINDING_PLATFORM_VALUES
+            if platform_config.enabled
+            and _platform_binds_port(platform.value, platform_config.extra)
         )
         if port_binding_platforms:
             joined = ", ".join(port_binding_platforms)

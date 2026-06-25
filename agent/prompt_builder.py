@@ -1678,8 +1678,26 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
 
 
 def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
+    """AGENTS.md — profile dir first, then cwd (no recursive walk)."""
+    hermes_home = get_hermes_home()
     for name in ["AGENTS.md", "agents.md"]:
+        # Profile-level AGENTS.md takes priority (mirrors SOUL.md pattern)
+        profile_candidate = hermes_home / name
+        if not profile_candidate.exists():
+            profile_candidate = None
+        if profile_candidate and profile_candidate.exists():
+            try:
+                content = profile_candidate.read_text(encoding="utf-8").strip()
+                if content:
+                    content = _scan_context_content(content, name)
+                    result = f"## {name}\n\n{content}"
+                    return _truncate_content(
+                        result, "AGENTS.md", context_length=context_length,
+                        read_path=str(profile_candidate),
+                    )
+            except Exception as e:
+                logger.debug("Could not read %s: %s", profile_candidate, e)
+        # Fall back to cwd
         candidate = cwd_path / name
         if candidate.exists():
             try:

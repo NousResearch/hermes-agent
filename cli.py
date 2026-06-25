@@ -9140,7 +9140,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         fetch_account_usage, provider,
                         base_url=base_url, api_key=api_key,
                     ).result(timeout=10.0)
-                except (concurrent.futures.TimeoutError, Exception):
+                except Exception:
                     account_snapshot = None
         account_lines = [f"  {line}" for line in render_account_usage_lines(account_snapshot)]
         if account_lines:

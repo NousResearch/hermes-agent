@@ -1897,7 +1897,7 @@ class CLICommandsMixin:
                     s.connect(("127.0.0.1", _port))
                     s.close()
                     print("   Status: ✓ reachable")
-                except (OSError, Exception):
+                except Exception:
                     print("   Status: ⚠ not reachable (browser may not be running)")
             else:
                 try:

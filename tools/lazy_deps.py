@@ -502,7 +502,7 @@ def _is_satisfied(spec: str) -> bool:
 
     try:
         return Version(installed) in SpecifierSet(spec_tail)
-    except (InvalidSpecifier, InvalidVersion, Exception):
+    except Exception:
         # Malformed spec or installed version we can't parse — don't churn.
         return True
 
@@ -898,7 +898,7 @@ def ensure_and_bind(
     """
     try:
         ensure(feature, prompt=prompt)
-    except (FeatureUnavailable, Exception):
+    except Exception:
         return False
 
     try:

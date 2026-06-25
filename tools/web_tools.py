@@ -138,7 +138,7 @@ def _load_web_config() -> dict:
     try:
         from hermes_cli.config import load_config
         return load_config().get("web", {})
-    except (ImportError, Exception):
+    except Exception:
         return {}
 
 def _get_backend() -> str:

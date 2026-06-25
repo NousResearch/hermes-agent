@@ -1024,6 +1024,28 @@ class TestConvertMessages:
         assert assistant_blocks[0]["text"] == "Hello from assistant"
         assert assistant_blocks[0]["cache_control"] == {"type": "ephemeral"}
 
+    def test_assistant_tool_use_cache_control_is_preserved(self):
+        messages = apply_anthropic_cache_control([
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Run the tool"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc_1", "function": {"name": "test_tool", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "tc_1", "content": "result"},
+        ], native_anthropic=True)
+
+        _, result = convert_messages_to_anthropic(messages)
+        assistant_msg = [m for m in result if m["role"] == "assistant"][0]
+        tool_use = assistant_msg["content"][-1]
+
+        assert tool_use["type"] == "tool_use"
+        assert tool_use["id"] == "tc_1"
+        assert tool_use["cache_control"] == {"type": "ephemeral"}
+
     def test_tool_cache_control_is_preserved_on_tool_result_block(self):
         messages = apply_anthropic_cache_control([
             {"role": "system", "content": "System prompt"},

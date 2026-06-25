@@ -1424,6 +1424,29 @@ def test_custom_provider_keeps_configured_non_responses_api_mode(monkeypatch):
     assert resolved["api_mode"] == "anthropic_messages"
 
 
+def test_named_custom_provider_without_base_url_warns(monkeypatch, caplog):
+    """A named custom/local provider with no base_url must not fail silently.
+
+    Regression for the kanban-worker footgun: an empty base_url returned None
+    and the caller silently fell back to OpenRouter (no key -> produces nothing,
+    no diagnostic). We now log a warning naming the provider so the per-task log
+    explains *why* a worker did nothing.
+    """
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {"name": "mylocal"},  # configured, but no base_url
+    )
+
+    with caplog.at_level("WARNING", logger=rp.logger.name):
+        result = rp._resolve_named_custom_runtime(requested_provider="mylocal")
+
+    assert result is None
+    assert any(
+        "base_url" in r.getMessage() and "mylocal" in r.getMessage()
+        for r in caplog.records
+    ), [r.getMessage() for r in caplog.records]
+
+
 def test_named_custom_provider_api_mode(monkeypatch):
     """custom_providers entries with api_mode should use it."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")

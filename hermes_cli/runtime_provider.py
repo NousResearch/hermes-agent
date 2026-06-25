@@ -974,6 +974,18 @@ def _resolve_named_custom_runtime(
         or custom_provider.get("base_url", "")
     ).rstrip("/")
     if not base_url:
+        # A named custom/local provider was configured but has no endpoint.
+        # This is the #1 silent kanban-worker footgun: with no base_url we
+        # return None and the caller falls back to default (OpenRouter)
+        # resolution — which produces nothing if no other credentials exist,
+        # and previously left ZERO trace of why. Surface it instead.
+        logger.warning(
+            "Custom provider %r is configured but has no base_url — set its "
+            "base_url (or LM_BASE_URL in this profile's .env). Falling back to "
+            "default provider resolution, which will fail if no other "
+            "credentials are configured.",
+            custom_provider.get("name") or requested_provider,
+        )
         return None
 
     # Check if a credential pool exists for this custom endpoint

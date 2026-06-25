@@ -64,3 +64,43 @@ jobs:
             apps/desktop/release/*.exe
             apps/desktop/release/*.msi
           if-no-files-found: error
+
+      # Publish the installer straight to Tencent COS from the runner (fast GH ->
+      # COS link), so we never pull the ~235 MB artifact down a slow link. Gated
+      # on the COS_* repo secrets: skips cleanly when unset (the artifact above
+      # is still produced as a fallback). The object key is the lowercased exe
+      # name (e.g. apexnodes-0.15.1-win-x64.exe) -> tracks the version and keeps
+      # the brand name out of the URL literal, consistent with the Mac dmg.
+      - name: Publish installer to Tencent COS
+        if: success()
+        shell: pwsh
+        env:
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+        run: |
+          if (-not $env:COS_SECRET_ID -or -not $env:COS_SECRET_KEY) {
+            Write-Host "COS_SECRET_ID/COS_SECRET_KEY not set; skipping COS publish (artifact still uploaded)."
+            exit 0
+          }
+          $ErrorActionPreference = "Stop"
+          Invoke-WebRequest -Uri "https://github.com/tencentyun/coscli/releases/download/v1.0.8/coscli-v1.0.8-windows-amd64.exe" -OutFile coscli.exe
+          $cfg = @(
+            "cos:",
+            "  base:",
+            "    protocol: https",
+            "    secretid: $env:COS_SECRET_ID",
+            "    secretkey: $env:COS_SECRET_KEY",
+            "  buckets:",
+            "  - name: apexnodes-runtime-202606250443-1300912302",
+            "    alias: apexnodes-runtime",
+            "    region: ap-guangzhou",
+            "    endpoint: cos.ap-guangzhou.myqcloud.com"
+          )
+          Set-Content -Path (Join-Path $env:USERPROFILE ".cos.yaml") -Value $cfg -Encoding ascii
+          $exe = Get-ChildItem apps/desktop/release/*.exe | Select-Object -First 1
+          if (-not $exe) { throw "no .exe found under apps/desktop/release" }
+          $key = $exe.Name.ToLower()
+          Write-Host "Publishing $($exe.Name) -> cos://.../desktop/$key"
+          ./coscli.exe cp $exe.FullName "cos://apexnodes-runtime-202606250443-1300912302/desktop/$key"
+          Remove-Item (Join-Path $env:USERPROFILE ".cos.yaml") -Force
+          Write-Host "COS publish OK: desktop/$key"

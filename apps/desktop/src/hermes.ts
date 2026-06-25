@@ -23,6 +23,7 @@ import type {
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
+  MoaConfigResponse,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
@@ -85,6 +86,8 @@ export type {
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
+  MoaConfigResponse,
+  MoaModelSlot,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
@@ -743,6 +746,22 @@ export function getAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
   return window.hermesDesktop.api<AuxiliaryModelsResponse>({
     ...profileScoped(),
     path: '/api/model/auxiliary'
+  })
+}
+
+export function getMoaModels(): Promise<MoaConfigResponse> {
+  return window.hermesDesktop.api<MoaConfigResponse>({
+    ...profileScoped(),
+    path: '/api/model/moa'
+  })
+}
+
+export function saveMoaModels(body: MoaConfigResponse): Promise<MoaConfigResponse & { ok: boolean }> {
+  return window.hermesDesktop.api<MoaConfigResponse & { ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/model/moa',
+    method: 'PUT',
+    body
   })
 }
 

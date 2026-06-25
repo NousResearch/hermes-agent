@@ -393,6 +393,36 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["value"] == ""
         assert "secret-value" not in json.dumps(data)
 
+    def test_get_moa_models_returns_provider_model_slots(self):
+        resp = self.client.get("/api/model/moa")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["reference_models"]
+        assert all(set(slot) == {"provider", "model"} for slot in data["reference_models"])
+        assert set(data["aggregator"]) == {"provider", "model"}
+
+    def test_put_moa_models_persists_provider_model_slots(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "reference_models": [
+                {"provider": "openai-codex", "model": "gpt-5.5"},
+                {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+            ],
+            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+            "reference_temperature": 0.6,
+            "aggregator_temperature": 0.4,
+            "max_tokens": 4096,
+            "enabled": True,
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        cfg = load_config()
+        assert cfg["moa"]["reference_models"] == payload["reference_models"]
+        assert cfg["moa"]["aggregator"] == payload["aggregator"]
+
     # ── GET /api/media (remote image display) ───────────────────────────
 
     def test_get_media_serves_image_in_root(self):

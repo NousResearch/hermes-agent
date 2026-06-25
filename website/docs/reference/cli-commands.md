@@ -39,6 +39,7 @@ hermes [global-options] <command> [subcommand/options]
 |---------|---------|
 | `hermes chat` | Interactive or one-shot chat with the agent. |
 | `hermes model` | Interactively choose the default provider and model. |
+| `hermes moa` | Configure named Mixture of Agents presets used by `/moa`. |
 | `hermes fallback` | Manage fallback providers tried when the primary model errors. |
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes proxy` | Local OpenAI-compatible proxy that attaches OAuth provider credentials. See [Subscription Proxy](../user-guide/features/subscription-proxy.md). |
@@ -1118,6 +1119,18 @@ The curator is an auxiliary-model background task that periodically reviews agen
 On a fresh install the first scheduled pass is deferred by one full `interval_hours` (7 days by default) — the gateway will not curate immediately on the first tick after `hermes update`. Use `hermes curator run --dry-run` to preview before that happens.
 
 See [Curator](../user-guide/features/curator.md) for behavior and config.
+
+## `hermes moa`
+
+Configure named Mixture of Agents presets used by the `/moa` slash command.
+
+```bash
+hermes moa list
+hermes moa configure [name]
+hermes moa delete <name>
+```
+
+`hermes moa configure` reuses Hermes' provider → model picker for each reference model and the aggregator. A preset is an execution-mode configuration, not a primary model or provider.
 
 ## `hermes fallback`
 

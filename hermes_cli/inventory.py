@@ -163,6 +163,10 @@ def build_models_payload(
         refresh=refresh,
     )
 
+    moa_row = _moa_provider_row(ctx)
+    if moa_row is not None:
+        rows = [moa_row] + [r for r in rows if str(r.get("slug", "")).lower() != "moa"]
+
     # --- Deduplicate: remove models from aggregators that overlap with
     # user-defined providers.  When a local proxy (e.g. litellm-proxy)
     # serves a model whose name also appears in an aggregator's curated
@@ -209,7 +213,7 @@ def build_models_payload(
                     row["total_models"] = len(filtered)
 
     if include_unconfigured:
-        rows = list(rows) + _append_unconfigured_rows(rows, ctx)
+        rows = list(rows) + [r for r in _append_unconfigured_rows(rows, ctx) if str(r.get("slug", "")).lower() != "moa"]
     if picker_hints:
         _apply_picker_hints(rows)
     if canonical_order:
@@ -436,3 +440,28 @@ def _apply_pricing(
                 # is never blocked from picking a model.
                 row["free_tier"] = False
                 row["unavailable_models"] = []
+
+
+def _moa_provider_row(ctx: ConfigContext) -> dict | None:
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.moa_config import normalize_moa_config
+
+        cfg = normalize_moa_config(load_config().get("moa") or {})
+        models = list(cfg.get("presets", {}).keys())
+        if not models:
+            return None
+        return {
+            "slug": "moa",
+            "name": "Mixture of Agents",
+            "is_current": (ctx.current_provider or "").lower() == "moa",
+            "is_user_defined": False,
+            "models": models,
+            "total_models": len(models),
+            "source": "virtual",
+            "authenticated": True,
+            "auth_type": "virtual",
+            "warning": "Aggregator acts as the selected model; references provide analysis before each call.",
+        }
+    except Exception:
+        return None

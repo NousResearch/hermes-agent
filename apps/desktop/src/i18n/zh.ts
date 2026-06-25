@@ -57,6 +57,7 @@ export const zh: Translations = {
       backgroundExitedDuringStartup: 'Hermes 后台进程在启动期间退出。',
       backendStopped: '后端已停止',
       desktopBootFailed: '桌面启动失败',
+      gatewayConnectionLost: '与网关的连接已断开',
       gatewaySignInRequired: '需要登录网关',
       ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
     },
@@ -206,6 +207,7 @@ export const zh: Translations = {
       'session.togglePin': '固定/取消固定当前会话',
       'composer.focus': '聚焦输入框',
       'composer.modelPicker': '打开模型选择器',
+      'composer.voice': '开始 / 停止语音对话',
       'view.toggleSidebar': '切换会话侧边栏',
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.showFiles': '显示文件浏览器',

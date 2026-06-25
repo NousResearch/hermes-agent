@@ -4495,6 +4495,15 @@ def _default_verify() -> bool | ssl.SSLContext:
     defer to httpx's built-in default (certifi via its own dependency).
     Mirrors the weixin fix in 3a0ec1d93.
     """
+    # First pass: let ssl_compat handle config, env vars, and certifi.
+    try:
+        from agent.ssl_compat import resolve_httpx_verify
+        result = resolve_httpx_verify()
+        if result is not True:
+            return result
+    except ImportError:
+        pass
+    # Second pass: legacy fallback for macOS + certifi.
     if sys.platform == "darwin":
         try:
             import certifi

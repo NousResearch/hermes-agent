@@ -903,6 +903,13 @@ DEFAULT_CONFIG = {
     "max_concurrent_sessions": None,
     "agent": {
         "max_turns": 90,
+        # SSL/TLS configuration for all HTTP clients.
+        # ca_bundle: path to a custom CA bundle PEM file.
+        # insecure: set True to disable certificate verification.
+        "tls": {
+            "ca_bundle": "",
+            "insecure": False,
+        },
         # Inactivity timeout for gateway agent execution (seconds).
         # The agent can run indefinitely as long as it's actively calling
         # tools or receiving API responses.  Only fires when the agent has

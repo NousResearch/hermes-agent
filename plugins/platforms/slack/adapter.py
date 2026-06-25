@@ -1914,7 +1914,23 @@ class SlackAdapter(BasePlatformAdapter):
             if thread_ts:
                 await self.stop_typing(chat_id, metadata=metadata)
             logger.error("[Slack] Send error: %s", e, exc_info=True)
-            return SendResult(success=False, error=str(e))
+            _retryable = self._is_retryable_upload_error(e)
+            _retry_after = None
+            if _retryable:
+                _resp = getattr(e, "response", None)
+                if _resp is not None:
+                    try:
+                        _ra = getattr(_resp, "headers", {}).get("Retry-After")
+                        if _ra is not None:
+                            _retry_after = float(_ra)
+                    except (TypeError, ValueError, AttributeError):
+                        pass
+            return SendResult(
+                success=False,
+                error=str(e),
+                retryable=_retryable,
+                retry_after=_retry_after,
+            )
 
     async def send_private_notice(
         self,

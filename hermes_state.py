@@ -3600,37 +3600,66 @@ class SessionDB:
                 t for t in raw_query.split()
                 if t.upper() not in {"AND", "OR", "NOT"} and self._contains_cjk(t)
             ]
-            _any_short_cjk = any(
-                self._count_cjk(t) < 3 for t in _tokens_for_check
+            # Route to trigram when ANY CJK token is long enough (≥3 chars).
+            # Previously we required ALL CJK tokens ≥3 chars, but that forced
+            # queries with short CJK tokens (e.g. "考勤", 2 chars) to fall
+            # back to unranked LIKE.  Short tokens are silently ignored by the
+            # trigram tokenizer — they don't break the query, and the long
+            # tokens still provide BM25 ranking and proper snippets.
+            _has_long_cjk = any(
+                self._count_cjk(t) >= 3 for t in _tokens_for_check
             )
 
             _trigram_succeeded = False
-            if cjk_count >= 3 and not _any_short_cjk and self._trigram_available:
-                # Trigram FTS5 path — quote each non-operator token to handle
-                # FTS5 special chars (%, *, etc.) while preserving boolean
-                # operators (AND, OR, NOT) for multi-term queries.
+            if cjk_count >= 3 and _has_long_cjk and self._trigram_available:
+                # Trigram FTS5 path with LIKE post-filter for short CJK tokens.
+                # SQLite trigram tokenizer requires ≥9 UTF-8 bytes (≈3 CJK chars)
+                # per token to generate any trigrams.  Short CJK tokens (1-2 chars)
+                # would silently match nothing in the MATCH clause, breaking
+                # implicit-AND semantics.  We route them to LIKE conditions
+                # appended to the WHERE clause instead.
                 tokens = raw_query.split()
-                parts = []
+                trigram_parts = []
+                short_cjk_terms: "list[str]" = []
                 for tok in tokens:
                     if tok.upper() in {"AND", "OR", "NOT"}:
-                        parts.append(tok)
+                        trigram_parts.append(tok)
+                    elif self._contains_cjk(tok) and self._count_cjk(tok) < 3:
+                        # Too short for trigram — save for LIKE post-filter
+                        short_cjk_terms.append(tok)
                     else:
-                        parts.append('"' + tok.replace('"', '""') + '"')
-                trigram_query = " ".join(parts)
-                tri_where = ["messages_fts_trigram MATCH ?"]
-                tri_params: list = [trigram_query]
-                if not include_inactive:
-                    tri_where.append("(m.active = 1 OR m.compacted = 1)")
-                if source_filter is not None:
-                    tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
-                    tri_params.extend(source_filter)
-                if exclude_sources is not None:
-                    tri_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
-                    tri_params.extend(exclude_sources)
-                if role_filter:
-                    tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
-                    tri_params.extend(role_filter)
-                tri_sql = f"""
+                        trigram_parts.append('"' + tok.replace('"', '""') + '"')
+
+                if not trigram_parts:
+                    # All tokens are short CJK — trigram can't help.
+                    # Return empty; caller (_discover) may retry with
+                    # broader LIKE semantics.
+                    matches = []
+                else:
+                    trigram_query = " ".join(trigram_parts)
+                    tri_where = ["messages_fts_trigram MATCH ?"]
+                    tri_params: list = [trigram_query]
+
+                    # Append LIKE conditions for short CJK tokens so they still
+                    # contribute to filtering (AND semantics preserved).
+                    for term in short_cjk_terms:
+                        esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                        tri_where.append(
+                            "(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"
+                        )
+                        tri_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
+                    if not include_inactive:
+                        tri_where.append("(m.active = 1 OR m.compacted = 1)")
+                    if source_filter is not None:
+                        tri_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
+                        tri_params.extend(source_filter)
+                    if exclude_sources is not None:
+                        tri_where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
+                        tri_params.extend(exclude_sources)
+                    if role_filter:
+                        tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
+                        tri_params.extend(role_filter)
+                    tri_sql = f"""
                     SELECT
                         m.id,
                         m.session_id,
@@ -3649,16 +3678,16 @@ class SessionDB:
                     {order_by_sql}
                     LIMIT ? OFFSET ?
                 """
-                tri_params.extend([limit, offset])
-                with self._lock:
-                    try:
-                        tri_cursor = self._conn.execute(tri_sql, tri_params)
-                    except sqlite3.OperationalError:
-                        # Trigram query failed at runtime — fall through to LIKE.
-                        pass
-                    else:
-                        matches = [dict(row) for row in tri_cursor.fetchall()]
-                        _trigram_succeeded = True
+                    tri_params.extend([limit, offset])
+                    with self._lock:
+                        try:
+                            tri_cursor = self._conn.execute(tri_sql, tri_params)
+                        except sqlite3.OperationalError:
+                            # Trigram query failed at runtime — fall through to LIKE.
+                            pass
+                        else:
+                            matches = [dict(row) for row in tri_cursor.fetchall()]
+                            _trigram_succeeded = True
             if not _trigram_succeeded:
                 # Short / mixed CJK query, trigram unavailable, or trigram
                 # <3 CJK chars. Fall back to LIKE substring search.
@@ -3830,6 +3859,150 @@ class SessionDB:
             key=lambda item: (score(item[1]), item[0]),
         )
         return [row for _, row in ranked[:limit]]
+
+    def search_sessions_by_terms(
+        self,
+        terms: "list[str]",
+        role_filter: "list[str] | None" = None,
+        exclude_sources: "list[str] | None" = None,
+        limit: int = 20,
+        sort: str = None,
+    ) -> "list[dict[str, Any]]":
+        """Session-level search: find sessions that cover multiple query terms.
+
+        Unlike ``search_messages`` which requires all terms in a *single*
+        message, this method searches each term independently via LIKE and
+        scores sessions by how many of the query terms appear *anywhere* in
+        the session.  This catches conversations where a topic is spread
+        across multiple messages (common in CJK chat).
+
+        Returns results shaped like ``search_messages`` (id, session_id,
+        role, snippet, content, …) for drop-in compatibility with
+        ``_discover``.  The returned message is the best-matching one in the
+        session (highest term coverage).
+        """
+        if not terms:
+            return []
+
+        # Normalise sort (same as search_messages).
+        if isinstance(sort, str):
+            sort_norm = sort.strip().lower()
+            if sort_norm not in ("newest", "oldest"):
+                sort_norm = None
+        else:
+            sort_norm = None
+
+        role_list = role_filter if role_filter else ["user", "assistant"]
+
+        # ── Phase 1: per-term match counts per session ──
+        term_scores: "dict[str, dict[str, int]]" = {}
+        session_term_hits: "dict[str, int]" = {}
+
+        for term in terms:
+            esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            like_pattern = f"%{esc}%"
+
+            params: list = [like_pattern, like_pattern, like_pattern]
+            where_extra = ""
+            if exclude_sources:
+                where_extra += f" AND s.source NOT IN ({','.join('?' for _ in exclude_sources)})"
+                params.extend(exclude_sources)
+            if role_list:
+                where_extra += f" AND m.role IN ({','.join('?' for _ in role_list)})"
+                params.extend(role_list)
+
+            sql = f"""
+                SELECT m.session_id, count(*) AS cnt
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE (m.content LIKE ? ESCAPE '\\'
+                       OR m.tool_name LIKE ? ESCAPE '\\'
+                       OR m.tool_calls LIKE ? ESCAPE '\\')
+                {where_extra}
+                GROUP BY m.session_id
+            """
+            with self._lock:
+                rows = self._conn.execute(sql, params).fetchall()
+            for row in rows:
+                sid = row["session_id"]
+                if sid not in term_scores:
+                    term_scores[sid] = {}
+                term_scores[sid][term] = row["cnt"]
+                if sid not in session_term_hits:
+                    session_term_hits[sid] = 1
+                else:
+                    session_term_hits[sid] += 1
+
+        if not session_term_hits:
+            return []
+
+        # ── Phase 2: score and rank sessions ──
+        total_terms = len(terms)
+        scored = []
+        for sid, hit_count in session_term_hits.items():
+            coverage = hit_count / total_terms
+            score = coverage + (1.0 if hit_count == total_terms else 0.0)
+            scored.append((sid, score, hit_count))
+
+        scored.sort(key=lambda x: (x[1], x[2]), reverse=True)
+        scored = scored[:limit * 3]
+
+        # ── Phase 3: find best anchor message per session ──
+        results = []
+        for sid, score, hit_count in scored:
+            like_clauses = []
+            like_params = []
+            for term in terms:
+                esc = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+                like_clauses.append(
+                    "(CASE WHEN m.content LIKE ? ESCAPE '\\' "
+                    "OR m.tool_name LIKE ? ESCAPE '\\' "
+                    "OR m.tool_calls LIKE ? ESCAPE '\\' THEN 1 ELSE 0 END)"
+                )
+                like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
+
+            term_score_expr = " + ".join(like_clauses)
+            order = "ORDER BY term_score DESC, m.timestamp DESC"
+            if sort_norm == "oldest":
+                order = "ORDER BY term_score DESC, m.timestamp ASC"
+
+            best_sql = f"""
+                SELECT m.id, m.session_id, m.role,
+                       m.content, m.timestamp, m.tool_name, m.tool_calls,
+                       s.source, s.model, s.started_at AS session_started,
+                       ({term_score_expr}) AS term_score
+                FROM messages m
+                JOIN sessions s ON s.id = m.session_id
+                WHERE m.session_id = ?
+                {('AND m.role IN (' + ','.join('?' for _ in role_list) + ')') if role_list else ''}
+                {order}
+                LIMIT 1
+            """
+            best_params = like_params + [sid]
+            if role_list:
+                best_params.extend(role_list)
+            with self._lock:
+                row = self._conn.execute(best_sql, best_params).fetchone()
+            if row:
+                d = dict(row)
+                content = self._decode_content(d.get("content") or "")
+                if isinstance(content, list):
+                    content = " ".join(
+                        p.get("text", "") for p in content
+                        if isinstance(p, dict) and p.get("type") == "text"
+                    )
+                if isinstance(content, str) and len(content) > 200:
+                    content = content[:200] + "..."
+                d["snippet"] = str(content)[:300]
+                d["_session_score"] = score
+                d["_terms_matched"] = hit_count
+                d["_total_terms"] = total_terms
+                results.append(d)
+
+            if len(results) >= limit:
+                break
+
+        return results
 
     def search_sessions(
         self,

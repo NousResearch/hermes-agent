@@ -416,14 +416,34 @@ def _discover(
         return tool_error(f"Search failed: {e}", success=False)
 
     if not raw_results:
-        return json.dumps({
-            "success": True,
-            "mode": "discover",
-            "query": query,
-            "results": [],
-            "count": 0,
-            "message": "No matching sessions found.",
-        }, ensure_ascii=False)
+        # Fallback: session-level aggregated search for multi-word queries.
+        # When FTS5 can't find a single message containing ALL query terms
+        # (common for CJK conversations where topics span multiple messages),
+        # try searching each term independently and scoring sessions by
+        # term coverage.
+        tokens = [t for t in query.split() if t.upper() not in {"AND", "OR", "NOT"}]
+        if len(tokens) > 1 and hasattr(db, "search_sessions_by_terms"):
+            try:
+                raw_results = db.search_sessions_by_terms(
+                    terms=tokens,
+                    role_filter=role_list,
+                    exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+                    limit=50,
+                    sort=sort,
+                )
+            except Exception as e:
+                logging.debug("session-level fallback failed: %s", e, exc_info=True)
+                raw_results = []
+
+        if not raw_results:
+            return json.dumps({
+                "success": True,
+                "mode": "discover",
+                "query": query,
+                "results": [],
+                "count": 0,
+                "message": "No matching sessions found.",
+            }, ensure_ascii=False)
 
     current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
 

@@ -80,10 +80,10 @@ export function execFileNoThrow(
         }, options.timeout)
       : null
 
-    child.stdout?.on('data', chunk => {
+    child.stdout?.on('data', (chunk: Buffer | string) => {
       stdout += String(chunk)
     })
-    child.stderr?.on('data', chunk => {
+    child.stderr?.on('data', (chunk: Buffer | string) => {
       stderr += String(chunk)
     })
     child.on('error', error => {

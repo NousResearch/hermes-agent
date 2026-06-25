@@ -138,14 +138,15 @@ export async function startPromptLiveSession({
 export function useMainApp(gw: GatewayClient) {
   const { exit } = useApp()
   const { stdout } = useStdout()
-  const [cols, setCols] = useState(stdout?.columns ?? 80)
+  const [colsSnapshot, setColsSnapshot] = useState(stdout?.columns ?? 80)
+  const cols = stdout?.columns ?? colsSnapshot
 
   useEffect(() => {
     if (!stdout) {
       return
     }
 
-    const sync = () => setCols(stdout.columns ?? 80)
+    const sync = () => setColsSnapshot(stdout.columns ?? 80)
 
     stdout.on('resize', sync)
 

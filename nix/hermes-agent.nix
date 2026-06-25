@@ -114,7 +114,19 @@ let
   # Walk propagatedBuildInputs to include transitive Python deps in PYTHONPATH.
   # Without this, a plugin listing e.g. requests as a dep would fail at runtime
   # if requests isn't already in the sealed uv2nix venv.
-  allExtraPythonPackages = python312.pkgs.requiredPythonModules extraPythonPackages;
+  #
+  # Expand every resolved module to ALL of its outputs. Multi-output Python
+  # derivations (notably torch: out, dev, lib, cxxdev, dist) ship their
+  # site-packages only in the `out` output, but a dependent package may
+  # propagate a *different* output — e.g. torchaudio depends on torch's `dev`
+  # output for headers/linking. In that case requiredPythonModules yields only
+  # `torch.dev`, which has no site-packages dir, so resolve-plugin-pythonpath.py
+  # silently drops torch from PYTHONPATH and `import torch` fails at runtime.
+  # Emitting every output lets the resolver find the `out` output that actually
+  # carries site-packages; outputs without one are skipped harmlessly there.
+  allExtraPythonPackages = lib.concatMap
+    (drv: map (output: drv.${output}) (drv.outputs or [ "out" ]))
+    (python312.pkgs.requiredPythonModules extraPythonPackages);
 
   # External Python script for filtering (avoids Nix string escaping hell)
   resolvePluginScript = ./resolve-plugin-pythonpath.py;

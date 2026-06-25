@@ -1578,7 +1578,11 @@ class AccessPolicy:
             return False
         if self._group_policy == "allowlist":
             return group_code.strip() in self._group_allow_from
-        return True
+        if self._group_policy == "pairing":
+            return False
+        if self._group_policy == "open":
+            return self._open_dm_opted_in()
+        return False
 
     @property
     def dm_policy(self) -> str:

@@ -563,6 +563,90 @@ class TestAccessGuardMiddleware:
         await AccessGuardMiddleware()(ctx, next_fn)
         next_fn.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_open_group_blocked_without_opt_in(self, monkeypatch):
+        """AccessGuardMiddleware blocks open group policy without explicit opt-in."""
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        adapter = make_adapter()
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing", dm_allow_from=[],
+            group_policy="open", group_allow_from=[],
+        )
+        ctx = make_ctx(adapter=adapter, chat_type="group", group_code="grp-1")
+        next_fn = AsyncMock()
+
+        await AccessGuardMiddleware()(ctx, next_fn)
+        next_fn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_open_group_passes_with_opt_in(self, monkeypatch):
+        """AccessGuardMiddleware passes open group policy with explicit opt-in."""
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        adapter = make_adapter()
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing", dm_allow_from=[],
+            group_policy="open", group_allow_from=[],
+        )
+        ctx = make_ctx(adapter=adapter, chat_type="group", group_code="grp-1")
+        next_fn = AsyncMock()
+
+        await AccessGuardMiddleware()(ctx, next_fn)
+        next_fn.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_unknown_group_policy_blocked(self, monkeypatch):
+        """AccessGuardMiddleware blocks unrecognized group_policy values."""
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        adapter = make_adapter()
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing", dm_allow_from=[],
+            group_policy="typo", group_allow_from=[],
+        )
+        ctx = make_ctx(adapter=adapter, chat_type="group", group_code="grp-1")
+        next_fn = AsyncMock()
+
+        await AccessGuardMiddleware()(ctx, next_fn)
+        next_fn.assert_not_awaited()
+
+
+class TestAccessPolicy:
+    def test_open_group_requires_opt_in(self, monkeypatch):
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        policy = AccessPolicy(
+            dm_policy="pairing", dm_allow_from=[],
+            group_policy="open", group_allow_from=[],
+        )
+        assert policy.is_group_allowed("unknown-group") is False
+
+    def test_open_group_with_gateway_opt_in(self, monkeypatch):
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        policy = AccessPolicy(
+            dm_policy="pairing", dm_allow_from=[],
+            group_policy="open", group_allow_from=[],
+        )
+        assert policy.is_group_allowed("unknown-group") is True
+
+    def test_open_group_with_platform_opt_in(self, monkeypatch):
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.setenv("YUANBAO_ALLOW_ALL_USERS", "true")
+        policy = AccessPolicy(
+            dm_policy="pairing", dm_allow_from=[],
+            group_policy="open", group_allow_from=[],
+        )
+        assert policy.is_group_allowed("unknown-group") is True
+
+    def test_unknown_group_policy_denies(self, monkeypatch):
+        monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
+        monkeypatch.delenv("YUANBAO_ALLOW_ALL_USERS", raising=False)
+        policy = AccessPolicy(
+            dm_policy="pairing", dm_allow_from=[],
+            group_policy="typo", group_allow_from=[],
+        )
+        assert policy.is_group_allowed("unknown-group") is False
+
 
 class TestAutoSetHomeMiddleware:
     @pytest.mark.asyncio

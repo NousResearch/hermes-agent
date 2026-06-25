@@ -1086,3 +1086,29 @@ class TestSafeStderr:
             logger.info("Session hygiene: 400 messages — auto-compressing")
         finally:
             logger.removeHandler(handler)
+
+
+class TestRedirectStderrToLog:
+    """Interactive stderr redirection should protect the live TUI prompt."""
+
+    def test_redirects_and_restores_stderr(self, hermes_home):
+        original = sys.stderr
+
+        with hermes_logging.redirect_stderr_to_log(hermes_home=hermes_home) as path:
+            assert path == hermes_home / "logs" / "cli-stderr.log"
+            assert sys.stderr is not original
+            sys.stderr.write("plain stderr line\n")
+
+        assert sys.stderr is original
+        assert "plain stderr line" in path.read_text(encoding="utf-8")
+
+    def test_redacts_warning_like_stderr_lines(self, hermes_home):
+        with hermes_logging.redirect_stderr_to_log(hermes_home=hermes_home) as path:
+            sys.stderr.write(
+                f"{__file__}:1111: UserWarning: token=sk-1234567890ABCDE\n"
+            )
+
+        text = path.read_text(encoding="utf-8")
+        assert "UserWarning" in text
+        assert "token=" in text
+        assert "sk-1234567890ABCDE" not in text

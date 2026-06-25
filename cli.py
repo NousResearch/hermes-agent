@@ -14464,9 +14464,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
                 _aio_probe.set_event_loop_policy(_SelectEventLoopPolicy())
 
-        # Run the application with patch_stdout for proper output handling
+        # Run the application with patch_stdout for proper output handling.
+        # prompt_toolkit only proxies stdout; raw stderr writes from warnings,
+        # background MCP reconnect paths, or third-party SDKs can still corrupt
+        # the live prompt. Divert stderr into a side log for the duration of the
+        # interactive app.
         try:
-            with patch_stdout():
+            from hermes_logging import redirect_stderr_to_log
+
+            with redirect_stderr_to_log(), patch_stdout():
                 # Set the custom handler on prompt_toolkit's event loop
                 try:
                     import asyncio as _aio

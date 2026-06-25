@@ -32,6 +32,7 @@ import logging
 import os
 import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -121,6 +122,9 @@ _NOISY_LOGGERS = (
     "openai._base_client",
     "httpx",
     "httpcore",
+    "mcp",
+    "mcp.client.streamable_http",
+    "mcp.client.auth.oauth2",
     "asyncio",
     "hpack",
     "hpack.hpack",
@@ -150,6 +154,69 @@ def set_session_context(session_id: str) -> None:
 def clear_session_context() -> None:
     """Clear the session ID for the current thread."""
     _session_context.session_id = None
+
+
+class _RedactingTextSink:
+    """File-like wrapper that redacts secrets before persisting raw stderr.
+
+    The interactive CLI/TUI must not let arbitrary third-party stderr writes hit
+    the live prompt_toolkit screen. Route them to a side log instead, but keep
+    the log safe by applying the same secret redaction used for normal logs.
+    """
+
+    encoding = "utf-8"
+
+    def __init__(self, wrapped):
+        self._wrapped = wrapped
+
+    def write(self, data):  # type: ignore[override]
+        if not data:
+            return 0
+        from agent.redact import redact_sensitive_text
+
+        text = data if isinstance(data, str) else str(data)
+        return self._wrapped.write(redact_sensitive_text(text, force=True))
+
+    def flush(self) -> None:
+        self._wrapped.flush()
+
+    def fileno(self) -> int:
+        return self._wrapped.fileno()
+
+    def isatty(self) -> bool:
+        return False
+
+
+@contextmanager
+def redirect_stderr_to_log(
+    *,
+    hermes_home: Optional[Path] = None,
+    log_name: str = "cli-stderr.log",
+):
+    """Temporarily redirect process stderr into a redacted log file.
+
+    prompt_toolkit's ``patch_stdout()`` protects stdout, but raw writes to
+    stderr from warnings, third-party SDKs, and background MCP reconnect paths
+    can still corrupt the live CLI/TUI prompt. During the interactive app
+    lifetime we therefore divert stderr to ``~/.hermes/logs/<log_name>``.
+    """
+
+    home = hermes_home or get_hermes_home()
+    log_dir = home / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    path = log_dir / log_name
+
+    original = sys.stderr
+    with path.open("a", encoding="utf-8", errors="replace", buffering=1) as fh:
+        sink = _RedactingTextSink(fh)
+        sys.stderr = sink  # type: ignore[assignment]
+        try:
+            yield path
+        finally:
+            try:
+                sink.flush()
+            finally:
+                sys.stderr = original
 
 
 # ---------------------------------------------------------------------------

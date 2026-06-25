@@ -1,0 +1,7 @@
+{
+  "boxAppSettings": {
+    "clientID": "YOUR_BOX_CLIENT_ID",
+    "clientSecret": "YOUR_BOX_CLIENT_SECRET"
+  },
+  "enterpriseID": "YOUR_BOX_ENTERPRISE_ID"
+}

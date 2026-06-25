@@ -11,6 +11,7 @@ import json
 import re
 import shlex
 import sqlite3
+import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -25,6 +26,7 @@ _MAX_OUTPUT_SUMMARY_CHARS = 2000
 _MAX_EVIDENCE_AGE_DAYS = 30
 _MAX_EVENTS_PER_SESSION_ROOT = 100
 _MAX_TOTAL_UNREFERENCED_EVENTS = 10_000
+_AD_HOC_SCRIPT_NAME_PREFIXES = ("hermes-verify-", "hermes-ad-hoc-")
 _VERIFY_SCHEMA_VERSION = 1
 _SHELL_SPLIT_RE = re.compile(r"\s*(?:&&|\|\||;)\s*")
 
@@ -240,6 +242,69 @@ def _scope_for_args(args: list[str]) -> str:
     return "targeted" if any(_looks_like_target(arg) for arg in args) else "full"
 
 
+def _is_under_temp_dir(token: str) -> bool:
+    if not token or token.startswith("-"):
+        return False
+    try:
+        path = Path(token).expanduser()
+        if not path.is_absolute():
+            return False
+        resolved = path.resolve()
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        return resolved == temp_root or temp_root in resolved.parents
+    except Exception:
+        return False
+
+
+def _is_under_root(token: str, root: str | Path | None) -> bool:
+    if not root:
+        return False
+    try:
+        path = Path(token).expanduser().resolve()
+        root_path = Path(root).expanduser().resolve()
+        return path == root_path or root_path in path.parents
+    except Exception:
+        return False
+
+
+def _is_temp_script_path(token: str, root: str | Path | None) -> bool:
+    try:
+        name = Path(token).expanduser().name
+    except Exception:
+        return False
+    return (
+        name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES)
+        and _is_under_temp_dir(token)
+        and not _is_under_root(token, root)
+    )
+
+
+def _ad_hoc_script_args(tokens: list[str], root: str | Path | None) -> Optional[list[str]]:
+    candidate_tokens = _strip_command_prefix(tokens)
+    if not candidate_tokens:
+        return None
+    command = candidate_tokens[0]
+    if _is_temp_script_path(command, root):
+        return candidate_tokens[1:]
+    if command in {"python", "python3", "node", "bash", "sh", "ruby", "perl"}:
+        for idx, token in enumerate(candidate_tokens[1:], start=1):
+            if token == "--":
+                continue
+            if _is_temp_script_path(token, root):
+                return candidate_tokens[idx + 1:]
+            if not token.startswith("-"):
+                return None
+    return None
+
+
+def _find_ad_hoc_match(command: str, root: str | Path | None) -> Optional[list[str]]:
+    for tokens in _split_segment_tokens(command):
+        trailing_args = _ad_hoc_script_args(tokens, root)
+        if trailing_args is not None:
+            return trailing_args
+    return None
+
+
 def _summarize_output(output: str) -> str:
     text = (output or "").strip()
     if len(text) <= _MAX_OUTPUT_SUMMARY_CHARS:
@@ -338,6 +403,12 @@ def classify_verification_command(
 
     verify_commands = list(facts.get("verifyCommands") or [])
     match = _find_canonical_match(command, verify_commands)
+    is_ad_hoc = False
+    if match is None and not verify_commands:
+        ad_hoc_args = _find_ad_hoc_match(command, facts.get("root"))
+        if ad_hoc_args is not None:
+            match = ("ad-hoc verification script", ad_hoc_args)
+            is_ad_hoc = True
     if match is None:
         return None
 
@@ -345,8 +416,8 @@ def classify_verification_command(
     return VerificationEvidence(
         command=command,
         canonical_command=canonical,
-        kind=_kind_for_command(canonical),
-        scope=_scope_for_args(trailing_args),
+        kind="ad_hoc" if is_ad_hoc else _kind_for_command(canonical),
+        scope="targeted" if is_ad_hoc else _scope_for_args(trailing_args),
         status="passed" if int(exit_code) == 0 else "failed",
         exit_code=int(exit_code),
         cwd=str(Path(cwd or ".").resolve()),

@@ -8,6 +8,7 @@ finish immediately after editing code without fresh evidence.
 from __future__ import annotations
 
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -127,26 +128,36 @@ def build_verify_on_stop_nudge(
         for cmd in (facts.get("verifyCommands") or [])
         if str(cmd).strip()
     ]
-    if not verify_commands:
-        return None
 
     state = str(status.get("status") or "unverified")
     if state == "passed":
         return None
 
-    command_hint = ", ".join(f"`{cmd}`" for cmd in verify_commands[:3])
-    if len(verify_commands) > 3:
-        command_hint += ", ..."
+    if verify_commands:
+        command_instruction = (
+            "Run the relevant verification command now ("
+            + ", ".join(f"`{cmd}`" for cmd in verify_commands[:3])
+            + (", ..." if len(verify_commands) > 3 else "")
+            + "), read any failure, repair the code, and summarize what passed."
+        )
+    else:
+        temp_dir = tempfile.gettempdir()
+        command_instruction = (
+            "No canonical test/lint/build command was detected. Create a focused "
+            f"temporary verification script under `{temp_dir}` using an OS-safe "
+            "`tempfile` path with a `hermes-verify-` filename prefix, run it "
+            "against the changed behavior, clean it up when possible, and "
+            "summarize it explicitly as ad-hoc verification rather than suite "
+            "green."
+        )
 
     return (
         "[System: You edited code in this turn, but the workspace does not have "
         "fresh passing verification evidence yet.\n\n"
         f"Verification status: {_status_detail(status)}\n\n"
         f"Changed paths:\n{_format_changed_paths(paths)}\n\n"
-        f"Run the relevant verification command now ({command_hint}), read any "
-        "failure, repair the code, and summarize what passed. If verification "
-        "is not possible, explain the concrete blocker instead of claiming the "
-        "work is fully verified.]"
+        f"{command_instruction} If verification is not possible, explain the "
+        "concrete blocker instead of claiming the work is fully verified.]"
     )
 
 

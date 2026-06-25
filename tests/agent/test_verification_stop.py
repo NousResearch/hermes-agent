@@ -1,4 +1,5 @@
 import json
+import tempfile
 from pathlib import Path
 
 from agent.verification_evidence import (
@@ -117,10 +118,35 @@ def test_nudge_includes_failed_output_summary(tmp_path, monkeypatch):
     assert "repair the code" in nudge
 
 
-def test_no_nudge_without_canonical_verify_command(tmp_path, monkeypatch):
+def test_no_suite_nudge_requests_temp_script(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     (tmp_path / "package.json").write_text("{}", encoding="utf-8")
     changed = str(tmp_path / "src" / "app.ts")
+
+    nudge = build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed])
+
+    assert nudge is not None
+    assert tempfile.gettempdir() in nudge
+    assert "ad-hoc verification" in nudge
+    assert "suite green" in nudge
+
+
+def test_ad_hoc_pass_satisfies_no_suite_stop_loop(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    changed = str(tmp_path / "src" / "app.ts")
+    script = Path(tempfile.gettempdir()) / f"hermes-ad-hoc-stop-{tmp_path.name}.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+    try:
+        record_terminal_result(
+            command=f"python {script}",
+            cwd=tmp_path,
+            session_id="s1",
+            exit_code=0,
+            output="ok",
+        )
+    finally:
+        script.unlink(missing_ok=True)
 
     assert build_verify_on_stop_nudge(session_id="s1", changed_paths=[changed]) is None
 

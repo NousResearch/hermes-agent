@@ -201,8 +201,7 @@ export const ja = defineLocale({
     },
     notifications: {
       title: '通知',
-      intro:
-        'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
+      intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
       enableAll: '通知を有効にする',
       enableAllDesc: 'マスタースイッチ。オフにすると以下のすべての通知を無効にします。',
       focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
@@ -1498,7 +1497,8 @@ export const ja = defineLocale({
     queueSend: '送信',
     queueDelete: '削除',
     queueStuckTitle: 'キュー内のメッセージを送信できません',
-    queueStuckBody: 'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
+    queueStuckBody:
+      'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,
@@ -1597,7 +1597,8 @@ export const ja = defineLocale({
     copy: 'コピー',
     copied: 'コピーしました',
     done: '完了',
-    applyingBody: 'Hermes アップデーターが独自のウィンドウで引き継ぎ、完了後に自動的に Hermes を再度開きます。更新中はご自分で Hermes を開き直さないでください。',
+    applyingBody:
+      'Hermes アップデーターが独自のウィンドウで引き継ぎ、完了後に自動的に Hermes を再度開きます。更新中はご自分で Hermes を開き直さないでください。',
     applyingBodyBackend: 'リモートバックエンドが更新を適用して再起動します。復帰すると Hermes が自動的に再接続します。',
     applyingClose: 'このウィンドウは更新中に閉じ、その後 Hermes が自動的に再度開きます。',
     errorTitle: '更新が完了しませんでした',
@@ -2029,7 +2030,83 @@ export const ja = defineLocale({
       statusRunning: '実行中',
       statusError: 'エラー',
       statusRecovered: '回復しました',
-      statusDone: '完了'
+      statusDone: '完了',
+      actions: {
+        read: '読み取り完了',
+        reading: '読み取り中',
+        opened: 'オープン済み',
+        opening: 'オープン中',
+        searched: '検索完了',
+        searching: '検索中',
+        ran: '実行完了',
+        running: '実行中',
+        ranCode: 'コード実行完了',
+        runningCode: 'スクリプト作成中'
+      },
+      prefixes: {
+        browser: 'ブラウザー',
+        web: 'Web'
+      },
+      titleTemplates: {
+        actionCommand: (action, command) => `${action} · ${command}`,
+        actionQuoted: (action, value) => `「${value}」を${action}`,
+        actionTarget: (action, target) => `${target} を${action}`,
+        prefixedDone: (prefix, action) => `${prefix} ${action}`,
+        runningPrefixedTool: (prefix, action) => `${prefix} ${action}を実行中`,
+        runningTool: action => `${action}を実行中`
+      },
+      titles: {
+        browser_click: {
+          done: 'ページ要素をクリックしました',
+          pending: 'ページ要素をクリック中',
+          pendingAction: 'クリック中'
+        },
+        browser_fill: { done: 'フォーム欄に入力しました', pending: 'フォーム欄に入力中', pendingAction: '入力中' },
+        browser_navigate: { done: 'ページを開きました', pending: 'ページをオープン中', pendingAction: 'オープン中' },
+        browser_snapshot: {
+          done: 'ページスナップショットを取得しました',
+          pending: 'ページスナップショットを取得中',
+          pendingAction: '取得中'
+        },
+        browser_take_screenshot: {
+          done: 'スクリーンショットを取得しました',
+          pending: 'スクリーンショットを取得中',
+          pendingAction: '取得中'
+        },
+        browser_type: { done: 'ページに入力しました', pending: 'ページに入力中', pendingAction: '入力中' },
+        clarify: { done: '質問しました', pending: '質問中', pendingAction: '質問中' },
+        cronjob: { done: 'Cron ジョブ', pending: 'Cron ジョブをスケジュール中', pendingAction: 'スケジュール中' },
+        edit_file: { done: 'ファイルを編集しました', pending: 'ファイルを編集中', pendingAction: '編集中' },
+        execute_code: { done: 'コードを実行しました', pending: 'スクリプト作成中', pendingAction: 'スクリプト作成中' },
+        image_generate: { done: '画像を生成しました', pending: '画像を生成中', pendingAction: '生成中' },
+        list_files: {
+          done: 'ファイルを一覧表示しました',
+          pending: 'ファイルを一覧表示中',
+          pendingAction: '一覧表示中'
+        },
+        patch: {
+          done: 'ファイルにパッチを適用しました',
+          pending: 'ファイルにパッチ適用中',
+          pendingAction: 'パッチ適用中'
+        },
+        read_file: { done: 'ファイルを読み取りました', pending: 'ファイルを読み取り中', pendingAction: '読み取り中' },
+        search_files: { done: 'ファイルを検索しました', pending: 'ファイルを検索中', pendingAction: '検索中' },
+        session_search_recall: {
+          done: 'セッション履歴を検索しました',
+          pending: 'セッション履歴を検索中',
+          pendingAction: '検索中'
+        },
+        terminal: { done: 'コマンドを実行しました', pending: 'コマンドを実行中', pendingAction: '実行中' },
+        todo: { done: 'Todo を更新しました', pending: 'Todo を更新中', pendingAction: '更新中' },
+        vision_analyze: { done: '画像を分析しました', pending: '画像を分析中', pendingAction: '分析中' },
+        web_extract: {
+          done: 'Web ページを読み取りました',
+          pending: 'Web ページを読み取り中',
+          pendingAction: '読み取り中'
+        },
+        web_search: { done: 'Web を検索しました', pending: 'Web を検索中', pendingAction: '検索中' },
+        write_file: { done: 'ファイルを編集しました', pending: 'ファイルを編集中', pendingAction: '編集中' }
+      }
     }
   },
 
@@ -2073,7 +2150,8 @@ export const ja = defineLocale({
     editFailed: '編集に失敗しました',
     resumeFailed: '再開に失敗しました',
     resumeStrandedTitle: 'このセッションを読み込めませんでした',
-    resumeStrandedBody: 'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
+    resumeStrandedBody:
+      'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
     resumeRetry: '再試行',
     nothingToBranch: 'ブランチするものがありません',
     branchNeedsChat: 'ブランチする前にチャットを開始または再開してください。',

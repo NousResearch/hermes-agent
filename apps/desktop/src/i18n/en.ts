@@ -1845,7 +1845,8 @@ export const en: Translations = {
       restoreCheckpoint: 'Restore checkpoint',
       restoreFromHere: 'Restore checkpoint — rerun from this prompt',
       restoreTitle: 'Restore to this checkpoint?',
-      restoreBody: 'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
+      restoreBody:
+        'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
       restoreConfirm: 'Restore & rerun',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
@@ -1901,7 +1902,67 @@ export const en: Translations = {
       statusRunning: 'Running',
       statusError: 'Error',
       statusRecovered: 'Recovered',
-      statusDone: 'Done'
+      statusDone: 'Done',
+      actions: {
+        read: 'Read',
+        reading: 'Reading',
+        opened: 'Opened',
+        opening: 'Opening',
+        searched: 'Searched',
+        searching: 'Searching',
+        ran: 'Ran',
+        running: 'Running',
+        ranCode: 'Ran code',
+        runningCode: 'Scripting'
+      },
+      prefixes: {
+        browser: 'Browser',
+        web: 'Web'
+      },
+      titleTemplates: {
+        actionCommand: (action, command) => `${action} · ${command}`,
+        actionQuoted: (action, value) => `${action} “${value}”`,
+        actionTarget: (action, target) => `${action} ${target}`,
+        prefixedDone: (prefix, action) => `${prefix} ${action}`,
+        runningPrefixedTool: (prefix, action) => `Running ${prefix.toLowerCase()} ${action.toLowerCase()}`,
+        runningTool: action => `Running ${action.toLowerCase()}`
+      },
+      titles: {
+        browser_click: { done: 'Clicked page element', pending: 'Clicking page element', pendingAction: 'Clicking' },
+        browser_fill: { done: 'Filled form field', pending: 'Filling form field', pendingAction: 'Filling' },
+        browser_navigate: { done: 'Opened page', pending: 'Opening page', pendingAction: 'Opening' },
+        browser_snapshot: {
+          done: 'Captured page snapshot',
+          pending: 'Capturing page snapshot',
+          pendingAction: 'Capturing'
+        },
+        browser_take_screenshot: {
+          done: 'Captured screenshot',
+          pending: 'Capturing screenshot',
+          pendingAction: 'Capturing'
+        },
+        browser_type: { done: 'Typed on page', pending: 'Typing on page', pendingAction: 'Typing' },
+        clarify: { done: 'Asked a question', pending: 'Asking a question', pendingAction: 'Asking' },
+        cronjob: { done: 'Cron job', pending: 'Scheduling cron job', pendingAction: 'Scheduling' },
+        edit_file: { done: 'Edited file', pending: 'Editing file', pendingAction: 'Editing' },
+        execute_code: { done: 'Ran code', pending: 'Scripting', pendingAction: 'Scripting' },
+        image_generate: { done: 'Generated image', pending: 'Generating image', pendingAction: 'Generating' },
+        list_files: { done: 'Listed files', pending: 'Listing files', pendingAction: 'Listing' },
+        patch: { done: 'Patched file', pending: 'Patching file', pendingAction: 'Patching' },
+        read_file: { done: 'Read file', pending: 'Reading file', pendingAction: 'Reading' },
+        search_files: { done: 'Searched files', pending: 'Searching files', pendingAction: 'Searching' },
+        session_search_recall: {
+          done: 'Searched session history',
+          pending: 'Searching session history',
+          pendingAction: 'Searching'
+        },
+        terminal: { done: 'Ran command', pending: 'Running command', pendingAction: 'Running' },
+        todo: { done: 'Updated todos', pending: 'Updating todos', pendingAction: 'Updating' },
+        vision_analyze: { done: 'Analyzed image', pending: 'Analyzing image', pendingAction: 'Analyzing' },
+        web_extract: { done: 'Read webpage', pending: 'Reading webpage', pendingAction: 'Reading' },
+        web_search: { done: 'Searched web', pending: 'Searching web', pendingAction: 'Searching' },
+        write_file: { done: 'Edited file', pending: 'Editing file', pendingAction: 'Editing' }
+      }
     }
   },
 
@@ -1944,7 +2005,8 @@ export const en: Translations = {
     editFailed: 'Edit failed',
     resumeFailed: 'Resume failed',
     resumeStrandedTitle: "Couldn't load this session",
-    resumeStrandedBody: 'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
+    resumeStrandedBody:
+      'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
     resumeRetry: 'Retry',
     nothingToBranch: 'Nothing to branch',
     branchNeedsChat: 'Start or resume a chat before branching.',

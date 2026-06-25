@@ -369,7 +369,8 @@ export const zh: Translations = {
       importedBadge: '已导入',
       pet: {
         title: '宠物',
-        intro: '领养一只悬浮在应用上的 petdex 动画宠物，它会根据 Hermes 的状态做出反应——工具执行时奔跑、成功时欢呼、出错时沮丧。',
+        intro:
+          '领养一只悬浮在应用上的 petdex 动画宠物，它会根据 Hermes 的状态做出反应——工具执行时奔跑、成功时欢呼、出错时沮丧。',
         restartHint: '宠物功能需要重启——当前运行的应用在此功能加入前启动。请退出并重新打开 Hermes，然后回到此处。',
         scaleTitle: '大小',
         scaleDesc: '调整悬浮宠物的大小，所有界面即时生效。',
@@ -1647,11 +1648,13 @@ export const zh: Translations = {
     manualBody: '你是从命令行安装的 Hermes，因此更新也需要在那里运行。请将此命令粘贴到终端：',
     manualPickedUp: '下次启动 Hermes 时会使用新版本。',
     guiSkewTitle: '请更新桌面应用',
-    guiSkewBody: '后端已更新，但此桌面应用包未更改。请更新或重新安装 Hermes 桌面应用（你的 AppImage / .deb / .rpm）以保持一致。',
+    guiSkewBody:
+      '后端已更新，但此桌面应用包未更改。请更新或重新安装 Hermes 桌面应用（你的 AppImage / .deb / .rpm）以保持一致。',
     copy: '复制',
     copied: '已复制',
     done: '完成',
-    applyingBody: 'Hermes 更新器会在自己的窗口中接管，并在完成后自动重新打开 Hermes。更新期间请不要自行重新打开 Hermes。',
+    applyingBody:
+      'Hermes 更新器会在自己的窗口中接管，并在完成后自动重新打开 Hermes。更新期间请不要自行重新打开 Hermes。',
     applyingBodyBackend: '远程后端正在应用更新并将重启。恢复后 Hermes 会自动重新连接。',
     applyingClose: '此窗口会在更新期间关闭，随后 Hermes 会自动重新打开。',
     errorTitle: '更新未完成',
@@ -2075,7 +2078,55 @@ export const zh: Translations = {
       statusRunning: '运行中',
       statusError: '错误',
       statusRecovered: '已恢复',
-      statusDone: '完成'
+      statusDone: '完成',
+      actions: {
+        read: '已读取',
+        reading: '正在读取',
+        opened: '已打开',
+        opening: '正在打开',
+        searched: '已搜索',
+        searching: '正在搜索',
+        ran: '已运行',
+        running: '正在运行',
+        ranCode: '已运行代码',
+        runningCode: '正在编写脚本'
+      },
+      prefixes: {
+        browser: '浏览器',
+        web: '网页'
+      },
+      titleTemplates: {
+        actionCommand: (action, command) => `${action} · ${command}`,
+        actionQuoted: (action, value) => `${action}“${value}”`,
+        actionTarget: (action, target) => `${action} ${target}`,
+        prefixedDone: (prefix, action) => `${prefix}${action}`,
+        runningPrefixedTool: (prefix, action) => `正在运行${prefix}${action}`,
+        runningTool: action => `正在运行 ${action}`
+      },
+      titles: {
+        browser_click: { done: '已点击页面元素', pending: '正在点击页面元素', pendingAction: '正在点击' },
+        browser_fill: { done: '已填写表单字段', pending: '正在填写表单字段', pendingAction: '正在填写' },
+        browser_navigate: { done: '已打开页面', pending: '正在打开页面', pendingAction: '正在打开' },
+        browser_snapshot: { done: '已捕获页面快照', pending: '正在捕获页面快照', pendingAction: '正在捕获' },
+        browser_take_screenshot: { done: '已捕获截图', pending: '正在捕获截图', pendingAction: '正在捕获' },
+        browser_type: { done: '已在页面输入', pending: '正在页面输入', pendingAction: '正在输入' },
+        clarify: { done: '已提问', pending: '正在提问', pendingAction: '正在提问' },
+        cronjob: { done: 'Cron 任务', pending: '正在安排 Cron 任务', pendingAction: '正在安排' },
+        edit_file: { done: '已编辑文件', pending: '正在编辑文件', pendingAction: '正在编辑' },
+        execute_code: { done: '已运行代码', pending: '正在编写脚本', pendingAction: '正在编写脚本' },
+        image_generate: { done: '已生成图片', pending: '正在生成图片', pendingAction: '正在生成' },
+        list_files: { done: '已列出文件', pending: '正在列出文件', pendingAction: '正在列出' },
+        patch: { done: '已修补文件', pending: '正在修补文件', pendingAction: '正在修补' },
+        read_file: { done: '已读取文件', pending: '正在读取文件', pendingAction: '正在读取' },
+        search_files: { done: '已搜索文件', pending: '正在搜索文件', pendingAction: '正在搜索' },
+        session_search_recall: { done: '已搜索会话历史', pending: '正在搜索会话历史', pendingAction: '正在搜索' },
+        terminal: { done: '已运行命令', pending: '正在运行命令', pendingAction: '正在运行' },
+        todo: { done: '已更新待办', pending: '正在更新待办', pendingAction: '正在更新' },
+        vision_analyze: { done: '已分析图片', pending: '正在分析图片', pendingAction: '正在分析' },
+        web_extract: { done: '已读取网页', pending: '正在读取网页', pendingAction: '正在读取' },
+        web_search: { done: '已搜索网页', pending: '正在搜索网页', pendingAction: '正在搜索' },
+        write_file: { done: '已编辑文件', pending: '正在编辑文件', pendingAction: '正在编辑' }
+      }
     }
   },
 

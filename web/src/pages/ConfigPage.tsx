@@ -73,6 +73,7 @@ const CATEGORY_ICONS: Record<
   tts: Volume2,
   stt: Ear,
   logging: ClipboardList,
+  messaging: MessageCircle,
   discord: MessageCircle,
   auxiliary: Wrench,
   bedrock: Cloud,
@@ -156,6 +157,7 @@ export default function ConfigPage() {
   }, [config, schema, searchQuery, setEnd, t.common.clear, t.common.search]);
 
   function prettyCategoryName(cat: string): string {
+    if (cat === "messaging") return "Messaging";
     const key = cat as keyof typeof t.config.categories;
     if (t.config.categories[key]) return t.config.categories[key];
     return cat.charAt(0).toUpperCase() + cat.slice(1);

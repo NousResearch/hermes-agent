@@ -163,3 +163,42 @@ def test_nudge_attempts_are_bounded(tmp_path, monkeypatch):
         attempts=2,
         max_attempts=2,
     ) is None
+
+def test_no_nudge_when_no_exec_tools(tmp_path, monkeypatch):
+    """Sessions without terminal/execute_code tools should skip the nudge."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    changed = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(session_id="s1", cwd=tmp_path, paths=[changed])
+
+    # With terminal tool present -> nudge fires
+    nudge = build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[changed],
+        available_tools={"terminal", "read_file", "write_file"},
+    )
+    assert nudge is not None
+
+    # With only file tools (no terminal/execute_code) -> skip
+    nudge = build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[changed],
+        available_tools={"read_file", "write_file", "search_files"},
+    )
+    assert nudge is None
+
+    # With execute_code tool -> nudge fires
+    nudge = build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[changed],
+        available_tools={"execute_code", "read_file"},
+    )
+    assert nudge is not None
+
+    # With available_tools=None (backward compat) -> nudge fires
+    nudge = build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[changed],
+        available_tools=None,
+    )
+    assert nudge is not None

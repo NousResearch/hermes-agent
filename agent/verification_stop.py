@@ -112,10 +112,19 @@ def build_verify_on_stop_nudge(
     changed_paths: Iterable[str],
     attempts: int = 0,
     max_attempts: int = 2,
+    available_tools: set[str] | None = None,
 ) -> str | None:
     """Return a synthetic follow-up when edited code lacks fresh verification."""
     paths = sorted({str(p) for p in changed_paths if p})
     if not paths or attempts >= max_attempts:
+        return None
+
+    # If the session has no terminal/execute_code tools, the agent cannot run
+    # verification commands. Skip the nudge to avoid burning tokens on
+    # hopeless loops (#52631).
+    if available_tools is not None and not (
+        available_tools & {"terminal", "execute_code"}
+    ):
         return None
 
     snapshot = _verification_snapshot(session_id=session_id, changed_paths=paths)

@@ -4547,6 +4547,7 @@ def run_conversation(
                             session_id=getattr(agent, "session_id", None),
                             changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
                             attempts=getattr(agent, "_verification_stop_nudges", 0),
+                            available_tools=getattr(agent, "valid_tool_names", set()),
                         )
                     else:
                         _verify_nudge = None

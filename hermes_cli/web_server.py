@@ -10106,9 +10106,20 @@ async def get_active_profile_endpoint():
         current = profiles_mod.get_active_profile_name() or "default"
     except Exception:
         current = "default"
-    return {"active": active, "current": current}
+    # [CN-fork] P-008 compat: the hermes-agent-cn desktop reads `.name` from this
+    # response (its ActiveProfileResponse schema requires `name: string`). Upstream
+    # ships only `{active, current}`; keep `name` mirroring the sticky `active` so
+    # existing desktop shells don't fail to load the profile list. Dropping this
+    # field is the regression behind Eynzof/Hermes-CN-Desktop#301. See FORK_NOTES
+    # P-008 and tests/hermes_cli/test_web_server_profile_active_compat.py.
+    return {"name": active, "active": active, "current": current}
 
 
+# [CN-fork] P-008 compat: PUT alias. The desktop switches profiles via
+# `putJSON("/api/profiles/active", {name})`; upstream only exposes POST, so
+# without this alias profile switching 405s. Stacked on the POST handler so both
+# verbs share one implementation.
+@app.put("/api/profiles/active")
 @app.post("/api/profiles/active")
 async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     """Set the sticky active profile (mirrors ``hermes profile use``).

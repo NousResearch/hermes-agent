@@ -228,6 +228,8 @@ Plus a 5000-entry cap to bound responses on huge directories.
 
 **Should we upstream?** Done — upstream shipped `GET/POST /api/profiles/active` in the 2026-06-04 sync (GET returns `{active, current}`; POST sets via `ProfileActiveUpdate`). The fork's standalone GET/PUT were removed to avoid a duplicate route. To keep the existing desktop client working without a coordinated release, two minimal compat shims now ride on upstream's endpoint: the GET response also carries `name` (= `active`; the desktop's `useActiveProfile` reads `.name`), and a `@app.put("/api/profiles/active")` alias is stacked on the setter (the desktop sets via `PUT`). Both can be dropped once the desktop migrates to `{active,current}` + `POST`.
 
+**Regression — dropped by the v0.17.0 upstream sync (restored, see issue #301)**: a sync reverted both compat shims — the GET response lost `name` and the `PUT` alias disappeared (only upstream's `POST` remained). The desktop's `ActiveProfileResponse` Zod schema requires `name: string`, so `GET /api/profiles/active` failed to parse (`path:["name"], received: undefined`) and the whole profile screen showed "无法读取档案列表"; profile switching also broke (PUT → 405). Restored and now guarded by `tests/hermes_cli/test_web_server_profile_active_compat.py` so a future sync can't silently drop either half again.
+
 ---
 
 ### P-009: SSE+POST gateway transport — **DEPRECATED**

@@ -11,6 +11,7 @@ import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.
 import {
   boundedLiveRenderText,
   compactPreview,
+  formatTokenCount,
   hasAnsi,
   isPasteBackedText,
   sanitizeAnsiForRender,
@@ -241,7 +242,7 @@ export const MessageLine = memo(function MessageLine({
         <Box>
           <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth} />
           <Text color={t.color.muted} dimColor>
-            {`📊 in:${msg.tokenBreakdown.input} out:${msg.tokenBreakdown.output} reason:${msg.tokenBreakdown.reasoning}`}
+            {`📊 in:${formatTokenCount(msg.tokenBreakdown.input)} out:${formatTokenCount(msg.tokenBreakdown.output)} rsn:${formatTokenCount(msg.tokenBreakdown.reasoning)}`}
           </Text>
         </Box>
       )}

@@ -4672,6 +4672,89 @@ class TestRunConversation:
         assert call.kwargs.get("end_run") is True
         assert "Iteration budget exhausted" in call.kwargs.get("error", "")
 
+    def test_kanban_textual_terminal_call_gets_corrective_retry(self, agent, monkeypatch):
+        """A Kanban worker that writes ``kanban_complete(...)`` as prose
+        must get a corrective retry instead of exiting with the task still
+        running."""
+        self._setup_agent(agent)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+        agent.tools = _make_tool_defs("kanban_complete", "kanban_block")
+        agent.valid_tool_names = {"kanban_complete", "kanban_block"}
+
+        fake_terminal_resp = _mock_response(
+            content=(
+                "Pilot is complete.\n\n"
+                "```python\n"
+                "kanban_complete(summary=\"done\", metadata={\"read_only\": true})\n"
+                "```"
+            ),
+            finish_reason="stop",
+        )
+        complete_tc = _mock_tool_call(
+            name="kanban_complete",
+            arguments='{"summary":"done","metadata":{"read_only":true}}',
+            call_id="kc1",
+        )
+        real_tool_resp = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[complete_tc],
+        )
+        final_resp = _mock_response(content="Done.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [
+            fake_terminal_resp,
+            real_tool_resp,
+            final_resp,
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do the kanban work")
+
+        assert result["completed"] is True
+        assert agent.client.chat.completions.create.call_count == 2
+        mock_hfc.assert_called_once()
+        assert mock_hfc.call_args[0][0] == "kanban_complete"
+        assert mock_hfc.call_args[0][1]["summary"] == "done"
+
+    def test_kanban_terminal_tool_call_stops_without_followup_text_response(self, agent, monkeypatch):
+        """After kanban_complete/kanban_block, the worker should exit instead
+        of asking the model for a post-tool final response."""
+        self._setup_agent(agent)
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_test_task_123")
+        agent.tools = _make_tool_defs("kanban_complete", "kanban_block")
+        agent.valid_tool_names = {"kanban_complete", "kanban_block"}
+
+        complete_tc = _mock_tool_call(
+            name="kanban_complete",
+            arguments='{"summary":"done","metadata":{"read_only":true}}',
+            call_id="kc1",
+        )
+        real_tool_resp = _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[complete_tc],
+        )
+        agent.client.chat.completions.create.return_value = real_tool_resp
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok") as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do the kanban work")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Kanban terminal tool invoked."
+        assert agent.client.chat.completions.create.call_count == 1
+        mock_hfc.assert_called_once()
+        assert mock_hfc.call_args[0][0] == "kanban_complete"
+
     def test_no_kanban_block_when_not_in_kanban_mode(self, agent, monkeypatch):
         """The exhaustion bridge must NOT fire when HERMES_KANBAN_TASK
         is unset (non-kanban runs are unaffected by #29747 gap 2)."""

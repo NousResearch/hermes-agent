@@ -1221,6 +1221,9 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_create" in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
+    # Terminal calls must be real tool calls, not prose snippets.
+    assert "This must be a real tool call" in prompt
+    assert "text does not update the board" in prompt
 
 
 def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):

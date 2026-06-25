@@ -586,6 +586,8 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
+    kanban_terminal_text_retries = 0
+
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
@@ -4123,6 +4125,16 @@ def run_conversation(
                                 pass
                     break
 
+                _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
+                if (
+                    os.environ.get("HERMES_KANBAN_TASK")
+                    and _tc_names.intersection({"kanban_complete", "kanban_block"})
+                ):
+                    _turn_exit_reason = "kanban_terminal_tool_call"
+                    final_response = "Kanban terminal tool invoked."
+                    messages.append({"role": "assistant", "content": final_response})
+                    break
+
                 # Reset per-turn retry counters after successful tool
                 # execution so a single truncation doesn't poison the
                 # entire conversation.
@@ -4139,7 +4151,6 @@ def run_conversation(
                 # Refund the iteration if the ONLY tool(s) called were
                 # execute_code (programmatic tool calling).  These are
                 # cheap RPC-style calls that shouldn't eat the budget.
-                _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
                 if _tc_names == {"execute_code"}:
                     agent.iteration_budget.refund()
                 
@@ -4510,6 +4521,37 @@ def run_conversation(
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
+
+                _kanban_task = os.environ.get("HERMES_KANBAN_TASK")
+                _has_kanban_terminal_tools = (
+                    "kanban_complete" in agent.valid_tool_names
+                    or "kanban_block" in agent.valid_tool_names
+                )
+                _looks_like_fake_kanban_terminal = bool(
+                    _kanban_task
+                    and _has_kanban_terminal_tools
+                    and re.search(r"\bkanban_(?:complete|block)\s*\(", final_response)
+                )
+                if _looks_like_fake_kanban_terminal and kanban_terminal_text_retries < 2:
+                    kanban_terminal_text_retries += 1
+                    final_msg = agent._build_assistant_message(assistant_message, "incomplete")
+                    messages.append(final_msg)
+                    agent._emit_interim_assistant_message(final_msg)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "[System: You are running as a Kanban worker. Your previous "
+                            "response wrote `kanban_complete(...)` or `kanban_block(...)` "
+                            "as text, which does not update the board. Call the real "
+                            "structured `kanban_complete` or `kanban_block` tool now. "
+                            "Do not return prose or a code block unless it is part of "
+                            "the actual tool arguments.]"
+                        ),
+                    })
+                    agent._session_messages = messages
+                    agent._save_session_log(messages)
+                    _turn_exit_reason = "kanban_terminal_text_retry"
+                    continue
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 

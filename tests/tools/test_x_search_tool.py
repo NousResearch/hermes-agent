@@ -36,6 +36,7 @@ class _FakeResponse:
 # default resolver path.
 # ---------------------------------------------------------------------------
 
+
 def test_x_search_posts_responses_request(monkeypatch):
     from tools.x_search_tool import x_search_tool
     from hermes_cli import __version__
@@ -47,12 +48,12 @@ def test_x_search_posts_responses_request(monkeypatch):
         captured["headers"] = headers
         captured["json"] = json
         captured["timeout"] = timeout
-        return _FakeResponse(
-            {
-                "output_text": "People on X are discussing xAI's latest launch.",
-                "citations": [{"url": "https://x.com/example/status/1", "title": "Example post"}],
-            }
-        )
+        return _FakeResponse({
+            "output_text": "People on X are discussing xAI's latest launch.",
+            "citations": [
+                {"url": "https://x.com/example/status/1", "title": "Example post"}
+            ],
+        })
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr("requests.post", _fake_post)
@@ -94,37 +95,38 @@ def test_x_search_rejects_conflicting_handle_filters(monkeypatch):
         )
     )
 
-    assert result["error"] == "allowed_x_handles and excluded_x_handles cannot be used together"
+    assert (
+        result["error"]
+        == "allowed_x_handles and excluded_x_handles cannot be used together"
+    )
 
 
 def test_x_search_extracts_inline_url_citations(monkeypatch):
     from tools.x_search_tool import x_search_tool
 
     def _fake_post(url, headers=None, json=None, timeout=None):
-        return _FakeResponse(
-            {
-                "output": [
-                    {
-                        "type": "message",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": "xAI posted an update on X.",
-                                "annotations": [
-                                    {
-                                        "type": "url_citation",
-                                        "url": "https://x.com/xai/status/123",
-                                        "title": "xAI update",
-                                        "start_index": 0,
-                                        "end_index": 3,
-                                    }
-                                ],
-                            }
-                        ],
-                    }
-                ]
-            }
-        )
+        return _FakeResponse({
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "xAI posted an update on X.",
+                            "annotations": [
+                                {
+                                    "type": "url_citation",
+                                    "url": "https://x.com/xai/status/123",
+                                    "title": "xAI update",
+                                    "start_index": 0,
+                                    "end_index": 3,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        })
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr("requests.post", _fake_post)
@@ -182,12 +184,10 @@ def test_x_search_retries_read_timeout_then_succeeds(monkeypatch):
         calls["count"] += 1
         if calls["count"] == 1:
             raise requests.ReadTimeout("timed out")
-        return _FakeResponse(
-            {
-                "output_text": "Recovered after retry.",
-                "citations": [],
-            }
-        )
+        return _FakeResponse({
+            "output_text": "Recovered after retry.",
+            "citations": [],
+        })
 
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr("requests.post", _fake_post)
@@ -228,6 +228,7 @@ def test_x_search_retries_5xx_then_succeeds(monkeypatch):
 # ---------------------------------------------------------------------------
 # Credential-resolution coverage — the OAuth-or-API-key gating contract.
 # ---------------------------------------------------------------------------
+
 
 def _no_xai_env(monkeypatch):
     """Strip any XAI_* env vars so the resolver doesn't see a leaked dev key."""
@@ -350,8 +351,11 @@ def test_x_search_prefers_oauth_when_both_available(monkeypatch):
     assert captured["headers"]["Authorization"] == "Bearer oauth-bearer-token"
 
 
-def test_x_search_returns_tool_error_when_no_credentials(monkeypatch):
-    """No credentials anywhere: tool returns a clear error, not a 401 from xAI."""
+def test_x_search_returns_tool_error_for_non_url_search_when_no_credentials(
+    monkeypatch,
+):
+    """No xAI creds: tool still registers for Jina URL reads; broad search errors cleanly."""
+
     from tools.registry import invalidate_check_fn_cache
     from tools.x_search_tool import check_x_search_requirements, x_search_tool
 
@@ -369,17 +373,17 @@ def test_x_search_returns_tool_error_when_no_credentials(monkeypatch):
     )
     invalidate_check_fn_cache()
 
-    assert check_x_search_requirements() is False
+    assert check_x_search_requirements() is True
 
-    # If a model somehow invokes the tool despite a False check_fn, the call
-    # surfaces a friendly error rather than an HTTP exception.
+    # Broad search still needs xAI credentials; only direct status URLs use Jina.
     result = x_search_tool(query="anything")
     assert "No xAI credentials available" in result
     assert "hermes auth add xai-oauth" in result
 
 
-def test_x_search_check_fn_false_when_resolver_raises(monkeypatch):
-    """Resolver exceptions (e.g. expired token + failed refresh) gate the tool out."""
+def test_x_search_check_fn_true_when_resolver_raises(monkeypatch):
+    """Resolver failures no longer gate out direct Jina URL reads."""
+
     from tools.registry import invalidate_check_fn_cache
     from tools.x_search_tool import check_x_search_requirements
 
@@ -388,12 +392,10 @@ def test_x_search_check_fn_false_when_resolver_raises(monkeypatch):
     def _boom():
         raise RuntimeError("token revoked and refresh failed")
 
-    monkeypatch.setattr(
-        "tools.x_search_tool.resolve_xai_http_credentials", _boom
-    )
+    monkeypatch.setattr("tools.x_search_tool.resolve_xai_http_credentials", _boom)
     invalidate_check_fn_cache()
 
-    assert check_x_search_requirements() is False
+    assert check_x_search_requirements() is True
 
 
 def test_x_search_honors_config_model_and_timeout(monkeypatch, tmp_path):
@@ -434,8 +436,89 @@ def test_x_search_registered_in_registry_with_check_fn():
     assert entry.toolset == "x_search"
     assert entry.check_fn is not None
     assert entry.check_fn.__name__ == "check_x_search_requirements"
-    assert "XAI_API_KEY" in entry.requires_env
+    assert entry.requires_env == []
     assert entry.emoji == "🐦"
+
+
+def test_x_search_reads_status_url_via_jina_without_xai_credentials(monkeypatch):
+    """Direct tweet URLs should be readable through r.jina.ai without xAI auth."""
+    from tools.registry import invalidate_check_fn_cache
+    from tools.x_search_tool import check_x_search_requirements, x_search_tool
+
+    _no_xai_env(monkeypatch)
+
+    def _fake_resolve():
+        return {"provider": "xai", "api_key": "", "base_url": "https://api.x.ai/v1"}
+
+    monkeypatch.setattr(
+        "tools.x_search_tool.resolve_xai_http_credentials", _fake_resolve
+    )
+    invalidate_check_fn_cache()
+
+    captured = {}
+
+    def _fake_get(url, headers=None, timeout=None):
+        captured["url"] = url
+        captured["headers"] = headers
+        captured["timeout"] = timeout
+        return _FakeResponse(
+            None,
+            text=(
+                "Title: Bob on X\n\n"
+                "URL Source: https://x.com/zapabob_ouj/status/123\n\n"
+                "ボブにゃん posted a useful Hermes update."
+            ),
+        )
+
+    monkeypatch.setattr("requests.get", _fake_get)
+
+    assert check_x_search_requirements() is True
+
+    result = json.loads(x_search_tool(query="https://x.com/zapabob_ouj/status/123"))
+
+    assert result["success"] is True
+    assert result["provider"] == "jina"
+    assert result["tool"] == "x_jina_reader"
+    assert captured["url"] == "https://r.jina.ai/https://x.com/zapabob_ouj/status/123"
+    assert "ボブにゃん posted" in result["answer"]
+    assert result["citations"] == [
+        {
+            "url": "https://x.com/zapabob_ouj/status/123",
+            "title": "X status via r.jina.ai",
+        }
+    ]
+
+
+def test_x_search_uses_jina_when_query_mentions_status_url_inside_text(monkeypatch):
+    from tools.x_search_tool import x_search_tool
+
+    def _fake_get(url, headers=None, timeout=None):
+        return _FakeResponse(None, text="tweet body from reader")
+
+    monkeypatch.setattr("requests.get", _fake_get)
+
+    result = json.loads(
+        x_search_tool(
+            query="このツイート読んで https://twitter.com/example/status/456?s=20"
+        )
+    )
+
+    assert result["success"] is True
+    assert result["provider"] == "jina"
+    assert result["query"] == "https://x.com/example/status/456"
+
+
+def test_x_search_jina_status_url_extractor_rejects_non_x_handle_shapes():
+    """Only canonical X/Twitter status URLs should reach the public reader."""
+    from tools.x_search_tool import _extract_x_status_url
+
+    assert (
+        _extract_x_status_url("https://x.com/good_handle/status/123")
+        == "https://x.com/good_handle/status/123"
+    )
+    assert _extract_x_status_url("https://x.com/evil.com@x/status/123") is None
+    assert _extract_x_status_url("https://x.com/%2f/status/123") is None
+    assert _extract_x_status_url("https://x.com/too_long_handle_123/status/123") is None
 
 
 # ---------------------------------------------------------------------------
@@ -445,10 +528,14 @@ def test_x_search_registered_in_registry_with_check_fn():
 # callers to distinguish from a real result.
 # ---------------------------------------------------------------------------
 
+
 def _no_post_allowed(monkeypatch):
     """Guard: any test that should fail before HTTP can hit this fence."""
+
     def _fail(*_, **__):
-        raise AssertionError("requests.post must not be called — validation should reject first")
+        raise AssertionError(
+            "requests.post must not be called — validation should reject first"
+        )
 
     monkeypatch.setattr("requests.post", _fail)
 
@@ -489,7 +576,10 @@ def test_x_search_rejects_inverted_date_range(monkeypatch):
         )
     )
 
-    assert "from_date (2026-05-10) must be on or before to_date (2026-05-01)" in result["error"]
+    assert (
+        "from_date (2026-05-10) must be on or before to_date (2026-05-01)"
+        in result["error"]
+    )
 
 
 def test_x_search_rejects_future_from_date(monkeypatch):
@@ -529,9 +619,10 @@ def test_x_search_allows_future_to_date(monkeypatch):
     monkeypatch.setattr("tools.x_search_tool.datetime", _FrozenDateTime)
 
     def _fake_post(url, headers=None, json=None, timeout=None):
-        return _FakeResponse(
-            {"output_text": "future to_date is allowed", "citations": []}
-        )
+        return _FakeResponse({
+            "output_text": "future to_date is allowed",
+            "citations": [],
+        })
 
     monkeypatch.setattr("requests.post", _fake_post)
 
@@ -576,6 +667,7 @@ def test_x_search_accepts_today_as_from_date(monkeypatch):
 # unsourced fluff when narrowing filters returned nothing.
 # ---------------------------------------------------------------------------
 
+
 def test_x_search_marks_degraded_when_handle_filter_returns_no_citations(monkeypatch):
     """allowed_x_handles set + zero citations → degraded=True."""
     from tools.x_search_tool import x_search_tool
@@ -583,13 +675,16 @@ def test_x_search_marks_degraded_when_handle_filter_returns_no_citations(monkeyp
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr(
         "requests.post",
-        lambda *a, **k: _FakeResponse(
-            {"output_text": "Generic encyclopedic answer with no citations.", "citations": []}
-        ),
+        lambda *a, **k: _FakeResponse({
+            "output_text": "Generic encyclopedic answer with no citations.",
+            "citations": [],
+        }),
     )
 
     result = json.loads(
-        x_search_tool(query="what has @ghostuser posted", allowed_x_handles=["ghostuser"])
+        x_search_tool(
+            query="what has @ghostuser posted", allowed_x_handles=["ghostuser"]
+        )
     )
 
     assert result["success"] is True
@@ -643,30 +738,28 @@ def test_x_search_not_degraded_when_filter_returns_inline_citations(monkeypatch)
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr(
         "requests.post",
-        lambda *a, **k: _FakeResponse(
-            {
-                "output": [
-                    {
-                        "type": "message",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": "Real post from xai.",
-                                "annotations": [
-                                    {
-                                        "type": "url_citation",
-                                        "url": "https://x.com/xai/status/1",
-                                        "title": "xAI post",
-                                        "start_index": 0,
-                                        "end_index": 4,
-                                    }
-                                ],
-                            }
-                        ],
-                    }
-                ]
-            }
-        ),
+        lambda *a, **k: _FakeResponse({
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Real post from xai.",
+                            "annotations": [
+                                {
+                                    "type": "url_citation",
+                                    "url": "https://x.com/xai/status/1",
+                                    "title": "xAI post",
+                                    "start_index": 0,
+                                    "end_index": 4,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        }),
     )
 
     result = json.loads(
@@ -686,17 +779,15 @@ def test_x_search_not_degraded_when_filter_returns_top_level_citations(monkeypat
     monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
     monkeypatch.setattr(
         "requests.post",
-        lambda *a, **k: _FakeResponse(
-            {
-                "output_text": "Found discussion.",
-                "citations": [{"url": "https://x.com/example/status/1", "title": "Example"}],
-            }
-        ),
+        lambda *a, **k: _FakeResponse({
+            "output_text": "Found discussion.",
+            "citations": [
+                {"url": "https://x.com/example/status/1", "title": "Example"}
+            ],
+        }),
     )
 
-    result = json.loads(
-        x_search_tool(query="anything", allowed_x_handles=["xai"])
-    )
+    result = json.loads(x_search_tool(query="anything", allowed_x_handles=["xai"]))
 
     assert result["degraded"] is False
     assert result["degraded_reason"] is None
@@ -722,4 +813,3 @@ def test_x_search_not_degraded_when_no_filters_active(monkeypatch):
     assert result["success"] is True
     assert result["degraded"] is False
     assert result["degraded_reason"] is None
-

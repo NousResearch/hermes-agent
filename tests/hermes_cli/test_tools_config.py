@@ -196,16 +196,15 @@ def test_get_platform_tools_x_search_auto_enabled_when_xai_api_key_present(monke
     assert "x_search" in cli_enabled
 
 
-def test_get_platform_tools_x_search_off_when_no_xai_credentials(monkeypatch):
-    """Without any xAI credentials, x_search stays off — preserves the
-    "don't ship the schema to users who can't use it" default."""
+def test_get_platform_tools_x_search_on_without_xai_credentials_for_jina_urls(monkeypatch):
+    """x_search stays available without xAI creds so direct status URLs can use Jina."""
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     monkeypatch.setattr(
         "hermes_cli.tools_config._xai_credentials_present", lambda: False
     )
 
     cli_enabled = _get_platform_tools({}, "cli")
-    assert "x_search" not in cli_enabled
+    assert "x_search" in cli_enabled
 
 
 def test_get_platform_tools_x_search_respects_explicit_config(monkeypatch):

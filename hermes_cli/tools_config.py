@@ -62,7 +62,7 @@ CONFIGURABLE_TOOLSETS = [
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
-    ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
+    ("x_search",        "🐦 X (Twitter) Search",        "x_search (Jina for status URLs; xAI creds for broad search)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -105,13 +105,10 @@ def gui_toolset_label(label: str) -> str:
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
 #
-# X search is off by default for users without xAI credentials, but
-# auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
-# set — mirroring the HASS_TOKEN → homeassistant auto-enable below. The
-# `hermes tools` → X (Twitter) Search setup walks users through credential
-# setup. The tool's check_fn means the schema still won't appear to the
-# model if the credential later goes missing or expires.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+# X search is on by default because direct X/Twitter status URLs can be read
+# through r.jina.ai without credentials. Broader X searches still require xAI
+# credentials at runtime and return a clear tool error if absent.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen"}
 
 
 def _xai_credentials_present() -> bool:
@@ -408,13 +405,13 @@ TOOL_CATEGORIES = {
     },
     "x_search": {
         "name": "X (Twitter) Search",
-        "setup_title": "Select xAI Credential Source",
+        "setup_title": "Select X Search Enhancement Source",
         "setup_note": (
-            "Hermes routes X searches through xAI's built-in x_search "
-            "Responses tool. Both credential sources hit the same "
-            "https://api.x.ai/v1/responses endpoint — pick whichever you "
-            "already have. SuperGrok OAuth is preferred when both are set "
-            "(uses your subscription quota instead of API spend)."
+            "Hermes can read direct X/Twitter status URLs through r.jina.ai "
+            "with no local credentials. For broad X searches, profiles, and "
+            "filtered timeline queries, configure xAI's built-in x_search "
+            "Responses tool here. SuperGrok OAuth is preferred when both are "
+            "set (uses your subscription quota instead of API spend)."
         ),
         "icon": "🐦",
         "providers": [
@@ -1379,6 +1376,7 @@ def _get_platform_tools(
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
+    platform_toolsets_explicit = isinstance(platform_toolsets, dict) and platform in platform_toolsets
 
     if toolset_names is None or not isinstance(toolset_names, list):
         plat_info = PLATFORMS.get(platform)
@@ -1456,19 +1454,26 @@ def _get_platform_tools(
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
-        # Auto-enable ``x_search`` when xAI credentials are configured.
+        # Auto-enable ``x_search`` on first install. Direct X/Twitter status
+        # URLs can be read through r.jina.ai without credentials; broader
+        # searches still runtime-gate on xAI credentials and return a clear
+        # error when absent.
         # Unlike ``homeassistant`` (whose ``ha_*`` tools live inside the
         # platform composite and thus pass the subset check above),
         # ``x_search`` is its own one-tool toolset that the composite does
         # NOT include, so the subset loop never picks it up. Inject it
         # directly here, mirroring the HASS_TOKEN → ``homeassistant`` rule
-        # below: once you have working creds, you don't have to also click
-        # through ``hermes tools`` to flip the toolset on. Only fires when
-        # the user has not yet saved an explicit toolset list — once they
-        # do, the saved list is authoritative.
+        # below: you don't have to also click through ``hermes tools`` to
+        # flip the toolset on. Preserve the explicit empty-list contract: once
+        # a user saves no configurable tools for the platform, nothing from the
+        # configurable checklist should reappear implicitly.
         x_search_auto_enabled = (
-            _toolset_allowed_for_platform("x_search", platform)
-            and _xai_credentials_present()
+            not (
+                platform_toolsets_explicit
+                and isinstance(platform_toolsets.get(platform), list)
+                and not toolset_names
+            )
+            and _toolset_allowed_for_platform("x_search", platform)
         )
         if x_search_auto_enabled:
             enabled_toolsets.add("x_search")
@@ -1533,6 +1538,12 @@ def _get_platform_tools(
             enabled_toolsets.add(ts_key)
             claimed.update(ts_tools)
 
+    explicit_empty_selection = (
+        platform_toolsets_explicit
+        and isinstance(platform_toolsets.get(platform), list)
+        and not toolset_names
+    )
+
     # Plugin toolsets: enabled by default unless explicitly disabled, or
     # unless the toolset is in _DEFAULT_OFF_TOOLSETS (e.g. spotify —
     # shipped as a bundled plugin but user must opt in via `hermes tools`
@@ -1550,8 +1561,9 @@ def _get_platform_tools(
             elif pts in _DEFAULT_OFF_TOOLSETS:
                 # Opt-in plugin toolset — stay off until user picks it
                 continue
-            elif pts not in known_for_platform:
-                # New plugin not yet seen by hermes tools — default enabled
+            elif pts not in known_for_platform and not explicit_empty_selection:
+                # New plugin not yet seen by hermes tools — default enabled,
+                # unless the user explicitly saved an empty selection for this platform.
                 enabled_toolsets.add(pts)
             # else: known but not in config = user disabled it
 
@@ -1565,11 +1577,6 @@ def _get_platform_tools(
     if not isinstance(context_cfg, dict):
         context_cfg = {}
     context_engine_name = str(context_cfg.get("engine") or "compressor").strip().lower()
-    explicit_empty_selection = (
-        platform in platform_toolsets
-        and isinstance(platform_toolsets.get(platform), list)
-        and not toolset_names
-    )
     if context_engine_name and context_engine_name != "compressor" and not explicit_empty_selection:
         enabled_toolsets.add("context_engine")
 

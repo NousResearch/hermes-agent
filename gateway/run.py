@@ -5079,9 +5079,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         try:
             from hermes_state import SessionDB as _SessionDB
             _sdb_recover = _SessionDB()
-            _sc_fresh, _sc_stale = _sdb_recover.recover_inflight_shadow_clone_tasks(
+            _sc_all = _sdb_recover.recover_inflight_shadow_clone_tasks(
                 ttl_seconds=7200.0
             )
+            _sc_stale = [r for r in _sc_all if r.get("status") == "timeout"]
+            _sc_fresh = [r for r in _sc_all if r.get("status") != "timeout"]
             if _sc_stale:
                 logger.warning(
                     "Shadow clone recovery: %d delegation(s) exceeded TTL and were "

@@ -2092,7 +2092,6 @@ def delegate_task(
     role: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
-    background: bool = False,
     timeout_seconds: Optional[float] = None,
 ) -> str:
     """
@@ -3257,7 +3256,6 @@ registry.register(
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
-        background=args.get("background", False),
         timeout_seconds=args.get("timeout_seconds"),
     ),
     check_fn=check_delegate_requirements,

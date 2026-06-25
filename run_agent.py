@@ -5241,7 +5241,6 @@ class AIAgent:
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
-            background=(not _is_subagent),
             parent_agent=self,
             background=function_args.get("background", False),
             timeout_seconds=function_args.get("timeout_seconds"),

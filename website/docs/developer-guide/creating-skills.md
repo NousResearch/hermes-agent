@@ -53,6 +53,9 @@ license: MIT
 platforms: [macos, linux]          # Optional — restrict to specific OS platforms
                                    #   Valid: macos, linux, windows
                                    #   Omit to load on all platforms (default)
+aliases: [pho]                     # Optional — alternate slash command names
+                                   #   Normalized like skill names (lowercase, hyphens)
+                                   #   Collisions with built-in commands are skipped
 metadata:
   hermes:
     tags: [Category, Subcategory, Keywords]

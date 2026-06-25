@@ -909,6 +909,41 @@ def _image_from_tool_result(out: Dict[str, Any]) -> tuple[Optional[str], Optiona
     return None, None
 
 
+def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Normalise cua-driver ``list_windows`` entries, dropping unusable ones.
+
+    Every downstream operation needs both an integer ``pid`` (for
+    get_window_state / action tools) and ``window_id`` (for screenshot /
+    element clicks), so a window missing either is uncapturable.
+
+    Crucially, on X11 a window's PID comes from the *optional*
+    ``_NET_WM_PID`` property — the desktop root, panels, and
+    override-redirect popups routinely omit it, so the driver reports
+    ``pid: null`` for them. Coercing every entry unconditionally
+    (``int(w["pid"])``) let one such window abort enumeration of the real,
+    targetable windows. We skip the unusable entries instead so capture()
+    and focus_app() still find the windows that matter.
+    """
+    windows: List[Dict[str, Any]] = []
+    for w in raw_windows:
+        pid, window_id = w.get("pid"), w.get("window_id")
+        if pid is None or window_id is None:
+            continue
+        try:
+            pid_int, window_id_int = int(pid), int(window_id)
+        except (TypeError, ValueError):
+            continue
+        windows.append({
+            "app_name": w.get("app_name", ""),
+            "pid": pid_int,
+            "window_id": window_id_int,
+            "off_screen": not w.get("is_on_screen", True),
+            "title": w.get("title", ""),
+            "z_index": w.get("z_index", 0),
+        })
+    return windows
+
+
 # ---------------------------------------------------------------------------
 # The backend itself
 # ---------------------------------------------------------------------------
@@ -1028,17 +1063,7 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "off_screen": not w.get("is_on_screen", True),
-                "title": w.get("title", ""),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
+        windows = _ingest_windows(raw_windows)
         # Sort by z_index descending (lowest z_index = frontmost on macOS).
         windows.sort(key=lambda w: w["z_index"])
 
@@ -1433,15 +1458,7 @@ class CuaDriverBackend(ComputerUseBackend):
             {"on_screen_only": True, "session": self._session_id},
         )
         raw_windows = (lw_out.get("structuredContent") or {}).get("windows") or []
-        windows = [
-            {
-                "app_name": w.get("app_name", ""),
-                "pid": int(w["pid"]),
-                "window_id": int(w["window_id"]),
-                "z_index": w.get("z_index", 0),
-            }
-            for w in raw_windows
-        ]
+        windows = _ingest_windows(raw_windows)
         windows.sort(key=lambda w: w["z_index"])
 
         app_lower = app.lower()

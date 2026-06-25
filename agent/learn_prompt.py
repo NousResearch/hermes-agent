@@ -46,8 +46,11 @@ Frontmatter:
     Bad (123):   `A comprehensive skill that lets the agent search arXiv for
                   academic papers using keywords, authors, and categories.`
 - version: 0.1.0
-- author: the human you are authoring this for, first; "Hermes Agent" second.
-  Never credit only the tool.
+- author: always the literal value `Hermes`. NEVER fill it from the host
+  environment — the OS/login username (e.g. the `user=` line in your
+  environment hints), git config, or any identity you can probe must not be
+  written. Skills get shared and published, so an environment-derived name is
+  a privacy leak the user never opted into; the skill names itself as Hermes.
 - platforms: declare `[macos]`, `[linux]`, and/or `[windows]` IF the skill
   uses OS-bound primitives (osascript/apt/systemctl => the matching OS; /proc,
   os.setsid, signal.SIGKILL => linux; fcntl/termios => POSIX). Prefer fixing it

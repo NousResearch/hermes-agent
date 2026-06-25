@@ -9550,14 +9550,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    session_db=self._session_db,
                                 )
                                 try:
                                     # The hygiene agent rotates the session
                                     # forward to a continuation id that becomes
                                     # the gateway session's live row. It must
-                                    # never finalize on close() (today it has no
-                                    # session_db so close() no-ops, but this
-                                    # guards a future where one is wired in).
+                                    # never finalize on close() — close() would
+                                    # end the newly rotated session the gateway
+                                    # entry now points at.
                                     _hyg_agent._end_session_on_close = False
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
@@ -9577,7 +9578,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     _hyg_new_sid = _hyg_agent.session_id
                                     _hyg_rotated = _hyg_new_sid != session_entry.session_id
                                     _hyg_in_place = bool(
-                                        getattr(_hyg_agent, "compression_in_place", False)
+                                        getattr(_hyg_agent, "_last_compaction_in_place", False)
                                     )
                                     if _hyg_rotated:
                                         session_entry.session_id = _hyg_new_sid
@@ -10233,11 +10234,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
                 if event.message_id:
                     _user_entry["message_id"] = str(event.message_id)
-                self.session_store.append_to_transcript(
-                    session_entry.session_id,
-                    _user_entry,
-                    skip_db=agent_persisted,
+                # Dedupe: skip if this platform message_id is already in the
+                # transcript (prevents duplicate user turns on Telegram retries
+                # after transient failures). #47237
+                _skip_persist = (
+                    event.message_id
+                    and self.session_store.has_platform_message_id(
+                        session_entry.session_id, str(event.message_id)
+                    )
                 )
+                if _skip_persist:
+                    logger.info(
+                        "Skipping duplicate user turn "
+                        "(message_id=%s) in session %s",
+                        event.message_id, session_entry.session_id,
+                    )
+                else:
+                    self.session_store.append_to_transcript(
+                        session_entry.session_id,
+                        _user_entry,
+                        skip_db=agent_persisted,
+                    )
             else:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []

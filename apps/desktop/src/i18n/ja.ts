@@ -2049,7 +2049,7 @@ export const ja = defineLocale({
         web: 'Web'
       },
       titleTemplates: {
-        actionCommand: (action, command) => `${action} · ${command}`,
+        actionCommand: (action, command) => `${action} ${command}`,
         actionQuoted: (action, value) => `「${value}」を${action}`,
         actionTarget: (action, target) => `${target} を${action}`,
         prefixedDone: (prefix, action) => `${prefix} ${action}`,

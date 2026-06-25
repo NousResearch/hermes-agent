@@ -2097,7 +2097,7 @@ export const zh: Translations = {
         web: '网页'
       },
       titleTemplates: {
-        actionCommand: (action, command) => `${action} · ${command}`,
+        actionCommand: (action, command) => `${action} ${command}`,
         actionQuoted: (action, value) => `${action}“${value}”`,
         actionTarget: (action, target) => `${action} ${target}`,
         prefixedDone: (prefix, action) => `${prefix}${action}`,

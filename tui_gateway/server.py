@@ -10660,7 +10660,7 @@ def _run_prompt_submit(
                     prompt,
                     cwd=cwd,
                     allowed_root=cwd,
-                    extra_allowed_file_roots=[_desktop_attachment_fallback_dir(session)],
+                    extra_allowed_file_roots=_desktop_attachment_allowed_file_roots(session),
                     context_length=ctx_len,
                 )
                 if ctx.blocked:
@@ -11614,6 +11614,7 @@ def _desktop_attachment_dir(session: dict) -> Path:
             raise
         fallback = _desktop_attachment_fallback_dir(session, workspace=workspace)
         fallback.mkdir(parents=True, exist_ok=True)
+        _remember_desktop_attachment_fallback_dir(session, fallback)
         return fallback
 
 
@@ -11626,6 +11627,20 @@ def _desktop_attachment_fallback_dir(session: dict, *, workspace: Path | None = 
     ).hexdigest()[:12]
     name = workspace.name or "workspace"
     return profile_home / "desktop-attachments" / f"{name}-{workspace_digest}-{session_digest}"
+
+
+def _remember_desktop_attachment_fallback_dir(session: dict, root: Path) -> None:
+    roots = session.setdefault("desktop_attachment_fallback_roots", [])
+    root_str = str(root.resolve())
+    if root_str not in roots:
+        roots.append(root_str)
+
+
+def _desktop_attachment_allowed_file_roots(session: dict) -> list[Path]:
+    return [
+        Path(root).resolve()
+        for root in session.get("desktop_attachment_fallback_roots", [])
+    ]
 
 
 def _should_fallback_attachment_path(exc: OSError) -> bool:
@@ -11748,6 +11763,7 @@ def _stage_session_file_attachment(
         ):
             raise
         fallback_dir.mkdir(parents=True, exist_ok=True)
+        _remember_desktop_attachment_fallback_dir(session, fallback_dir)
         target = _unique_attachment_path(fallback_dir, filename)
         target.write_bytes(payload)
     return target.resolve(), True

@@ -6517,11 +6517,13 @@ def test_prompt_submit_expands_context_refs(monkeypatch, tmp_path):
     workspace.mkdir()
     hermes_home = tmp_path / "hermes-home"
     hermes_home.mkdir()
+    remembered_root = hermes_home / "desktop-attachments" / "remembered"
 
     server._sessions["sid"] = _session(
         agent=_Agent(),
         cwd=str(workspace),
         profile_home=str(hermes_home),
+        desktop_attachment_fallback_roots=[str(remembered_root)],
     )
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
@@ -6544,7 +6546,7 @@ def test_prompt_submit_expands_context_refs(monkeypatch, tmp_path):
     assert [
         Path(root).resolve() for root in context_kwargs["extra_allowed_file_roots"]
     ] == [
-        server._desktop_attachment_fallback_dir(server._sessions["sid"]).resolve()
+        remembered_root.resolve()
     ]
 
 
@@ -6711,9 +6713,9 @@ def test_file_attach_falls_back_to_hermes_home_when_workspace_is_read_only(monke
             resp["result"]["ref_text"],
             cwd=workspace,
             allowed_root=workspace,
-            extra_allowed_file_roots=[
-                server._desktop_attachment_fallback_dir(server._sessions["sid"])
-            ],
+            extra_allowed_file_roots=server._desktop_attachment_allowed_file_roots(
+                server._sessions["sid"]
+            ),
             context_length=100_000,
         )
         assert ctx.blocked is False
@@ -6722,7 +6724,7 @@ def test_file_attach_falls_back_to_hermes_home_when_workspace_is_read_only(monke
         server._sessions.pop("sid", None)
 
 
-def test_file_attach_fallback_ref_expands_during_prompt_submit(monkeypatch, tmp_path):
+def test_file_attach_fallback_ref_survives_session_key_and_cwd_change(monkeypatch, tmp_path):
     workspace = tmp_path / "readonly-workspace"
     workspace.mkdir()
     hermes_home = tmp_path / "hermes-home"
@@ -6796,6 +6798,10 @@ def test_file_attach_fallback_ref_expands_during_prompt_submit(monkeypatch, tmp_
                 },
             }
         )
+        next_workspace = tmp_path / "next-workspace"
+        next_workspace.mkdir()
+        server._sessions["sid"]["session_key"] = "new-session-key"
+        server._sessions["sid"]["cwd"] = str(next_workspace)
         server.handle_request(
             {
                 "id": "2",

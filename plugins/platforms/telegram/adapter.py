@@ -13,7 +13,6 @@ import inspect
 import json
 import logging
 import os
-import tempfile
 import html as _html
 import re
 from datetime import datetime, timezone
@@ -2035,29 +2034,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 changed = True
 
             if changed:
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=str(config_path.parent),
-                    suffix=".tmp",
-                    prefix=".config_",
+                from utils import atomic_yaml_write
+
+                atomic_yaml_write(
+                    config_path,
+                    config,
+                    default_flow_style=False,
+                    sort_keys=False,
                 )
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        _yaml.dump(
-                            config,
-                            f,
-                            default_flow_style=False,
-                            sort_keys=False,
-                            allow_unicode=True,
-                        )
-                        f.flush()
-                        os.fsync(f.fileno())
-                    atomic_replace(tmp_path, config_path)
-                except BaseException:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
                 logger.info(
                     "[%s] Persisted thread_id=%s for topic '%s' in config.yaml",
                     self.name, thread_id, topic_name,

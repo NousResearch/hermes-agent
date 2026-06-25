@@ -35,6 +35,7 @@ import {
   $activeGatewayProfile,
   $profileColors,
   $profileCreateRequest,
+  $profileIcons,
   $profileOrder,
   $profiles,
   $profileScope,
@@ -43,6 +44,7 @@ import {
   refreshActiveProfile,
   selectProfile,
   setProfileColor,
+  setProfileIcon,
   setProfileOrder,
   setShowAllProfiles,
   sortByProfileOrder
@@ -53,6 +55,8 @@ import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
 import { DeleteProfileDialog } from '../../profiles/delete-profile-dialog'
 import { RenameProfileDialog } from '../../profiles/rename-profile-dialog'
 import { PROFILES_ROUTE } from '../../routes'
+
+import { ProfileIconDialog } from './profile-icon-dialog'
 
 const RAIL_GAP = 4 // px — matches gap-1 between squares.
 
@@ -94,6 +98,7 @@ export function ProfileRail() {
   const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
+  const icons = useStore($profileIcons)
   const navigate = useNavigate()
 
   const [createOpen, setCreateOpen] = useState(false)
@@ -244,12 +249,14 @@ export function ProfileRail() {
                   <ProfileSquare
                     active={!isAll && normalizeProfileKey(profile.name) === activeKey}
                     color={resolveProfileColor(profile.name, colors)}
+                    icon={icons[normalizeProfileKey(profile.name)] ?? null}
                     key={profile.name}
                     label={profile.name}
                     onDelete={() => setPendingDelete(profile)}
                     onRecolor={color => setProfileColor(profile.name, color)}
                     onRename={() => setPendingRename(profile)}
                     onSelect={() => selectProfile(profile.name)}
+                    onSetIcon={icon => setProfileIcon(profile.name, icon)}
                   />
                 ))}
               </div>
@@ -336,9 +343,11 @@ function ProfilePill({ active, glyph, label, onSelect }: ProfilePillProps) {
 interface ProfileSquareProps {
   active: boolean
   color: null | string
+  icon: null | string
   label: string
   onSelect: () => void
   onRecolor: (color: null | string) => void
+  onSetIcon: (icon: null | string) => void
   onRename: () => void
   onDelete: () => void
 }
@@ -354,11 +363,22 @@ const LONG_PRESS_MS = 450
 // right-click to rename/delete. The button carries both the tooltip and
 // context-menu triggers via nested asChild Slots, so a single element keeps the
 // dnd listeners, hover tip, and right-click menu.
-function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, onSelect }: ProfileSquareProps) {
+function ProfileSquare({
+  active,
+  color,
+  icon,
+  label,
+  onDelete,
+  onRecolor,
+  onRename,
+  onSelect,
+  onSetIcon
+}: ProfileSquareProps) {
   const { t } = useI18n()
   const p = t.profiles
   const hue = color ?? 'var(--ui-text-quaternary)'
   const [pickerOpen, setPickerOpen] = useState(false)
+  const [iconOpen, setIconOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
   const suppressClick = useRef(false)
 
@@ -394,6 +414,7 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
   }
 
   return (
+    <>
     <Popover onOpenChange={setPickerOpen} open={pickerOpen}>
       <ContextMenu>
         <TooltipProvider delayDuration={0}>
@@ -453,7 +474,7 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
                     onPointerLeave={clearPress}
                     onPointerUp={clearPress}
                   >
-                    {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                    {icon || label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
                   </button>
                 </TooltipTrigger>
               </ContextMenuTrigger>
@@ -476,6 +497,10 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
           <ContextMenuItem onSelect={() => setPickerOpen(true)}>
             <Codicon name="symbol-color" size="0.875rem" />
             <span>{p.color}</span>
+          </ContextMenuItem>
+          <ContextMenuItem onSelect={() => setIconOpen(true)}>
+            <Codicon name="symbol-misc" size="0.875rem" />
+            <span>{p.icon}</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={onRename}>
             <Codicon name="edit" size="0.875rem" />
@@ -520,5 +545,17 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
         </button>
       </PopoverContent>
     </Popover>
+    <ProfileIconDialog
+      hasIcon={Boolean(icon)}
+      label={label}
+      onClear={() => {
+        onSetIcon(null)
+        setIconOpen(false)
+      }}
+      onOpenChange={setIconOpen}
+      onSelect={emoji => onSetIcon(emoji)}
+      open={iconOpen}
+    />
+    </>
   )
 }

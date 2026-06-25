@@ -21,7 +21,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
 import {
@@ -73,6 +80,7 @@ import {
   toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
+import { notify } from '@/store/notifications'
 import {
   $newChatProfile,
   $profiles,
@@ -94,12 +102,26 @@ import {
   $workingSessionIds,
   sessionPinId
 } from '@/store/session'
+import {
+  $sidebarFolders,
+  createFolder,
+  deleteFolder,
+  folderKeySet,
+  renameFolder,
+  reorderFolders,
+  reorderFolderSessions,
+  type SidebarFolder,
+  toggleFolderOpen,
+  toggleFolderPinned
+} from '@/store/sidebar-folders'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
+import { FolderNameDialog } from './folder-dialogs'
+import { filterUnfiledSessions, resolveFolderSessions, visibleFoldersForScope } from './folders'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { resolveManualSessionOrderIds } from './order'
 import { ProfileRail } from './profile-switcher'
@@ -462,6 +484,13 @@ export function ChatSidebar({
 
   const pinnedRealIdSet = useMemo(() => new Set(pinnedSessions.map(s => s.id)), [pinnedSessions])
 
+  // Desktop-local custom folders. Membership is keyed by the durable id
+  // (sessionPinId), the same key pinning uses, so a foldered session survives
+  // compaction. `folderedKeys` drives the unfiled-list filter below; resolving
+  // each folder's own sessions happens at render time via sessionByAnyId.
+  const folders = useStore($sidebarFolders)
+  const folderedKeys = useMemo(() => folderKeySet(folders), [folders])
+
   // Full-text search across *all* sessions (not just the loaded page) so 699
   // sessions stay findable. Debounced; loaded sessions are matched instantly
   // client-side and merged ahead of the server hits.
@@ -515,9 +544,18 @@ export function ChatSidebar({
     return [...out.values()]
   }, [trimmedQuery, sortedSessions, serverMatches, sessionByAnyId])
 
+  // Unfiled recents: drop pinned sessions AND any session claimed by a custom
+  // folder, so foldered chats live only under their folder. This single filter
+  // feeds the flat list, the workspace tree, and the recents count (all derive
+  // from agentSessions), keeping them consistent without filtering each.
   const unpinnedAgentSessions = useMemo(
-    () => sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
-    [sortedSessions, pinnedRealIdSet]
+    () =>
+      filterUnfiledSessions(
+        sortedSessions.filter(s => !pinnedRealIdSet.has(s.id)),
+        folderedKeys,
+        sessionPinId
+      ),
+    [sortedSessions, pinnedRealIdSet, folderedKeys]
   )
 
   useEffect(() => {
@@ -533,6 +571,7 @@ export function ChatSidebar({
 
     if (!next.length && agentOrderIds.length) {
       setSidebarSessionOrderIds([])
+
       return
     }
 
@@ -791,6 +830,56 @@ export function ChatSidebar({
       })
     )
 
+  // ---- Custom folders --------------------------------------------------------
+  // Only folders that belong to the active profile (or are pinned/global) show;
+  // this is what makes a folder "stick" to its profile. Then resolve each
+  // folder's stored keys to live sessions (drops stale/non-loaded ids so a
+  // folder of gone sessions can't crash the render). The ALL-profiles view
+  // groups by profile and leaves folders aside for v1.
+  const folderSections = useMemo(
+    () =>
+      visibleFoldersForScope(folders, profileScope).map(folder => ({
+        folder,
+        sessions: resolveFolderSessions(folder, sessionByAnyId)
+      })),
+    [folders, profileScope, sessionByAnyId]
+  )
+
+  const [folderNameDialog, setFolderNameDialog] = useState<{
+    id?: string
+    mode: 'create' | 'rename'
+    name: string
+  } | null>(null)
+
+  const [folderToDelete, setFolderToDelete] = useState<null | SidebarFolder>(null)
+
+  const submitFolderName = (name: string) => {
+    if (!folderNameDialog) {
+      return
+    }
+
+    if (folderNameDialog.mode === 'create') {
+      // Scope the new folder to the active profile (global if in the ALL view).
+      createFolder(name, showAllProfiles ? undefined : profileScope)
+      notify({ durationMs: 2_000, kind: 'success', message: s.folderCreated })
+    } else if (folderNameDialog.id) {
+      renameFolder(folderNameDialog.id, name)
+      notify({ durationMs: 2_000, kind: 'success', message: s.folderRenamed })
+    }
+  }
+
+  // Folder rows report their new order as live ids; translate to durable keys
+  // (the store keys membership by sessionPinId) before persisting.
+  const reorderFolderRows = (folderId: string, ids: string[]) =>
+    reorderFolderSessions(
+      folderId,
+      ids.map(id => {
+        const session = sessionByAnyId.get(id)
+
+        return session ? sessionPinId(session) : id
+      })
+    )
+
   return (
     <Sidebar
       className={cn(
@@ -933,6 +1022,34 @@ export function ChatSidebar({
               />
             )}
 
+            {/* Custom folders sit above the unfiled Sessions list. Hidden in the
+                ALL-profiles view (which groups by profile) and in search mode. */}
+            {!trimmedQuery && !showAllProfiles && folderSections.length > 0 && (
+              <ReorderableList
+                ids={folderSections.map(({ folder }) => folder.id)}
+                onReorder={reorderFolders}
+                sensors={dndSensors}
+              >
+                {folderSections.map(({ folder, sessions: folderSessions }) => (
+                  <FolderSection
+                    activeSessionId={activeSidebarSessionId}
+                    folder={folder}
+                    key={folder.id}
+                    onArchiveSession={onArchiveSession}
+                    onDeleteFolder={setFolderToDelete}
+                    onDeleteSession={onDeleteSession}
+                    onRenameFolder={f => setFolderNameDialog({ id: f.id, mode: 'rename', name: f.name })}
+                    onReorderSessions={reorderFolderRows}
+                    onResumeSession={onResumeSession}
+                    onTogglePinned={toggleFolderPinned}
+                    reorderable={folderSections.length > 1}
+                    sessions={folderSessions}
+                    workingSessionIdSet={workingSessionIdSet}
+                  />
+                ))}
+              </ReorderableList>
+            )}
+
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
@@ -969,27 +1086,47 @@ export function ChatSidebar({
                   // Grouping operates on unpinned recents; if everything is pinned
                   // the toggle does nothing, and it's irrelevant in the ALL-profiles
                   // view (always grouped by profile), so hide the button (not the slot).
-                  <div className="grid size-6 shrink-0 place-items-center">
-                    {!showAllProfiles && agentSessions.length > 0 ? (
-                      <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
+                  <div className="flex items-center gap-0.5">
+                    {!showAllProfiles ? (
+                      <Tip label={s.createFolder}>
                         <Button
-                          aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
-                          className={cn(
-                            'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
-                            agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-                          )}
+                          aria-label={s.createFolder}
+                          className="text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100"
                           onClick={event => {
                             event.stopPropagation()
-                            setSidebarRecentsOpen(true)
-                            setSidebarAgentsGrouped(!agentsGrouped)
+                            setFolderNameDialog({ mode: 'create', name: s.customFolderDefaultName })
                           }}
                           size="icon-xs"
                           variant="ghost"
                         >
-                          <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                          <Codicon name="new-folder" size="0.75rem" />
                         </Button>
                       </Tip>
                     ) : null}
+                    {/* Reserve the toggle slot so the "Sessions" label keeps a stable
+                        height whether or not the grouping toggle renders. */}
+                    <div className="grid size-6 shrink-0 place-items-center">
+                      {!showAllProfiles && agentSessions.length > 0 ? (
+                        <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
+                          <Button
+                            aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
+                            className={cn(
+                              'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                              agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                            )}
+                            onClick={event => {
+                              event.stopPropagation()
+                              setSidebarRecentsOpen(true)
+                              setSidebarAgentsGrouped(!agentsGrouped)
+                            }}
+                            size="icon-xs"
+                            variant="ghost"
+                          >
+                            <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                          </Button>
+                        </Tip>
+                      ) : null}
+                    </div>
                   </div>
                 }
                 label={s.sessions}
@@ -1084,6 +1221,33 @@ export function ChatSidebar({
           </div>
         )}
       </SidebarContent>
+
+      <FolderNameDialog
+        initialName={folderNameDialog?.name ?? ''}
+        mode={folderNameDialog?.mode ?? 'create'}
+        onOpenChange={open => {
+          if (!open) {
+            setFolderNameDialog(null)
+          }
+        }}
+        onSubmit={submitFolderName}
+        open={folderNameDialog !== null}
+      />
+
+      <ConfirmDialog
+        confirmLabel={s.deleteFolderAction}
+        description={folderToDelete ? s.deleteFolderConfirm(folderToDelete.name) : ''}
+        destructive
+        onClose={() => setFolderToDelete(null)}
+        onConfirm={() => {
+          if (folderToDelete) {
+            deleteFolder(folderToDelete.id)
+            notify({ durationMs: 2_000, kind: 'success', message: s.folderDeleted })
+          }
+        }}
+        open={folderToDelete !== null}
+        title={s.deleteFolderTitle}
+      />
     </Sidebar>
   )
 }
@@ -1348,6 +1512,139 @@ function SidebarSessionsSection({
         </SidebarGroupContent>
       )}
     </SidebarGroup>
+  )
+}
+
+interface FolderSectionProps {
+  folder: SidebarFolder
+  sessions: SessionInfo[]
+  reorderable: boolean
+  activeSessionId: null | string
+  workingSessionIdSet: Set<string>
+  onResumeSession: (sessionId: string) => void
+  onDeleteSession: (sessionId: string) => void
+  onArchiveSession: (sessionId: string) => void
+  onReorderSessions: (folderId: string, ids: string[]) => void
+  onRenameFolder: (folder: SidebarFolder) => void
+  onDeleteFolder: (folder: SidebarFolder) => void
+  onTogglePinned: (id: string) => void
+}
+
+// One custom folder, rendered as a collapsible SidebarSessionsSection. Wrapped in
+// useSortableBindings so the parent ReorderableList can drag folders up/down. The
+// header carries a ⋯ menu (rename / pin to all profiles / delete) and the drag
+// grab handle.
+function FolderSection({
+  folder,
+  sessions,
+  reorderable,
+  activeSessionId,
+  workingSessionIdSet,
+  onResumeSession,
+  onDeleteSession,
+  onArchiveSession,
+  onReorderSessions,
+  onRenameFolder,
+  onDeleteFolder,
+  onTogglePinned
+}: FolderSectionProps) {
+  const { t } = useI18n()
+  const s = t.sidebar
+  const { dragging, dragHandleProps, ref, style } = useSortableBindings(folder.id)
+
+  const headerButtonClass =
+    'text-(--ui-text-tertiary) opacity-0 transition group-hover/section:opacity-100 hover:bg-(--ui-control-hover-background) hover:text-foreground focus-visible:opacity-100'
+
+  return (
+    <div className={cn('shrink-0', dragging && 'opacity-80')} ref={ref} style={style}>
+      <SidebarSessionsSection
+        activeSessionId={activeSessionId}
+        contentClassName={cn('flex flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
+        emptyState={
+          <div className="flex min-h-7 items-center rounded-lg px-2 text-[0.75rem] text-(--ui-text-tertiary)">
+            {s.folderEmpty}
+          </div>
+        }
+        headerAction={
+          <div className="flex items-center gap-0.5">
+            <DropdownMenu>
+              <Tip label={s.folderActionsFor(folder.name)}>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    aria-label={s.folderActionsFor(folder.name)}
+                    className={headerButtonClass}
+                    onClick={event => event.stopPropagation()}
+                    size="icon-xs"
+                    variant="ghost"
+                  >
+                    <Codicon name="ellipsis" size="0.75rem" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </Tip>
+              <DropdownMenuContent align="end" className="w-44" sideOffset={6}>
+                <DropdownMenuItem onSelect={() => onRenameFolder(folder)}>
+                  <Codicon name="edit" size="0.875rem" />
+                  <span>{s.renameFolderAction}</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => onTogglePinned(folder.id)}>
+                  <Codicon name={folder.pinned ? 'pinned-dirty' : 'pin'} size="0.875rem" />
+                  <span>{folder.pinned ? s.unpinFolder : s.pinFolder}</span>
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="text-destructive focus:text-destructive"
+                  onSelect={() => onDeleteFolder(folder)}
+                  variant="destructive"
+                >
+                  <Codicon name="trash" size="0.875rem" />
+                  <span>{s.deleteFolderAction}</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+            {reorderable && (
+              <Button
+                aria-label={s.reorderFolder(folder.name)}
+                className={cn(headerButtonClass, 'cursor-grab active:cursor-grabbing')}
+                size="icon-xs"
+                variant="ghost"
+                {...dragHandleProps}
+              >
+                <Codicon name="grabber" size="0.75rem" />
+              </Button>
+            )}
+          </div>
+        }
+        label={folder.name}
+        labelIcon={
+          <Codicon
+            className="text-(--ui-text-tertiary)"
+            name={folder.open ? 'folder-opened' : 'folder'}
+            size="0.75rem"
+          />
+        }
+        labelMeta={
+          <span className="inline-flex items-center gap-1">
+            {folder.pinned && (
+              <Tip label={s.folderPinnedBadge}>
+                <Codicon className="text-(--ui-text-tertiary)" name="pinned" size="0.625rem" />
+              </Tip>
+            )}
+            {String(sessions.length)}
+          </span>
+        }
+        onArchiveSession={onArchiveSession}
+        onDeleteSession={onDeleteSession}
+        onReorderSessions={ids => onReorderSessions(folder.id, ids)}
+        onResumeSession={onResumeSession}
+        onToggle={() => toggleFolderOpen(folder.id)}
+        onTogglePin={pinSession}
+        open={folder.open}
+        pinned={false}
+        rootClassName="shrink-0 p-0 pb-1"
+        sessions={sessions}
+        sortable={sessions.length > 1}
+        workingSessionIdSet={workingSessionIdSet}
+      />
+    </div>
   )
 }
 

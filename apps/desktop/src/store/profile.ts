@@ -93,6 +93,29 @@ export function setProfileColor(name: string, color: null | string): void {
   $profileColors.set(next)
 }
 
+// ── Rail icons ─────────────────────────────────────────────────────────────
+// Optional per-profile emoji shown on the rail square instead of the first
+// letter. Local-only cosmetic preference, mirrors $profileColors.
+const PROFILE_ICONS_STORAGE_KEY = 'hermes.desktop.profileIcons'
+
+export const $profileIcons = atom<Record<string, string>>(storedStringRecord(PROFILE_ICONS_STORAGE_KEY))
+
+$profileIcons.subscribe(value => persistStringRecord(PROFILE_ICONS_STORAGE_KEY, value))
+
+// Set (or, with null, clear) a profile's emoji/icon override.
+export function setProfileIcon(name: string, icon: null | string): void {
+  const key = normalizeProfileKey(name)
+  const next = { ...$profileIcons.get() }
+
+  if (icon) {
+    next[key] = icon
+  } else {
+    delete next[key]
+  }
+
+  $profileIcons.set(next)
+}
+
 interface ActiveProfileResponse {
   active: string
   current: string

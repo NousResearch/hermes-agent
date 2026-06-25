@@ -15,7 +15,7 @@ vi.mock('@/hermes', () => ({
 }))
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
 
-const { $activeGatewayProfile, ensureGatewayProfile } = await import('./profile')
+const { $activeGatewayProfile, $profileIcons, ensureGatewayProfile, setProfileIcon } = await import('./profile')
 const { $connection } = await import('./session')
 
 const remoteConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
@@ -38,6 +38,31 @@ beforeEach(() => {
 afterEach(() => {
   vi.unstubAllGlobals()
   $connection.set(null)
+})
+
+describe('setProfileIcon', () => {
+  beforeEach(() => {
+    $profileIcons.set({})
+  })
+
+  it('sets an emoji keyed by the normalized profile name', () => {
+    setProfileIcon('Film Maker', '🎬')
+
+    expect($profileIcons.get()['Film Maker']).toBe('🎬')
+  })
+
+  it('clears the icon when passed null', () => {
+    setProfileIcon('film-maker', '🎬')
+    setProfileIcon('film-maker', null)
+
+    expect($profileIcons.get()['film-maker']).toBeUndefined()
+  })
+
+  it('normalizes an empty profile name to "default"', () => {
+    setProfileIcon('', '🌱')
+
+    expect($profileIcons.get().default).toBe('🌱')
+  })
 })
 
 describe('ensureGatewayProfile → $connection sync (#46651)', () => {

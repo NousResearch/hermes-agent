@@ -23,8 +23,157 @@ keep the exact logger name (``"agent.conversation_loop"``).
 from __future__ import annotations
 
 import os
+from typing import Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+
+
+def _build_turn_summary(
+    final_response: str,
+    api_call_count: int,
+    turn_exit_reason: str,
+    messages: list,
+) -> str:
+    """Build a one-sentence turn summary, preferring Ollama (qwen3.5:9b).
+
+    Falls back to a mechanical format if Ollama is unreachable or the
+    model returns nothing useful.
+    """
+    _llm_line = _try_ollama_summary(final_response, messages)
+    if _llm_line:
+        return _llm_line
+
+    # Mechanical fallback — same format as before.
+    _tool_names = []
+    for _m in messages:
+        if isinstance(_m, dict) and _m.get("role") == "assistant" and _m.get("tool_calls"):
+            for _tc in _m["tool_calls"]:
+                if isinstance(_tc, dict):
+                    _tn = _tc.get("function", {}).get("name")
+                    if _tn:
+                        _tool_names.append(_tn)
+
+    _tool_summary = ""
+    if _tool_names:
+        _unique = list(dict.fromkeys(_tool_names))
+        _tool_summary = f", {len(_tool_names)} tool calls ({', '.join(_unique[:5])})"
+        if len(_unique) > 5:
+            _tool_summary += f" +{len(_unique) - 5} more"
+
+    _resp_preview = (final_response or "").strip()[:120]
+    return (
+        f"{api_call_count} API calls{_tool_summary}. "
+        f"Exit: {turn_exit_reason}. "
+        f"Response: {_resp_preview}"
+    )
+
+
+def _get_auto_summary_model() -> str:
+    """Read ``agent.auto_summary_model`` from config.
+
+    Returns the model name (default ``llama3.2:1b``).  An empty string
+    means the caller should skip Ollama and use the mechanical fallback.
+    """
+    try:
+        from hermes_cli.config import load_config as _load_config
+        _cfg = _load_config() or {}
+    except Exception:
+        _cfg = {}
+    _agent = _cfg.get("agent") if isinstance(_cfg, dict) else None
+    if isinstance(_agent, dict) and "auto_summary_model" in _agent:
+        return str(_agent.get("auto_summary_model", ""))
+    return "llama3.2:1b"
+
+
+def _try_ollama_summary(final_response: str, messages: list) -> str | None:
+    """Ask a local Ollama model for a one-sentence turn summary.
+
+    Model is read from ``agent.auto_summary_model`` config (default
+    ``llama3.2:1b``).  Returns ``None`` on any failure — callers fall
+    back to the mechanical format.
+    """
+    import json
+    import urllib.request
+
+    _model = _get_auto_summary_model()
+    if not _model:
+        return None
+
+    # Build a compact prompt from the turn's output.
+    _resp_preview = (final_response or "").strip()[:400]
+
+    # Extract the user's message for context.
+    _user_msg = ""
+    for _m in messages:
+        if isinstance(_m, dict) and _m.get("role") == "user":
+            _content = _m.get("content")
+            if isinstance(_content, str) and _content.strip():
+                _user_msg = _content.strip()[:300]
+                break
+
+    # Collect tool names, file paths, and tool result snippets.
+    _tool_names = []
+    _paths = set()
+    _tool_results = []  # (tool_name, first 200 chars of result)
+    for _m in messages:
+        if isinstance(_m, dict) and _m.get("role") == "assistant" and _m.get("tool_calls"):
+            for _tc in _m["tool_calls"]:
+                if isinstance(_tc, dict):
+                    _fn = _tc.get("function", {})
+                    _tn = _fn.get("name")
+                    if _tn:
+                        _tool_names.append(_tn)
+                    # Extract file paths from tool arguments.
+                    _args = _fn.get("arguments")
+                    if isinstance(_args, dict):
+                        _path = _args.get("path") or _args.get("file_path")
+                        if _path:
+                            _paths.add(_path)
+        # Extract tool result content for context.
+        if isinstance(_m, dict) and _m.get("role") == "tool":
+            _tname = _m.get("name") or _m.get("tool_name") or ""
+            _tcontent = _m.get("content")
+            if isinstance(_tcontent, str) and _tcontent.strip():
+                _snippet = _tcontent.strip()[:200]
+                _tool_results.append(f"{_tname}: {_snippet}")
+
+    _tool_str = ", ".join(list(dict.fromkeys(_tool_names))[:8]) if _tool_names else "none"
+    _path_str = ", ".join(sorted(_paths)[:10]) if _paths else "none"
+    _results_str = "\n".join(_tool_results[:6]) if _tool_results else "none"
+
+    _prompt = (
+        "Summarize what was accomplished this turn in one sentence. "
+        "Focus on what was done, not how. Be specific and concise.\n\n"
+        f"User asked: {_user_msg}\n"
+        f"Files: {_path_str}\n"
+        f"Tools used: {_tool_str}\n"
+        f"Tool results:\n{_results_str}\n"
+        f"Response: {_resp_preview}\n\n"
+        "One-sentence summary:"
+    )
+
+    _body = json.dumps({
+        "model": _model,
+        "prompt": _prompt,
+        "stream": False,
+        "options": {"num_predict": 80, "temperature": 0.0},
+    }).encode("utf-8")
+
+    try:
+        _req = urllib.request.Request(
+            "http://localhost:11434/api/generate",
+            data=_body,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(_req, timeout=5) as _resp:
+            _data = json.loads(_resp.read().decode("utf-8"))
+        _text = (_data.get("response") or "").strip()
+        if _text and len(_text) > 5:
+            return _text
+    except Exception:
+        pass
+
+    return None
 
 
 def finalize_turn(
@@ -485,11 +634,11 @@ def finalize_turn(
     except Exception as exc:
         logger.warning("on_session_end hook failed: %s", exc)
 
-    # Auto session summary — mechanical, no LLM inference.
-    # Appends a one-line summary entry to the running session summary file
-    # after every completed, non-interrupted turn.  Survives context
-    # compression so the agent can read back what happened without loading
-    # full transcripts.  Gated on config key agent.auto_session_summary.
+    # Auto session summary — LLM-powered via Ollama (qwen3.5:9b).
+    # After every completed, non-interrupted turn, asks the local model
+    # to produce a one-sentence summary of what was accomplished.
+    # Falls back to the mechanical format if Ollama is unavailable.
+    # Gated on config key agent.auto_session_summary.
     if (
         final_response
         and not interrupted
@@ -498,28 +647,8 @@ def finalize_turn(
         try:
             from tools.session_summary_tool import session_summary as _ss
 
-            # Count tool turns in this turn's messages
-            _tool_names = []
-            for _m in messages:
-                if isinstance(_m, dict) and _m.get("role") == "assistant" and _m.get("tool_calls"):
-                    for _tc in _m["tool_calls"]:
-                        if isinstance(_tc, dict):
-                            _tn = _tc.get("function", {}).get("name")
-                            if _tn:
-                                _tool_names.append(_tn)
-
-            _tool_summary = ""
-            if _tool_names:
-                _unique = list(dict.fromkeys(_tool_names))  # dedup, preserve order
-                _tool_summary = f", {len(_tool_names)} tool calls ({', '.join(_unique[:5])})"
-                if len(_unique) > 5:
-                    _tool_summary += f" +{len(_unique) - 5} more"
-
-            _resp_preview = (final_response or "").strip()[:120]
-            _line = (
-                f"{api_call_count} API calls{_tool_summary}. "
-                f"Exit: {_turn_exit_reason}. "
-                f"Response: {_resp_preview}"
+            _line = _build_turn_summary(
+                final_response, api_call_count, _turn_exit_reason, messages,
             )
 
             _ss(

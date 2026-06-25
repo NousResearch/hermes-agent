@@ -971,12 +971,18 @@ DEFAULT_CONFIG = {
         "parallel_tool_call_guidance": True,
         # Auto session summary — after every turn, automatically append a
         # one-line summary entry to the running session summary file
-        # (~/.hermes/sessions/<id>/running_summary.md).  Mechanical, no
-        # LLM inference — just turn number, tool calls made, and key
-        # outcomes.  Survives context compression so the agent can read
-        # back what happened without loading full transcripts.  Set False
-        # to disable (the agent can still use session_summary manually).
+        # (~/.hermes/sessions/<id>/running_summary.md).  Uses a local
+        # Ollama model (auto_summary_model) to produce a one-sentence
+        # summary; falls back to a mechanical format if Ollama is
+        # unavailable.  Survives context compression so the agent can
+        # read back what happened without loading full transcripts.
+        # Set False to disable (the agent can still use session_summary
+        # manually).
         "auto_session_summary": True,
+        # Ollama model used for auto session summaries.  Default is
+        # llama3.2:1b (1.3 GB, ~0.6s per summary, free).  Set to an
+        # empty string to force the mechanical fallback format.
+        "auto_summary_model": "llama3.2:1b",
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

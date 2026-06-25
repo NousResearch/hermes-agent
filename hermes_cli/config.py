@@ -2228,7 +2228,7 @@ DEFAULT_CONFIG = {
         # Set false to keep STT for the agent while suppressing that user-facing echo.
         "echo_transcripts": True,
         "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe) | "deepinfra"
-        "hotwords": [],  # words/phrases to boost STT recognition for (e.g. ["Hermes", "OpenCode"])
+        "hotwords": [],  # words/phrases to boost STT recognition for (e.g. ["Hermes", "Nous"])
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force

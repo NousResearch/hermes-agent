@@ -595,10 +595,13 @@ Config:
 ```yaml
 stt:
   enabled: true
-  provider: local        # local, groq, openai, mistral
+  provider: local        # local, groq, openai, mistral, elevenlabs
+  hotwords: []           # words/phrases to bias recognition toward (e.g. ["Hermes", "Nous"])
   local:
     model: base          # tiny, base, small, medium, large-v3
 ```
+
+Add domain terms (app names, project jargon) to ``stt.hotwords`` so STT recognizes them correctly. Supported by local (faster-whisper), OpenAI, and Groq providers.
 
 ### TTS (Text → Voice)
 

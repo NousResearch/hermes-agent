@@ -1256,8 +1256,63 @@ _PROVIDER_ALIASES = {
 }
 
 
-# Cost-safe overrides for the *silent* auto-default
-# (``get_default_model_for_provider``). Most providers' curated lists lead with a
+def hidden_model_provider_slugs(config: Optional[dict[str, Any]] = None) -> set[str]:
+    """Return provider slugs hidden from model-picker option lists.
+
+    This is a display/discovery filter only. It keeps unwanted providers out
+    of ``hermes model``, the TUI model picker, and gateway ``/model`` options
+    without disabling explicit runtime use for existing configs or scripts.
+
+    Config shape::
+
+        model:
+          hidden_providers: [copilot, copilot-acp]
+
+    ``model_catalog.hidden_providers`` is accepted as a backwards-compatible
+    alias for users who think of this as picker/catalog configuration.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+
+    raw_values: list[Any] = []
+    if isinstance(config, dict):
+        for section_name in ("model", "model_catalog"):
+            section = config.get(section_name) or {}
+            if not isinstance(section, dict):
+                continue
+            raw = section.get("hidden_providers") or section.get("disabled_providers")
+            if isinstance(raw, str):
+                raw_values.extend(part.strip() for part in raw.split(","))
+            elif isinstance(raw, (list, tuple, set)):
+                raw_values.extend(raw)
+
+    hidden: set[str] = set()
+    for raw in raw_values:
+        value = str(raw or "").strip().lower()
+        if not value:
+            continue
+        hidden.add(value)
+        hidden.add(_PROVIDER_ALIASES.get(value, value))
+
+        # Human GitHub names all refer to the two GitHub-backed provider rows.
+        if value in {"github", "github-copilot", "github-model", "github-models", "copilot"}:
+            hidden.update({"copilot", "github-copilot"})
+        if value in {"github", "github-copilot-acp", "copilot-acp", "copilot-acp-agent"}:
+            hidden.add("copilot-acp")
+
+        # Custom provider display names are surfaced as custom:<slugified-name>
+        # by list_authenticated_providers(). Accept the friendly name too.
+        if not value.startswith("custom:") and " " in value:
+            hidden.add("custom:" + value.replace(" ", "-"))
+
+    return hidden
+
+
 # sensible default, but Nous Portal is a per-token *metered aggregator* whose
 # list is ordered best-/most-capable-first — entry [0] is the priciest flagship
 # (``anthropic/claude-opus-4.8``, $5/$25 per Mtok). Using that as the
@@ -1640,8 +1695,10 @@ def list_available_providers() -> list[dict[str, str]]:
     Derives the provider list from :data:`CANONICAL_PROVIDERS` (single
     source of truth shared with ``hermes model``, ``/model``, etc.).
     """
+    hidden = hidden_model_provider_slugs()
+
     # Derive display order from canonical list + custom
-    provider_order = [p.slug for p in CANONICAL_PROVIDERS] + ["custom"]
+    provider_order = [p.slug for p in CANONICAL_PROVIDERS if p.slug not in hidden] + ["custom"]
 
     # Build reverse alias map
     aliases_for: dict[str, list[str]] = {}

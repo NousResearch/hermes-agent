@@ -32,6 +32,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _task_delegation_config,
 )
 
 
@@ -69,6 +70,11 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("model", props)
+        self.assertIn("provider", props)
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("model", task_props)
+        self.assertIn("provider", task_props)
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -1160,6 +1166,30 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         cfg = {"model": "some-model", "provider": "crof.ai"}
         creds = _resolve_delegation_credentials(cfg, parent)
         self.assertIsNone(creds["provider"])
+
+    def test_per_task_runtime_config_overrides_top_and_global(self):
+        cfg = {"model": "deepseek-v4-flash", "provider": "deepseek", "base_url": ""}
+        task_cfg = _task_delegation_config(
+            cfg,
+            top_model="z-ai/glm-5.2",
+            top_provider="openrouter",
+            task={"goal": "x", "model": "anthropic/claude-sonnet-4", "provider": "anthropic"},
+        )
+        self.assertEqual(task_cfg["model"], "anthropic/claude-sonnet-4")
+        self.assertEqual(task_cfg["provider"], "anthropic")
+        self.assertEqual(task_cfg["base_url"], "")
+
+    def test_per_call_self_bypasses_delegation_config(self):
+        cfg = {"model": "deepseek-v4-flash", "provider": "deepseek", "base_url": "https://api.deepseek.com/v1"}
+        task_cfg = _task_delegation_config(
+            cfg,
+            top_model="self",
+            top_provider=None,
+            task={"goal": "x"},
+        )
+        self.assertEqual(task_cfg["model"], "")
+        self.assertEqual(task_cfg["provider"], "")
+        self.assertEqual(task_cfg["base_url"], "")
 
 
 class TestDelegationProviderIntegration(unittest.TestCase):

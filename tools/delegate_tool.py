@@ -2071,6 +2071,8 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2078,8 +2080,8 @@ def delegate_task(
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, model/provider)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, model, provider}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -2143,15 +2145,9 @@ def delegate_task(
         )
     effective_max_iter = default_max_iter
 
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    # Per-call/per-task model/provider credentials are resolved after the
+    # normalized task list is known. This lets batch tasks target different
+    # runtimes while preserving config-level delegation defaults.
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2190,6 +2186,19 @@ def delegate_task(
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
 
+    creds_by_task: list[dict] = []
+    for i, task in enumerate(task_list):
+        try:
+            task_cfg = _task_delegation_config(
+                cfg,
+                top_model=model,
+                top_provider=provider,
+                task=task,
+            )
+            creds_by_task.append(_resolve_delegation_credentials(task_cfg, parent_agent))
+        except ValueError as exc:
+            return tool_error(f"Task {i}: {exc}")
+
     overall_start = time.monotonic()
     results = []
 
@@ -2210,6 +2219,7 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            creds = creds_by_task[i]
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
@@ -2527,7 +2537,7 @@ def delegate_task(
             context=context,
             toolsets=toolsets,
             role=top_role,
-            model=creds["model"],
+            model=_batch_runtime_label(creds_by_task),
             session_key=_session_key,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
@@ -2771,6 +2781,89 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+_INHERIT_RUNTIME_SENTINELS = {"", "self", "inherit", "parent"}
+
+
+def _runtime_override_value(value: Any) -> Optional[str]:
+    """Normalize a per-call runtime override value.
+
+    Returns ``None`` when the caller omitted the value. Explicit inheritance
+    sentinels are handled by ``_task_delegation_config`` because they clear the
+    config-level delegation runtime instead of merely leaving it untouched.
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or ""
+
+
+def _task_delegation_config(
+    base_cfg: dict,
+    *,
+    top_model: Optional[str],
+    top_provider: Optional[str],
+    task: dict,
+) -> dict:
+    """Return delegation config for one child after per-call/task overrides.
+
+    Precedence:
+    1. per-task ``model`` / ``provider``
+    2. top-level ``model`` / ``provider``
+    3. ``delegation.*`` config
+
+    Explicit ``self`` / ``inherit`` / ``parent`` bypasses config-level
+    delegation routing and makes the child clone the parent runtime.
+    """
+    cfg = dict(base_cfg or {})
+
+    def _clear_runtime() -> None:
+        for key in ("model", "provider", "base_url", "api_key", "api_mode"):
+            cfg[key] = ""
+
+    for key, raw in (("model", top_model), ("provider", top_provider)):
+        value = _runtime_override_value(raw)
+        if value is None:
+            continue
+        if value.lower() in _INHERIT_RUNTIME_SENTINELS:
+            _clear_runtime()
+        else:
+            cfg[key] = value
+            if key == "provider":
+                cfg["base_url"] = ""
+
+    for key in ("model", "provider"):
+        if key not in task:
+            continue
+        value = _runtime_override_value(task.get(key))
+        if value is None:
+            continue
+        if value.lower() in _INHERIT_RUNTIME_SENTINELS:
+            _clear_runtime()
+        else:
+            cfg[key] = value
+            if key == "provider":
+                cfg["base_url"] = ""
+
+    return cfg
+
+
+def _task_runtime_label(creds: dict) -> Optional[str]:
+    model = str((creds or {}).get("model") or "").strip()
+    provider = str((creds or {}).get("provider") or "").strip()
+    if model and provider:
+        return f"{provider}/{model}"
+    return model or provider or None
+
+
+def _batch_runtime_label(creds_by_task: list[dict]) -> Optional[str]:
+    labels = {label for c in creds_by_task if (label := _task_runtime_label(c))}
+    if not labels:
+        return None
+    if len(labels) == 1:
+        return next(iter(labels))
+    return "mixed"
+
+
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
@@ -2898,7 +2991,11 @@ def _build_top_level_description() -> str:
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
         f"user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
-        "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
+        "- Subagent model/provider can be selected per call with top-level "
+        "model/provider, or per batch task with task.model/task.provider. "
+        "Omit both to use delegation.provider / delegation.model from config, "
+        "falling back to the parent runtime. Pass model='self' or provider='self' "
+        "to explicitly bypass delegation config and inherit the parent.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
         "- Results are always returned as an array, one entry per task."
     )
@@ -3056,6 +3153,14 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": "Per-task model override. Omit to inherit top-level/config routing; use 'self', 'inherit', or 'parent' to bypass delegation config and clone the parent runtime.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Per-task provider override. Omit to inherit top-level/config routing; use 'self', 'inherit', or 'parent' to bypass delegation config and clone the parent runtime.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -3068,6 +3173,22 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Override model for child agents. Omit to use delegation.model/provider "
+                    "from config, falling back to the parent runtime. Use 'self', "
+                    "'inherit', or 'parent' to explicitly bypass delegation config."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Override provider for child agents. Omit to use delegation.model/provider "
+                    "from config, falling back to the parent runtime. Use 'self', "
+                    "'inherit', or 'parent' to explicitly bypass delegation config."
+                ),
             },
             "background": {
                 "type": "boolean",
@@ -3142,6 +3263,8 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),

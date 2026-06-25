@@ -412,6 +412,13 @@ def test_run_agent_dispatch_forces_background():
         assert captured["background"] is True
 
         run_agent.AIAgent._dispatch_delegate_task(
+            agent,
+            {"goal": "x", "model": "z-ai/glm-5.2", "provider": "openrouter"},
+        )
+        assert captured["model"] == "z-ai/glm-5.2"
+        assert captured["provider"] == "openrouter"
+
+        run_agent.AIAgent._dispatch_delegate_task(
             agent, {"tasks": [{"goal": "a"}, {"goal": "b"}]}
         )
         assert captured["background"] is True

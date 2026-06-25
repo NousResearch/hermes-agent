@@ -28,14 +28,22 @@ test('desktop background child processes opt into hidden Windows consoles', () =
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
 
   requireHiddenChildOptions(source, "execFileSync(\n          'reg'")
-  requireHiddenChildOptions(source, 'execFileSync(pyExe')
-  requireHiddenChildOptions(source, 'spawn(resolveGitBinary()')
+  requireHiddenChildOptions(source, 'execFileSync(\n          pyExe')
+  requireHiddenChildOptions(source, 'spawn(\n      resolveGitBinary()')
   requireHiddenChildOptions(source, "execFileSync('taskkill'")
-  requireHiddenChildOptions(source, 'spawn(command, args')
+  requireHiddenChildOptions(source, 'child = spawn(\n        command,\n        args')
   requireHiddenChildOptions(source, "spawn('curl'")
-  requireHiddenChildOptions(source, 'spawn(backend.command, backend.args')
-  requireHiddenChildOptions(source, 'hermesProcess = spawn(backend.command, backend.args')
-  requireHiddenChildOptions(source, "spawn(py, ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary']")
+  requireHiddenChildOptions(source, 'const child = spawn(\n    backend.command')
+  requireHiddenChildOptions(source, 'hermesProcess = spawn(\n      backend.command')
+  requireHiddenChildOptions(source, "spawn(\n        py,\n        ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary']")
+})
+
+test('primary backend restart waits for teardown before respawn', () => {
+  const source = readElectronFile('main.cjs')
+
+  assert.match(source, /let primaryBackendTeardownPromise = Promise\.resolve\(\)/)
+  assert.match(source, /primaryBackendTeardownPromise = waitForBackendExit\(dying\)\.catch/)
+  assert.match(source, /await primaryBackendTeardownPromise\n\s+await advanceBootProgress\('backend\.resolve'/)
 })
 
 test('intentional or interactive desktop child processes stay documented', () => {

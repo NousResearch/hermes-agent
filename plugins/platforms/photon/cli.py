@@ -313,8 +313,49 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     sidecar_installed = (_SIDECAR_DIR / "node_modules").exists()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
+    print(f"  sidecar live        : {_runtime_sidecar_status()}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
     return 0
+
+
+def _runtime_sidecar_status() -> str:
+    """Best-effort live status for the gateway-managed sidecar.
+
+    The sidecar's authenticated /healthz token is generated inside the live
+    gateway process, so the standalone CLI cannot make a full health request.
+    A loopback listener owned by ``photon/sidecar/index.mjs`` still answers the
+    practical question users ask from ``hermes photon status``: is Photon
+    currently attached to the running gateway, or only configured on disk?
+    """
+    port = os.getenv("PHOTON_SIDECAR_PORT") or "8789"
+    try:
+        proc = subprocess.run(  # noqa: S603, S607
+            ["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"],
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown (could not inspect listener)"
+    if proc.returncode != 0 or not proc.stdout.strip():
+        return f"✗ no listener on 127.0.0.1:{port} (gateway Photon not live)"
+    listener_lines = proc.stdout.splitlines()[1:]
+    pids = [line.split()[1] for line in listener_lines if len(line.split()) > 1]
+    for pid in pids:
+        try:
+            ps = subprocess.run(  # noqa: S603, S607
+                ["ps", "-p", pid, "-o", "command="],
+                capture_output=True,
+                text=True,
+                timeout=3.0,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if "photon/sidecar/index.mjs" in ps.stdout:
+            return f"✓ listening on 127.0.0.1:{port} (pid {pid})"
+    return f"? port {port} is in use, but not by the Photon sidecar"
 
 
 def _refresh_status_numbers() -> None:

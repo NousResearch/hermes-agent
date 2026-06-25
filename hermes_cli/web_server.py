@@ -11751,6 +11751,159 @@ async def get_usage_analytics(days: int = 30, profile: Optional[str] = None):
         db.close()
 
 
+# ── Real-time message-level analytics (bit-packed token_count) ─────────────
+# Mirrors the gateway api_server endpoints on the dashboard's management
+# server so the Analytics page can render them. SELF-CONTAINED: decodes
+# messages.token_count with inline SQL bit ops (see hermes_token_codec) via
+# db._conn, then defers the math to agent.analytics — so it does not depend on
+# any SessionDB helper methods being present in this install.
+
+_ANALYTICS_WINDOWS = {"1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000}
+_ANALYTICS_TREND_BUCKETS = {"1h": 60, "24h": 3600, "7d": 86400, "30d": 86400}
+# codec tags + field masks (see hermes_token_codec)
+_AN_TMASK, _AN_V1, _AN_V2 = 15, 134217727, 268435455
+_AN_TAG_INPUT, _AN_TAG_OUTPUT, _AN_TAG_CACHE = 2, 0, 3
+
+
+def _an_dec(tag: int) -> str:
+    """SQL summing one bit-packed token category (alias m). SQLite >> is
+    arithmetic on negatives → always & mask after >>."""
+    return (
+        f"SUM(CASE WHEN m.token_count<0 AND ((m.token_count>>59)&{_AN_TMASK})={tag} "
+        f"THEN ((m.token_count>>32)&{_AN_V1}) ELSE 0 END)"
+        f"+SUM(CASE WHEN m.token_count<0 AND ((m.token_count>>28)&{_AN_TMASK})={tag} "
+        f"THEN (m.token_count&{_AN_V2}) ELSE 0 END)"
+    )
+
+
+def _an_timeseries(conn, start: float, end: float, bucket: int):
+    out_sql = (_an_dec(_AN_TAG_OUTPUT) +
+               "+SUM(CASE WHEN m.token_count>=0 AND m.role='assistant' THEN m.token_count ELSE 0 END)")
+    rows = conn.execute(
+        "SELECT CAST(m.timestamp/? AS INTEGER)*? AS bucket_start, "
+        "SUM(CASE WHEN m.role='assistant' THEN 1 ELSE 0 END) AS requests, "
+        f"COALESCE(({_an_dec(_AN_TAG_INPUT)}),0) AS input, "
+        f"COALESCE(({out_sql}),0) AS output, "
+        f"COALESCE(({_an_dec(_AN_TAG_CACHE)}),0) AS cache_read, "
+        "COUNT(*) AS messages "
+        "FROM messages m WHERE m.active=1 AND m.timestamp>=? AND m.timestamp<? "
+        "GROUP BY bucket_start ORDER BY bucket_start",
+        (bucket, bucket, start, end),
+    ).fetchall()
+    res = []
+    for r in rows:
+        res.append({
+            "bucket_start": int(r["bucket_start"]), "requests": int(r["requests"] or 0),
+            "input": int(r["input"] or 0), "output": int(r["output"] or 0),
+            "cache_read": int(r["cache_read"] or 0), "reasoning": 0,
+            "messages": int(r["messages"] or 0),
+        })
+    return res
+
+
+def _an_active_providers(conn, since: float):
+    rows = conn.execute(
+        "SELECT DISTINCT billing_provider FROM sessions "
+        "WHERE billing_provider IS NOT NULL AND billing_provider!='' "
+        "AND COALESCE(ended_at, started_at) >= ?", (since,)).fetchall()
+    return [r[0] for r in rows if r[0]]
+
+
+def _an_cost_groups(conn, since: float):
+    rows = conn.execute(
+        "SELECT model, billing_provider, billing_base_url, COUNT(*) AS sessions, "
+        "COALESCE(SUM(input_tokens),0) AS input_tokens, COALESCE(SUM(output_tokens),0) AS output_tokens, "
+        "COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens, COALESCE(SUM(cache_write_tokens),0) AS cache_write_tokens, "
+        "COALESCE(SUM(reasoning_tokens),0) AS reasoning_tokens, COALESCE(SUM(estimated_cost_usd),0) AS estimated_cost_usd "
+        "FROM sessions WHERE COALESCE(ended_at, started_at) >= ? "
+        "GROUP BY model, billing_provider, billing_base_url", (since,)).fetchall()
+    return [{
+        "model": r["model"], "billing_provider": r["billing_provider"], "billing_base_url": r["billing_base_url"],
+        "sessions": int(r["sessions"] or 0), "input_tokens": int(r["input_tokens"] or 0),
+        "output_tokens": int(r["output_tokens"] or 0), "cache_read_tokens": int(r["cache_read_tokens"] or 0),
+        "cache_write_tokens": int(r["cache_write_tokens"] or 0), "reasoning_tokens": int(r["reasoning_tokens"] or 0),
+        "estimated_cost_usd": float(r["estimated_cost_usd"] or 0.0),
+    } for r in rows]
+
+
+@app.get("/api/analytics/provider-quotas")
+async def get_provider_quotas(provider: Optional[str] = None):
+    from agent.provider_quotas import get_provider_quota, list_provider_quotas
+
+    if provider:
+        q = get_provider_quota(provider)
+        data = [q] if q else []
+    else:
+        data = list_provider_quotas()
+    return {"object": "list", "data": data}
+
+
+@app.get("/api/analytics/usage-rates")
+async def get_usage_rates(window: str = "24h", profile: Optional[str] = None):
+    from fastapi import HTTPException
+    from agent.analytics import compute_usage_rates
+    from agent.provider_quotas import get_provider_quota
+
+    seconds = _ANALYTICS_WINDOWS.get(window)
+    if seconds is None:
+        raise HTTPException(status_code=400, detail="window must be 1h|24h|7d|30d")
+    db = _open_session_db_for_profile(profile)
+    try:
+        now = time.time()
+        minute_buckets = _an_timeseries(db._conn, now - seconds, now, 60)
+        daily = _an_timeseries(db._conn, now - 86400, now, 86400)
+        daily_totals = daily[-1] if daily else {}
+        quotas = [q for q in (get_provider_quota(p) for p in _an_active_providers(db._conn, now - seconds)) if q]
+        rates = compute_usage_rates(minute_buckets, daily_totals, quotas)
+        return {"window": window, "generated_at": now, **rates}
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/token-trends")
+async def get_token_trends(window: str = "24h", bucket: Optional[int] = None, profile: Optional[str] = None):
+    from fastapi import HTTPException
+    from agent.analytics import compute_token_trends
+
+    seconds = _ANALYTICS_WINDOWS.get(window)
+    if seconds is None:
+        raise HTTPException(status_code=400, detail="window must be 1h|24h|7d|30d")
+    bucket_seconds = bucket if bucket and bucket >= 60 else _ANALYTICS_TREND_BUCKETS[window]
+    db = _open_session_db_for_profile(profile)
+    try:
+        now = time.time()
+        buckets = _an_timeseries(db._conn, now - seconds, now, bucket_seconds)
+        trends = compute_token_trends(buckets)
+        return {"window": window, "bucket_seconds": bucket_seconds, "generated_at": now, **trends}
+    finally:
+        db.close()
+
+
+@app.get("/api/analytics/cost-estimate")
+async def get_cost_estimate(window: str = "24h", profile: Optional[str] = None):
+    from fastapi import HTTPException
+    from agent.analytics import compute_cost_estimate
+    from agent.usage_pricing import get_pricing_entry
+
+    seconds = _ANALYTICS_WINDOWS.get(window)
+    if seconds is None:
+        raise HTTPException(status_code=400, detail="window must be 1h|24h|7d|30d")
+    db = _open_session_db_for_profile(profile)
+    try:
+        now = time.time()
+        groups = _an_cost_groups(db._conn, now - seconds)
+
+        def _lookup(model, prov, base_url):
+            if not model:
+                return None
+            return get_pricing_entry(model, provider=prov, base_url=base_url)
+
+        estimate = compute_cost_estimate(groups, seconds, _lookup)
+        return {"window": window, "generated_at": now, **estimate}
+    finally:
+        db.close()
+
+
 @app.get("/api/analytics/models")
 async def get_models_analytics(days: int = 30, profile: Optional[str] = None):
     """Rich per-model analytics for the Models dashboard page.

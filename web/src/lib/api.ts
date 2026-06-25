@@ -471,6 +471,20 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),
+  getUsageRates: (window: AnalyticsWindow, profile = getManagementProfile()) =>
+    fetchJSON<UsageRatesResponse>(
+      appendProfileParam(`/api/analytics/usage-rates?window=${window}`, profile),
+    ),
+  getTokenTrends: (window: AnalyticsWindow, profile = getManagementProfile()) =>
+    fetchJSON<TokenTrendsResponse>(
+      appendProfileParam(`/api/analytics/token-trends?window=${window}`, profile),
+    ),
+  getCostEstimate: (window: AnalyticsWindow, profile = getManagementProfile()) =>
+    fetchJSON<CostEstimateResponse>(
+      appendProfileParam(`/api/analytics/cost-estimate?window=${window}`, profile),
+    ),
+  getProviderQuotas: () =>
+    fetchJSON<ProviderQuotasResponse>(`/api/analytics/provider-quotas`),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
@@ -1846,6 +1860,98 @@ export interface AnalyticsResponse {
     summary: AnalyticsSkillsSummary;
     top_skills: AnalyticsSkillEntry[];
   };
+}
+
+// ── Real-time message-level analytics ──────────────────────────────────────
+export type AnalyticsWindow = "1h" | "24h" | "7d" | "30d";
+
+export interface ProviderQuota {
+  provider: string;
+  display?: string;
+  tier?: string | null;
+  rpm?: number | null;
+  rpd?: number | null;
+  tpm_input?: number | null;
+  tpm_output?: number | null;
+  tpd?: number | null;
+  notes?: string;
+  source_url?: string;
+  as_of?: string;
+}
+
+export interface ProviderQuotasResponse {
+  object: string;
+  data: ProviderQuota[];
+}
+
+export interface UsageRatesProviderView {
+  provider: string;
+  display?: string;
+  tier?: string | null;
+  limits: Record<string, number | null>;
+  pct_of_limit: Record<string, number | null>;
+  source_url?: string;
+  as_of?: string;
+}
+
+export interface UsageRatesResponse {
+  window: AnalyticsWindow;
+  generated_at: number;
+  rpm: { current: number; peak: number };
+  tpm: { current: number; peak: number; peak_input: number; peak_output: number };
+  rpd: number;
+  tpd: number;
+  window_totals: { requests: number; input: number; output: number };
+  providers: UsageRatesProviderView[];
+}
+
+export interface TokenTrendBucket {
+  bucket_start: number;
+  requests: number;
+  input: number;
+  output: number;
+  cache_read: number;
+  reasoning: number;
+  cache_hit_rate: number | null;
+  avg_input_per_request: number;
+  avg_output_per_request: number;
+}
+
+export interface TokenTrendsResponse {
+  window: AnalyticsWindow;
+  bucket_seconds: number;
+  generated_at: number;
+  series: TokenTrendBucket[];
+  totals: { requests: number; input: number; output: number; cache_read: number; reasoning: number };
+  averages_per_request: {
+    input: number;
+    output: number;
+    reasoning: number;
+    cache_read: number;
+    input_distribution: Record<string, number>;
+    output_distribution: Record<string, number>;
+  };
+  cache_hit_rate: number | null;
+}
+
+export interface CostEstimateModel {
+  model: string | null;
+  provider: string | null;
+  sessions: number;
+  tokens: Record<string, number>;
+  cost_breakdown: Record<string, number | null>;
+  cost_usd: number;
+  cost_source: string;
+}
+
+export interface CostEstimateResponse {
+  window: AnalyticsWindow;
+  generated_at: number;
+  total_cost_usd: number;
+  cost_by_tier: { input: number; output: number; cache: number };
+  projection: { daily_usd: number; monthly_usd: number };
+  has_unpriced_models: boolean;
+  models: CostEstimateModel[];
 }
 
 export interface ActiveProfileInfo {

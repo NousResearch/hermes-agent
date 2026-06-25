@@ -13,6 +13,7 @@ import datetime as _dt
 import hashlib
 import hmac
 import mimetypes
+import json
 import os
 import subprocess
 from dataclasses import dataclass
@@ -55,6 +56,7 @@ class ExternalMediaConfig:
     secret_access_key: str = ""
     api_token: str = ""
     wrangler: bool = False
+    credential_file: str = ""
 
     @classmethod
     def disabled(cls) -> "ExternalMediaConfig":
@@ -86,6 +88,32 @@ def _as_int(value: Any, default: int = 0) -> int:
 
 def _env(name: str) -> str:
     return os.getenv(name, "").strip()
+
+
+def _read_r2_credentials(path_value: Any) -> dict[str, Any]:
+    """Read optional Cloudflare R2 credentials without requiring secrets in config.yaml."""
+    candidates: list[Path] = []
+    if path_value:
+        candidates.append(Path(str(path_value)).expanduser())
+    candidates.extend([
+        Path.home() / ".hermes/secrets/cloudflare/r2.json",
+        Path.home() / ".config/cloudflare/r2.json",
+    ])
+    for path in candidates:
+        try:
+            if path.is_file():
+                data = json.loads(path.read_text())
+                return data if isinstance(data, dict) else {}
+        except Exception:
+            continue
+    return {}
+
+
+def _first_value(*values: Any) -> str:
+    for value in values:
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return ""
 
 
 def _merge_dicts(*items: Any) -> dict[str, Any]:
@@ -131,7 +159,19 @@ def external_media_config_for(adapter: Any, media_kind: str) -> ExternalMediaCon
         threshold_mb = raw.get("size_threshold_mb", 0)
         threshold = max(0, _as_int(threshold_mb, 0)) * 1024 * 1024
 
-    # Secrets may come from env so config.yaml can stay non-secret.
+    credential_file = str(raw.get("credential_file") or raw.get("credentials_file") or "").strip()
+    r2_creds = _read_r2_credentials(credential_file) if str(raw.get("provider") or "r2").strip().lower() == "r2" else {}
+    public_domain = _first_value(
+        raw.get("public_base_url"),
+        _env("CLOUDFLARE_R2_PUBLIC_BASE_URL"),
+        _env("R2_PUBLIC_BASE_URL"),
+        r2_creds.get("customDomain"),
+        r2_creds.get("publicDomain"),
+    )
+    if public_domain and not public_domain.startswith(("http://", "https://")):
+        public_domain = f"https://{public_domain}"
+
+    # Secrets may come from env or a private credential file so config.yaml can stay non-secret.
     return ExternalMediaConfig(
         enabled=_as_bool(raw.get("enabled"), False),
         provider=str(raw.get("provider") or "r2").strip().lower(),
@@ -143,13 +183,14 @@ def external_media_config_for(adapter: Any, media_kind: str) -> ExternalMediaCon
         size_threshold_bytes=threshold,
         remote_prefix=str(raw.get("remote_prefix") or "hermes/media/%Y/%m/%d/"),
         verify=_as_bool(raw.get("verify"), True),
-        public_base_url=str(raw.get("public_base_url") or _env("CLOUDFLARE_R2_PUBLIC_BASE_URL") or _env("R2_PUBLIC_BASE_URL")),
-        bucket=str(raw.get("bucket") or _env("CLOUDFLARE_R2_BUCKET") or _env("R2_BUCKET")),
-        account_id=str(raw.get("account_id") or _env("CLOUDFLARE_ACCOUNT_ID")),
-        access_key_id=str(raw.get("access_key_id") or _env("CLOUDFLARE_R2_ACCESS_KEY_ID") or _env("R2_ACCESS_KEY_ID")),
-        secret_access_key=str(raw.get("secret_access_key") or _env("CLOUDFLARE_R2_SECRET_ACCESS_KEY") or _env("R2_SECRET_ACCESS_KEY")),
-        api_token=str(raw.get("api_token") or _env("CLOUDFLARE_API_TOKEN")),
+        public_base_url=public_domain,
+        bucket=_first_value(raw.get("bucket"), _env("CLOUDFLARE_R2_BUCKET"), _env("R2_BUCKET"), r2_creds.get("bucket")),
+        account_id=_first_value(raw.get("account_id"), _env("CLOUDFLARE_ACCOUNT_ID"), r2_creds.get("accountId")),
+        access_key_id=_first_value(raw.get("access_key_id"), _env("CLOUDFLARE_R2_ACCESS_KEY_ID"), _env("R2_ACCESS_KEY_ID"), r2_creds.get("accessKeyId")),
+        secret_access_key=_first_value(raw.get("secret_access_key"), _env("CLOUDFLARE_R2_SECRET_ACCESS_KEY"), _env("R2_SECRET_ACCESS_KEY"), r2_creds.get("secretAccessKey")),
+        api_token=_first_value(raw.get("api_token"), _env("CLOUDFLARE_API_TOKEN"), r2_creds.get("apiToken")),
         wrangler=_as_bool(raw.get("wrangler"), False),
+        credential_file=credential_file,
     )
 
 
@@ -179,6 +220,12 @@ def _remote_key(cfg: ExternalMediaConfig, path: Path) -> str:
 def _public_url(cfg: ExternalMediaConfig, key: str) -> str:
     base = cfg.public_base_url.rstrip("/")
     return f"{base}/{quote(key, safe='/')}"
+
+
+def _urlopen_no_proxy(req: urllib.request.Request, timeout: int):
+    """Open storage URLs directly; OS proxy settings can break R2 custom domains."""
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return opener.open(req, timeout=timeout)
 
 
 def _sign(key: bytes, msg: str) -> bytes:
@@ -238,7 +285,7 @@ def _upload_r2_sigv4(cfg: ExternalMediaConfig, local_path: Path, key: str) -> st
     req.add_header("X-Amz-Date", amz_date)
     req.add_header("X-Amz-Content-Sha256", hashlib.sha256(payload).hexdigest())
     req.add_header("Authorization", _sigv4_authorization(cfg, "PUT", key, payload, content_type, amz_date, date_stamp))
-    with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 - user-configured storage endpoint
+    with _urlopen_no_proxy(req, timeout=60) as resp:  # noqa: S310 - user-configured storage endpoint
         if resp.status not in {200, 201, 204}:
             raise RuntimeError(f"R2 upload failed with HTTP {resp.status}")
     return _public_url(cfg, key)
@@ -268,14 +315,14 @@ def _upload_r2_wrangler(cfg: ExternalMediaConfig, local_path: Path, key: str) ->
 def _verify_public_url(url: str) -> None:
     req = urllib.request.Request(url, method="HEAD")
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310 - URL was just produced by configured storage
+        with _urlopen_no_proxy(req, timeout=20) as resp:  # noqa: S310 - URL was just produced by configured storage
             if resp.status < 200 or resp.status >= 400:
                 raise RuntimeError(f"published media URL returned HTTP {resp.status}")
     except Exception:
         # Some object-store custom domains reject HEAD but serve GET.
         req = urllib.request.Request(url, method="GET")
         req.add_header("Range", "bytes=0-0")
-        with urllib.request.urlopen(req, timeout=20) as resp:  # noqa: S310
+        with _urlopen_no_proxy(req, timeout=20) as resp:  # noqa: S310
             if resp.status < 200 or resp.status >= 400:
                 raise RuntimeError(f"published media URL returned HTTP {resp.status}")
 

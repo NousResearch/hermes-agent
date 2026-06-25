@@ -111,6 +111,12 @@ media_delivery:
     account_id: ${CLOUDFLARE_ACCOUNT_ID}
     access_key_id: ${CLOUDFLARE_R2_ACCESS_KEY_ID}
     secret_access_key: ${CLOUDFLARE_R2_SECRET_ACCESS_KEY}
+
+    # Or keep all R2 secrets in a private local JSON file. Supported keys:
+    # bucket, accountId, apiToken, publicDomain/customDomain,
+    # accessKeyId, secretAccessKey.
+    credential_file: ~/.hermes/secrets/cloudflare/r2.json
+    wrangler: false                  # true = use wrangler + apiToken instead of SigV4 keys
 ```
 
 Modes:

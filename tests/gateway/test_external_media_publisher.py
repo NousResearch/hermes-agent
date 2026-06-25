@@ -81,6 +81,40 @@ def test_external_media_config_merges_platform_override():
     assert cfg.public_base_url == "https://cdn.example.com"
 
 
+
+
+def test_external_media_config_reads_private_r2_credential_file(tmp_path):
+    cred = tmp_path / "r2.json"
+    cred.write_text(
+        '{"bucket":"b","accountId":"acct","apiToken":"tok","customDomain":"media.example.com"}'
+    )
+    adapter = DiscordAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={
+                "media_delivery": {
+                    "external_upload": {
+                        "enabled": True,
+                        "provider": "r2",
+                        "wrangler": True,
+                        "credential_file": str(cred),
+                    }
+                }
+            },
+        )
+    )
+
+    cfg = external_media_config_for(adapter, "images")
+
+    assert cfg.enabled is True
+    assert cfg.bucket == "b"
+    assert cfg.account_id == "acct"
+    assert cfg.api_token == "tok"
+    assert cfg.public_base_url == "https://media.example.com"
+    assert cfg.wrangler is True
+
+
 def test_format_published_media_message_multiple_items():
     msg = format_published_media_message(
         [

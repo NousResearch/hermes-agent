@@ -1,0 +1,4 @@
+interface:
+  display_name: "Company Second Brain Start"
+  short_description: "Start querying Company Second Brain quickly."
+  default_prompt: "Use Company Second Brain to answer from company knowledge."

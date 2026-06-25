@@ -349,10 +349,11 @@ async def install_page() -> str:
     <header>
       <div>
         <h1>Company Second Brain</h1>
-        <p>Cài skill cho agent hoặc IDE, nhập token nhân sự, rồi query tài liệu public của công ty. C-Level chỉ mở cho admin.</p>
+        <p>Cài CLI và 2 skill cho agent: starter skill để session mới biết cách query ngay, main skill cho upload/source/admin. C-Level chỉ mở cho admin.</p>
       </div>
       <div class="status" aria-label="Compatibility">
         <span class="pill">Hermes skill</span>
+        <span class="pill">Codex skill</span>
         <span class="pill">Codex CLI</span>
         <span class="pill">IDE/agent API</span>
       </div>
@@ -393,7 +394,7 @@ Không yêu cầu admin key, không tự cấu hình source, không upload tài 
         <ol>
           <li>Admin tạo token nhân sự và gửi token cho user.</li>
           <li>Nhân sự chạy lệnh dưới đây trong terminal của agent hoặc IDE.</li>
-          <li>Installer sẽ hỏi token, xác minh với gateway, rồi lưu cấu hình local.</li>
+        <li>Installer sẽ hỏi token, cài <code>company-second-brain-start</code> + <code>company-second-brain</code>, xác minh gateway, rồi lưu cấu hình local.</li>
         </ol>
         <pre><code>{install_command}</code></pre>
         <pre><code>second-brain me
@@ -486,13 +487,13 @@ async def admin_page() -> str:
   <main>
     <header>
       <h1>Admin Setup</h1>
-      <p>Vận hành Company Second Brain: tạo token, upload tài liệu, cấu hình source Notion/Drive, kiểm tra lịch scan và handoff cho agent khác.</p>
+      <p>Vận hành Company Second Brain: tạo token, cài starter skill cho session mới, upload tài liệu, cấu hình source Notion/Drive, kiểm tra analytics và handoff cho agent khác.</p>
     </header>
 
     <section>
       <h2>1. Cài CLI/skill cho admin</h2>
       <ol>
-        <li>Chạy installer như user bình thường.</li>
+        <li>Chạy installer như user bình thường; installer cài cả starter skill cho Hermes/Codex và command <code>second-brain</code>.</li>
         <li>Khi installer hỏi token, dùng token admin bearer nếu muốn query C-Level; các lệnh quản trị dùng admin key.</li>
       </ol>
       <pre><code>{install_command}</code></pre>

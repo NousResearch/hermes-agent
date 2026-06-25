@@ -33,6 +33,10 @@ The CLI wrapper inside this skill is:
 ~/.hermes/skills/productivity/company-second-brain/scripts/second-brain
 ```
 
+For fresh sessions that only need quick query commands, use
+`company-second-brain-start` first. Use this full skill for upload, sources,
+token creation, analytics, and admin workflows.
+
 ## When To Use
 
 Use this skill when the user asks to:

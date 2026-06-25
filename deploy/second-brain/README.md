@@ -120,8 +120,13 @@ curl -fsSL https://second-brain.your-company.com/install.sh \
 bash install-company-second-brain.sh
 ```
 
-The installer asks for the bearer token, installs the skill/CLI, verifies
+The installer asks for the bearer token, installs the CLI plus two skills, verifies
 `/api/me`, and writes local config to `~/.second-brain/config.json`.
+
+Installed skills:
+
+- `company-second-brain-start`: short session bootstrap for fresh agents
+- `company-second-brain`: full operations guide for query, upload, sources, admin, analytics
 
 User verification:
 

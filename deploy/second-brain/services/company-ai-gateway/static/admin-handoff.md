@@ -104,8 +104,13 @@ curl -fsSL __PUBLIC_BASE_URL__/install.sh -o install-company-second-brain.sh
 bash install-company-second-brain.sh
 ```
 
-The installer asks for the bearer token, installs the skill/CLI, verifies
-identity, and stores config at `~/.second-brain/config.json`.
+The installer asks for the bearer token, installs the CLI plus two skills,
+verifies identity, and stores config at `~/.second-brain/config.json`.
+
+Installed skills:
+
+- `company-second-brain-start`: short session bootstrap for fresh agents
+- `company-second-brain`: full operations guide for query, upload, sources, admin, analytics
 
 Verify access:
 

@@ -6,7 +6,7 @@ description: "Customize the Hermes CLI with built-in and user-defined skins"
 
 # Skins & Themes
 
-Skins control the **visual presentation** of the Hermes CLI: banner colors, spinner faces and verbs, response-box labels, branding text, and the tool activity prefix.
+Skins control the **visual presentation** of the Hermes CLI and TUI: banner colors, spinner faces and verbs, response-box labels, branding text, the tool activity prefix, and — in the TUI — inline-diff colors.
 
 Conversational style and visual style are separate concepts:
 
@@ -73,6 +73,23 @@ Controls all color values throughout the CLI. Values are hex color strings.
 | `completion_menu_meta_bg` | Background color for the completion meta column | `#1a1a2e` |
 | `completion_menu_meta_current_bg` | Background color for the active completion meta column | `#333355` |
 
+### Diff colors (TUI)
+
+These keys let a skin recolor the TUI's inline-diff rendering. They are
+**optional** — when a key is unset the TUI uses its adaptive light/dark default,
+so the bundled look is unchanged unless a skin opts in.
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `diff_added` | Background of added (`+`) diff lines | adaptive green |
+| `diff_removed` | Background of removed (`-`) diff lines | adaptive red |
+| `diff_added_text` | Foreground of added (`+`) diff lines | adaptive green |
+| `diff_removed_text` | Foreground of removed (`-`) diff lines | adaptive red |
+| `completion_current_text` | Foreground of the **selected** completion / `/command` row. Unset = the row keeps its normal text color and only the background changes. | _unset_ |
+
+Both inline tool diffs (edits, patches) and assistant-authored ` ```diff ` blocks
+pick up the `diff_*` colors automatically.
+
 ### Spinner (`spinner:`)
 
 Controls the animated spinner shown while waiting for API responses.
@@ -98,6 +115,9 @@ Text strings used throughout the CLI interface.
 | `response_label` | Label on the response box header | ` ⚕ Hermes ` |
 | `prompt_symbol` | Symbol before the user input prompt (bare token, renderers add a trailing space) | `❯` |
 | `help_header` | Header text for the `/help` command output | `(^_^)? Available Commands` |
+| `icon` | Glyph shown before the agent name in the TUI banner | `⚕` |
+| `tagline` | Banner tagline shown under the wordmark. Override per skin; `""` omits the line. | `Messenger of the Digital Gods` |
+| `vendor_label` | Credit shown after the model name and as the leading half of the banner tagline. Override per skin; `""` omits it. | `Nous Research` |
 
 ### Other top-level keys
 
@@ -210,6 +230,35 @@ branding:
   response_label: " ⚡ Cyber "
 
 tool_prefix: "▏"
+```
+
+### Banner branding fields
+
+`agent_name`, `icon`, `vendor_label`, and `tagline` are overridable per skin
+like any other branding field. Their defaults are:
+
+```yaml
+branding:
+  agent_name: "Hermes Agent"
+  icon: "⚕"
+  vendor_label: "Nous Research"
+  tagline: "Messenger of the Digital Gods"
+```
+
+Set any of these in your skin to customize the banner; unset fields keep these
+defaults.
+
+### Theme inline diffs
+
+Recolor the TUI's inline diffs (file edits, patches, and assistant ` ```diff `
+blocks) to match your palette. Unset keys keep the adaptive light/dark defaults:
+
+```yaml
+colors:
+  diff_added: "#10261a"        # added-line background
+  diff_removed: "#2a1416"      # removed-line background
+  diff_added_text: "#7ee787"   # added-line text
+  diff_removed_text: "#ff7b72" # removed-line text
 ```
 
 ## Hermes Mod — Visual Skin Editor

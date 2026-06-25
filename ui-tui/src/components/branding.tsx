@@ -44,11 +44,22 @@ export function ArtLines({ lines }: { lines: [string, string][] }) {
 // Terminals can't scale glyphs, so "responsive" means picking a layout that
 // fits the available columns. Thresholds are picked so each tier reads
 // comfortably without forcing wrap or truncation drift on box-drawing edges.
-const TAG_FULL = 'Nous Research · Messenger of the Digital Gods'
-const TAG_MID = 'Messenger of the Digital Gods'
-const TAG_TINY = 'Nous Research'
 const HIDE_BELOW = 34
 const COMPACT_FROM = 58
+
+// Banner tagline tiers, composed from the skin's brand fields (vendor credit +
+// tagline). Each tier degrades gracefully when one half is empty, and the call
+// sites render nothing when a tier is empty.
+function taglines(t: Theme): { full: string; mid: string; tiny: string } {
+  const vendor = t.brand.vendor.trim()
+  const tag = t.brand.tagline.trim()
+
+  return {
+    full: vendor && tag ? `${vendor} · ${tag}` : vendor || tag,
+    mid: tag || vendor,
+    tiny: vendor || tag
+  }
+}
 
 const clip = (s: string, w: number) =>
   w <= 0 ? '' : s.length > w ? `${s.slice(0, Math.max(0, w - 1))}…` : s
@@ -76,7 +87,7 @@ function CompactBanner({ cols, t }: { cols: number; t: Theme }) {
   return (
     <Box flexDirection="column" height={3} marginBottom={1} opaque width={w}>
       <Text bold color={t.color.primary}>{ruleIn(t.brand.name, w)}</Text>
-      <Text color={t.color.muted}>{centerIn(TAG_FULL, w)}</Text>
+      <Text color={t.color.muted}>{centerIn(taglines(t).full, w)}</Text>
       <Text color={t.color.primary}>{'─'.repeat(w)}</Text>
     </Box>
   )
@@ -90,6 +101,10 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
     return null
   }
 
+  const { full, mid, tiny } = taglines(t)
+  const icon = t.brand.icon.trim()
+  const iconPfx = icon ? `${icon} ` : ''
+
   const logoLines = logo(t.color, t.bannerLogo || undefined)
   const logoW = t.bannerLogo ? artWidth(logoLines) : LOGO_WIDTH
 
@@ -97,9 +112,11 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
     return (
       <Box flexDirection="column" marginBottom={1}>
         <ArtLines lines={logoLines} />
-        <Text color={t.color.muted} wrap="truncate-end">
-          {t.brand.icon} {TAG_FULL}
-        </Text>
+        {full ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {iconPfx}{full}
+          </Text>
+        ) : null}
       </Box>
     )
   }
@@ -109,12 +126,12 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
   }
 
   const name = cols >= 52 ? t.brand.name : (t.brand.name.split(' ')[0] ?? t.brand.name)
-  const tag = cols >= 64 ? TAG_FULL : cols >= 46 ? TAG_MID : TAG_TINY
+  const tag = cols >= 64 ? full : cols >= 46 ? mid : tiny
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Text bold color={t.color.primary} wrap="truncate-end">{t.brand.icon} {name}</Text>
-      <Text color={t.color.muted} wrap="truncate-end">{t.brand.icon} {tag}</Text>
+      <Text bold color={t.color.primary} wrap="truncate-end">{iconPfx}{name}</Text>
+      {tag ? <Text color={t.color.muted} wrap="truncate-end">{iconPfx}{tag}</Text> : null}
     </Box>
   )
 }
@@ -298,7 +315,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
           <Text color={t.color.accent}>
             {info.model.split('/').pop()}
-            <Text color={t.color.muted}> · Nous Research</Text>
+            {t.brand.vendor.trim() ? <Text color={t.color.muted}> · {t.brand.vendor}</Text> : null}
           </Text>
 
           <Text color={t.color.muted} wrap="truncate-end">
@@ -329,7 +346,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
           <Box flexDirection="column" marginBottom={1}>
             <Text color={t.color.accent} wrap="truncate-end">
               {info.model.split('/').pop()}
-              <Text color={t.color.muted}> · Nous Research</Text>
+              {t.brand.vendor.trim() ? <Text color={t.color.muted}> · {t.brand.vendor}</Text> : null}
             </Text>
             <Text color={t.color.muted} wrap="truncate-end">
               {info.cwd || process.cwd()}

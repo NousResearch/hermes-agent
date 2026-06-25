@@ -654,7 +654,10 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     if len(model_short) > 28:
         model_short = model_short[:25] + "..."
     ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-    left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+    # Vendor credit is sourced from the skin's branding (overridable per skin).
+    vendor = _bskin.get_branding("vendor_label", "Nous Research") if _bskin else "Nous Research"
+    vendor_suffix = f" [dim {dim}]·[/] [dim {dim}]{vendor}[/]" if vendor else ""
+    left_lines.append(f"[{accent}]{model_short}[/]{ctx_str}{vendor_suffix}")
 
     if os.getenv("HERMES_YOLO_MODE"):
         left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")

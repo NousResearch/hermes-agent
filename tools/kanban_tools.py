@@ -158,7 +158,7 @@ def _enforce_worker_task_ownership(tid: str) -> Optional[str]:
         return tool_error(
             f"worker is scoped to task {env_tid}; refusing to mutate "
             f"{tid}. Use kanban_comment to hand off information to other "
-            f"tasks, or kanban_create to spawn follow-up work."
+            "tasks, or kanban_create to spawn follow-up work."
         )
     return None
 
@@ -507,7 +507,7 @@ def _handle_complete(args: dict, **kw) -> str:
             created_cards = [created_cards]
         if not isinstance(created_cards, (list, tuple)):
             return tool_error(
-                f"created_cards must be a list of task ids, got "
+                "created_cards must be a list of task ids, got "
                 f"{type(created_cards).__name__}"
             )
         # Normalise: strings only, stripped, non-empty.
@@ -520,7 +520,7 @@ def _handle_complete(args: dict, **kw) -> str:
             artifacts = [artifacts]
         if not isinstance(artifacts, (list, tuple)):
             return tool_error(
-                f"artifacts must be a list of file paths, got "
+                "artifacts must be a list of file paths, got "
                 f"{type(artifacts).__name__}"
             )
         artifacts = [
@@ -536,7 +536,7 @@ def _handle_complete(args: dict, **kw) -> str:
                 metadata = {}
             elif not isinstance(metadata, dict):
                 return tool_error(
-                    f"metadata must be an object/dict, got "
+                    "metadata must be an object/dict, got "
                     f"{type(metadata).__name__}"
                 )
             # Don't overwrite an existing metadata.artifacts the worker
@@ -585,13 +585,13 @@ def _handle_complete(args: dict, **kw) -> str:
                 # failure and either blocks or crashes the run instead
                 # of retrying. See #22923.
                 return tool_error(
-                    f"kanban_complete blocked: the following created_cards "
-                    f"do not exist or were not created by this worker: "
+                    "kanban_complete blocked: the following created_cards "
+                    "do not exist or were not created by this worker: "
                     f"{', '.join(hall_err.phantom)}. "
-                    f"Your task is still in-flight (no state change). "
-                    f"Retry kanban_complete with the same summary/metadata "
-                    f"and either drop these ids from created_cards, or pass "
-                    f"created_cards=[] to skip the card-claim check entirely."
+                    "Your task is still in-flight (no state change). "
+                    "Retry kanban_complete with the same summary/metadata "
+                    "and either drop these ids from created_cards, or pass "
+                    "created_cards=[] to skip the card-claim check entirely."
                 )
             if not ok:
                 return tool_error(
@@ -634,7 +634,7 @@ def _handle_block(args: dict, **kw) -> str:
             if not ok:
                 return tool_error(
                     f"could not block {tid} (unknown id or not in "
-                    f"running/ready)"
+                    "running/ready)"
                 )
             run = kb.latest_run(conn, tid)
             return _ok(task_id=tid, run_id=run.id if run else None)

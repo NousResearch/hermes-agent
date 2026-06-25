@@ -1040,10 +1040,10 @@ def build_environment_hints() -> str:
         if probe:
             hints.append(
                 f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
-                f"`write_file`, `patch`, and `search_files` tools all operate "
+                "`write_file`, `patch`, and `search_files` tools all operate "
                 f"inside this {backend} environment — NOT on the machine "
-                f"where Hermes itself is running. The host OS, home, and cwd "
-                f"of the Hermes process are irrelevant; only the following "
+                "where Hermes itself is running. The host OS, home, and cwd "
+                "of the Hermes process are irrelevant; only the following "
                 f"backend state matters:\n{probe}"
             )
         else:
@@ -1052,13 +1052,13 @@ def build_environment_hints() -> str:
             )
             hints.append(
                 f"Terminal backend: {backend}. Your `terminal`, `read_file`, "
-                f"`write_file`, `patch`, and `search_files` tools all operate "
+                "`write_file`, `patch`, and `search_files` tools all operate "
                 f"inside {description} — NOT on the machine where Hermes "
-                f"itself runs. The backend probe didn't respond at "
-                f"prompt-build time, so the sandbox's current user, $HOME, "
-                f"and working directory are unknown from here. If you need "
-                f"them, probe directly with a terminal call like "
-                f"`uname -a && whoami && pwd`."
+                "itself runs. The backend probe didn't respond at "
+                "prompt-build time, so the sandbox's current user, $HOME, "
+                "and working directory are unknown from here. If you need "
+                "them, probe directly with a terminal call like "
+                "`uname -a && whoami && pwd`."
             )
 
     # Hermes desktop GUI — any agent running under the desktop app should know
@@ -1709,8 +1709,8 @@ def _truncate_content(
     msg = (
         f"⚠️  Context file {filename} TRUNCATED: "
         f"{len(content)} chars exceeds limit of {max_chars} — "
-        f"trim the file, pin a larger context_file_max_chars, or use a "
-        f"larger-context model!"
+        "trim the file, pin a larger context_file_max_chars, or use a "
+        "larger-context model!"
     )
     logger.warning(msg)
     _record_truncation_warning(msg)
@@ -1721,7 +1721,7 @@ def _truncate_content(
     marker = (
         f"\n\n[...truncated {filename}: kept {head_chars}+{tail_chars} of "
         f"{len(content)} chars. The middle is omitted — if you need the full "
-        f"instructions, read the complete file with the read_file tool: "
+        "instructions, read the complete file with the read_file tool: "
         f"{target}]\n\n"
     )
     return head + marker + tail

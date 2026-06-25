@@ -79,10 +79,10 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
     from_pct = int(round(autoraise["from"] * 100))
     to_pct = int(round(autoraise["to"] * 100))
     return (
-        f"ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised "
+        "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised "
         f"to {to_pct}% (from {from_pct}%) to use more of the window before "
-        f"summarizing.\n"
-        f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
+        "summarizing.\n"
+        "  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
     )
 
 
@@ -875,7 +875,7 @@ def init_agent(
                         raise RuntimeError(
                             f"Provider '{_explicit}' is set in config.yaml but no API key "
                             f"was found. Set the {_env_hint} environment "
-                            f"variable, or switch to a different provider with `hermes model`."
+                            "variable, or switch to a different provider with `hermes model`."
                         )
                 if not getattr(agent, "_fallback_activated", False):
                     # No provider configured — reject with a clear message.
@@ -1399,8 +1399,8 @@ def init_agent(
                 )
                 print(
                     f"\n⚠ Invalid model.max_tokens in config.yaml: {_config_max_tokens!r}\n"
-                    f"  Must be a positive integer (e.g. 4096).\n"
-                    f"  Falling back to provider default.\n",
+                    "  Must be a positive integer (e.g. 4096).\n"
+                    "  Falling back to provider default.\n",
                     file=sys.stderr,
                 )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
@@ -1422,8 +1422,8 @@ def init_agent(
             )
             print(
                 f"\n⚠ Invalid model.context_length in config.yaml: {_config_context_length!r}\n"
-                f"  Must be a plain integer (e.g. 256000, not '256K').\n"
-                f"  Falling back to auto-detected context window.\n",
+                "  Must be a plain integer (e.g. 256000, not '256K').\n"
+                "  Falling back to auto-detected context window.\n",
                 file=sys.stderr,
             )
             _config_context_length = None
@@ -1486,8 +1486,8 @@ def init_agent(
                                     )
                                     print(
                                         f"\n⚠ Invalid context_length for model {agent.model!r} in custom_providers: {_cp_ctx!r}\n"
-                                        f"  Must be a positive integer (e.g. 256000, not '256K').\n"
-                                        f"  Falling back to auto-detected context window.\n",
+                                        "  Must be a positive integer (e.g. 256000, not '256K').\n"
+                                        "  Falling back to auto-detected context window.\n",
                                         file=sys.stderr,
                                     )
                     break
@@ -1608,9 +1608,9 @@ def init_agent(
         raise ValueError(
             f"Model {agent.model} has a context window of {_ctx:,} tokens, "
             f"which is below the minimum {MINIMUM_CONTEXT_LENGTH:,} required "
-            f"by Hermes Agent.  Choose a model with at least "
+            "by Hermes Agent.  Choose a model with at least "
             f"{MINIMUM_CONTEXT_LENGTH // 1000}K context, or set "
-            f"model.context_length in config.yaml to override."
+            "model.context_length in config.yaml to override."
         )
 
     # Inject context engine tool schemas (e.g. lcm_grep, lcm_describe, lcm_expand).

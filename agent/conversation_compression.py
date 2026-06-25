@@ -166,11 +166,11 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"Auxiliary compression model {aux_model} has a context "
                 f"window of {aux_context:,} tokens, which is below the "
                 f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Hermes "
-                f"Agent.  Choose a compression model with at least "
+                "Agent.  Choose a compression model with at least "
                 f"{MINIMUM_CONTEXT_LENGTH // 1000}K context (set "
-                f"auxiliary.compression.model in config.yaml), or set "
-                f"auxiliary.compression.context_length to override the "
-                f"detected value if it is wrong."
+                "auxiliary.compression.model in config.yaml), or set "
+                "auxiliary.compression.context_length to override the "
+                "detected value if it is wrong."
             )
 
         threshold = agent.context_compressor.threshold_tokens
@@ -227,15 +227,15 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"{aux_context:,} tokens, but the main model "
                 f"{_main_label}'s compression threshold was "
                 f"{old_threshold:,} tokens. "
-                f"Auto-lowered this session's threshold to "
+                "Auto-lowered this session's threshold to "
                 f"{new_threshold:,} tokens so compression can run.\n"
-                f"  To make this permanent, edit config.yaml — either:\n"
-                f"  1. Use a larger compression model:\n"
-                f"       auxiliary:\n"
-                f"         compression:\n"
+                "  To make this permanent, edit config.yaml — either:\n"
+                "  1. Use a larger compression model:\n"
+                "       auxiliary:\n"
+                "         compression:\n"
                 f"           model: <model-with-{old_threshold:,}+-context>\n"
-                f"  2. Lower the compression threshold:\n"
-                f"       compression:\n"
+                "  2. Lower the compression threshold:\n"
+                "       compression:\n"
                 f"         threshold: 0.{safe_pct:02d}"
             )
             agent._compression_warning = msg
@@ -729,7 +729,7 @@ def compress_context(
     if _cc >= 2:
         _cc_msg = (
             f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
-            f"accuracy may degrade. Consider /new to start fresh."
+            "accuracy may degrade. Consider /new to start fresh."
         )
         agent._compression_warning = _cc_msg
         agent._emit_status(_cc_msg)

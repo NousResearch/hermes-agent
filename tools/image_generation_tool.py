@@ -521,9 +521,9 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
             raise ValueError(
                 f"Nous Subscription gateway rejected model '{model}' "
                 f"(HTTP {status}). This model may not yet be enabled on "
-                f"the Nous Portal's FAL proxy. Either:\n"
-                f"  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
-                f"  • Pick a different model via `hermes tools` → Image Generation."
+                "the Nous Portal's FAL proxy. Either:\n"
+                "  • Set FAL_KEY in your environment to use FAL.ai directly, or\n"
+                "  • Pick a different model via `hermes tools` → Image Generation."
                 f"{gateway_message}"
             ) from exc
         raise
@@ -915,9 +915,9 @@ def image_generate_tool(
         if source_images and not edit_endpoint:
             raise ValueError(
                 f"Model '{meta.get('display', model_id)}' ({model_id}) is not "
-                f"capable of image-to-image / editing. Provide a text-only "
-                f"prompt (omit image_url), or switch to an edit-capable model "
-                f"via `hermes tools` → Image Generation."
+                "capable of image-to-image / editing. Provide a text-only "
+                "prompt (omit image_url), or switch to an edit-capable model "
+                "via `hermes tools` → Image Generation."
             )
 
         aspect_lc = (aspect_ratio or DEFAULT_ASPECT_RATIO).lower().strip()
@@ -1332,8 +1332,8 @@ def _dispatch_to_plugin_provider(
             "image": None,
             "error": (
                 f"image_gen.provider='{configured}' is set but no plugin "
-                f"registered that name. Run `hermes plugins list` to see "
-                f"available image gen backends."
+                "registered that name. Run `hermes plugins list` to see "
+                "available image gen backends."
             ),
             "error_type": "provider_not_registered",
         })
@@ -1368,10 +1368,10 @@ def _dispatch_to_plugin_provider(
                 "image": None,
                 "error": (
                     f"Provider '{getattr(provider, 'name', '?')}' does not "
-                    f"support image-to-image / editing (its generate() "
-                    f"signature is out of date with the image_generate schema). "
-                    f"Omit image_url for text-to-image, or pick a backend that "
-                    f"supports editing via `hermes tools` → Image Generation."
+                    "support image-to-image / editing (its generate() "
+                    "signature is out of date with the image_generate schema). "
+                    "Omit image_url for text-to-image, or pick a backend that "
+                    "supports editing via `hermes tools` → Image Generation."
                 ),
                 "error_type": "modality_unsupported",
             })

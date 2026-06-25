@@ -2331,6 +2331,38 @@ function Clear-ElectronBuildCache {
     return $removed
 }
 
+function Stop-DesktopProcessesLockingRelease {
+    param([string]$DesktopDir)
+
+    $releaseDir = Join-Path $DesktopDir 'release'
+    if (-not (Test-Path -LiteralPath $releaseDir)) { return }
+
+    $releasePrefix = [System.IO.Path]::GetFullPath($releaseDir).TrimEnd('\') + '\'
+    $myPid = $PID
+    $lockers = @()
+
+    try {
+        $lockers = @(Get-CimInstance Win32_Process -ErrorAction Stop |
+            Where-Object {
+                $_.ProcessId -ne $myPid -and
+                $_.ExecutablePath -and
+                $_.ExecutablePath.StartsWith($releasePrefix, [System.StringComparison]::OrdinalIgnoreCase)
+            })
+    } catch {
+        Write-Warn "Could not enumerate desktop release processes: $($_.Exception.Message)"
+    }
+
+    foreach ($proc in $lockers) {
+        Write-Info "  stopping PID $($proc.ProcessId) ($($proc.Name)) running from desktop release"
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($lockers.Count -gt 0) {
+        # Windows can keep image handles live briefly after Stop-Process returns.
+        Start-Sleep -Milliseconds 800
+    }
+}
+
 # Last-resort Electron mirror after GitHub download fails (#47266).
 $script:DesktopElectronFallbackMirror = "https://npmmirror.com/mirrors/electron/"
 
@@ -2544,12 +2576,14 @@ function Install-Desktop {
         $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
         $env:WIN_CSC_LINK = ""
         $env:WIN_CSC_KEY_PASSWORD = ""
+        Stop-DesktopProcessesLockingRelease -DesktopDir $desktopDir
         & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             $purged = @()
             $restored = $false
             if (-not (Test-ElectronDist -InstallDir $InstallDir)) {
+                Stop-DesktopProcessesLockingRelease -DesktopDir $desktopDir
                 $purged = @(Clear-ElectronBuildCache -DesktopDir $desktopDir)
                 $restored = Restore-ElectronDist -InstallDir $InstallDir
             }
@@ -2571,6 +2605,7 @@ function Install-Desktop {
             $prevMirror = $env:ELECTRON_MIRROR
             $env:ELECTRON_MIRROR = $mirror
             try {
+                Stop-DesktopProcessesLockingRelease -DesktopDir $desktopDir
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
                 $code = $LASTEXITCODE
             } finally {

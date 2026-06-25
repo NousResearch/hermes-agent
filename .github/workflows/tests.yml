@@ -70,7 +70,7 @@ jobs:
           rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until
@@ -194,7 +194,7 @@ jobs:
           rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
         with:
           # Persist uv's download/wheel cache (~/.cache/uv) across runs.
           # Keyed on the dependency manifests, so the cache is reused until

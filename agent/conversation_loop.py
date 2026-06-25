@@ -4465,27 +4465,28 @@ def run_conversation(
                     or interim_has_codex_message_items
                 ):
                     last_msg = messages[-1] if messages else None
-                    # Duplicate detection: two consecutive incomplete assistant
-                    # messages with identical content AND reasoning are collapsed.
-                    # For provider-state-only changes (encrypted reasoning
-                    # items or replayable message ids/phases/statuses differ
-                    # while visible content/reasoning are unchanged), compare
-                    # those opaque payloads too so we don't silently drop the
-                    # newer continuation state.
-                    last_codex_items = last_msg.get("codex_reasoning_items") if isinstance(last_msg, dict) else None
-                    interim_codex_items = interim_msg.get("codex_reasoning_items")
-                    last_codex_message_items = last_msg.get("codex_message_items") if isinstance(last_msg, dict) else None
-                    interim_codex_message_items = interim_msg.get("codex_message_items")
-                    duplicate_interim = (
+                    # Duplicate detection: compare only visible content
+                    # (content + reasoning).  Opaque provider state
+                    # (encrypted reasoning items, message item ids/phases)
+                    # drifts per continuation even when the visible output
+                    # is identical, so including it in the comparison defeats
+                    # dedup and causes message storms (#52711).
+                    visible_duplicate = (
                         isinstance(last_msg, dict)
                         and last_msg.get("role") == "assistant"
                         and last_msg.get("finish_reason") == "incomplete"
                         and (last_msg.get("content") or "") == (interim_msg.get("content") or "")
                         and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
-                        and last_codex_items == interim_codex_items
-                        and last_codex_message_items == interim_codex_message_items
                     )
-                    if not duplicate_interim:
+                    if visible_duplicate:
+                        # Update opaque state in-place so the latest
+                        # provider payload is preserved without emitting
+                        # a duplicate visible message.
+                        for _key in ("codex_reasoning_items", "codex_message_items"):
+                            _new_val = interim_msg.get(_key)
+                            if _new_val is not None:
+                                last_msg[_key] = _new_val
+                    else:
                         messages.append(interim_msg)
                         agent._emit_interim_assistant_message(interim_msg)
 

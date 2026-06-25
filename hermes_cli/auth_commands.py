@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import math
+import os
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 import uuid
 
@@ -776,5 +778,204 @@ def auth_command(args) -> None:
     if action == "spotify":
         auth_spotify_command(args)
         return
+    if action == "sync":
+        auth_sync_command(args)
+        return
     # No subcommand — launch interactive mode
     _interactive_auth()
+
+
+# ---------------------------------------------------------------------------
+# hermes auth sync — detect and fix credential drift across .env files
+# ---------------------------------------------------------------------------
+
+def _mask_key(value: str) -> str:
+    """Mask a secret for display: first 4 + … + last 4, or full if short."""
+    if not value:
+        return "(empty)"
+    if len(value) <= 12:
+        return value[:2] + "…" + value[-2:]
+    return value[:4] + "…" + value[-4:]
+
+
+def _collect_credential_env_vars() -> list[str]:
+    """Return the sorted list of env-var names that hold provider API keys.
+
+    Sources:
+    - ``PROVIDER_REGISTRY[*].api_key_env_vars`` for every api-key provider.
+    - Common tool credential vars not in the provider registry (FAL_KEY,
+      FIRECRAWL_API_KEY, GROQ_API_KEY, etc.).
+    """
+    env_vars: set[str] = set()
+    for cfg in PROVIDER_REGISTRY.values():
+        for var in cfg.api_key_env_vars:
+            if var:
+                env_vars.add(var)
+    # Well-known tool / auxiliary credential env vars
+    env_vars.update({
+        "OPENROUTER_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GLM_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "XAI_API_KEY",
+        "FIRECRAWL_API_KEY",
+        "FAL_KEY",
+        "GROQ_API_KEY",
+        "KIMI_API_KEY",
+        "MINIMAX_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "HF_TOKEN",
+        "COPILOT_GITHUB_TOKEN",
+    })
+    env_vars.discard("")
+    return sorted(env_vars)
+
+
+def _read_env_file(env_path) -> dict[str, str]:
+    """Parse a .env file into a dict (KEY=VALUE, stripping comments/quotes)."""
+    from agent.secret_scope import load_env_file
+    return load_env_file(env_path)
+
+
+def _discover_profile_envs() -> list[tuple[str, Path]]:
+    """Return (profile_name, env_path) for the default profile and all named profiles."""
+    from hermes_cli.profiles import _get_profiles_root, _get_default_hermes_home
+
+    result: list[tuple[str, Path]] = []
+    default_home = _get_default_hermes_home()
+    default_env = default_home / ".env"
+    if default_env.exists():
+        result.append(("default", default_env))
+
+    profiles_root = _get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            env_file = entry / ".env"
+            if env_file.exists():
+                result.append((entry.name, env_file))
+    return result
+
+
+def _upsert_env_key(env_path: Path, key: str, value: str) -> bool:
+    """Update *key* in *env_path* to *value*. Returns True if a change was made."""
+    import tempfile
+    import stat
+
+    lines: list[str] = []
+    if env_path.exists():
+        text = env_path.read_text(encoding="utf-8-sig", errors="replace")
+        lines = text.splitlines()
+    found = False
+    changed = False
+    for i, line in enumerate(lines):
+        stripped = line.lstrip()
+        if stripped.startswith("export "):
+            stripped = stripped[len("export "):]
+        if stripped.startswith(f"{key}="):
+            new_line = f"{key}={value}"
+            if lines[i].lstrip().startswith("export "):
+                new_line = f"export {new_line}"
+            if lines[i] != new_line:
+                lines[i] = new_line
+                changed = True
+            found = True
+            break
+    if not found:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(f"{key}={value}")
+        changed = True
+    if changed:
+        # Preserve permissions (Docker volumes, 0o600 on profile .env)
+        original_mode = None
+        if env_path.exists():
+            try:
+                original_mode = stat.S_IMODE(env_path.stat().st_mode)
+            except OSError:
+                pass
+        fd, tmp = tempfile.mkstemp(dir=str(env_path.parent), suffix=".env_tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+            os.replace(tmp, str(env_path))
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        if original_mode is not None:
+            try:
+                os.chmod(str(env_path), original_mode)
+            except OSError:
+                pass
+    return changed
+
+
+def auth_sync_command(args) -> None:
+    """Detect and optionally fix credential drift across .env files.
+
+    The main ``~/.hermes/.env`` is treated as the source of truth.  Profile
+    ``.env`` files are compared against it; mismatches are reported and,
+    with ``--fix``, updated to match.
+    """
+    import os as _os
+
+    fix = getattr(args, "fix", False)
+
+    profile_envs = _discover_profile_envs()
+    if not profile_envs:
+        print("No .env files found.")
+        return
+
+    default_env_path = profile_envs[0][1]
+    default_secrets = _read_env_file(default_env_path)
+    if not default_secrets:
+        print(f"Source of truth ({default_env_path}) is empty or missing.")
+        return
+
+    cred_vars = _collect_credential_env_vars()
+    # Only check vars that actually exist in the default .env
+    cred_vars = [v for v in cred_vars if v in default_secrets]
+    if not cred_vars:
+        print("No credential env vars found in the default .env.")
+        return
+
+    total_mismatches = 0
+    fixed_count = 0
+
+    for env_var in cred_vars:
+        source_val = default_secrets.get(env_var, "")
+        profile_mismatches: list[tuple[str, str, Path]] = []
+
+        for prof_name, prof_env_path in profile_envs[1:]:
+            prof_secrets = _read_env_file(prof_env_path)
+            prof_val = prof_secrets.get(env_var, "")
+            if prof_val != source_val:
+                profile_mismatches.append((prof_name, prof_val, prof_env_path))
+
+        if not profile_mismatches:
+            continue
+
+        total_mismatches += len(profile_mismatches)
+        print(f"\n  {env_var}:")
+        print(f"    {default_env_path.parent.name}/.env  ✅ {_mask_key(source_val)}")
+        for prof_name, prof_val, prof_env_path in profile_mismatches:
+            print(f"    {prof_name}/.env              ❌ {_mask_key(prof_val)} (mismatch!)")
+            if fix:
+                changed = _upsert_env_key(prof_env_path, env_var, source_val)
+                if changed:
+                    fixed_count += 1
+                    print(f"      → fixed ({prof_name}/.env updated)")
+
+    if total_mismatches == 0:
+        print("\n✅ All profile .env files are in sync with the main .env.")
+    else:
+        if fix:
+            print(f"\n{fixed_count} of {total_mismatches} mismatch(es) fixed.")
+        else:
+            print(f"\n{total_mismatches} mismatch(es) found. Run `hermes auth sync --fix` to update.")

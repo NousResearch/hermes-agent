@@ -106,4 +106,13 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
     auth_spotify.add_argument(
         "--timeout", type=float, help="Callback/token exchange timeout in seconds"
     )
+    auth_sync = auth_subparsers.add_parser(
+        "sync",
+        help="Detect and fix credential drift across .env files",
+    )
+    auth_sync.add_argument(
+        "--fix",
+        action="store_true",
+        help="Update stale profile .env files to match the main .env",
+    )
     auth_parser.set_defaults(func=cmd_auth)

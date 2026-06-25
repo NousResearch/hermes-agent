@@ -69,6 +69,17 @@ def test_conversation_format_attaches_tokens_without_scalar(db):
     assert convo[1]["tokens"]["reasoning"] == 120
 
 
+def test_export_session_decodes_tokens(db):
+    # Export is for analysis (no re-import reads token_count) — it must decode,
+    # never emit the raw negative packed sentinel.
+    _seed(db)
+    exported = db.export_session("s1")
+    msgs = exported["messages"]
+    assert all((m["token_count"] is None or m["token_count"] >= 0) for m in msgs)
+    assert msgs[0]["tokens"]["input"] == 8000
+    assert msgs[1]["tokens"]["output"] == 900
+
+
 def test_fork_style_roundtrip_preserves_packed_accounting(db):
     # Mirror the api_server fork path: get_messages(flatten_tokens=False)
     # then replace_messages must preserve packed token_count losslessly.

@@ -2402,6 +2402,7 @@ class AIAgent:
             return
 
         try:
+            from hermes_state import _attach_token_view
             cleaned = []
             for msg in messages:
                 if msg.get("role") == "assistant" and msg.get("content"):
@@ -2415,6 +2416,14 @@ class AIAgent:
                 if "content" in msg:
                     msg = dict(msg)
                     msg["content"] = self._redact_message_content(msg.get("content"))
+                # Flatten the bit-packed token_count for the external tooling
+                # that consumes this JSON snapshot: attach a decoded `tokens`
+                # bucket dict and neutralise the scalar so the file never
+                # carries the raw negative packed sentinel. Copy first so the
+                # live `messages` list (and the DB flush that follows in
+                # _persist_session) keeps its raw packed values.
+                msg = dict(msg)
+                _attach_token_view(msg)
                 cleaned.append(msg)
 
             # Guard: never overwrite a larger session log with fewer messages.

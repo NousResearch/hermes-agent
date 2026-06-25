@@ -4721,9 +4721,11 @@ class SessionDB:
         session = self.get_session(session_id)
         if not session:
             return None
-        # Backup must round-trip losslessly: keep the raw bit-packed
-        # token_count rather than the flattened display view.
-        messages = self.get_messages(session_id, flatten_tokens=False)
+        # Export is consumed for analysis/inspection (no automated re-import
+        # reads token_count back), so decode it: each message carries a
+        # readable `tokens` bucket dict and a legacy-safe scalar instead of
+        # the raw negative packed sentinel.
+        messages = self.get_messages(session_id, flatten_tokens=True)
         return {**session, "messages": messages}
 
     def export_all(self, source: str = None) -> List[Dict[str, Any]]:
@@ -4734,8 +4736,8 @@ class SessionDB:
         sessions = self.search_sessions(source=source, limit=100000)
         results = []
         for session in sessions:
-            # Lossless backup — keep raw packed token_count (see export_session).
-            messages = self.get_messages(session["id"], flatten_tokens=False)
+            # Decode token_count for analysis consumers (see export_session).
+            messages = self.get_messages(session["id"], flatten_tokens=True)
             results.append({**session, "messages": messages})
         return results
 

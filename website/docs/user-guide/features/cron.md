@@ -290,7 +290,16 @@ Cronjob Response: Morning feeds
 Note: The agent cannot see this message, and therefore cannot respond to it.
 ```
 
-To deliver the raw agent output without the wrapper, set `cron.wrap_response` to `false`:
+For a single job, set `no_header=True` when creating or updating it to deliver that job's output exactly as produced while leaving other cron jobs unchanged.
+
+```yaml
+deliver: origin
+no_header: true
+```
+
+When omitted or false, Hermes keeps the existing Cronjob Response wrapper. When true, Hermes delivers only the job output body.
+
+To deliver the raw agent output without the wrapper for all jobs, set `cron.wrap_response` to `false`:
 
 ```yaml
 # ~/.hermes/config.yaml

@@ -98,6 +98,28 @@ def test_update_job_roundtrips_no_agent_flag(hermes_env):
 # ---------------------------------------------------------------------------
 
 
+def test_cronjob_tool_create_and_update_no_header(hermes_env):
+    from tools.cronjob_tools import cronjob
+
+    created = json.loads(
+        cronjob(
+            action="create",
+            schedule="every 5m",
+            prompt="report",
+            deliver="local",
+            no_header=True,
+        )
+    )
+    assert created["success"] is True
+    assert created["job"]["no_header"] is True
+
+    updated = json.loads(
+        cronjob(action="update", job_id=created["job_id"], no_header=False)
+    )
+    assert updated["success"] is True
+    assert "no_header" not in updated["job"]
+
+
 def test_cronjob_tool_create_no_agent_without_script_errors(hermes_env):
     from tools.cronjob_tools import cronjob
 

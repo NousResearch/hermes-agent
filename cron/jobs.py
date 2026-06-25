@@ -242,6 +242,7 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         name = label_source[:50].strip() or "cron job"
     normalized["name"] = name
     normalized["schedule_display"] = _schedule_display_for_job(normalized)
+    normalized["no_header"] = normalized.get("no_header") is True
 
     state = _coerce_job_text(normalized.get("state")).strip()
     if not state:
@@ -789,6 +790,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    no_header: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -833,6 +835,8 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        no_header: When True, deliver successful cron output without the
+                automatic "Cronjob Response" wrapper. Defaults to False.
 
     Returns:
         The created job dict
@@ -868,6 +872,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_no_header = no_header is True
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -945,6 +950,7 @@ def create_job(
         "base_url": normalized_base_url,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
+        "no_header": normalized_no_header,
         "context_from": context_from,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),

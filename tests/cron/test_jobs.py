@@ -319,6 +319,28 @@ class TestJobCRUD:
         job = create_job(prompt="Test", schedule="30m")
         assert job["deliver"] == "local"
 
+    def test_create_defaults_no_header_false(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="30m")
+        assert job["no_header"] is False
+
+    def test_create_accepts_no_header_true(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="30m", no_header=True)
+        assert job["no_header"] is True
+        assert get_job(job["id"])["no_header"] is True
+
+    def test_legacy_record_missing_no_header_normalizes_false(self, tmp_cron_dir):
+        save_jobs([
+            {
+                "id": "abc123deadbe",
+                "name": "legacy",
+                "prompt": "Test",
+                "schedule": {"kind": "interval", "minutes": 60, "display": "every 60m"},
+                "enabled": True,
+            }
+        ])
+
+        assert list_jobs()[0]["no_header"] is False
+
 
 class TestUpdateJob:
     def test_update_name(self, tmp_cron_dir):
@@ -360,6 +382,14 @@ class TestUpdateJob:
         assert updated["enabled"] is False
         fetched = get_job(job["id"])
         assert fetched["enabled"] is False
+
+    def test_update_no_header(self, tmp_cron_dir):
+        job = create_job(prompt="Report", schedule="every 1h")
+
+        updated = update_job(job["id"], {"no_header": True})
+
+        assert updated["no_header"] is True
+        assert get_job(job["id"])["no_header"] is True
 
     def test_update_nonexistent_returns_none(self, tmp_cron_dir):
         result = update_job("nonexistent_id", {"name": "X"})

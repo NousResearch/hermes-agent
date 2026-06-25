@@ -1060,7 +1060,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     except Exception:
         pass
 
-    if wrap_response:
+    if wrap_response and job.get("no_header") is not True:
         task_name = job.get("name", job["id"])
         job_id = job.get("id", "")
         delivery_content = (

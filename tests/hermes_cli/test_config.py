@@ -1197,3 +1197,58 @@ class TestWriteApprovalMigration:
             # gate ends up off and there's no leftover write_mode key.
             assert raw["memory"].get("write_approval", False) is False
             assert "write_mode" not in raw.get("memory", {})
+
+
+class TestRemovedToolsetMigration:
+    """Version 30→31 removes the retired messaging toolset from user config."""
+
+    def _write(self, tmp_path, body: dict):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(body), encoding="utf-8")
+
+    def test_prunes_retired_messaging_toolset_from_persisted_surfaces(self, tmp_path):
+        self._write(
+            tmp_path,
+            {
+                "_config_version": 30,
+                "platform_toolsets": {
+                    "cli": ["file", "messaging", "terminal"],
+                    "telegram": ["messaging", "telegram"],
+                },
+                "agent": {"enabled_toolsets": ["web", "messaging"]},
+            },
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["platform_toolsets"]["cli"] == ["file", "terminal"]
+        assert raw["platform_toolsets"]["telegram"] == ["telegram"]
+        assert raw["agent"]["enabled_toolsets"] == ["web"]
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert any(
+            "removed retired messaging toolset" in entry
+            for entry in results["config_added"]
+        )
+
+    def test_preserves_non_retired_custom_and_mcp_toolset_names(self, tmp_path):
+        self._write(
+            tmp_path,
+            {
+                "_config_version": 30,
+                "mcp_servers": {"mcp-docs": {"url": "https://example.com/mcp"}},
+                "platform_toolsets": {
+                    "cli": ["mcp-docs", "plugin-search", "messaging"],
+                },
+                "agent": {
+                    "enabled_toolsets": ["plugin-search", "messaging", "file"],
+                },
+            },
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+
+        raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+        assert raw["platform_toolsets"]["cli"] == ["mcp-docs", "plugin-search"]
+        assert raw["agent"]["enabled_toolsets"] == ["plugin-search", "file"]

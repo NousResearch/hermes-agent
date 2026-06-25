@@ -2908,7 +2908,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 30,
+    "_config_version": 31,
 }
 
 # =============================================================================
@@ -2925,6 +2925,38 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
 }
+
+_REMOVED_BUILTIN_TOOLSETS: frozenset[str] = frozenset({"messaging"})
+
+
+def _drop_removed_builtin_toolsets(config: Dict[str, Any]) -> List[str]:
+    """Remove built-in toolset names that were intentionally retired."""
+    removed_locations: List[str] = []
+
+    def _prune(values: Any) -> Tuple[Any, bool]:
+        if not isinstance(values, list):
+            return values, False
+        pruned = [value for value in values if value not in _REMOVED_BUILTIN_TOOLSETS]
+        return pruned, pruned != values
+
+    platform_toolsets = config.get("platform_toolsets")
+    if isinstance(platform_toolsets, dict):
+        for platform_name, values in list(platform_toolsets.items()):
+            pruned, changed = _prune(values)
+            if changed:
+                platform_toolsets[platform_name] = pruned
+                removed_locations.append(f"platform_toolsets.{platform_name}")
+        config["platform_toolsets"] = platform_toolsets
+
+    agent_cfg = config.get("agent")
+    if isinstance(agent_cfg, dict):
+        pruned, changed = _prune(agent_cfg.get("enabled_toolsets"))
+        if changed:
+            agent_cfg["enabled_toolsets"] = pruned
+            config["agent"] = agent_cfg
+            removed_locations.append("agent.enabled_toolsets")
+
+    return removed_locations
 
 # Required environment variables with metadata for migration prompts.
 # LLM provider is required but handled in the setup wizard's provider
@@ -5228,6 +5260,30 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 print(
                     "  ✓ Seeded curator.consolidate: false "
                     "(LLM consolidation is now opt-in; pruning stays on)"
+                )
+
+    # ── Version 30 → 31: remove the retired messaging toolset from configs ──
+    # PR #47856 removed the agent-callable `messaging` toolset. Older configs
+    # can still have it persisted under platform_toolsets.* or
+    # agent.enabled_toolsets, which makes every CLI startup warn about an
+    # unknown toolset even though the user's config is otherwise healthy.
+    #
+    # Keep this targeted to known retired built-ins: a generic "remove any
+    # invalid toolset" pass would risk deleting user/plugin toolsets before
+    # their registry entries have been loaded during early config migration.
+    if current_ver < 31:
+        config = read_raw_config()
+        removed_locations = _drop_removed_builtin_toolsets(config)
+        if removed_locations:
+            save_config(config)
+            locations = ", ".join(removed_locations)
+            results["config_added"].append(
+                f"removed retired messaging toolset from {locations}"
+            )
+            if not quiet:
+                print(
+                    "  ✓ Removed retired messaging toolset from config: "
+                    f"{locations}"
                 )
 
     # ── Post-migration: disable exfiltration-shaped MCP stdio entries ──

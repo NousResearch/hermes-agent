@@ -1,5 +1,7 @@
 import { PixelEggSprite } from '@/components/pet/pixel-egg-sprite'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { PawPrint } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
@@ -13,11 +15,21 @@ interface DraftGridProps {
   hasDrafts: boolean
   onCancel: () => void
   onHatch: () => void
+  onRemix: (draft: { index: number; dataUri: string }) => void
   onSelect: (index: number) => void
   selected: number | null
 }
 
-export function DraftGrid({ drafts, generating, hasDrafts, onCancel, onHatch, onSelect, selected }: DraftGridProps) {
+export function DraftGrid({
+  drafts,
+  generating,
+  hasDrafts,
+  onCancel,
+  onHatch,
+  onRemix,
+  onSelect,
+  selected
+}: DraftGridProps) {
   const { t } = useI18n()
   const copy = t.commandCenter.generatePet
 
@@ -43,32 +55,56 @@ export function DraftGrid({ drafts, generating, hasDrafts, onCancel, onHatch, on
           const isSelected = draft != null && selected === draft.index
 
           return (
-            <button
-              className={cn(
-                'relative flex aspect-[192/208] items-center justify-center overflow-hidden',
-                selectableCardClass({ active: isSelected, prominent: true })
+            <div className="group relative aspect-[192/208]" key={draft ? `draft-${draft.index}` : `slot-${i}`}>
+              <button
+                className={cn(
+                  'absolute inset-0 flex items-center justify-center overflow-hidden',
+                  selectableCardClass({ active: isSelected, prominent: true })
+                )}
+                disabled={draft == null}
+                onClick={() => draft != null && onSelect(draft.index)}
+                type="button"
+              >
+                {draft != null ? (
+                  // Hatches into place as each draft streams back.
+                  <img
+                    alt=""
+                    className="pet-reveal size-full object-contain p-1.5"
+                    draggable={false}
+                    src={draft.dataUri}
+                  />
+                ) : (
+                  // Incubating: a creme egg bouncing on its contact shadow.
+                  <div className="relative z-10 flex flex-col items-center">
+                    <PixelEggSprite index={i} mode="bounce" size={48} />
+                    <span className="pet-egg-shadow pet-egg-shadow--sm" style={{ marginTop: '-0.3rem' }} />
+                  </div>
+                )}
+              </button>
+
+              {/* Remix: branch a new round off this look. Revealed on hover/focus. */}
+              {draft != null && !generating && (
+                <Tip label={copy.remix}>
+                  <Button
+                    aria-label={copy.remix}
+                    className={cn(
+                      'absolute right-1 top-1 z-20',
+                      'text-(--ui-text-tertiary) opacity-10 transition',
+                      'hover:bg-transparent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100'
+                    )}
+                    onClick={event => {
+                      event.stopPropagation()
+                      onRemix(draft)
+                    }}
+                    size="icon-xs"
+                    type="button"
+                    variant="ghost"
+                  >
+                    <Codicon name="git-branch" size={12} />
+                  </Button>
+                </Tip>
               )}
-              disabled={draft == null}
-              key={draft ? `draft-${draft.index}` : `slot-${i}`}
-              onClick={() => draft != null && onSelect(draft.index)}
-              type="button"
-            >
-              {draft != null ? (
-                // Hatches into place as each draft streams back.
-                <img
-                  alt=""
-                  className="pet-reveal size-full object-contain p-1.5"
-                  draggable={false}
-                  src={draft.dataUri}
-                />
-              ) : (
-                // Incubating: a creme egg bouncing on its contact shadow.
-                <div className="relative z-10 flex flex-col items-center">
-                  <PixelEggSprite index={i} mode="bounce" size={48} />
-                  <span className="pet-egg-shadow pet-egg-shadow--sm" style={{ marginTop: '-0.3rem' }} />
-                </div>
-              )}
-            </button>
+            </div>
           )
         })}
       </div>

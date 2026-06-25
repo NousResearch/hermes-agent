@@ -2220,6 +2220,64 @@ def _model_flow_bedrock(config, current_model=""):
     else:
         print("  No change.")
 
+def _select_zai_endpoint(current_base: str) -> str:
+    """Present a picker for Z.AI endpoint selection during setup.
+
+    Offers the four official Z.AI endpoints (Global, China, Coding Plan
+    Global, Coding Plan China) plus a custom-proxy option.  The list is
+    sourced from ``ZAI_ENDPOINTS`` in ``hermes_cli.auth`` so it stays in
+    sync with the probe list.
+
+    Returns the selected base URL.  Falls back to *current_base* on cancel
+    or error.
+    """
+    from hermes_cli.main import _prompt_provider_choice
+    from hermes_cli.auth import ZAI_ENDPOINTS
+
+    # Build label + URL pairs from the shared endpoint list.
+    options = [(label, url) for _, url, _, label in ZAI_ENDPOINTS]
+    normalized_current = (current_base or "").strip().rstrip("/")
+
+    # Default to the currently-active option if it matches one of the
+    # known endpoints; otherwise default to the first (Global).
+    default_idx = 0
+    for idx, (_, url) in enumerate(options):
+        if normalized_current == url.rstrip("/"):
+            default_idx = idx
+            break
+    else:
+        if normalized_current:
+            # A custom URL is active — offer "Custom proxy" as the default.
+            default_idx = len(options)
+
+    choices = [f"{label} ({url})" for label, url in options]
+    choices.append("Custom proxy URL")
+
+    selected = _prompt_provider_choice(
+        choices,
+        default=default_idx,
+        title="Select Z.AI / GLM endpoint:",
+    )
+    if selected is None:
+        return current_base
+
+    if selected == len(options):
+        # Custom proxy URL
+        try:
+            override = input(f"Custom base URL [{current_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return current_base
+        if not override:
+            return current_base
+        if not override.startswith(("http://", "https://")):
+            print("  Invalid URL — must start with http:// or https://. Keeping current value.")
+            return current_base
+        return override.rstrip("/")
+
+    return options[selected][1]
+
+
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
     """Generic flow for API-key providers (z.ai, MiniMax, OpenCode, etc.)."""
     from hermes_cli.main import _prompt_api_key

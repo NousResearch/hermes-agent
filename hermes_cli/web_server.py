@@ -180,19 +180,46 @@ async def _lifespan(app: "FastAPI"):
     asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
+    # since the app *usually* has no gateway running the scheduler. Server
+    # `hermes dashboard` is unaffected — it relies on its own gateway.
+    #
+    # BUT: when a `hermes gateway run` (launchd/systemd) and the desktop app
+    # share the same HERMES_HOME, BOTH would start a builtin scheduler. They
+    # race on cron/.tick.lock — whichever grabs it executes the tick. The lock
+    # only guarantees mutual exclusion, NOT capability: the desktop process is
+    # launched by the GUI and lacks the gateway's inference env/credentials, so
+    # when it wins the race the agent job stalls and hits the 600s inactivity
+    # timeout, delivering "provider timeout. Fallback chain was exhausted...".
+    # Invariant: exactly ONE scheduler executes jobs per HERMES_HOME. If a live
+    # gateway is detected, the desktop stays a passive observer and never starts
+    # its own ticker. Only a desktop WITHOUT a gateway runs cron itself.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
-        cron_stop = threading.Event()
-        cron_thread = threading.Thread(
-            target=_start_desktop_cron_ticker,
-            args=(cron_stop,),
-            daemon=True,
-            name="desktop-cron-ticker",
-        )
-        cron_thread.start()
+        gateway_alive = False
+        try:
+            from gateway.status import is_gateway_running
+            # PID file + runtime lock liveness, with stale-PID cleanup.
+            gateway_alive = is_gateway_running()
+        except Exception:
+            # On any error, assume NO gateway and run the ticker — a desktop-only
+            # install must keep firing cron (no worse than the prior behavior).
+            gateway_alive = False
+
+        if gateway_alive:
+            _log.info(
+                "Desktop backend: live gateway detected — not starting an own cron "
+                "scheduler (the gateway is the sole cron executor for this HERMES_HOME)."
+            )
+        else:
+            cron_stop = threading.Event()
+            cron_thread = threading.Thread(
+                target=_start_desktop_cron_ticker,
+                args=(cron_stop,),
+                daemon=True,
+                name="desktop-cron-ticker",
+            )
+            cron_thread.start()
 
     try:
         yield

@@ -6072,3 +6072,23 @@ class TestDesktopCronTicker:
 
         with self._client():
             assert not called.wait(0.5), "ticker must not run outside the desktop app"
+
+    def test_ticker_skipped_when_gateway_alive(self, monkeypatch, _isolate_hermes_home):
+        """A live gateway is the sole cron executor — the desktop backend must
+        NOT start its own scheduler, even under HERMES_DESKTOP=1. Otherwise both
+        race on .tick.lock and the desktop (no gateway inference env) can win the
+        tick and stall the job to the 600s inactivity timeout."""
+        import threading
+        import cron.scheduler as sched
+        import gateway.status as gw_status
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        # web_server imports is_gateway_running from gateway.status at call time.
+        monkeypatch.setattr(gw_status, "is_gateway_running", lambda *a, **k: True)
+
+        with self._client():
+            assert not called.wait(0.5), (
+                "ticker must not run when a live gateway is already executing cron"
+            )

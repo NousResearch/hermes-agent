@@ -1101,8 +1101,21 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
 
         if not delivered:
-            # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            # Standalone path: run the async send in a fresh event loop (safe from any thread).
+            # Bound every send with a hard timeout so a wedged platform HTTP call
+            # cannot hang the tick indefinitely — the direct asyncio.run() branch
+            # was previously unbounded, so a stuck send blocked the cron worker
+            # (the threadpool fallback below already had a 30s budget; mirror it
+            # on the primary path via asyncio.wait_for).
+            def _bounded_send():
+                return asyncio.wait_for(
+                    _send_to_platform(
+                        platform, pconfig, chat_id, cleaned_delivery_content,
+                        thread_id=thread_id, media_files=media_files,
+                    ),
+                    timeout=30,
+                )
+            coro = _bounded_send()
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -1112,8 +1125,8 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
-                    result = future.result(timeout=30)
+                    future = pool.submit(asyncio.run, _bounded_send())
+                    result = future.result(timeout=35)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg)

@@ -530,7 +530,7 @@ def _incremental_sync(conn: sqlite3.Connection) -> int:
             "content_hash": row["content_hash"],
             "last_parsed": row["last_parsed"],
             "file_path": row["file_path"],
-        "needs_organizing": bool(row.get("needs_organizing")) or False,
+        "needs_organizing": bool(dict(row).get("needs_organizing")) or False,
         }
 
     now = time.time()
@@ -1351,7 +1351,7 @@ def _handle_skill_graph_search(args: dict | None = None, **kw) -> str:
                         "file_path": row["file_path"],
                         "relevance": "listed",
                         "score": 0.0,
-                    "needs_organizing": bool(row.get("needs_organizing")) or False,
+                    "needs_organizing": bool(dict(row).get("needs_organizing")) or False,
                     })
                 total = len(results)
                 hint = "All skills listed by name. Call skill_load(name) to load full content."

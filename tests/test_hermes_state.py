@@ -210,6 +210,54 @@ class TestSessionLifecycle:
                                model="xiaomi/mimo-v2.5-pro")
         assert db.get_session("s1")["model"] == "xiaomi/mimo-v2.5"
 
+    def test_update_session_billing_route_overwrites_after_switch(self, db):
+        """A mid-session provider switch must overwrite the billing route.
+
+        update_token_counts writes billing fields with
+        COALESCE(billing_provider, ?) (first-writer-wins), so after a
+        provider switch the dashboard kept attributing cost to the original
+        provider (#48248). update_session_billing_route sets them
+        unconditionally and nulls system_prompt so the next turn rebuilds
+        the Model:/Provider: header (#48173).
+        """
+        db.create_session(session_id="s1", source="telegram")
+        # First token update seeds the billing route.
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               billing_provider="openrouter",
+                               billing_base_url="https://openrouter.ai/api/v1",
+                               billing_mode="api_key")
+        sess = db.get_session("s1")
+        assert sess["billing_provider"] == "openrouter"
+        # A later token update never changes it (COALESCE first-writer-wins).
+        db.update_token_counts("s1", input_tokens=10, output_tokens=5,
+                               billing_provider="ollama",
+                               billing_base_url="http://localhost:11434/v1",
+                               billing_mode="local")
+        assert db.get_session("s1")["billing_provider"] == "openrouter"
+
+        # Seed a stale prompt snapshot, then switch the billing route.
+        db.update_system_prompt("s1", "Model: x/old\nProvider: openrouter")
+        assert db.get_session("s1")["system_prompt"] is not None
+        db.update_session_billing_route(
+            "s1", provider="ollama",
+            base_url="http://localhost:11434/v1", billing_mode="local",
+        )
+        sess = db.get_session("s1")
+        assert sess["billing_provider"] == "ollama"
+        assert sess["billing_base_url"] == "http://localhost:11434/v1"
+        assert sess["billing_mode"] == "local"
+        assert sess["system_prompt"] is None, \
+            "system_prompt must be nulled so the next turn rebuilds Model:/Provider:"
+
+        # billing_mode defaults to COALESCE — omitting it preserves the value.
+        db.update_session_billing_route(
+            "s1", provider="openai",
+            base_url="https://api.openai.com/v1",
+        )
+        sess = db.get_session("s1")
+        assert sess["billing_provider"] == "openai"
+        assert sess["billing_mode"] == "local"  # preserved (COALESCE on None)
+
     def test_parent_session(self, db):
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")

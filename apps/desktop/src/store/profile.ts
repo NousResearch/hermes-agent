@@ -144,12 +144,13 @@ export const $activeGatewayProfile = atom<string>('default')
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
 
-// Bumped whenever the profile context actually changes (switch or create). The
-// chat controller subscribes and drops to a fresh new-session draft, so the
-// session you were in doesn't stay sticky across a profile switch.
+// Bumped whenever the open session should be dropped for a fresh new-session
+// draft: a profile switch/create (below), or deleting the project that owns the
+// currently-open session (store/projects). The chat controller subscribes and
+// resets to the intro draft, so we never strand the user in an orphaned view.
 export const $freshSessionRequest = atom(0)
 
-function requestFreshSession(): void {
+export function requestFreshSession(): void {
   $freshSessionRequest.set($freshSessionRequest.get() + 1)
 }
 

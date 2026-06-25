@@ -1326,3 +1326,71 @@ def test_session_split_restores_source_thread_id_from_binding(tmp_path):
     meta = GatewayRunner._thread_metadata_for_source(runner, source)
     assert meta is not None
     assert meta["thread_id"] == "17585"
+
+
+@pytest.mark.asyncio
+async def test_title_command_renames_current_telegram_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    result = await runner._handle_title_command(
+        _make_event("/title Manual Topic Name", thread_id="42")
+    )
+
+    assert "Manual Topic Name" in result
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="Manual Topic Name",
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_with_title_renames_rebound_telegram_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("old-topic", source="telegram", user_id="208214988")
+    db.create_session("new-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="old-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.session_store.reset_session = MagicMock(
+        return_value=SessionEntry(
+            session_key="agent:main:telegram:dm:208214988:42",
+            session_id="new-topic",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            origin=_make_source(thread_id="42"),
+        )
+    )
+
+    result = await runner._handle_reset_command(
+        _make_event("/new Fresh Debug Thread", thread_id="42")
+    )
+
+    assert "Fresh Debug Thread" in str(result)
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["session_id"] == "new-topic"
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="Fresh Debug Thread",
+    )

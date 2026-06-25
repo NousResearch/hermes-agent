@@ -54,6 +54,17 @@ class TurnRetryState:
     oauth_1m_beta_retry_attempted: bool = False
     llama_cpp_grammar_retry_attempted: bool = False
 
+    # Aggregate-payload (413) image-shrink guards.  Unlike a single-pass
+    # recovery, the 413 image path shrinks PROGRESSIVELY harder: the first
+    # 413 re-encodes every embedded image to ≤512 KB, a second 413 (the new
+    # payload still too big for the gateway) re-encodes to ≤256 KB.  Two
+    # one-shot bools keep the dataclass all-boolean (see the field-set and
+    # all-False contract tests) while giving the loop two escalating passes
+    # before it falls through to text compression.  See the
+    # ``payload_too_large`` branch in ``conversation_loop``.
+    payload_image_shrink_pass1_attempted: bool = False
+    payload_image_shrink_pass2_attempted: bool = False
+
     # ── Transport / rate-limit recovery ──────────────────────────────────
     primary_recovery_attempted: bool = False
     has_retried_429: bool = False

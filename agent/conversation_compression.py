@@ -796,6 +796,7 @@ def try_shrink_image_parts_in_messages(
     api_messages: list,
     *,
     max_dimension: int = 8000,
+    target_bytes: Optional[int] = None,
 ) -> bool:
     """Re-encode all native image parts at a smaller size to recover from
     image-too-large errors (Anthropic 5 MB, unknown other providers).
@@ -803,6 +804,17 @@ def try_shrink_image_parts_in_messages(
     Mutates ``api_messages`` in place. Returns True if any image part was
     actually replaced, False if there were no image parts to shrink or
     Pillow couldn't help (caller should surface the original error).
+
+    ``target_bytes`` overrides the default 4 MB per-image budget.  The
+    per-image default is right for the Anthropic 5 MB *single-image*
+    ceiling, but an aggregate request-body 413 (``payload_too_large``)
+    can be triggered by several individually-under-4 MB images whose
+    *sum* blows the gateway's body limit (observed on GitHub Copilot:
+    a handful of ~500 KB screenshots embedded by native vision).  The
+    413 recovery path passes a much smaller ``target_bytes`` so every
+    embedded image is shrunk hard enough to bring the total under the
+    limit, instead of no-opping because each image is already under
+    4 MB.  See the ``payload_too_large`` branch in ``conversation_loop``.
 
     Strategy: look for ``image_url`` / ``input_image`` parts carrying a
     ``data:image/...;base64,...`` payload, plus Anthropic-native
@@ -829,7 +841,16 @@ def try_shrink_image_parts_in_messages(
     # Non-Anthropic providers we haven't observed rejecting are fine with
     # much larger; shrinking to 4 MB here loses quality but only fires
     # after a confirmed provider rejection, so the alternative is failure.
-    target_bytes = 4 * 1024 * 1024
+    #
+    # ``target_bytes`` (when passed by the caller) overrides this for the
+    # aggregate-payload 413 path, where the binding constraint is the SUM
+    # of all embedded images, not any single image's 5 MB ceiling.  A much
+    # smaller per-image target there is what actually brings the total
+    # request body back under the gateway limit.
+    if target_bytes is not None and target_bytes > 0:
+        target_bytes = int(target_bytes)
+    else:
+        target_bytes = 4 * 1024 * 1024
     # Anthropic enforces an 8000px per-side dimension cap independently of
     # the 5 MB byte cap.  In many-image requests, the provider can report a
     # lower cap (observed: 2000px).  The caller passes that parsed ceiling

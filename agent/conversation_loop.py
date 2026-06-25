@@ -2963,6 +2963,55 @@ def run_conversation(
                     )
 
                 if is_payload_too_large:
+                    # ── Aggregate-image 413 recovery (runs BEFORE text
+                    # compression) ──────────────────────────────────────
+                    # A 413 is a request-BODY-size error, measured in bytes,
+                    # not a token-count overflow.  When the body is bloated by
+                    # several base64 images embedded via native vision (each
+                    # individually under the 5 MB single-image ceiling, but
+                    # collectively megabytes), compressing TEXT can't shrink
+                    # it — the images dominate the bytes and text compression
+                    # reports "cannot compress further" while the real payload
+                    # is untouched.  Observed on GitHub Copilot: a handful of
+                    # ~500 KB screenshots from vision_analyze 413 a session
+                    # that is only tens of KB of text.
+                    #
+                    # Shrink every embedded image and ``continue`` (re-runs
+                    # _build_api_kwargs at the top of this retry loop with the
+                    # shrunk payload), mirroring the ``image_too_large``
+                    # sibling above.  Two PROGRESSIVE passes: the first 413
+                    # re-encodes images to ≤512 KB each; if the gateway still
+                    # 413s (sum still over its body cap), the second pass goes
+                    # to ≤256 KB.  Only after both image passes are spent —
+                    # i.e. the body is genuinely text-dominated — do we fall
+                    # through to the text-compression path below.
+                    _shrink_target = None
+                    if not _retry.payload_image_shrink_pass1_attempted:
+                        _retry.payload_image_shrink_pass1_attempted = True
+                        _shrink_target = 512 * 1024
+                    elif not _retry.payload_image_shrink_pass2_attempted:
+                        _retry.payload_image_shrink_pass2_attempted = True
+                        _shrink_target = 256 * 1024
+                    if _shrink_target is not None:
+                        if agent._try_shrink_image_parts_in_messages(
+                            api_messages,
+                            max_dimension=2000,
+                            target_bytes=_shrink_target,
+                        ):
+                            agent._buffer_status(
+                                "🖼️  Request too large (413) from embedded images — "
+                                f"shrank attached image(s) to ≤{_shrink_target // 1024} KB "
+                                "each and retrying..."
+                            )
+                            continue
+                        else:
+                            logger.info(
+                                f"{agent.log_prefix}413 payload-image-shrink "
+                                f"(target {_shrink_target // 1024} KB): no further "
+                                "shrinkable image parts; falling through to text "
+                                "compression."
+                            )
+
                     compression_attempts += 1
                     if compression_attempts > max_compression_attempts:
                         # Terminal — surface the buffered retry trace.

@@ -1187,9 +1187,19 @@ clone_repo() {
                         log_warn "Local changes were restored on top of the updated codebase."
                         log_warn "Review git diff / git status if Hermes behaves unexpectedly."
                     else
-                        log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
-                        log_info "Resolve manually with: git stash apply $autostash_ref"
-                        exit 1
+                        # `git stash apply` reports a conflict via a non-zero exit.
+                        # Leaving the half-merged tree would write `<<<<<<<` markers
+                        # into tracked source and stop the backend from even
+                        # importing (SyntaxError on startup). Use git's own
+                        # documented recovery instead: discard the conflicted apply
+                        # with a hard reset to the commit we just checked out. The
+                        # tree is restored to pristine, bootable source, and the
+                        # user's work is untouched in the stash for deliberate,
+                        # conflict-aware re-apply.
+                        log_warn "Local changes conflict with this update and could not be re-applied automatically."
+                        git reset --hard HEAD >/dev/null 2>&1
+                        log_warn "Updated to a clean checkout. Your changes are preserved in git stash."
+                        log_info "Re-apply manually with: git stash apply $autostash_ref  (then resolve conflicts)"
                     fi
                 else
                     log_info "Skipped restoring local changes."

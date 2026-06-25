@@ -1364,9 +1364,19 @@ function Install-Repository {
                             Write-Warn "Local changes were restored on top of the updated codebase."
                             Write-Warn "Review git diff / git status if Hermes behaves unexpectedly."
                         } else {
-                            Write-Err "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
-                            Write-Info "Resolve manually with: git stash apply $autostashRef"
-                            throw "git stash apply failed after update"
+                            # `git stash apply` reports a conflict via a non-zero
+                            # exit. Leaving the half-merged tree would write
+                            # `<<<<<<<` markers into tracked source and stop the
+                            # backend from even importing (SyntaxError on startup).
+                            # Use git's own documented recovery instead: discard the
+                            # conflicted apply with a hard reset to the commit we
+                            # just checked out. The tree is restored to pristine,
+                            # bootable source, and the user's work is untouched in
+                            # the stash for deliberate, conflict-aware re-apply.
+                            Write-Warn "Local changes conflict with this update and could not be re-applied automatically."
+                            git -c windows.appendAtomically=false reset --hard HEAD 2>$null
+                            Write-Warn "Updated to a clean checkout. Your changes are preserved in git stash."
+                            Write-Info "Re-apply manually with: git stash apply $autostashRef  (then resolve conflicts)"
                         }
                     } else {
                         Write-Info "Skipped restoring local changes."

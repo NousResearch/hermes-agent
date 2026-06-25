@@ -1928,3 +1928,71 @@ class TestCodexAppServerAutoConfig:
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
 
 
+class TestRetiredToolsetMigration:
+    """Version 33→34 prunes toolset names retired from built-in toolsets."""
+
+    def _write(self, tmp_path, data):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    @pytest.mark.parametrize("start_version", [31, 32, 33])
+    def test_prunes_messaging_from_platform_and_agent_enabled(
+        self, tmp_path, start_version
+    ):
+        self._write(
+            tmp_path,
+            {
+                "_config_version": start_version,
+                "agent": {"enabled_toolsets": ["terminal", "messaging"]},
+                "platform_toolsets": {
+                    "cli": ["web", "messaging", "terminal"],
+                    "telegram": ["messaging", "web"],
+                },
+            },
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["agent"]["enabled_toolsets"] == ["terminal"]
+        assert raw["platform_toolsets"]["cli"] == ["web", "terminal"]
+        assert raw["platform_toolsets"]["telegram"] == ["web"]
+
+    def test_preserves_mcp_sentinel_and_custom_toolset_names(self, tmp_path):
+        self._write(
+            tmp_path,
+            {
+                "_config_version": 33,
+                "mcp_servers": {"local-mcp": {"url": "http://127.0.0.1/mcp"}},
+                "platform_toolsets": {
+                    "cli": ["messaging", "local-mcp", "custom-plugin", "no_mcp"],
+                },
+            },
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+
+        assert raw["platform_toolsets"]["cli"] == [
+            "local-mcp",
+            "custom-plugin",
+            "no_mcp",
+        ]
+
+    def test_preserves_mcp_server_named_messaging(self, tmp_path):
+        self._write(
+            tmp_path,
+            {
+                "_config_version": 33,
+                "mcp_servers": {"messaging": {"url": "http://127.0.0.1/mcp"}},
+                "platform_toolsets": {"cli": ["messaging"]},
+            },
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+
+        assert raw["platform_toolsets"]["cli"] == ["messaging"]

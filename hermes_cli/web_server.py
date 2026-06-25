@@ -33,6 +33,8 @@ import threading
 import time
 import urllib.error
 import urllib.parse
+
+from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -1228,12 +1230,17 @@ def _fs_default_cwd() -> str:
 
 def _fs_git_branch(cwd: str) -> str:
     try:
+        run_kwargs: Dict[str, Any] = {
+            "capture_output": True,
+            "text": True,
+            "timeout": 2,
+            "check": False,
+        }
+        if sys.platform == "win32":
+            run_kwargs["creationflags"] = windows_hide_flags()
         result = subprocess.run(
             ["git", "-C", cwd, "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
+            **run_kwargs,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
@@ -2387,6 +2394,18 @@ def _record_completed_action(name: str, message: str, exit_code: int = 1) -> Non
     _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": None}
 
 
+def _dashboard_spawn_executable() -> str:
+    """Prefer pythonw.exe for detached dashboard actions on Windows."""
+    if sys.platform != "win32":
+        return sys.executable
+    exe = sys.executable
+    if exe.lower().endswith("python.exe"):
+        pythonw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        if os.path.isfile(pythonw):
+            return pythonw
+    return exe
+
+
 def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
 
@@ -2401,7 +2420,7 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
     )
 
-    cmd = [sys.executable, "-m", "hermes_cli.main", *subcommand]
+    cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
 
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
@@ -2411,10 +2430,7 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         "env": {**os.environ, "HERMES_NONINTERACTIVE": "1"},
     }
     if sys.platform == "win32":
-        popen_kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-        )
+        popen_kwargs["creationflags"] = windows_detach_flags()
     else:
         popen_kwargs["start_new_session"] = True
 
@@ -12943,6 +12959,45 @@ def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
     return fallback
 
 
+def _write_dashboard_ready_file(actual_port: int) -> None:
+    """Optionally publish the dashboard port through an atomic ready file.
+
+    Windows Desktop can launch dashboard backends with ``pythonw.exe`` to avoid
+    console flashes. That path cannot rely on stdout for the port announcement,
+    so Electron passes ``HERMES_DESKTOP_READY_FILE`` and waits for this JSON.
+    Normal CLI/dashboard launches still use the stdout READY line below.
+    """
+    target = os.environ.get("HERMES_DESKTOP_READY_FILE")
+    if not target:
+        return
+
+    tmp_name = ""
+    try:
+        path = Path(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"port": int(actual_port)}, separators=(",", ":"))
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f"{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+            tmp_name = fh.name
+        os.replace(tmp_name, path)
+    except Exception as exc:
+        if tmp_name:
+            try:
+                Path(tmp_name).unlink(missing_ok=True)
+            except Exception:
+                pass
+        _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
+
+
 def _maybe_open_browser(
     host: str, actual_port: int, open_browser: bool, initial_profile: str
 ) -> None:
@@ -13134,6 +13189,7 @@ def start_server(
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port
 
+            _write_dashboard_ready_file(actual_port)
             print(f"HERMES_DASHBOARD_READY port={actual_port}", flush=True)
             print(f"  Hermes Web UI → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)

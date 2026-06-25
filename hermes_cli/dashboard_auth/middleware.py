@@ -50,6 +50,19 @@ _GATE_PUBLIC_PREFIXES: tuple[str, ...] = (
 )
 
 
+def _request_path(request: Request) -> str:
+    """Return the ASGI-dispatched path for auth decisions.
+
+    ``request.url.path`` is reconstructed from URL components and is not the
+    routing source of truth. Keep path-based gates tied to ``scope["path"]`` so
+    host/header parsing quirks cannot desync auth checks from dispatch.
+    """
+    path = request.scope.get("path") if hasattr(request, "scope") else None
+    if isinstance(path, str) and path:
+        return path
+    return request.url.path
+
+
 def _path_is_public(path: str) -> bool:
     """True if ``path`` bypasses the OAuth auth gate.
 
@@ -102,7 +115,7 @@ def _unauth_response(request: Request, *, reason: str) -> Response:
     """
     from hermes_cli.dashboard_auth.prefix import prefix_from_request
 
-    path = request.url.path
+    path = _request_path(request)
     next_param = _safe_next_target(request)
     prefix = prefix_from_request(request)
     login_url = (
@@ -140,7 +153,7 @@ def _safe_next_target(request: Request) -> str:
     string return means the caller produces a bare ``/login`` URL — fine,
     user lands at the dashboard root after re-auth.
     """
-    path = request.url.path
+    path = _request_path(request)
     # Reject anything that doesn't start with "/" or starts with "//"
     # (protocol-relative URL — would open-redirect to an attacker host).
     if not path or not path.startswith("/") or path.startswith("//"):
@@ -181,7 +194,7 @@ async def gated_auth_middleware(
     if not getattr(request.app.state, "auth_required", False):
         return await call_next(request)
 
-    path = request.url.path
+    path = _request_path(request)
     if _path_is_public(path):
         return await call_next(request)
 

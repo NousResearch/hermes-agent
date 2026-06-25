@@ -324,6 +324,12 @@ _SUDO_WRONG_PASSWORD_MARKERS = (
     "sudo: incorrect password attempt",
     "sudo: maximum 3 incorrect authentication attempts",
     "sudo: 3 incorrect password attempts",
+    # Real `sudo -S` summarises a rejected piped password with a counted
+    # line, e.g. "sudo: 1 incorrect password attempt" (or "... 3 incorrect
+    # password attempts"). None of the fixed-count markers above match a
+    # single piped attempt, so also match the count-independent core — it is
+    # a substring of both the singular and plural forms.
+    "incorrect password attempt",
 )
 
 

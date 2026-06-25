@@ -330,7 +330,12 @@ function seedDefaultModelConfig() {
       '# (the DeepSeek card), which writes DEEPSEEK_API_KEY.\n' +
       'model:\n' +
       '  default: deepseek-v4-pro\n' +
-      '  provider: deepseek\n'
+      '  provider: deepseek\n' +
+      '# Shell UI locale. The runtime writes display.language: en by default, which\n' +
+      '# beats the China-first zh fallback (it only triggers when the key is\n' +
+      '# absent); pre-seeding zh makes a fresh install open in Simplified Chinese.\n' +
+      'display:\n' +
+      '  language: zh\n'
     fs.writeFileSync(configPath, seed, { encoding: 'utf8' })
     rememberLog(`[apexnodes] seeded default DeepSeek config at ${configPath}`)
   } catch (err) {

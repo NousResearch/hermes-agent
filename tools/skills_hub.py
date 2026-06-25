@@ -66,6 +66,9 @@ _MAX_SKILL_FETCH_REDIRECTS = 5
 # Data models
 # ---------------------------------------------------------------------------
 
+# Compiled regex for skill name validation (moved from function body)
+_VALID_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+
 @dataclass
 class SkillMeta:
     """Minimal metadata returned by search results."""
@@ -1313,7 +1316,7 @@ class UrlSource(SkillSource):
     # Skill names must look like identifiers: lowercase letters/digits with
     # optional hyphens/underscores. Blocks dangerous (``../evil``) AND useless
     # (``SKILL``, ``README``, empty) candidates before they hit the disk.
-    _VALID_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+    _VALID_NAME_RE = _VALID_NAME_RE
 
     @classmethod
     def _is_valid_skill_name(cls, name: Optional[str]) -> bool:

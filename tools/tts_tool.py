@@ -55,6 +55,10 @@ from urllib.parse import urljoin
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
+
+# Compiled regex for think block stripping (moved from function body)
+_THINK_BLOCK_RE = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
+
 def get_env_value(name, default=None):
     """Read env values through the live config module.
 
@@ -2639,7 +2643,7 @@ def stream_tts_to_speaker(
         queue_timeout = 0.5
         _spoken_sentences: list[str] = []  # track spoken sentences to skip duplicates
         # Regex to strip complete <think>...</think> blocks from buffer
-        _think_block_re = re.compile(r'<think[\s>].*?</think>', flags=re.DOTALL)
+        _think_block_re = _THINK_BLOCK_RE
 
         def _speak_sentence(sentence: str):
             """Display sentence and optionally generate + play audio."""

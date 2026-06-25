@@ -56,6 +56,10 @@ _OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)")
 _FENCE_MARKER_RE = re.compile(r"'?\x07?__HERMES_FENCE_[A-Za-z0-9]+__\x07?'?")
 
 
+
+# Compiled regex for rg/grep output parsing (moved from function body)
+_MATCH_RE = re.compile(r"^([A-Za-z]:)?(.*?):(\d+):(.*)$")
+
 def _strip_terminal_fence_leaks(text: str) -> str:
     """Strip leaked terminal fence wrappers from file read output."""
     if not text:
@@ -2263,7 +2267,7 @@ class ShellFileOperations(FileOperations):
             # rg group seps:    "--"
             # Note: on Windows, paths contain drive letters (e.g. C:\path),
             # so naive split(":") breaks. Use regex to handle both platforms.
-            _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
+            _match_re = _MATCH_RE
             matches = []
             for line in stdout.strip().split('\n'):
                 if not line or line == "--":
@@ -2388,7 +2392,7 @@ class ShellFileOperations(FileOperations):
             # grep group seps:    "--"
             # Note: on Windows, paths contain drive letters (e.g. C:\path),
             # so naive split(":") breaks. Use regex to handle both platforms.
-            _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
+            _match_re = _MATCH_RE
             matches = []
             for line in stdout.strip().split('\n'):
                 if not line or line == "--":

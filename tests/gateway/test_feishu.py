@@ -4944,3 +4944,58 @@ class TestChatLockEviction(unittest.TestCase):
                 held.release()
 
         asyncio.run(_run())
+
+
+class TestLoadSettingsSecretScope(unittest.TestCase):
+    """Verify _load_settings uses get_secret() for credential env vars (#52564)."""
+
+    def test_credentials_read_via_get_secret_not_os_getenv(self):
+        """Credential vars must resolve through the profile secret scope."""
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        scope_secrets = {
+            "FEISHU_APP_ID": "scope_app_id",
+            "FEISHU_APP_SECRET": "scope_secret",
+            "FEISHU_ENCRYPT_KEY": "scope_encrypt",
+            "FEISHU_VERIFICATION_TOKEN": "scope_token",
+        }
+
+        with patch(
+            "agent.secret_scope.get_secret",
+            side_effect=lambda name, default="": scope_secrets.get(name, default),
+        ):
+            settings = FeishuAdapter._load_settings({})
+
+        self.assertEqual(settings.app_id, "scope_app_id")
+        self.assertEqual(settings.app_secret, "scope_secret")
+        self.assertEqual(settings.encrypt_key, "scope_encrypt")
+        self.assertEqual(settings.verification_token, "scope_token")
+
+    def test_extra_overrides_secret_scope(self):
+        """Explicit config.yaml values (extra) take precedence over scope."""
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        with patch(
+            "agent.secret_scope.get_secret",
+            side_effect=lambda name, default="": "scope_val",
+        ):
+            settings = FeishuAdapter._load_settings({
+                "app_id": "config_app_id",
+                "app_secret": "config_secret",
+            })
+
+        self.assertEqual(settings.app_id, "config_app_id")
+        self.assertEqual(settings.app_secret, "config_secret")
+
+    def test_non_credential_vars_still_use_os_getenv(self):
+        """Config vars (domain, connection_mode, group_policy) still use os.getenv."""
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        with patch.dict(os.environ, {
+            "FEISHU_DOMAIN": "lark",
+            "FEISHU_GROUP_POLICY": "open",
+        }, clear=False):
+            settings = FeishuAdapter._load_settings({})
+
+        self.assertEqual(settings.domain_name, "lark")
+        self.assertEqual(settings.group_policy, "open")

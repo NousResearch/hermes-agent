@@ -1478,6 +1478,9 @@ class FeishuAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
+        # Lazy import to avoid circular dependency — same pattern as gateway/run.py
+        from agent.secret_scope import get_secret
+
         # Parse per-group rules from config
         raw_group_rules = extra.get("group_rules", {})
         group_rules: Dict[str, FeishuGroupRule] = {}
@@ -1515,15 +1518,15 @@ class FeishuAdapter(BasePlatformAdapter):
             allow_bots = "none"
 
         return FeishuAdapterSettings(
-            app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
-            app_secret=str(extra.get("app_secret") or os.getenv("FEISHU_APP_SECRET", "")).strip(),
+            app_id=str(extra.get("app_id") or get_secret("FEISHU_APP_ID", "")).strip(),
+            app_secret=str(extra.get("app_secret") or get_secret("FEISHU_APP_SECRET", "")).strip(),
             domain_name=str(extra.get("domain") or os.getenv("FEISHU_DOMAIN", "feishu")).strip().lower(),
             connection_mode=str(
                 extra.get("connection_mode") or os.getenv("FEISHU_CONNECTION_MODE", "websocket")
             ).strip().lower(),
-            encrypt_key=str(extra.get("encrypt_key") or os.getenv("FEISHU_ENCRYPT_KEY", "")).strip(),
+            encrypt_key=str(extra.get("encrypt_key") or get_secret("FEISHU_ENCRYPT_KEY", "")).strip(),
             verification_token=str(
-                extra.get("verification_token") or os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+                extra.get("verification_token") or get_secret("FEISHU_VERIFICATION_TOKEN", "")
             ).strip(),
             group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
             allowed_group_users=frozenset(

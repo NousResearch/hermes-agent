@@ -308,6 +308,38 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_fallback is True
 
+    def test_429_usage_limit_without_retry_signal_is_billing(self):
+        e = MockAPIError(
+            "You've reached monthly usage limit for this billing cycle",
+            status_code=429,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_429_usage_limit_with_retry_signal_stays_rate_limit(self):
+        e = MockAPIError(
+            "usage limit exceeded, try again in 5 minutes",
+            status_code=429,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_429_rate_limit_exceeded_stays_rate_limit(self):
+        e = MockAPIError("Rate limit exceeded.", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+        assert result.retryable is True
+
+    def test_429_billing_phrase_without_usage_limit_is_billing(self):
+        e = MockAPIError("insufficient credits remaining", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.
 

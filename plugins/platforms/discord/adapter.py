@@ -1955,7 +1955,7 @@ class DiscordAdapter(BasePlatformAdapter):
         message = format_published_media_message(published, heading=heading)
         if caption:
             message = f"{caption.strip()}\n{message}" if message else caption.strip()
-        return await self.send(chat_id, message or "Media uploaded")
+        return await self.send(chat_id, message or "Media uploaded", metadata={"non_conversational": True})
 
     async def _maybe_publish_media_file(
         self,

@@ -8,6 +8,8 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 
 
 
@@ -95,6 +97,63 @@ class TestModuleSurface:
             assert orch_tool in EXPOSED_TOOLS, (
                 f"{orch_tool!r} missing from codex callback"
             )
+
+
+class TestSchemaOverride:
+    def test_installs_hermes_schema_and_passes_structured_arguments(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        captured = {}
+
+        def fake_tool(**kwargs):
+            captured.update(kwargs)
+            return "ok"
+
+        params_schema = {
+            "type": "object",
+            "properties": {
+                "image_url": {"type": "string"},
+                "question": {"type": "string"},
+            },
+            "required": ["image_url"],
+        }
+        registered = SimpleNamespace(
+            parameters={
+                "type": "object",
+                "properties": {"kwargs": {"type": "string"}},
+            },
+            fn_metadata=SimpleNamespace(),
+        )
+        server = SimpleNamespace(
+            _tool_manager=SimpleNamespace(get_tool=lambda name: registered)
+        )
+
+        assert m._install_tool_schema_override(server, "vision_analyze", params_schema)
+        assert registered.parameters == params_schema
+
+        result = asyncio.run(
+            registered.fn_metadata.call_fn_with_arg_validation(
+                fake_tool,
+                False,
+                {"image_url": "/tmp/image.png", "question": "describe it"},
+                None,
+            )
+        )
+
+        assert result == "ok"
+        assert captured == {
+            "image_url": "/tmp/image.png",
+            "question": "describe it",
+        }
+
+    def test_schema_override_reports_missing_tool_manager(self):
+        import agent.transports.hermes_tools_mcp_server as m
+
+        assert not m._install_tool_schema_override(
+            SimpleNamespace(),
+            "vision_analyze",
+            {"type": "object", "properties": {}},
+        )
 
 
 class TestMain:

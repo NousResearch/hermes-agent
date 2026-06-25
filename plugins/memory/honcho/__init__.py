@@ -344,22 +344,16 @@ class HonchoMemoryProvider(MemoryProvider):
             logger.debug("Honcho recall_mode: %s", self._recall_mode)
 
             # ----- B5: cost-awareness config -----
-            try:
-                raw = cfg.raw or {}
-                self._injection_frequency = raw.get("injectionFrequency", "every-turn")
-                self._context_cadence = int(raw.get("contextCadence", 1))
-                # Backwards-compat: unset dialecticCadence falls back to 1
-                # (every turn) so existing honcho.json configs without the key
-                # behave as they did before. New setups via `hermes honcho setup`
-                # get dialecticCadence=2 written explicitly by the wizard.
-                self._dialectic_cadence = int(raw.get("dialecticCadence", 1))
-                self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
-                self._dialectic_depth_levels = cfg.dialectic_depth_levels
-                self._reasoning_heuristic = cfg.reasoning_heuristic
-                if cfg.reasoning_level_cap in self._LEVEL_ORDER:
-                    self._reasoning_level_cap = cfg.reasoning_level_cap
-            except Exception as e:
-                logger.debug("Honcho cost-awareness config parse error: %s", e)
+            # All three cadence fields now have proper typed dataclass fields
+            # with host-block-first resolution (client.py).
+            self._injection_frequency = cfg.injection_frequency
+            self._context_cadence = cfg.context_cadence
+            self._dialectic_cadence = cfg.dialectic_cadence
+            self._dialectic_depth = max(1, min(cfg.dialectic_depth, 3))
+            self._dialectic_depth_levels = cfg.dialectic_depth_levels
+            self._reasoning_heuristic = cfg.reasoning_heuristic
+            if cfg.reasoning_level_cap in self._LEVEL_ORDER:
+                self._reasoning_level_cap = cfg.reasoning_level_cap
 
             # aiPeer comes from honcho.json (host block or root) only.
             # SOUL.md is persona content, not identity config.

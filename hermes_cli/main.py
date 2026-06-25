@@ -8324,13 +8324,12 @@ def _run_pre_update_backup(args) -> None:
         cfg = {}
 
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
-    # The default config ships with ``pre_update_backup: true`` (see
-    # ``hermes_cli/config.py``). Fall back to true if the key is missing
-    # (e.g. a user has an older custom config without the field). The
-    # ``False`` default from before #48200 caused silent data loss when
-    # an update step computed a wrong path — the cost of a few minutes
-    # of zip time per update is negligible compared to the alternative.
-    enabled = updates_cfg.get("pre_update_backup", True)
+    # The default config ships with ``pre_update_backup: false`` (see
+    # ``hermes_cli/config.py``). Fall back to false if the key is missing
+    # so the default behaviour matches the shipped config: zipping a large
+    # HERMES_HOME can add minutes to every update. Users who want the
+    # #48200 safety net opt in via the config knob or ``--backup``.
+    enabled = updates_cfg.get("pre_update_backup", False)
     keep = updates_cfg.get("backup_keep", 5)
 
     if not enabled and not force_backup:

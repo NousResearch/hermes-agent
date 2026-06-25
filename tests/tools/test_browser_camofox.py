@@ -18,6 +18,7 @@ from tools.browser_camofox import (
     camofox_vision,
     check_camofox_available,
     is_camofox_mode,
+    _auth_headers,
     _rewrite_loopback_url_for_camofox,
 )
 
@@ -69,6 +70,36 @@ def _mock_response(status=200, json_data=None):
     resp.content = b"\x89PNG\r\n\x1a\nfake"
     resp.raise_for_status = MagicMock()
     return resp
+
+
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
+
+
+class TestCamofoxAuth:
+    def test_auth_headers_empty_when_unset(self, monkeypatch):
+        monkeypatch.delenv("CAMOFOX_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("CAMOFOX_API_KEY", raising=False)
+
+        assert _auth_headers() == {}
+
+    def test_access_key_preferred_over_api_key(self, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_ACCESS_KEY", "access-token")
+        monkeypatch.setenv("CAMOFOX_API_KEY", "api-token")
+
+        assert _auth_headers() == {"Authorization": "Bearer access-token"}
+
+    @patch("tools.browser_camofox.requests.post")
+    def test_create_tab_includes_auth_header_when_configured(self, mock_post, monkeypatch):
+        monkeypatch.setenv("CAMOFOX_URL", "http://localhost:9377")
+        monkeypatch.setenv("CAMOFOX_ACCESS_KEY", "secret-token")
+        mock_post.return_value = _mock_response(json_data={"tabId": "tab-auth", "url": "https://example.com"})
+
+        result = json.loads(camofox_navigate("https://example.com", task_id="auth-task"))
+
+        assert result["success"] is True
+        assert mock_post.call_args.kwargs["headers"] == {"Authorization": "Bearer secret-token"}
 
 
 # ---------------------------------------------------------------------------

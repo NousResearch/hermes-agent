@@ -57,6 +57,43 @@ def get_camofox_url() -> str:
     return os.getenv("CAMOFOX_URL", "").rstrip("/")
 
 
+def _auth_headers() -> Dict[str, str]:
+    """Return Authorization headers for Camofox, if a token is configured.
+
+    Upstream camofox-browser gates sensitive routes such as JS evaluation, and
+    can optionally gate every route with ``CAMOFOX_ACCESS_KEY``.  Keep secrets in
+    Hermes' environment/.env rather than config.yaml; if both are present, the
+    access key wins because it satisfies both the global and per-route gates.
+    """
+    token = os.getenv("CAMOFOX_ACCESS_KEY", "").strip() or os.getenv("CAMOFOX_API_KEY", "").strip()
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _request_kwargs(**kwargs: Any) -> Dict[str, Any]:
+    """Attach optional Camofox auth headers to a requests call."""
+    headers = _auth_headers()
+    if headers:
+        kwargs["headers"] = headers
+    return kwargs
+
+
+def _raise_for_status(resp: requests.Response) -> None:
+    """Raise for HTTP errors, with an actionable auth hint for Camofox."""
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError as exc:
+        status = getattr(resp, "status_code", None)
+        if status in (401, 403):
+            raise RuntimeError(
+                f"Camofox API authentication failed (HTTP {status}). "
+                "Set CAMOFOX_ACCESS_KEY (preferred) or CAMOFOX_API_KEY in Hermes .env "
+                "to match the Camofox server."
+            ) from exc
+        raise
+
+
 def is_camofox_mode() -> bool:
     """True when Camofox backend is configured and no CDP override is active.
 
@@ -343,14 +380,13 @@ def _ensure_tab(task_id: Optional[str], url: str = "about:blank") -> Dict[str, A
     base = get_camofox_url()
     resp = requests.post(
         f"{base}/tabs",
-        json={
+        **_request_kwargs(json={
             "userId": session["user_id"],
             "sessionKey": session["session_key"],
             "url": url,
-        },
-        timeout=_DEFAULT_TIMEOUT,
+        }, timeout=_DEFAULT_TIMEOUT),
     )
-    resp.raise_for_status()
+    _raise_for_status(resp)
     data = resp.json()
     session["tab_id"] = data.get("tabId")
     return session
@@ -387,32 +423,32 @@ def camofox_soft_cleanup(task_id: Optional[str] = None) -> bool:
 def _post(path: str, body: dict, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """POST JSON to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.post(url, json=body, timeout=timeout)
-    resp.raise_for_status()
+    resp = requests.post(url, **_request_kwargs(json=body, timeout=timeout))
+    _raise_for_status(resp)
     return resp.json()
 
 
 def _get(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """GET from camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
-    resp.raise_for_status()
+    resp = requests.get(url, **_request_kwargs(params=params, timeout=timeout))
+    _raise_for_status(resp)
     return resp.json()
 
 
 def _get_raw(path: str, params: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> requests.Response:
     """GET from camofox and return raw response (for binary data)."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.get(url, params=params, timeout=timeout)
-    resp.raise_for_status()
+    resp = requests.get(url, **_request_kwargs(params=params, timeout=timeout))
+    _raise_for_status(resp)
     return resp
 
 
 def _delete(path: str, body: dict = None, timeout: int = _DEFAULT_TIMEOUT) -> dict:
     """DELETE to camofox and return parsed response."""
     url = f"{get_camofox_url()}{path}"
-    resp = requests.delete(url, json=body, timeout=timeout)
-    resp.raise_for_status()
+    resp = requests.delete(url, **_request_kwargs(json=body, timeout=timeout))
+    _raise_for_status(resp)
     return resp.json()
 
 

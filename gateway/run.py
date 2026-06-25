@@ -1381,6 +1381,24 @@ _PORT_BINDING_PLATFORM_VALUES = frozenset({
     "sms",
 })
 
+# Platforms whose port-binding status depends on connection mode.
+# Feishu in websocket mode (the default) uses an outbound WebSocket — no port
+# binding.  Only webhook/callback mode needs an HTTP listener.
+_PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {
+    "feishu": "webhook",  # only binds port when connection_mode == "webhook"
+}
+
+
+def _platform_binds_port(platform_value: str, extra: dict) -> bool:
+    """Return True if *platform_value* actually binds a port for *extra* config."""
+    if platform_value not in _PORT_BINDING_PLATFORM_VALUES:
+        return False
+    expected_mode = _PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
+    if expected_mode is not None:
+        actual = str(extra.get("connection_mode", "websocket")).strip().lower()
+        return actual == expected_mode
+    return True
+
 
 class MultiplexConfigError(RuntimeError):
     """A profile multiplexer config is invalid (fail-fast at startup).
@@ -7251,7 +7269,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # default profile's listener already serves every profile via the
             # /p/<profile>/ prefix, so a second bind can only collide. This is a
             # config error, not a transient failure — fail fast and loud.
-            if platform.value in _PORT_BINDING_PLATFORM_VALUES:
+            if _platform_binds_port(platform.value, platform_config.extra):
                 raise MultiplexConfigError(
                     f"Profile '{profile_name}' enables the port-binding platform "
                     f"'{platform.value}', but gateway.multiplex_profiles is on. The "

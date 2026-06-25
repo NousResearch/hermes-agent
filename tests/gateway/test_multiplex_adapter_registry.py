@@ -134,3 +134,71 @@ class TestPortBindingHardError:
                   "wecom_callback", "bluebubbles", "sms"):
             assert p in _PORT_BINDING_PLATFORM_VALUES
 
+
+
+class TestFeishuPortBindingConditional:
+    """Feishu websocket mode does NOT bind a port; only webhook mode does (#52563)."""
+
+    @pytest.mark.asyncio
+    async def test_feishu_websocket_mode_not_rejected(self, monkeypatch):
+        """Feishu in websocket mode (the default) should NOT raise MultiplexConfigError."""
+        from gateway.run import MultiplexConfigError
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={"app_id": "cli_xxx", "app_secret": "sec", "connection_mode": "websocket"},
+            ),
+        }
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: None)
+
+        connected = await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+        assert connected == 0  # no error, just nothing connected
+
+    @pytest.mark.asyncio
+    async def test_feishu_webhook_mode_raises(self, monkeypatch):
+        """Feishu in webhook mode binds a port and should raise MultiplexConfigError."""
+        from gateway.run import MultiplexConfigError
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+
+        reviewer_cfg = GatewayConfig(multiplex_profiles=True)
+        reviewer_cfg.platforms = {
+            Platform.FEISHU: PlatformConfig(
+                enabled=True,
+                extra={"app_id": "cli_xxx", "app_secret": "sec", "connection_mode": "webhook"},
+            ),
+        }
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: reviewer_cfg)
+
+        with pytest.raises(MultiplexConfigError) as ei:
+            await runner._start_one_profile_adapters("reviewer", "/tmp/x", {})
+        assert "feishu" in str(ei.value)
+
+    def test_platform_binds_port_helper(self):
+        """Unit test for _platform_binds_port helper."""
+        from gateway.run import _platform_binds_port
+
+        # Non-port-binding platform
+        assert _platform_binds_port("telegram", {}) is False
+
+        # Unconditional port-binding platform
+        assert _platform_binds_port("webhook", {}) is True
+        assert _platform_binds_port("api_server", {}) is True
+
+        # Feishu: websocket = no port binding
+        assert _platform_binds_port("feishu", {"connection_mode": "websocket"}) is False
+        assert _platform_binds_port("feishu", {}) is False  # default is websocket
+
+        # Feishu: webhook = port binding
+        assert _platform_binds_port("feishu", {"connection_mode": "webhook"}) is True

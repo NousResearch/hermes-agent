@@ -98,6 +98,7 @@ def _make_runner(adapter):
     runner._fallback_model = None
     runner._session_db = None
     runner._running_agents = {}
+    runner._active_progress_messages = {}
     runner._session_run_generation = {}
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
@@ -186,6 +187,55 @@ async def test_final_response_edits_progress_message_without_new_send():
     assert adapter.edits[-1]["message_id"] == "201"
     assert adapter.edits[-1]["content"] == "final answer"
     assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_final_response_edit_clears_active_progress_tracking():
+    adapter = DiscordProgressAdapter()
+    runner = _make_runner(adapter)
+    source = SessionSource(platform=Platform.DISCORD, chat_id="42")
+    event = SimpleNamespace(source=source, message_id="9")
+
+    runner._remember_active_progress_message(
+        "agent:main:discord:dm:42",
+        source,
+        "201",
+        '💻 端末確認: "必要な確認を実行中"',
+    )
+
+    ok = await runner._edit_progress_message_to_final_response(
+        adapter=adapter,
+        source=source,
+        event=event,
+        message_id="201",
+        content="final answer",
+    )
+
+    assert ok is True
+    assert runner._active_progress_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_shutdown_interruption_replaces_stale_progress_message():
+    adapter = DiscordProgressAdapter()
+    runner = _make_runner(adapter)
+    source = SessionSource(platform=Platform.DISCORD, chat_id="42")
+
+    runner._remember_active_progress_message(
+        "agent:main:discord:dm:42",
+        source,
+        "201",
+        '💻 端末確認: "必要な確認を実行中"',
+    )
+
+    await runner._edit_active_progress_messages_to_interruption_notice(
+        {"agent:main:discord:dm:42"}
+    )
+
+    assert adapter.edits[-1]["message_id"] == "201"
+    assert "Gateway再起動" in adapter.edits[-1]["content"]
+    assert "端末確認" not in adapter.edits[-1]["content"]
+    assert runner._active_progress_messages == {}
 
 
 @pytest.mark.asyncio

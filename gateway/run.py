@@ -1419,6 +1419,7 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+    _active_progress_messages: Dict[str, Dict[str, Any]] = {}
 
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
@@ -1464,6 +1465,7 @@ class GatewayRunner:
         # Key: session_key, Value: AIAgent instance
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
+        self._active_progress_messages: Dict[str, Dict[str, Any]] = {}
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
@@ -5681,9 +5683,11 @@ class GatewayRunner:
                 _resume_reason = (
                     "restart_timeout" if self._restart_requested else "shutdown_timeout"
                 )
+                _interrupted_progress_keys: set[str] = set()
                 for _sk, _agent in list(self._running_agents.items()):
                     if _agent is _AGENT_PENDING_SENTINEL:
                         continue
+                    _interrupted_progress_keys.add(_sk)
                     try:
                         self.session_store.mark_resume_pending(_sk, _resume_reason)
                     except Exception as _e:
@@ -5698,6 +5702,10 @@ class GatewayRunner:
                 while self._running_agents and asyncio.get_running_loop().time() < interrupt_deadline:
                     self._update_runtime_status("draining")
                     await asyncio.sleep(0.1)
+
+                await self._edit_active_progress_messages_to_interruption_notice(
+                    _interrupted_progress_keys
+                )
 
                 # Kill lingering tool subprocesses NOW, before we spend more
                 # budget on adapter disconnect / session DB close.  Under
@@ -7821,6 +7829,116 @@ class GatewayRunner:
                 pass
         return source
 
+    def _remember_active_progress_message(
+        self,
+        session_key: str | None,
+        source: SessionSource,
+        message_id: str | None,
+        content: str,
+        *,
+        can_edit: bool = True,
+    ) -> None:
+        """Track the editable progress bubble for an active gateway turn."""
+        if not session_key or not message_id or not source or not source.chat_id:
+            return
+        progress_messages = getattr(self, "_active_progress_messages", None)
+        if progress_messages is None:
+            progress_messages = {}
+            self._active_progress_messages = progress_messages
+        if not can_edit:
+            progress_messages.pop(session_key, None)
+            return
+        progress_messages[session_key] = {
+            "platform": source.platform,
+            "chat_id": str(source.chat_id),
+            "message_id": str(message_id),
+            "content": str(content or ""),
+        }
+
+    def _forget_active_progress_message(
+        self,
+        *,
+        session_key: str | None = None,
+        platform: Platform | None = None,
+        chat_id: str | None = None,
+        message_id: str | None = None,
+    ) -> None:
+        progress_messages = getattr(self, "_active_progress_messages", None)
+        if not progress_messages:
+            return
+        if session_key:
+            progress_messages.pop(session_key, None)
+            return
+        if not message_id:
+            return
+        for key, info in list(progress_messages.items()):
+            if str(info.get("message_id")) != str(message_id):
+                continue
+            if platform is not None and info.get("platform") != platform:
+                continue
+            if chat_id is not None and str(info.get("chat_id")) != str(chat_id):
+                continue
+            progress_messages.pop(key, None)
+
+    async def _edit_active_progress_messages_to_interruption_notice(
+        self,
+        session_keys: set[str] | None = None,
+    ) -> None:
+        """Replace stale progress bubbles when shutdown interrupts a turn."""
+        progress_messages = getattr(self, "_active_progress_messages", None)
+        if not progress_messages:
+            return
+        notice = "⚠️ Gateway再起動で作業が中断されました。再起動後にもう一度依頼してください。"
+        targets = list(progress_messages.items())
+        for session_key, info in targets:
+            if session_keys is not None and session_key not in session_keys:
+                continue
+            platform = info.get("platform")
+            adapter = self.adapters.get(platform)
+            message_id = str(info.get("message_id") or "")
+            chat_id = str(info.get("chat_id") or "")
+            if not adapter or not chat_id or not message_id:
+                progress_messages.pop(session_key, None)
+                continue
+            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+                progress_messages.pop(session_key, None)
+                continue
+            kwargs = {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": notice,
+            }
+            try:
+                edit_params = inspect.signature(adapter.edit_message).parameters
+                if (
+                    "metadata" in edit_params
+                    or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in edit_params.values())
+                ):
+                    source = self._get_cached_session_source(session_key)
+                    kwargs["metadata"] = (
+                        self._thread_metadata_for_source(source, None)
+                        if source is not None
+                        else None
+                    )
+            except (TypeError, ValueError):
+                pass
+            try:
+                result = await adapter.edit_message(**kwargs)
+                if not getattr(result, "success", False):
+                    logger.debug(
+                        "Shutdown progress interruption edit failed for %s: %s",
+                        session_key,
+                        getattr(result, "error", ""),
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "Shutdown progress interruption edit raised for %s: %s",
+                    session_key,
+                    exc,
+                )
+            finally:
+                progress_messages.pop(session_key, None)
+
     async def _edit_progress_message_to_final_response(
         self,
         *,
@@ -7875,6 +7993,11 @@ class GatewayRunner:
                 getattr(edit_result, "error", ""),
             )
             return False
+        self._forget_active_progress_message(
+            platform=source.platform,
+            chat_id=source.chat_id,
+            message_id=str(message_id),
+        )
 
         for extra_chunk in chunks[1:]:
             extra_result = await adapter.send(
@@ -15887,6 +16010,13 @@ class GatewayRunner:
                     _progress_state["message_id"] = str(message_id)
                 _progress_state["can_edit"] = bool(can_edit_value)
                 _progress_state["content"] = str(content or "")
+                self._remember_active_progress_message(
+                    session_key,
+                    source,
+                    str(message_id) if message_id else _progress_state.get("message_id"),
+                    str(content or ""),
+                    can_edit=bool(can_edit_value),
+                )
 
             def _progress_text(lines: list) -> str:
                 if _final_response_edits_progress:

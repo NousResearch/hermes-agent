@@ -135,12 +135,45 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     return disabled
 
 
+def _merge_mcp_into_per_job_toolsets(per_job: list[str], cfg: dict) -> list[str]:
+    """Layer enabled MCP servers onto a per-job ``enabled_toolsets`` allowlist.
+
+    A per-job list scopes the *native* toolsets, but on its own it silently
+    drops every MCP server: ``discover_mcp_tools()`` registers the tools into
+    the global registry, yet ``get_tool_definitions(enabled_toolsets=...)``
+    only keeps toolsets named in the list. The agent then rejects every
+    ``mcp_*`` call with "Unknown tool". This restores parity with
+    ``_get_platform_tools`` MCP semantics:
+
+      * ``no_mcp`` sentinel present  -> no MCP servers (sentinel stripped)
+      * one or more MCP server names already listed -> treat as an allowlist,
+        add nothing further (the user named exactly the servers they want)
+      * otherwise -> union in every globally-enabled MCP server
+    """
+    result = [t for t in per_job if t != "no_mcp"]
+    if "no_mcp" in per_job:
+        return result
+    # lazy import: avoid heavy hermes_cli import at cron module load (matches
+    # _resolve_cron_enabled_toolsets' fallback) and share one MCP-membership
+    # computation with the gateway/CLI platform resolver.
+    from hermes_cli.tools_config import enabled_mcp_server_names
+    enabled_mcp = enabled_mcp_server_names(cfg)
+    if set(result) & enabled_mcp:
+        return result
+    for name in sorted(enabled_mcp):
+        if name not in result:
+            result.append(name)
+    return result
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
     Precedence:
     1. Per-job ``enabled_toolsets`` (set via ``cronjob`` tool on create/update).
-       Keeps the agent's job-scoped toolset override intact — #6130.
+       Keeps the agent's job-scoped toolset override intact — #6130. Enabled
+       MCP servers are layered on per ``_merge_mcp_into_per_job_toolsets`` so a
+       native-toolset allowlist does not silently strip MCP tools.
     2. Per-platform ``hermes tools`` config for the ``cron`` platform.
        Mirrors gateway behavior (``_get_platform_tools(cfg, platform_key)``)
        so users can gate cron toolsets globally without recreating every job.
@@ -154,7 +187,7 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """
     per_job = job.get("enabled_toolsets")
     if per_job:
-        return per_job
+        return _merge_mcp_into_per_job_toolsets(list(per_job), cfg or {})
     try:
         from hermes_cli.tools_config import _get_platform_tools  # lazy: avoid heavy import at cron module load
         return sorted(_get_platform_tools(cfg or {}, "cron"))
@@ -1975,6 +2008,60 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             message = format_runtime_provider_error(exc)
             raise RuntimeError(message) from exc
 
+        # Provider/model-drift fail-closed guard (#44585).
+        #
+        # An UNPINNED job (no explicit job["provider"]/["model"]) follows the
+        # global default, which can change after the job was created — a switch
+        # to a paid PROVIDER (e.g. nous) OR a paid MODEL on the same provider
+        # (e.g. claude-fable-5 on openrouter). Without a guard the job would
+        # silently inherit that change and spend real money on every tick — the
+        # $7.73 incident named BOTH a provider and a model.
+        #
+        # create_job() snapshots whatever resolution would have picked at
+        # creation for each unpinned axis (job["provider_snapshot"] /
+        # job["model_snapshot"]). Here, for each axis that (a) has a snapshot and
+        # (b) is unpinned and (c) currently resolves to a DIFFERENT value, we
+        # fail closed: skip this run, make NO paid call, and deliver a loud,
+        # actionable alert telling the user to pin the axis explicitly.
+        #
+        # Back-compat: an axis with no snapshot (pre-existing jobs, no_agent, or
+        # any axis whose creation-time resolution failed) behaves exactly as
+        # before — the guard never engages for it. Pinned axes are unaffected.
+        _drift: list[str] = []
+        _provider_snapshot = (job.get("provider_snapshot") or "").strip().lower()
+        if _provider_snapshot and not (job.get("provider") or "").strip():
+            _current_provider = str(runtime.get("provider") or "").strip().lower()
+            if _current_provider and _current_provider != _provider_snapshot:
+                _drift.append(
+                    f"provider '{_provider_snapshot}' -> '{_current_provider}'"
+                )
+        _model_snapshot = (job.get("model_snapshot") or "").strip().lower()
+        if _model_snapshot and not (job.get("model") or "").strip():
+            _current_model = str(model or "").strip().lower()
+            if _current_model and _current_model != _model_snapshot:
+                _drift.append(
+                    f"model '{_model_snapshot}' -> '{_current_model}'"
+                )
+        if _drift:
+            _changes = "; ".join(_drift)
+            logger.warning(
+                "Job '%s': SKIPPED — global inference config drifted since "
+                "creation (%s) and this job is unpinned. Skipped to prevent "
+                "unintended spend. Pin explicitly to proceed: "
+                "`cronjob action=update job_id=%s provider=<p> model=<m>`.",
+                job_id,
+                _changes,
+                job_id,
+            )
+            raise RuntimeError(
+                f"Skipped to prevent unintended spend: global inference config "
+                f"drifted since this job was created ({_changes}), and this job "
+                f"is unpinned. No inference call was made. To run on the new "
+                f"config, pin it explicitly: `cronjob action=update "
+                f"job_id={job_id} provider=<provider> model=<model>` "
+                f"(or pin the original values to keep them). See #44585."
+            )
+
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
         credential_pool = None
         runtime_provider = str(runtime.get("provider") or "").strip().lower()
@@ -2148,13 +2235,27 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # would otherwise be delivered as if it were the agent's reply and the
         # job's `last_status` set to "ok". Raise so the except handler below
         # builds the proper failure tuple. (issue #17855)
-        if result.get("failed") is True or result.get("completed") is False:
+        turn_exit_reason = str(result.get("turn_exit_reason") or "")
+        final_response_text = (result.get("final_response") or "").strip()
+        max_iteration_summary = (
+            result.get("failed") is not True
+            and result.get("completed") is False
+            and turn_exit_reason.startswith("max_iterations_reached(")
+            and bool(final_response_text)
+        )
+        if result.get("failed") is True or (result.get("completed") is False and not max_iteration_summary):
             _err_text = (
                 result.get("error")
-                or (result.get("final_response") or "").strip()
+                or final_response_text
                 or "agent reported failure"
             )
             raise RuntimeError(_err_text)
+        if max_iteration_summary:
+            logger.warning(
+                "Job '%s' reached the iteration limit but produced a final fallback response; "
+                "delivering the response instead of failing the cron run",
+                job_name,
+            )
 
         final_response = result.get("final_response", "") or ""
         # Strip leaked placeholder text that upstream may inject on empty completions.

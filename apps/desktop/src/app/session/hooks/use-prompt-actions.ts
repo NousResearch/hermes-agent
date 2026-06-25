@@ -27,6 +27,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setSessionYolo } from '@/lib/yolo-session'
+import { openCommandPalettePage } from '@/store/command-palette'
 import {
   $composerAttachments,
   clearComposerAttachments,
@@ -37,8 +38,11 @@ import {
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
+import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { setPetScale } from '@/store/pet-gallery'
+import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
@@ -58,8 +62,8 @@ import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
 
 import type {
-  ClientSessionState,
   BrowserManageResponse,
+  ClientSessionState,
   FileAttachResponse,
   HandoffFailResponse,
   HandoffRequestResponse,
@@ -551,7 +555,14 @@ export function usePromptActions({
     async (rawText: string, options?: SubmitTextOptions) => {
       const visibleText = rawText.trim()
       const usingComposerAttachments = !options?.attachments
-      const attachments = options?.attachments ?? $composerAttachments.get()
+      // Drop undefined/null holes a session switch or draft restore can leave in
+      // the attachments array (same bug class as AttachmentList #49624). Without
+      // this, the sibling iterations below (a.kind / a.label / a.refText, and the
+      // sync step) throw "Cannot read properties of undefined (reading 'refText')"
+      // and break the chat surface.
+      const attachments = (options?.attachments ?? $composerAttachments.get()).filter(
+        (a): a is ComposerAttachment => Boolean(a)
+      )
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
@@ -564,14 +575,17 @@ export function usePromptActions({
       let attachmentRefs = attachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
 
       const buildContextText = (atts: ComposerAttachment[]): string => {
-        const contextRefs = atts
+        // atts may be the post-sync array, which can reintroduce holes; filter
+        // before touching a.refText / a.kind.
+        const present = atts.filter((a): a is ComposerAttachment => Boolean(a))
+        const contextRefs = present
           .map(a => a.refText)
           .filter(Boolean)
           .join('\n')
 
         return (
           [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
-          (atts.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
+          (present.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
         )
       }
 
@@ -1175,6 +1189,47 @@ export function usePromptActions({
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
+        // /hatch opens the pet generator overlay (the desktop's rich, multi-step
+        // generate→pick→hatch→adopt flow). A typed description seeds the prompt
+        // so `/hatch a cyber fox` lands on the composer step prefilled.
+        hatch: async ({ arg }) => {
+          const concept = arg.trim()
+
+          if (concept) {
+            $petGenInput.set(concept)
+          }
+
+          openPetGenerate()
+        },
+        pet: async ctx => {
+          const [sub = '', rawValue = ''] = ctx.arg.trim().split(/\s+/)
+          const lower = sub.toLowerCase()
+
+          if (lower === 'list' || lower === 'gallery' || lower === 'browse' || lower === 'all') {
+            openCommandPalettePage('pets')
+
+            return
+          }
+
+          // `/pet scale <n>` resizes the floating pet locally (instant) and
+          // persists via the store — no round-trip to the slash worker.
+          if (lower === 'scale') {
+            const value = Number(rawValue)
+
+            if (!rawValue || Number.isNaN(value)) {
+              const resolved = await withSlashOutput(ctx)
+              resolved?.render('usage: /pet scale <factor>  (e.g. /pet scale 0.5)')
+
+              return
+            }
+
+            setPetScale(requestGateway, value)
+
+            return
+          }
+
+          await runExec(ctx)
+        },
         // /browser connect|disconnect|status manages the live CDP connection on
         // the gateway host, mirroring the TUI's browser.manage RPC. It mutates
         // BROWSER_CDP_URL (and may launch Chrome) in the gateway process — only
@@ -1391,6 +1446,7 @@ export function usePromptActions({
 
   const cancelRun = useCallback(async () => {
     const sessionId = activeSessionId || activeSessionIdRef.current
+
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
       setBusy(false)
@@ -1643,6 +1699,7 @@ export function usePromptActions({
       // rows (and kill the live processes) before the fresh run repopulates.
       clearSessionTodos(sessionId)
       resetSessionBackground(sessionId)
+      clearPreviewArtifacts(sessionId)
 
       clearNotifications()
       setMutableRef(busyRef, true)
@@ -1705,6 +1762,7 @@ export function usePromptActions({
       // processes) before the re-run repopulates them.
       clearSessionTodos(sessionId)
       resetSessionBackground(sessionId)
+      clearPreviewArtifacts(sessionId)
 
       clearNotifications()
       setMutableRef(busyRef, true)

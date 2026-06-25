@@ -21,6 +21,7 @@ from hermes_cli.config import (
     save_env_value,
     save_env_value_secure,
     sanitize_env_file,
+    write_platform_config_field,
     _sanitize_env_lines,
 )
 
@@ -60,6 +61,30 @@ class TestEnsureHermesHome:
             soul_path.write_text("custom soul", encoding="utf-8")
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == "custom soul"
+
+    def test_upgrades_legacy_template_soul_md(self, tmp_path):
+        # Older installers seeded a comment-only scaffold that shadowed the
+        # runtime default. A SOUL.md still matching that scaffold carries no
+        # user persona and should be upgraded in place to DEFAULT_SOUL_MD.
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD, _LEGACY_TEMPLATE_SOULS
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(_LEGACY_TEMPLATE_SOULS[0] + "\n", encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
+
+    def test_preserves_legacy_template_with_user_persona(self, tmp_path):
+        # If the user typed a persona alongside the scaffold, the content no
+        # longer matches the known empty template — leave it untouched.
+        from hermes_cli.default_soul import _LEGACY_TEMPLATE_SOULS
+
+        mixed = _LEGACY_TEMPLATE_SOULS[0] + "\nYou are a helpful pirate."
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(mixed, encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == mixed
 
 
 class TestLoadConfigDefaults:
@@ -254,6 +279,24 @@ class TestSaveAndLoadRoundtrip:
 
             reloaded = load_config()
             assert reloaded["terminal"]["timeout"] == 999
+
+    def test_write_platform_config_field_coerces_nested_platform_maps(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model: test/custom-model\nplatforms: not-a-map\n",
+                encoding="utf-8",
+            )
+
+            write_platform_config_field(
+                "email",
+                "unauthorized_dm_behavior",
+                "pair",
+                raw=True,
+            )
+
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+            assert saved["model"] == "test/custom-model"
+            assert saved["platforms"]["email"]["unauthorized_dm_behavior"] == "pair"
 
 
 class TestSaveEnvValueSecure:

@@ -691,6 +691,7 @@ class TeamsAdapter(BasePlatformAdapter):
     """Microsoft Teams adapter using the microsoft-teams-apps SDK."""
 
     MAX_MESSAGE_LENGTH = 28000  # Teams text message limit (~28 KB)
+    splits_long_messages = True  # send() chunks via truncate_message()
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("teams"))

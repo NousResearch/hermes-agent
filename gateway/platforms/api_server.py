@@ -3448,7 +3448,7 @@ class APIServerAdapter(BasePlatformAdapter):
         against double-fire on a NAS/scheduler retry.
         """
         from hermes_cli.config import cfg_get, load_config
-        from plugins.cron.chronos.verify import get_fire_verifier
+        from plugins.cron_providers.chronos.verify import get_fire_verifier
 
         auth = request.headers.get("Authorization", "")
         token = auth[7:].strip() if auth.startswith("Bearer ") else ""
@@ -3964,6 +3964,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
                     event = dict(approval_data or {})
+                    # Redact credentials from the command before it enters the
+                    # SSE/API event stream — same egress bug as #48456, second
+                    # transport: API/desktop clients would otherwise receive the
+                    # raw command Tirith flagged. Reuse the gateway seam.
+                    if "command" in event:
+                        from gateway.run import _redact_approval_command
+
+                        event["command"] = _redact_approval_command(event.get("command"))
                     event.update({
                         "event": "approval.request",
                         "run_id": run_id,

@@ -72,6 +72,7 @@ export interface Translations {
       backgroundExitedDuringStartup: string
       backendStopped: string
       desktopBootFailed: string
+      gatewayConnectionLost: string
       gatewaySignInRequired: string
       ipcBridgeUnavailable: string
     }
@@ -270,6 +271,41 @@ export interface Translations {
       installed: (name: string) => string
       removeTheme: string
       importedBadge: string
+      pet: {
+        title: string
+        intro: string
+        restartHint: string
+        on: string
+        off: string
+        scaleTitle: string
+        scaleDesc: string
+        chooseTitle: string
+        chooseDesc: string
+        searchPlaceholder: string
+        unreachable: string
+        noMatch: (query: string) => string
+        installedTag: string
+        generatedTag: string
+        countCapped: (cap: number, total: number) => string
+        count: (n: number) => string
+        uninstall: (name: string) => string
+        delete: (name: string) => string
+        deleteTitle: (name: string) => string
+        deleteBody: string
+        deleteConfirm: string
+        rename: (name: string) => string
+        renameTitle: string
+        renamePlaceholder: string
+        renameSave: string
+        exportPet: (name: string) => string
+        adoptFailed: (slug: string) => string
+        uninstallFailed: (slug: string) => string
+        renameFailed: (slug: string) => string
+        exportFailed: (slug: string) => string
+        noneAvailable: string
+        turnOnFailed: string
+        turnOffFailed: string
+      }
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
@@ -602,6 +638,46 @@ export interface Translations {
     settings: string
     changeTheme: string
     changeColorMode: string
+    pets: {
+      title: string
+      placeholder: string
+      loading: string
+      error: string
+      staleBackend: string
+      empty: string
+      turnOff: string
+      turnOn: string
+      installed: string
+      generatedTag: string
+      adoptFailed: string
+      toggleFailed: string
+      noneAvailable: string
+    }
+    generatePet: {
+      title: string
+      placeholder: string
+      promptHint: string
+      readyHint: string
+      generate: string
+      generating: string
+      retry: string
+      hatch: string
+      spawning: string
+      hatching: string
+      hatchingSub: string
+      hatched: string
+      hatchRow: (state: string, done: number, total: number) => string
+      hatchComposing: string
+      hatchSaving: string
+      namePlaceholder: string
+      staleBackend: string
+      backgroundHint: string
+      genericError: string
+      referenceImageTooLarge: string
+      referenceImageInvalid: string
+      adopt: string
+      startOver: string
+    }
     installTheme: {
       title: string
       placeholder: string
@@ -1308,6 +1384,7 @@ export interface Translations {
     opening: string
     hide: string
     openPreview: string
+    openInBrowser: string
     sourceLineTitle: string
     source: string
     renderedPreview: string

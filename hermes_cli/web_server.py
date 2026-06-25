@@ -62,6 +62,7 @@ from hermes_cli.config import (
     format_docker_update_message,
     recommended_update_command_for_method,
     redact_key,
+    write_platform_config_field,
 )
 from hermes_cli.memory_providers import (
     MemoryProvider,
@@ -232,6 +233,11 @@ def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
 
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+
+# Memory-provider OAuth connect routes live in the memory layer, not here.
+from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402
+
+app.include_router(_memory_oauth_router)
 
 # ---------------------------------------------------------------------------
 # Session token for protecting sensitive endpoints (reveal).
@@ -622,6 +628,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # with the other messaging-platform config (discord) so it isn't an
     # orphan tab of one field.
     "telegram": "discord",
+    # `computer_use.cua_telemetry` is the only schema-surfaced computer_use
+    # field — fold it into the agent tab rather than spawning a one-field
+    # orphan category.
+    "computer_use": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -1317,13 +1327,35 @@ def _dashboard_local_update_managed_externally() -> bool:
     in-browser local update action. Keep this dashboard capability separate
     from install-method detection: manual git/pip installs inside containers can
     still behave like their actual install method in the CLI.
+
+    However, when the install method is ``git`` (a bind-mounted checkout inside
+    a container — e.g. the hermes-webui image sharing the Hermes source tree),
+    the dashboard's ``hermes update`` button is the correct update path and
+    should not be suppressed. Other containerized install methods remain
+    externally managed unless their apply path is proven safe inside the
+    running container filesystem.
     """
+    if _default_hermes_root_is_opt_data():
+        return True
     try:
         from hermes_constants import is_container
 
-        return is_container()
+        if not is_container():
+            return False
     except Exception:
         return False
+    # We are inside a container, but the install may still be self-managed.
+    # If the install method is git, the dashboard update button works against
+    # the mounted checkout and should be offered. Keep pip blocked inside
+    # containers: its apply path mutates the running container filesystem and
+    # is not the bind-mounted checkout case this gate is meant to recover.
+    try:
+        method = detect_install_method(PROJECT_ROOT)
+        if method == "git":
+            return False
+    except Exception:
+        pass
+    return True
 
 
 def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
@@ -5006,17 +5038,7 @@ def _messaging_platform_payload(
 
 
 def _write_platform_enabled(platform_id: str, enabled: bool) -> None:
-    config = load_config()
-    platforms = config.setdefault("platforms", {})
-    if not isinstance(platforms, dict):
-        platforms = {}
-        config["platforms"] = platforms
-    platform_config = platforms.setdefault(platform_id, {})
-    if not isinstance(platform_config, dict):
-        platform_config = {}
-        platforms[platform_id] = platform_config
-    platform_config["enabled"] = enabled
-    save_config(config)
+    write_platform_config_field(platform_id, "enabled", enabled)
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
@@ -6101,6 +6123,7 @@ try:
     from agent.anthropic_adapter import (
         _OAUTH_CLIENT_ID as _ANTHROPIC_OAUTH_CLIENT_ID,
         _OAUTH_TOKEN_URL as _ANTHROPIC_OAUTH_TOKEN_URL,
+        _OAUTH_TOKEN_URLS as _ANTHROPIC_OAUTH_TOKEN_URLS,
         _OAUTH_REDIRECT_URI as _ANTHROPIC_OAUTH_REDIRECT_URI,
         _OAUTH_SCOPES as _ANTHROPIC_OAUTH_SCOPES,
         _generate_pkce as _generate_pkce_pair,
@@ -6289,22 +6312,31 @@ def _submit_anthropic_pkce(
         "redirect_uri": _ANTHROPIC_OAUTH_REDIRECT_URI,
         "code_verifier": sess["verifier"],
     }).encode()
-    req = urllib.request.Request(
-        _ANTHROPIC_OAUTH_TOKEN_URL,
-        data=exchange_data,
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": "hermes-dashboard/1.0",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            result = json.loads(resp.read().decode())
-    except Exception as e:
+    # Anthropic migrated the OAuth token endpoint to platform.claude.com;
+    # console.anthropic.com now 404s. Try the new host first, then fall back.
+    result = None
+    last_exc = None
+    for _endpoint in _ANTHROPIC_OAUTH_TOKEN_URLS:
+        req = urllib.request.Request(
+            _endpoint,
+            data=exchange_data,
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": "hermes-dashboard/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                result = json.loads(resp.read().decode())
+            break
+        except Exception as e:
+            last_exc = e
+            continue
+    if result is None:
         with _oauth_sessions_lock:
             sess["status"] = "error"
-            sess["error_message"] = f"Token exchange failed: {e}"
+            sess["error_message"] = f"Token exchange failed: {last_exc}"
         return {"ok": False, "status": "error", "message": sess["error_message"]}
 
     access_token = result.get("access_token", "")
@@ -7894,7 +7926,7 @@ async def cron_fire_webhook(request: Request):
     Returns 202 immediately and runs the job in the background so a long agent
     turn never trips NAS's HTTP timeout.
     """
-    from plugins.cron.chronos.verify import get_fire_verifier
+    from plugins.cron_providers.chronos.verify import get_fire_verifier
 
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
@@ -8332,6 +8364,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
 
 # Register the mcp-install action log so /api/actions/mcp-install/status works.
 _ACTION_LOG_FILES.setdefault("mcp-install", "action-mcp-install.log")
+_ACTION_LOG_FILES.setdefault("computer-use-grant", "action-computer-use-grant.log")
 
 
 # ---------------------------------------------------------------------------
@@ -10655,6 +10688,63 @@ async def run_toolset_post_setup(
 
 
 # ---------------------------------------------------------------------------
+# Computer Use (cua-driver) — cross-platform readiness + macOS permission grant
+#
+# cua-driver runs on macOS, Windows, and Linux. The desktop card reflects
+# per-OS readiness: on macOS the Accessibility + Screen Recording TCC grants
+# (which attach to cua-driver's OWN identity, com.trycua.driver — not Hermes,
+# so no app entitlement is involved); elsewhere, driver health from
+# `cua-driver doctor`. The grant flow is macOS-only (no TCC toggles to request
+# on Windows/Linux).
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/tools/computer-use/status")
+async def get_computer_use_status(profile: Optional[str] = None):
+    """Cross-platform Computer Use readiness for the desktop card.
+
+    See ``tools.computer_use.permissions.computer_use_status`` for the payload
+    shape. Read-only and fast (shells ``cua-driver doctor`` + macOS
+    ``permissions status``).
+    """
+    from tools.computer_use.permissions import computer_use_status
+
+    with _profile_scope(profile):
+        return computer_use_status()
+
+
+@app.post("/api/tools/computer-use/permissions/grant")
+async def grant_computer_use_permissions(profile: Optional[str] = None):
+    """Spawn ``hermes computer-use permissions grant`` as a background action.
+
+    macOS-only: ``cua-driver permissions grant`` launches CuaDriver via
+    LaunchServices so the TCC dialog is attributed to com.trycua.driver, then
+    waits for approval. The frontend polls ``GET /api/actions/computer-use-
+    grant/status`` and re-reads ``/status`` once it exits. Windows/Linux have
+    no TCC toggles to grant, so this returns 400 there.
+    """
+    if sys.platform != "darwin":
+        raise HTTPException(
+            status_code=400,
+            detail="Computer Use permission grants are a macOS concept.",
+        )
+    try:
+        proc = _spawn_hermes_action(
+            _profile_cli_args(profile)
+            + ["computer-use", "permissions", "grant"],
+            "computer-use-grant",
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.exception("Failed to spawn computer-use permissions grant")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to request permissions: {exc}"
+        )
+    return {"ok": True, "pid": proc.pid, "name": "computer-use-grant"}
+
+
+# ---------------------------------------------------------------------------
 # Raw YAML config endpoint
 # ---------------------------------------------------------------------------
 
@@ -12823,6 +12913,13 @@ def start_server(
     """
     import uvicorn
 
+    try:
+        from hermes_cli.nous_auth_keepalive import start_nous_auth_keepalive
+
+        start_nous_auth_keepalive()
+    except Exception as exc:
+        _log.debug("Nous auth keepalive did not start: %s", exc)
+
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
     # injection / WS-auth paths can branch on it consistently.  Phase 3.5
     # uses this to decide whether to refuse the bind, log the gate-on
@@ -12956,4 +13053,45 @@ def start_server(
             if server.started:
                 await server.shutdown()
 
-    asyncio.run(_serve())
+    # On POSIX, keep the long-standing ``asyncio.run(_serve())`` behavior
+    # unchanged — Python's default loop there is already a SelectorEventLoop
+    # (or uvloop when uvicorn[standard] installs it), which is exactly what
+    # uvicorn serves on. Touching that path would only widen the blast radius
+    # for no benefit.
+    #
+    # On Windows it is broken: ``asyncio.run`` defaults to a ProactorEventLoop,
+    # but uvicorn's socket-serving stack assumes a SelectorEventLoop on win32
+    # (``uvicorn/loops/asyncio.py`` forces it, and ``uvicorn.Server.run`` threads
+    # ``config.get_loop_factory()`` into its runner for exactly this reason).
+    # Driving uvicorn on the proactor loop makes ``server.startup()`` bind a
+    # socket that never accepts — the dashboard / desktop backend prints
+    # "Skipping web UI build" and then hangs forever with the port LISTENING but
+    # no TCP handshake completing (#50641). So *only on Windows* we mirror
+    # uvicorn's own machinery and run on the loop factory it picks.
+    if sys.platform != "win32":
+        asyncio.run(_serve())
+        return
+
+    # Windows-only path. Resolve the runner + loop factory FIRST (and fall back
+    # to a hand-installed Windows selector policy only when uvicorn predates the
+    # loop-factory API, < 0.36). The actual serve call is then OUTSIDE the
+    # try/except so genuine serve-time errors (port in use, KeyboardInterrupt)
+    # propagate normally instead of being swallowed and double-run.
+    try:
+        from uvicorn._compat import asyncio_run as _runner
+
+        _loop_factory = config.get_loop_factory()
+    except Exception:
+        _runner = None
+        _loop_factory = None
+        try:
+            asyncio.set_event_loop_policy(
+                asyncio.WindowsSelectorEventLoopPolicy()  # type: ignore[attr-defined]
+            )
+        except Exception:
+            pass
+
+    if _runner is not None:
+        _runner(_serve(), loop_factory=_loop_factory)
+    else:
+        asyncio.run(_serve())

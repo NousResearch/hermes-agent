@@ -599,9 +599,59 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, int]:
 
 
 def _count_real_sudo_invocations(command: str) -> int:
-    """Return how many real sudo command words appear in *command*."""
-    _, sudo_count = _rewrite_real_sudo_invocations(command)
-    return sudo_count
+    """Return how many real sudo command words appear in *command*.
+
+    Lightweight scan that reuses the same tokeniser as
+    ``_rewrite_real_sudo_invocations`` but skips the string-building, so it
+    is cheap to call from the result-processing path.
+    """
+    count = 0
+    i = 0
+    n = len(command)
+    command_start = True
+
+    while i < n:
+        ch = command[i]
+
+        if ch.isspace():
+            if ch == "\n":
+                command_start = True
+            i += 1
+            continue
+
+        if ch == "#" and command_start:
+            comment_end = command.find("\n", i)
+            if comment_end == -1:
+                break
+            i = comment_end
+            continue
+
+        if command.startswith("&&", i) or command.startswith("||", i) or command.startswith(";;", i):
+            i += 2
+            command_start = True
+            continue
+
+        if ch in ";|&(":
+            i += 1
+            command_start = True
+            continue
+
+        if ch == ")":
+            i += 1
+            command_start = False
+            continue
+
+        token, next_i = _read_shell_token(command, i)
+        if command_start and token == "sudo":
+            count += 1
+
+        if command_start and _looks_like_env_assignment(token):
+            command_start = True
+        else:
+            command_start = False
+        i = next_i
+
+    return count
 
 
 def _sudo_nopasswd_works() -> bool:
@@ -2553,12 +2603,6 @@ def terminal_tool(
                         "cleared. You will be prompted again on the next sudo "
                         "command."
                     )
-            if sudo_auth_failed and _count_real_sudo_invocations(command) > 1:
-                output += (
-                    "\n\n💡 Tip: this command had multiple sudo invocations. "
-                    "Hermes pipes one password line per sudo; nested sudo inside "
-                    "heredocs/scripts may still need a single outer sudo wrapper."
-                )
 
             # Foreground terminal output canonicalization seam: plugins receive
             # the full output string before default truncation and may only

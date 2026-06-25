@@ -350,9 +350,9 @@ def _looks_like_error_output(content: Any) -> bool:
 
 
 def _normalize_role(r: Optional[str]) -> str:
-    """Normalise a caller-provided role to 'leaf' or 'orchestrator'.
+    """Normalise a caller-provided role to 'lea' or 'orchestrator'.
 
-    None/empty -> 'leaf'.  Unknown strings coerce to 'leaf' with a
+    None/empty -> 'lea'.  Unknown strings coerce to 'leaf' with a
     warning log (matches the silent-degrade pattern of
     _get_orchestrator_enabled).  _build_child_agent adds a second
     degrade layer for depth/kill-switch bounds.
@@ -360,7 +360,7 @@ def _normalize_role(r: Optional[str]) -> str:
     if r is None or not r:
         return "leaf"
     r_norm = str(r).strip().lower()
-    if r_norm in {"leaf", "orchestrator"}:
+    if r_norm in {"lea", "orchestrator"}:
         return r_norm
     logger.warning("Unknown delegate_task role=%r, coercing to 'leaf'", r)
     return "leaf"
@@ -713,7 +713,7 @@ def _build_child_system_prompt(
             if child_depth + 1 >= max_spawn_depth
             else "Your own children can themselves be orchestrators or leaves, "
             "depending on the `role` you pass to delegate_task. Default is "
-            "'leaf'; pass role='orchestrator' explicitly when a child "
+            "'lea'; pass role='orchestrator' explicitly when a child "
             "needs to further decompose its work."
         )
         parts.append(
@@ -1006,7 +1006,7 @@ def _build_child_agent(
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
     # Per-call role controlling whether the child can further delegate.
-    # 'leaf' (default) cannot; 'orchestrator' retains the delegation
+    # 'lea' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
     role: str = "leaf",
 ):
@@ -1027,7 +1027,7 @@ def _build_child_agent(
     # child's depth allow it.  This is the single point where role
     # degrades to 'leaf' — keeps the rule predictable.  Callers pass
     # the normalised role (_normalize_role ran in delegate_task) so
-    # we only deal with 'leaf' or 'orchestrator' here.
+    # we only deal with 'lea' or 'orchestrator' here.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
     max_spawn = _get_max_spawn_depth()
     orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
@@ -1366,7 +1366,7 @@ def _dump_subagent_timeout_diagnostic(
         def _w(line: str = "") -> None:
             lines.append(line)
 
-        _w(f"# Subagent timeout diagnostic — issue #14726")
+        _w("# Subagent timeout diagnostic — issue #14726")
         _w(f"# Generated: {_dt.datetime.now().isoformat()}")
         _w("")
         _w("## Timeout")
@@ -1743,9 +1743,9 @@ def _run_single_child(
                 if child_api_calls == 0:
                     _err = (
                         f"Subagent timed out after {child_timeout}s without "
-                        f"making any API call — the child never reached its "
-                        f"first LLM request (prompt construction, credential "
-                        f"resolution, or transport may be stuck)."
+                        "making any API call — the child never reached its "
+                        "first LLM request (prompt construction, credential "
+                        "resolution, or transport may be stuck)."
                     )
                     if diagnostic_path:
                         _err += f" Diagnostic: {diagnostic_path}"
@@ -1753,7 +1753,7 @@ def _run_single_child(
                     _err = (
                         f"Subagent timed out after {child_timeout}s with "
                         f"{child_api_calls} API call(s) completed — likely "
-                        f"stuck on a slow API call or unresponsive network request."
+                        "stuck on a slow API call or unresponsive network request."
                     )
             else:
                 _err = str(_timeout_exc)
@@ -2075,7 +2075,7 @@ def _recover_tasks_from_json_string(
         )
     if not isinstance(parsed, list):
         return None, (
-            f"tasks must be a JSON array of task objects; parsed "
+            "tasks must be a JSON array of task objects; parsed "
             f"{type(parsed).__name__} instead."
         )
     return parsed, None
@@ -2101,7 +2101,7 @@ def delegate_task(
       - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
 
     The 'role' parameter controls whether a child can further delegate:
-    'leaf' (default) cannot; 'orchestrator' retains the delegation
+    'lea' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
 
@@ -2139,9 +2139,9 @@ def delegate_task(
                 "error": (
                     f"Delegation depth limit reached (depth={depth}, "
                     f"max_spawn_depth={max_spawn}). Raise "
-                    f"delegation.max_spawn_depth in config.yaml if deeper "
-                    f"nesting is required (no hard ceiling, but each level "
-                    f"multiplies API cost)."
+                    "delegation.max_spawn_depth in config.yaml if deeper "
+                    "nesting is required (no hard ceiling, but each level "
+                    "multiplies API cost)."
                 )
             }
         )
@@ -2185,9 +2185,9 @@ def delegate_task(
             return tool_error(
                 f"Too many tasks: {len(tasks)} provided, but "
                 f"max_concurrent_children is {max_children}. "
-                f"Either reduce the task count, split into multiple "
-                f"delegate_task calls, or increase "
-                f"delegation.max_concurrent_children in config.yaml."
+                "Either reduce the task count, split into multiple "
+                "delegate_task calls, or increase "
+                "delegation.max_concurrent_children in config.yaml."
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
@@ -2590,10 +2590,10 @@ def delegate_task(
                 "continue."
                 if n == 1 else
                 f"{n} subagents are running in parallel in the background. You "
-                f"and the user can keep working; they wait on each other and "
-                f"their consolidated results re-enter the conversation as a "
-                f"single message once ALL of them finish. Do not wait or poll "
-                f"— just continue."
+                "and the user can keep working; they wait on each other and "
+                "their consolidated results re-enter the conversation as a "
+                "single message once ALL of them finish. Do not wait or poll "
+                "— just continue."
             )
             payload = {
                 "status": "dispatched",
@@ -2795,16 +2795,16 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     except Exception as exc:
         raise ValueError(
             f"Cannot resolve delegation provider '{configured_provider}': {exc}. "
-            f"Check that the provider is configured (API key set, valid provider name), "
-            f"or set delegation.base_url/delegation.api_key for a direct endpoint. "
-            f"Available providers: openrouter, nous, zai, kimi-coding, minimax."
+            "Check that the provider is configured (API key set, valid provider name), "
+            "or set delegation.base_url/delegation.api_key for a direct endpoint. "
+            "Available providers: openrouter, nous, zai, kimi-coding, minimax."
         ) from exc
 
     api_key = runtime.get("api_key", "")
     if not api_key:
         raise ValueError(
             f"Delegation provider '{configured_provider}' resolved but has no API key. "
-            f"Set the appropriate environment variable or run 'hermes auth'."
+            "Set the appropriate environment variable or run 'hermes auth'."
         )
 
     return {
@@ -2872,24 +2872,24 @@ def _build_top_level_description() -> str:
 
     if max_depth >= 2 and orchestrator_on:
         nesting_clause = (
-            f"Nested delegation IS enabled for this user "
+            "Nested delegation IS enabled for this user "
             f"(max_spawn_depth={max_depth}): pass role='orchestrator' on a "
             f"child to let it spawn its own workers, up to {max_depth - 1} "
-            f"additional level(s) deep."
+            "additional level(s) deep."
         )
     elif max_depth >= 2 and not orchestrator_on:
         nesting_clause = (
-            f"Nested delegation is DISABLED on this install "
-            f"(delegation.orchestrator_enabled=false), even though "
+            "Nested delegation is DISABLED on this install "
+            "(delegation.orchestrator_enabled=false), even though "
             f"max_spawn_depth={max_depth}. role='orchestrator' is silently "
-            f"forced to 'leaf'."
+            "forced to 'leaf'."
         )
     else:
         nesting_clause = (
-            f"Nested delegation is OFF for this user "
+            "Nested delegation is OFF for this user "
             f"(max_spawn_depth={max_depth}): every child is a leaf and "
-            f"cannot delegate further. Raise delegation.max_spawn_depth in "
-            f"config.yaml to enable nesting."
+            "cannot delegate further. Raise delegation.max_spawn_depth in "
+            "config.yaml to enable nesting."
         )
 
     return (
@@ -2900,7 +2900,7 @@ def _build_top_level_description() -> str:
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets).\n"
         f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
-        f"items concurrently for this user (configured via "
+        "items concurrently for this user (configured via "
         f"delegation.max_concurrent_children in config.yaml). {nesting_clause}\n\n"
         "BOTH MODES RUN IN THE BACKGROUND. delegate_task returns immediately — "
         "you and the user keep working, and each subagent's full result "
@@ -2943,7 +2943,7 @@ def _build_top_level_description() -> str:
         "delegate_task so they can spawn their own workers, but still "
         "cannot use clarify, memory, send_message, or execute_code. "
         f"Orchestrators are bounded by max_spawn_depth={max_depth} for this "
-        f"user and can be disabled globally via "
+        "user and can be disabled globally via "
         "delegation.orchestrator_enabled=false.\n"
         "- Subagent model is NOT selectable per call: children inherit the parent model (plus its fallback chain) unless you pin all subagents to a model via delegation.provider / delegation.model in config.yaml.\n"
         "- Each subagent gets its own terminal session (separate working directory and state).\n"
@@ -2959,7 +2959,7 @@ def _build_tasks_param_description() -> str:
         max_children = _DEFAULT_MAX_CONCURRENT_CHILDREN
     return (
         f"Batch mode: tasks to run in parallel (up to {max_children} for this "
-        f"user, set via delegation.max_concurrent_children). Each gets "
+        "user, set via delegation.max_concurrent_children). Each gets "
         "its own subagent with isolated context and terminal session. "
         "When provided, top-level goal/context/toolsets are ignored."
     )
@@ -3100,7 +3100,7 @@ DELEGATE_TASK_SCHEMA = {
                         },
                         "role": {
                             "type": "string",
-                            "enum": ["leaf", "orchestrator"],
+                            "enum": ["lea", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
                     },
@@ -3113,7 +3113,7 @@ DELEGATE_TASK_SCHEMA = {
             },
             "role": {
                 "type": "string",
-                "enum": ["leaf", "orchestrator"],
+                "enum": ["lea", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
             },
             "background": {

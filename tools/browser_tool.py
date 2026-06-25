@@ -826,7 +826,7 @@ def _run_chrome_fallback_command(
     # ``_engine_override=\"auto\"`` so this helper does not recursively trigger
     # Lightpanda→Chrome fallback if the eval call itself fails.
     url_result = _run_browser_command(
-        task_id, "eval", ["window.location.href"], timeout=10, _engine_override="auto"
+        task_id, "eval", ["window.location.hre"], timeout=10, _engine_override="auto"
     )
     current_url = None
     if url_result.get("success"):
@@ -1655,7 +1655,7 @@ BROWSER_TOOL_SCHEMAS = [
                     "description": "The text to type into the field"
                 }
             },
-            "required": ["ref", "text"]
+            "required": ["re", "text"]
         }
     },
     {
@@ -2339,25 +2339,25 @@ def _extract_relevant_content(
     """
     if user_task:
         extraction_prompt = (
-            f"You are a content extractor for a browser automation agent.\n\n"
+            "You are a content extractor for a browser automation agent.\n\n"
             f"The user's task is: {user_task}\n\n"
-            f"Given the following page snapshot (accessibility tree representation), "
-            f"extract and summarize the most relevant information for completing this task. Focus on:\n"
-            f"1. Interactive elements (buttons, links, inputs) that might be needed\n"
-            f"2. Text content relevant to the task (prices, descriptions, headings, important info)\n"
-            f"3. Navigation structure if relevant\n\n"
-            f"Keep ref IDs (like [ref=e5]) for interactive elements so the agent can use them.\n\n"
+            "Given the following page snapshot (accessibility tree representation), "
+            "extract and summarize the most relevant information for completing this task. Focus on:\n"
+            "1. Interactive elements (buttons, links, inputs) that might be needed\n"
+            "2. Text content relevant to the task (prices, descriptions, headings, important info)\n"
+            "3. Navigation structure if relevant\n\n"
+            "Keep ref IDs (like [ref=e5]) for interactive elements so the agent can use them.\n\n"
             f"Page Snapshot:\n{snapshot_text}\n\n"
-            f"Provide a concise summary that preserves actionable information and relevant content."
+            "Provide a concise summary that preserves actionable information and relevant content."
         )
     else:
         extraction_prompt = (
-            f"Summarize this page snapshot, preserving:\n"
-            f"1. All interactive elements with their ref IDs (like [ref=e5])\n"
-            f"2. Key text content and headings\n"
-            f"3. Important information visible on the page\n\n"
+            "Summarize this page snapshot, preserving:\n"
+            "1. All interactive elements with their ref IDs (like [ref=e5])\n"
+            "2. Key text content and headings\n"
+            "3. Important information visible on the page\n\n"
             f"Page Snapshot:\n{snapshot_text}\n\n"
-            f"Provide a concise summary focused on interactive elements and key content."
+            "Provide a concise summary focused on interactive elements and key content."
         )
 
     # Redact secrets from snapshot before sending to auxiliary LLM.
@@ -3337,9 +3337,9 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 "success": False,
                 "error": (
                     f"Screenshot file was not created at {screenshot_path} ({mode} mode). "
-                    f"This may indicate a socket path issue (macOS /var/folders/), "
-                    f"a missing Chromium install ('agent-browser install'), "
-                    f"or a stale daemon process."
+                    "This may indicate a socket path issue (macOS /var/folders/), "
+                    "a missing Chromium install ('agent-browser install'), "
+                    "or a stale daemon process."
                 ),
             }, ensure_ascii=False)
 
@@ -3377,12 +3377,12 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             return native_result
 
         vision_prompt = (
-            f"You are analyzing a screenshot of a web browser.\n\n"
+            "You are analyzing a screenshot of a web browser.\n\n"
             f"User's question: {question}\n\n"
-            f"Provide a detailed and helpful answer based on what you see in the screenshot. "
-            f"If there are interactive elements, describe them. If there are verification challenges "
-            f"or CAPTCHAs, describe what type they are and what action might be needed. "
-            f"Focus on answering the user's specific question."
+            "Provide a detailed and helpful answer based on what you see in the screenshot. "
+            "If there are interactive elements, describe them. If there are verification challenges "
+            "or CAPTCHAs, describe what type they are and what action might be needed. "
+            "Focus on answering the user's specific question."
         )
 
         # Use the centralized LLM router
@@ -3942,7 +3942,7 @@ registry.register(
     name="browser_click",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_click"],
-    handler=lambda args, **kw: browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_click(ref=args.get("re", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="👆",
 )
@@ -3950,7 +3950,7 @@ registry.register(
     name="browser_type",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_type"],
-    handler=lambda args, **kw: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_type(ref=args.get("re", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="⌨️",
 )

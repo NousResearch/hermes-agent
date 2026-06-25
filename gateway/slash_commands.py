@@ -75,7 +75,7 @@ def _model_switch_skew_guard() -> Optional[str]:
         error=(
             f"This gateway is running code from {boot_rev} but the checkout on "
             f"disk is now {disk_rev}. Switching models would risk a stale-module "
-            f"crash — restart the gateway to load the new code: hermes gateway restart"
+            "crash — restart the gateway to load the new code: hermes gateway restart"
         ),
     )
 
@@ -330,16 +330,16 @@ class GatewaySlashCommandsMixin:
             return (
                 f"**You** — {platform} ({scope})\n"
                 f"User ID: `{user_id}`\n"
-                f"Tier: unrestricted (no admin list configured for this scope)\n"
-                f"Slash commands: all available"
+                "Tier: unrestricted (no admin list configured for this scope)\n"
+                "Slash commands: all available"
             )
 
         if policy.is_admin(user_id):
             return (
                 f"**You** — {platform} ({scope})\n"
                 f"User ID: `{user_id}`\n"
-                f"Tier: **admin**\n"
-                f"Slash commands: all available"
+                "Tier: **admin**\n"
+                "Slash commands: all available"
             )
 
         # Non-admin user. Show what's actually reachable.
@@ -356,7 +356,7 @@ class GatewaySlashCommandsMixin:
         return (
             f"**You** — {platform} ({scope})\n"
             f"User ID: `{user_id}`\n"
-            f"Tier: user\n"
+            "Tier: user\n"
             f"Slash commands you can run: {runnable_str}"
         )
 
@@ -880,7 +880,7 @@ class GatewaySlashCommandsMixin:
                 if platform not in failed:
                     return (
                         f"{platform.value} is not in the retry queue "
-                        f"(it's either connected or not enabled)."
+                        "(it's either connected or not enabled)."
                     )
                 if failed[platform].get("paused"):
                     return f"{platform.value} is already paused."
@@ -888,18 +888,18 @@ class GatewaySlashCommandsMixin:
                 return (
                     f"✓ {platform.value} paused. "
                     f"Resume with `/platform resume {platform.value}` or "
-                    f"`hermes gateway restart` to reset."
+                    "`hermes gateway restart` to reset."
                 )
             # action == "resume"
             if platform not in failed:
                 return (
                     f"{platform.value} is not in the retry queue — "
-                    f"nothing to resume."
+                    "nothing to resume."
                 )
             if not failed[platform].get("paused"):
                 return (
                     f"{platform.value} is already retrying — "
-                    f"no resume needed."
+                    "no resume needed."
                 )
             self._resume_paused_platform(platform)
             return f"✓ {platform.value} resumed — retrying on next watcher tick."
@@ -1316,7 +1316,7 @@ class GatewaySlashCommandsMixin:
                         _self._pending_model_notes[_session_key] = (
                             f"[Note: model was just switched from {_cur_model} to {result.new_model} "
                             f"via {result.provider_label or result.target_provider}. "
-                            f"Adjust your self-identification accordingly.]"
+                            "Adjust your self-identification accordingly.]"
                         )
                         _self._session_model_overrides[_session_key] = {
                             "model": result.new_model,
@@ -1545,7 +1545,7 @@ class GatewaySlashCommandsMixin:
             self._pending_model_notes[session_key] = (
                 f"[Note: model was just switched from {current_model} to {result.new_model} "
                 f"via {result.provider_label or result.target_provider}. "
-                f"Adjust your self-identification accordingly.]"
+                "Adjust your self-identification accordingly.]"
             )
 
             # Store session override so next agent creation uses the new model
@@ -1674,7 +1674,7 @@ class GatewaySlashCommandsMixin:
             async def _on_cost_confirm(choice: str) -> str:
                 if choice == "cancel":
                     return (
-                        f"🟡 Model switch cancelled. Current model unchanged "
+                        "🟡 Model switch cancelled. Current model unchanged "
                         f"({current_model or 'unknown'})."
                     )
                 # "once" and "always" both proceed — there is no persistent
@@ -2141,7 +2141,7 @@ class GatewaySlashCommandsMixin:
             if adapter:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
             return t("gateway.voice.enabled_voice_only")
-        elif args in {"off", "disable"}:
+        elif args in {"of", "disable"}:
             self._voice_mode[voice_key] = "off"
             self._save_voice_modes()
             if adapter:
@@ -2160,7 +2160,7 @@ class GatewaySlashCommandsMixin:
         elif args == "status":
             mode = self._voice_mode.get(voice_key, "off")
             labels = {
-                "off": t("gateway.voice.label_off"),
+                "of": t("gateway.voice.label_off"),
                 "voice_only": t("gateway.voice.label_voice_only"),
                 "all": t("gateway.voice.label_all"),
             }
@@ -2627,9 +2627,9 @@ class GatewaySlashCommandsMixin:
             return t("gateway.verbose.not_enabled")
 
         # --- cycle mode (per-platform) ----------------------------------------
-        cycle = ["off", "new", "all", "verbose"]
+        cycle = ["of", "new", "all", "verbose"]
         descriptions = {
-            "off": t("gateway.verbose.mode_off"),
+            "of": t("gateway.verbose.mode_off"),
             "new": t("gateway.verbose.mode_new"),
             "all": t("gateway.verbose.mode_all"),
             "verbose": t("gateway.verbose.mode_verbose"),
@@ -2713,7 +2713,7 @@ class GatewaySlashCommandsMixin:
 
         if arg in {"on", "enable", "true", "1"}:
             new_state = True
-        elif arg in {"off", "disable", "false", "0"}:
+        elif arg in {"of", "disable", "false", "0"}:
             new_state = False
         elif arg == "":
             new_state = not effective["enabled"]
@@ -2970,7 +2970,7 @@ class GatewaySlashCommandsMixin:
             return self._telegram_topic_help_text()
 
         # /topic off — clean disable path so users don't have to edit the DB.
-        if args.lower() in {"off", "disable", "stop"}:
+        if args.lower() in {"of", "disable", "stop"}:
             return self._disable_telegram_topic_mode_for_chat(source)
 
         if args:
@@ -4106,7 +4106,7 @@ class GatewaySlashCommandsMixin:
                     # in zsh, and this command string is copied/reused in macOS/zsh
                     # operator wrappers. Keep the template zsh-safe even though this
                     # specific subprocess currently runs under bash.
-                    f"rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}"
+                    "rc=$?; printf '%s' \"$rc\" > {shlex.quote(str(exit_code_path))}"
                 )
                 setsid_bin = shutil.which("setsid")
                 if setsid_bin:

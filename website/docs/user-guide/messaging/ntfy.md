@@ -87,8 +87,8 @@ cronjob(
 
 Or target a specific topic explicitly:
 
-```python
-send_message(target="ntfy:alerts-channel", message="Done!")
+```bash
+hermes send --to ntfy:alerts-channel "Done!"
 ```
 
 This works even when the cron runs out-of-process from the gateway — the plugin registers a `standalone_sender_fn` that opens its own HTTP connection.

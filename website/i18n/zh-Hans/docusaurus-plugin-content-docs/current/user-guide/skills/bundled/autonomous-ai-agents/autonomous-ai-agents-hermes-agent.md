@@ -430,7 +430,6 @@ Profiles 使用 `~/.hermes/profiles/<name>/`，布局相同。
 | `delegation` | 子 agent 任务委派 |
 | `cronjob` | 定时任务管理 |
 | `clarify` | 向用户提问澄清 |
-| `messaging` | 跨平台消息发送 |
 | `todo` | 会话内任务规划和跟踪 |
 | `kanban` | 多 agent 工作队列工具（仅限 worker） |
 | `debugging` | 额外的内省/调试工具（默认关闭） |

@@ -159,7 +159,6 @@ delegation:
 - `clarify` — 子智能体无法与用户交互
 - `memory` — 不可写入共享持久内存
 - `code_execution` — 子智能体应逐步推理
-- `send_message` — 无跨平台副作用（例如发送 Telegram 消息）
 
 ## 最大迭代次数
 
@@ -243,7 +242,7 @@ delegate_task(
 
 - 每个子智能体获得其**独立的终端会话**（与父智能体分离）
 - **嵌套委派为可选项**——只有 `role="orchestrator"` 的子智能体可以进一步委派，且仅在 `max_spawn_depth` 从默认值 1（扁平）提高后才生效。可通过 `orchestrator_enabled: false` 全局禁用。
-- 叶子子智能体**不能**调用：`delegate_task`、`clarify`、`memory`、`send_message`、`execute_code`。编排者子智能体保留 `delegate_task`，但仍不能使用其他四个。
+- 叶子子智能体**不能**调用：`delegate_task`、`clarify`、`memory` 或 `execute_code`。编排者子智能体保留 `delegate_task`，但仍不能使用其他三个。
 - **中断传播**——中断父智能体会中断所有活跃的子智能体（包括编排者下的孙智能体）
 - 只有最终摘要进入父智能体的上下文，保持 token 使用高效
 - 子智能体继承父智能体的 **API 密钥、provider 配置和凭据池**（支持在速率限制时轮换密钥）

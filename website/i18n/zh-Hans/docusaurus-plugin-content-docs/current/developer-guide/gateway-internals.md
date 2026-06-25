@@ -191,7 +191,7 @@ gateway/platforms/                  # 核心 base 与旧的直接适配器
 
 - **直接回复** — 将响应发回原始聊天
 - **主频道投递** — 将 cron 任务输出和后台结果路由至已配置的主频道
-- **显式目标投递** — `send_message` 工具指定 `telegram:-1001234567890`，或通过 [`hermes send` CLI](/guides/pipe-script-output) 封装同一工具供 shell 脚本使用
+- **显式目标投递** — cron `deliver` 目标（如 `telegram:-1001234567890`），或用于 shell 脚本的 [`hermes send` CLI](/guides/pipe-script-output)
 - **跨平台投递** — 投递至与原始消息不同的平台
 
 Cron 任务投递**不会**镜像到 gateway 会话历史中 — 它们仅存在于各自的 cron 会话中。这是有意为之的设计选择，以避免消息交替违规。

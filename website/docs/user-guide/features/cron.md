@@ -256,7 +256,7 @@ When scheduling jobs, you specify where the output goes:
 | `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
 | `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
-The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.
+The agent's final response is automatically delivered. You do not need an agent-callable messaging tool in the cron prompt.
 
 ### Routing intent (`all`)
 
@@ -464,7 +464,7 @@ This means cron jobs that run at high frequency or during peak hours are more re
 
 ## Schedule formats
 
-The agent's final response is automatically delivered — you do **not** need to include `send_message` in the cron prompt for that same destination. If a cron run calls `send_message` to the exact target the scheduler will already deliver to, Hermes skips that duplicate send and tells the model to put the user-facing content in the final response instead. Use `send_message` only for additional or different targets.
+The agent's final response is automatically delivered — you do **not** need an agent-callable messaging tool in the cron prompt. For additional destinations, configure the cron job's `deliver` field instead of asking the model to send messages itself.
 
 ### Relative delays (one-shot)
 

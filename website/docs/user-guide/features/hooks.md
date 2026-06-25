@@ -202,7 +202,7 @@ Create `~/.hermes/BOOT.md`. Write it as if you were giving instructions to a hum
 # Startup Checklist
 
 1. Run `hermes cron list` and check if any scheduled jobs failed overnight.
-2. If any failed, send a summary to Discord #ops using the `send_message` tool.
+2. If any failed, return a summary for the gateway delivery layer or a follow-up `hermes send --to discord:#ops` command.
 3. Check if `/opt/app/deploy.log` has any ERROR lines from the last 24 hours. If yes, summarize them and include in the same Discord message.
 4. If nothing went wrong, reply with only `[SILENT]` so no message is sent.
 ```
@@ -247,8 +247,9 @@ def _build_prompt(content: str) -> str:
         "---\n"
         f"{content}\n"
         "---\n\n"
-        "Execute each instruction. Use the send_message tool to deliver any "
-        "messages to platforms like Discord or Slack.\n"
+        "Execute each instruction. If a message should be delivered to a "
+        "platform, include it in the final response for the hook or gateway "
+        "delivery layer to handle outside the agent loop.\n"
         "If nothing needs attention and there is nothing to report, reply "
         "with ONLY: [SILENT]"
     )

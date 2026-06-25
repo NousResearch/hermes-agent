@@ -62,7 +62,7 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 
 ## Find your contact ID or display name
 
-After starting the daemon, open a conversation with your agent contact. The numeric `contactId` appears in session logs or via `hermes send_message action=list`. If you'd rather use the display name shown in the SimpleX UI, that works too — `SIMPLEX_ALLOWED_USERS` accepts either form.
+After starting the daemon, open a conversation with your agent contact. The numeric `contactId` appears in session logs or via `hermes send --list simplex`. If you'd rather use the display name shown in the SimpleX UI, that works too — `SIMPLEX_ALLOWED_USERS` accepts either form.
 
 ## Authorization
 
@@ -83,7 +83,7 @@ SIMPLEX_GROUP_ALLOWED=*              # any group the bot is in
 ```
 
 Address groups by prefixing the chat ID with `group:`, e.g.
-`simplex:group:12` in `send_message` or as a cron `deliver=` target.
+`simplex:group:12` as a `hermes send --to` or cron `deliver=` target.
 
 ## Attachments
 
@@ -115,8 +115,8 @@ cronjob(
 
 Or target a specific contact:
 
-```python
-send_message(target="simplex:<contact-id>", message="Done!")
+```bash
+hermes send --to simplex:<contact-id> "Done!"
 ```
 
 ## Privacy notes

@@ -229,13 +229,13 @@ IDs.
 | `hermes send` | ✅ | ✅ | No (bot-token) | Everything below |
 | Raw `curl` to each platform | Each scripted separately | Manual | No | Critical watchdogs |
 | `cron` job with `--deliver` | ✅ | ✅ | No | Scheduled agent tasks |
-| `send_message` agent tool | ✅ | ✅ | No | Inside an agent loop |
 
 `hermes send` is intentionally the simplest possible surface. If you need
-an agent to decide what to say, use the `send_message` tool from within a
-chat or cron job. If you need a scheduled run with LLM-generated content,
-use `cronjob(action='create', prompt=...)` with `deliver='telegram:...'`.
-If you just need to pipe a raw string, reach for `hermes send`.
+a scheduled run with LLM-generated content, use `cronjob(action='create',
+prompt=...)` with `deliver='telegram:...'`. If you just need to pipe a raw
+string, reach for `hermes send`. Agent-callable cross-platform messaging is
+not exposed as a model tool; outbound delivery is handled outside the agent
+loop by the gateway, scheduler, and CLI.
 
 ---
 

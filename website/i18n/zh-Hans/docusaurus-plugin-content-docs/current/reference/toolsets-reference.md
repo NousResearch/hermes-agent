@@ -69,7 +69,6 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `video_gen` | `video_generate` | 通过插件注册的后端（xAI Grok-Imagine、FAL.ai Veo 3.1 / Pixverse v6 / Kling O3）进行文本生成视频和图像生成视频。传入 `image_url` 可对图像进行动画化；省略则为文本生成视频。 |
 | `kanban` | `kanban_block`, `kanban_comment`, `kanban_complete`, `kanban_create`, `kanban_heartbeat`, `kanban_link`, `kanban_list`, `kanban_show`, `kanban_unblock` | 多 agent 协调工具。为调度器生成的任务工作者（`HERMES_KANBAN_TASK`）以及显式启用 `kanban` 工具集的 profile 注册。工作者可标记任务完成、阻塞、心跳、评论以及创建/关联后续任务；编排器 profile 还额外获得看板路由工具，如 list/unblock。 |
 | `memory` | `memory` | 持久化跨会话记忆管理。 |
-| `messaging` | `send_message` | 在会话中向其他平台（Telegram、Discord 等）发送消息。 |
 | `moa` | `mixture_of_agents` | 通过 Mixture of Agents 实现多模型共识。 |
 | `safe` | `image_generate`, `vision_analyze`, `web_extract`, `web_search`（通过 `includes`） | 只读研究 + 媒体生成。无文件写入、无终端、无代码执行。 |
 | `search` | `web_search` | 仅网页搜索（不含提取）。 |
@@ -91,9 +90,9 @@ hermes tools                            # curses UI to enable/disable per platfo
 
 | 工具集 | 与 `hermes-cli` 的差异 |
 |--------|------------------------|
-| `hermes-cli` | 完整工具集——交互式 CLI 会话的默认配置。包含 file、terminal、web、browser、memory、skills、vision、image_gen、todo、tts、delegation、code_execution、cronjob、session_search、clarify 和 `safe`（只读）套件，以及标准消息工具。 |
-| `hermes-acp` | 移除了 `clarify`、`cronjob`、`image_generate`、`send_message`、`text_to_speech` 以及全部四个 Home Assistant 工具。专注于 IDE 环境中的编码任务。 |
-| `hermes-api-server` | 移除了 `clarify`、`send_message` 和 `text_to_speech`。保留其他所有工具——适用于无法进行用户交互的程序化访问场景。 |
+| `hermes-cli` | 完整工具集——交互式 CLI 会话的默认配置。包含 file、terminal、web、browser、memory、skills、vision、image_gen、todo、tts、delegation、code_execution、cronjob、session_search、clarify 和 `safe`（只读）套件。 |
+| `hermes-acp` | 移除了 `clarify`、`cronjob`、`image_generate`、`text_to_speech` 以及全部四个 Home Assistant 工具。专注于 IDE 环境中的编码任务。 |
+| `hermes-api-server` | 移除了 `clarify` 和 `text_to_speech`。保留其他所有工具——适用于无法进行用户交互的程序化访问场景。 |
 | `hermes-cron` | 与 `hermes-cli` 相同。 |
 | `hermes-telegram` | 与 `hermes-cli` 相同。 |
 | `hermes-discord` | 在 `hermes-cli` 基础上添加了 `discord` 和 `discord_admin`。 |

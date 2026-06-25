@@ -441,7 +441,7 @@ launchd plist 是静态的——如果你在配置网关后安装了新工具（
 | QQBot | `hermes-qqbot` | 完整工具，包括终端 |
 | Yuanbao | `hermes-yuanbao` | 完整工具，包括终端 |
 | Microsoft Teams | `hermes-teams` | 完整工具，包括终端 |
-| API Server | `hermes-api-server` | 完整工具（去除 `clarify`、`send_message`、`text_to_speech`——程序化访问没有交互用户） |
+| API Server | `hermes-api-server` | 完整工具（去除 `clarify` 和 `text_to_speech`——程序化访问没有交互用户） |
 | Webhooks | `hermes-webhook` | 完整工具，包括终端 |
 
 ## 运营多平台网关

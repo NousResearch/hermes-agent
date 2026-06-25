@@ -277,7 +277,7 @@ hermes cron status
 | `"telegram,discord"` | 扇出到指定的一组频道 | 逗号分隔列表 |
 | `"origin,all"` | 投递到来源**加上**所有其他已连接频道 | 可组合任意 token |
 
-Agent 的最终响应会自动投递，无需在 cron prompt 中调用 `send_message`。
+Agent 的最终响应会自动投递，无需在 cron prompt 中使用 agent 可调用的消息工具。
 
 ### 路由意图（`all`）
 
@@ -452,7 +452,7 @@ Cron 任务继承你配置的回退 provider 和凭证池轮换。如果主 API 
 
 ## 调度格式
 
-Agent 的最终响应会自动投递——你**无需**在 cron prompt 中为同一目标包含 `send_message`。如果 cron 运行调用了 `send_message` 且目标与调度器已投递的目标完全相同，Hermes 会跳过该重复发送，并告知模型将面向用户的内容放在最终响应中。仅对额外或不同的目标使用 `send_message`。
+Agent 的最终响应会自动投递——你**无需**在 cron prompt 中使用 agent 可调用的消息工具。若需要额外目标，请配置 cron job 的 `deliver` 字段，而不是让模型自行发送消息。
 
 ### 相对延迟（一次性）
 

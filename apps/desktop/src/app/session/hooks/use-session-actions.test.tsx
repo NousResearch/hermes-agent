@@ -4,6 +4,7 @@ import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages } from '@/hermes'
+import { createClientSessionState } from '@/lib/chat-runtime'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import { $currentCwd, $messages, $resumeFailedSessionId, setMessages, setResumeFailedSessionId } from '@/store/session'
 
@@ -280,5 +281,149 @@ describe('resumeSession failure recovery', () => {
 
     expect(resumeParams).not.toHaveProperty('lazy')
     expect(resumeParams).not.toHaveProperty('eager_build')
+  })
+})
+
+interface CacheHarnessProps {
+  onReady: (resume: (storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) => void
+  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
+  selectedStoredSessionIdRef: MutableRefObject<string | null>
+  sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
+}
+
+// Harness that lets the test own the two cache maps so it can pre-seed a
+// cross-wired runtime-id mapping and observe whether the warm fast-path trusts
+// it. Mirrors the production wiring from use-session-state-cache.
+function CacheHarness({
+  onReady,
+  requestGateway,
+  runtimeIdByStoredSessionIdRef,
+  selectedStoredSessionIdRef,
+  sessionStateByRuntimeIdRef
+}: CacheHarnessProps) {
+  const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
+
+  const actions = useSessionActions({
+    activeSessionId: null,
+    activeSessionIdRef: ref<string | null>(null),
+    busyRef: ref(false),
+    creatingSessionRef: ref(false),
+    ensureSessionState: () => ({}) as ClientSessionState,
+    getRouteToken: () => 'token',
+    navigate: vi.fn() as never,
+    requestGateway,
+    runtimeIdByStoredSessionIdRef,
+    selectedStoredSessionId: null,
+    selectedStoredSessionIdRef,
+    sessionStateByRuntimeIdRef,
+    syncSessionStateToView: vi.fn(),
+    updateSessionState: (_sessionId, updater) => updater({} as ClientSessionState)
+  })
+
+  useEffect(() => {
+    onReady(actions.resumeSession)
+  }, [actions.resumeSession, onReady])
+
+  return null
+}
+
+const clientState = (storedSessionId: string | null): ClientSessionState => createClientSessionState(storedSessionId)
+
+describe('resumeSession warm-cache mapping integrity', () => {
+  afterEach(() => {
+    cleanup()
+    setResumeFailedSessionId(null)
+    setMessages([])
+    vi.restoreAllMocks()
+  })
+
+  it('rejects a cross-wired runtime mapping and falls through to a full resume', async () => {
+    // A recycled runtime id ('rt-recycled') is mapped to 'stored-A', but its
+    // cached state actually belongs to a DIFFERENT session ('stored-B') — the
+    // exact "open chat A, chat B loads" corruption a reaped/respawned pooled
+    // backend can leave behind.
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-recycled']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-recycled', clientState('stored-B')]])
+    }
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'session.resume') {
+        return { session_id: 'rt-A-fresh', resumed: params?.session_id, messages: [], info: {} } as never
+      }
+
+      return {} as never
+    })
+
+    vi.mocked(getSessionMessages).mockResolvedValue({ messages: [] } as never)
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <CacheHarness
+        onReady={r => (resume = r)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    // The fast-path did NOT short-circuit on the cross-wired cache — the full
+    // resume RPC ran, for the session that was actually requested.
+    const resumeCalls = requestGateway.mock.calls.filter(([method]) => method === 'session.resume')
+    expect(resumeCalls.length).toBe(1)
+    expect(resumeCalls[0][1]).toMatchObject({ session_id: 'stored-A' })
+
+    // The corrupt mapping was purged so it can't mis-resolve again.
+    expect(runtimeIdByStoredSessionIdRef.current.has('stored-A')).toBe(false)
+    expect(sessionStateByRuntimeIdRef.current.has('rt-recycled')).toBe(false)
+  })
+
+  it('honours a warm cache entry whose stored id matches (no needless refetch)', async () => {
+    // Correctly-wired mapping: 'rt-A' <-> 'stored-A'. The fast-path should trust
+    // it and never reach session.resume (only the lightweight usage probe).
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', clientState('stored-A')]])
+    }
+
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.usage') {
+        return { input: 0, output: 0, total: 0 } as never
+      }
+
+      return {} as never
+    })
+
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+    render(
+      <CacheHarness
+        onReady={r => (resume = r)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    // Fast-path served the session from cache: no full resume RPC, mapping intact.
+    const methods = requestGateway.mock.calls.map(([method]) => method)
+    expect(methods).not.toContain('session.resume')
+    expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
   })
 })

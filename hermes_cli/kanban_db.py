@@ -8889,6 +8889,17 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     # the rejection rationale and force-push a fix. Without this, the
     # reject→fix-same-PR loop deadlocks because the dispatcher keeps
     # seeing the PR URL and refusing to spawn.
+    #
+    # The entire active_pr guard can be disabled board-wide via
+    # ``kanban.disable_pr_respawn_guard: true`` in config.yaml.
+    try:
+        from hermes_cli.config import load_config
+
+        _kanban_cfg = load_config().get("kanban") or {}
+        if _kanban_cfg.get("disable_pr_respawn_guard"):
+            return None
+    except Exception:
+        pass
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     latest_pr_ts: Optional[int] = None
     for c in conn.execute(

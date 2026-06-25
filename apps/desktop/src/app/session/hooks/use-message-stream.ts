@@ -1049,7 +1049,13 @@ export function useMessageStream({
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
 
         if (requestId) {
-          setSudoRequest({ requestId, sessionId: sessionId ?? null })
+          const command = typeof payload?.command === 'string' ? payload.command : ''
+
+          setSudoRequest({
+            command: command || undefined,
+            requestId,
+            sessionId: sessionId ?? null
+          })
 
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))

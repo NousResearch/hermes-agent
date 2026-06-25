@@ -75,6 +75,7 @@ export interface ApprovalRequest extends KeyedPrompt {
 }
 
 export interface SudoRequest extends KeyedPrompt {
+  command?: string
   requestId: string
 }
 

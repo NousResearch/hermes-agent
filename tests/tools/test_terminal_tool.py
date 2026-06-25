@@ -122,6 +122,26 @@ def test_registered_sudo_callback_is_used_without_interactive_env(monkeypatch):
     assert sudo_stdin == "callback-pass\n"
 
 
+def test_sudo_callback_receives_command_when_supported(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+
+    received = []
+
+    def sudo_callback(command=""):
+        received.append(command)
+        return "callback-pass"
+
+    terminal_tool.set_sudo_password_callback(sudo_callback)
+    try:
+        terminal_tool._transform_sudo_command("sudo apt install fprintd")
+    finally:
+        terminal_tool.set_sudo_password_callback(None)
+
+    assert received == ["sudo apt install fprintd"]
+
+
 def test_cached_sudo_password_isolated_by_session_key(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)

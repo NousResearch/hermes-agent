@@ -104,7 +104,14 @@ function SudoDialog() {
       <DialogContent showCloseButton={false}>
         <DialogHeader>
           <DialogTitle icon={Lock}>{copy.sudoTitle}</DialogTitle>
-          <DialogDescription>{copy.sudoDesc}</DialogDescription>
+          <DialogDescription>
+            {copy.sudoDesc}
+            {request.command ? (
+              <code className="mt-2 block max-h-24 overflow-y-auto rounded-md bg-muted/60 px-2 py-1.5 font-mono text-[length:var(--conversation-tool-font-size)] text-foreground break-all">
+                {request.command}
+              </code>
+            ) : null}
+          </DialogDescription>
         </DialogHeader>
 
         <form className="grid gap-3" onSubmit={onSubmit}>

@@ -928,6 +928,40 @@ DEFAULT_CONFIG = {
         # provider hiccups on a single provider.
         "api_max_retries": 3,
         "service_tier": "",
+        "request_router": {
+            "enabled": False,
+            "providers_allowlist": ["openai-codex"],
+            "default_preset": "high_standard",
+            "allow_auto_priority": False,
+            "log_decisions": False,
+            "presets": {
+                "low_standard": {
+                    "model": "gpt-5.5",
+                    "effort": "low",
+                    "service_tier": "standard",
+                },
+                "high_standard": {
+                    "model": "gpt-5.5",
+                    "effort": "high",
+                    "service_tier": "standard",
+                },
+                "xhigh_standard": {
+                    "model": "gpt-5.5",
+                    "effort": "xhigh",
+                    "service_tier": "standard",
+                },
+                "xhigh_fast": {
+                    "model": "gpt-5.4",
+                    "effort": "xhigh",
+                    "service_tier": "standard",
+                },
+                "high_priority": {
+                    "model": "gpt-5.5",
+                    "effort": "high",
+                    "service_tier": "priority",
+                },
+            },
+        },
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
         # Values: "auto" (default — applies to gpt/codex models), true/false

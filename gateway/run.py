@@ -3449,15 +3449,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        *,
+        explicit_model_override: bool = False,
+    ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        Uses the session's primary model/provider by default. When
+        ``agent.request_router.enabled`` is true and the provider is allowlisted,
+        enriches the turn with deterministic model/reasoning/service-tier
+        settings without changing prompt, tools, or transcript history.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.turn_router import route_turn
 
         runtime = {
             "api_key": runtime_kwargs.get("api_key"),
@@ -3480,11 +3488,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 runtime["command"],
                 tuple(runtime["args"]),
             ),
+            "reasoning_config": getattr(self, "_reasoning_config", None),
+            "service_tier": getattr(self, "_service_tier", None),
+            "request_overrides": {},
+            "router_decision": None,
+            "message_override": None,
         }
+
+        cfg = _load_gateway_runtime_config()
+        agent_cfg = cfg_get(cfg, "agent", default={})
+        router_cfg = agent_cfg.get("request_router", {}) if isinstance(agent_cfg, dict) else {}
+        router_decision = route_turn(
+            user_message,
+            router_config=router_cfg,
+            current_model=model,
+            provider=runtime["provider"],
+            explicit_reasoning_config=getattr(self, "_reasoning_config", None),
+            explicit_service_tier=getattr(self, "_service_tier", None),
+            explicit_model_override=explicit_model_override,
+        )
+        route["router_decision"] = router_decision
+        if router_decision.enabled:
+            route["model"] = router_decision.model or route["model"]
+            route["reasoning_config"] = router_decision.reasoning_config
+            route["service_tier"] = router_decision.service_tier
+            route["request_overrides"] = router_decision.request_overrides
+            route["message_override"] = router_decision.message_override
+            route["signature"] = (
+                route["model"],
+                runtime["provider"],
+                runtime["base_url"],
+                runtime["api_mode"],
+                runtime["command"],
+                tuple(runtime["args"]),
+            )
+            return route
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = {}
             return route
 
         try:
@@ -11504,11 +11545,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            try:
+                _background_session_key = self._session_key_for_source(source)
+            except Exception:
+                _background_session_key = None
+            turn_route = self._resolve_turn_agent_config(
+                prompt,
+                model,
+                runtime_kwargs,
+                explicit_model_override=bool(
+                    _background_session_key and _background_session_key in self._session_model_overrides
+                ),
+            )
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
-            enriched_prompt = prompt
+            enriched_prompt = turn_route.get("message_override") or prompt
             if media_urls:
                 image_paths = []
                 for i, path in enumerate(media_urls):
@@ -11518,7 +11570,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if image_paths:
                     try:
                         enriched_prompt = await self._enrich_message_with_vision(
-                            prompt, image_paths,
+                            enriched_prompt, image_paths,
                         )
                     except Exception as e:
                         logger.warning("Background task vision enrichment failed: %s", e)
@@ -11532,8 +11584,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
-                    reasoning_config=reasoning_config,
-                    service_tier=self._service_tier,
+                    reasoning_config=turn_route.get("reasoning_config"),
+                    service_tier=turn_route.get("service_tier"),
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
@@ -15719,7 +15771,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     log_message="interim_assistant_callback scheduling error",
                 )
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            _router_original_message = message
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                explicit_model_override=bool(session_key and session_key in self._session_model_overrides),
+            )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -15803,8 +15861,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     disabled_toolsets=disabled_toolsets,
                     ephemeral_system_prompt=combined_ephemeral or None,
                     prefill_messages=self._prefill_messages or None,
-                    reasoning_config=reasoning_config,
-                    service_tier=self._service_tier,
+                    reasoning_config=turn_route.get("reasoning_config"),
+                    service_tier=turn_route.get("service_tier"),
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
@@ -15875,8 +15933,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.notice_callback = _notice_callback_sync
             agent.notice_clear_callback = None
             agent.event_callback = _event_callback_sync
-            agent.reasoning_config = reasoning_config
-            agent.service_tier = self._service_tier
+            agent.reasoning_config = turn_route.get("reasoning_config")
+            agent.service_tier = turn_route.get("service_tier")
             agent.request_overrides = turn_route.get("request_overrides") or {}
 
             _bg_review_release = threading.Event()
@@ -16266,12 +16324,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # attachment, wrap the user turn as an OpenAI-style multimodal
                 # content list. Consume-and-clear so subsequent turns on the same
                 # runner instance don't re-attach stale images.
+                _api_message_text = message
+                _router_override = turn_route.get("message_override")
+                if _router_override is not None:
+                    if message == _router_original_message:
+                        _api_message_text = _router_override
+                    elif isinstance(message, str) and isinstance(_router_original_message, str) and message.endswith(_router_original_message):
+                        _api_message_text = message[: -len(_router_original_message)] + _router_override
+                    else:
+                        _api_message_text = _router_override
                 _native_imgs = self._consume_pending_native_image_paths(session_key)
                 if _native_imgs:
                     try:
                         from agent.image_routing import build_native_content_parts
                         _parts, _skipped = build_native_content_parts(
-                            message,
+                            _api_message_text,
                             _native_imgs,
                         )
                         if _skipped:
@@ -16283,15 +16350,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _run_message: Any = _parts
                         else:
                             # All images failed to read — fall back to plain text.
-                            _run_message = message
+                            _run_message = _api_message_text
                     except Exception as _img_exc:
                         logger.warning(
                             "Native image attachment failed, falling back to text: %s",
                             _img_exc,
                         )
-                        _run_message = message
+                        _run_message = _api_message_text
                 else:
-                    _run_message = message
+                    _run_message = _api_message_text
 
                 _api_run_message = _wrap_current_message_with_observed_context(
                     _run_message,
@@ -16303,6 +16370,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
                 if _persist_user_message_override is not None:
                     _conversation_kwargs["persist_user_message"] = _persist_user_message_override
+                elif turn_route.get("message_override") is not None:
+                    _conversation_kwargs["persist_user_message"] = message
                 elif observed_group_context:
                     _conversation_kwargs["persist_user_message"] = message
                 if _persist_user_timestamp_override is not None:

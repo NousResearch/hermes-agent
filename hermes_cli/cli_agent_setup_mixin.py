@@ -174,12 +174,14 @@ class CLIAgentSetupMixin:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
-        toggled `/fast` on and the current model supports Priority
-        Processing / Anthropic fast mode, attach `request_overrides` so the
-        API call is marked accordingly.
+        Uses the session's primary model/provider by default. When
+        ``agent.request_router.enabled`` is true and the active provider is
+        allowlisted, enriches the turn with model/reasoning/service-tier
+        settings from the deterministic router. No system prompt, tool schema,
+        or conversation history is mutated.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
+        from hermes_cli.turn_router import route_turn
 
         runtime = {
             "api_key": self.api_key,
@@ -201,11 +203,40 @@ class CLIAgentSetupMixin:
                 runtime["command"],
                 tuple(runtime["args"]),
             ),
+            "reasoning_config": getattr(self, "reasoning_config", None),
+            "service_tier": getattr(self, "service_tier", None),
+            "request_overrides": None,
+            "router_decision": None,
+            "message_override": None,
         }
+
+        router_decision = route_turn(
+            user_message,
+            router_config=getattr(self, "request_router_config", {}) or {},
+            current_model=self.model,
+            provider=runtime["provider"],
+            explicit_reasoning_config=getattr(self, "reasoning_config", None),
+            explicit_service_tier=getattr(self, "service_tier", None),
+        )
+        route["router_decision"] = router_decision
+        if router_decision.enabled:
+            route["model"] = router_decision.model or route["model"]
+            route["reasoning_config"] = router_decision.reasoning_config
+            route["service_tier"] = router_decision.service_tier
+            route["request_overrides"] = router_decision.request_overrides
+            route["message_override"] = router_decision.message_override
+            route["signature"] = (
+                route["model"],
+                runtime["provider"],
+                runtime["base_url"],
+                runtime["api_mode"],
+                runtime["command"],
+                tuple(runtime["args"]),
+            )
+            return route
 
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:
-            route["request_overrides"] = None
             return route
 
         try:

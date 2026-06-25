@@ -424,6 +424,13 @@ def load_cli_config() -> Dict[str, Any]:
             "prefill_messages_file": "",
             "reasoning_effort": "",
             "service_tier": "",
+            "request_router": {
+                "enabled": False,
+                "providers_allowlist": ["openai-codex"],
+                "default_preset": "high_standard",
+                "allow_auto_priority": False,
+                "log_decisions": False,
+            },
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",
@@ -3602,6 +3609,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         )
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
+        )
+        _request_router_config = CLI_CONFIG["agent"].get("request_router", {})
+        self.request_router_config = (
+            dict(_request_router_config) if isinstance(_request_router_config, dict) else {}
         )
         
         # OpenRouter provider routing preferences
@@ -11450,6 +11461,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             request_overrides=turn_route.get("request_overrides"),
         ):
             return None
+        if self.agent is not None:
+            # Per-turn router fields must update cached agents in place.
+            # Rebuilding is only required for model/runtime signature changes.
+            self.agent.reasoning_config = turn_route.get("reasoning_config")
+            self.agent.service_tier = turn_route.get("service_tier")
+            self.agent.request_overrides = turn_route.get("request_overrides") or {}
+        _router_message_override = turn_route.get("message_override")
         
         # Route image attachments based on the active model's vision capability.
         # "native" → pass pixels as OpenAI-style content parts (adapters
@@ -11655,7 +11673,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 except Exception:
                     reset_current_session_key = None  # type: ignore[assignment]
                     _approval_session_token = None
-                agent_message = _voice_prefix + message if _voice_prefix else message
+                _api_message = _router_message_override if isinstance(message, str) and _router_message_override is not None else message
+                agent_message = _voice_prefix + _api_message if _voice_prefix and isinstance(_api_message, str) else _api_message
                 # Prepend pending notes via _prepend_note_to_message, which
                 # handles both plain-string and multimodal content-parts list
                 # messages. Naive ``note + "\n\n" + agent_message`` crashed with
@@ -11678,7 +11697,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         conversation_history=self.conversation_history[:-1],  # Exclude the message we just added
                         stream_callback=stream_callback,
                         task_id=self.session_id,
-                        persist_user_message=message if _voice_prefix else None,
+                        persist_user_message=message if (_voice_prefix or _router_message_override is not None) else None,
                     )
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
@@ -15366,6 +15385,27 @@ def main(
                         runtime_override=turn_route["runtime"],
                         request_overrides=turn_route.get("request_overrides"),
                     ):
+                        cli.agent.reasoning_config = turn_route.get("reasoning_config")
+                        cli.agent.service_tier = turn_route.get("service_tier")
+                        cli.agent.request_overrides = turn_route.get("request_overrides") or {}
+                        _router_message_override = turn_route.get("message_override")
+                        _api_effective_query = effective_query
+                        if _router_message_override is not None:
+                            if isinstance(effective_query, str):
+                                _api_effective_query = _router_message_override
+                            elif isinstance(effective_query, list):
+                                _api_effective_query = []
+                                _replaced_text = False
+                                for _part in effective_query:
+                                    if (
+                                        not _replaced_text
+                                        and isinstance(_part, dict)
+                                        and _part.get("type") == "text"
+                                    ):
+                                        _part = dict(_part)
+                                        _part["text"] = _router_message_override
+                                        _replaced_text = True
+                                    _api_effective_query.append(_part)
                         cli.agent.quiet_mode = True
                         cli.agent.suppress_status_output = True
                         # Suppress streaming display callbacks so stdout stays
@@ -15374,9 +15414,11 @@ def main(
                         cli.agent.stream_delta_callback = None
                         cli.agent.tool_gen_callback = None
                         try:
+                            _persist_query = effective_query if _router_message_override is not None else None
                             result = cli.agent.run_conversation(
-                                user_message=effective_query,
+                                user_message=_api_effective_query,
                                 conversation_history=cli.conversation_history,
+                                persist_user_message=_persist_query,
                             )
                         except KeyboardInterrupt:
                             _emit_interrupted_session_end(cli, reason="keyboard_interrupt")

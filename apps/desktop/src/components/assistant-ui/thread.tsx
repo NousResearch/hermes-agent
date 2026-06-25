@@ -63,6 +63,7 @@ import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
+import { FloatingQuoteButton } from '@/components/assistant-ui/floating-quote-button'
 import { ThreadMessageList } from '@/components/assistant-ui/thread-list'
 import { ThreadTimeline } from '@/components/assistant-ui/thread-timeline'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
@@ -214,6 +215,7 @@ export const Thread: FC<{
       />
       {loading === 'session' && <CenteredThreadSpinner />}
       <ThreadTimeline />
+      <FloatingQuoteButton />
     </div>
   )
 }

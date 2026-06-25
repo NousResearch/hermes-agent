@@ -2052,7 +2052,8 @@ export const en: Translations = {
       systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
       failed: error => `Handoff failed: ${error}`,
       timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
-    }
+    },
+    quoteSelection: 'Quote selection',
   },
 
   errors: {

@@ -99,6 +99,9 @@ export type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  ProjectFolder,
+  ProjectInfo,
+  ProjectsPayload,
   RpcEvent,
   SessionCreateResponse,
   SessionInfo,
@@ -150,7 +153,9 @@ export async function listSessions(
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`,
+    path:
+      `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
+      `&archived=${archived}&order=${order}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 

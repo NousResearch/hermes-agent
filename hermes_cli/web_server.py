@@ -2993,6 +2993,7 @@ async def get_sessions(
     order: str = "created",
     source: str = None,
     exclude_sources: str = None,
+    cwd_prefix: str = None,
     profile: Optional[str] = None,
 ):
     """List sessions.
@@ -3034,6 +3035,7 @@ async def get_sessions(
             sessions = db.list_sessions_rich(
                 source=source or None,
                 exclude_sources=exclude_list or None,
+                cwd_prefix=(cwd_prefix or None),
                 limit=limit,
                 offset=offset,
                 min_message_count=min_message_count,
@@ -3043,6 +3045,7 @@ async def get_sessions(
             )
             total = db.session_count(
                 source=source or None,
+                cwd_prefix=(cwd_prefix or None),
                 exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,
                 include_archived=include_archived,

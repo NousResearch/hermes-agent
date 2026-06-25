@@ -36,7 +36,9 @@ import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
+import { followActiveSessionCwd } from '@/store/projects'
 import {
+  $currentCwd,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -46,6 +48,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setSessions,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -53,6 +56,7 @@ import { broadcastSessionsChanged } from '@/store/session-sync'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
 import { setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
+import { notifyWorkspaceChanged, toolMayMutateFiles } from '@/store/workspace-events'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../types'
@@ -339,6 +343,9 @@ export function useMessageStream({
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
+  // Last session we applied a session.info cwd for — lets us tell an agent
+  // relocating the SAME session (follow it) from a session switch (don't yank).
+  const lastCwdInfoSessionRef = useRef<null | string>(null)
 
   const flushQueuedDeltas = useCallback(
     (sessionId?: string) => {
@@ -746,7 +753,20 @@ export function useMessageStream({
           }
 
           if (typeof payload?.cwd === 'string') {
+            // The active session's agent can relocate itself (new repo/worktree
+            // via the terminal). When the SAME active session's cwd actually
+            // moves, follow it — refresh the project tree + scope so the sidebar
+            // tracks the live thread. A fresh selection (different session id)
+            // is a switch, not a move, so it refreshes data without yanking scope.
+            const cwdMoved = payload.cwd !== $currentCwd.get()
+            const sameSession = !!sessionId && sessionId === lastCwdInfoSessionRef.current
+
+            lastCwdInfoSessionRef.current = sessionId
             setCurrentCwd(payload.cwd)
+
+            if (cwdMoved && sameSession) {
+              void followActiveSessionCwd(payload.cwd)
+            }
           }
 
           if (typeof payload?.branch === 'string') {
@@ -923,6 +943,16 @@ export function useMessageStream({
         if (payload?.usage) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))
         }
+      } else if (event.type === 'session.title') {
+        // Live auto-title push (titler runs async, after the turn's refresh).
+        const storedId = typeof payload?.session_id === 'string' ? payload.session_id : ''
+        const nextTitle = typeof payload?.title === 'string' ? payload.title.trim() : ''
+
+        if (storedId && nextTitle) {
+          setSessions(prev =>
+            prev.map(s => (s.id === storedId || s._lineage_root_id === storedId ? { ...s, title: nextTitle } : s))
+          )
+        }
       } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
         if (!sessionId) {
           return
@@ -958,6 +988,13 @@ export function useMessageStream({
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
           recordToolDiff(payload.tool_id || payload.name || '', payload.inline_diff)
+        }
+
+        // A file-mutating tool just finished — nudge the git-mirroring surfaces
+        // (coding rail, review pane, file tree) to refresh. Event-driven, not
+        // polled: fires exactly when the agent touches the tree.
+        if (payload && toolMayMutateFiles(payload)) {
+          notifyWorkspaceChanged()
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
         if (sessionId && payload && !sessionInterrupted(sessionId)) {

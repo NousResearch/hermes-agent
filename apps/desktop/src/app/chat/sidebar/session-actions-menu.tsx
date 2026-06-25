@@ -77,6 +77,7 @@ interface SessionActions {
   pinned?: boolean
   profile?: string
   onPin?: () => void
+  onBranch?: () => void
   onArchive?: () => void
   onDelete?: () => void
 }
@@ -92,7 +93,7 @@ interface ItemSpec {
   variant?: 'destructive'
 }
 
-function useSessionActions({ sessionId, title, pinned = false, profile, onPin, onArchive, onDelete }: SessionActions) {
+function useSessionActions({ sessionId, title, pinned = false, profile, onPin, onBranch, onArchive, onDelete }: SessionActions) {
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
@@ -128,6 +129,15 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
       onSelect: () => {
         triggerHaptic('selection')
         void exportSession(sessionId, { profile, title })
+      }
+    },
+    {
+      disabled: !onBranch,
+      icon: 'git-branch',
+      label: r.branchFrom,
+      onSelect: () => {
+        triggerHaptic('selection')
+        onBranch?.()
       }
     },
     {
@@ -175,6 +185,7 @@ function useSessionActions({ sessionId, title, pinned = false, profile, onPin, o
         appearance={Item === DropdownMenuItem ? 'menu-item' : 'context-menu-item'}
         disabled={!sessionId}
         errorMessage={r.copyIdFailed}
+        iconClassName="size-3.5 text-current"
         key={r.copyId}
         label={r.copyId}
         onCopyError={err => notifyError(err, r.copyIdFailed)}

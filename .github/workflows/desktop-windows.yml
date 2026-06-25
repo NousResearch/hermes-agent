@@ -1,0 +1,66 @@
+name: Build ApexNodes Desktop (Windows)
+
+# Builds the ApexNodes Electron desktop app (apps/desktop) for Windows on a
+# native windows-latest runner: dist:win -> unsigned NSIS/MSI installer, uploaded
+# as a build artifact. This is the Windows counterpart to the Mac dmg (both are
+# apps/desktop).
+#
+# Deliberately SEPARATE from build-windows-installer.yml, which builds the
+# upstream Tauri "Hermes-Setup.exe" (Azure-signed, admin-only) — a different
+# artifact for a different purpose. No code signing here, matching the unsigned
+# Mac dmg for V0.1 (signing is a V0.2 item). Native windows-latest avoids the
+# Mac cross-build pitfalls (wrong node-pty binary, @electron/get download hangs).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ApexNodes Windows installer (x64, unsigned)
+    runs-on: windows-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # Root install: apps/desktop's build asserts a root workspace install
+      # (assert-root-install.cjs) and links @hermes/shared via the workspace.
+      - name: Install dependencies (root workspaces)
+        run: npm ci
+
+      # dist:win = build (write-build-stamp + stage-install-script +
+      # stage-native-deps[stages win32 node-pty natively on this host] + tsc +
+      # vite) then electron-builder --win. The local node_modules/electron/dist
+      # is the Windows electron on this runner, so the builder wrapper's
+      # electronDist override resolves to the correct binary. Unsigned: no CSC_*
+      # or Azure secrets (CSC_IDENTITY_AUTO_DISCOVERY=false; the build config
+      # already sets signAndEditExecutable:false so no wine/rcedit is needed).
+      - name: Build Windows installer (unsigned)
+        working-directory: apps/desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run dist:win
+
+      - name: List build output
+        if: always()
+        working-directory: apps/desktop
+        run: Get-ChildItem release
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: apexnodes-desktop-windows
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.msi
+          if-no-files-found: error

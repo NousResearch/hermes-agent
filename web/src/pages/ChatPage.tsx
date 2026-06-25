@@ -529,6 +529,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
+    // Intercept native paste on the terminal host to prevent the
+    // stale-value bug in xterm.js v6 CompositionHelper.  When text is
+    // pasted directly into the xterm-helper-textarea (Ctrl+V on
+    // Windows/Linux, or any paste that bypasses our custom key handler),
+    // xterm.js may fail to clear the textarea value after processing the
+    // paste.  The next typed character then picks up the stale textarea
+    // content and duplicates the last character (see #52471).
+    // Routing all paste events through term.paste() avoids this by using
+    // xterm's internal paste path which properly resets the textarea.
+    const onPaste = (ev: ClipboardEvent) => {
+      ev.preventDefault();
+      const text = ev.clipboardData?.getData("text");
+      if (text) term.paste(text);
+    };
+    host.addEventListener("paste", onPaste);
+
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
@@ -813,6 +829,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // the ticket fetch resolves and ``wsRef.current`` was never assigned.
       wsRef.current?.close();
       wsRef.current = null;
+      host.removeEventListener("paste", onPaste);
       term.dispose();
       termRef.current = null;
       fitRef.current = null;

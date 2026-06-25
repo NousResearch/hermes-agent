@@ -246,6 +246,7 @@ def hatch_pet(
             if cancelled():
                 return state, None
             strict = attempt < _ROW_GEN_ATTEMPTS - 1
+            strips: list[Path] = []
             try:
                 strips = imagegen.generate(
                     prompts.build_row_prompt(state, count, label, style=style),
@@ -274,6 +275,18 @@ def hatch_pet(
                     "pet hatch %r: row %r attempt %d/%d failed: %s",
                     slug, state, attempt + 1, _ROW_GEN_ATTEMPTS, exc,
                 )
+            finally:
+                # The strip is an intermediate. extract_strip_frames has already
+                # decoded its frames into memory, so drop the row image after
+                # every attempt (success or failure). Nothing prunes
+                # cache/images outside the gateway housekeeping loop, so a CLI
+                # or desktop hatch would otherwise leave each strip behind for
+                # good and grow the cache without bound.
+                for strip in strips:
+                    try:
+                        Path(strip).unlink(missing_ok=True)
+                    except OSError:
+                        pass
         logger.warning(
             "pet hatch %r: row %r gave up after %.1fs: %s",
             slug, state, time.monotonic() - t0, last_exc,

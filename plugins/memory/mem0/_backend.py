@@ -123,6 +123,9 @@ class OSSBackend(Mem0Backend):
             "embedder": oss_config["embedder"],
             "version": "v1.1",
         }
+        # Pass custom_instructions if present in oss_config (set via mem0.json "oss.custom_instructions")
+        if oss_config.get("custom_instructions"):
+            config["custom_instructions"] = oss_config["custom_instructions"]
         self._memory = Memory.from_config(config)
 
     @staticmethod

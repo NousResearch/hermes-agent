@@ -5419,19 +5419,24 @@ function profileNameFromDeleteRequest(request) {
   return name.toLowerCase()
 }
 
+// Returns the profile name whose backend was torn down, or null when the
+// request is not a profile-delete.  The caller uses this to skip ensureBackend
+// for the just-torn-down profile — otherwise ensureBackend respawns a pool
+// backend whose ensure_hermes_home() recreates the deleted profile directory.
 async function prepareProfileDeleteRequest(request) {
   const profile = profileNameFromDeleteRequest(request)
   if (!profile || profile === 'default' || !PROFILE_NAME_RE.test(profile)) {
-    return
+    return null
   }
 
   if (profile === primaryProfileKey()) {
     writeActiveDesktopProfile('default')
     await teardownPrimaryBackendAndWait()
-    return
+    return profile
   }
 
   await teardownPoolBackendAndWait(profile)
+  return profile
 }
 
 async function startHermes() {
@@ -6465,10 +6470,15 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     return rerouted
   }
 
-  await prepareProfileDeleteRequest(request)
+  const tornDownProfile = await prepareProfileDeleteRequest(request)
 
   const profile = request?.profile
-  const connection = await ensureBackend(profile)
+  // After tearing down a backend for profile deletion, route to the primary
+  // backend instead of spawning a fresh pool backend.  A freshly spawned
+  // backend calls ensure_hermes_home() which recreates the profile directory,
+  // defeating the deletion and leaving a zombie process.
+  const routeProfile = tornDownProfile ? null : profile
+  const connection = await ensureBackend(routeProfile)
   const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
   const requestPath = pathWithGlobalRemoteProfile(request.path, profile, {
     globalRemote: globalRemoteActive(),

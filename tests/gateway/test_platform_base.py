@@ -1920,3 +1920,52 @@ class TestMediaFallbackDoesNotLeakHostPath:
         sent_text = adapter.sent[0]["content"]
         assert "Here's the daily summary." in sent_text
         assert self.SENSITIVE_PATH not in sent_text
+
+
+class TestDockerPathTranslation:
+    """Shared Docker container→host path translation (used by send_message and the
+    gateway delivery loop). The mount table is stubbed so tests never shell out to
+    docker; container_id=None disables the docker-cp fallback, exercising pure
+    bind-mount mapping."""
+
+    def test_media_paths_passthrough_when_no_docker_env(self):
+        mf = [("/workspace/a.png", False)]
+        with patch.object(BasePlatformAdapter, "_get_docker_mount_table", return_value=([], None)):
+            assert BasePlatformAdapter.translate_docker_media_paths(mf) == mf
+
+    def test_media_path_mapped_via_bind_mount(self):
+        mounts = [("/workspace", "/host/sandbox/workspace")]
+        with patch.object(BasePlatformAdapter, "_get_docker_mount_table", return_value=(mounts, None)):
+            out = BasePlatformAdapter.translate_docker_media_paths([("/workspace/img.png", True)])
+        assert out == [("/host/sandbox/workspace/img.png", True)]
+
+    def test_longest_prefix_wins(self):
+        # _get_docker_mount_table returns mounts pre-sorted longest-first.
+        mounts = [("/workspace/out", "/host/out"), ("/workspace", "/host/ws")]
+        with patch.object(BasePlatformAdapter, "_get_docker_mount_table", return_value=(mounts, None)):
+            out = BasePlatformAdapter.translate_docker_media_paths([("/workspace/out/f.mp3", False)])
+        assert out == [("/host/out/f.mp3", False)]
+
+    def test_exact_destination_match(self):
+        mounts = [("/data/file.bin", "/host/data/file.bin")]
+        with patch.object(BasePlatformAdapter, "_get_docker_mount_table", return_value=(mounts, None)):
+            out = BasePlatformAdapter.translate_docker_media_paths([("/data/file.bin", False)])
+        assert out == [("/host/data/file.bin", False)]
+
+    def test_unmapped_path_passthrough_without_container(self):
+        # No matching mount and container_id=None → docker cp skipped, path unchanged.
+        with patch.object(BasePlatformAdapter, "_get_docker_mount_table",
+                          return_value=([("/workspace", "/host/ws")], None)):
+            out = BasePlatformAdapter.translate_docker_media_paths([("/tmp/x.png", False)])
+        assert out == [("/tmp/x.png", False)]
+
+    def test_local_paths_mapped(self):
+        mounts = [("/workspace", "/host/ws")]
+        with patch.object(BasePlatformAdapter, "_get_docker_mount_table", return_value=(mounts, None)):
+            out = BasePlatformAdapter.translate_docker_local_paths(["/workspace/doc.pdf", "/elsewhere/y"])
+        assert out == ["/host/ws/doc.pdf", "/elsewhere/y"]
+
+    def test_empty_inputs_are_noops(self):
+        # Early return before any docker call.
+        assert BasePlatformAdapter.translate_docker_media_paths([]) == []
+        assert BasePlatformAdapter.translate_docker_local_paths([]) == []

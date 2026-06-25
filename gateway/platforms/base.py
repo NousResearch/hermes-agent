@@ -3496,6 +3496,110 @@ class BasePlatformAdapter(ABC):
                 logger.warning("Skipping unsafe local file path: %s", _log_safe_path(raw))
         return safe_paths
 
+    @staticmethod
+    def _get_docker_mount_table() -> Tuple[List[Tuple[str, str]], Optional[str]]:
+        """Return ([(container_dest, host_src), ...], container_id) for the active Docker env.
+
+        Mounts are sorted longest-destination-first so the most specific prefix wins.
+        Returns ([], None) if no active Docker environment is found.
+        """
+        try:
+            import json
+            import subprocess
+            from tools.terminal_tool import _active_environments  # type: ignore[import]
+            for env in list(_active_environments.values()):
+                cid = getattr(env, "_container_id", None)
+                if not cid:
+                    continue
+                result = subprocess.run(
+                    ["docker", "inspect", "--format", "{{json .Mounts}}", cid],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if result.returncode != 0:
+                    continue
+                mounts = [
+                    (m["Destination"].rstrip("/"), m["Source"].rstrip("/"))
+                    for m in json.loads(result.stdout)
+                    if m.get("Type") == "bind"
+                ]
+                mounts.sort(key=lambda x: len(x[0]), reverse=True)
+                return mounts, cid
+        except Exception:
+            pass
+        return [], None
+
+    @staticmethod
+    def _translate_one_docker_path(
+        path: str, mounts: List[Tuple[str, str]], container_id: Optional[str]
+    ) -> str:
+        """Translate one container path to a host-readable path.
+
+        1. Map via the longest matching bind-mount prefix.
+        2. If still unmapped (e.g. /tmp/) and absent on the host, ``docker cp`` it
+           out to a temp file the host can read.
+        """
+        import os
+        from pathlib import Path
+
+        host_path = path
+        for dest, src in mounts:
+            if path == dest:
+                host_path = src
+                break
+            if path.startswith(dest + "/"):
+                host_path = src + path[len(dest):]
+                break
+
+        if host_path == path and not Path(path).exists() and container_id:
+            try:
+                import hashlib
+                import subprocess
+                tag = hashlib.md5(path.encode()).hexdigest()[:8]
+                dest_path = f"/tmp/hermes_docker_media_{tag}{os.path.splitext(path)[1]}"
+                r = subprocess.run(
+                    ["docker", "cp", f"{container_id}:{path}", dest_path],
+                    capture_output=True, timeout=30,
+                )
+                if r.returncode == 0:
+                    host_path = dest_path
+            except Exception:
+                pass
+        return host_path
+
+    @staticmethod
+    def translate_docker_media_paths(media_files: list) -> list:
+        """Translate ``(path, is_voice)`` container paths to host equivalents.
+
+        send_message and the gateway delivery loop run on the HOST; files written
+        by the agent inside a Docker terminal backend are only reachable via a
+        bind-mount or by copying them out.  The mount table is built once per call.
+        No-op when no Docker environment is active.
+        """
+        if not media_files:
+            return media_files
+        mounts, container_id = BasePlatformAdapter._get_docker_mount_table()
+        if not mounts and not container_id:
+            return media_files
+        return [
+            (BasePlatformAdapter._translate_one_docker_path(p, mounts, container_id), is_voice)
+            for p, is_voice in media_files
+        ]
+
+    @staticmethod
+    def translate_docker_local_paths(file_paths: list) -> list:
+        """Translate bare container file-path strings to host equivalents.
+
+        Plain-path counterpart to translate_docker_media_paths (no is_voice flag).
+        """
+        if not file_paths:
+            return file_paths
+        mounts, container_id = BasePlatformAdapter._get_docker_mount_table()
+        if not mounts and not container_id:
+            return file_paths
+        return [
+            BasePlatformAdapter._translate_one_docker_path(p, mounts, container_id)
+            for p in file_paths
+        ]
 
     @staticmethod
     def _mask_protected_spans(content: str) -> str:

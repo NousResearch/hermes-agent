@@ -80,6 +80,7 @@ def _load_config() -> dict:
     config = {
         "mode": os.environ.get("MEM0_MODE", "platform"),
         "api_key": os.environ.get("MEM0_API_KEY", ""),
+        "host": os.environ.get("MEM0_HOST", ""),
         "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
         "oss": {},
     }
@@ -217,7 +218,7 @@ class Mem0MemoryProvider(MemoryProvider):
         mode = cfg.get("mode", "platform")
         if mode == "oss":
             return bool(cfg.get("oss", {}).get("vector_store"))
-        return bool(cfg.get("api_key"))
+        return bool(cfg.get("api_key") or cfg.get("host"))
 
     def save_config(self, values, hermes_home):
         """Write config to $HERMES_HOME/mem0.json."""
@@ -240,6 +241,7 @@ class Mem0MemoryProvider(MemoryProvider):
         api_key_required = mode != "oss"
         return [
             {"key": "api_key", "description": "Mem0 Platform API key", "secret": True, "required": api_key_required, "env_var": "MEM0_API_KEY", "url": "https://app.mem0.ai"},
+            {"key": "host", "description": "Self-hosted Mem0 URL (e.g. http://localhost:8888)", "default": "", "env_var": "MEM0_HOST"},
             {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
             {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
             {"key": "rerank", "description": "Enable reranking for recall", "default": "true", "choices": ["true", "false"]},
@@ -254,6 +256,9 @@ class Mem0MemoryProvider(MemoryProvider):
             if self._mode == "oss":
                 from ._backend import OSSBackend
                 return OSSBackend(self._config.get("oss", {}))
+            if self._host:
+                from ._backend import SelfHostedBackend
+                return SelfHostedBackend(self._api_key, self._host)
             from ._backend import PlatformBackend
             return PlatformBackend(self._api_key)
         except Exception as e:
@@ -308,6 +313,7 @@ class Mem0MemoryProvider(MemoryProvider):
         self._config = _load_config()
         self._mode = self._config.get("mode", "platform")
         self._api_key = self._config.get("api_key", "")
+        self._host = self._config.get("host", "")
         # Resolution order for user_id:
         #   1. Operator-configured MEM0_USER_ID (env or $HERMES_HOME/mem0.json) —
         #      the canonical principal, applied across every gateway so the same
@@ -344,7 +350,12 @@ class Mem0MemoryProvider(MemoryProvider):
         return {"channel": self._channel} if self._channel else {}
 
     def system_prompt_block(self) -> str:
-        mode_label = "platform (cloud API)" if self._mode == "platform" else "OSS (self-hosted)"
+        if getattr(self, "_host", ""):
+            mode_label = f"self-hosted ({self._host})"
+        elif self._mode == "platform":
+            mode_label = "platform (cloud API)"
+        else:
+            mode_label = "OSS (self-hosted)"
         rerank_note = " Rerank is available on search." if self._mode == "platform" else ""
         return (
             "# Mem0 Memory\n"

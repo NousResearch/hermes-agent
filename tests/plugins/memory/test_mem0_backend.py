@@ -2,7 +2,7 @@
 
 import pytest
 
-from plugins.memory.mem0._backend import Mem0Backend, PlatformBackend, OSSBackend
+from plugins.memory.mem0._backend import Mem0Backend, PlatformBackend, OSSBackend, SelfHostedBackend
 
 
 class FakePlatformClient:
@@ -207,3 +207,150 @@ class TestOSSBackend:
         backend, _ = self._make()
         result = backend.delete("m1")
         assert result == {"result": "Memory deleted.", "memory_id": "m1"}
+
+
+class TestSelfHostedBackend:
+    """Tests for SelfHostedBackend — direct HTTP to self-hosted Mem0 server."""
+
+    def _make(self, api_key="test-key", host="http://localhost:8888"):
+        backend = SelfHostedBackend.__new__(SelfHostedBackend)
+        backend._host = host.rstrip("/")
+
+        class MockClient:
+            def __init__(self):
+                self.calls = []
+                self.base_url = host
+                self.headers = {}
+
+            def post(self, path, json=None, **kw):
+                self.calls.append(("POST", path, json))
+                if path == "/search":
+                    return MockResponse(200, {"results": [{"id": "m1", "memory": "fact1", "score": 0.9}]})
+                if path == "/memories":
+                    return MockResponse(200, {"event_id": "evt-1", "status": "ok"})
+                return MockResponse(404, {})
+
+            def get(self, path, params=None, **kw):
+                self.calls.append(("GET", path, params))
+                return MockResponse(200, {"results": [{"id": "m1", "memory": "fact1"}]})
+
+            def patch(self, path, json=None, **kw):
+                self.calls.append(("PATCH", path, json))
+                return MockResponse(200, {"id": "m1"})
+
+            def delete(self, path, **kw):
+                self.calls.append(("DELETE", path))
+                return MockResponse(200, {})
+
+            def close(self):
+                pass
+
+        class MockResponse:
+            def __init__(self, status, data):
+                self.status_code = status
+                self._data = data
+
+            def json(self):
+                return self._data
+
+        backend._client = MockClient()
+        return backend
+
+    def test_search_forwards_params(self):
+        backend = self._make()
+        result = backend.search("test query", filters={"user_id": "u1"}, top_k=5)
+        call = backend._client.calls[0]
+        assert call[0] == "POST"
+        assert call[1] == "/search"
+        assert call[2]["query"] == "test query"
+        assert call[2]["top_k"] == 5
+        assert call[2]["filters"] == {"user_id": "u1"}
+
+    def test_search_returns_list(self):
+        backend = self._make()
+        result = backend.search("q", filters={})
+        assert isinstance(result, list)
+        assert result[0]["id"] == "m1"
+
+    def test_search_empty_filters_omits_key(self):
+        backend = self._make()
+        backend.search("q", filters={})
+        call = backend._client.calls[0]
+        assert "filters" not in call[2]
+
+    def test_get_all_forwards_user_id(self):
+        backend = self._make()
+        result = backend.get_all(filters={"user_id": "u1"}, page=1, page_size=50)
+        call = backend._client.calls[0]
+        assert call[0] == "GET"
+        assert call[1] == "/memories"
+        assert call[2]["user_id"] == "u1"
+        assert "results" in result
+        assert "count" in result
+
+    def test_get_all_pagination(self):
+        backend = self._make()
+        result = backend.get_all(filters={"user_id": "u1"}, page=1, page_size=1)
+        assert len(result["results"]) <= 1
+
+    def test_add_forwards_kwargs(self):
+        backend = self._make()
+        msgs = [{"role": "user", "content": "hi"}]
+        result = backend.add(msgs, user_id="u1", agent_id="hermes", infer=False)
+        call = backend._client.calls[0]
+        assert call[0] == "POST"
+        assert call[1] == "/memories"
+        assert call[2]["messages"] == msgs
+        assert call[2]["user_id"] == "u1"
+        assert call[2]["infer"] is False
+
+    def test_add_forwards_metadata(self):
+        backend = self._make()
+        msgs = [{"role": "user", "content": "hi"}]
+        backend.add(msgs, user_id="u1", agent_id="hermes", infer=True, metadata={"channel": "telegram"})
+        call = backend._client.calls[0]
+        assert call[2]["metadata"] == {"channel": "telegram"}
+
+    def test_add_omits_empty_metadata(self):
+        backend = self._make()
+        msgs = [{"role": "user", "content": "hi"}]
+        backend.add(msgs, user_id="u1", agent_id="hermes", infer=False)
+        call = backend._client.calls[0]
+        assert "metadata" not in call[2]
+
+    def test_update_forwards(self):
+        backend = self._make()
+        result = backend.update("m1", "new text")
+        call = backend._client.calls[0]
+        assert call[0] == "PATCH"
+        assert call[1] == "/memories/m1"
+        assert call[2] == {"text": "new text"}
+        assert result["result"] == "Memory updated."
+
+    def test_delete_forwards(self):
+        backend = self._make()
+        result = backend.delete("m1")
+        call = backend._client.calls[0]
+        assert call[0] == "DELETE"
+        assert call[1] == "/memories/m1"
+        assert result["result"] == "Memory deleted."
+
+    def test_init_sets_headers(self):
+        backend = SelfHostedBackend("my-key", "http://localhost:8888")
+        assert backend._client.headers.get("X-API-Key") == "my-key"
+        assert "Authorization" not in backend._client.headers
+        backend.close()
+
+    def test_init_strips_trailing_slash(self):
+        backend = SelfHostedBackend("key", "http://localhost:8888/")
+        assert backend._host == "http://localhost:8888"
+        backend.close()
+
+    def test_init_no_api_key(self):
+        backend = SelfHostedBackend("", "http://localhost:8888")
+        assert "X-API-Key" not in backend._client.headers
+        backend.close()
+
+    def test_close(self):
+        backend = self._make()
+        backend.close()

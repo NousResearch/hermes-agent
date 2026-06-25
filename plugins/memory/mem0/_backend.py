@@ -90,6 +90,93 @@ class PlatformBackend(Mem0Backend):
         return {"result": "Memory deleted.", "memory_id": memory_id}
 
 
+class SelfHostedBackend(Mem0Backend):
+    """Direct HTTP backend for self-hosted Mem0 (FastAPI server via httpx).
+
+    Bypasses MemoryClient entirely — the SDK's ``_validate_api_key`` calls
+    ``GET /v1/ping/`` which the self-hosted server does not expose.
+    Uses ``X-API-Key`` header instead of ``Authorization: Token``.
+    """
+
+    def __init__(self, api_key: str, host: str):
+        import httpx
+
+        self._host = host.rstrip("/")
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if api_key:
+            headers["X-API-Key"] = api_key
+        self._client = httpx.Client(
+            base_url=self._host, headers=headers, timeout=30,
+        )
+
+    def _unwrap(self, response) -> list:
+        if response.status_code >= 400:
+            return []
+        data = response.json()
+        if isinstance(data, dict):
+            return data.get("results", data.get("data", []))
+        if isinstance(data, list):
+            return data
+        return []
+
+    def search(self, query: str, *, filters: dict, top_k: int = 10, rerank: bool = True) -> list[dict]:
+        body: dict[str, Any] = {"query": query, "top_k": top_k}
+        if filters:
+            body["filters"] = filters
+        resp = self._client.post("/search", json=body)
+        return self._unwrap(resp)
+
+    def get_all(self, *, filters: dict, page: int = 1, page_size: int = 100) -> dict:
+        params: dict[str, Any] = {}
+        if filters:
+            params["user_id"] = filters.get("user_id", "")
+        resp = self._client.get("/memories", params=params)
+        results = self._unwrap(resp)
+        total = len(results)
+        start = (page - 1) * page_size
+        return {"results": results[start : start + page_size], "count": total}
+
+    def add(
+        self,
+        messages: list,
+        *,
+        user_id: str,
+        agent_id: str,
+        infer: bool = False,
+        metadata: dict | None = None,
+    ) -> dict:
+        body: dict[str, Any] = {
+            "messages": messages,
+            "user_id": user_id,
+            "agent_id": agent_id,
+            "infer": infer,
+        }
+        if metadata:
+            body["metadata"] = metadata
+        resp = self._client.post("/memories", json=body)
+        if resp.status_code >= 400:
+            return {"error": resp.text}
+        return resp.json()
+
+    def update(self, memory_id: str, text: str) -> dict:
+        resp = self._client.patch(f"/memories/{memory_id}", json={"text": text})
+        if resp.status_code >= 400:
+            return {"error": resp.text}
+        return {"result": "Memory updated.", "memory_id": memory_id}
+
+    def delete(self, memory_id: str) -> dict:
+        resp = self._client.delete(f"/memories/{memory_id}")
+        if resp.status_code >= 400:
+            return {"error": resp.text}
+        return {"result": "Memory deleted.", "memory_id": memory_id}
+
+    def close(self) -> None:
+        try:
+            self._client.close()
+        except Exception:
+            pass
+
+
 class OSSBackend(Mem0Backend):
     """Wraps mem0.Memory for self-hosted (OSS) mode."""
 

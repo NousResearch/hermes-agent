@@ -461,3 +461,63 @@ class TestMem0WriteMetadata:
         adds = [c for c in provider._backend.captured if c[0] == "add"]
         assert adds, "expected an add call from sync_turn"
         assert adds[-1][2]["metadata"] == {"channel": "discord"}
+
+
+class TestCreateBackendRouting:
+    """Test _create_backend() routes to the correct backend based on config."""
+
+    def test_host_routes_to_self_hosted(self):
+        from plugins.memory.mem0._backend import SelfHostedBackend
+        provider = Mem0MemoryProvider()
+        provider._config = {"host": "http://localhost:8888", "api_key": "key", "mode": "platform"}
+        provider._mode = "platform"
+        provider._api_key = "key"
+        provider._host = "http://localhost:8888"
+        backend = provider._create_backend()
+        assert isinstance(backend, SelfHostedBackend)
+        backend.close()
+
+    def test_no_host_routes_to_platform(self, monkeypatch):
+        from plugins.memory.mem0._backend import PlatformBackend
+        class FakeMemoryClient:
+            def __init__(self, api_key=None, host=None):
+                pass
+        original_init = PlatformBackend.__init__
+        def patched_init(self, api_key):
+            self._client = FakeMemoryClient(api_key=api_key)
+        monkeypatch.setattr(PlatformBackend, "__init__", patched_init)
+        provider = Mem0MemoryProvider()
+        provider._config = {"api_key": "key", "mode": "platform"}
+        provider._mode = "platform"
+        provider._api_key = "key"
+        provider._host = ""
+        backend = provider._create_backend()
+        assert isinstance(backend, PlatformBackend)
+
+    def test_oss_mode_routes_to_oss(self):
+        from plugins.memory.mem0._backend import OSSBackend
+        provider = Mem0MemoryProvider()
+        provider._config = {"mode": "oss", "oss": {"vector_store": {"provider": "qdrant", "config": {"path": "/tmp/test"}}}}
+        provider._mode = "oss"
+        provider._api_key = ""
+        provider._host = ""
+        original_oss_init = OSSBackend.__init__
+        def fake_oss_init(self, oss_config):
+            self._memory = None
+        OSSBackend.__init__ = fake_oss_init
+        try:
+            backend = provider._create_backend()
+            assert isinstance(backend, OSSBackend)
+        finally:
+            OSSBackend.__init__ = original_oss_init
+
+    def test_host_with_empty_api_key(self):
+        from plugins.memory.mem0._backend import SelfHostedBackend
+        provider = Mem0MemoryProvider()
+        provider._config = {"host": "http://localhost:8888", "mode": "platform"}
+        provider._mode = "platform"
+        provider._api_key = ""
+        provider._host = "http://localhost:8888"
+        backend = provider._create_backend()
+        assert isinstance(backend, SelfHostedBackend)
+        backend.close()

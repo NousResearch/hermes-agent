@@ -798,7 +798,7 @@ export const en: Translations = {
       namePlaceholder: 'Name your pet',
       staleBackend: 'Update Hermes to generate pets.',
       backgroundHint: 'You can close this — Hermes will notify you when it’s done.',
-      slowProviderHint: 'This can take up to 5 minutes',
+      slowProviderHint: 'This can take several minutes',
       genericError: 'Generation failed — try again or pick a suggestion.',
       referenceImageTooLarge: 'Reference image is too large. Use one under 16 MB.',
       referenceImageInvalid: 'Could not read that reference image. Try a PNG, JPG, WebP, or GIF.',

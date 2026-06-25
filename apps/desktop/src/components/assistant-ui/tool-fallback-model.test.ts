@@ -136,8 +136,8 @@ describe('buildToolView title actions', () => {
       ''
     )
 
-    expect(read.title).toBe('Reading file')
-    expect(read.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' file' })
+    expect(read.title).toBe('Reading demo.txt')
+    expect(read.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' demo.txt' })
     expect(web.title).toBe('Reading example.com/docs')
     expect(web.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' example.com/docs' })
     expect(terminal.title).toBe('Running npm test -- --runInBand')
@@ -191,6 +191,20 @@ describe('buildToolView title actions', () => {
     expect(view.title).toBe('Read package.json L1-5')
   })
 
+  it('uses inherited backend context for live read_file rows', () => {
+    const view = buildToolView(
+      part({
+        args: { context: 'package.json L1-5', path: './package.json' },
+        result: undefined,
+        toolName: 'read_file'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Reading package.json L1-5')
+    expect(view.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' package.json L1-5' })
+  })
+
   it('uses returned line numbers for negative-offset read_file rows', () => {
     const view = buildToolView(
       part({
@@ -239,6 +253,24 @@ describe('buildToolView title actions', () => {
     }
   })
 
+  it('uses inherited backend context for live terminal rows', () => {
+    const view = buildToolView(
+      part({
+        args: {
+          command: 'cd /Users/brooklyn/www/bb-rainbows && pnpm run lint 2>&1 | tail -20',
+          context: 'pnpm run lint'
+        },
+        result: undefined,
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Running pnpm run lint')
+    expect(view.subtitle).toBe('')
+    expect(view.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' pnpm run lint' })
+  })
+
   it('uses the runtime locale for title text and action placement', () => {
     setRuntimeI18nLocale('ja')
 
@@ -249,8 +281,8 @@ describe('buildToolView title actions', () => {
       ''
     )
 
-    expect(read.title).toBe('ファイルを読み取り中')
-    expect(read.titleAction).toEqual({ prefix: 'ファイルを', text: '読み取り中', suffix: '' })
+    expect(read.title).toBe('demo.txt を読み取り中')
+    expect(read.titleAction).toEqual({ prefix: 'demo.txt を', text: '読み取り中', suffix: '' })
     expect(web.title).toBe('example.com/docs を読み取り中')
     expect(web.titleAction).toEqual({ prefix: 'example.com/docs を', text: '読み取り中', suffix: '' })
   })

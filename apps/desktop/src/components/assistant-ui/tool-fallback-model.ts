@@ -165,6 +165,24 @@ function readFileLineLabel(args: Record<string, unknown>, result: Record<string,
   return start === end ? `L${start}` : `L${start}-${end}`
 }
 
+function readFileDisplayTarget(args: Record<string, unknown>, result: Record<string, unknown>): string {
+  const inherited = firstStringField(args, ['context', 'preview'])
+
+  if (inherited) {
+    return inherited
+  }
+
+  const path = firstStringField(args, ['path', 'file', 'filepath'])
+
+  if (!path) {
+    return ''
+  }
+
+  const lineLabel = readFileLineLabel(args, result)
+
+  return [fileEditBasename(path), lineLabel].filter(Boolean).join(' ')
+}
+
 const TOOL_META: Record<ToolTitleKey, ToolMetaSpec> = {
   browser_click: {
     icon: 'globe',
@@ -1220,9 +1238,9 @@ function toolSubtitle(
       }
     }
 
-    const command = firstStringField(argsRecord, ['command', 'code']) || contextValue(argsRecord)
+    const command = firstStringField(argsRecord, ['context', 'preview', 'command', 'code']) || contextValue(argsRecord)
 
-    return command ? compactPreview(summarizeShellCommand(command), 120) : 'Executed command'
+    return command ? '' : 'Executed command'
   }
 
   if (toolName === 'read_file' || isFileEditTool(toolName)) {
@@ -1543,8 +1561,18 @@ function dynamicTitle(
       : fallback
   }
 
+  if (part.toolName === 'read_file') {
+    const target = readFileDisplayTarget(args, result)
+    const action = verb(translateNow('assistant.tool.actions.reading'), translateNow('assistant.tool.actions.read'))
+
+    return target
+      ? titledAction(action, translateNow('assistant.tool.titleTemplates.actionTarget', action, target))
+      : fallback
+  }
+
   if (part.toolName === 'terminal' || part.toolName === 'execute_code') {
-    const command = firstStringField(args, ['command', 'code']) || contextValue(args)
+    const command =
+      firstStringField(args, ['context', 'preview']) || firstStringField(args, ['command', 'code']) || contextValue(args)
 
     if (command) {
       const action =
@@ -1560,18 +1588,6 @@ function dynamicTitle(
           compactPreview(summarizeShellCommand(command), 160)
         )
       )
-    }
-  }
-
-  if (part.toolName === 'read_file' && part.result !== undefined) {
-    const path = firstStringField(args, ['path', 'file', 'filepath'])
-
-    if (path) {
-      const lineLabel = readFileLineLabel(args, result)
-      const target = [fileEditBasename(path), lineLabel].filter(Boolean).join(' ')
-      const action = verb(translateNow('assistant.tool.actions.reading'), translateNow('assistant.tool.actions.read'))
-
-      return { title: translateNow('assistant.tool.titleTemplates.actionTarget', action, target) }
     }
   }
 

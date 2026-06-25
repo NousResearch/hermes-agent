@@ -746,7 +746,15 @@ class WebSocketRelayTransport:
             handler = getattr(self, "_passthrough_handler", None)
             if handler is not None:
                 fwd = _passthrough_from_wire(frame.get("forward", {}))
-                await handler(fwd, frame.get("bufferId"))
+                buffer_id = frame.get("bufferId")
+                await handler(fwd, buffer_id)
+                # Phase 5 §5.3: mirror the inbound path. A buffered passthrough
+                # replay carries a bufferId; ack it after the handler has durably
+                # taken it so the connector advances its delivery-leg buffer
+                # cursor and stops re-delivering it on every reconnect. A live
+                # (non-buffered) forward has no bufferId, so there is nothing to ack.
+                if buffer_id:
+                    await self._send_inbound_ack(str(buffer_id))
         else:
             # hello/outbound/interrupt are gateway->connector; ignore if echoed.
             pass

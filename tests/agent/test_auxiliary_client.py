@@ -2411,6 +2411,11 @@ class TestAuxiliaryFallbackLayering:
             reason="invalid provider response",
         )
 
+    def _make_codex_usage_limit_err(self):
+        exc = Exception("Error code: 429 - {'code': 'usage_limit_reached'}")
+        setattr(exc, "status_code", 429)
+        return exc
+
     def test_auto_provider_uses_task_then_main_chain_before_builtin_chain(self, monkeypatch):
         """Auto aux call failures try per-task then top-level fallback before built-ins."""
         primary_client = MagicMock()
@@ -2440,6 +2445,80 @@ class TestAuxiliaryFallbackLayering:
             "title_generation", "auto", reason="payment error")
         mock_main_chain.assert_called_once_with(
             "title_generation", "auto", reason="payment error")
+        mock_builtin_chain.assert_not_called()
+
+    def test_auto_vision_failure_uses_top_level_main_fallback_chain(self):
+        """Vision auto keeps the user's top-level fallback chain after main provider failure."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_codex_usage_limit_err()
+
+        main_chain_client = MagicMock()
+        main_chain_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from OpenAI API fallback"))
+        ])
+
+        with patch("agent.auxiliary_client.resolve_vision_provider_client",
+                   return_value=("openai-codex", primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._recoverable_pool_provider",
+                   return_value=None), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")) as mock_task_chain, \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(main_chain_client, "gpt-5.5", "openai-api")) as mock_main_chain, \
+             patch("agent.auxiliary_client._try_payment_fallback") as mock_builtin_chain:
+            result = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "from OpenAI API fallback"
+        assert main_chain_client.chat.completions.create.called
+        mock_task_chain.assert_called_once_with(
+            "vision", "openai-codex", reason="rate limit")
+        mock_main_chain.assert_called_once_with(
+            "vision", "openai-codex", reason="rate limit")
+        mock_builtin_chain.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_async_auto_vision_failure_uses_top_level_main_fallback_chain(self):
+        """Async vision auto uses top-level fallback_providers after main provider failure."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(
+            side_effect=self._make_codex_usage_limit_err()
+        )
+
+        sync_fallback_client = MagicMock()
+        async_fallback_client = MagicMock()
+        async_fallback_client.chat.completions.create = AsyncMock(return_value=MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from async OpenAI API fallback"))
+        ]))
+
+        with patch("agent.auxiliary_client.resolve_vision_provider_client",
+                   return_value=("openai-codex", primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._recoverable_pool_provider",
+                   return_value=None), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")) as mock_task_chain, \
+             patch("agent.auxiliary_client._try_main_fallback_chain",
+                   return_value=(sync_fallback_client, "gpt-5.5", "openai-api")) as mock_main_chain, \
+             patch("agent.auxiliary_client._try_payment_fallback") as mock_builtin_chain, \
+             patch("agent.auxiliary_client._to_async_client",
+                   return_value=(async_fallback_client, "gpt-5.5")):
+            result = await async_call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result.choices[0].message.content == "from async OpenAI API fallback"
+        async_fallback_client.chat.completions.create.assert_awaited_once()
+        mock_task_chain.assert_called_once_with(
+            "vision", "openai-codex", reason="rate limit")
+        mock_main_chain.assert_called_once_with(
+            "vision", "openai-codex", reason="rate limit")
         mock_builtin_chain.assert_not_called()
 
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):

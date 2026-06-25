@@ -2413,13 +2413,44 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
         self.config = config or load_gateway_config()
+
+        # ── Mutual-exclusion guard: multiplex_profiles vs MGA agent routing ──
+        # Both features use the same session-key prefix slot ("agent:<X>:…").
+        # multiplex_profiles stamps the profile name there; MGA routing stamps
+        # agent_id there.  If BOTH are enabled simultaneously the prefixes
+        # collide when any profile name equals an agent id (e.g. profile="X"
+        # and agent_id="X" both produce "agent:X:…").  The collision is silent
+        # at runtime — the wrong session is served and history bleeds across
+        # routing boundaries.
+        #
+        # Priority order (documented in build_session_key):
+        #   1. source.agent_id  (MGA routing — set by adapter _attach_agent_id)
+        #   2. profile          (multiplex gateway — set by /p/<profile>/ prefix)
+        #   3. "main"           (legacy single-agent default)
+        #
+        # The two features are mutually exclusive by design.  Enabling both
+        # requires a distinct prefix strategy (e.g. "mga:<id>:" vs "agent:<p>:")
+        # AND migration of all persisted session keys — a deliberate upgrade, NOT
+        # something to allow silently.  Fail fast here instead of corrupting
+        # sessions at runtime.
+        _multiplex_on = bool(getattr(self.config, "multiplex_profiles", False))
+        _mga_on = bool(getattr(self.config, "agents", None))  # non-empty agents dict → MGA active
+        if _multiplex_on and _mga_on:
+            raise RuntimeError(
+                "Gateway config conflict: both 'multiplex_profiles' and 'agents' (MGA routing) "
+                "are enabled simultaneously.  These features share the session-key namespace "
+                "('agent:<X>:…') and will collide when any profile name matches an agent id.  "
+                "Disable one or the other.  To use both you must migrate to distinct key "
+                "prefixes — see build_session_key docstring for the three-tier priority order."
+            )
+
         # Mark the process as a profile multiplexer when configured. This flips
         # agent.secret_scope.get_secret() to fail-closed on any unscoped
         # credential read, so a missed migration crashes loudly instead of
         # leaking a cross-profile value (Workstream A). Inert when off.
         try:
             from agent.secret_scope import set_multiplex_active
-            set_multiplex_active(bool(getattr(self.config, "multiplex_profiles", False)))
+            set_multiplex_active(_multiplex_on)
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
@@ -6020,16 +6051,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Compute the gateway's session_key for that destination using the
         # same rules its adapters use, so switch_session targets the right
-        # entry. For thread destinations build_session_key keys without
-        # user_id (thread_sessions_per_user defaults to False) — so the
-        # next real user message in the thread shares this same session.
-        platform_cfg = self.config.platforms.get(platform)
-        extra = platform_cfg.extra if platform_cfg else {}
-        session_key = build_session_key(
-            dest_source,
-            group_sessions_per_user=extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
-        )
+        # entry.  Use _session_key_for_source (not bare build_session_key)
+        # so the profile= argument is threaded in when multiplex_profiles is
+        # on — otherwise the key lands in "agent:main:..." while the store
+        # holds "agent:<profile>:..." and switch_session targets the wrong
+        # slot.  For thread destinations the key is built without user_id
+        # (thread_sessions_per_user defaults to False) so the next real user
+        # message in the thread shares this same session.
+        session_key = self._session_key_for_source(dest_source)
 
         # Make sure there's an entry in the session_store for this key. If
         # the home channel has never been used, get_or_create_session

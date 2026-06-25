@@ -163,3 +163,81 @@ class TestSessionStoreProfileResolution:
             assert store._generate_session_key(s) == "agent:main:telegram:dm:99"
 
 
+class TestAgentIdDMKeyIsolation:
+    """DM with agent_id set and no chat_id must route to a per-user key,
+    never the bare shared sink "<agent_prefix>:<platform>:dm".
+
+    Regression guard for the MGA routing path: source.agent_id takes the
+    highest-priority namespace slot, and the DM fallback chain must reach
+    user_id before falling through to the bare sink — otherwise every DM
+    from every user that lacks a chat_id collapses into one shared session
+    and cross-user history bleeds across routing boundaries.
+    """
+
+    def test_mga_dm_no_chat_id_uses_user_id(self):
+        """agent_id="myagent", chat_id=None → key is agent:myagent:<platform>:dm:<user_id>.
+
+        Why: validates that the MGA agent_id prefix + DM fallback to user_id
+        works end-to-end, so a DM arriving without a chat_id doesn't sink into
+        the shared "agent:myagent:telegram:dm" bucket and pollute other users.
+        What: builds key from a source with agent_id set, chat_id empty, user_id present.
+        Test: assert key matches the expected per-user pattern, not the bare :dm sink.
+        """
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="",          # no chat_id — exercises the DM fallback path
+            chat_type="dm",
+            user_id="user42",
+            agent_id="myagent",  # MGA routing — takes priority over profile
+        )
+        key = build_session_key(source)
+        assert key == "agent:myagent:telegram:dm:user42", (
+            f"Expected agent:myagent:telegram:dm:user42 but got {key!r}. "
+            "The DM fallback must reach user_id, not collapse to the bare :dm sink."
+        )
+
+    def test_mga_dm_no_chat_id_no_user_id_uses_bare_sink(self):
+        """With agent_id set but no chat_id AND no user_id, key is the bare per-agent sink.
+
+        Why: documents the intended (unavoidable) fallback when zero identifiers
+        are available — at least the MGA agent_id prefix keeps each agent's
+        bare sink isolated from other agents.
+        What: key ends with :dm and contains the agent_id prefix.
+        Test: assert key is "agent:myagent:telegram:dm".
+        """
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="",
+            chat_type="dm",
+            user_id=None,
+            agent_id="myagent",
+        )
+        key = build_session_key(source)
+        assert key == "agent:myagent:telegram:dm", (
+            f"Expected agent:myagent:telegram:dm but got {key!r}."
+        )
+
+    def test_mga_prefix_takes_priority_over_profile(self):
+        """agent_id overrides profile in the namespace slot — they must not collide.
+
+        Why: documents the three-tier priority (agent_id > profile > 'main').
+        A source with both agent_id and profile set must use the agent_id prefix
+        so the session store's MGA routing is authoritative.
+        What: build_session_key with agent_id="X" and profile="X" → "agent:X:…",
+        but the same key would arise from profile="X" without agent_id — the
+        call sites that pass agent_id are the MGA routing path.
+        Test: assert key prefix is "agent:myagent:" not "agent:worker:".
+        """
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            agent_id="myagent",
+        )
+        # profile kwarg is "worker" but agent_id="myagent" takes priority
+        key = build_session_key(source, profile="worker")
+        assert key == "agent:myagent:telegram:dm:99", (
+            f"agent_id must override profile in key namespace, got {key!r}"
+        )
+
+

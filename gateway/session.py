@@ -688,11 +688,21 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
 
-    Agent identity:
-      - When ``source.agent_id`` is set (via routing in the adapter), the
-        key is prefixed with ``agent:<id>:``.  Unset (the single-agent default)
-        produces ``agent:main:``, preserving every key string generated before
-        the multi-agent feature shipped.
+    Agent identity (three-tier priority — highest wins):
+      1. ``source.agent_id`` set (MGA routing via adapter ``_attach_agent_id``)
+         → prefix is ``agent:<agent_id>:``.
+      2. ``profile`` argument set to a named profile (multiplex gateway via
+         ``/p/<profile>/`` URL prefix or per-credential adapter ownership)
+         → prefix is ``agent:<profile>:`` (or ``agent:main:`` when profile is
+         ``None``/``""``/``"default"``).
+      3. Neither set → prefix is ``agent:main:``, byte-identical to every key
+         generated before the multi-agent/multiplex features shipped.
+
+    Note: ``source.agent_id`` (MGA) and ``profile`` (multiplex) use the SAME
+    prefix slot and WILL collide if both are enabled simultaneously with the
+    same value.  The gateway startup guard in ``GatewayRunner.__init__``
+    enforces mutual exclusion — enabling both is a config error that fails
+    fast rather than silently corrupting session keys.
     """
     # Unified session key namespace: agent_id (MGA routing) takes priority;
     # falls back to profile-based namespace (multiplex gateway); then "main".

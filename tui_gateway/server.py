@@ -11602,9 +11602,17 @@ def _attachment_ref_path(session: dict, target: Path) -> str:
 
 
 def _desktop_attachment_dir(session: dict) -> Path:
-    root = Path(_session_cwd(session)).resolve() / ".hermes" / "desktop-attachments"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    workspace = Path(_session_cwd(session)).resolve()
+    root = workspace / ".hermes" / "desktop-attachments"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    except PermissionError:
+        profile_home = Path(str(session.get("profile_home") or _hermes_home)).resolve()
+        digest = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:12]
+        fallback = profile_home / "desktop-attachments" / f"{workspace.name or 'workspace'}-{digest}"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
 
 
 def _sanitize_attachment_name(name: str) -> str:

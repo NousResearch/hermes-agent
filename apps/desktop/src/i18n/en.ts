@@ -57,6 +57,7 @@ export const en: Translations = {
       backgroundExitedDuringStartup: 'Hermes background process exited during startup.',
       backendStopped: 'Backend stopped',
       desktopBootFailed: 'Desktop boot failed',
+      gatewayConnectionLost: 'Lost connection to the gateway',
       gatewaySignInRequired: 'Gateway sign-in required',
       ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
     },

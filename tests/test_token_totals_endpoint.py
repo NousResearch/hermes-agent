@@ -10,6 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
+# The handler builds aiohttp web.Response objects; skip where aiohttp is not
+# installed (e.g. minimal test runtimes that don't carry the gateway deps).
+pytest.importorskip("aiohttp")
+
 from hermes_state import SessionDB
 from hermes_token_codec import pack_assistant_tokens, pack_input_tokens
 

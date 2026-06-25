@@ -8178,6 +8178,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 return "Could not start /learn — please try again."
 
+        if canonical == "slack-ingest":
+            # Slack-friendly natural-language ingest entrypoint. The command is
+            # just a thin wrapper: turn `/slack-ingest ...` (or `!slack-ingest ...`
+            # via the Slack adapter rewrite) into a normal user turn with an
+            # explicit execution scaffold, then let the live agent do the actual
+            # Slack-history reads + wiki writes. This preserves role alternation
+            # and keeps the core surface small.
+            from agent.slack_ingest_prompt import build_slack_ingest_prompt
+
+            _ingest_req = event.get_command_args().strip()
+            if not _ingest_req:
+                return (
+                    "Usage: /slack-ingest <natural-language request>\n"
+                    "Example: /slack-ingest 2026-06-24 기준으로 <#C0B7QVCLQF9>, "
+                    "<#C0B833C0C2H>, <#C05PG78UK19> 채널의 업무만 요약해서 "
+                    "LLM-Wiki에 1일 단위로 인제스트해줘"
+                )
+            try:
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    _ack_meta = self._thread_metadata_for_source(source)
+                    await adapter.send(
+                        str(source.chat_id),
+                        "Slack channel history ingest request received — gathering history and updating the wiki…",
+                        metadata=_ack_meta,
+                    )
+            except Exception:
+                logger.debug("slack-ingest ack send failed", exc_info=True)
+            try:
+                event.text = build_slack_ingest_prompt(_ingest_req)
+                # fall through to agent processing
+            except Exception:
+                return "Could not start /slack-ingest — please include what to ingest."
+
         if canonical == "fast":
             return await self._handle_fast_command(event)
 

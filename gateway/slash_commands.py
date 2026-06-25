@@ -1848,6 +1848,49 @@ class GatewaySlashCommandsMixin:
         # Let the normal message handler process it
         return await self._handle_message(retry_event)
 
+    async def _handle_ingest_command(self, event: MessageEvent) -> str:
+        """Handle /ingest <request> by forwarding a structured Slack-ingest prompt.
+
+        The command exists primarily for messaging platforms — especially Slack,
+        where typed slash commands inside threads are awkward and the adapter
+        already rewrites ``!ingest ...`` to ``/ingest ...``. We keep the user
+        surface natural-language-first: everything after the command is treated
+        as the actual request and passed through the normal agent/tool path.
+        """
+
+        args = (event.get_command_args() or "").strip()
+        if not args:
+            typed_prefix = self._typed_command_prefix_for(
+                event.source.platform if event.source else None
+            )
+            return (
+                "Usage: "
+                f"`{typed_prefix}ingest <Slack history request>`\n"
+                "Example: "
+                f"`{typed_prefix}ingest <#C0B7QVCLQF9> <#C0B833C0C2H> <#C05PG78UK19> "
+                "채널의 6월 24일 업무만 요약해서 LLM-Wiki에 저장해줘`"
+            )
+
+        ingest_prompt = (
+            "Slack channel history ingest request. "
+            "Treat the following as the user's actual request. "
+            "Use Slack channel history as the primary evidence via slack_history_read, "
+            "not Hermes session recall, unless the user explicitly asks for session history. "
+            "If the request asks for LLM-Wiki saving, follow the existing wiki verification "
+            "and write rules before saving.\n\n"
+            f"User request:\n{args}"
+        )
+
+        ingest_event = MessageEvent(
+            text=ingest_prompt,
+            message_type=MessageType.TEXT,
+            source=event.source,
+            message_id=event.message_id,
+            raw_message=event.raw_message,
+            channel_prompt=event.channel_prompt,
+        )
+        return await self._handle_message(ingest_event)
+
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.
 

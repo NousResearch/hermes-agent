@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import threading
+
+from agent.conversation_loop import (
+    _defer_skill_review_when_input_pending,
+    _has_pending_user_input,
+)
 import run_agent as run_agent_module
 from run_agent import AIAgent
 
@@ -359,6 +365,73 @@ def test_background_review_fork_skips_external_memory_plugins(monkeypatch):
         "the fork leaks harness prompts into the user's real memory "
         "namespace via on_turn_start / prefetch_all / sync_all."
     )
+
+
+def test_background_review_skill_deferred_when_steer_pending():
+    """Queued user input should outrank a skill review nudge."""
+    agent = _bare_agent()
+    agent._pending_steer = "queued"
+    agent._pending_steer_lock = threading.Lock()
+    agent._iters_since_skill = 10
+    agent._skill_nudge_interval = 10
+    agent.valid_tool_names = ["skill_manage"]
+
+    assert _has_pending_user_input(agent) is True
+
+    _defer_skill_review_when_input_pending(agent)
+
+    assert agent._iters_since_skill == 9
+
+
+def test_background_review_skill_not_deferred_without_pending_input():
+    """The helper leaves the counter alone when no next-turn input exists."""
+    agent = _bare_agent()
+    agent._pending_steer = None
+    agent._pending_steer_lock = threading.Lock()
+    agent._pending_user_message = None
+    agent._interrupt_message = None
+    agent._iters_since_skill = 10
+    agent._skill_nudge_interval = 10
+    agent.valid_tool_names = ["skill_manage"]
+
+    _defer_skill_review_when_input_pending(agent)
+
+    assert agent._iters_since_skill == 10
+
+
+def test_has_pending_user_input_checks_all_sources():
+    agent = _bare_agent()
+    agent._pending_steer_lock = threading.Lock()
+
+    agent._pending_steer = "queued"
+    agent._pending_user_message = None
+    agent._interrupt_message = None
+    assert _has_pending_user_input(agent) is True
+
+    agent._pending_steer = None
+    agent._pending_user_message = "next message"
+    assert _has_pending_user_input(agent) is True
+
+    agent._pending_user_message = None
+    agent._interrupt_message = "interrupt"
+    assert _has_pending_user_input(agent) is True
+
+    agent._interrupt_message = None
+    assert _has_pending_user_input(agent) is False
+
+
+def test_background_review_skill_not_deferred_below_threshold():
+    """The helper leaves the counter alone until the nudge threshold is reached."""
+    agent = _bare_agent()
+    agent._pending_steer = "queued"
+    agent._pending_steer_lock = threading.Lock()
+    agent._iters_since_skill = 9
+    agent._skill_nudge_interval = 10
+    agent.valid_tool_names = ["skill_manage"]
+
+    _defer_skill_review_when_input_pending(agent)
+
+    assert agent._iters_since_skill == 9
 
 
 # ---------------------------------------------------------------------------

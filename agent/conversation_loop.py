@@ -73,6 +73,38 @@ logger = logging.getLogger(__name__)
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
 
+def _has_pending_user_input(agent) -> bool:
+    """Return True when another user turn is already queued."""
+    steer_lock = getattr(agent, "_pending_steer_lock", None)
+    if steer_lock is not None:
+        with steer_lock:
+            if getattr(agent, "_pending_steer", None):
+                return True
+    elif getattr(agent, "_pending_steer", None):
+        return True
+    if getattr(agent, "_pending_user_message", None):
+        return True
+    if getattr(agent, "_interrupt_message", None):
+        return True
+    return False
+
+
+def _defer_skill_review_when_input_pending(agent) -> None:
+    """Keep queued user turns ahead of background skill review."""
+    if getattr(agent, "_skill_nudge_interval", 0) <= 0:
+        return
+    if "skill_manage" not in getattr(agent, "valid_tool_names", []):
+        return
+    if getattr(agent, "_iters_since_skill", 0) < agent._skill_nudge_interval:
+        return
+    if not _has_pending_user_input(agent):
+        return
+
+    # Leave the counter one step below the threshold so the next eligible turn
+    # retriggers review without delaying the queued user input.
+    agent._iters_since_skill = max(agent._skill_nudge_interval - 1, 0)
+
+
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []

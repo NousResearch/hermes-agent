@@ -48,7 +48,10 @@ def finalize_turn(
     Lifted verbatim from ``run_conversation`` (the region after the main agent
     loop). See module docstring.
     """
-    from agent.conversation_loop import logger
+    from agent.conversation_loop import (
+        _defer_skill_review_when_input_pending,
+        logger,
+    )
 
     if final_response is None and (
         api_call_count >= agent.max_iterations
@@ -431,6 +434,8 @@ def finalize_turn(
 
     # Clear stream callback so it doesn't leak into future calls
     agent._stream_callback = None
+
+    _defer_skill_review_when_input_pending(agent)
 
     # Check skill trigger NOW — based on how many tool iterations THIS turn used.
     _should_review_skills = False

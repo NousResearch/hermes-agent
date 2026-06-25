@@ -306,6 +306,7 @@ all = [
 
 [tool.uv]
 conflicts = [
+  # hindsight-all and mistralai currently resolve incompatible transitive graphs.
   [
     { extra = "hindsight" },
     { extra = "mistral" },

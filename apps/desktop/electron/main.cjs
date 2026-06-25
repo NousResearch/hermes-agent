@@ -1285,8 +1285,14 @@ function findOnPath(command) {
   const pathEntries = String(process.env.PATH || '')
     .split(path.delimiter)
     .filter(Boolean)
+  // On Windows, try PATHEXT extensions BEFORE the bare (empty-extension) name.
+  // A real command must resolve via its .exe/.cmd (Windows command-resolution
+  // semantics consult PATHEXT); an extensionless file — e.g. a Git-Bash
+  // shell-script shim named `hermes` — must not shadow `hermes.cmd`/`hermes.exe`.
+  // The empty entry is kept LAST so callers that already include the extension
+  // (py.exe, pwsh.exe, powershell.exe) still resolve.
   const extensions = IS_WINDOWS
-    ? ['', ...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)]
+    ? [...(process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean), '']
     : ['']
 
   for (const entry of pathEntries) {
@@ -2243,7 +2249,18 @@ async function handOffWindowsBootstrapRecovery(reason) {
     : configuredBranch || DEFAULT_UPDATE_BRANCH
   const venvBin = path.join(updateRoot, 'venv', IS_WINDOWS ? 'Scripts' : 'bin')
   const venvHermes = path.join(venvBin, IS_WINDOWS ? 'hermes.exe' : 'hermes')
-  const updaterArgs = fileExists(venvHermes) ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
+  const venvPython = path.join(venvBin, IS_WINDOWS ? 'python.exe' : 'python')
+  // Choose the gentle in-place --update when ANY real-install signal is present,
+  // not just the `hermes.exe` console-script shim. That shim is generated at the
+  // END of venv setup and is absent in exactly the interrupted/quarantined states
+  // this recovery exists to heal — gating on it alone forced the destructive
+  // --repair (full venv recreate) and drove reinstall loops. The venv interpreter
+  // and the bootstrap-complete marker are present earlier and are better signals.
+  const haveRealInstall =
+    fileExists(venvPython) ||
+    fileExists(venvHermes) ||
+    fileExists(path.join(updateRoot, '.hermes-bootstrap-complete'))
+  const updaterArgs = haveRealInstall ? ['--update', '--branch', branch] : ['--repair', '--branch', branch]
 
   await releaseBackendLockForUpdate(updateRoot)
 

@@ -462,8 +462,9 @@ class TestZaiEndpointPicker:
 
         monkeypatch.setenv("GLM_API_KEY", "test-key")
 
-        # Last option index = custom proxy
-        with patch("hermes_cli.main._prompt_provider_choice", return_value=4), \
+        from hermes_cli.auth import ZAI_ENDPOINTS
+        custom_idx = len(ZAI_ENDPOINTS)  # last option = custom proxy
+        with patch("hermes_cli.main._prompt_provider_choice", return_value=custom_idx), \
              patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
              patch("hermes_cli.auth.deactivate_provider"), \
              patch("builtins.input", return_value="https://proxy.example.com/glm/v4"):
@@ -479,8 +480,10 @@ class TestZaiEndpointPicker:
 
         monkeypatch.setenv("GLM_API_KEY", "test-key")
         monkeypatch.delenv("GLM_BASE_URL", raising=False)
+        from hermes_cli.auth import ZAI_ENDPOINTS
+        custom_idx = len(ZAI_ENDPOINTS)
 
-        with patch("hermes_cli.main._prompt_provider_choice", return_value=4), \
+        with patch("hermes_cli.main._prompt_provider_choice", return_value=custom_idx), \
              patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
              patch("hermes_cli.auth.deactivate_provider"), \
              patch("builtins.input", return_value="not-a-url"):

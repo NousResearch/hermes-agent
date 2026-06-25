@@ -113,6 +113,37 @@ def test_bg_work_blocks_idle_via_background_tasks(monkeypatch):
         loop.close()
 
 
+def test_bg_work_blocks_idle_via_async_delegation(monkeypatch):
+    """delegate_task(background=true) lives in tools.async_delegation, not the
+    process registry. An active background delegation must block suspend too."""
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._background_tasks = set()
+
+    monkeypatch.setattr("tools.async_delegation.active_count", lambda: 1)
+
+    assert r._scale_to_zero_has_live_background_work() is True
+
+
+def test_real_inbound_after_dormancy_restores_running_status(monkeypatch):
+    """Once a dormant gateway receives real inbound after wake, the runtime
+    lifecycle must not remain stuck in the watcher-written `draining` state."""
+    r = GatewayRunner.__new__(GatewayRunner)
+    r._last_inbound_at = 0.0
+    r._scale_to_zero_cooldown_until = time.time() + 60.0
+    status_updates = []
+    monkeypatch.setattr(
+        r,
+        "_update_runtime_status",
+        lambda state=None, *a, **k: status_updates.append(state),
+        raising=False,
+    )
+
+    r._scale_to_zero_note_real_inbound()
+
+    assert r._last_inbound_at > 0.0
+    assert status_updates == ["running"]
+
+
 def test_bg_work_false_when_quiet():
     r = GatewayRunner.__new__(GatewayRunner)
     r._background_tasks = set()

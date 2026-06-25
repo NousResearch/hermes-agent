@@ -192,6 +192,7 @@ _IMAGE_TOO_LARGE_PATTERNS = [
 _MULTIMODAL_TOOL_CONTENT_PATTERNS = [
     # Xiaomi MiMo: {"error":{"code":"400","message":"Param Incorrect","param":"text is not set"}}
     "text is not set",
+    "text` is not set",
     # Generic "tool message must be string" shapes
     "tool message content must be a string",
     "tool content must be a string",

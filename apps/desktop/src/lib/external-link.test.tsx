@@ -92,6 +92,24 @@ describe('external link helpers', () => {
     expect(bridge).toHaveBeenCalledTimes(1)
   })
 
+  it('keeps title cache entries separate for different ports on the same host', async () => {
+    const bridge = vi
+      .fn()
+      .mockResolvedValueOnce('Open WebUI')
+      .mockResolvedValueOnce('Hermes Agent - Dashboard')
+
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    const openWebUi = 'https://macbook-pro.taild5b79a.ts.net/'
+    const dashboard = 'https://macbook-pro.taild5b79a.ts.net:9119/'
+
+    const [a, b] = await Promise.all([fetchLinkTitle(openWebUi), fetchLinkTitle(dashboard)])
+
+    expect(a).toBe('Open WebUI')
+    expect(b).toBe('Hermes Agent - Dashboard')
+    expect(bridge).toHaveBeenCalledTimes(2)
+  })
+
   it('opens links via the desktop bridge', () => {
     const openExternal = vi.fn().mockResolvedValue(undefined)
     installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
@@ -127,6 +145,20 @@ describe('external link helpers', () => {
       expect(link.textContent).toContain('From Fajardo: Full-Day Culebra Islands Catamaran Tour')
     })
     expect(link.textContent).not.toContain('getyourguide.com')
+  })
+
+  it('uses explicit labels instead of fetched titles', async () => {
+    const bridge = vi.fn().mockResolvedValue('Open WebUI')
+    installDesktopBridge({ fetchLinkTitle: bridge as unknown as Window['hermesDesktop']['fetchLinkTitle'] })
+
+    const url = 'https://macbook-pro.taild5b79a.ts.net:9119/kanban'
+
+    render(<PrettyLink href={url} label="Hermes Dashboard / Kanban" />)
+
+    const link = screen.getByTitle(url)
+    expect(link.textContent).toBe('Hermes Dashboard / Kanban')
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(bridge).not.toHaveBeenCalled()
   })
 
   it('shows host/path fallback when title is unavailable', () => {

@@ -51,9 +51,10 @@ function titleCacheKey(value: string): string {
   }
 
   const host = url.hostname.replace(/^www\./i, '').toLowerCase()
+  const port = url.port ? `:${url.port}` : ''
   const pathname = url.pathname === '/' ? '/' : url.pathname.replace(/\/+$/, '') || '/'
 
-  return `${host}${pathname}${url.search || ''}`
+  return `${host}${port}${pathname}${url.search || ''}`
 }
 
 export function shortHostLabel(value: string): string {
@@ -253,8 +254,9 @@ interface PrettyLinkProps extends Omit<ComponentProps<'a'>, 'href' | 'target'> {
 
 export function PrettyLink({ className, fallbackLabel, href, label, ...rest }: PrettyLinkProps) {
   const target = useMemo(() => normalizeExternalUrl(href), [href])
-  const fetched = useLinkTitle(label ? null : target)
-  const display = fetched || label?.trim() || fallbackLabel?.trim() || urlSlugTitleLabel(target)
+  const explicitLabel = label?.trim()
+  const fetched = useLinkTitle(explicitLabel ? null : target)
+  const display = explicitLabel || fetched || fallbackLabel?.trim() || urlSlugTitleLabel(target)
 
   return (
     <ExternalLink className={cn('wrap-break-word', className)} href={target} title={target} {...rest}>

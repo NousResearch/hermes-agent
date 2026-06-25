@@ -36,6 +36,7 @@ async def ensure_runtime_schema(pool: asyncpg.Pool) -> None:
         await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS queued_at timestamptz")
         await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS indexed_at timestamptz")
         await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ingest_error text")
+        await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS checksum text")
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS document_ingest_payloads (
@@ -101,6 +102,52 @@ async def ensure_runtime_schema(pool: asyncpg.Pool) -> None:
             )
             """
         )
+        await conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS document_dedupe_keys (
+              workspace_slug text NOT NULL,
+              checksum text NOT NULL,
+              document_id uuid REFERENCES documents(id) ON DELETE SET NULL,
+              created_at timestamptz NOT NULL DEFAULT now(),
+              updated_at timestamptz NOT NULL DEFAULT now(),
+              PRIMARY KEY (workspace_slug, checksum)
+            )
+            """
+        )
+        await backfill_document_checksums(conn)
+        await conn.execute(
+            """
+            INSERT INTO document_dedupe_keys (workspace_slug, checksum, document_id)
+            SELECT DISTINCT ON (rw.slug, d.checksum)
+                   rw.slug, d.checksum, d.id
+            FROM documents d
+            JOIN document_workspace_membership dwm ON dwm.document_id = d.id
+            JOIN rag_workspaces rw ON rw.id = dwm.workspace_id
+            WHERE d.checksum IS NOT NULL
+            ORDER BY rw.slug, d.checksum,
+                     CASE WHEN d.status = 'indexed' THEN 0 ELSE 1 END,
+                     d.created_at
+            ON CONFLICT (workspace_slug, checksum) DO NOTHING
+            """
+        )
+
+
+async def backfill_document_checksums(conn: Any) -> None:
+    rows = await conn.fetch(
+        """
+        SELECT d.id, p.source_text
+        FROM documents d
+        JOIN document_ingest_payloads p ON p.document_id = d.id
+        WHERE d.checksum IS NULL AND p.source_text IS NOT NULL
+        """
+    )
+    for row in rows:
+        checksum = checksum_text(extract_ingest_body(row["source_text"]))
+        await conn.execute(
+            "UPDATE documents SET checksum = $1 WHERE id = $2 AND checksum IS NULL",
+            checksum,
+            row["id"],
+        )
 
 
 async def bootstrap_queue(pool: asyncpg.Pool, redis_client: redis.Redis) -> None:
@@ -139,7 +186,12 @@ def source_config_from_value(value: Any) -> dict[str, Any]:
 
 
 def checksum_text(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(str(text or "").strip().encode("utf-8")).hexdigest()
+
+
+def extract_ingest_body(source_text: str) -> str:
+    parts = str(source_text or "").split("\n\n", 1)
+    return parts[1] if len(parts) == 2 else parts[0]
 
 
 def compact_error_text(text: str, limit: int = 500) -> str:
@@ -394,94 +446,169 @@ async def queue_scanned_document(
         return False
     checksum = checksum_text(text)
     external_id = str(document["external_id"])
+    document_id: Any = None
     async with pool.acquire() as conn:
-        existing = await conn.fetchrow(
-            """
-            SELECT checksum
-            FROM source_items
-            WHERE source_id = $1::uuid AND external_id = $2
-            """,
-            source_id,
-            external_id,
-        )
-        if existing and existing["checksum"] == checksum:
-            await conn.execute(
+        async with conn.transaction():
+            existing = await conn.fetchrow(
                 """
-                UPDATE source_items
-                SET last_seen_at = now(), updated_at = now()
+                SELECT checksum
+                FROM source_items
                 WHERE source_id = $1::uuid AND external_id = $2
                 """,
                 source_id,
                 external_id,
             )
-            return False
-        title = str(document.get("title") or external_id).strip()[:500]
-        source_uri = str(document.get("source_uri") or external_id)
-        source_text = (
-            f"Title: {title}\n"
-            f"Workspace: {workspace}\n"
-            f"Source: {source_uri}\n"
-            f"Classification: {classification}\n\n"
-            f"{text}"
-        )
-        row = await conn.fetchrow(
-            """
-            INSERT INTO documents (title, source_uri, department_slug, classification, checksum, status, queued_at)
-            VALUES ($1, $2, $3, $4, $5, 'queued', now())
-            RETURNING id
-            """,
-            title,
-            source_uri,
-            "c_level" if workspace == "department_c_level" else "public",
-            classification,
-            checksum,
-        )
-        workspace_row = await conn.fetchrow("SELECT id FROM rag_workspaces WHERE slug = $1", workspace)
-        if workspace_row:
+            if existing and existing["checksum"] == checksum:
+                await conn.execute(
+                    """
+                    UPDATE source_items
+                    SET last_seen_at = now(), updated_at = now()
+                    WHERE source_id = $1::uuid AND external_id = $2
+                    """,
+                    source_id,
+                    external_id,
+                )
+                return False
+            title = str(document.get("title") or external_id).strip()[:500]
+            source_uri = str(document.get("source_uri") or external_id)
+            duplicate = await conn.fetchrow(
+                """
+                SELECT document_id
+                FROM document_dedupe_keys
+                WHERE workspace_slug = $1 AND checksum = $2
+                """,
+                workspace,
+                checksum,
+            )
+            if duplicate and duplicate["document_id"]:
+                await conn.execute(
+                    """
+                    INSERT INTO source_items (source_id, external_id, checksum, document_id, title, source_uri)
+                    VALUES ($1::uuid, $2, $3, $4, $5, $6)
+                    ON CONFLICT (source_id, external_id) DO UPDATE
+                    SET checksum = EXCLUDED.checksum,
+                        document_id = EXCLUDED.document_id,
+                        title = EXCLUDED.title,
+                        source_uri = EXCLUDED.source_uri,
+                        last_seen_at = now(),
+                        updated_at = now()
+                    """,
+                    source_id,
+                    external_id,
+                    checksum,
+                    duplicate["document_id"],
+                    title,
+                    source_uri,
+                )
+                return False
+            source_text = (
+                f"Title: {title}\n"
+                f"Workspace: {workspace}\n"
+                f"Source: {source_uri}\n"
+                f"Classification: {classification}\n\n"
+                f"{text}"
+            )
+            row = await conn.fetchrow(
+                """
+                INSERT INTO documents (title, source_uri, department_slug, classification, checksum, status, queued_at)
+                VALUES ($1, $2, $3, $4, $5, 'queued', now())
+                RETURNING id
+                """,
+                title,
+                source_uri,
+                "c_level" if workspace == "department_c_level" else "public",
+                classification,
+                checksum,
+            )
+            document_id = row["id"]
+            dedupe_row = await conn.fetchrow(
+                """
+                INSERT INTO document_dedupe_keys (workspace_slug, checksum, document_id)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (workspace_slug, checksum) DO NOTHING
+                RETURNING document_id
+                """,
+                workspace,
+                checksum,
+                document_id,
+            )
+            if not dedupe_row:
+                duplicate = await conn.fetchrow(
+                    """
+                    SELECT document_id
+                    FROM document_dedupe_keys
+                    WHERE workspace_slug = $1 AND checksum = $2
+                    """,
+                    workspace,
+                    checksum,
+                )
+                await conn.execute("DELETE FROM documents WHERE id = $1", document_id)
+                await conn.execute(
+                    """
+                    INSERT INTO source_items (source_id, external_id, checksum, document_id, title, source_uri)
+                    VALUES ($1::uuid, $2, $3, $4, $5, $6)
+                    ON CONFLICT (source_id, external_id) DO UPDATE
+                    SET checksum = EXCLUDED.checksum,
+                        document_id = EXCLUDED.document_id,
+                        title = EXCLUDED.title,
+                        source_uri = EXCLUDED.source_uri,
+                        last_seen_at = now(),
+                        updated_at = now()
+                    """,
+                    source_id,
+                    external_id,
+                    checksum,
+                    duplicate["document_id"] if duplicate else None,
+                    title,
+                    source_uri,
+                )
+                return False
+            workspace_row = await conn.fetchrow("SELECT id FROM rag_workspaces WHERE slug = $1", workspace)
+            if workspace_row:
+                await conn.execute(
+                    """
+                    INSERT INTO document_workspace_membership (document_id, workspace_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    document_id,
+                    workspace_row["id"],
+                )
             await conn.execute(
                 """
-                INSERT INTO document_workspace_membership (document_id, workspace_id)
-                VALUES ($1, $2)
-                ON CONFLICT DO NOTHING
+                INSERT INTO document_ingest_payloads (document_id, workspace_slug, title, source_text)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (document_id) DO UPDATE
+                SET workspace_slug = EXCLUDED.workspace_slug,
+                    title = EXCLUDED.title,
+                    source_text = EXCLUDED.source_text,
+                    updated_at = now()
                 """,
-                row["id"],
-                workspace_row["id"],
+                document_id,
+                workspace,
+                title,
+                source_text,
             )
-        await conn.execute(
-            """
-            INSERT INTO document_ingest_payloads (document_id, workspace_slug, title, source_text)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (document_id) DO UPDATE
-            SET workspace_slug = EXCLUDED.workspace_slug,
-                title = EXCLUDED.title,
-                source_text = EXCLUDED.source_text,
-                updated_at = now()
-            """,
-            row["id"],
-            workspace,
-            title,
-            source_text,
-        )
-        await conn.execute(
-            """
-            INSERT INTO source_items (source_id, external_id, checksum, document_id, title, source_uri)
-            VALUES ($1::uuid, $2, $3, $4, $5, $6)
-            ON CONFLICT (source_id, external_id) DO UPDATE
-            SET checksum = EXCLUDED.checksum,
-                document_id = EXCLUDED.document_id,
-                title = EXCLUDED.title,
-                source_uri = EXCLUDED.source_uri,
-                last_seen_at = now(),
-                updated_at = now()
-            """,
-            source_id,
-            external_id,
-            checksum,
-            row["id"],
-            title,
-            source_uri,
-        )
-    await redis_client.rpush(INGEST_QUEUE_NAME, str(row["id"]))
+            await conn.execute(
+                """
+                INSERT INTO source_items (source_id, external_id, checksum, document_id, title, source_uri)
+                VALUES ($1::uuid, $2, $3, $4, $5, $6)
+                ON CONFLICT (source_id, external_id) DO UPDATE
+                SET checksum = EXCLUDED.checksum,
+                    document_id = EXCLUDED.document_id,
+                    title = EXCLUDED.title,
+                    source_uri = EXCLUDED.source_uri,
+                    last_seen_at = now(),
+                    updated_at = now()
+                """,
+                source_id,
+                external_id,
+                checksum,
+                document_id,
+                title,
+                source_uri,
+            )
+    await redis_client.rpush(INGEST_QUEUE_NAME, str(document_id))
     return True
 
 

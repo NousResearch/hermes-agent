@@ -591,7 +591,7 @@ curl "{PUBLIC_BASE_URL}/api/analytics?days=30&amp;limit=20" \\
 
     <section>
       <h2>7. Upload tài liệu</h2>
-      <p>CLI ingest file text-friendly hoặc gọi API multipart. Upload trả <code>queued</code>, worker sẽ index nền vào LightRAG.</p>
+      <p>CLI ingest file text-friendly hoặc gọi API multipart. Upload mới trả <code>queued</code>, worker sẽ index nền vào LightRAG. Nếu cùng nội dung đã có trong cùng workspace, API trả <code>duplicate</code> và không đưa vào queue index lần nữa.</p>
       <pre><code>second-brain ingest-text \\
   --file ./company-handbook.md \\
   --title "Company Handbook" \\

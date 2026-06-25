@@ -101,7 +101,8 @@ Document upload:
 
 ```text
 Admin -> Gateway upload endpoint -> Knowledge API route_workspace()
-      -> Postgres document row + Redis job
+      -> document_dedupe_keys workspace checksum check
+      -> Postgres document row + Redis job, or duplicate response
       -> knowledge-worker -> target LightRAG /documents/text
 ```
 
@@ -110,7 +111,8 @@ Scheduled source scan:
 ```text
 Admin -> Gateway /api/sources -> Knowledge API stores source config
 Scheduler -> Redis source_scan queue -> knowledge-worker fetches source docs
-          -> source_items checksum dedupe -> document_ingest_payloads
+          -> source_items + document_dedupe_keys checksum dedupe
+          -> document_ingest_payloads
           -> normal LightRAG ingest queue
 ```
 
@@ -190,6 +192,21 @@ Content-Type: application/json
   "text": "..."
 }
 ```
+
+Duplicate response:
+
+```json
+{
+  "status": "duplicate",
+  "document_id": "existing-document-id",
+  "workspace": "company_public",
+  "checksum": "sha256"
+}
+```
+
+Duplicate documents are scoped per workspace. The same content can exist once in
+`company_public` and once in `department_c_level`, but not twice inside the same
+LightRAG workspace.
 
 C-Level upload:
 

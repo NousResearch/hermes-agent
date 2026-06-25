@@ -114,6 +114,15 @@ CREATE TABLE IF NOT EXISTS source_items (
   PRIMARY KEY (source_id, external_id)
 );
 
+CREATE TABLE IF NOT EXISTS document_dedupe_keys (
+  workspace_slug text NOT NULL,
+  checksum text NOT NULL,
+  document_id uuid REFERENCES documents(id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (workspace_slug, checksum)
+);
+
 CREATE TABLE IF NOT EXISTS audit_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   actor_user_id uuid,

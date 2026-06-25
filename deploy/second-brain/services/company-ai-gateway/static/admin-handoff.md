@@ -324,6 +324,18 @@ Document statuses:
 - `indexed`: LightRAG accepted the document
 - `failed`: max retries reached; inspect `ingest_error`
 
+Duplicate protection:
+
+- The Knowledge API computes a SHA-256 checksum from normalized document text.
+- `document_dedupe_keys` enforces one document per `workspace_slug + checksum`.
+- If manual upload sends the same text to the same workspace, API returns
+  `status: duplicate` with the existing `document_id`; no Redis job is pushed.
+- If Notion/Drive scan sees duplicate content from another source, it updates
+  `source_items` to point to the existing document and does not queue indexing.
+- Startup backfills checksums from existing `document_ingest_payloads` or
+  LightRAG full-doc storage, so older uploads are also protected after
+  service restart/deploy.
+
 Treat a document as large when extracted text is over 1MB, source file is over
 10MB, PDF/DOCX is over 50 pages, or the document likely creates more than 200 chunks.
 For large documents, extract text first, clean boilerplate, split into stable
@@ -338,6 +350,7 @@ Tables:
 - `document_sources`: source config, target workspace, interval, last/next scan
 - `source_scan_runs`: queued/running/complete/failed scan runs
 - `source_items`: dedupe map from external document id to checksum/document id
+- `document_dedupe_keys`: content dedupe by workspace checksum
 - `query_events`: who asked what, role/groups, allowed workspaces, status, latency
 - `query_workspace_events`: per-workspace query status, latency, reference count
 - `query_document_hits`: LightRAG references surfaced in answers for top-document analytics

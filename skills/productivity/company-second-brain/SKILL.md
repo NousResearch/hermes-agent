@@ -219,6 +219,8 @@ Analytics includes:
 
 Admin only. Ingest is asynchronous: the API returns `queued`, then
 `knowledge-worker` indexes the document into LightRAG in the background.
+If the same normalized text already exists in the same workspace, the API
+returns `duplicate` with the existing `document_id`; do not retry that upload.
 
 Public document:
 

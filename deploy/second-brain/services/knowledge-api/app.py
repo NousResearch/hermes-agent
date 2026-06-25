@@ -1,6 +1,7 @@
 import os
 import asyncio
 import json
+import hashlib
 import time
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,7 @@ async def ensure_runtime_schema() -> None:
         await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS queued_at timestamptz")
         await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS indexed_at timestamptz")
         await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS ingest_error text")
+        await conn.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS checksum text")
         await conn.execute(
             """
             CREATE TABLE IF NOT EXISTS document_ingest_payloads (
@@ -71,6 +73,7 @@ async def ensure_runtime_schema() -> None:
             """
         )
         await ensure_source_schema(conn)
+        await ensure_dedupe_schema(conn)
         await ensure_analytics_schema(conn)
 
 
@@ -127,6 +130,103 @@ async def ensure_source_schema(conn: Any) -> None:
         )
         """
     )
+
+
+async def ensure_dedupe_schema(conn: Any) -> None:
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS document_dedupe_keys (
+          workspace_slug text NOT NULL,
+          checksum text NOT NULL,
+          document_id uuid REFERENCES documents(id) ON DELETE SET NULL,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (workspace_slug, checksum)
+        )
+        """
+    )
+    await backfill_document_checksums(conn)
+    await conn.execute(
+        """
+        INSERT INTO document_dedupe_keys (workspace_slug, checksum, document_id)
+        SELECT DISTINCT ON (rw.slug, d.checksum)
+               rw.slug, d.checksum, d.id
+        FROM documents d
+        JOIN document_workspace_membership dwm ON dwm.document_id = d.id
+        JOIN rag_workspaces rw ON rw.id = dwm.workspace_id
+        WHERE d.checksum IS NOT NULL
+        ORDER BY rw.slug, d.checksum,
+                 CASE WHEN d.status = 'indexed' THEN 0 ELSE 1 END,
+                 d.created_at
+        ON CONFLICT (workspace_slug, checksum) DO NOTHING
+        """
+    )
+
+
+async def backfill_document_checksums(conn: Any) -> None:
+    rows = await conn.fetch(
+        """
+        SELECT d.id, p.source_text
+        FROM documents d
+        JOIN document_ingest_payloads p ON p.document_id = d.id
+        WHERE d.checksum IS NULL AND p.source_text IS NOT NULL
+        """
+    )
+    for row in rows:
+        checksum = checksum_text(extract_ingest_body(row["source_text"]))
+        await conn.execute(
+            "UPDATE documents SET checksum = $1 WHERE id = $2 AND checksum IS NULL",
+            checksum,
+            row["id"],
+        )
+    await backfill_document_checksums_from_lightrag(conn)
+
+
+async def backfill_document_checksums_from_lightrag(conn: Any) -> None:
+    for workspace in ENABLED_WORKSPACES:
+        title_rows = await conn.fetch(
+            """
+            SELECT d.title, array_agg(d.id) AS document_ids
+            FROM documents d
+            JOIN document_workspace_membership dwm ON dwm.document_id = d.id
+            JOIN rag_workspaces rw ON rw.id = dwm.workspace_id
+            WHERE rw.slug = $1 AND d.checksum IS NULL
+            GROUP BY d.title
+            HAVING count(*) = 1
+            """,
+            workspace,
+        )
+        docs_by_title = {str(row["title"]): row["document_ids"][0] for row in title_rows}
+        if not docs_by_title:
+            continue
+
+        content_by_title: dict[str, str] = {}
+        duplicate_titles: set[str] = set()
+        for path in sorted((LIGHTRAG_ROOT / "workspaces" / workspace).glob("**/kv_store_full_docs.json")):
+            try:
+                data = json.loads(path.read_text() or "{}")
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"checksum LightRAG backfill skipped {path}: {exc}", flush=True)
+                continue
+            for item in data.values():
+                content = item.get("content") if isinstance(item, dict) else str(item)
+                title = extract_ingest_title(content)
+                if not title:
+                    continue
+                if title in content_by_title:
+                    duplicate_titles.add(title)
+                    continue
+                content_by_title[title] = str(content or "")
+
+        for title, content in content_by_title.items():
+            if title in duplicate_titles or title not in docs_by_title:
+                continue
+            checksum = checksum_text(extract_ingest_body(content))
+            await conn.execute(
+                "UPDATE documents SET checksum = $1 WHERE id = $2 AND checksum IS NULL",
+                checksum,
+                docs_by_title[title],
+            )
 
 
 async def ensure_analytics_schema(conn: Any) -> None:
@@ -352,6 +452,22 @@ def serialize_scan_run(row: Any) -> dict[str, Any]:
         if hasattr(value, "isoformat"):
             data[key] = value.isoformat()
     return data
+
+
+def checksum_text(text: str) -> str:
+    return hashlib.sha256(str(text or "").strip().encode("utf-8")).hexdigest()
+
+
+def extract_ingest_body(source_text: str) -> str:
+    parts = str(source_text or "").split("\n\n", 1)
+    return parts[1] if len(parts) == 2 else parts[0]
+
+
+def extract_ingest_title(source_text: str) -> str:
+    for line in str(source_text or "").splitlines():
+        if line.startswith("Title:"):
+            return line.split(":", 1)[1].strip()
+    return ""
 
 
 def analytics_int(value: Any, default: int = 0) -> int:
@@ -648,10 +764,11 @@ async def ingest_text(payload: dict[str, Any]) -> dict[str, Any]:
     if workspace not in LIGHTRAG_URLS:
         return {"status": "error", "reason": f"unknown workspace {workspace}"}
 
-    title = payload["title"]
-    text = payload["text"]
+    title = str(payload["title"])
+    text = str(payload["text"])
     classification = payload.get("classification", "internal")
     department = payload.get("department") or ("c_level" if workspace == C_LEVEL_WORKSPACE else "public")
+    checksum = checksum_text(text)
     source_text = (
         f"Title: {title}\n"
         f"Workspace: {workspace}\n"
@@ -661,45 +778,91 @@ async def ingest_text(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     async with app.state.pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO documents (title, department_slug, classification, status, queued_at)
-            VALUES ($1, $2, $3, 'queued', now())
-            RETURNING id
-            """,
-            title,
-            department,
-            classification,
-        )
-        workspace_row = await conn.fetchrow(
-            "SELECT id FROM rag_workspaces WHERE slug = $1",
-            workspace,
-        )
-        if workspace_row:
+        async with conn.transaction():
+            existing = await conn.fetchrow(
+                """
+                SELECT document_id
+                FROM document_dedupe_keys
+                WHERE workspace_slug = $1 AND checksum = $2
+                """,
+                workspace,
+                checksum,
+            )
+            if existing and existing["document_id"]:
+                return {
+                    "status": "duplicate",
+                    "document_id": str(existing["document_id"]),
+                    "workspace": workspace,
+                    "checksum": checksum,
+                }
+            row = await conn.fetchrow(
+                """
+                INSERT INTO documents (title, department_slug, classification, checksum, status, queued_at)
+                VALUES ($1, $2, $3, $4, 'queued', now())
+                RETURNING id
+                """,
+                title,
+                department,
+                classification,
+                checksum,
+            )
+            dedupe_row = await conn.fetchrow(
+                """
+                INSERT INTO document_dedupe_keys (workspace_slug, checksum, document_id)
+                VALUES ($1, $2, $3)
+                ON CONFLICT (workspace_slug, checksum) DO NOTHING
+                RETURNING document_id
+                """,
+                workspace,
+                checksum,
+                row["id"],
+            )
+            if not dedupe_row:
+                existing = await conn.fetchrow(
+                    """
+                    SELECT document_id
+                    FROM document_dedupe_keys
+                    WHERE workspace_slug = $1 AND checksum = $2
+                    """,
+                    workspace,
+                    checksum,
+                )
+                await conn.execute("DELETE FROM documents WHERE id = $1", row["id"])
+                return {
+                    "status": "duplicate",
+                    "document_id": str(existing["document_id"]) if existing else "",
+                    "workspace": workspace,
+                    "checksum": checksum,
+                }
+            workspace_row = await conn.fetchrow(
+                "SELECT id FROM rag_workspaces WHERE slug = $1",
+                workspace,
+            )
+            if workspace_row:
+                await conn.execute(
+                    """
+                    INSERT INTO document_workspace_membership (document_id, workspace_id)
+                    VALUES ($1, $2)
+                    ON CONFLICT DO NOTHING
+                    """,
+                    row["id"],
+                    workspace_row["id"],
+                )
             await conn.execute(
                 """
-                INSERT INTO document_workspace_membership (document_id, workspace_id)
-                VALUES ($1, $2)
-                ON CONFLICT DO NOTHING
+                INSERT INTO document_ingest_payloads (document_id, workspace_slug, title, source_text)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (document_id) DO UPDATE
+                SET workspace_slug = EXCLUDED.workspace_slug,
+                    title = EXCLUDED.title,
+                    source_text = EXCLUDED.source_text,
+                    updated_at = now()
                 """,
                 row["id"],
-                workspace_row["id"],
+                workspace,
+                title,
+                source_text,
             )
-        await conn.execute(
-            """
-            INSERT INTO document_ingest_payloads (document_id, workspace_slug, title, source_text)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (document_id) DO UPDATE
-            SET workspace_slug = EXCLUDED.workspace_slug,
-                title = EXCLUDED.title,
-                source_text = EXCLUDED.source_text,
-                updated_at = now()
-            """,
-            row["id"],
-            workspace,
-            title,
-            source_text,
-        )
 
     await app.state.redis.rpush(INGEST_QUEUE_NAME, str(row["id"]))
 
@@ -708,6 +871,7 @@ async def ingest_text(payload: dict[str, Any]) -> dict[str, Any]:
         "document_id": str(row["id"]),
         "workspace": workspace,
         "queue": INGEST_QUEUE_NAME,
+        "checksum": checksum,
     }
 
 

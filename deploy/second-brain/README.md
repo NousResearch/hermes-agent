@@ -287,6 +287,17 @@ Uploads are queued. The API returns `status: queued` plus a `document_id`; the
 `knowledge-worker` container indexes the document into the routed LightRAG
 workspace in the background.
 
+Duplicate protection is per LightRAG workspace. The Knowledge API stores a
+SHA-256 checksum for normalized document text in `document_dedupe_keys`
+(`workspace_slug`, `checksum`). If the same text is uploaded again to the same
+workspace, the API returns `status: duplicate` with the existing `document_id`
+and does not push a Redis job, so LightRAG is not indexed twice. Source scans
+also map the new source item to the existing document instead of queueing a new
+document.
+On service startup, older indexed documents are backfilled from remaining ingest
+payloads or LightRAG full-doc storage when the workspace title mapping is
+unambiguous.
+
 Check a single document:
 
 ```bash
@@ -340,6 +351,13 @@ second-brain source-update SOURCE_ID --interval-minutes 1440 --reset-schedule
 
 Drive public MVP supports direct public Docs/Sheets/Slides or file links. Public
 folder listing needs Drive API/OAuth and is intentionally not scraped from HTML.
+
+Source dedupe has two layers:
+
+- unchanged source item: same `source_id`, `external_id`, and checksum only
+  refreshes `last_seen_at`
+- duplicate content from another source: same workspace checksum is linked to
+  the existing document and skipped
 
 ## Query Performance
 

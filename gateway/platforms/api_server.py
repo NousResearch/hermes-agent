@@ -12,6 +12,7 @@ Exposes an HTTP server with endpoints:
 - POST /api/sessions               — create an empty Hermes session
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
 - GET  /api/sessions/{session_id}/messages — read session message history
+- GET  /api/sessions/{session_id}/token-totals — decoded per-message token totals
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
@@ -1284,6 +1285,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
                 "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
                 "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+                "session_token_totals": {"method": "GET", "path": "/api/sessions/{session_id}/token-totals"},
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
@@ -1597,6 +1599,42 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "list",
             "session_id": resolved_id,
             "data": [self._message_response(m) for m in messages],
+        })
+
+    async def _handle_session_token_totals(self, request: "web.Request") -> "web.Response":
+        """GET /api/sessions/{session_id}/token-totals[?scope=session|conversation].
+
+        Decoded, aggregated per-message token buckets (bit-packed
+        token_count summed via the codec — see hermes_token_codec). ``scope``:
+          * ``session`` (default) — totals for this session's messages.
+          * ``conversation`` — totals across the whole compression lineage
+            (this session and its compression-continuation descendants).
+        Returns ``{session_id, scope, tokens:{input, output, cache_read,
+        reasoning, messages}}``.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        session_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(session_id)
+        if err:
+            return err
+        scope = (request.query.get("scope") or "session").strip().lower()
+        if scope not in ("session", "conversation"):
+            return web.json_response(
+                _openai_error("scope must be 'session' or 'conversation'", code="invalid_scope"),
+                status=400,
+            )
+        db = self._ensure_session_db()
+        resolved_id = db.resolve_resume_session_id(session_id)
+        if scope == "conversation":
+            tokens = db.get_conversation_message_token_totals(resolved_id)
+        else:
+            tokens = db.get_session_message_token_totals(resolved_id)
+        return web.json_response({
+            "session_id": resolved_id,
+            "scope": scope,
+            "tokens": tokens,
         })
 
     async def _handle_fork_session(self, request: "web.Request") -> "web.Response":
@@ -4480,6 +4518,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_patch("/api/sessions/{session_id}", self._handle_patch_session)
             self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
             self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
+            self._app.router.add_get("/api/sessions/{session_id}/token-totals", self._handle_session_token_totals)
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)

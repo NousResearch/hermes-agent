@@ -109,7 +109,7 @@ HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 
 MAX_NAME_LENGTH = 64
-MAX_DESCRIPTION_LENGTH = 1024
+MAX_DESCRIPTION_LENGTH = 60
 
 
 def _containing_skills_root(skill_path: Path) -> Path:

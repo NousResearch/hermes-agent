@@ -95,7 +95,7 @@ SKILLS_DIR = HERMES_HOME / "skills"
 
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
-MAX_DESCRIPTION_LENGTH = 1024
+MAX_DESCRIPTION_LENGTH = 60
 
 # Platform identifiers for the 'platforms' frontmatter field.
 # Maps user-friendly names to sys.platform prefixes.

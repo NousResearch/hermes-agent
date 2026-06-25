@@ -9885,6 +9885,7 @@ _PENDING_INPUT_COMMANDS: frozenset[str] = frozenset(
         "plan",
         "goal",
         "undo",
+        "learn",
     }
 )
 

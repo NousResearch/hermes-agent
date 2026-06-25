@@ -156,8 +156,11 @@ def get_read_block_error(path: str) -> Optional[str]:
       * Credential / secret stores under HERMES_HOME and the global Hermes
         root: ``auth.json``, ``auth.lock``, ``.anthropic_oauth.json``,
         ``.env``, ``webhook_subscriptions.json``, ``auth/google_oauth.json``,
-        and anything under ``mcp-tokens/``. These hold plaintext provider keys,
-        OAuth tokens, and HMAC secrets that the agent never needs to read
+        ``google_token.json``, ``google_oauth_pending.json``,
+        ``cache/bws_cache.json``, anything under ``mcp-tokens/``, and the
+        DM-pairing tree (``pairing/`` and ``platforms/pairing/``). These hold
+        plaintext provider keys, OAuth access/refresh tokens, HMAC secrets,
+        and pairing-approval state that the agent never needs to read
         directly — provider tools / gateway adapters consume them through
         internal channels.
       * Project-local environment files anywhere on disk: ``.env``,
@@ -232,6 +235,15 @@ def get_read_block_error(path: str) -> Optional[str]:
         ".env",
         "webhook_subscriptions.json",
         os.path.join("auth", "google_oauth.json"),
+        # Google Workspace skill OAuth stores at the HERMES_HOME root: the
+        # auto-refreshing access/refresh token (google_token.json) and the
+        # pending-exchange session/verifier file (google_oauth_pending.json).
+        # Both are already credential-classified by the gateway media-delivery
+        # denylist (gateway/platforms/base.py::_media_delivery_denied_paths),
+        # which documents that it "mirrors the canonical read guard" here — but
+        # this read guard had drifted behind it.
+        "google_token.json",
+        "google_oauth_pending.json",
         # Bitwarden Secrets Manager disk cache: stores plaintext secret values
         # to avoid re-fetching across back-to-back CLI invocations. The file
         # was introduced by #31968 but not added to this guard.
@@ -274,6 +286,39 @@ def get_read_block_error(path: str) -> Optional[str]:
             "and cannot be read directly. (Defense-in-depth — not a "
             "security boundary; the terminal tool can still bypass.)"
         )
+
+    # DM-pairing store: directory prefix match — every child is pairing
+    # approval state (approved-user lists, pending one-time codes, rate-limit
+    # records). The write deny guard (is_write_denied) and the gateway
+    # media-delivery denylist already treat this tree as credential material;
+    # the read guard mirrors them so the agent can't read approved-user
+    # identifiers or pending pairing codes back into the transcript. Both the
+    # legacy ``<home>/pairing`` and the consolidated ``<home>/platforms/pairing``
+    # layouts are covered — gateway/pairing.py resolves the live directory via
+    # ``get_hermes_dir("platforms/pairing", "pairing")``, so new installs use
+    # the ``platforms/`` location.
+    for hd in hermes_dirs:
+        for rel in ("pairing", os.path.join("platforms", "pairing")):
+            try:
+                pairing_dir = (hd / rel).resolve()
+            except Exception:
+                continue
+            if resolved == pairing_dir:
+                return (
+                    f"Access denied: {path} is the Hermes DM-pairing "
+                    "directory and cannot be read directly. (Defense-in-depth "
+                    "— not a security boundary; the terminal tool can still "
+                    "bypass.)"
+                )
+            try:
+                resolved.relative_to(pairing_dir)
+            except ValueError:
+                continue
+            return (
+                f"Access denied: {path} is a Hermes DM-pairing credential "
+                "file and cannot be read directly. (Defense-in-depth — not a "
+                "security boundary; the terminal tool can still bypass.)"
+            )
 
     # Block common secret-bearing project-local .env files anywhere on disk.
     # The agent helping a user with their project rarely needs to read raw

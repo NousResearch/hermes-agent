@@ -1913,6 +1913,7 @@ export const en: Translations = {
         reading: 'Reading',
         opened: 'Opened',
         opening: 'Opening',
+        failedToOpen: 'Failed to open',
         searched: 'Searched',
         searching: 'Searching',
         ran: 'Ran',

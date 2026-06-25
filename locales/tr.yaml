@@ -134,6 +134,11 @@ gateway:
     resumed:               "▶ Hedef devam ettirildi: {goal}\nDevam etmek için herhangi bir mesaj gönderin veya bekleyin — bir sonraki turda adımı atacağım."
     invalid:               "Geçersiz hedef: {error}"
     set:                   "⊙ Hedef ayarlandı ({budget} turluk bütçe): {goal}\nHedef tamamlanana, siz duraklatana/temizleyene veya bütçe tükenene kadar çalışmaya devam edeceğim.\nKontroller: /goal status · /goal pause · /goal resume · /goal clear"
+    acceptance_pending:   "⏳ Goal complete — pending PM acceptance: {goal}"
+    accepted:             "✓ Goal accepted: {goal}"
+    rejected:             "✗ Goal rejected: {goal}"
+    no_accept:            "No goal pending acceptance."
+    no_reject:            "No goal pending acceptance."
 
   help:
     header:                "📖 **Hermes Komutları**\n"

@@ -538,7 +538,7 @@ class GoalManager:
         return self._state is not None and self._state.status == "active"
 
     def has_goal(self) -> bool:
-        return self._state is not None and self._state.status in {"active", "paused"}
+        return self._state is not None and self._state.status in {"active", "paused", "acceptance_pending"}
 
     def status_line(self) -> str:
         s = self._state
@@ -553,6 +553,14 @@ class GoalManager:
             return f"⏸ Goal (paused, {turns}{sub}{extra}): {s.goal}"
         if s.status == "done":
             return f"✓ Goal done ({turns}{sub}): {s.goal}"
+        if s.status == "acceptance_pending":
+            extra = f" — {s.paused_reason}" if s.paused_reason else ""
+            return f"⏳ Goal (acceptance pending, {turns}{sub}{extra}): {s.goal}"
+        if s.status == "accepted":
+            return f"✓ Goal accepted ({turns}{sub}): {s.goal}"
+        if s.status == "rejected":
+            extra = f" — {s.paused_reason}" if s.paused_reason else ""
+            return f"✗ Goal rejected ({turns}{sub}{extra}): {s.goal}"
         return f"Goal ({s.status}, {turns}{sub}): {s.goal}"
 
     # --- mutation -----------------------------------------------------

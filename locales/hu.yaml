@@ -134,6 +134,11 @@ gateway:
     resumed:               "▶ Cél folytatva: {goal}\nKüldj bármilyen üzenetet a folytatáshoz, vagy várj — a következő körben megteszem a következő lépést."
     invalid:               "Érvénytelen cél: {error}"
     set:                   "⊙ Cél beállítva ({budget} körös keret): {goal}\nDolgozni fogok rajta, amíg a cél el nem készül, te nem szünetelteted/törlöd, vagy a keret ki nem merül.\nVezérlés: /goal status · /goal pause · /goal resume · /goal clear"
+    acceptance_pending:   "⏳ Goal complete — pending PM acceptance: {goal}"
+    accepted:             "✓ Goal accepted: {goal}"
+    rejected:             "✗ Goal rejected: {goal}"
+    no_accept:            "No goal pending acceptance."
+    no_reject:            "No goal pending acceptance."
 
   help:
     header:                "📖 **Hermes parancsok**\n"

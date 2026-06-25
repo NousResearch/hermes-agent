@@ -1765,6 +1765,17 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.goal.no_resume")
             return t("gateway.goal.resumed", goal=state.goal)
 
+        if lower == "accept":
+            state = mgr.accept(reason="accepted via gateway")
+            if state is None:
+                return t("gateway.goal.no_accept")
+            return t("gateway.goal.accepted", goal=state.goal)
+
+        if lower == "reject":
+            state = mgr.reject(reason="rejected via gateway")
+            if state is None:
+                return t("gateway.goal.no_reject")
+            return t("gateway.goal.rejected", goal=state.goal)
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()

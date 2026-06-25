@@ -1858,6 +1858,21 @@ class CLICommandsMixin:
                 )
             return
 
+        if lower == "accept":
+            state = mgr.accept(reason="accepted via CLI")
+            if state is None:
+                _cprint("  No goal pending acceptance.")
+                return
+            _cprint(f"  ✓ Goal accepted: {state.goal}")
+            return
+
+        if lower == "reject":
+            state = mgr.reject(reason="rejected via CLI")
+            if state is None:
+                _cprint("  No goal pending acceptance.")
+                return
+            _cprint(f"  ✗ Goal rejected: {state.goal}")
+            return
         if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()

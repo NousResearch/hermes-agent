@@ -134,6 +134,11 @@ gateway:
     resumed:               "▶ Ziel fortgesetzt: {goal}\nSenden Sie eine Nachricht zum Fortfahren oder warten Sie — ich übernehme den nächsten Schritt im nächsten Zug."
     invalid:               "Ungültiges Ziel: {error}"
     set:                   "⊙ Ziel gesetzt ({budget}-Zug-Budget): {goal}\nIch arbeite weiter, bis das Ziel erreicht ist, Sie es pausieren/löschen oder das Budget aufgebraucht ist.\nSteuerung: /goal status · /goal pause · /goal resume · /goal clear"
+    acceptance_pending:   "⏳ Goal complete — pending PM acceptance: {goal}"
+    accepted:             "✓ Goal accepted: {goal}"
+    rejected:             "✗ Goal rejected: {goal}"
+    no_accept:            "No goal pending acceptance."
+    no_reject:            "No goal pending acceptance."
 
   help:
     header:                "📖 **Hermes-Befehle**\n"

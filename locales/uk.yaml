@@ -134,6 +134,11 @@ gateway:
     resumed:               "▶ Ціль відновлено: {goal}\nНадішліть будь-яке повідомлення, щоб продовжити, або зачекайте — я зроблю наступний крок у наступному ході."
     invalid:               "Неприпустима ціль: {error}"
     set:                   "⊙ Ціль встановлено (бюджет {budget} ходів): {goal}\nЯ продовжуватиму працювати, доки ціль не буде досягнута, ви її не призупините/очистите, або бюджет не вичерпається.\nКерування: /goal status · /goal pause · /goal resume · /goal clear"
+    acceptance_pending:   "⏳ Goal complete — pending PM acceptance: {goal}"
+    accepted:             "✓ Goal accepted: {goal}"
+    rejected:             "✗ Goal rejected: {goal}"
+    no_accept:            "No goal pending acceptance."
+    no_reject:            "No goal pending acceptance."
 
   help:
     header:                "📖 **Команди Hermes**\n"

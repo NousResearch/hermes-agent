@@ -149,6 +149,11 @@ gateway:
     resumed:               "▶ Goal resumed: {goal}\nSend any message to continue, or wait — I'll take the next step on the next turn."
     invalid:               "Invalid goal: {error}"
     set:                   "⊙ Goal set ({budget}-turn budget): {goal}\nI'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\nControls: /goal status · /goal pause · /goal resume · /goal clear"
+    acceptance_pending:   "⏳ Goal complete — pending PM acceptance: {goal}"
+    accepted:             "✓ Goal accepted: {goal}"
+    rejected:             "✗ Goal rejected: {goal}"
+    no_accept:            "No goal pending acceptance."
+    no_reject:            "No goal pending acceptance."
 
   help:
     header:                "📖 **Hermes Commands**\n"

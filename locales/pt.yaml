@@ -134,6 +134,11 @@ gateway:
     resumed:               "▶ Objetivo retomado: {goal}\nEnvia qualquer mensagem para continuar, ou aguarda — darei o próximo passo no próximo turno."
     invalid:               "Objetivo inválido: {error}"
     set:                   "⊙ Objetivo definido (orçamento de {budget} turnos): {goal}\nVou continuar a trabalhar até o objetivo estar concluído, pausares/limpares ou o orçamento esgotar.\nControlos: /goal status · /goal pause · /goal resume · /goal clear"
+    acceptance_pending:   "⏳ Goal complete — pending PM acceptance: {goal}"
+    accepted:             "✓ Goal accepted: {goal}"
+    rejected:             "✗ Goal rejected: {goal}"
+    no_accept:            "No goal pending acceptance."
+    no_reject:            "No goal pending acceptance."
 
   help:
     header:                "📖 **Comandos do Hermes**\n"

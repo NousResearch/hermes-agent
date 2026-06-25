@@ -134,6 +134,11 @@ gateway:
     resumed:               "▶ Objectif repris : {goal}\nEnvoyez un message pour continuer, ou attendez — je passerai à l'étape suivante au prochain tour."
     invalid:               "Objectif invalide : {error}"
     set:                   "⊙ Objectif défini (budget de {budget} tours) : {goal}\nJe continuerai jusqu'à ce que l'objectif soit terminé, que vous le mettiez en pause/effaciez, ou que le budget soit épuisé.\nContrôles : /goal status · /goal pause · /goal resume · /goal clear"
+    acceptance_pending:   "⏳ Goal complete — pending PM acceptance: {goal}"
+    accepted:             "✓ Goal accepted: {goal}"
+    rejected:             "✗ Goal rejected: {goal}"
+    no_accept:            "No goal pending acceptance."
+    no_reject:            "No goal pending acceptance."
 
   help:
     header:                "📖 **Commandes Hermes**\n"

@@ -1,6 +1,6 @@
 import { atom } from 'nanostores'
 
-import { persistString, storedString } from '@/lib/storage'
+import { persistBoolean, persistString, storedBoolean, storedString } from '@/lib/storage'
 import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
@@ -118,6 +118,7 @@ export interface PetGenProvider {
 }
 
 const PROVIDER_KEY = 'hermes.desktop.petgen.provider'
+const REMIX_CONFIRMED_KEY = 'hermes.desktop.petgen.remixConfirmed'
 
 /** Reference-capable providers available to pick (from `pet.generate.status`). */
 export const $petGenProviders = atom<PetGenProvider[]>([])
@@ -128,6 +129,15 @@ export const $petGenProvider = atom(storedString(PROVIDER_KEY) ?? '')
 export function setPetGenProvider(name: string): void {
   $petGenProvider.set(name)
   persistString(PROVIDER_KEY, name || null)
+}
+
+/** Whether the user has acknowledged the one-time "remix regenerates" notice. */
+export const $petGenRemixConfirmed = atom(storedBoolean(REMIX_CONFIRMED_KEY, false))
+
+/** Remember that the remix notice has been shown so we don't ask again. */
+export function markRemixConfirmed(): void {
+  $petGenRemixConfirmed.set(true)
+  persistBoolean(REMIX_CONFIRMED_KEY, true)
 }
 
 /** Probe whether generation is possible (a reference-capable backend exists). */

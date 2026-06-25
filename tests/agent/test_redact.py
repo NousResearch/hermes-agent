@@ -528,3 +528,158 @@ class TestXaiToken:
     def test_prefix_visible_in_masked_output(self):
         result = redact_sensitive_text(self.KEY, force=True)
         assert result.startswith("xai-AB")
+
+
+class TestEnvFileVariableNamePreservation:
+    """Regression tests for issue #52551.
+
+    When redacting .env file content (via ``cat .env``, ``grep``, or
+    ``printenv``), the **variable name** must remain visible so the
+    agent (and user) can tell which key exists.  Only the value portion
+    (after ``=``) should be masked.
+    """
+
+    # -- Single-line scenarios --------------------------------------------
+
+    def test_env_var_name_preserved_with_known_prefix_value(self):
+        """Variable name visible when value has a known vendor prefix."""
+        text = "RUNNINGHUB_API_KEY=sk-proj-abc123def456ghi789"
+        result = redact_sensitive_text(text)
+        assert "RUNNINGHUB_API_KEY=" in result
+        assert "abc123def456" not in result
+
+    def test_env_var_name_preserved_with_short_value(self):
+        """Variable name visible when value is shorter than mask floor."""
+        text = "MY_API_KEY=shortval"
+        result = redact_sensitive_text(text)
+        assert "MY_API_KEY=" in result
+        assert "shortval" not in result
+        assert "***" in result
+
+    def test_env_var_name_preserved_with_jwt_value(self):
+        """Variable name visible when value is a JWT token."""
+        text = "AUTH_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"
+        result = redact_sensitive_text(text)
+        assert "AUTH_TOKEN=" in result
+        # The JWT value is masked (truncated); full value must not appear
+        assert "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U" not in result
+
+    def test_env_var_name_preserved_with_db_url(self):
+        """Variable name visible when value is a DB connection string."""
+        text = "DATABASE_URL=postgres://user:secretpassword@localhost:5432/mydb"
+        result = redact_sensitive_text(text)
+        assert "DATABASE_URL=" in result
+        assert "secretpassword" not in result
+        assert "postgres://" in result
+
+    def test_env_var_name_preserved_with_github_pat(self):
+        """Variable name visible when value is a GitHub PAT."""
+        text = "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz123456"
+        result = redact_sensitive_text(text)
+        assert "GITHUB_TOKEN=" in result
+        assert "abcdefghijklmnop" not in result
+
+    # -- Multi-line .env content ------------------------------------------
+
+    def test_multiline_env_all_names_preserved(self):
+        """All variable names visible in a multi-line .env dump."""
+        env_content = "\n".join([
+            "RUNNINGHUB_API_KEY=abc123...",
+            "OPENAI_API_KEY=sk-proj-abc123def456ghi789",
+            "DATABASE_URL=postgres://user:secret@localhost/db",
+            "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz123456",
+            "HOME=/home/user",
+            "PATH=/usr/bin:/usr/local/bin",
+        ])
+        result = redact_sensitive_text(env_content)
+        # All variable names must be preserved
+        for name in [
+            "RUNNINGHUB_API_KEY=",
+            "OPENAI_API_KEY=",
+            "DATABASE_URL=",
+            "GITHUB_TOKEN=",
+            "HOME=/home/user",
+            "PATH=/usr/bin:/usr/local/bin",
+        ]:
+            assert name in result, f"Variable name lost: {name}"
+
+    def test_multiline_env_secret_values_masked(self):
+        """Secret values masked in multi-line .env dump."""
+        env_content = "\n".join([
+            "OPENAI_API_KEY=sk-proj-abc123def456ghi789",
+            "GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz123456",
+        ])
+        result = redact_sensitive_text(env_content)
+        assert "abc123def456" not in result
+        assert "abcdefghijklmnop" not in result
+
+    def test_multiline_env_non_secret_unchanged(self):
+        """Non-secret lines pass through unchanged in multi-line content."""
+        env_content = "\n".join([
+            "HOME=/home/user",
+            "SHELL=/bin/bash",
+            "EDITOR=vim",
+            "NODE_ENV=development",
+        ])
+        result = redact_sensitive_text(env_content)
+        assert result == env_content
+
+    # -- grep simulation (subset of .env) ---------------------------------
+
+    def test_grep_simulation_matching_secret_line(self):
+        """Simulate ``grep API_KEY .env`` — matching line shows name."""
+        grep_output = "RUNNINGHUB_API_KEY=abc123..."
+        result = redact_sensitive_text(grep_output)
+        assert "RUNNINGHUB_API_KEY=" in result
+        assert "abc123def456" not in result
+
+    def test_grep_simulation_matching_non_secret_line(self):
+        """Simulate ``grep HOME .env`` — non-secret line unchanged."""
+        grep_output = "HOME=/home/user"
+        result = redact_sensitive_text(grep_output)
+        assert result == grep_output
+
+    # -- Edge cases -------------------------------------------------------
+
+    def test_env_var_with_empty_value(self):
+        """Variable with empty value preserved as-is."""
+        text = "EMPTY_VAR="
+        result = redact_sensitive_text(text)
+        assert result == text
+
+    def test_env_var_with_comment(self):
+        """Inline comment preserved; value masked."""
+        text = "API_KEY=secret123 # this is a comment"
+        result = redact_sensitive_text(text)
+        assert "API_KEY=" in result
+        assert "secret123" not in result
+        assert "# this is a comment" in result
+
+    def test_export_prefix_preserved(self):
+        """``export`` prefix preserved when redacting env assignments."""
+        text = "export RUNNINGHUB_API_KEY=abc123..."
+        result = redact_sensitive_text(text)
+        assert result.startswith("export ")
+        assert "RUNNINGHUB_API_KEY=" in result
+
+    def test_all_secret_env_name_patterns(self):
+        """All _SECRET_ENV_NAMES patterns preserve variable names."""
+        patterns = [
+            ("MY_API_KEY=val1234567890123456", "MY_API_KEY="),
+            ("MY_APIKEY=val12345678901234567", "MY_APIKEY="),
+            ("MY_TOKEN=val123456789012345678", "MY_TOKEN="),
+            ("MY_SECRET=val12345678901234567", "MY_SECRET="),
+            ("MY_PASSWORD=val123456789012345", "MY_PASSWORD="),
+            ("MY_PASSWD=val12345678901234567", "MY_PASSWD="),
+            ("MY_CREDENTIAL=val1234567890123", "MY_CREDENTIAL="),
+            ("MY_AUTH=val12345678901234567890", "MY_AUTH="),
+        ]
+        for text, expected_name in patterns:
+            result = redact_sensitive_text(text)
+            assert expected_name in result, (
+                f"Variable name lost for {expected_name!r}: {result!r}"
+            )
+            # Value should be masked (not present verbatim)
+            assert "val12345" not in result, (
+                f"Value not masked for {expected_name!r}: {result!r}"
+            )

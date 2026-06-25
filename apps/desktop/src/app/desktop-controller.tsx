@@ -57,8 +57,8 @@ import {
   $gatewayState,
   $messages,
   $messagingSessions,
-  $resumeFailedSessionId,
   $resumeExhaustedSessionId,
+  $resumeFailedSessionId,
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
@@ -202,6 +202,10 @@ export function DesktopController() {
   // and injects each plugin's <script>/<link>; the bundle calls register(),
   // resolved by <PluginPage>. Mirrors web/src/App.tsx's plugin mount.
   const { manifests: pluginManifests } = usePlugins()
+  const pluginRoutePaths = useMemo(
+    () => new Set(pluginManifests.map(manifest => manifest.tab.path)),
+    [pluginManifests]
+  )
 
   const busyRef = useRef(false)
   const creatingSessionRef = useRef(false)
@@ -224,7 +228,7 @@ export function DesktopController() {
   // hover-reveal overlay becomes the way in. Restores once it's wide again.
   const narrowViewport = useMediaQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)
 
-  const routedSessionId = routeSessionId(location.pathname)
+  const routedSessionId = routeSessionId(location.pathname, pluginRoutePaths)
   const routeToken = `${location.pathname}:${location.search}:${location.hash}`
   const routeTokenRef = useRef(routeToken)
   routeTokenRef.current = routeToken
@@ -243,7 +247,7 @@ export function DesktopController() {
     profilesOpen,
     settingsOpen,
     toggleCommandCenter
-  } = useOverlayRouting()
+  } = useOverlayRouting(pluginRoutePaths)
 
   const terminalSidebarOpen = chatOpen && terminalTakeover
 
@@ -954,7 +958,7 @@ export function DesktopController() {
 
   const sidebar = (
     <ChatSidebar
-      activePluginPath={routeSessionId(location.pathname) ? null : location.pathname}
+      activePluginPath={routedSessionId ? null : location.pathname}
       currentView={currentView}
       onArchiveSession={sessionId => void archiveSession(sessionId)}
       onDeleteSession={sessionId => void removeSession(sessionId)}

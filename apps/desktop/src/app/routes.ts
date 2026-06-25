@@ -16,6 +16,7 @@ export type AppView =
   | 'command-center'
   | 'cron'
   | 'messaging'
+  | 'plugin'
   | 'profiles'
   | 'settings'
   | 'skills'
@@ -65,8 +66,12 @@ export function isNewChatRoute(pathname: string): boolean {
   return pathname === NEW_CHAT_ROUTE
 }
 
-export function routeSessionId(pathname: string): string | null {
-  if (!pathname.startsWith(SESSION_ROUTE_PREFIX) || RESERVED_PATHS.has(pathname)) {
+export function routeSessionId(pathname: string, extraReservedPaths?: ReadonlySet<string>): string | null {
+  if (
+    !pathname.startsWith(SESSION_ROUTE_PREFIX) ||
+    RESERVED_PATHS.has(pathname) ||
+    Boolean(extraReservedPaths?.has(pathname))
+  ) {
     return null
   }
 
@@ -79,8 +84,12 @@ export function sessionRoute(sessionId: string): string {
   return `${SESSION_ROUTE_PREFIX}${encodeURIComponent(sessionId)}`
 }
 
-export function appViewForPath(pathname: string): AppView {
-  if (isNewChatRoute(pathname) || routeSessionId(pathname)) {
+export function appViewForPath(pathname: string, extraReservedPaths?: ReadonlySet<string>): AppView {
+  if (extraReservedPaths?.has(pathname)) {
+    return 'plugin'
+  }
+
+  if (isNewChatRoute(pathname) || routeSessionId(pathname, extraReservedPaths)) {
     return 'chat'
   }
 

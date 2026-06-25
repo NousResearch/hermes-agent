@@ -4962,6 +4962,12 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception:
                 provider_label = current_provider
 
+            content = (
+                "⚙ **Model Configuration**\n"
+                f"Current model: `{current_model or 'unknown'}`\n"
+                f"Provider: {provider_label}\n\n"
+                "Select a provider:"
+            )
             embed = discord.Embed(
                 title="⚙ Model Configuration",
                 description=(
@@ -4982,7 +4988,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
             )
 
-            msg = await channel.send(embed=embed, view=view)
+            msg = await channel.send(content=content, embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
 

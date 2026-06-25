@@ -5176,6 +5176,28 @@ class GatewayRunner:
                 or "database disk image is malformed" in msg
             )
 
+        def _confirm_corrupt_board_db(slug: str) -> bool:
+            """Return True only when a separate read-only check confirms corruption."""
+            path = _kb.kanban_db_path(slug)
+            try:
+                stat = path.stat()
+            except OSError:
+                return False
+            if stat.st_size == 0:
+                return False
+            try:
+                resolved = path.expanduser().resolve()
+                conn = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True)
+                try:
+                    row = conn.execute("PRAGMA quick_check").fetchone()
+                finally:
+                    conn.close()
+            except sqlite3.DatabaseError as check_exc:
+                return _is_corrupt_board_db_error(check_exc)
+            except Exception:
+                return False
+            return not row or row[0] != "ok"
+
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
@@ -5214,6 +5236,15 @@ class GatewayRunner:
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
+                    if not _confirm_corrupt_board_db(slug):
+                        logger.warning(
+                            "kanban dispatcher: board %s database error looked "
+                            "transient; health check passed and dispatch will "
+                            "retry on the next tick: %s",
+                            slug,
+                            exc,
+                        )
+                        return None
                     disabled_corrupt_boards[slug] = fingerprint
                     logger.error(
                         "kanban dispatcher: board %s database %s is not a valid "

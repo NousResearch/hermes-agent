@@ -315,6 +315,8 @@ ENV HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
 # Recursion is impossible because the shim exec's the venv binary by
 # absolute path (/opt/hermes/.venv/bin/hermes). See the shim source for
 # the opt-out env var (HERMES_DOCKER_EXEC_AS_ROOT=1).
+COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
+COPY --chmod=0755 docker/entrypoint-dispatch.sh /opt/hermes/docker/entrypoint-dispatch.sh
 
 # Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
 # the venv bin onto PATH; Architecture B's main-wrapper.sh does the
@@ -331,27 +333,37 @@ ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 
-# s6-overlay's /init is PID 1. It sets up the supervision tree, runs
-# /etc/cont-init.d/* (our stage2 hook), starts s6-rc services
-# declared in /etc/s6-overlay/s6-rc.d/, then exec's its remaining
-# argv as the container's "main program" with stdin/stdout/stderr
-# inherited (this is what makes interactive --tui work). When the
-# main program exits, /init begins stage 3 shutdown and the container
-# exits with the program's exit code. Replaces tini — see Phase 2 of
-# docs/plans/2026-05-07-s6-overlay-dynamic-subagent-gateways.md.
+# The image ENTRYPOINT is a tiny dispatcher rather than `/init` directly.
+# When the image really owns PID 1 (normal Docker / Podman), the dispatcher
+# execs `/init` and preserves the full s6 supervision tree. When a platform
+# wraps the image entrypoint under its own PID-1 init (Fly Machines,
+# `docker run --init`, some schedulers), `/init` would abort with
+# `can only run as pid 1`; in that case the dispatcher falls back to
+# `stage2-hook.sh` + `main-wrapper.sh` directly so foreground commands still
+# work. See #38349.
+#
+# On the PID-1 path, s6-overlay's /init sets up the supervision tree, runs
+# /etc/cont-init.d/* (our stage2 hook), starts s6-rc services declared in
+# /etc/s6-overlay/s6-rc.d/, then exec's its remaining argv as the container's
+# "main program" with stdin/stdout/stderr inherited (this is what makes
+# interactive --tui work). When the main program exits, /init begins stage 3
+# shutdown and the container exits with the program's exit code. Replaces
+# tini — see Phase 2 of docs/plans/2026-05-07-s6-overlay-dynamic-subagent-gateways.md.
 #
 # We use the ENTRYPOINT+CMD split rather than CMD alone so the
 # wrapper is prepended to user-supplied args automatically:
 #
-#   docker run <image>                  → /init main-wrapper.sh   (CMD default)
-#   docker run <image> chat -q "hi"     → /init main-wrapper.sh chat -q hi
-#   docker run <image> sleep infinity   → /init main-wrapper.sh sleep infinity
-#   docker run <image> --tui            → /init main-wrapper.sh --tui
+#   docker run <image>                  → entrypoint-dispatch.sh   (CMD default)
+#   docker run <image> chat -q "hi"     → entrypoint-dispatch.sh chat -q hi
+#   docker run <image> sleep infinity   → entrypoint-dispatch.sh sleep infinity
+#   docker run <image> --tui            → entrypoint-dispatch.sh --tui
 #
 # main-wrapper.sh handles arg routing (bare-exec vs. hermes
 # subcommand vs. no-args), drops to the hermes user via s6-setuidgid,
 # and exec's the final program so its exit code becomes the container
-# exit code. Without the wrapper-as-ENTRYPOINT, leading-dash args
-# like `--version` would be intercepted by /init's POSIX shell.
-ENTRYPOINT [ "/init", "/opt/hermes/docker/main-wrapper.sh" ]
+# exit code. The dispatcher preserves that contract across both the
+# supervised PID-1 path and the non-PID-1 fallback path. Without the
+# wrapper-as-ENTRYPOINT, leading-dash args like `--version` would be
+# intercepted by /init's POSIX shell.
+ENTRYPOINT [ "/opt/hermes/docker/entrypoint-dispatch.sh" ]
 CMD [ ]

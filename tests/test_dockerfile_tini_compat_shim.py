@@ -38,12 +38,12 @@ def test_tini_compat_comment_explains_why():
 
 
 def test_entrypoint_still_init_not_tini():
-    """Sanity check: the actual ENTRYPOINT is still /init (s6-overlay).
-    The shim is for legacy external wrappers, not for the image's own
-    runtime — that path must continue to use the canonical /init."""
+    """Sanity check: the image ENTRYPOINT stays on the dispatcher, which
+    preserves the `/init` path when PID 1 and falls back only when the
+    runtime wraps the entrypoint under another init."""
     df = _dockerfile_text()
-    assert 'ENTRYPOINT [ "/init"' in df, (
-        "Dockerfile ENTRYPOINT must remain /init (s6-overlay). The "
-        "tini shim is only for external wrappers that haven't been "
-        "updated yet."
+    assert 'ENTRYPOINT [ "/opt/hermes/docker/entrypoint-dispatch.sh" ]' in df, (
+        "Dockerfile ENTRYPOINT must stay on the dispatcher so the image "
+        "can preserve /init under PID 1 while still booting on non-PID-1 "
+        "platforms like Fly Machines."
     )

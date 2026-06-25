@@ -28,6 +28,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 DOCKERIGNORE = REPO_ROOT / ".dockerignore"
+ENTRYPOINT_DISPATCH = REPO_ROOT / "docker" / "entrypoint-dispatch.sh"
 
 
 # Init-process families this repo accepts as PID 1. ``tini`` /
@@ -113,12 +114,12 @@ def test_dockerfile_installs_an_init_for_zombie_reaping(dockerfile_text):
 
 
 def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
-    """The ENTRYPOINT must invoke the init, not the entrypoint script directly.
+    """The ENTRYPOINT must preserve a PID-1 init path, even with a dispatcher.
 
     Installing the init is only half the fix — the container must actually
-    run with it as PID 1.  If the ENTRYPOINT executes the shell script
-    directly, the shell becomes PID 1 and will ``exec`` into hermes,
-    which then runs as PID 1 without any zombie reaping.
+    run with it as PID 1.  A shell dispatcher is fine only if it execs the
+    real init when the image owns PID 1; otherwise the shell would become
+    PID 1 and hermes would run without zombie reaping.
     """
     # Find the last uncommented ENTRYPOINT line — Docker honours the final one.
     entrypoint_line = None
@@ -131,12 +132,30 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
 
     assert entrypoint_line is not None, "Dockerfile is missing an ENTRYPOINT directive"
 
-    routes_through_init = any(name in entrypoint_line for name in _KNOWN_INIT_TOKENS)
-    assert routes_through_init, (
-        f"ENTRYPOINT does not route through a PID-1 init: {entrypoint_line!r}. "
-        f"Expected one of {_KNOWN_INIT_TOKENS}. If the init is installed but "
-        "not wired into ENTRYPOINT, hermes still runs as PID 1 and zombies "
-        "will accumulate (#15012)."
+    if any(name in entrypoint_line for name in _KNOWN_INIT_TOKENS):
+        return
+
+    assert "/opt/hermes/docker/entrypoint-dispatch.sh" in entrypoint_line, (
+        f"Unexpected Dockerfile ENTRYPOINT: {entrypoint_line!r}"
+    )
+    assert ENTRYPOINT_DISPATCH.exists(), (
+        "Dockerfile points at entrypoint-dispatch.sh but the script is missing."
+    )
+    dispatcher = ENTRYPOINT_DISPATCH.read_text(encoding="utf-8")
+    assert 'if [ "$$" -eq 1 ]; then' in dispatcher
+    assert "exec /init /opt/hermes/docker/main-wrapper.sh" in dispatcher, (
+        "The entrypoint dispatcher must hand PID-1 execution off to /init; "
+        "otherwise the shell becomes PID 1 and zombies will accumulate."
+    )
+
+
+def test_dispatcher_non_pid1_fallback_restores_s6_helpers_on_path() -> None:
+    """Skipping /init must still expose s6-setuidgid to stage2/main-wrapper."""
+    dispatcher = ENTRYPOINT_DISPATCH.read_text(encoding="utf-8")
+    assert 'export PATH="/command:/package/admin/s6/command:${PATH}"' in dispatcher, (
+        "The non-PID-1 entrypoint fallback skips /init, so it must restore the "
+        "s6 helper directories on PATH before invoking stage2-hook.sh and "
+        "main-wrapper.sh."
     )
 
 

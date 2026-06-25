@@ -323,7 +323,9 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         {
             "id": "r1",
             "method": "session.resume",
-            "params": {"session_id": "20260409_010101_abc123", "cols": 100},
+            # eager_build: exercise the synchronous build path (this test
+            # monkeypatches _make_agent/_init_session/_session_info).
+            "params": {"session_id": "20260409_010101_abc123", "cols": 100, "eager_build": True},
         }
     )
 
@@ -336,11 +338,12 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     ]
 
 
-def test_session_resume_defer_build_returns_transcript_without_blocking(server, monkeypatch):
-    """``defer_build: true`` (desktop cold resume) must return the full display
+def test_session_resume_defaults_to_deferred_build(server, monkeypatch):
+    """A normal cold resume (no ``eager_build``) must return the full display
     transcript immediately and register an upgradable live session WITHOUT
     building the agent on the response path — that eager build is the
-    multi-second switch latency."""
+    multi-second switch latency. Deferred is the default; ``eager_build: true``
+    opts back into the synchronous path."""
 
     target = "20260409_010101_abc123"
 
@@ -382,7 +385,7 @@ def test_session_resume_defer_build_returns_transcript_without_blocking(server, 
         {
             "id": "r1",
             "method": "session.resume",
-            "params": {"session_id": target, "cols": 100, "defer_build": True},
+            "params": {"session_id": target, "cols": 100},
         }
     )
 
@@ -514,7 +517,7 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
         {
             "id": "r1",
             "method": "session.resume",
-            "params": {"session_id": "20260502_000000_listcontent", "cols": 100},
+            "params": {"session_id": "20260502_000000_listcontent", "cols": 100, "eager_build": True},
         }
     )
 
@@ -828,7 +831,9 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
                 {
                     "id": "first",
                     "method": "session.resume",
-                    "params": {"session_id": target, "cols": 100},
+                    # eager_build: this test drives the synchronous build race +
+                    # double-checked locking that only the eager path exercises.
+                    "params": {"session_id": target, "cols": 100, "eager_build": True},
                 }
             )
 
@@ -843,7 +848,7 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
                 {
                     "id": "second",
                     "method": "session.resume",
-                    "params": {"session_id": target, "cols": 120},
+                    "params": {"session_id": target, "cols": 120, "eager_build": True},
                 }
             )
 

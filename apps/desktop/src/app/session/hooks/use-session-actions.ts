@@ -706,12 +706,12 @@ export function useSessionActions({
         const resumePromise = requestGateway<SessionResumeResponse>('session.resume', {
           session_id: storedSessionId,
           cols: 96,
-          // Watch windows attach lazily (live mirror); every other cold resume
-          // asks the backend to DEFER the agent build so the RPC returns the
-          // transcript immediately instead of blocking the switch on
-          // _make_agent (MCP discovery / prompt build). The agent pre-warms in
-          // the background and the prefetch above paints the transcript.
-          ...(watchWindow ? { lazy: true } : { defer_build: true }),
+          // Watch windows attach lazily (live mirror). Every other cold resume
+          // gets the gateway's default deferred build: the RPC returns the
+          // transcript immediately instead of blocking the switch on _make_agent
+          // (MCP discovery / prompt build), and the agent pre-warms in the
+          // background while the prefetch above paints the transcript.
+          ...(watchWindow ? { lazy: true } : {}),
           ...(sessionProfile ? { profile: sessionProfile } : {})
         })
         // The rejection is consumed by the `await` below; this guard only

@@ -1234,6 +1234,19 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 pass
 
             _wire_callbacks(sid)
+            # Surface the self-improvement review's "💾 …" summary as an event
+            # the TUI/desktop render in-transcript, honoring
+            # display.memory_notifications. _init_session wires this for the
+            # eager/branch paths; deferred-built sessions (session.create and the
+            # default cold resume) build through here, so without this their
+            # review summaries would leak to stdout instead of the chat.
+            try:
+                agent.background_review_callback = lambda message, _sid=sid: _emit(
+                    "review.summary", _sid, {"text": str(message)}
+                )
+                agent.memory_notifications = _load_memory_notifications()
+            except Exception:
+                pass
             # Hydrate credits notices at session OPEN (not just on the first
             # message), so depletion / usage-band warnings show at "ready". Runs
             # off the build thread, after the notice_callback is wired. Fail-open.
@@ -5044,23 +5057,27 @@ def _(rid, params: dict) -> dict:
             },
         )
 
-    # Deferred build (desktop cold resume): register the live session and read
-    # its stored transcript WITHOUT building the agent on the response path.
-    # _make_agent can block for seconds (MCP discovery, prompt/skill build,
-    # AIAgent construction), and the desktop awaits this RPC before it paints
-    # the chat — so the eager build below is the bulk of the multi-second
-    # "switching sessions is frozen" latency. We return the full display
-    # transcript immediately and pre-warm the agent on a short timer (the same
-    # deferred-build contract session.create uses); _sess() also builds on
-    # demand if the first prompt beats the timer. Distinct from the lazy/watch
+    # Cold resume default: register the live session and read its stored
+    # transcript, but build the agent OFF the response path. _make_agent can
+    # block for seconds (MCP discovery, prompt/skill build, AIAgent
+    # construction), and every resume caller (desktop + Ink TUI) awaits this RPC
+    # before it paints — so building eagerly is the bulk of the multi-second
+    # "switching sessions is frozen" latency. Return the full display transcript
+    # immediately and pre-warm the agent on a short timer (the same deferred-
+    # build contract session.create uses); _sess() also builds on demand if the
+    # first prompt beats the timer. A caller that needs the agent built
+    # synchronously (e.g. tests of the build race) passes ``eager_build: true``
+    # to fall through to the eager path below. Distinct from the lazy/watch
     # branch above: a normal resume restores the full ancestor history and the
-    # session's persisted runtime identity, and is a real (upgradable) session,
-    # not a never-built spectator window.
-    if is_truthy_value(params.get("defer_build", False)):
+    # session's persisted runtime identity, and is a real (upgradable) session.
+    if not is_truthy_value(params.get("eager_build", False)):
         sid = uuid.uuid4().hex[:8]
         lease, limit_message = _claim_active_session_slot(target, live_session_id=sid)
         if limit_message is not None:
             return _err(rid, 4090, limit_message)
+        # Interactive resume routes approvals/clarify through gateway prompts;
+        # the deferred build wires the remaining per-session callbacks.
+        _enable_gateway_prompts()
         try:
             db.reopen_session(target)
             history = db.get_messages_as_conversation(target)

@@ -159,6 +159,18 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+
+def test_run_slash_review_unblock_cycle(kanban_home):
+    out = kc.run_slash("create 'review me' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+    assert "Review" in kc.run_slash(f"review {tid} 'PR is green and waiting for approval'")
+    show = kc.run_slash(f"show {tid}")
+    assert "status:    review" in show
+    assert "Unblocked" in kc.run_slash(f"unblock {tid}")
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

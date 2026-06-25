@@ -3702,52 +3702,22 @@ def test_claim_review_task_fails_when_already_claimed(kanban_home):
     assert second is None
 
 
-def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
-    """dispatch_once dry-run sees review tasks and reports them as spawned."""
+def test_dispatch_leaves_review_tasks_visible_but_unspawned(kanban_home, all_assignees_spawnable):
+    """Review is a human lane: dispatch_once does not auto-spawn it."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, dry_run=True)
-    assert len(res.spawned) == 1
-    assert res.spawned[0][0] == t
-    # Dry run must NOT mutate status.
+    assert not res.spawned
+    assert t not in res.skipped_unassigned
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "review"
 
 
-def test_dispatch_review_spawns_with_correct_skills(
+def test_dispatch_ready_ignores_review_tasks_for_max_spawn(
     kanban_home, all_assignees_spawnable,
 ):
-    """Review tasks get sdlc-review skill set before spawning."""
-    spawned_tasks = []
-
-    def capture_spawn(task, workspace, board=None):
-        spawned_tasks.append(task)
-        return 42  # fake PID
-
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="review me", assignee="alice")
-        _set_task_status(conn, t, "review")
-        res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
-    assert len(res.spawned) == 1
-    assert len(spawned_tasks) == 1
-    assert spawned_tasks[0].skills == ["sdlc-review"]
-
-
-def test_dispatch_review_skips_unassigned(kanban_home):
-    """Unassigned review tasks go to skipped_unassigned, not spawned."""
-    with kb.connect() as conn:
-        t = kb.create_task(conn, title="review floater")
-        _set_task_status(conn, t, "review")
-        res = kb.dispatch_once(conn, dry_run=True)
-    assert t in res.skipped_unassigned
-    assert not res.spawned
-
-
-def test_dispatch_review_counts_toward_max_spawn(
-    kanban_home, all_assignees_spawnable,
-):
-    """Review spawns count against max_spawn alongside ready tasks."""
+    """Ready work still dispatches; review cards do not consume spawn budget."""
     spawns = []
 
     def fake_spawn(task, workspace, board=None):
@@ -3755,21 +3725,21 @@ def test_dispatch_review_counts_toward_max_spawn(
         return 42
 
     with kb.connect() as conn:
-        # Create 2 ready tasks + 1 review task, max_spawn=2
         t1 = kb.create_task(conn, title="ready 1", assignee="alice")
         t2 = kb.create_task(conn, title="ready 2", assignee="bob")
         t3 = kb.create_task(conn, title="review", assignee="alice")
         _set_task_status(conn, t3, "review")
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=2)
-    # Only 2 should spawn (ready tasks get priority in the loop)
     assert len(res.spawned) == 2
     assert len(spawns) == 2
+    assert {t1, t2} == set(spawns)
 
 
-def test_dispatch_review_spawns_when_ready_empty(
+
+def test_dispatch_review_only_board_spawns_nothing(
     kanban_home, all_assignees_spawnable,
 ):
-    """When only review tasks exist, they still get dispatched."""
+    """When only review tasks exist, dispatch_once leaves them untouched."""
     spawns = []
 
     def fake_spawn(task, workspace, board=None):
@@ -3780,17 +3750,20 @@ def test_dispatch_review_spawns_when_ready_empty(
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
-    assert len(res.spawned) == 1
-    assert spawns[0] == t
+    assert not res.spawned
+    assert not spawns
+    with kb.connect() as conn:
+        assert kb.get_task(conn, t).status == "review"
 
 
-def test_has_spawnable_review_true(kanban_home):
-    """has_spawnable_review returns True when review tasks exist with real profiles."""
+
+def test_has_spawnable_review_false_even_when_review_tasks_exist(kanban_home):
+    """Review is a human gate, so it never counts as spawnable work."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review me", assignee="default")
         _set_task_status(conn, t, "review")
-        # default profile should exist in the test env
-        assert kb.has_spawnable_review(conn) is True
+        assert kb.has_spawnable_review(conn) is False
+
 
 
 def test_has_spawnable_review_false_on_empty(kanban_home):
@@ -3799,10 +3772,11 @@ def test_has_spawnable_review_false_on_empty(kanban_home):
         assert kb.has_spawnable_review(conn) is False
 
 
+
 def test_has_spawnable_review_false_when_only_terminal_lanes(
     kanban_home, monkeypatch,
 ):
-    """has_spawnable_review returns False when review tasks are terminal lanes."""
+    """has_spawnable_review returns False when review tasks are human-only."""
     from hermes_cli import profiles
     monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
     with kb.connect() as conn:
@@ -3811,16 +3785,18 @@ def test_has_spawnable_review_false_when_only_terminal_lanes(
         assert kb.has_spawnable_review(conn) is False
 
 
+
 def test_dispatch_review_skips_nonspawnable(kanban_home, monkeypatch):
-    """Review tasks with non-existent profiles go to skipped_nonspawnable."""
+    """Review tasks are not dispatch candidates, even with invalid assignees."""
     from hermes_cli import profiles
     monkeypatch.setattr(profiles, "profile_exists", lambda name: False)
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review", assignee="orion-cc")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, dry_run=True)
-    assert t in res.skipped_nonspawnable
+    assert t not in res.skipped_nonspawnable
     assert not res.spawned
+
 
 
 def test_review_status_in_valid_statuses():

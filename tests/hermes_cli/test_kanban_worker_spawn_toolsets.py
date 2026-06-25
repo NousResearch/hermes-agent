@@ -78,11 +78,17 @@ agent:
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    pid = kb._default_spawn(_make_task(kb, assignee="elias"), str(workspace))
+    pid = kb._default_spawn(
+        _make_task(kb, assignee="elias"), str(workspace), board="pilot-board"
+    )
 
     assert pid == 4242
     assert captured["env"]["HERMES_HOME"] == str(profile)
     assert captured["env"]["HERMES_KANBAN_TASK"] == "t_spawn_tools"
+    assert captured["env"]["HERMES_SESSION_SOURCE"] == "kanban"
+    assert captured["env"]["HERMES_KANBAN_SESSION_TITLE"].startswith(
+        "pilot-board · t_spawn_tools · run 7 · spawn tools"
+    )
     assert "--toolsets" in captured["cmd"]
     pinned = captured["cmd"][captured["cmd"].index("--toolsets") + 1].split(",")
     for required in ("terminal", "web", "file", "skills", "code_execution", "delegation"):
@@ -116,3 +122,16 @@ toolsets:
     assert "web" in resolved
     assert "kanban" in resolved  # recovered worker lifecycle surface
     assert resolved != ["kanban"]
+
+
+def test_build_kanban_worker_session_title_includes_board_run_and_truncates():
+    from hermes_cli import kanban_db as kb
+
+    task = _make_task(kb, assignee="elias")
+    task.title = "Very long title " * 20
+
+    title = kb._build_kanban_worker_session_title(task, "pilot-board")
+
+    assert title.startswith("pilot-board · t_spawn_tools · run 7 · ")
+    assert len(title) <= 100
+    assert "..." in title

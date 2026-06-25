@@ -791,6 +791,79 @@ END;
 """
 
 
+def _build_message_token_totals_select() -> str:
+    """Build the SELECT that aggregates bit-packed messages.token_count.
+
+    Decodes the codec layout [F:1][tag1:4][value1:27][tag2:4][value2:28]
+    (see :mod:`hermes_token_codec`) entirely in SQL so legacy and packed
+    rows can be summed in a single pass:
+
+      * packed rows  → token_count < 0; route each of the two tagged
+        buckets to its category (output / reasoning / input / cache_read).
+      * legacy rows  → token_count >= 0; historically only assistant rows
+        carried a raw output count, so attribute those to ``output`` and
+        ignore non-negative counts on other roles.
+
+    SQLite's ``>>`` is an arithmetic (sign-extending) shift on the negative
+    packed integers, so EVERY ``>>`` is immediately followed by ``& mask``
+    to discard the sign-extended high bits. The 28-bit value2 field needs
+    no shift and is masked directly.
+    """
+    from hermes_token_codec import (
+        TAG_OUTPUT,
+        TAG_REASONING,
+        TAG_TOTAL_INPUT,
+        TAG_CACHE_READ,
+        _TAG_MASK,
+        _V1_MAX,
+        _V2_MAX,
+    )
+
+    def _bucket(tag: int) -> str:
+        # value1 lives in bits 32..58 (tag1 in 59..62); value2 in bits 0..27
+        # (tag2 in 28..31). A packed row contributes value1 when tag1 == tag,
+        # and value2 when tag2 == tag.
+        return (
+            "SUM(CASE WHEN token_count < 0 "
+            f"AND ((token_count >> 59) & {_TAG_MASK}) = {tag} "
+            f"THEN ((token_count >> 32) & {_V1_MAX}) ELSE 0 END) + "
+            "SUM(CASE WHEN token_count < 0 "
+            f"AND ((token_count >> 28) & {_TAG_MASK}) = {tag} "
+            f"THEN (token_count & {_V2_MAX}) ELSE 0 END)"
+        )
+
+    legacy_output = (
+        " + SUM(CASE WHEN token_count >= 0 AND role = 'assistant' "
+        "THEN token_count ELSE 0 END)"
+    )
+    return (
+        "SELECT "
+        f"COALESCE(({_bucket(TAG_TOTAL_INPUT)}), 0) AS input, "
+        f"COALESCE(({_bucket(TAG_OUTPUT)}{legacy_output}), 0) AS output, "
+        f"COALESCE(({_bucket(TAG_CACHE_READ)}), 0) AS cache_read, "
+        f"COALESCE(({_bucket(TAG_REASONING)}), 0) AS reasoning, "
+        "COUNT(*) AS messages "
+        "FROM messages "
+    )
+
+
+# Built once at import; pure function of the codec layout constants.
+_MESSAGE_TOKEN_TOTALS_SELECT = _build_message_token_totals_select()
+
+
+def _row_to_token_totals(row) -> Dict[str, int]:
+    """Normalise an aggregate row into the standard token-bucket dict."""
+    if row is None:
+        return {"input": 0, "output": 0, "cache_read": 0, "reasoning": 0, "messages": 0}
+    return {
+        "input": int(row["input"] or 0),
+        "output": int(row["output"] or 0),
+        "cache_read": int(row["cache_read"] or 0),
+        "reasoning": int(row["reasoning"] or 0),
+        "messages": int(row["messages"] or 0),
+    }
+
+
 class SessionDB:
     """
     SQLite-backed session storage with FTS5 search.
@@ -3321,6 +3394,73 @@ class SessionDB:
                     msg["tool_calls"] = []
             result.append(msg)
         return result
+
+    def get_message_tokens(self, message_id: int) -> Dict[str, int]:
+        """Decode the bit-packed ``token_count`` for a single message row.
+
+        Returns the resolved ``{input, output, cache_read, reasoning}``
+        buckets (see :func:`hermes_token_codec.resolve_message_tokens`).
+        Legacy non-negative counts are attributed to assistant ``output``
+        only; a missing/unknown row yields all-zero buckets.
+        """
+        from hermes_token_codec import resolve_message_tokens
+
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT role, token_count FROM messages WHERE id = ?",
+                (message_id,),
+            )
+            row = cursor.fetchone()
+        if row is None:
+            return {"input": 0, "output": 0, "cache_read": 0, "reasoning": 0}
+        return resolve_message_tokens(row["role"], row["token_count"])
+
+    def get_session_message_token_totals(self, session_id: str) -> Dict[str, int]:
+        """Aggregate per-message token buckets for one session.
+
+        Sums the bit-packed ``token_count`` across every message row in the
+        session — mixing legacy (non-negative) and packed (negative) rows in
+        a single SQL pass via :data:`_MESSAGE_TOKEN_TOTALS_SELECT`. Inactive
+        (rewound / compacted) rows are included: their tokens were spent and
+        belong in the accounting total. Returns
+        ``{input, output, cache_read, reasoning, messages}``.
+        """
+        sql = _MESSAGE_TOKEN_TOTALS_SELECT + "WHERE session_id = ?"
+        with self._lock:
+            cursor = self._conn.execute(sql, (session_id,))
+            row = cursor.fetchone()
+        return _row_to_token_totals(row)
+
+    def get_conversation_message_token_totals(
+        self, root_session_id: str
+    ) -> Dict[str, int]:
+        """Aggregate per-message token buckets across a compression lineage.
+
+        Walks the ``parent_session_id`` chain from ``root_session_id`` down
+        through every compression-continuation descendant (the same lineage
+        rule used by :meth:`set_session_archived`) and sums the bit-packed
+        ``token_count`` over all their messages. Use this to get whole-
+        conversation totals that survive compression-triggered session
+        splits. Returns ``{input, output, cache_read, reasoning, messages}``.
+        """
+        sql = (
+            "WITH RECURSIVE descendants(id) AS ("
+            "  SELECT ? "
+            "  UNION "
+            "  SELECT child.id "
+            "  FROM descendants d "
+            "  JOIN sessions parent ON parent.id = d.id "
+            "  JOIN sessions child ON child.parent_session_id = parent.id "
+            "  WHERE parent.end_reason = 'compression' "
+            "    AND child.started_at >= parent.ended_at"
+            ") "
+            + _MESSAGE_TOKEN_TOTALS_SELECT
+            + "WHERE session_id IN (SELECT id FROM descendants)"
+        )
+        with self._lock:
+            cursor = self._conn.execute(sql, (root_session_id,))
+            row = cursor.fetchone()
+        return _row_to_token_totals(row)
 
     def get_messages_around(
         self,

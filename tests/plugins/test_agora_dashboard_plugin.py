@@ -1979,6 +1979,150 @@ def test_kanban_task_blocked_drops_unknown_task_id(client):
     assert r.json()["notifications"] == []
 
 
+def test_kanban_task_completion_clears_profile_status(client):
+    """agora_agent_status must be idle after a task is marked done."""
+    from hermes_cli import kanban_db as kb
+
+    import plugins.agora.dashboard.plugin_api as real_agora
+
+    real_agora._db_init_path = None
+
+    # Seed a working state for the assignee pointing at the task about to be done.
+    client.post(
+        "/api/plugins/agora/agents/status/agent-backend",
+        json={
+            "state": "working",
+            "current_task_id": "t_placeholder",
+            "current_step": "run 99",
+            "status_text": "old work",
+            "pid": 12345,
+            "run_id": 99,
+            "metadata": {"source": "kanban-worker"},
+        },
+    )
+
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(
+            conn, title="Status cleanup test", assignee="agent-backend"
+        )
+        # Pre-update the seeded row so current_task_id matches the real task.
+        with real_agora._connect() as aconn:
+            aconn.execute(
+                "UPDATE agora_agent_status SET current_task_id = ? WHERE profile = ?",
+                (task_id, "agent-backend"),
+            )
+            aconn.commit()
+
+        ok = kb.complete_task(
+            conn,
+            task_id,
+            summary="Task done; assignee should go idle.",
+            result="done",
+        )
+        assert ok is True
+    finally:
+        conn.close()
+
+    with real_agora._connect() as aconn:
+        row = aconn.execute(
+            "SELECT state, current_task_id, run_id, pid, status_text "
+            "FROM agora_agent_status WHERE profile = ?",
+            ("agent-backend",),
+        ).fetchone()
+        assert row["state"] == "idle"
+        assert row["current_task_id"] is None
+        assert row["run_id"] is None
+        assert row["pid"] is None
+        assert "concluída" in row["status_text"] or "tarefa" in row["status_text"]
+
+
+def test_kanban_task_completion_does_not_clobber_new_task(client):
+    """Sync must skip if the profile already picked up a different task."""
+    from hermes_cli import kanban_db as kb
+
+    import plugins.agora.dashboard.plugin_api as real_agora
+
+    real_agora._db_init_path = None
+
+    conn = kb.connect()
+    try:
+        old_task = kb.create_task(conn, title="Old work", assignee="agent-backend")
+        new_task = kb.create_task(conn, title="New work", assignee="agent-backend")
+        # Pre-seed agora with current_task_id = new_task (profile moved on).
+        client.post(
+            "/api/plugins/agora/agents/status/agent-backend",
+            json={
+                "state": "working",
+                "current_task_id": new_task,
+                "current_step": "run 200",
+                "status_text": "new work",
+                "pid": 222,
+                "run_id": 200,
+            },
+        )
+        ok = kb.complete_task(conn, old_task, summary="Old task done", result="done")
+        assert ok is True
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/agora/agents/status/agent-backend")
+    assert r.status_code == 200
+    agent = r.json()["agent"]
+    assert agent["state"] == "working"
+    assert agent["current_task_id"] == new_task
+    assert agent["run_id"] == 200
+    assert agent["pid"] == 222
+
+
+def test_kanban_task_blocked_clears_profile_status(client):
+    """agora_agent_status must reflect blocked when its active task is blocked."""
+    from hermes_cli import kanban_db as kb
+
+    import plugins.agora.dashboard.plugin_api as real_agora
+
+    real_agora._db_init_path = None
+
+    client.post(
+        "/api/plugins/agora/agents/status/agent-backend",
+        json={
+            "state": "working",
+            "current_task_id": "t_placeholder",
+            "current_step": "run 1",
+            "pid": 111,
+            "run_id": 1,
+        },
+    )
+
+    conn = kb.connect()
+    try:
+        task_id = kb.create_task(
+            conn, title="Blocked status test", assignee="agent-backend"
+        )
+        with real_agora._connect() as aconn:
+            aconn.execute(
+                "UPDATE agora_agent_status SET current_task_id = ? WHERE profile = ?",
+                (task_id, "agent-backend"),
+            )
+            aconn.commit()
+        kb.claim_task(conn, task_id)
+        ok = kb.block_task(conn, task_id, reason="need input")
+        assert ok is True
+    finally:
+        conn.close()
+
+    with real_agora._connect() as aconn:
+        row = aconn.execute(
+            "SELECT state, current_task_id, status_text "
+            "FROM agora_agent_status WHERE profile = ?",
+            ("agent-backend",),
+        ).fetchone()
+        assert row["state"] == "blocked"
+        assert row["current_task_id"] is None
+        assert "bloqueada" in row["status_text"]
+
+
+
 def test_notifications_count_and_read(client):
     client.post("/api/plugins/agora/agents/status/target", json={"state": "idle"})
     client.post(

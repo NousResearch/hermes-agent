@@ -1868,6 +1868,35 @@ class TestBuildApiKwargs:
         assert kwargs.get("extra_body", {}).get("think") is None
 
 
+class TestGlmStopTruncationGuard:
+    def test_cliproxy_ports_are_not_treated_as_ollama_glm(self, agent):
+        agent.provider = "custom"
+        agent.model = "glm-5.2"
+        agent.base_url = "http://127.0.0.1:8317/v1"
+        agent._base_url_lower = agent.base_url.lower()
+
+        assert agent._is_ollama_glm_backend() is False
+        assert agent._should_treat_stop_as_truncated(
+            "stop",
+            _mock_assistant_msg(content="partial answer without punctuation"),
+            messages=[{"role": "tool", "content": "result"}],
+        ) is False
+
+    def test_local_ollama_glm_still_uses_stop_truncation_guard(self, agent):
+        agent.provider = "custom"
+        agent.model = "glm-4.6"
+        agent.api_mode = "chat_completions"
+        agent.base_url = "http://127.0.0.1:11434/v1"
+        agent._base_url_lower = agent.base_url.lower()
+
+        assert agent._is_ollama_glm_backend() is True
+        assert agent._should_treat_stop_as_truncated(
+            "stop",
+            _mock_assistant_msg(content="partial answer without punctuation"),
+            messages=[{"role": "tool", "content": "result"}],
+        ) is True
+
+
 
 class TestBuildAssistantMessage:
     def test_basic_message(self, agent):

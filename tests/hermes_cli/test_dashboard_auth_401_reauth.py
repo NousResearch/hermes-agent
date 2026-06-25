@@ -358,6 +358,7 @@ class TestNextSameOriginValidation:
         class FakeRequest:
             def __init__(self, path, query=""):
                 self.url = type("URL", (), {"path": path, "query": query})()
+                self.headers = {}
 
         assert _safe_next_target(FakeRequest("/sessions")) == "%2Fsessions"
         assert (
@@ -371,6 +372,7 @@ class TestNextSameOriginValidation:
         class FakeRequest:
             def __init__(self, path):
                 self.url = type("URL", (), {"path": path, "query": ""})()
+                self.headers = {}
 
         assert _safe_next_target(FakeRequest("//evil.com")) == ""
 
@@ -380,6 +382,7 @@ class TestNextSameOriginValidation:
         class FakeRequest:
             def __init__(self, path):
                 self.url = type("URL", (), {"path": path, "query": ""})()
+                self.headers = {}
 
         assert _safe_next_target(FakeRequest("/login")) == ""
         assert _safe_next_target(FakeRequest("/auth/login")) == ""
@@ -397,6 +400,7 @@ class TestNextSameOriginValidation:
         class FakeRequest:
             def __init__(self, path, query=""):
                 self.url = type("URL", (), {"path": path, "query": query})()
+                self.headers = {}
 
         assert _safe_next_target(FakeRequest("/api/analytics/models")) == ""
         assert (
@@ -419,12 +423,68 @@ class TestNextSameOriginValidation:
         class FakeRequest:
             def __init__(self, path):
                 self.url = type("URL", (), {"path": path, "query": ""})()
+                self.headers = {}
 
         # ``/apidocs`` or ``/api-keys`` lookalike SPA routes — we must
         # only match the ``/api/`` prefix or exact ``/api``.
         assert _safe_next_target(FakeRequest("/apidocs")) == "%2Fapidocs"
         assert _safe_next_target(FakeRequest("/api-keys")) == "%2Fapi-keys"
 
+
+
+    def test_safe_next_validator_respects_prefix(self):
+        """When ``X-Forwarded-Prefix`` is set, the ``next`` target must
+        include the prefix so the post-login redirect lands within the
+        reverse-proxy sub-path."""
+        from hermes_cli.dashboard_auth.middleware import _safe_next_target
+
+        class FakeRequest:
+            def __init__(self, path, query="", prefix=""):
+                self.url = type("URL", (), {"path": path, "query": query})()
+                self.headers = {"x-forwarded-prefix": prefix} if prefix else {}
+
+        # Without prefix: behaves as before
+        assert _safe_next_target(FakeRequest("/sessions")) == "%2Fsessions"
+        assert (
+            _safe_next_target(FakeRequest("/sessions", "page=2"))
+            == "%2Fsessions%3Fpage%3D2"
+        )
+
+        # With prefix: path is prefixed
+        assert (
+            _safe_next_target(FakeRequest("/sessions", prefix="/hermes"))
+            == "%2Fhermes%2Fsessions"
+        )
+        assert (
+            _safe_next_target(FakeRequest("/sessions", "page=2", prefix="/hermes"))
+            == "%2Fhermes%2Fsessions%3Fpage%3D2"
+        )
+
+        # With multi-level prefix like /profile/nati
+        assert (
+            _safe_next_target(FakeRequest("/sessions", prefix="/profile/nati"))
+            == "%2Fprofile%2Fnati%2Fsessions"
+        )
+
+        # Auth rejection paths still work with prefix
+        assert (
+            _safe_next_target(FakeRequest("/login", prefix="/hermes"))
+            == ""
+        )
+        assert (
+            _safe_next_target(FakeRequest("/auth/login", prefix="/hermes"))
+            == ""
+        )
+        assert (
+            _safe_next_target(FakeRequest("/api/auth/me", prefix="/hermes"))
+            == ""
+        )
+
+        # API paths rejected even with prefix
+        assert (
+            _safe_next_target(FakeRequest("/api/analytics/models", prefix="/hermes"))
+            == ""
+        )
 
 # ---------------------------------------------------------------------------
 # /auth/callback honours next= and validates it

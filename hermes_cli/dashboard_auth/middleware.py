@@ -139,6 +139,11 @@ def _safe_next_target(request: Request) -> str:
     ``//evil.com`` open-redirect attempts are silently dropped. The empty
     string return means the caller produces a bare ``/login`` URL — fine,
     user lands at the dashboard root after re-auth.
+
+    When the dashboard is served behind a reverse proxy at a sub-path
+    (e.g. ``/hermes``), the ``X-Forwarded-Prefix`` header is prepended to
+    the path so the post-login redirect lands within the same prefix
+    (``/hermes/sessions`` rather than bare ``/sessions``).
     """
     path = request.url.path
     # Reject anything that doesn't start with "/" or starts with "//"
@@ -146,6 +151,8 @@ def _safe_next_target(request: Request) -> str:
     if not path or not path.startswith("/") or path.startswith("//"):
         return ""
     # Don't redirect back to the auth routes themselves — that loops.
+    # Check original path BEFORE prepending prefix so auth-route detection
+    # works regardless of the reverse-proxy mount point.
     if any(
         path == p or path.startswith(p)
         for p in ("/login", "/auth/", "/api/auth/")
@@ -161,6 +168,12 @@ def _safe_next_target(request: Request) -> str:
     # in ``web/src/lib/api.ts`` covers the deep-link case.
     if path == "/api" or path.startswith("/api/"):
         return ""
+    # Prepend X-Forwarded-Prefix so the next= target preserves the
+    # reverse-proxy sub-path (e.g. /hermes/sessions, not /sessions).
+    from hermes_cli.dashboard_auth.prefix import prefix_from_request
+    prefix = prefix_from_request(request)
+    if prefix:
+        path = prefix + path
     # Preserve query string if present (e.g. /sessions?page=2).
     query = request.url.query
     target = f"{path}?{query}" if query else path

@@ -2344,6 +2344,66 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+# Allowlist of ACP CLIs the subprocess transport can actually drive. Kept
+# narrow on purpose: agent/copilot_acp_client.py is wired specifically to the
+# GitHub Copilot CLI ("copilot --acp --stdio"). Add an entry here only when a
+# new ACP-compatible CLI is genuinely supported.
+_SUPPORTED_ACP_COMMANDS = frozenset({"copilot"})
+
+
+def _validate_acp_command(
+    value: Optional[str], *, field: str = "acp_command"
+) -> Optional[str]:
+    """Reject a model-supplied acp_command the ACP transport cannot safely drive.
+
+    ``acp_command`` / ``acp_args`` are free-form, model-controllable tool-call
+    arguments that propagate unvalidated into ``subprocess.Popen`` (see
+    agent/copilot_acp_client.py). An unrestricted value (e.g. ``python``,
+    ``powershell``, ``bash``) is therefore arbitrary host-process execution,
+    bypassing the terminal backend's sandboxing and command approvals. Restrict
+    the model-facing override to the supported command IDENTITY only — the bare
+    name ``copilot`` (optionally with a Windows executable suffix), compared
+    case-insensitively.
+
+    A PATH is NOT accepted from the model. Accepting any value whose basename is
+    ``copilot`` (e.g. ``/tmp/copilot``) would let the model point the ACP
+    transport at an arbitrary host binary it merely *named* ``copilot``, which
+    then runs via ``subprocess.Popen`` outside the terminal sandbox/approvals.
+    Custom install locations belong in TRUSTED operator config
+    (``delegation.command`` / ``HERMES_COPILOT_ACP_COMMAND``), which is never
+    routed through this check.
+
+    Returns an error string if blocked, else ``None`` (valid).
+    """
+    if not value:
+        return None
+    v = str(value).strip()
+    if not v:
+        return None
+    if "/" in v or "\\" in v:
+        return (
+            f"Unsupported {field}={value!r}: a path is not accepted from the "
+            f"model. Only the bare command name {sorted(_SUPPORTED_ACP_COMMANDS)} "
+            f"is allowed; set a custom install path via operator config "
+            f"(delegation.command), not the model-facing override."
+        )
+    # Compare case-insensitively and tolerate a Windows executable suffix
+    # (the installed binary is `copilot.exe` on Windows). Only KNOWN suffixes
+    # are stripped, so "copilot.evil" / "copilot-evil" stay blocked.
+    name = v.lower()
+    for _suffix in (".exe", ".cmd", ".bat", ".com"):
+        if name.endswith(_suffix):
+            name = name[: -len(_suffix)]
+            break
+    if name in _SUPPORTED_ACP_COMMANDS:
+        return None
+    return (
+        f"Unsupported {field}={value!r}. The ACP subprocess transport only "
+        f"supports the GitHub Copilot CLI ({sorted(_SUPPORTED_ACP_COMMANDS)}). "
+        f"Do not set {field} to any other binary or to a path."
+    )
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2463,6 +2523,17 @@ def delegate_task(
     if not task_list:
         return tool_error("No tasks provided.")
 
+    # SECURITY: restrict the model-supplied acp_command override to the
+    # supported ACP transport BEFORE any child agent is built. acp_command /
+    # acp_args flow unvalidated into subprocess.Popen, so an arbitrary value
+    # (python/powershell/...) is host-process execution outside the terminal
+    # sandbox and command approvals. Only the model-facing top-level and
+    # per-task overrides are checked here; operator-configured
+    # delegation.command (creds["command"]) is trusted and unaffected.
+    _acp_err = _validate_acp_command(acp_command)
+    if _acp_err:
+        return tool_error(_acp_err)
+
     # Validate each task has a goal
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
@@ -2471,6 +2542,11 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        _task_acp_err = _validate_acp_command(
+            task.get("acp_command"), field=f"tasks[{i}].acp_command"
+        )
+        if _task_acp_err:
+            return tool_error(_task_acp_err)
 
     overall_start = time.monotonic()
     results = []
@@ -3400,9 +3476,10 @@ DELEGATE_TASK_SCHEMA = {
                         "acp_command": {
                             "type": "string",
                             "description": (
-                                "Per-task ACP command override (e.g. 'copilot'). "
-                                "Overrides the top-level acp_command for this task only. "
-                                "Do NOT set unless the user explicitly told you an ACP CLI is installed."
+                                "Per-task ACP command override; overrides the top-level "
+                                "acp_command for this task only. Only 'copilot' is supported "
+                                "(any other value is rejected). Do NOT set unless the user "
+                                "explicitly told you the GitHub Copilot CLI is installed."
                             ),
                         },
                         "acp_args": {
@@ -3443,13 +3520,13 @@ DELEGATE_TASK_SCHEMA = {
             "acp_command": {
                 "type": "string",
                 "description": (
-                    "Override ACP command for child agents (e.g. 'copilot'). "
-                    "When set, children use ACP subprocess transport instead of inheriting "
-                    "the parent's transport. Requires an ACP-compatible CLI "
-                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio'). "
+                    "Override ACP command for child agents. Only 'copilot' (the "
+                    "GitHub Copilot CLI, 'copilot --acp --stdio') is supported; "
+                    "any other value is rejected. When set, children use the ACP "
+                    "subprocess transport instead of inheriting the parent's. "
                     "See agent/copilot_acp_client.py for the implementation. "
                     "IMPORTANT: Do NOT set this unless the user has explicitly told you "
-                    "a specific ACP-compatible CLI is installed and configured. "
+                    "the GitHub Copilot CLI is installed and configured. "
                     "Leave empty to use the parent's default transport (Hermes subagents)."
                 ),
             },

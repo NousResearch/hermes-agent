@@ -33,7 +33,52 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
+    _SUPPORTED_ACP_COMMANDS,
+    _validate_acp_command,
 )
+
+
+class TestAcpCommandAllowlist(unittest.TestCase):
+    """The model-supplied acp_command override must be restricted to the
+    supported ACP transport — it otherwise reaches subprocess.Popen as an
+    arbitrary host binary (CWE-78)."""
+
+    def test_allows_bare_supported_name(self):
+        # Only the bare command name (+ Windows exe suffix, any case) is allowed.
+        for value in ("copilot", "copilot.exe", "Copilot.exe", "COPILOT",
+                      "copilot.cmd", "  copilot  "):
+            self.assertIsNone(_validate_acp_command(value), value)
+
+    def test_rejects_any_path(self):
+        # A model-supplied PATH whose basename is "copilot" must be rejected —
+        # the model must not point the transport at an arbitrary host binary it
+        # merely named "copilot" (e.g. /tmp/copilot). Custom paths are operator
+        # config only.
+        for value in ("/tmp/copilot", "/usr/local/bin/copilot",
+                      "/opt/copilot/bin/copilot", "C:\\tools\\copilot",
+                      "C:\\tools\\copilot.exe", "./copilot", "..\\copilot.exe"):
+            err = _validate_acp_command(value)
+            self.assertIsNotNone(err, value)
+            self.assertIn("path", err.lower())
+
+    def test_empty_is_allowed(self):
+        self.assertIsNone(_validate_acp_command(None))
+        self.assertIsNone(_validate_acp_command(""))
+        self.assertIsNone(_validate_acp_command("  "))
+
+    def test_rejects_arbitrary_binaries(self):
+        for value in ("python", "powershell", "bash", "claude",
+                      "copilot-evil", "copilot.evil", "notcopilot.exe"):
+            err = _validate_acp_command(value)
+            self.assertIsNotNone(err, value)
+            self.assertIn("Unsupported", err)
+
+    def test_field_name_propagates(self):
+        err = _validate_acp_command("python", field="tasks[1].acp_command")
+        self.assertIn("tasks[1].acp_command", err)
+
+    def test_allowlist_is_copilot_only(self):
+        self.assertEqual(set(_SUPPORTED_ACP_COMMANDS), {"copilot"})
 
 
 def _make_mock_parent(depth=0):
@@ -215,6 +260,33 @@ class TestDelegateTask(unittest.TestCase):
         parent = _make_mock_parent()
         result = json.loads(delegate_task(tasks=[{"context": "no goal here"}], parent_agent=parent))
         self.assertIn("error", result)
+
+    def test_rejects_model_top_level_acp_command(self):
+        """A model-supplied top-level acp_command is rejected before any child
+        is built — no subprocess is spawned for an arbitrary binary."""
+        parent = _make_mock_parent()
+        with patch("tools.delegate_tool._build_child_agent") as build:
+            result = json.loads(
+                delegate_task(goal="test", acp_command="python", parent_agent=parent)
+            )
+        self.assertIn("error", result)
+        self.assertIn("Unsupported acp_command='python'", result["error"])
+        build.assert_not_called()
+
+    def test_rejects_model_per_task_acp_command(self):
+        """A per-task acp_command override is validated too, with the offending
+        task index named."""
+        parent = _make_mock_parent()
+        with patch("tools.delegate_tool._build_child_agent") as build:
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": "ok"}, {"goal": "bad", "acp_command": "claude"}],
+                    parent_agent=parent,
+                )
+            )
+        self.assertIn("error", result)
+        self.assertIn("tasks[1].acp_command", result["error"])
+        build.assert_not_called()
 
     @patch("tools.delegate_tool._run_single_child")
     def test_single_task_mode(self, mock_run):
@@ -2250,12 +2322,14 @@ class TestDispatchDelegateTask(unittest.TestCase):
 
             delegate_task(
                 goal="test",
-                acp_command="claude",
+                # "copilot" is the only acp_command the allowlist permits;
+                # arbitrary binaries are rejected (see TestAcpCommandAllowlist).
+                acp_command="copilot",
                 acp_args=["--acp", "--stdio"],
                 parent_agent=parent,
             )
             _, kwargs = mock_build.call_args
-            self.assertEqual(kwargs["override_acp_command"], "claude")
+            self.assertEqual(kwargs["override_acp_command"], "copilot")
             self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
 
 class TestDelegateEventEnum(unittest.TestCase):

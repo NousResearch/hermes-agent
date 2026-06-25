@@ -1,0 +1,23 @@
+name: aituber-kit
+version: 0.1.0
+description: "Hermes bridge for tegnike/aituber-kit — install, dev server, v1 API, and External Linkage."
+author: "Hermes local plugin"
+kind: standalone
+platforms:
+  - windows
+  - linux
+  - macos
+provides_tools:
+  - aituber_kit_status
+  - aituber_kit_configure
+  - aituber_kit_install
+  - aituber_kit_prepare
+  - aituber_kit_start
+  - aituber_kit_stop
+  - aituber_kit_speak
+  - aituber_kit_chat
+  - aituber_kit_stop_playback
+  - aituber_kit_bridge_start
+  - aituber_kit_bridge_stop
+provides_cli:
+  - aituber-kit

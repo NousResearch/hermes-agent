@@ -469,7 +469,17 @@ class SessionEntry:
     
     # Last API-reported prompt tokens (for accurate compression pre-check)
     last_prompt_tokens: int = 0
-    
+
+    # True once the session has completed at least one real model turn.
+    # Set on the first update_session(...) call and NEVER reset by
+    # transcript compression (which zeroes last_prompt_tokens to signal a
+    # stale value). This is the durable "did this session have a real
+    # conversation" signal used to gate the auto-reset notice — distinct
+    # from last_prompt_tokens precisely because compression zeroes the
+    # latter, which would otherwise suppress the notice for a compressed-
+    # then-idle session that DID have history.
+    had_any_turn: bool = False
+
     # Set when a session was created because the previous one expired;
     # consumed once by the message handler to inject a notice into context
     was_auto_reset: bool = False
@@ -523,6 +533,7 @@ class SessionEntry:
             "cache_write_tokens": self.cache_write_tokens,
             "total_tokens": self.total_tokens,
             "last_prompt_tokens": self.last_prompt_tokens,
+            "had_any_turn": self.had_any_turn,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
             "expiry_finalized": self.expiry_finalized,
@@ -579,6 +590,7 @@ class SessionEntry:
             cache_write_tokens=data.get("cache_write_tokens", 0),
             total_tokens=data.get("total_tokens", 0),
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
+            had_any_turn=data.get("had_any_turn", False),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
             expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),
@@ -939,8 +951,17 @@ class SessionStore:
                     # Session is being auto-reset.
                     was_auto_reset = True
                     auto_reset_reason = reset_reason
-                    # Track whether the expired session had any real conversation
-                    reset_had_activity = entry.total_tokens > 0
+                    # Track whether the expired session had any real conversation.
+                    # had_any_turn is the durable signal — set on the first real
+                    # turn and never zeroed by transcript compression. Fall back
+                    # to last_prompt_tokens > 0 for entries persisted before
+                    # had_any_turn existed (older sessions.json rows default the
+                    # flag to False but may still carry a non-zero token count).
+                    # SessionEntry.total_tokens is never populated (token totals
+                    # live in the SessionDB — see gateway/slash_commands.py), so
+                    # the old `total_tokens > 0` gate was permanently False and
+                    # the user-facing reset notice never fired.
+                    reset_had_activity = entry.had_any_turn or entry.last_prompt_tokens > 0
                     db_end_session_id = entry.session_id
             else:
                 was_auto_reset = False
@@ -1001,6 +1022,13 @@ class SessionStore:
                 entry.updated_at = _now()
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
+                    # Latch the durable "had a real turn" flag on any positive
+                    # token count. The compression path calls update_session
+                    # with last_prompt_tokens=0 to mark the value stale — that
+                    # must NOT set the flag, so gate on > 0. Once True it never
+                    # goes back to False here.
+                    if last_prompt_tokens > 0:
+                        entry.had_any_turn = True
                 self._save()
 
     def suspend_session(self, session_key: str) -> bool:

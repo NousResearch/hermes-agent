@@ -68,6 +68,46 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+# Greppable marker logged when a session auto-reset notice was supposed to be
+# sent but the adapter.send raised. The send is attempted exactly once per
+# reset event (was_auto_reset is cleared outside the try/except), so this is a
+# WARNING (not a silent debug) and is naturally once-per-event — no throttle
+# state needed.
+SESSION_RESET_NOTICE_SEND_FAILED = "SESSION_RESET_NOTICE_SEND_FAILED"
+
+
+def _reset_reason_text(reason, policy) -> str:
+    """Human reason clause for the session auto-reset chat notice.
+
+    Mode-correct for every ``session_reset.mode`` (``idle`` / ``daily`` /
+    ``both`` / ``suspended``): ``_should_reset`` resolves ``both`` to the
+    concrete reason that actually tripped (``idle`` or ``daily``), so this
+    helper only ever sees a concrete reason. An unknown/future reason returns
+    the empty string so the caller emits a neutral "Session automatically
+    reset." with no false specifics (never echo a raw reason token) — mirrors
+    the compaction announce's unknown-reason discipline.
+
+    Pure function (depends only on ``reason`` + ``policy``) so it is unit
+    testable without driving the gateway message handler.
+    """
+    if reason == "suspended":
+        return "previous session was stopped or interrupted"
+    if reason == "daily":
+        return f"daily schedule at {policy.at_hour}:00"
+    if reason == "idle":
+        hours = policy.idle_minutes // 60
+        mins = policy.idle_minutes % 60
+        if hours and mins:
+            duration = f"{hours}h {mins}m"
+        elif hours:
+            duration = f"{hours}h"
+        else:
+            duration = f"{mins}m"
+        return f"inactive for {duration}"
+    # Unknown/future reason → no specific clause.
+    return ""
+
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -9061,17 +9101,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if should_notify:
                     adapter = self.adapters.get(source.platform)
                     if adapter:
-                        if reset_reason == "suspended":
-                            reason_text = "previous session was stopped or interrupted"
-                        elif reset_reason == "daily":
-                            reason_text = f"daily schedule at {policy.at_hour}:00"
-                        else:
-                            hours = policy.idle_minutes // 60
-                            mins = policy.idle_minutes % 60
-                            duration = f"{hours}h" if not mins else f"{hours}h {mins}m" if hours else f"{mins}m"
-                            reason_text = f"inactive for {duration}"
-                        notice = (
+                        reason_text = _reset_reason_text(reset_reason, policy)
+                        # Neutral form when the reason has no specific clause
+                        # (unknown/future reason) — never echo a raw token.
+                        header = (
                             f"◐ Session automatically reset ({reason_text}). "
+                            if reason_text
+                            else "◐ Session automatically reset. "
+                        )
+                        notice = (
+                            f"{header}"
                             f"Conversation history cleared.\n"
                             f"Use /resume to browse and restore a previous session.\n"
                             f"Adjust reset timing in config.yaml under session_reset."
@@ -9087,7 +9126,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             metadata=self._thread_metadata_for_source(source),
                         )
             except Exception as e:
-                logger.debug("Auto-reset notification failed (non-fatal): %s", e)
+                # The send is attempted exactly once per reset event
+                # (was_auto_reset is cleared below, outside this try), so a
+                # WARNING here is naturally once-per-event. Raised to WARNING
+                # (from debug) so a silently-broken adapter is greppable.
+                logger.warning(
+                    "%s: auto-reset notification failed (non-fatal): %s",
+                    SESSION_RESET_NOTICE_SEND_FAILED, e,
+                )
 
             session_entry.was_auto_reset = False
             session_entry.auto_reset_reason = None

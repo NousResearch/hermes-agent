@@ -9,12 +9,17 @@ Verifies that:
 
 from datetime import datetime, timedelta
 
+import ast
+import inspect
+
 
 from gateway.config import (
     GatewayConfig,
     Platform,
     SessionResetPolicy,
 )
+from gateway import run as gateway_run
+from gateway.run import _reset_reason_text, SESSION_RESET_NOTICE_SEND_FAILED
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
@@ -153,8 +158,11 @@ class TestSessionEntryReason:
         source = _make_source()
 
         entry1 = store.get_or_create_session(source)
-        # Simulate some conversation happened
-        entry1.total_tokens = 5000
+        # Simulate some conversation happened (last_prompt_tokens is the
+        # API-reported prompt-token count persisted every turn via
+        # update_session; total_tokens is never populated on SessionEntry —
+        # see gateway/slash_commands.py).
+        entry1.last_prompt_tokens = 5000
         entry1.updated_at = datetime.now() - timedelta(minutes=5)
         store._save()
 
@@ -245,7 +253,7 @@ class TestSessionEntryAutoResetRoundtrip:
         source = _make_source()
 
         entry = store.get_or_create_session(source)
-        entry.total_tokens = 1000
+        entry.last_prompt_tokens = 1000
         entry.updated_at = datetime.now() - timedelta(minutes=5)
         store._save()
 
@@ -277,3 +285,237 @@ class TestSessionEntryAutoResetRoundtrip:
         assert reloaded.was_auto_reset is False
         assert reloaded.auto_reset_reason is None
         assert reloaded.reset_had_activity is False
+
+
+# ---------------------------------------------------------------------------
+# _reset_reason_text — mode-correct notice wording (idle/daily/both/suspended)
+# ---------------------------------------------------------------------------
+
+class TestResetReasonText:
+    def test_idle_reason_72h(self):
+        policy = SessionResetPolicy(mode="idle", idle_minutes=4320, at_hour=4)
+        assert _reset_reason_text("idle", policy) == "inactive for 72h"
+
+    def test_idle_reason_hours_and_minutes(self):
+        policy = SessionResetPolicy(mode="idle", idle_minutes=90)
+        assert _reset_reason_text("idle", policy) == "inactive for 1h 30m"
+
+    def test_idle_reason_minutes_only(self):
+        policy = SessionResetPolicy(mode="idle", idle_minutes=30)
+        assert _reset_reason_text("idle", policy) == "inactive for 30m"
+
+    def test_daily_reason_uses_at_hour(self):
+        policy = SessionResetPolicy(mode="daily", at_hour=4)
+        assert _reset_reason_text("daily", policy) == "daily schedule at 4:00"
+
+    def test_suspended_reason(self):
+        policy = SessionResetPolicy()
+        assert _reset_reason_text("suspended", policy) == (
+            "previous session was stopped or interrupted"
+        )
+
+    def test_both_mode_resolves_to_concrete_reason(self):
+        """Under mode=both, _should_reset returns the concrete reason that
+        tripped (idle or daily), never 'both' — so the helper is correct for
+        both-mode without special-casing it."""
+        policy = SessionResetPolicy(mode="both", idle_minutes=4320, at_hour=4)
+        assert _reset_reason_text("idle", policy) == "inactive for 72h"
+        assert _reset_reason_text("daily", policy) == "daily schedule at 4:00"
+
+    def test_unknown_reason_is_neutral_no_raw_token(self):
+        """A future/unknown reason yields no clause (caller emits the neutral
+        'Session automatically reset.' form) and never echoes the raw token."""
+        policy = SessionResetPolicy()
+        result = _reset_reason_text("some_future_reason", policy)
+        assert result == ""
+        assert "some_future_reason" not in result
+        assert "inactive" not in result
+        assert "daily" not in result
+
+    def test_marker_constant_is_stable(self):
+        assert SESSION_RESET_NOTICE_SEND_FAILED == "SESSION_RESET_NOTICE_SEND_FAILED"
+
+
+# ---------------------------------------------------------------------------
+# had_any_turn — durable activity flag survives compaction zeroing
+# (PR #104 Greptile P2: last_prompt_tokens is reset to 0 by the transcript-
+# compression path; a compressed-then-idle session must still notify.)
+# ---------------------------------------------------------------------------
+
+class TestHadAnyTurnDurableFlag:
+    def test_update_session_latches_flag_on_real_turn(self, tmp_path):
+        store = _make_store(SessionResetPolicy(mode="idle", idle_minutes=1), tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        assert entry.had_any_turn is False
+        store.update_session(entry.session_key, last_prompt_tokens=42000)
+        assert store._entries[entry.session_key].had_any_turn is True
+
+    def test_compaction_zeroing_does_not_clear_flag(self, tmp_path):
+        """update_session(..., last_prompt_tokens=0) is how transcript
+        compression marks the value stale — it must NOT set OR clear the
+        durable flag."""
+        store = _make_store(SessionResetPolicy(mode="idle", idle_minutes=1), tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        store.update_session(entry.session_key, last_prompt_tokens=42000)  # real turn
+        store.update_session(entry.session_key, last_prompt_tokens=0)       # compaction
+        live = store._entries[entry.session_key]
+        assert live.last_prompt_tokens == 0       # compaction zeroed it
+        assert live.had_any_turn is True          # but the durable flag survives
+
+    def test_zero_only_session_never_latches_flag(self, tmp_path):
+        """A session that only ever saw a 0 token-count (no real turn) must
+        not latch the flag — no false 'history cleared'."""
+        store = _make_store(SessionResetPolicy(mode="idle", idle_minutes=1), tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        store.update_session(entry.session_key, last_prompt_tokens=0)
+        assert store._entries[entry.session_key].had_any_turn is False
+
+    def test_compressed_then_idle_session_still_flags_activity(self, tmp_path):
+        """The Greptile P2 case end-to-end: a session has a real turn, gets
+        compressed (last_prompt_tokens -> 0), then idles out. The reset MUST
+        still report had_activity via the durable flag."""
+        store = _make_store(SessionResetPolicy(mode="idle", idle_minutes=1), tmp_path)
+        source = _make_source()
+        entry1 = store.get_or_create_session(source)
+        store.update_session(entry1.session_key, last_prompt_tokens=42000)  # real turn
+        store.update_session(entry1.session_key, last_prompt_tokens=0)       # compaction
+        # Age it past the idle threshold.
+        store._entries[entry1.session_key].updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+        entry2 = store.get_or_create_session(source)
+        assert entry2.was_auto_reset is True
+        assert entry2.reset_had_activity is True  # would be False under the old gate
+
+    def test_flag_survives_roundtrip(self, tmp_path):
+        store = _make_store(SessionResetPolicy(mode="idle", idle_minutes=1), tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        store.update_session(entry.session_key, last_prompt_tokens=42000)
+        store._loaded = False
+        store._entries.clear()
+        store._ensure_loaded()
+        assert store._entries[entry.session_key].had_any_turn is True
+
+    def test_legacy_entry_without_flag_falls_back_to_last_prompt_tokens(self, tmp_path):
+        """Entries persisted before had_any_turn existed default the flag to
+        False but may carry a non-zero last_prompt_tokens — the gate's OR
+        fallback must still flag activity for them."""
+        store = _make_store(SessionResetPolicy(mode="idle", idle_minutes=1), tmp_path)
+        source = _make_source()
+        entry1 = store.get_or_create_session(source)
+        # Simulate a legacy row: token count set directly, flag never latched.
+        entry1.last_prompt_tokens = 5000
+        entry1.had_any_turn = False
+        entry1.updated_at = datetime.now() - timedelta(minutes=5)
+        store._save()
+        entry2 = store.get_or_create_session(source)
+        assert entry2.reset_had_activity is True
+
+
+# ---------------------------------------------------------------------------
+# AST invariant: the auto-reset NOTICE block wiring (gateway/run.py)
+#
+# The notice send lives deep in the 17k-line async message handler, so we pin
+# its load-bearing structure with an AST invariant (the established pattern —
+# see test_35809_auto_reset_clean_context.py) rather than driving the whole
+# handler. The behavioral correctness of the gate + wording is covered by the
+# real-SessionStore tests above and the _reset_reason_text unit tests.
+# ---------------------------------------------------------------------------
+
+def _find_auto_reset_notice_block() -> ast.If:
+    """Return the ``if getattr(session_entry, 'was_auto_reset', False):`` block."""
+    tree = ast.parse(inspect.getsource(gateway_run))
+    candidates = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        consts = {
+            n.value
+            for n in ast.walk(node.test)
+            if isinstance(n, ast.Constant) and isinstance(n.value, str)
+        }
+        if "was_auto_reset" in consts:
+            calls = {
+                sub.func.attr
+                for sub in ast.walk(node)
+                if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+            }
+            if "_reset_reason_text" in calls or "send" in calls:
+                candidates.append(node)
+    assert candidates, (
+        "Could not locate the auto-reset notice block "
+        "(if getattr(session_entry,'was_auto_reset',...) ... _reset_reason_text) "
+        "in gateway/run.py — the structure changed or the AST walker is stale."
+    )
+    # The outermost matching block.
+    return max(candidates, key=lambda n: len(list(ast.walk(n))))
+
+
+class TestAutoResetNoticeBlockWiring:
+    def test_block_uses_reset_reason_text_helper(self):
+        block = _find_auto_reset_notice_block()
+        attrs = {
+            sub.func.attr
+            for sub in ast.walk(block)
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Attribute)
+        }
+        names = {
+            sub.func.id
+            for sub in ast.walk(block)
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name)
+        }
+        assert "_reset_reason_text" in names, (
+            "the auto-reset notice block must build its reason text via the "
+            "_reset_reason_text helper (mode-correct + testable)."
+        )
+        assert "send" in attrs, (
+            "the auto-reset notice block must adapter.send the notice."
+        )
+
+    def test_block_logs_warning_marker_on_send_failure(self):
+        """The lost-send path must reference the greppable WARNING marker, and
+        the marker must be logged at WARNING (not debug)."""
+        block = _find_auto_reset_notice_block()
+        marker_refs = [
+            n
+            for n in ast.walk(block)
+            if isinstance(n, ast.Name) and n.id == "SESSION_RESET_NOTICE_SEND_FAILED"
+        ]
+        assert marker_refs, (
+            "the auto-reset notice block must reference "
+            "SESSION_RESET_NOTICE_SEND_FAILED on the send-failure path so a "
+            "silently-broken adapter is greppable."
+        )
+        warning_calls = [
+            sub
+            for sub in ast.walk(block)
+            if isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "warning"
+        ]
+        assert warning_calls, (
+            "the lost-send path must logger.warning(...), not logger.debug(...)."
+        )
+
+    def test_notice_is_out_of_band_no_history_mutation(self):
+        """Invariant I1/I2: the notice is sent via adapter.send only; it must
+        NOT be appended into model conversation history (prompt-cache &
+        role-alternation safety)."""
+        block = _find_auto_reset_notice_block()
+        bad_appends = [
+            sub
+            for sub in ast.walk(block)
+            if isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Attribute)
+            and sub.func.attr == "append"
+            and isinstance(sub.func.value, ast.Name)
+            and sub.func.value.id in {"messages", "history"}
+        ]
+        assert not bad_appends, (
+            "the auto-reset notice must be out-of-band (adapter.send), never "
+            "appended into messages/history — that would break prompt caching "
+            "and role alternation (Invariants I1/I2)."
+        )

@@ -172,6 +172,13 @@
         "to": "native-deps"
       },
       {
+        "from": "build/native-deps/node_modules",
+        "to": "native-deps/node_modules",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
         "from": "assets/icon.ico",
         "to": "icon.ico"
       }

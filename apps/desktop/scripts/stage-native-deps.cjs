@@ -148,11 +148,80 @@ function stageOne(spec) {
   console.log(`[stage-native-deps] ${path.relative(APP_ROOT, spec.to)}: ${copied} files`)
 }
 
+// Pure-JS runtime deps that the Electron main process require()s directly
+// (e.g. simple-git in electron/git-review-ops.cjs).  Same hoisting problem as
+// the native deps above -- workspace dedup lifts them into the repo-root
+// node_modules, out of reach of electron-builder's explicit `files:` collector,
+// so they never land in the asar.  We stage each module's full dependency
+// closure into build/native-deps/node_modules/ (a real node_modules layout so
+// transitive require()s resolve), ship it via extraResources, and the consumer
+// falls back to process.resourcesPath when the bare require fails in a packaged
+// build -- mirroring the node-pty pattern in main.cjs.
+const JS_DEP_CLOSURES = ['simple-git']
+
+// Locate a module's on-disk root dir + parsed package.json. We resolve the
+// package entry (not `<name>/package.json`, which modern packages hide behind an
+// `exports` map -- e.g. simple-git) and walk up to the first package.json whose
+// `name` matches, so scoped packages and dist/-nested entries both resolve.
+function resolveModule(name, req, rootName) {
+  let entry
+  try {
+    entry = req.resolve(name)
+  } catch (err) {
+    throw new Error(
+      `stage-native-deps: cannot resolve '${name}' (closure of '${rootName}'): ` +
+        `${err.message}.  Run \`npm install\` at the workspace root first.`
+    )
+  }
+  let dir = path.dirname(entry)
+  for (;;) {
+    const pj = path.join(dir, 'package.json')
+    if (fs.existsSync(pj)) {
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pj, 'utf8'))
+        if (pkg.name === name) return { dir, pkg }
+      } catch { /* keep walking */ }
+    }
+    const parent = path.dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  throw new Error(`stage-native-deps: could not locate package root for '${name}'`)
+}
+
+// Copy a module's full dependency closure into destNodeModules, preserving the
+// node_modules layout (scoped packages keep their @scope/ dir).  Resolution is
+// done per-module via createRequire so nested installs are handled, not just the
+// flat hoisted case.
+function stageClosure(rootName, destNodeModules) {
+  const { createRequire } = require('node:module')
+  const rootReq = createRequire(path.join(REPO_ROOT, 'package.json'))
+  const visited = new Set()
+  const queue = [{ name: rootName, req: rootReq }]
+  while (queue.length) {
+    const { name, req } = queue.shift()
+    if (visited.has(name)) continue
+    visited.add(name)
+    const { dir: modDir, pkg } = resolveModule(name, req, rootName)
+    const dest = path.join(destNodeModules, ...name.split('/'))
+    ensureDir(path.dirname(dest))
+    fs.cpSync(modDir, dest, { recursive: true })
+    const childReq = createRequire(path.join(modDir, 'package.json'))
+    for (const dep of Object.keys(pkg.dependencies || {})) {
+      if (!visited.has(dep)) queue.push({ name: dep, req: childReq })
+    }
+  }
+  console.log(`[stage-native-deps] node_modules/${rootName} closure: ${visited.size} modules`)
+}
+
 function main() {
   rmrf(STAGE_ROOT)
   ensureDir(STAGE_ROOT)
   for (const spec of NATIVE_DEPS) {
     stageOne(spec)
+  }
+  for (const rootName of JS_DEP_CLOSURES) {
+    stageClosure(rootName, path.join(STAGE_ROOT, 'node_modules'))
   }
 }
 

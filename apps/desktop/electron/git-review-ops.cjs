@@ -10,7 +10,22 @@ const { execFile } = require('node:child_process')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
-const simpleGit = require('simple-git')
+// Workspace dedup hoists simple-git into the repo-root node_modules, which
+// electron-builder's explicit `files:` collector can't reach, so it never lands
+// in the asar. scripts/stage-native-deps.cjs ships its dependency closure under
+// resources/native-deps/node_modules via extraResources; resolve from there
+// when the bare require fails in a packaged build. Mirrors the node-pty fallback
+// in main.cjs.
+let simpleGit
+try {
+  simpleGit = require('simple-git')
+} catch (err) {
+  if (err && err.code === 'MODULE_NOT_FOUND' && process.resourcesPath) {
+    simpleGit = require(path.join(process.resourcesPath, 'native-deps', 'node_modules', 'simple-git'))
+  } else {
+    throw err
+  }
+}
 
 const { resolveRequestedPathForIpc } = require('./hardening.cjs')
 

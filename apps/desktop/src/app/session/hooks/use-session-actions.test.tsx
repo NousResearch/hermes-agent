@@ -5,7 +5,17 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { getSessionMessages } from '@/hermes'
 import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
-import { $currentCwd, $messages, $resumeFailedSessionId, setMessages, setResumeFailedSessionId } from '@/store/session'
+import {
+  $currentCwd,
+  $currentModel,
+  $currentProvider,
+  $messages,
+  $resumeFailedSessionId,
+  setCurrentModel,
+  setCurrentProvider,
+  setMessages,
+  setResumeFailedSessionId
+} from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -84,6 +94,8 @@ describe('createBackendSessionForSend profile routing', () => {
     cleanup()
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
+    setCurrentModel('')
+    setCurrentProvider('')
     vi.restoreAllMocks()
   })
 
@@ -116,6 +128,58 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ profile: 'default' })
+  })
+
+  it('repairs a stale model/provider pair before creating a profile chat', async () => {
+    let createParams: Record<string, unknown> | undefined
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === 'model.options') {
+        return {
+          model: 'grok-composer-2.5-fast',
+          provider: 'xai-oauth',
+          providers: [
+            {
+              name: 'xAI Grok OAuth',
+              slug: 'xai-oauth',
+              models: ['grok-composer-2.5-fast']
+            },
+            {
+              name: 'OpenAI Codex',
+              slug: 'openai-codex',
+              models: ['gpt-5.5']
+            }
+          ]
+        } as never
+      }
+
+      if (method === 'session.create') {
+        createParams = params
+
+        return { session_id: RUNTIME_SESSION_ID, stored_session_id: null } as never
+      }
+
+      return {} as never
+    })
+
+    $currentCwd.set('')
+    $activeGatewayProfile.set('job-hunting')
+    $newChatProfile.set(null)
+    setCurrentModel('gpt-5.5')
+    setCurrentProvider('xai-oauth')
+
+    let create: ((preview?: string | null) => Promise<string | null>) | null = null
+    render(<Harness onReady={c => (create = c)} requestGateway={requestGateway} />)
+    await waitFor(() => expect(create).not.toBeNull())
+    await create!()
+
+    expect(createParams).toMatchObject({
+      model: 'grok-composer-2.5-fast',
+      profile: 'job-hunting',
+      provider: 'xai-oauth'
+    })
+    expect($currentModel.get()).toBe('grok-composer-2.5-fast')
+    expect($currentProvider.get()).toBe('xai-oauth')
   })
 })
 

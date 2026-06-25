@@ -5,7 +5,7 @@ import type { NavigateFunction } from 'react-router-dom'
 import { deleteSession, getSession, getSessionMessages, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
-import { normalizePersonalityValue } from '@/lib/chat-runtime'
+import { normalizePersonalityValue, resolveModelSelection } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearQueuedPrompts } from '@/store/composer-queue'
@@ -51,7 +51,14 @@ import {
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { reportBackendContract } from '@/store/updates'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo, UsageStats } from '@/types/hermes'
+import type {
+  ModelOptionsResponse,
+  SessionCreateResponse,
+  SessionInfo,
+  SessionResumeResponse,
+  SessionRuntimeInfo,
+  UsageStats
+} from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
@@ -454,10 +461,26 @@ export function useSessionActions({
         // with every session.create so the new chat opens on whatever the picker
         // shows — applied as per-session overrides, never written to the profile
         // default (that lives in Settings → Model).
-        const uiModel = $currentModel.get().trim()
-        const uiProvider = $currentProvider.get().trim()
+        let uiModel = $currentModel.get().trim()
+        let uiProvider = $currentProvider.get().trim()
         const uiEffort = $currentReasoningEffort.get().trim()
         const uiFast = $currentFastMode.get()
+
+        if (uiModel && uiProvider) {
+          try {
+            const options = await requestGateway<ModelOptionsResponse>('model.options')
+            const resolved = resolveModelSelection(options, { model: uiModel, provider: uiProvider })
+
+            if (resolved.repaired) {
+              uiModel = resolved.model
+              uiProvider = resolved.provider
+              setCurrentModel(resolved.model)
+              setCurrentProvider(resolved.provider)
+            }
+          } catch {
+            // If options are unavailable, let the backend handle session.create.
+          }
+        }
 
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,

@@ -114,6 +114,18 @@ class CodexAppServerClient:
         # Codex emits tracing to stderr; default WARN keeps it quiet for users.
         spawn_env.setdefault("RUST_LOG", "warn")
 
+        # codex app-server runs a model-driven agent that executes tool calls;
+        # strip Hermes-managed secrets (provider keys, gateway/session tokens,
+        # GH/Modal/Daytona creds) so model-controlled actions can't read or
+        # exfiltrate them. Codex authenticates via CODEX_HOME, not Hermes
+        # provider env, and the non-secret vars it needs (CODEX_HOME, RUST_LOG,
+        # PATH, HOME, HERMES_HOME, HERMES_KANBAN_*) survive sanitization. This
+        # mirrors the sanitizer already applied at the cron, gateway,
+        # process_registry, and computer-use spawn sites.
+        from tools.environments.local import _sanitize_subprocess_env
+
+        spawn_env = _sanitize_subprocess_env(spawn_env)
+
         self._proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,

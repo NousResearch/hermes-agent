@@ -108,6 +108,14 @@ def _build_subprocess_env() -> dict[str, str]:
     env["HOME"] = home
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
+    # `copilot --acp` is a model-driven coding agent that executes tool calls;
+    # strip Hermes-managed secrets (provider keys, gateway/session tokens,
+    # GH/Modal/Daytona creds) so model-controlled actions can't read or
+    # exfiltrate them. Copilot authenticates via its own CLI login state under
+    # HOME (preserved here, not blocklisted), so this does not affect its auth.
+    from tools.environments.local import _sanitize_subprocess_env
+
+    env = _sanitize_subprocess_env(env)
     return env
 
 

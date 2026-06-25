@@ -1151,6 +1151,7 @@ class GatewaySlashCommandsMixin:
         current_api_key = ""
         user_provs = None
         custom_provs = None
+        provider_lockdown = False
         config_path = _hermes_home / "config.yaml"
         try:
             cfg = _load_gateway_config()
@@ -1160,6 +1161,7 @@ class GatewaySlashCommandsMixin:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
+                    provider_lockdown = bool(model_cfg.get("provider_lockdown", False))
                 user_provs = cfg.get("providers")
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
@@ -1206,6 +1208,7 @@ class GatewaySlashCommandsMixin:
                         user_providers=user_provs,
                         custom_providers=custom_provs,
                         max_models=50,
+                        provider_lockdown=provider_lockdown,
                     )
                 except Exception:
                     providers = []

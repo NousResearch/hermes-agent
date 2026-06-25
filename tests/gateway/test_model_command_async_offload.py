@@ -80,6 +80,15 @@ def _isolated_config(tmp_path, monkeypatch):
     return hermes_home
 
 
+@pytest.fixture
+def _lockdown_config(_isolated_config):
+    (_isolated_config / "config.yaml").write_text(
+        "model:\n  default: gpt-5.5\n  provider: openai-codex\n  provider_lockdown: true\nproviders:\n  replabs:\n    default_model: z-ai/glm-5.2\n",
+        encoding="utf-8",
+    )
+    return _isolated_config
+
+
 # --------------------------------------------------------------------------- #
 # Text-fallback path  ->  list_authenticated_providers
 # --------------------------------------------------------------------------- #
@@ -166,3 +175,30 @@ async def test_picker_path_offloads_list_picker_providers(_isolated_config, monk
         "list_picker_providers must be dispatched via asyncio.to_thread "
         "(it was called inline on the event loop instead)"
     )
+
+
+@pytest.mark.asyncio
+async def test_picker_path_passes_provider_lockdown_from_model_config(_lockdown_config, monkeypatch):
+    captured = {}
+    fake_providers = [{"slug": "replabs", "name": "RepLabs", "models": ["z-ai/glm-5.2"], "total_models": 1}]
+
+    def _fake_list_picker_providers(**kwargs):
+        captured.update(kwargs)
+        return fake_providers
+
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.list_picker_providers",
+        _fake_list_picker_providers,
+    )
+
+    runner = _make_runner()
+    runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
+    monkeypatch.setattr(runner, "_thread_metadata_for_source", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(runner, "_reply_anchor_for_event", lambda *a, **k: None, raising=False)
+
+    result = await runner._handle_model_command(_make_event())
+
+    assert result is None
+    assert captured["provider_lockdown"] is True
+    assert captured["current_provider"] == "openai-codex"
+    assert captured["current_model"] == "gpt-5.5"

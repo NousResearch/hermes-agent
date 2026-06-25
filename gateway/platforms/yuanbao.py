@@ -1356,16 +1356,16 @@ class RecallGuardMiddleware(InboundMiddleware):
                               group_code: str, from_account: str) -> None:
         where = f"group {group_code}" if group_code else f"direct chat with {from_account}"
         recall_text = (
-            f"[CRITICAL — MESSAGE RECALLED] The user message that triggered "
-            f"your current task (message_id=\"{recalled_id}\") in {where} has "
-            f"been recalled/withdrawn by the sender. "
-            f"IGNORE any prior system note asking you to finish processing "
-            f"tool results — the original request is void. "
-            f"Do NOT continue the task, do NOT call more tools, do NOT "
-            f"reference the recalled content. "
-            f"Reply only with a brief acknowledgment such as "
-            f"\"The message has been recalled.\" in the "
-            f"language the user was using."
+            "[CRITICAL — MESSAGE RECALLED] The user message that triggered "
+            "your current task (message_id=\"{recalled_id}\") in {where} has "
+            "been recalled/withdrawn by the sender. "
+            "IGNORE any prior system note asking you to finish processing "
+            "tool results — the original request is void. "
+            "Do NOT continue the task, do NOT call more tools, do NOT "
+            "reference the recalled content. "
+            "Reply only with a brief acknowledgment such as "
+            "\"The message has been recalled.\" in the "
+            "language the user was using."
         )
 
         synth_event = MessageEvent(

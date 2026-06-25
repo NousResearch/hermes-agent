@@ -299,8 +299,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(
             f"You are powered by the model named {_model_short}. "
             f"The exact model ID is {agent.model}. "
-            f"When asked what model you are, always answer based on this information, "
-            f"not on any model name returned by the API."
+            "When asked what model you are, always answer based on this information, "
+            "not on any model name returned by the API."
         )
 
     # Environment hints (WSL, Termux, etc.) — tell the agent about the
@@ -372,13 +372,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         stable_parts.append(
             f"Active Hermes profile: {active_profile}. This session reads "
             f"and writes ~/.hermes/profiles/{active_profile}/. The default "
-            f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
-            f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
-            f"different session run from a different shell. Do NOT modify "
-            f"another profile's skills/plugins/cron/memories unless the user "
-            f"explicitly directs you to. The cross-profile write guard will "
-            f"refuse such writes by default; pass cross_profile=True only "
-            f"after explicit direction."
+            "profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
+            "~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
+            "different session run from a different shell. Do NOT modify "
+            "another profile's skills/plugins/cron/memories unless the user "
+            "explicitly directs you to. The cross-profile write guard will "
+            "refuse such writes by default; pass cross_profile=True only "
+            "after explicit direction."
         )
 
     platform_key = (agent.platform or "").lower().strip()

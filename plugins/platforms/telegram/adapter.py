@@ -3572,7 +3572,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
             text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
+                "⚠️ <b>Command Approval Required</b>\n\n"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
                 f"Reason: {_html.escape(description)}"
             )
@@ -3789,10 +3789,10 @@ class TelegramAdapter(BasePlatformAdapter):
             provider_label = get_label(current_provider)
             text = self.format_message(
                 (
-                    f"⚙ *Model Configuration*\n\n"
+                    "⚙ *Model Configuration*\n\n"
                     f"Current model: `{current_model or 'unknown'}`\n"
                     f"Provider: {provider_label}\n\n"
-                    f"Select a provider:"
+                    "Select a provider:"
                 )
             )
 
@@ -3964,7 +3964,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.edit_message_text(
                 text=self.format_message(
                     (
-                        f"⚙ *Model Configuration*\n\n"
+                        "⚙ *Model Configuration*\n\n"
                         f"Provider: *{pname}*{page_info}\n"
                         f"Select a model:{extra}"
                     )
@@ -4000,7 +4000,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.edit_message_text(
                 text=self.format_message(
                     (
-                        f"⚙ *Model Configuration*\n\n"
+                        "⚙ *Model Configuration*\n\n"
                         f"Provider: *{pname}*{page_info}\n"
                         f"Select a model:{extra}"
                     )
@@ -4176,9 +4176,9 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.edit_message_text(
                 text=self.format_message(
                     (
-                        f"⚙ *Model Configuration*\n\n"
+                        "⚙ *Model Configuration*\n\n"
                         f"Provider family: *{_label or group_id}*\n\n"
-                        f"Select a provider:"
+                        "Select a provider:"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -4198,10 +4198,10 @@ class TelegramAdapter(BasePlatformAdapter):
             await query.edit_message_text(
                 text=self.format_message(
                     (
-                        f"⚙ *Model Configuration*\n\n"
+                        "⚙ *Model Configuration*\n\n"
                         f"Current model: `{state['current_model'] or 'unknown'}`\n"
                         f"Provider: {provider_label}\n\n"
-                        f"Select a provider:"
+                        "Select a provider:"
                     )
                 ),
                 parse_mode=ParseMode.MARKDOWN_V2,

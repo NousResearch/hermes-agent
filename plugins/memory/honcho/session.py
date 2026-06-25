@@ -888,14 +888,14 @@ class HonchoSessionManager:
                 continue
 
             wrapped = (
-                f"<prior_memory_file>\n"
-                f"<context>\n"
-                f"This file was consolidated from local conversations BEFORE Honcho was activated.\n"
+                "<prior_memory_file>\n"
+                "<context>\n"
+                "This file was consolidated from local conversations BEFORE Honcho was activated.\n"
                 f"{description}. Treat as foundational context for this user.\n"
-                f"</context>\n"
-                f"\n"
+                "</context>\n"
+                "\n"
                 f"{content}\n"
-                f"</prior_memory_file>\n"
+                "</prior_memory_file>\n"
             )
 
             try:
@@ -1297,11 +1297,11 @@ class HonchoSessionManager:
 
         try:
             wrapped = (
-                f"<ai_identity_seed>\n"
+                "<ai_identity_seed>\n"
                 f"<source>{source}</source>\n"
-                f"\n"
+                "\n"
                 f"{content.strip()}\n"
-                f"</ai_identity_seed>"
+                "</ai_identity_seed>"
             )
             honcho_session.add_messages([assistant_peer.message(wrapped)])
             logger.info("Seeded AI identity from '%s' into %s", source, session_key)

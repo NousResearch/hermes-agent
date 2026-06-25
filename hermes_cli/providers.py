@@ -404,6 +404,10 @@ TRANSPORT_TO_API_MODE: Dict[str, str] = {
     "bedrock_converse": "bedrock_converse",
 }
 
+_API_MODE_TO_TRANSPORT: Dict[str, str] = {
+    api_mode: transport for transport, api_mode in TRANSPORT_TO_API_MODE.items()
+}
+
 
 # -- Helper functions ---------------------------------------------------------
 
@@ -732,12 +736,59 @@ def resolve_custom_provider(
     return None
 
 
+def _resolve_provider_profile(name: str) -> Optional[ProviderDef]:
+    """Resolve a plugin ``ProviderProfile`` for the full CLI switch path."""
+    canonical = (name or "").strip().lower()
+    if not canonical or canonical == "custom":
+        return None
+
+    try:
+        import providers as provider_registry
+
+        get_profile = getattr(provider_registry, "get_provider_profile", None)
+        profile = get_profile(canonical) if get_profile else None
+    except Exception:
+        return None
+    if profile is None:
+        return None
+
+    auth_type = str(getattr(profile, "auth_type", "api_key") or "api_key")
+    env_vars = tuple(str(v) for v in (getattr(profile, "env_vars", ()) or ()))
+    if auth_type != "api_key" or not env_vars:
+        return None
+    api_key_env_vars = tuple(
+        value
+        for value in env_vars
+        if not value.endswith("_BASE_URL") and not value.endswith("_URL")
+    ) or env_vars
+    base_url_env_var = next(
+        (value for value in env_vars if value.endswith("_BASE_URL") or value.endswith("_URL")),
+        "",
+    )
+    api_mode = str(getattr(profile, "api_mode", "") or "chat_completions")
+    display_name = str(getattr(profile, "display_name", "") or profile.name)
+    description = str(getattr(profile, "description", "") or "")
+    signup_url = str(getattr(profile, "signup_url", "") or "")
+    return ProviderDef(
+        id=str(profile.name),
+        name=display_name,
+        transport=_API_MODE_TO_TRANSPORT.get(api_mode, "openai_chat"),
+        api_key_env_vars=api_key_env_vars,
+        base_url=str(getattr(profile, "base_url", "") or ""),
+        base_url_env_var=base_url_env_var,
+        is_aggregator=False,
+        auth_type=auth_type,
+        doc=description or signup_url,
+        source="provider-profile",
+    )
+
+
 def resolve_provider_full(
     name: str,
     user_providers: Optional[Dict[str, Any]] = None,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[ProviderDef]:
-    """Full resolution chain: built-in → models.dev → user config.
+    """Resolve user config, built-ins, saved custom endpoints, then profiles.
 
     This is the main entry point for --provider flag resolution.
 
@@ -785,6 +836,19 @@ def resolve_provider_full(
     custom_pdef = resolve_custom_provider(name, custom_providers)
     if custom_pdef is not None:
         return custom_pdef
+
+    # 2c. ProviderProfile plugins are the last configured identity fallback.
+    # Resolve aliases to the canonical profile ID, then give an explicit user
+    # provider with that ID one final chance to win.
+    profile_pdef = _resolve_provider_profile(canonical)
+    if profile_pdef is None and raw != canonical:
+        profile_pdef = _resolve_provider_profile(raw)
+    if profile_pdef is not None:
+        if user_providers:
+            user_pdef = resolve_user_provider(profile_pdef.id, user_providers)
+            if user_pdef is not None:
+                return user_pdef
+        return profile_pdef
 
     # 3. Try models.dev directly (for providers not in our ALIASES)
     try:

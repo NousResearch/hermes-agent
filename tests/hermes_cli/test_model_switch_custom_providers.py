@@ -9,6 +9,7 @@ import hermes_cli.providers as providers_mod
 import pytest
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
+from providers.base import ProviderProfile
 
 
 _MOCK_VALIDATION = {
@@ -23,6 +24,166 @@ _MOCK_VALIDATION = {
 def _disable_live_custom_provider_model_probe(monkeypatch):
     """Keep custom-provider picker fixtures independent of local model servers."""
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
+
+
+def _install_unit_test_provider_profile(monkeypatch) -> ProviderProfile:
+    profile = ProviderProfile(
+        name="unit-test-profile-provider",
+        aliases=("unit-test-profile", "utpp"),
+        display_name="Unit Test Profile Provider",
+        description="ProviderProfile-only provider used by resolver tests.",
+        signup_url="https://unit-test-provider.example/signup",
+        env_vars=("UTPP_API_KEY", "UTPP_BASE_URL"),
+        base_url="https://unit-test-provider.example/v1",
+        api_mode="anthropic_messages",
+        fallback_models=("unit-profile-model",),
+    )
+
+    def fake_get_provider_profile(name):
+        if name in {profile.name, *profile.aliases}:
+            return profile
+        return None
+
+    import providers as provider_registry
+    from hermes_cli import auth as auth_mod
+
+    monkeypatch.setattr(provider_registry, "get_provider_profile", fake_get_provider_profile)
+    monkeypatch.setitem(
+        auth_mod.PROVIDER_REGISTRY,
+        profile.name,
+        auth_mod.ProviderConfig(
+            id=profile.name,
+            name=profile.display_name,
+            auth_type="api_key",
+            inference_base_url=profile.base_url,
+            api_key_env_vars=("UTPP_API_KEY",),
+            base_url_env_var="UTPP_BASE_URL",
+            extra={"api_mode": profile.api_mode},
+        ),
+    )
+    for alias in profile.aliases:
+        monkeypatch.setitem(auth_mod.PROVIDER_REGISTRY, alias, auth_mod.PROVIDER_REGISTRY[profile.name])
+    return profile
+
+
+def test_provider_profile_alias_resolves_through_cli_provider_identity(monkeypatch):
+    """ProviderProfile plugins should work in shared --provider resolution."""
+    profile = _install_unit_test_provider_profile(monkeypatch)
+
+    resolved = resolve_provider_full("unit-test-profile")
+
+    assert resolved is not None
+    assert resolved.id == profile.name
+    assert resolved.name == profile.display_name
+    assert resolved.transport == "anthropic_messages"
+    assert resolved.api_key_env_vars == ("UTPP_API_KEY",)
+    assert resolved.base_url_env_var == "UTPP_BASE_URL"
+    assert resolved.base_url == profile.base_url
+    assert resolved.doc == profile.description
+    assert resolved.source == "provider-profile"
+
+
+def test_normalize_provider_does_not_trigger_profile_discovery(monkeypatch):
+    """Hot-path normalization should stay cheap; get_provider handles profiles."""
+    import agent.models_dev as models_dev
+    import providers as provider_registry
+
+    monkeypatch.setattr(models_dev, "get_provider_info", lambda key: None)
+
+    def fail_get_provider_profile(name):
+        raise AssertionError("normalize_provider must not discover provider profiles")
+
+    monkeypatch.setattr(provider_registry, "get_provider_profile", fail_get_provider_profile)
+
+    assert providers_mod.normalize_provider("missing-profile-provider") == "missing-profile-provider"
+
+
+def test_get_provider_does_not_trigger_profile_discovery(monkeypatch):
+    """Built-in lookup stays cheap; profile plugins belong to full resolution."""
+    import agent.models_dev as models_dev
+    import providers as provider_registry
+
+    monkeypatch.setattr(models_dev, "get_provider_info", lambda key: None)
+
+    profile_calls = []
+
+    def record_get_provider_profile(name):
+        profile_calls.append(name)
+        return None
+
+    monkeypatch.setattr(provider_registry, "get_provider_profile", record_get_provider_profile)
+
+    assert providers_mod.get_provider("missing-profile-provider") is None
+    assert profile_calls == []
+
+
+def test_switch_model_accepts_explicit_provider_profile_alias(monkeypatch):
+    """Explicit /model --provider should accept ProviderProfile aliases."""
+    profile = _install_unit_test_provider_profile(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_api_key_provider_credentials",
+        lambda provider: {"api_key": "profile-key", "base_url": profile.base_url, "source": "test"},
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="unit-profile-model",
+        current_provider="openrouter",
+        current_model="anthropic/claude-sonnet-4.6",
+        current_base_url="https://openrouter.ai/api/v1",
+        current_api_key="unused",
+        explicit_provider="unit-test-profile",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == profile.name
+    assert result.provider_label == profile.display_name
+    assert result.new_model == "unit-profile-model"
+    assert result.base_url == profile.base_url
+    assert result.api_mode == "anthropic_messages"
+
+
+def test_provider_profile_aliases_do_not_override_existing_provider_ids():
+    """A profile alias must not recanonicalize existing Hermes/models.dev ids."""
+    assert providers_mod.normalize_provider("opencode") == "opencode"
+    assert providers_mod.is_aggregator("opencode-zen") is True
+    assert providers_mod.is_aggregator("opencode-go") is True
+
+
+def test_builtin_custom_profile_does_not_change_get_provider_semantics():
+    """Bare custom endpoint handling remains owned by model_switch fallback."""
+    assert providers_mod.get_provider("custom") is None
+
+
+def test_bare_custom_provider_keeps_current_base_url_for_autodetect(monkeypatch):
+    """The built-in custom ProviderProfile must not bypass bare-custom fallback."""
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider._auto_detect_local_model",
+        lambda base_url: "local-autodetected-model" if base_url == "http://127.0.0.1:11434/v1" else "",
+    )
+    monkeypatch.setattr("hermes_cli.models.validate_requested_model", lambda *a, **k: _MOCK_VALIDATION)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_info", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.model_switch.get_model_capabilities", lambda *a, **k: None)
+
+    result = switch_model(
+        raw_input="",
+        current_provider="custom",
+        current_model="old-local-model",
+        current_base_url="http://127.0.0.1:11434/v1",
+        current_api_key="unused",
+        explicit_provider="custom",
+        user_providers={},
+        custom_providers=[],
+    )
+
+    assert result.success is True
+    assert result.target_provider == "custom"
+    assert result.new_model == "local-autodetected-model"
+    assert result.base_url == "http://127.0.0.1:11434/v1"
 
 
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):

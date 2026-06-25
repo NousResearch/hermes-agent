@@ -61,6 +61,35 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# ===========================================================================
+# ApexNodes China mirror mode (opt-in via HERMES_CN_MIRRORS=1)
+# ===========================================================================
+# Mirrors the identically-named block in install.sh. OFF by default: with the
+# flag unset this is skipped and the installer behaves byte-for-byte like
+# upstream. The packaged ApexNodes desktop sets HERMES_CN_MIRRORS=1 (and, once
+# provisioned, HERMES_RUNTIME_COS_BASE) from electron/bootstrap-runner.cjs so a
+# fresh mainland-China machine installs without reaching github.com / pypi.org /
+# registry.npmjs.org directly. Our runtime source + uv (no public CN mirror
+# exists) come from our public-read COS bucket (see Install-RuntimeFromCos /
+# Install-UvFromCos); every public third-party dep uses an established CN mirror
+# below. Each value only sets when unset so an operator can override any single
+# mirror via the real environment.
+function Test-CnEnabled { return ($env:HERMES_CN_MIRRORS -eq "1") }
+
+if (Test-CnEnabled) {
+    # Python package index -> Tsinghua TUNA (PyPI mirror).
+    if (-not $env:UV_DEFAULT_INDEX)         { $env:UV_DEFAULT_INDEX = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+    if (-not $env:UV_INDEX_URL)             { $env:UV_INDEX_URL = $env:UV_DEFAULT_INDEX }
+    if (-not $env:PIP_INDEX_URL)            { $env:PIP_INDEX_URL = "https://pypi.tuna.tsinghua.edu.cn/simple" }
+    # uv-managed CPython (astral python-build-standalone) -> npmmirror binary mirror.
+    if (-not $env:UV_PYTHON_INSTALL_MIRROR) { $env:UV_PYTHON_INSTALL_MIRROR = "https://registry.npmmirror.com/-/binary/python-build-standalone" }
+    # npm registry + Electron binaries -> npmmirror.
+    if (-not $env:npm_config_registry)      { $env:npm_config_registry = "https://registry.npmmirror.com" }
+    if (-not $env:ELECTRON_MIRROR)          { $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/" }
+    # Node.js dist tarballs -> npmmirror binary mirror (consumed by Install-Node).
+    if (-not $env:HERMES_NODE_DIST_BASE)    { $env:HERMES_NODE_DIST_BASE = "https://registry.npmmirror.com/-/binary/node" }
+}
+
 # Suppress Invoke-WebRequest's per-chunk progress bar.  Windows PowerShell
 # 5.1's progress UI repaints synchronously on every received byte, which
 # pegs CPU on a single core and throttles downloads by 10-100x (a 57MB
@@ -360,6 +389,50 @@ function Get-PowerShellHostExe {
     return "powershell"
 }
 
+# CN mode: fetch a prebuilt uv from our public-read COS bucket instead of the
+# astral.sh installer (which downloads from github.com, blocked in mainland
+# China). Mirrors install.sh's _install_uv_from_cos. The publish script ships
+# uv-<triple>.zip (astral's Windows uv is a .zip, not .tar.gz). Returns $true
+# with $script:UvCmd set on success; $false on any failure so Install-Uv falls
+# through to the astral path.
+function Install-UvFromCos {
+    if (-not (Test-CnEnabled)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($env:HERMES_RUNTIME_COS_BASE)) { return $false }
+
+    $arch = Get-WindowsArch
+    $triple = if ($arch -eq 'arm64') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+    $base = $env:HERMES_RUNTIME_COS_BASE.TrimEnd('/')
+    $url = "$base/uv-$triple.zip"
+    $binDir = Join-Path $HermesHome "bin"
+    New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+    $tmp = Join-Path $env:TEMP ("hermes-uv-" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    try {
+        Write-Info "Fetching uv from COS mirror: $url"
+        Invoke-WebRequest -Uri $url -OutFile (Join-Path $tmp "uv.zip") -UseBasicParsing
+        Expand-Archive -Path (Join-Path $tmp "uv.zip") -DestinationPath $tmp -Force
+        $uvExe = Get-ChildItem -Path $tmp -Recurse -Filter "uv.exe" | Select-Object -First 1
+        if (-not $uvExe) {
+            Write-Warn "uv.exe not found inside COS archive -- will try the astral.sh installer"
+            return $false
+        }
+        Copy-Item $uvExe.FullName (Join-Path $binDir "uv.exe") -Force
+        $uvxExe = Get-ChildItem -Path $tmp -Recurse -Filter "uvx.exe" | Select-Object -First 1
+        if ($uvxExe) { Copy-Item $uvxExe.FullName (Join-Path $binDir "uvx.exe") -Force }
+        $managedUv = Join-Path $binDir "uv.exe"
+        if (-not (Test-Path $managedUv)) { return $false }
+        $script:UvCmd = $managedUv
+        $version = & $managedUv --version
+        Write-Success "Managed uv installed from COS mirror ($version)"
+        return $true
+    } catch {
+        Write-Warn "COS uv install failed ($_) -- will try the astral.sh installer"
+        return $false
+    } finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-Uv {
     # Hermes owns its own uv at $HermesHome\bin\uv.exe.  Always install there —
     # no PATH probing, no conda guards, no multi-location resolution chains.
@@ -373,6 +446,9 @@ function Install-Uv {
         Write-Success "Managed uv found ($version)"
         return $true
     }
+
+    # CN mode: prefer our COS mirror (github-free) before the astral.sh installer.
+    if (Install-UvFromCos) { return $true }
 
     Write-Info "Installing managed uv into $HermesHome\bin ..."
     New-Item -ItemType Directory -Path (Join-Path $HermesHome "bin") -Force | Out-Null
@@ -844,7 +920,12 @@ function Test-Node {
     Write-Info "(no admin rights required; isolated from any system Node install)"
     try {
         $arch = Get-WindowsArch
-        $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
+        # CN mode sets HERMES_NODE_DIST_BASE to npmmirror's node binary mirror
+        # (registry.npmmirror.com/-/binary/node), which mirrors nodejs.org/dist's
+        # directory layout so the latest-v<ver>.x/ index + win zip names resolve
+        # identically. Default stays nodejs.org for upstream/non-CN installs.
+        $nodeDistBase = if ($env:HERMES_NODE_DIST_BASE) { $env:HERMES_NODE_DIST_BASE.TrimEnd('/') } else { "https://nodejs.org/dist" }
+        $indexUrl = "$nodeDistBase/latest-v${NodeVersion}.x/"
         $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
         $zipName = ($indexPage.Content | Select-String -Pattern "node-v${NodeVersion}\.\d+\.\d+-win-${arch}\.zip" -AllMatches).Matches[0].Value
 
@@ -1142,6 +1223,54 @@ function Install-SystemPackages {
 # Installation
 # ============================================================================
 
+# CN mode: download the pinned runtime source tarball from our public-read COS
+# bucket instead of git-cloning github.com (blocked/slow in mainland China).
+# Mirrors install.sh's _download_runtime_tarball -- the tarball is `git archive
+# --prefix=hermes-agent/` of the pinned commit (clean source tree, NO .git),
+# keyed by the pinned commit (preferred) or branch so the COS object matches the
+# desktop build stamp. Returns $true with $InstallDir populated on success;
+# $false (and $InstallDir removed) on any failure so Install-Repository falls
+# back to a normal git clone.
+function Install-RuntimeFromCos {
+    if (-not (Test-CnEnabled)) { return $false }
+    if ([string]::IsNullOrWhiteSpace($env:HERMES_RUNTIME_COS_BASE)) { return $false }
+
+    $key = if ($Commit) { $Commit } else { $Branch }
+    if ([string]::IsNullOrWhiteSpace($key)) { return $false }
+
+    $base = $env:HERMES_RUNTIME_COS_BASE.TrimEnd('/')
+    $url = "$base/hermes-agent-$key.tar.gz"
+    $tmp = Join-Path $env:TEMP ("hermes-src-" + [System.Guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+    $tarball = Join-Path $tmp "runtime.tar.gz"
+    try {
+        Write-Info "Downloading runtime source from COS mirror: $url"
+        Invoke-WebRequest -Uri $url -OutFile $tarball -UseBasicParsing
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+        # Archive built with --prefix=hermes-agent/, so strip the leading dir.
+        # Windows 10 1803+ ships bsdtar (tar.exe) which handles .tar.gz natively.
+        & tar -xzf $tarball -C $InstallDir --strip-components=1
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "COS runtime tarball could not be extracted -- falling back to git clone"
+            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
+            return $false
+        }
+        if (-not (Test-Path (Join-Path $InstallDir "pyproject.toml"))) {
+            Write-Warn "COS runtime tarball missing pyproject.toml -- falling back to git clone"
+            if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
+            return $false
+        }
+        Write-Success "Runtime source ready from COS mirror ($key)"
+        return $true
+    } catch {
+        Write-Warn "COS runtime download failed ($_) -- falling back to git clone"
+        if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
+        return $false
+    } finally {
+        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+    }
+}
+
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
 
@@ -1314,6 +1443,13 @@ function Install-Repository {
                 Pop-Location
             }
             $didUpdate = $true
+        } elseif ((Test-CnEnabled) -and (Test-Path (Join-Path $InstallDir "pyproject.toml"))) {
+            # CN install: $InstallDir was populated from the COS source tarball on
+            # a previous (interrupted) run -- no .git, but a valid checkout. Reuse
+            # it instead of erroring out so the repository stage stays idempotent.
+            # Mirrors install.sh's _cn_enabled reuse branch.
+            Write-Info "Existing COS-mirror checkout found at $InstallDir, reusing"
+            $didUpdate = $true
         } else {
             # Directory exists but isn't a usable git repo -- e.g. an
             # interrupted clone with no initial commit (#40998), or a leftover
@@ -1338,6 +1474,10 @@ function Install-Repository {
     if (-not $didUpdate) {
         $cloneSuccess = $false
 
+        # CN mode: prefer our public-read COS source tarball (github-free) before
+        # any git clone. Mirrors install.sh's _download_runtime_tarball.
+        if (Install-RuntimeFromCos) { $cloneSuccess = $true }
+
         # Fix Windows git "copy-fd: write returned: Invalid argument" error.
         # Git for Windows can fail on atomic file operations (hook templates,
         # config lock files) due to antivirus, OneDrive, or NTFS filter drivers.
@@ -1348,14 +1488,18 @@ function Install-Repository {
         $env:GIT_CONFIG_VALUE_0 = "false"
         git config --global windows.appendAtomically false 2>$null
 
-        # Try SSH first, then HTTPS, with -c flag for atomic write fix
-        Write-Info "Trying SSH clone..."
-        $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
-        try {
-            Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir }
-            if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
-        } catch { }
-        $env:GIT_SSH_COMMAND = $null
+        # Try SSH first, then HTTPS, with -c flag for atomic write fix.
+        # Guard on $cloneSuccess so CN installs (source already fetched from COS)
+        # never try to git-clone over a populated $InstallDir.
+        if (-not $cloneSuccess) {
+            Write-Info "Trying SSH clone..."
+            $env:GIT_SSH_COMMAND = "ssh -o BatchMode=yes -o ConnectTimeout=5"
+            try {
+                Invoke-NativeWithRelaxedErrorAction { git -c windows.appendAtomically=false clone --depth 1 --branch $Branch $RepoUrlSsh $InstallDir }
+                if ($LASTEXITCODE -eq 0) { $cloneSuccess = $true }
+            } catch { }
+            $env:GIT_SSH_COMMAND = $null
+        }
 
         if (-not $cloneSuccess) {
             if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }

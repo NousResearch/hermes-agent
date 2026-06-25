@@ -336,7 +336,7 @@ function resolveWindowsPowerShell() {
   return 'powershell.exe'
 }
 
-function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome } = {}) {
+function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, hermesHome, extraEnv } = {}) {
   return new Promise((resolve, reject) => {
     const ps = process.platform === 'win32' ? resolveWindowsPowerShell() : 'pwsh'
     const fullArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
@@ -347,7 +347,12 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
         ...process.env,
         // Pass HERMES_HOME through so install.ps1 respects the caller's
         // choice rather than re-computing the default.
-        HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
+        HERMES_HOME: hermesHome || process.env.HERMES_HOME || '',
+        // CN mirror mode + COS runtime source (empty {} when off). Spread last so
+        // an explicit value here overrides any inherited process.env entry. This
+        // mirrors spawnBash so install.ps1's China mirror mode activates on
+        // Windows too (HERMES_CN_MIRRORS / HERMES_RUNTIME_COS_BASE).
+        ...(extraEnv || {})
       }
     }))
 

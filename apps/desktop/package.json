@@ -171,6 +171,10 @@
         "to": "install.sh"
       },
       {
+        "from": "build/install.ps1",
+        "to": "install.ps1"
+      },
+      {
         "from": "build/native-deps",
         "to": "native-deps"
       },

@@ -1368,14 +1368,14 @@ function findGitBash() {
     return findOnPath('bash')
   }
 
-  // install.ps1 drops PortableGit at %LOCALAPPDATA%\hermes\git\... — checked
+  // install.ps1 drops PortableGit at %LOCALAPPDATA%\apexnodes\git\... — checked
   // first so users who installed via install.ps1 are detected before we
   // start probing system-wide locations.
   const localAppData = process.env.LOCALAPPDATA || ''
   const candidates = []
   if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'bash.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'usr', 'bin', 'bash.exe'))
+    candidates.push(path.join(localAppData, 'apexnodes', 'git', 'bin', 'bash.exe'))
+    candidates.push(path.join(localAppData, 'apexnodes', 'git', 'usr', 'bin', 'bash.exe'))
   }
 
   // Standard Git for Windows install locations.
@@ -1400,7 +1400,7 @@ function getVenvPython(venvRoot) {
 }
 
 // resolveGitBinary — locate git.exe on Windows. A fresh installer-driven
-// install only has PortableGit under %LOCALAPPDATA%\hermes\git (never on
+// install only has PortableGit under %LOCALAPPDATA%\apexnodes\git (never on
 // PATH), so a bare spawn('git') ENOENTs and self-update checks fail with
 // "Couldn't check for updates". Mirror findGitBash: PortableGit first, then
 // standard Git-for-Windows locations, then PATH. Cached after first probe.
@@ -1415,8 +1415,8 @@ function resolveGitBinary() {
   const localAppData = process.env.LOCALAPPDATA || ''
   const candidates = []
   if (localAppData) {
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'cmd', 'git.exe'))
-    candidates.push(path.join(localAppData, 'hermes', 'git', 'bin', 'git.exe'))
+    candidates.push(path.join(localAppData, 'apexnodes', 'git', 'cmd', 'git.exe'))
+    candidates.push(path.join(localAppData, 'apexnodes', 'git', 'bin', 'git.exe'))
   }
   candidates.push(path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Git', 'cmd', 'git.exe'))
   candidates.push(path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Git', 'cmd', 'git.exe'))
@@ -2653,7 +2653,7 @@ async function ensureRuntime(backend) {
   // On Windows, preflight Git Bash. Hermes' terminal tool calls bash.exe
   // directly (tools/environments/local.py); without it the agent can't run
   // terminal commands. install.ps1's Stage-Git puts PortableGit at
-  // %LOCALAPPDATA%\hermes\git\, which findGitBash() picks up, so for any
+  // %LOCALAPPDATA%\apexnodes\git\, which findGitBash() picks up, so for any
   // user who completed the bootstrap this is a no-op. For users who got
   // here via an external `hermes` on PATH, this check still helps.
   if (IS_WINDOWS && !findGitBash()) {

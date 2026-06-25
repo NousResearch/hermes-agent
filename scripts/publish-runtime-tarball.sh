@@ -56,7 +56,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 # Keep in sync with apps/desktop/scripts/write-build-stamp.cjs (fromApexNodesPin).
 DEFAULT_COMMIT="2bd1977d8fad185c9b4be47884f7e87f1add0ce3"
-DEFAULT_TARGETS="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu"
+DEFAULT_TARGETS="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-msvc aarch64-pc-windows-msvc"
 
 COMMIT="$DEFAULT_COMMIT"
 OUT_DIR="$REPO_ROOT/dist/cos-runtime"
@@ -66,6 +66,7 @@ PREFIX="runtime"
 UV_VERSION=""
 TARGETS="$DEFAULT_TARGETS"
 WITH_UV=true
+WITH_SOURCE=true
 DO_UPLOAD=false
 
 while [[ $# -gt 0 ]]; do
@@ -78,6 +79,7 @@ while [[ $# -gt 0 ]]; do
         --uv-version) UV_VERSION="$2"; shift 2 ;;
         --targets) TARGETS="$2"; shift 2 ;;
         --no-uv) WITH_UV=false; shift ;;
+        --no-source) WITH_SOURCE=false; shift ;;
         --upload) DO_UPLOAD=true; shift ;;
         -h|--help) sed -n '2,200p' "$0" | sed -n '/^# Usage:/,/^# ====/p' | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "Unknown option: $1" >&2; exit 1 ;;
@@ -97,9 +99,13 @@ SRC_TARBALL="$OUT_DIR/hermes-agent-${FULL_SHA}.tar.gz"
 
 # ── 1. Source tarball ───────────────────────────────────────────────────────
 # --prefix=hermes-agent/ so install.sh extracts with --strip-components=1.
-log "Archiving runtime source ${FULL_SHA:0:12} -> $(basename "$SRC_TARBALL")"
-git -C "$REPO_ROOT" archive --format=tar.gz --prefix=hermes-agent/ "$FULL_SHA" -o "$SRC_TARBALL"
-log "  $(du -h "$SRC_TARBALL" | cut -f1)  $SRC_TARBALL"
+if [ "$WITH_SOURCE" = true ]; then
+    log "Archiving runtime source ${FULL_SHA:0:12} -> $(basename "$SRC_TARBALL")"
+    git -C "$REPO_ROOT" archive --format=tar.gz --prefix=hermes-agent/ "$FULL_SHA" -o "$SRC_TARBALL"
+    log "  $(du -h "$SRC_TARBALL" | cut -f1)  $SRC_TARBALL"
+else
+    log "Skipping source tarball (--no-source)."
+fi
 
 # ── 2. uv binaries (fetched from GitHub; re-hosted because npmmirror lacks uv) ─
 UV_ARTIFACTS=()
@@ -111,8 +117,13 @@ if [ "$WITH_UV" = true ]; then
         UV_BASE="https://github.com/astral-sh/uv/releases/latest/download"
     fi
     for triple in $TARGETS; do
-        out="$OUT_DIR/uv-${triple}.tar.gz"
-        url="${UV_BASE}/uv-${triple}.tar.gz"
+        # uv ships Windows as a .zip and every other platform as .tar.gz.
+        case "$triple" in
+            *windows*) uv_ext="zip" ;;
+            *)         uv_ext="tar.gz" ;;
+        esac
+        out="$OUT_DIR/uv-${triple}.${uv_ext}"
+        url="${UV_BASE}/uv-${triple}.${uv_ext}"
         if [ -s "$out" ]; then
             log "Reusing cached uv ($triple) at $out"
         else
@@ -140,7 +151,9 @@ upload_one() {
 if [ "$DO_UPLOAD" = true ]; then
     command -v coscli >/dev/null 2>&1 || die "coscli not found — install + configure it, or drop --upload to only build artifacts"
     [ -n "$BUCKET" ] || die "--bucket (or COS_BUCKET) is required for --upload"
-    upload_one "$SRC_TARBALL" "hermes-agent-${FULL_SHA}.tar.gz"
+    if [ "$WITH_SOURCE" = true ]; then
+        upload_one "$SRC_TARBALL" "hermes-agent-${FULL_SHA}.tar.gz"
+    fi
     for a in "${UV_ARTIFACTS[@]:-}"; do
         [ -n "$a" ] && upload_one "$a" "$(basename "$a")"
     done

@@ -19,6 +19,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { KeyRound, Loader2, Lock } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import { notifyBlockingPromptResolved } from '@/store/session'
 import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } from '@/store/prompts'
 
 // Renders the modal mid-turn prompts the gateway raises and waits on: sudo
@@ -68,6 +69,7 @@ function SudoDialog() {
         })
         triggerHaptic('submit')
         clearSudoRequest(request.sessionId, request.requestId)
+        notifyBlockingPromptResolved(request.sessionId)
       } catch (error) {
         notifyError(error, copy.sudoSendFailed)
         setSubmitting(false)
@@ -171,6 +173,7 @@ function SecretDialog() {
         })
         triggerHaptic('submit')
         clearSecretRequest(request.sessionId, request.requestId)
+        notifyBlockingPromptResolved(request.sessionId)
       } catch (error) {
         notifyError(error, copy.secretSendFailed)
         setSubmitting(false)

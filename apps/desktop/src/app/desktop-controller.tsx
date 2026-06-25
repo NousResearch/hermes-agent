@@ -69,6 +69,7 @@ import {
   getRecentlySettledSessionIds,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
+  $blockingPromptResolvedRuntimeId,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -266,6 +267,20 @@ export function DesktopController() {
     setBusy,
     setMessages
   })
+
+  // Sudo/secret overlays resolve before tool.complete — drop needsInput right
+  // away so the sidebar badge and retry flow do not look stuck.
+  useEffect(
+    () =>
+      $blockingPromptResolvedRuntimeId.listen(runtimeSessionId => {
+        if (runtimeSessionId) {
+          updateSessionState(runtimeSessionId, state =>
+            state.needsInput ? { ...state, needsInput: false } : state
+          )
+        }
+      }),
+    [updateSessionState]
+  )
 
   const { connectionRef, gatewayRef, requestGateway } = useGatewayRequest()
 

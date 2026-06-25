@@ -5352,6 +5352,241 @@ class SessionDB:
             results.append({**session, "messages": messages})
         return results
 
+    @staticmethod
+    def _json_text_or_none(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        try:
+            return json.dumps(value)
+        except (TypeError, ValueError):
+            return str(value)
+
+    @staticmethod
+    def _float_or_none(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _int_or_default(value: Any, default: int = 0) -> int:
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _reasoning_json_value(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+
+    def import_sessions(self, sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Import sessions exported by :meth:`export_session` or ``export_all``.
+
+        Existing session IDs are skipped. Imported child sessions keep their
+        parent only when that parent already exists or is included in the same
+        import payload; otherwise the child is detached so partial imports don't
+        fail foreign-key validation. Gateway routing, handoff, rewind, and other
+        live runtime state are intentionally reset: this restores conversation
+        history, not ownership of a live channel or process.
+        """
+        if not isinstance(sessions, list):
+            raise ValueError("sessions must be a list")
+        if len(sessions) > 500:
+            raise ValueError("sessions must contain at most 500 entries")
+
+        normalized: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+
+        for index, raw in enumerate(sessions):
+            if not isinstance(raw, dict):
+                errors.append({"index": index, "error": "session must be an object"})
+                continue
+            session_id = str(raw.get("id") or "").strip()
+            if not session_id:
+                errors.append({"index": index, "error": "session id is required"})
+                continue
+            if session_id in seen_ids:
+                errors.append(
+                    {"index": index, "session_id": session_id, "error": "duplicate session id"}
+                )
+                continue
+            messages = raw.get("messages") or []
+            if not isinstance(messages, list):
+                errors.append(
+                    {"index": index, "session_id": session_id, "error": "messages must be a list"}
+                )
+                continue
+            if any(not isinstance(msg, dict) for msg in messages):
+                errors.append(
+                    {
+                        "index": index,
+                        "session_id": session_id,
+                        "error": "messages must contain only objects",
+                    }
+                )
+                continue
+            seen_ids.add(session_id)
+            normalized.append({"index": index, "session": raw, "messages": messages})
+
+        if errors:
+            return {
+                "ok": False,
+                "imported": 0,
+                "skipped": 0,
+                "detached": 0,
+                "errors": errors,
+            }
+
+        def _do(conn):
+            imported_ids: List[str] = []
+            skipped_ids: List[str] = []
+            parent_updates: List[tuple[str, str]] = []
+            detached = 0
+
+            for item in normalized:
+                raw = item["session"]
+                messages = item["messages"]
+                session_id = str(raw.get("id") or "").strip()
+                exists = conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+                if exists:
+                    skipped_ids.append(session_id)
+                    continue
+
+                started_at = self._float_or_none(raw.get("started_at"))
+                if started_at is None:
+                    started_at = time.time()
+                archived = 1 if raw.get("archived") else 0
+
+                conn.execute(
+                    """INSERT INTO sessions (
+                           id, source, user_id, model, model_config, system_prompt,
+                           parent_session_id, started_at, ended_at, end_reason,
+                           message_count, tool_call_count, input_tokens, output_tokens,
+                           cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                           cwd, git_branch, git_repo_root,
+                           billing_provider, billing_base_url, billing_mode,
+                           estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                           pricing_version, title, api_call_count, archived
+                       )
+                       VALUES (
+                           :id, :source, :user_id, :model, :model_config,
+                           :system_prompt, NULL, :started_at, :ended_at,
+                           :end_reason, 0, 0, :input_tokens, :output_tokens,
+                           :cache_read_tokens, :cache_write_tokens,
+                           :reasoning_tokens, :cwd, :git_branch, :git_repo_root,
+                           :billing_provider, :billing_base_url, :billing_mode,
+                           :estimated_cost_usd, :actual_cost_usd, :cost_status,
+                           :cost_source, :pricing_version, :title,
+                           :api_call_count, :archived
+                       )""",
+                    {
+                        "id": session_id,
+                        "source": str(raw.get("source") or "import"),
+                        "user_id": raw.get("user_id"),
+                        "model": raw.get("model"),
+                        "model_config": self._json_text_or_none(raw.get("model_config")),
+                        "system_prompt": raw.get("system_prompt"),
+                        "started_at": started_at,
+                        "ended_at": self._float_or_none(raw.get("ended_at")),
+                        "end_reason": raw.get("end_reason"),
+                        "input_tokens": self._int_or_default(raw.get("input_tokens")),
+                        "output_tokens": self._int_or_default(raw.get("output_tokens")),
+                        "cache_read_tokens": self._int_or_default(
+                            raw.get("cache_read_tokens")
+                        ),
+                        "cache_write_tokens": self._int_or_default(
+                            raw.get("cache_write_tokens")
+                        ),
+                        "reasoning_tokens": self._int_or_default(
+                            raw.get("reasoning_tokens")
+                        ),
+                        "cwd": raw.get("cwd"),
+                        "git_branch": raw.get("git_branch"),
+                        "git_repo_root": raw.get("git_repo_root"),
+                        "billing_provider": raw.get("billing_provider"),
+                        "billing_base_url": raw.get("billing_base_url"),
+                        "billing_mode": raw.get("billing_mode"),
+                        "estimated_cost_usd": self._float_or_none(
+                            raw.get("estimated_cost_usd")
+                        ),
+                        "actual_cost_usd": self._float_or_none(
+                            raw.get("actual_cost_usd")
+                        ),
+                        "cost_status": raw.get("cost_status"),
+                        "cost_source": raw.get("cost_source"),
+                        "pricing_version": raw.get("pricing_version"),
+                        "title": raw.get("title"),
+                        "api_call_count": self._int_or_default(raw.get("api_call_count")),
+                        "archived": archived,
+                    },
+                )
+
+                sanitized_messages: List[Dict[str, Any]] = []
+                for msg in messages:
+                    clean = dict(msg)
+                    for key in (
+                        "reasoning_details",
+                        "codex_reasoning_items",
+                        "codex_message_items",
+                    ):
+                        clean[key] = self._reasoning_json_value(clean.get(key))
+                    sanitized_messages.append(clean)
+
+                total_messages, total_tool_calls = self._insert_message_rows(
+                    conn,
+                    session_id,
+                    sanitized_messages,
+                )
+                conn.execute(
+                    "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                    (total_messages, total_tool_calls, session_id),
+                )
+
+                parent_id = str(raw.get("parent_session_id") or "").strip()
+                if parent_id and parent_id != session_id:
+                    parent_updates.append((session_id, parent_id))
+                imported_ids.append(session_id)
+
+            for session_id, parent_id in parent_updates:
+                parent_exists = conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+                    (parent_id,),
+                ).fetchone()
+                if parent_exists:
+                    conn.execute(
+                        "UPDATE sessions SET parent_session_id = ? WHERE id = ?",
+                        (parent_id, session_id),
+                    )
+                else:
+                    detached += 1
+
+            return {
+                "ok": True,
+                "imported": len(imported_ids),
+                "skipped": len(skipped_ids),
+                "detached": detached,
+                "imported_ids": imported_ids,
+                "skipped_ids": skipped_ids,
+                "errors": [],
+            }
+
+        return self._execute_write(_do)
+
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
         def _do(conn):

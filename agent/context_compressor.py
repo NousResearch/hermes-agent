@@ -29,6 +29,7 @@ from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
     estimate_messages_tokens_rough,
+    estimate_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
 
@@ -259,11 +260,15 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     tail overshot ``tail_token_budget`` and compression became ineffective.
     See issue #28053.
     """
-    content_len = _content_length_for_budget(msg.get("content") or "")
-    tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/key overhead
+    content = msg.get("content") or ""
+    if isinstance(content, str):
+        tokens = estimate_tokens_rough(content) + 10  # +10 for role/key overhead
+    else:
+        content_len = _content_length_for_budget(content)
+        tokens = content_len // _CHARS_PER_TOKEN + 10
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
-            tokens += len(str(tc)) // _CHARS_PER_TOKEN
+            tokens += estimate_tokens_rough(str(tc))
     return tokens
 
 
@@ -2568,6 +2573,19 @@ This compaction should PRIORITISE preserving all information related to the focu
         # Phase 4: Assemble compressed message list
         compressed = []
         for i in range(compress_start):
+            # If an earlier compaction handoff is in the protected head
+            # (common after resume / in-place compaction), do not carry it
+            # forward verbatim. It has already been rehydrated into
+            # _previous_summary above and _generate_summary() will emit the
+            # updated replacement below. Keeping both makes repeated
+            # compactions accumulate old summaries and prevents the live prompt
+            # from actually shrinking.
+            if (
+                summary_idx is not None
+                and i == summary_idx
+                and self._is_context_summary_content(messages[i].get("content"))
+            ):
+                continue
             msg = messages[i].copy()
             if i == 0 and msg.get("role") == "system":
                 existing = msg.get("content")
@@ -2594,7 +2612,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
 
         _merge_summary_into_tail = False
-        last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
+        last_head_role = compressed[-1].get("role", "user") if compressed else "user"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
         # Pick a role that avoids consecutive same-role with both neighbors.
         # Priority: avoid colliding with head (already committed), then tail.

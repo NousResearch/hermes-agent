@@ -2818,8 +2818,12 @@ class GatewaySlashCommandsMixin:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
+                session_db=self._session_db,
             )
             try:
+                # Rotation ends the old session inside _compress_context; the
+                # throwaway agent must not end the continuation on close().
+                tmp_agent._end_session_on_close = False
                 tmp_agent._print_fn = lambda *a, **kw: None
 
                 # Estimate with system prompt + tool schemas included so the

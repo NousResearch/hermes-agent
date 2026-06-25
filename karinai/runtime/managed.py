@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 from typing import Mapping
 
 from .config import ManagedRuntimeConfig, parse_bool
@@ -55,6 +56,81 @@ def managed_agent_toolsets(
 ) -> tuple[list[str], list[str]]:
     cfg = config or load_managed_runtime_config(env)
     return list(cfg.enabled_toolsets), list(cfg.disabled_toolsets)
+
+
+def _normalize_model_gateway_base_url(value: str) -> str:
+    text = str(value or "").strip().rstrip("/")
+    if not text:
+        return ""
+    if text.endswith("/chat/completions"):
+        text = text[: -len("/chat/completions")].rstrip("/")
+    if not text.endswith("/v1"):
+        text = f"{text}/v1"
+    return text
+
+
+def _load_yaml_mapping(path: Path) -> dict:
+    if not path.exists():
+        return {}
+    import yaml
+
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_managed_model_gateway_config(
+    config: ManagedRuntimeConfig | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> Path | None:
+    """Render managed model-provider config without persisting raw provider keys.
+
+    Managed containers see exactly one model provider: the KarinAI model gateway.
+    The gateway itself lives outside the user container and owns real provider
+    credentials. The container stores only a key_env reference to the scoped
+    runtime token that runtime-manager injected for this warm container.
+    """
+
+    cfg = config or load_managed_runtime_config(env)
+    if not cfg.model_gateway_url:
+        return None
+
+    import yaml
+
+    base_url = _normalize_model_gateway_base_url(cfg.model_gateway_url)
+    config_path = cfg.runtime_state_path / "config.yaml"
+    data = _load_yaml_mapping(config_path)
+    original_data = dict(data)
+
+    model_cfg = data.get("model") if isinstance(data.get("model"), dict) else {}
+    model_cfg = dict(model_cfg or {})
+    model_cfg.update(
+        {
+            "default": cfg.model_gateway_model,
+            "provider": "custom:karinai-model-gateway",
+            "base_url": base_url,
+            "api_mode": "chat_completions",
+        }
+    )
+    data["model"] = model_cfg
+
+    providers = data.get("providers") if isinstance(data.get("providers"), dict) else {}
+    providers = dict(providers or {})
+    providers["karinai-model-gateway"] = {
+        "name": "KarinAI model gateway",
+        "api": base_url,
+        "key_env": "KARINAI_RUNTIME_TOKEN",
+        "default_model": cfg.model_gateway_model,
+        "transport": "chat_completions",
+    }
+    data["providers"] = providers
+
+    if config_path.exists() and data == original_data:
+        return config_path
+
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+    return config_path
 
 
 def apply_managed_startup_env(

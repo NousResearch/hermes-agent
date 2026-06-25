@@ -94,6 +94,7 @@ API_SERVER_PORT=<private port>
 API_SERVER_KEY=<container-internal key>
 KARINAI_ENABLED_TOOLSETS=<backend-rendered beta tool policy>
 KARINAI_MODEL_GATEWAY_URL=<trusted internal gateway>
+KARINAI_MODEL_GATEWAY_MODEL=<backend-selected model alias>
 KARINAI_TOOL_GATEWAY_URL=<trusted internal gateway>
 KARINAI_RUNTIME_TOKEN=<scoped runtime token>
 KARINAI_LOCAL_CRON_ENABLED=false
@@ -153,6 +154,8 @@ The backend validates auth, quota, schedule frequency, workspace ownership, secu
 The user container is not a trusted place for platform-wide secrets. Code running inside the container must not be able to read provider API keys, cloud credentials, object-storage admin credentials, GitHub app secrets, or backend service credentials.
 
 The KarinAI agent should receive only scoped runtime tokens for trusted model/tool gateways. Gateways hold real provider credentials outside the user container, enforce policy and quota, and report usage back to backend run records.
+
+When `KARINAI_MODEL_GATEWAY_URL` is set, managed startup renders the upstream-compatible model config inside `HERMES_HOME/config.yaml` with a single custom provider named `karinai-model-gateway`. That config stores `key_env: KARINAI_RUNTIME_TOKEN`, not the token value and not raw upstream provider keys. The backend-selected `KARINAI_MODEL_GATEWAY_MODEL` becomes the default model for the agent process.
 
 ## Prompt and branding contract
 

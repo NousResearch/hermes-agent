@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence
+from urllib.parse import urlparse
 
 from .tool_policy import (
     BETA_DISABLED_TOOLSETS,
@@ -72,6 +73,7 @@ class ManagedRuntimeConfig:
     brand_name: str = "KarinAI"
     policy_mode: str = "beta"
     model_gateway_url: str = ""
+    model_gateway_model: str = "karinai/default"
     tool_gateway_url: str = ""
     runtime_token: str = field(default="", repr=False)
     enabled_toolsets: tuple[str, ...] = BETA_ENABLED_TOOLSETS
@@ -115,6 +117,8 @@ class ManagedRuntimeConfig:
             brand_name=_clean(source.get("KARINAI_BRAND_NAME")) or "KarinAI",
             policy_mode=_clean(source.get("KARINAI_POLICY_MODE")) or "beta",
             model_gateway_url=_clean(source.get("KARINAI_MODEL_GATEWAY_URL")),
+            model_gateway_model=_clean(source.get("KARINAI_MODEL_GATEWAY_MODEL"))
+            or "karinai/default",
             tool_gateway_url=_clean(source.get("KARINAI_TOOL_GATEWAY_URL")),
             runtime_token=_clean(source.get("KARINAI_RUNTIME_TOKEN")),
             enabled_toolsets=parse_csv(source.get("KARINAI_ENABLED_TOOLSETS"))
@@ -155,6 +159,12 @@ class ManagedRuntimeConfig:
             errors.append("KARINAI_PLUGIN_INSTALL_ENABLED must be false by default")
         if self.dashboard_enabled:
             errors.append("KARINAI_DASHBOARD_ENABLED must be false in beta managed runtime")
+        if self.model_gateway_url:
+            parsed = urlparse(self.model_gateway_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                errors.append("KARINAI_MODEL_GATEWAY_URL must be an absolute HTTP(S) URL")
+            _require_non_empty("KARINAI_MODEL_GATEWAY_MODEL", self.model_gateway_model, errors)
+            _require_non_empty("KARINAI_RUNTIME_TOKEN", self.runtime_token, errors)
         try:
             validate_beta_tool_policy(self.enabled_toolsets, self.disabled_toolsets)
         except ValueError as exc:
@@ -185,6 +195,7 @@ class ManagedRuntimeConfig:
             "enabled_toolsets": ", ".join(self.enabled_toolsets),
             "disabled_toolsets": ", ".join(self.disabled_toolsets),
             "model_gateway_configured": "true" if self.model_gateway_url else "false",
+            "model_gateway_model": self.model_gateway_model,
             "tool_gateway_configured": "true" if self.tool_gateway_url else "false",
         }
 

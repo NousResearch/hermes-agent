@@ -72,6 +72,7 @@ Behavior:
 - Map `KARINAI_RUNTIME_STATE_DIR` to `HERMES_HOME` and `HOME` for all s6-supervised processes.
 - Map `KARINAI_WORKSPACE_DIR` to `TERMINAL_CWD` and `HERMES_WRITE_SAFE_ROOT`.
 - Disable the dashboard in managed beta containers through `HERMES_DASHBOARD=false`.
+- Render the `karinai-model-gateway` provider config after upstream Docker config migration when `KARINAI_MODEL_GATEWAY_URL` is configured.
 - Create the managed workspace and runtime home directories with hermes-user ownership where possible.
 
 ### `docker/main-wrapper.sh`

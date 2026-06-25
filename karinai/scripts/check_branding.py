@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
-from audit_prompts import main
+try:
+    from .audit_prompts import main
+except ImportError:  # pragma: no cover - script execution from this directory
+    from audit_prompts import main
 
 
 if __name__ == "__main__":

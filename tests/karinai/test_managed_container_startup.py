@@ -51,6 +51,8 @@ def test_stage2_applies_managed_paths_before_bootstrapping_hermes_home() -> None
     assert text.index("karinai_apply_managed_bootstrap_env") < text.index('mkdir -p "$HERMES_HOME"')
     assert "KARINAI_DOCKER_MANAGED_RUNTIME" in text
     assert 'mkdir -p "$KARINAI_WORKSPACE_DIR"' in text
+    assert "write_managed_model_gateway_config" in text
+    assert text.index("docker_config_migrate.py") < text.index("write_managed_model_gateway_config")
 
 
 def test_main_wrapper_routes_managed_default_to_start_managed() -> None:

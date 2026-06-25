@@ -12,7 +12,11 @@ import pytest
 
 from agent.system_prompt import build_system_prompt_parts
 from karinai.runtime.config import ManagedRuntimeConfig, ManagedRuntimeConfigError
-from karinai.runtime.managed import compose_ephemeral_system_prompt, prepare_managed_runtime_filesystem
+from karinai.runtime.managed import (
+    compose_ephemeral_system_prompt,
+    prepare_managed_runtime_filesystem,
+    write_managed_model_gateway_config,
+)
 from karinai.runtime.prompts import TemplateRenderError, render_template_text
 from karinai.runtime.tool_policy import (
     BETA_DISABLED_TOOLSETS,
@@ -78,6 +82,13 @@ def test_managed_config_requires_internal_api_key():
         ManagedRuntimeConfig.from_env(env)
 
 
+def test_managed_config_requires_runtime_token_when_model_gateway_is_configured():
+    with pytest.raises(ManagedRuntimeConfigError, match="KARINAI_RUNTIME_TOKEN"):
+        ManagedRuntimeConfig.from_env(
+            managed_env(KARINAI_MODEL_GATEWAY_URL="http://model-gateway.internal/v1")
+        )
+
+
 def test_managed_config_rejects_local_cron_plugin_install_and_dashboard():
     with pytest.raises(ManagedRuntimeConfigError, match="LOCAL_CRON"):
         ManagedRuntimeConfig.from_env(managed_env(KARINAI_LOCAL_CRON_ENABLED="true"))
@@ -118,6 +129,38 @@ def test_prepare_managed_runtime_filesystem_creates_workspace_state_and_home(tmp
     assert workspace.is_dir()
     assert state.is_dir()
     assert (state / "home").is_dir()
+
+
+def test_write_managed_model_gateway_config_uses_key_env_not_raw_token(tmp_path):
+    yaml = pytest.importorskip("yaml")
+    workspace = tmp_path / "workspace"
+    state = tmp_path / "state"
+    cfg = ManagedRuntimeConfig.from_env(
+        managed_env(
+            KARINAI_WORKSPACE_DIR=str(workspace),
+            KARINAI_RUNTIME_STATE_DIR=str(state),
+            KARINAI_MODEL_GATEWAY_URL="http://model-gateway.internal",
+            KARINAI_MODEL_GATEWAY_MODEL="karinai/test-model",
+            KARINAI_RUNTIME_TOKEN="scoped-runtime-token",
+        )
+    )
+    prepare_managed_runtime_filesystem(cfg)
+    config_path = write_managed_model_gateway_config(cfg)
+
+    assert config_path is not None
+    assert config_path == state / "config.yaml"
+    data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert data["model"] == {
+        "default": "karinai/test-model",
+        "provider": "custom:karinai-model-gateway",
+        "base_url": "http://model-gateway.internal/v1",
+        "api_mode": "chat_completions",
+    }
+    provider = data["providers"]["karinai-model-gateway"]
+    assert provider["api"] == "http://model-gateway.internal/v1"
+    assert provider["key_env"] == "KARINAI_RUNTIME_TOKEN"
+    assert provider["default_model"] == "karinai/test-model"
+    assert "scoped-runtime-token" not in config_path.read_text(encoding="utf-8")
 
 
 def test_start_managed_prepares_env_chdirs_and_runs_gateway(tmp_path, monkeypatch):

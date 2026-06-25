@@ -366,6 +366,15 @@ if [ -f "$HERMES_HOME/config.yaml" ]; then
         || echo "[stage2] Warning: docker_config_migrate.py failed; continuing"
 fi
 
+if [ "$KARINAI_DOCKER_MANAGED_RUNTIME" = true ] && [ -n "${KARINAI_MODEL_GATEWAY_URL:-}" ]; then
+    "$INSTALL_DIR/.venv/bin/python" - <<'PY'
+from karinai.runtime.managed import write_managed_model_gateway_config
+write_managed_model_gateway_config()
+PY
+    chown hermes:hermes "$HERMES_HOME/config.yaml" 2>/dev/null || true
+    chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+fi
+
 # auth.json: bootstrap from env on first boot only. Same semantics as the
 # pre-s6 entrypoint — the [ ! -f ] guard is critical to avoid clobbering
 # rotated refresh tokens on container restart.

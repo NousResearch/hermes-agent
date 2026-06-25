@@ -63,6 +63,51 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def _load_runner_module():
+    """Import scripts/run_tests_parallel.py as a module for in-process testing."""
+    import importlib.util
+
+    repo_root = Path(__file__).resolve().parent.parent
+    path = repo_root / "scripts" / "run_tests_parallel.py"
+    spec = importlib.util.spec_from_file_location("_rtp_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_file_timeout_override_only_extends_known_heavy_files() -> None:
+    """The per-file timeout registry must only ever *extend* a file's budget,
+    and only for files explicitly registered as heavy — everything else stays on
+    the default cap so the cap keeps working as a hang detector."""
+    rtp = _load_runner_module()
+    default = rtp._DEFAULT_FILE_TIMEOUT_SECONDS
+
+    # Contract, not a snapshot: every registered override gives MORE time than
+    # the default (otherwise the entry is pointless / would shorten the budget).
+    assert rtp._FILE_TIMEOUT_OVERRIDES, "expected at least one heavy-file override"
+    for name, secs in rtp._FILE_TIMEOUT_OVERRIDES.items():
+        assert secs > default, f"override for {name} ({secs}s) must exceed default {default}s"
+
+    # An unregistered file gets exactly the default.
+    assert rtp._file_timeout_for(Path("tests/agent/test_something_else.py"), default) == default
+
+    # A registered heavy file gets its (larger) override...
+    heavy = next(iter(rtp._FILE_TIMEOUT_OVERRIDES))
+    assert rtp._file_timeout_for(Path("tests/agent") / heavy, default) == rtp._FILE_TIMEOUT_OVERRIDES[heavy]
+
+    # ...but a more generous explicit default still wins (override never shortens).
+    bigger = max(rtp._FILE_TIMEOUT_OVERRIDES.values()) + 100.0
+    assert rtp._file_timeout_for(Path("tests/agent") / heavy, bigger) == bigger
+
+
+def test_pet_generate_is_registered_as_heavy() -> None:
+    """The pet-generation suite is CPU-heavy enough to exceed the default cap
+    under CI worker contention; it must carry a timeout override so the file is
+    not SIGKILL'd mid-run."""
+    rtp = _load_runner_module()
+    assert "test_pet_generate.py" in rtp._FILE_TIMEOUT_OVERRIDES
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only probe")
 @pytest.mark.live_system_guard_bypass
 def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:

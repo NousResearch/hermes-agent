@@ -74,6 +74,33 @@ _SKIP_PARTS = {"integration", "e2e", "docker"}
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
 _DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at commit time was ~100s in CI and adding some leeway
 
+# A small number of files do legitimately heavy CPU work and, under CI's
+# oversubscribed worker pool (more pytest workers than cores), run right up
+# against the global per-file cap. Give *those specific files* a larger budget
+# instead of raising the global default — raising the default would blunt the
+# cap's value as a hang detector for the ~1600 other files. Keyed by basename
+# so the match is independent of the discovery root the file is found under.
+_FILE_TIMEOUT_OVERRIDES: dict[str, float] = {
+    # ~30-36 real PIL atlas-composition tests; ~30s in isolation but balloons
+    # past the default cap under CI's 8-worker contention, SIGKILL'ing the file
+    # mid-run with no test actually failing. See tests/agent/test_pet_generate.py.
+    "test_pet_generate.py": 300.0,
+}
+
+
+def _file_timeout_for(file: Path, default: float) -> float:
+    """Resolve the per-file wall-clock cap for ``file``.
+
+    Returns the registered override for a known-heavy file, but only when it is
+    larger than the active ``default`` — so an explicit ``--file-timeout`` /
+    ``HERMES_TEST_FILE_TIMEOUT`` that is already more generous still wins, and an
+    override can only *extend* a file's budget, never shorten it.
+    """
+    override = _FILE_TIMEOUT_OVERRIDES.get(file.name)
+    if override is not None and override > default:
+        return override
+    return default
+
 # Duration cache: maps relative file paths to last-observed subprocess
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
@@ -776,7 +803,11 @@ def main() -> int:
         for file in files:
             t0 = time.monotonic()
             fut = pool.submit(
-                _run_one_file, file, pytest_passthrough, repo_root, args.file_timeout
+                _run_one_file,
+                file,
+                pytest_passthrough,
+                repo_root,
+                _file_timeout_for(file, args.file_timeout),
             )
             fut.add_done_callback(lambda f, file=file, t0=t0: _on_done(file, t0, f))
             futures.append(fut)

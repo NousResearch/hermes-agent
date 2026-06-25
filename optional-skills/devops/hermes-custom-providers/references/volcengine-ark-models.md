@@ -8,14 +8,49 @@
 
 Volcengine Ark (火山方舟) is ByteDance's unified AI model platform. It's the primary way Chinese developers access models from multiple vendors through a single API key and billing system. The platform supports both Anthropic Messages API and OpenAI Chat Completions API protocols.
 
-### Subscription Model
+## Two Subscription Plans: Agent Plan vs Coding Plan
 
-- **Lite Plan (Lite 套餐)**: Monthly subscription with auto-renewal. Most common for individual developers.
-- **Pay-as-you-go**: Available for enterprise accounts.
-- Models are activated from the [console](https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement).
-- Switching a model takes 3-5 minutes to propagate.
+Volcengine Ark offers **two separate subscription plans** for individual users. They share the same API protocol and endpoints but differ in scope, billing model, and use restrictions.
+
+### Quick Comparison
+
+| Dimension | Agent Plan (Agent Plan 个人版) | Coding Plan (Coding Plan 个人版) |
+|-----------|-------------------------------|----------------------------------|
+| **Target audience** | AI Agent / general-purpose users | Developer / coding-focused users |
+| **Billing unit** | AFP (Agent Fuel Point) — unified points | Token-based quota |
+| **Tiers** | Small / Medium / Large / Max (4 tiers) | Lite / Pro (2 tiers) |
+| **Model scope** | Text + Image + Video + Embedding + Harness (豆包搜索等) | Text LLMs + Embedding only |
+| **Multi-modal** | ✅ Image gen, video gen, TTS, ASR | ❌ Text-only LLMs |
+| **Use restriction** | Can be used in AI tools + API | **AI coding tools ONLY** — API calls flagged as abuse |
+| **Rate limit** | Per-plan tier | 5-hour rolling window + weekly + monthly caps |
+| **Official doc** | [Agent Plan 套餐概览](https://www.volcengine.com/docs/82379/2366394) | [Coding Plan 套餐概览](https://www.volcengine.com/docs/82379/2366394) (same page, different tab) |
+| **Hermes compatibility** | ✅ Fully compatible | ⚠️ **RISKY** — Coding Plan forbids non-coding-tool API usage |
+
+### ⚠️ Critical: Coding Plan API Restriction
+
+The Coding Plan documentation explicitly states:
+
+> "套餐额度仅在 AI 编程工具中生效，不可用于 API 调用。在非 AI 编程工具中使用方舟 Coding Plan 权益对应的 Base URL 和 API Key 有可能被识别为滥用/违规，会导致订阅停用或账号封禁。"
+
+Translation: **Coding Plan quotas are only valid in AI coding tools. Using the Coding Plan's Base URL and API Key outside of coding tools may be flagged as abuse, resulting in subscription suspension or account ban.**
+
+This is a significant risk for Hermes users — Hermes is an AI agent, not strictly a coding tool. If Volcengine's detection flags Hermes as a non-coding-tool client, your subscription could be terminated.
+
+### ✅ Recommendation: Use Agent Plan
+
+For Hermes users, **the Agent Plan is the safe choice**:
+
+1. **No tool restrictions** — Agent Plan is designed for general AI agent usage and explicitly lists Hermes Agent as a supported tool
+2. **More models** — includes multi-modal models (image, video, TTS) not available in Coding Plan
+3. **Same LLMs** — all Coding Plan text models are also available in Agent Plan
+4. **AFP billing is predictable** — unified points system vs token counting
+5. **4 tiers** — Small/Medium/Large/Max gives more flexibility than Lite/Pro
+
+If you already have a Coding Plan subscription, it **will work** from a purely technical standpoint (same endpoints, same API protocol) — but be aware of the account risk.
 
 ## Endpoints
+
+Both plans use the same endpoints:
 
 | Endpoint | Protocol | Extra Cost | Prompt Caching | Recommended |
 |----------|----------|:----------:|:--------------:|:-----------:|
@@ -30,23 +65,49 @@ Volcengine Ark (火山方舟) is ByteDance's unified AI model platform. It's the
 3. **Full feature parity** — streaming, tool calling, deep thinking, structured output all work
 4. **Responses API is irrelevant** — Hermes doesn't support the Responses API protocol, and `/api/v3` costs extra
 
-## Model List (Lite Plan — 11 models as of 2026-06)
+## Model List (Agent Plan — all tiers, as of 2026-06)
+
+### Text Generation Models (shared by both plans)
 
 | Model ID | Type | Context Window | Max Output | Notes |
 |----------|------|:-------------:|:----------:|-------|
-| `deepseek-v4-flash` | General | **1,000,000** (1M) | 384,000 | Flagship fast model — best default |
-| `deepseek-v4-pro` | Reasoning | **1,000,000** (1M) | 384,000 | Flagship reasoning — higher quality, slower |
-| `glm-5.2` | General | **1,000,000** (1M) | 128,000 | Zhipu AI / Tsinghua model |
-| `doubao-seed-2.0-pro` | General | 256,000 | 128,000 | ByteDance pro model |
-| `doubao-seed-2.0-lite` | General | 256,000 | 128,000 | ByteDance lite model |
-| `doubao-seed-2.0-mini` | General | 256,000 | 128,000 | ByteDance mini model |
-| `doubao-seed-2.0-code` | Coding | 256,000 | 128,000 | ByteDance coding specialist |
-| `kimi-k2.7-code` | Coding | 256,000 | 32,000 | Moonshot coding model |
-| `kimi-k2.6` | General | 256,000 | 32,000 | Moonshot general model |
-| `minimax-m3` | General | **512,000** | 128,000 | MiniMax latest — large context |
-| `minimax-m2.7` | General | 200,000 | 128,000 | MiniMax previous generation |
+| `deepseek-v4-flash` | General | **1,000,000** (1M) | 384,000 | Flagship fast model — best default. ⚠️ Trial version, may throttle. |
+| `deepseek-v4-pro` | Reasoning | **1,000,000** (1M) | 384,000 | Flagship reasoning. High AFP cost, use for complex tasks. |
+| `glm-5.2` | General | **1,000,000** (1M) | 128,000 | Zhipu AI / Tsinghua flagship. |
+| `doubao-seed-2.0-pro` | General | 256,000 | 128,000 | ByteDance flagship — complex reasoning, long-chain tasks. |
+| `doubao-seed-2.0-lite` | General | 256,000 | 128,000 | ByteDance — balanced quality/speed for production. |
+| `doubao-seed-2.0-mini` | General | 256,000 | 128,000 | ByteDance — fastest, lightest model. |
+| `doubao-seed-2.0-code` | Coding | 256,000 | 128,000 | ByteDance coding specialist with vision. |
+| `kimi-k2.7-code` | Coding | 256,000 | 32,000 | Moonshot latest coding model. |
+| `kimi-k2.6` | General | 256,000 | 32,000 | Moonshot — strong reasoning, multi-step tool calls. High AFP cost. |
+| `minimax-m3` | General | **512,000** | 128,000 | MiniMax latest — Agent reasoning, tool calling, code. |
+| `minimax-m2.7` | General | 200,000 | 128,000 | MiniMax — complex Agent harness. High AFP cost. |
 
-### Capabilities (all models)
+### Agent Plan Exclusive (not in Coding Plan)
+
+| Model ID | Domain | Notes |
+|----------|--------|-------|
+| `doubao-seedream-5.0-lite` | Image Generation | Text-to-image |
+| `doubao-seedance-1.5-pro` | Video Generation | Text-to-video |
+| `doubao-seedance-2.0` | Video Generation | Next-gen video gen |
+| `doubao-seedance-2.0-fast` | Video Generation | Fast video gen |
+| `doubao-seed-tts-2.0` | TTS | Text-to-speech |
+| `doubao-seed-asr-2.0` | ASR | Speech recognition |
+| `doubao-embedding-vision` | Embedding | Vision embedding |
+
+> **Note**: Small tier does not support video generation. Medium+ recommended.
+
+### Deprecated Models (avoid)
+
+| Model | Status |
+|-------|--------|
+| `deepseek-v3.2` | ⚠️ Retiring soon — migrate to v4 |
+| `kimi-k2.5` | ⚠️ Retiring soon |
+| `glm-5.1` | ⚠️ Retiring soon — migrate to glm-5.2 |
+| `glm-4.7` | ⚠️ Retiring soon |
+| `minimax-m2.5` | ⚠️ Retiring soon |
+
+### Capabilities (all text models)
 
 ✅ Streaming output
 ✅ Deep thinking (深度思考)
@@ -120,18 +181,20 @@ custom_providers:
 
 ## Setup Checklist for New Machines
 
-1. **Get API Key**: [Ark API Key Management](https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey)
-2. **Activate models**: [Model Service Management](https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement)
-3. **Copy the config template above** into `~/.hermes/config.yaml`
-4. **Replace** `ark-xxxxx...` with your actual API key
-5. **Launch Hermes**: `hermes`
-6. **Select** `ark-custom` provider and verify models appear
+1. **Choose a plan**: [Agent Plan](https://console.volcengine.com/ark/region:ark+cn-beijing/) (recommended) or Coding Plan
+2. **Get API Key**: [Ark API Key Management](https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey)
+3. **Activate models**: [Model Service Management](https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement)
+4. **Copy the config template above** into `~/.hermes/config.yaml`
+5. **Replace** `ark-xxxxx...` with your actual API key
+6. **Launch Hermes**: `hermes`
+7. **Select** `ark-custom` provider and verify models appear
 
 ## Important Links
 
 | Resource | URL |
 |----------|-----|
 | Ark Console | https://console.volcengine.com/ark/region:ark+cn-beijing/ |
+| Plan Overview (Agent + Coding) | https://www.volcengine.com/docs/82379/2366394 |
 | API Key Management | https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey |
 | Model Activation | https://console.volcengine.com/ark/region:ark+cn-beijing/openManagement |
 | Usage Tracking | https://console.volcengine.com/ark/region:ark+cn-beijing/usageTracking |
@@ -147,3 +210,6 @@ custom_providers:
 | 124 stale models in list | `discover_models` is not set to `false` | Set `discover_models: false` in the provider config |
 | Config changes ignored | Old `providers:` format still in config | Migrate to `custom_providers:` list format |
 | Unexpected charges | Using `/api/v3` endpoint | Switch to `/api/coding` |
+| Account flagged / banned | Using Coding Plan outside coding tools | Switch to Agent Plan |
+| `max_tokens` 400 error on OpenAI endpoint | Server ceiling < 65536 (e.g., 32768 for kimi-k2.7) | Use `anthropic_messages` protocol instead |
+| User-Agent 400 error on OpenAI endpoint | Ark blocks default OpenAI SDK UA | Use `anthropic_messages` protocol instead |

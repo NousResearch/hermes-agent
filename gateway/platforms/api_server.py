@@ -3243,10 +3243,14 @@ class APIServerAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
-    # Allowed fields for update — prevents clients injecting arbitrary keys
-    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
+    # Allowed fields for update — prevents clients injecting arbitrary keys.
+    # `responsibility_id` links a routine to the responsibility it serves (the
+    # console's coverage view); it's plain linkage metadata, not behavior.
+    _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill",
+                              "repeat", "enabled", "responsibility_id"}
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
+    _MAX_RESPONSIBILITY_ID_LENGTH = 128
 
     @staticmethod
     def _check_jobs_available() -> Optional["web.Response"]:
@@ -3438,6 +3442,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
+            # responsibility_id: a slug/sentinel string, or null to clear (untriaged).
+            if "responsibility_id" in sanitized:
+                rid = sanitized["responsibility_id"]
+                if rid is not None and (
+                    not isinstance(rid, str) or len(rid) > self._MAX_RESPONSIBILITY_ID_LENGTH
+                ):
+                    return web.json_response(
+                        {"error": f"responsibility_id must be a string ≤ "
+                                  f"{self._MAX_RESPONSIBILITY_ID_LENGTH} characters, or null"},
+                        status=400,
+                    )
             if sanitized.get("prompt") and _scan_cron_prompt is not None:
                 scan_error = _scan_cron_prompt(sanitized["prompt"])
                 if scan_error:

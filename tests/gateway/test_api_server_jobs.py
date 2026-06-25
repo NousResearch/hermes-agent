@@ -383,6 +383,37 @@ class TestUpdateJob:
                 data = await resp.json()
                 assert "No valid fields" in data["error"]
 
+    @pytest.mark.asyncio
+    async def test_update_job_responsibility_id(self, adapter):
+        """PATCH accepts responsibility_id (a slug) and null (to clear)."""
+        app = _create_app(adapter)
+        mock_update = MagicMock(return_value={**SAMPLE_JOB, "responsibility_id": "manage-pms"})
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True), patch(f"{_MOD}._cron_update", mock_update):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}", json={"responsibility_id": "manage-pms"},
+                )
+                assert resp.status == 200
+                assert mock_update.call_args[0][1]["responsibility_id"] == "manage-pms"
+                # null clears the link (untriaged) — must survive the whitelist.
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}", json={"responsibility_id": None},
+                )
+                assert resp.status == 200
+                assert mock_update.call_args[0][1]["responsibility_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_update_job_responsibility_id_rejects_non_string(self, adapter):
+        """A non-string / oversized responsibility_id is a 400."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch(f"{_MOD}._CRON_AVAILABLE", True):
+                resp = await cli.patch(
+                    f"/api/jobs/{VALID_JOB_ID}", json={"responsibility_id": 123},
+                )
+                assert resp.status == 400
+                assert "responsibility_id" in (await resp.json())["error"]
+
 
 # ---------------------------------------------------------------------------
 # 13. test_delete_job

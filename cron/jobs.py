@@ -248,6 +248,10 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
+    # Always expose the responsibility link (the console coverage join reads it);
+    # unset = None = an untriaged routine. Storage is left untouched on read.
+    normalized["responsibility_id"] = job.get("responsibility_id")
+
     return normalized
 
 

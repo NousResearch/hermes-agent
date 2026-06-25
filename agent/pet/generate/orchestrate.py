@@ -35,6 +35,10 @@ ProgressFn = Callable[[str, str], None]
 # back-to-back and routinely blow past the client's RPC timeout. Capped so we
 # don't hammer the provider's rate limit (one cold call can still be slow).
 _MAX_PARALLEL_GENERATIONS = 4
+# How many times to (re)generate a single row before accepting a best-effort
+# slice. Early attempts demand clean per-pose gutters; the last is lenient so a
+# stubborn row still yields frames instead of dropping out entirely.
+_ROW_GEN_ATTEMPTS = 2
 _MIN_FILLED_STATES = 6
 _REQUIRED_STATES = frozenset({"idle", "running-right", "waving"})
 
@@ -80,6 +84,7 @@ def generate_base_drafts(
     *,
     n: int = 4,
     style: str = "auto",
+    reference_images: list[Path] | None = None,
     provider: SpriteProvider | None = None,
     on_draft: Callable[[int, Path], None] | None = None,
     is_cancelled: Callable[[], bool] | None = None,
@@ -96,7 +101,10 @@ def generate_base_drafts(
     drafts and cancel any queued work (already-in-flight provider calls can't be
     hard-killed, but their results are dropped).
     """
-    sprite = provider or imagegen.resolve_provider(require_references=False)
+    # A user reference image (e.g. their own pet) grounds every draft, so it
+    # needs a reference-capable provider — same requirement as the row passes.
+    refs = reference_images or None
+    sprite = provider or imagegen.resolve_provider(require_references=bool(refs))
     cancelled = is_cancelled or (lambda: False)
 
     # Each draft is its own one-shot generation, run concurrently so the user
@@ -104,25 +112,26 @@ def generate_base_drafts(
     # Each gets a distinct variation nudge so the options aren't near-duplicates.
     logger.info("pet generate: drafting %d base looks for %r (style=%s)", n, concept, style)
 
-    def _one(index: int) -> tuple[int, Path | None]:
+    def _one(index: int) -> tuple[int, Path | None, str | None]:
         if cancelled():
-            return index, None
+            return index, None, None
         t0 = time.monotonic()
         variation = prompts.BASE_VARIATIONS[index % len(prompts.BASE_VARIATIONS)]
         prompt = prompts.build_base_prompt(concept, style=style, variation=variation)
         try:
-            out = imagegen.generate(prompt, n=1, provider=sprite, prefix="pet_base")
+            out = imagegen.generate(prompt, n=1, reference_images=refs, provider=sprite, prefix="pet_base")
         except Exception as exc:  # noqa: BLE001 - tolerate a single failed draft
             logger.warning("pet generate: draft %d failed after %.1fs: %s", index, time.monotonic() - t0, exc)
-            return index, None
+            return index, None, str(exc)
         if not out:
             logger.warning("pet generate: draft %d produced no image", index)
-            return index, None
+            return index, None, "the image provider returned no image"
         logger.info("pet generate: draft %d ready in %.1fs", index, time.monotonic() - t0)
-        return index, _harden_transparency(out[0])
+        return index, _harden_transparency(out[0]), None
 
     workers = max(1, min(n, _MAX_PARALLEL_GENERATIONS))
     results: dict[int, Path] = {}
+    errors: list[str] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = [pool.submit(_one, i) for i in range(n)]
         # as_completed runs in *this* (the caller's) thread, so on_draft — and any
@@ -134,8 +143,10 @@ def generate_base_drafts(
                 for pending in futures:
                     pending.cancel()
                 break
-            index, path = fut.result()
+            index, path, err = fut.result()
             if path is None:
+                if err:
+                    errors.append(err)
                 continue
             results[index] = path
             if on_draft is not None:
@@ -146,8 +157,40 @@ def generate_base_drafts(
 
     drafts = [results[i] for i in sorted(results)]
     if not drafts and not cancelled():
-        raise GenerationError("image generation produced no usable drafts")
+        # Surface *why* — every draft failed for a reason (a content-policy refusal
+        # on a name like "minion", a provider/auth error, …); the most common one
+        # is the representative cause. Far more useful than "no usable drafts".
+        raise GenerationError(_drafts_failed_reason(errors))
     return drafts
+
+
+def _drafts_failed_reason(errors: list[str]) -> str:
+    """The representative reason a draft round produced nothing, humanized."""
+    if not errors:
+        return "image generation produced no usable drafts"
+    from collections import Counter
+
+    return _humanize_image_error(Counter(errors).most_common(1)[0][0])
+
+
+def _humanize_image_error(error: str) -> str:
+    """Turn a raw provider error into a friendly, actionable sentence.
+
+    The big one is moderation: image models refuse trademarked characters and
+    real people (e.g. "minion"), which reads as an opaque 400 otherwise.
+    """
+    low = error.lower()
+    if any(s in low for s in ("moderation_blocked", "safety system", "content policy", "content_policy")):
+        return (
+            "The image provider blocked this prompt — its safety filter rejects "
+            "trademarked characters and real people. Try an original description."
+        )
+    if any(s in low for s in ("api key", "unauthorized", "401", "auth")):
+        return "The image provider rejected the request — check your API key in Settings → Providers."
+    if "rate limit" in low or "429" in low:
+        return "The image provider is rate-limiting — wait a moment and try again."
+    # Otherwise the first line, trimmed of the noisy provider envelope.
+    return error.splitlines()[0].strip()[:200]
 
 
 def hatch_pet(
@@ -194,25 +237,48 @@ def hatch_pet(
         if cancelled():
             return state, None
         t0 = time.monotonic()
-        try:
-            strips = imagegen.generate(
-                prompts.build_row_prompt(state, count, label, style=style),
-                n=1,
-                reference_images=[base],
-                provider=sprite,
-                prefix=f"pet_row_{state}",
-            )
-            # One image call per row (the expensive part). ``auto`` validates by
-            # connected components with an equal-slot fallback; raw (fit=False) so
-            # normalize_cells registers the whole pet at once. We deliberately do
-            # NOT re-generate a ragged row — the registration pass salvages it far
-            # cheaper than another image-model round-trip.
-            frames = atlas.extract_strip_frames(strips[0], count, method="auto", fit=False)
-            logger.info("pet hatch %r: row %r ready in %.1fs", slug, state, time.monotonic() - t0)
-            return state, frames
-        except Exception as exc:  # noqa: BLE001 - one bad row is tolerated (idle guaranteed)
-            logger.warning("pet hatch %r: row %r failed after %.1fs: %s", slug, state, time.monotonic() - t0, exc)
-            return state, None
+        last_exc: Exception | None = None
+        # Self-healing: a model occasionally returns a row whose poses are touching
+        # (no clean gutters), which slices badly. We retry such rolls; only the
+        # final attempt falls back to lenient ``auto`` slicing so a stubborn row
+        # still yields *something* rather than dropping the whole row.
+        for attempt in range(_ROW_GEN_ATTEMPTS):
+            if cancelled():
+                return state, None
+            strict = attempt < _ROW_GEN_ATTEMPTS - 1
+            try:
+                strips = imagegen.generate(
+                    prompts.build_row_prompt(state, count, label, style=style),
+                    n=1,
+                    reference_images=[base],
+                    provider=sprite,
+                    prefix=f"pet_row_{state}",
+                    # Wider canvas → each frame gets real horizontal room, so winged
+                    # poses keep a full, healthy size and still leave clean gutters.
+                    aspect_ratio="landscape",
+                )
+                # ``components`` requires clean per-pose gutters (raises otherwise),
+                # so a touching roll is rejected and regenerated; the last attempt
+                # uses ``auto`` (equal-slot fallback, never raises). Raw (fit=False)
+                # so normalize_cells registers the whole pet at once.
+                method = "components" if strict else "auto"
+                frames = atlas.extract_strip_frames(strips[0], count, method=method, fit=False)
+                logger.info(
+                    "pet hatch %r: row %r ready in %.1fs (attempt %d)",
+                    slug, state, time.monotonic() - t0, attempt + 1,
+                )
+                return state, frames
+            except Exception as exc:  # noqa: BLE001 - retried; one bad row is tolerated
+                last_exc = exc
+                logger.warning(
+                    "pet hatch %r: row %r attempt %d/%d failed: %s",
+                    slug, state, attempt + 1, _ROW_GEN_ATTEMPTS, exc,
+                )
+        logger.warning(
+            "pet hatch %r: row %r gave up after %.1fs: %s",
+            slug, state, time.monotonic() - t0, last_exc,
+        )
+        return state, None
 
     # running-left is derived by mirroring running-right (guaranteed-consistent
     # and one fewer generation), so we don't generate it directly.

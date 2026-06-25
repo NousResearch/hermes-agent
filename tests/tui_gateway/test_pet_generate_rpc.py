@@ -23,10 +23,32 @@ def test_pet_generate_requires_prompt():
     assert "error" in resp
 
 
+def test_pet_generate_rejects_invalid_reference_image():
+    resp = server._methods["pet.generate"](
+        "r_invalid_ref",
+        {"referenceImage": "data:image/svg+xml;base64,PHN2Zy8+"},
+    )
+    assert "error" in resp
+    assert "unsupported reference image type" in resp["error"]["message"]
+
+
+def test_pet_generate_rejects_oversized_reference_image(monkeypatch):
+    import base64
+
+    monkeypatch.setattr(server, "_PET_REFERENCE_MAX_BYTES", 8)
+    payload = base64.b64encode(b"0123456789").decode("ascii")
+    resp = server._methods["pet.generate"](
+        "r_big_ref",
+        {"referenceImage": f"data:image/png;base64,{payload}"},
+    )
+    assert "error" in resp
+    assert "too large" in resp["error"]["message"].lower()
+
+
 def test_pet_generate_returns_token_and_previews(monkeypatch, tmp_path):
     import agent.pet.generate as gen
 
-    def fake_drafts(prompt, *, n=4, style="auto", on_draft=None, is_cancelled=None):
+    def fake_drafts(prompt, *, n=4, style="auto", reference_images=None, provider=None, on_draft=None, is_cancelled=None):
         paths = []
         for i in range(n):
             p = tmp_path / f"d{i}.png"
@@ -66,7 +88,7 @@ def test_pet_generate_cancel_stops_run(monkeypatch, tmp_path):
 
     monkeypatch.setattr(server, "_emit", cap_emit)
 
-    def fake_drafts(prompt, *, n=4, style="auto", on_draft=None, is_cancelled=None):
+    def fake_drafts(prompt, *, n=4, style="auto", reference_images=None, provider=None, on_draft=None, is_cancelled=None):
         # Simulate a Stop landing mid-run: the cooperative flag must read True.
         server._pet_cancel_request(seen["token"])
         assert is_cancelled() is True
@@ -93,7 +115,7 @@ def test_pet_hatch_expired_draft():
 
 
 def _fake_drafts_factory(tmp_path):
-    def fake_drafts(prompt, *, n=4, style="auto", on_draft=None, is_cancelled=None):
+    def fake_drafts(prompt, *, n=4, style="auto", reference_images=None, provider=None, on_draft=None, is_cancelled=None):
         paths = []
         for i in range(n):
             p = tmp_path / f"d{i}.png"
@@ -178,3 +200,46 @@ def test_pet_hatch_then_adopt_activates(monkeypatch, tmp_path):
     adopt = server._methods["pet.select"]("r3", {"slug": hatched["slug"]})["result"]
     assert adopt["ok"]
     assert activated["slug"] == "my-fox"
+
+
+def test_pet_sprite_payload_includes_concrete_row_counts():
+    from agent.pet import constants, store
+
+    cols, rows = 8, 9
+    sheet = Image.new("RGBA", (constants.FRAME_W * cols, constants.FRAME_H * rows), (0, 0, 0, 0))
+    # Current Codex rows can have more/fewer frames than Hermes' generic
+    # FRAMES_PER_STATE. The desktop preview needs the concrete row count.
+    real = {0: 6, 1: 8, 3: 4, 4: 5, 7: 6}
+    for row, count in real.items():
+        for col in range(count):
+            block = Image.new("RGBA", (constants.FRAME_W, constants.FRAME_H), (80, 120, 220, 255))
+            sheet.paste(block, (col * constants.FRAME_W, row * constants.FRAME_H))
+
+    pet = store.register_local_pet(sheet, slug="row-counts", display_name="Row Counts")
+    payload = server._pet_sprite_payload(pet, scale=0.7)
+
+    assert payload["framesByRow"]["running-right"] == 8
+    assert payload["framesByRow"]["waving"] == 4
+    assert payload["framesByRow"]["jumping"] == 5
+    assert payload["framesByState"]["run"] == 6
+
+
+def test_pet_info_meta_avoids_full_payload(monkeypatch):
+    import hermes_cli.config as cli_config
+    from agent.pet import constants, store
+
+    sheet = Image.new("RGBA", (constants.FRAME_W * 8, constants.FRAME_H * 9), (80, 120, 220, 255))
+    pet = store.register_local_pet(sheet, slug="meta-pet", display_name="Meta Pet")
+    monkeypatch.setattr(
+        cli_config,
+        "load_config",
+        lambda: {"display": {"pet": {"enabled": True, "slug": pet.slug, "scale": 0.7}}},
+    )
+
+    resp = server._methods["pet.info.meta"]("r_meta", {})
+    result = resp["result"]
+    assert result["enabled"] is True
+    assert result["slug"] == pet.slug
+    assert result["displayName"] == "Meta Pet"
+    assert result["scale"] == 0.7
+    assert ":" in result["spritesheetRevision"]

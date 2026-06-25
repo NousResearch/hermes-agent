@@ -22,6 +22,25 @@ interface Point {
   y: number
 }
 
+interface PetInfoMeta {
+  enabled: boolean
+  slug?: string
+  displayName?: string
+  scale?: number
+  spritesheetRevision?: string
+}
+
+function samePetRevision(info: PetInfo, meta: PetInfoMeta): boolean {
+  return (
+    info.enabled &&
+    Boolean(info.spritesheetBase64) &&
+    info.slug === meta.slug &&
+    info.displayName === meta.displayName &&
+    info.scale === meta.scale &&
+    info.spritesheetRevision === meta.spritesheetRevision
+  )
+}
+
 function clampToViewport({ x, y }: Point): Point {
   const maxX = Math.max(0, (window.innerWidth || 800) - 80)
   const maxY = Math.max(0, (window.innerHeight || 600) - 80)
@@ -63,12 +82,15 @@ function loadPosition(): Point {
  * Adopting a pet is fully in-app: type `/pet boba` in the composer. That
  * writes `display.pet.*` from the slash worker, so we keep polling `pet.info`
  * while no pet is active and the mascot pops in within a few seconds — no
- * reload, no CLI. Once a pet is live we stop polling.
+ * reload, no CLI. Once a pet is live we still refresh more slowly so generated
+ * pets rewritten on disk (or renamed/rebuilt by the hatch flow) repaint without
+ * restarting the app.
  *
  * Promotion to a separate frameless OS-level window is a follow-up — the
  * sprite + state logic here is reused as-is, only the host changes.
  */
 const PET_POLL_MS = 3000
+const PET_ACTIVE_REFRESH_MS = 15000
 
 export function FloatingPet() {
   const { requestGateway } = useGatewayRequest()
@@ -93,11 +115,12 @@ export function FloatingPet() {
   // state is only committed on release.
   const dragRef = useRef<{ dx: number; dy: number; x: number; y: number } | null>(null)
 
-  // Fetch pet.info on connect, then keep polling while no pet is active so an
-  // in-app `/pet <slug>` shows up live. Stops polling once a pet is enabled.
+  // Fetch pet.info on connect. Poll quickly while inactive so an in-app
+  // `/pet <slug>` appears, then slowly while active so regenerated spritesheets
+  // and row-count metadata replace the cached base64 payload.
   const active = info.enabled && Boolean(info.spritesheetBase64)
   useEffect(() => {
-    if (gatewayState !== 'open' || active) {
+    if (gatewayState !== 'open') {
       return
     }
 
@@ -105,9 +128,39 @@ export function FloatingPet() {
 
     const pull = async () => {
       try {
+        if (active) {
+          try {
+            const meta = await requestGateway<PetInfoMeta>('pet.info.meta', { profile: petProfile() })
+            if (cancelled || !meta) {
+              return
+            }
+            if (!meta.enabled) {
+              setPetInfo({ enabled: false })
+              return
+            }
+            if (samePetRevision($petInfo.get(), meta)) {
+              return
+            }
+          } catch {
+            // Older gateways may not have pet.info.meta yet; fall back to pet.info.
+          }
+        }
+
         const next = await requestGateway<PetInfo>('pet.info', { profile: petProfile() })
 
         if (!cancelled && next) {
+          const current = $petInfo.get()
+          if (
+            next.enabled &&
+            current.enabled &&
+            current.slug === next.slug &&
+            current.displayName === next.displayName &&
+            current.scale === next.scale &&
+            current.spritesheetRevision &&
+            current.spritesheetRevision === next.spritesheetRevision
+          ) {
+            return
+          }
           setPetInfo(next)
         }
       } catch {
@@ -116,10 +169,12 @@ export function FloatingPet() {
     }
 
     void pull()
-    const timer = window.setInterval(() => void pull(), PET_POLL_MS)
+    const timer = window.setInterval(() => void pull(), active ? PET_ACTIVE_REFRESH_MS : PET_POLL_MS)
+    window.addEventListener('focus', pull)
 
     return () => {
       cancelled = true
+      window.removeEventListener('focus', pull)
       window.clearInterval(timer)
     }
   }, [gatewayState, active, requestGateway])

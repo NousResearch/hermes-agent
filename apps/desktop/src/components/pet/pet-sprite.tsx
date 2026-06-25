@@ -91,6 +91,7 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
   const frameH = info.frameH ?? DEFAULT_FRAME_H
   const frames = info.framesPerState ?? DEFAULT_FRAMES
   const framesByState = info.framesByState
+  const framesByRow = info.framesByRow
   const loopMs = info.loopMs ?? DEFAULT_LOOP_MS
   const scale = (info.scale ?? DEFAULT_SCALE) * zoom
   const rows = info.stateRows ?? DEFAULT_STATE_ROWS
@@ -134,6 +135,8 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     let lastStep = performance.now()
     let drawnFrame = -1
     let drawnRow = -1
+    let activeRow = -1
+    let activeCount = -1
 
     const rowIndexForState = (s: PetState): number => {
       for (const key of STATE_ALIASES[s] ?? [s]) {
@@ -161,13 +164,25 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
     const resolveRow = (rowName: string): { row: number; count: number } => {
       const row = rows.indexOf(rowName)
       const state = ROW_TO_STATE[rowName]
-      const count = Math.max(1, framesByState?.[rowName] ?? (state ? framesByState?.[state] : 0) ?? frames)
+      const count = Math.max(
+        1,
+        framesByRow?.[rowName] ?? framesByState?.[rowName] ?? (state ? framesByState?.[state] : 0) ?? frames
+      )
       return { row: row >= 0 ? row : rowIndexForState(state ?? 'idle'), count }
     }
 
     const render = (now: number) => {
       const forcedRow = rowOverrideRef.current
       const { row, count } = forcedRow ? resolveRow(forcedRow) : resolve(overrideRef.current ?? stateRef.current)
+
+      if (row !== activeRow || count !== activeCount) {
+        activeRow = row
+        activeCount = count
+        frame = 0
+        lastStep = now
+        drawnFrame = -1
+      }
+
       // Per-state step keeps every state's loop ~loopMs even when frame counts
       // differ; counts vary per row so derive the cadence here, not once.
       const stepMs = loopMs / count
@@ -201,7 +216,7 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
       cancelAnimationFrame(raf)
       unsubState()
     }
-  }, [image, frameW, frameH, frames, framesByState, loopMs, drawW, drawH, rows])
+  }, [image, frameW, frameH, frames, framesByState, framesByRow, loopMs, drawW, drawH, rows])
 
   return (
     <canvas

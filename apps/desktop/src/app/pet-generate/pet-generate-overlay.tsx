@@ -6,92 +6,37 @@
  * breathe: a device-framed header, its own concept prompt, a roomy draft grid
  * that streams in live, and the egg-hatch + reveal flow. It's a thin view over
  * the `pet-generate` store; the store owns the generate → hatch → adopt steps.
+ *
+ * This file is just the dialog shell + sizing; the flow lives in
+ * `PetGenerateContent`, and each screen is its own atomic component under
+ * `./components`.
  */
 
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
 
-import { SETTINGS_ROUTE } from '@/app/routes'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
-import { PetEggHatch } from '@/components/pet/pet-egg-hatch'
-import { PetStarShower } from '@/components/pet/pet-star-shower'
-import { PetSprite } from '@/components/pet/pet-sprite'
-import { PixelEggSprite } from '@/components/pet/pixel-egg-sprite'
-import { Alert, AlertDescription } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import { GenerateButton } from '@/components/ui/generate-button'
-import { Input } from '@/components/ui/input'
+import { Dialog, DialogContent } from '@/components/ui/dialog'
 import { useI18n } from '@/i18n'
-import { ExternalLink } from '@/lib/external-link'
-import { triggerHaptic } from '@/lib/haptics'
-import { Egg, Loader2, PawPrint, RefreshCw, Settings2 } from '@/lib/icons'
-import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
-import { type PetInfo } from '@/store/pet'
 import {
-  $petGenAvailable,
   $petGenDrafts,
   $petGenerateOpen,
   $petGenError,
-  $petGenPreview,
-  $petGenSelected,
-  $petGenStage,
   $petGenStatus,
-  adoptHatched,
-  cancelGenerate,
-  cancelHatch,
-  checkPetGenAvailable,
-  cleanPetName,
-  cleanupPetGen,
-  closePetGenerate,
-  discardHatched,
-  generateDrafts,
-  hatchSelected
+  cleanupPetGenOnClose,
+  closePetGenerate
 } from '@/store/pet-generate'
 
-const VARIANT_COUNT = 4
-const PREVIEW_SCALE = 0.7
-const PREVIEW_ROWS = [
-  'idle',
-  'waving',
-  'running-right',
-  'running-left',
-  'running',
-  'review',
-  'jumping',
-  'failed',
-  'waiting'
-]
-const PREVIEW_STATE_MS = 1400
-
-const ROW_TO_FRAME_KEY: Record<string, string> = {
-  idle: 'idle',
-  wave: 'wave',
-  waving: 'wave',
-  jump: 'jump',
-  jumping: 'jump',
-  run: 'run',
-  running: 'run',
-  'running-right': 'run',
-  'running-left': 'run',
-  failed: 'failed',
-  review: 'review',
-  waiting: 'waiting'
-}
-
-function frameCountForRow(pet: PetInfo, row: string): number {
-  const byState = pet.framesByState
-  const mapped = ROW_TO_FRAME_KEY[row]
-  return byState?.[row] ?? (mapped ? byState?.[mapped] : undefined) ?? pet.framesPerState ?? 0
-}
+import { PetGenerateContent } from './pet-generate-content'
 
 export function PetGenerateOverlay() {
+  const { t } = useI18n()
+  const { requestGateway } = useGatewayRequest()
   const open = useStore($petGenerateOpen)
   const status = useStore($petGenStatus)
-  const { requestGateway } = useGatewayRequest()
+  const error = useStore($petGenError)
+  const drafts = useStore($petGenDrafts)
 
   // Yield the screen to a full-screen route overlay (e.g. /settings while the
   // user adds an image-gen key) without tearing down — the store keeps us open,
@@ -102,449 +47,39 @@ export function PetGenerateOverlay() {
 
   const handleOpenChange = (next: boolean) => {
     if (!next) {
-      // Deletes a hatched-but-unadopted preview pet so it doesn't linger, then
-      // resets all generation state.
-      cleanupPetGen(requestGateway)
+      cleanupPetGenOnClose(requestGateway)
+      // Never interrupt in-flight work. Generating/hatching continues in the
+      // background; only an unadopted finished preview is discarded on close.
       closePetGenerate()
     }
   }
 
   // The draft screen needs room for the 2×2 grid; the single-pet screens
   // (hatch egg, reveal) shrink to the pet's frame so it isn't lost in a wide box.
+  // `fitContent` lets the dialog size to content; the `min-w` floors each phase.
   const single = status === 'hatching' || status === 'preview' || status === 'adopting'
+  const copy = t.commandCenter.generatePet
+
+  // The footer banner narrates the dialog's async state: the failure reason on a
+  // dead-end error, else the "you can close this, we'll notify you" reassurance
+  // while a generate/hatch runs in the background.
+  const working = status === 'generating' || status === 'hatching'
+  const errored = status === 'error' && drafts.length === 0
+  const banner = errored ? error || copy.genericError : working ? copy.backgroundHint : undefined
 
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
       <DialogContent
         aria-describedby={undefined}
-        className={cn('max-w-none gap-4 text-center', single ? 'w-[min(17rem,92vw)]' : 'w-[min(23rem,92vw)]')}
+        banner={banner}
+        bannerTone={errored ? 'error' : 'info'}
+        // Cap the width so a long banner (e.g. a provider refusal) wraps instead
+        // of stretching the dialog out; the min-w floors each phase.
+        className={cn('gap-4 text-center', single ? 'min-w-[17rem] max-w-[20rem]' : 'min-w-[19rem] max-w-[22rem]')}
+        fitContent
       >
         {open && <PetGenerateContent />}
       </DialogContent>
     </Dialog>
   )
 }
-
-function PetGenerateContent() {
-  const { t } = useI18n()
-  const copy = t.commandCenter.generatePet
-  const { requestGateway } = useGatewayRequest()
-  const navigate = useNavigate()
-
-  const status = useStore($petGenStatus)
-  const error = useStore($petGenError)
-  const available = useStore($petGenAvailable)
-  // `null` = not yet probed → stay optimistic (show the prompt); only the
-  // confirmed-no-backend case swaps in the setup card.
-  const unavailable = available === false
-  const drafts = useStore($petGenDrafts)
-  const selected = useStore($petGenSelected)
-  const preview = useStore($petGenPreview)
-  const stage = useStore($petGenStage)
-
-  const [prompt, setPrompt] = useState('')
-
-  // Probe backend availability on open — and again whenever the content
-  // remounts (e.g. after returning from the providers settings), so adding a
-  // key flips the setup card to the prompt with no manual refresh.
-  useEffect(() => {
-    void checkPetGenAvailable(requestGateway)
-  }, [requestGateway])
-
-  const busy = status === 'generating' || status === 'hatching'
-  const hasDrafts = drafts.length > 0
-  const generating = status === 'generating'
-  // The idle "describe a pet" state — egg + suggestions get generous, equidistant
-  // breathing room (gap-7.5) from the prompt; the working states stay compact.
-  const isEmptyState =
-    !hasDrafts &&
-    !generating &&
-    status !== 'hatching' &&
-    status !== 'preview' &&
-    status !== 'adopting' &&
-    status !== 'stale'
-
-  const close = () => {
-    cleanupPetGen(requestGateway)
-    closePetGenerate()
-  }
-
-  const generate = () => {
-    if (prompt.trim() && !busy) {
-      void generateDrafts(requestGateway, { prompt: prompt.trim() })
-    }
-  }
-
-  // One-click an example prompt straight into a draft round.
-  const runExample = (example: string) => {
-    setPrompt(example)
-    void generateDrafts(requestGateway, { prompt: example })
-  }
-
-  // Hatch with a clean default name derived from the prompt (the prompt itself
-  // is grounding text, not a label); the user names it on the reveal screen.
-  const hatch = () => {
-    if (prompt.trim()) {
-      void hatchSelected(requestGateway, { name: cleanPetName(prompt), prompt: prompt.trim() })
-    }
-  }
-
-  const adopt = (finalName: string) => {
-    void adoptHatched(requestGateway, finalName).then(out => {
-      if (out.ok) {
-        triggerHaptic('crisp')
-        close()
-      }
-    })
-  }
-
-  // The header title tracks the phase instead of sticking on "Generate a pet".
-  const headerTitle =
-    status === 'hatching' ? copy.spawning : status === 'preview' || status === 'adopting' ? copy.hatched : copy.title
-  // Send the user to set up a key without closing — the overlay yields to the
-  // settings route (useRouteOverlayActive) and reappears + re-checks on return.
-  const setupImageGen = () => navigate(`${SETTINGS_ROUTE}?tab=providers`)
-
-  // Prompt input only belongs on the describe/draft screens (and never when
-  // there's no backend to generate with).
-  const showPrompt = !unavailable && status !== 'hatching' && status !== 'preview' && status !== 'adopting'
-
-  return (
-    <>
-      {unavailable ? (
-        <DialogTitle className="sr-only">{copy.title}</DialogTitle>
-      ) : (
-        <DialogHeader>
-          <DialogTitle icon={Egg}>{headerTitle}</DialogTitle>
-        </DialogHeader>
-      )}
-
-      <div className={cn('flex min-h-0 flex-1 flex-col', isEmptyState ? 'gap-4' : 'gap-2.5')}>
-        {/* Concept prompt with the inline sparkle generate/stop affordance (the
-            same primitive as the commit-message + project-idea fields). */}
-        {showPrompt && (
-          <div className="relative">
-            <Input
-              autoFocus
-              className="pr-9"
-              onChange={event => setPrompt(event.target.value)}
-              onKeyDown={event => {
-                if (event.key === 'Enter') {
-                  event.preventDefault()
-                  generate()
-                }
-              }}
-              placeholder={copy.placeholder}
-              value={prompt}
-            />
-            <GenerateButton
-              className="absolute right-1 top-1/2 -translate-y-1/2"
-              disabled={!prompt.trim()}
-              generating={generating}
-              generatingLabel={t.common.cancel}
-              label={copy.generate}
-              onCancel={cancelGenerate}
-              onGenerate={generate}
-            />
-          </div>
-        )}
-
-        {error && !unavailable && status !== 'preview' && status !== 'adopting' && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-
-        {unavailable ? (
-          <GenerateUnavailable onSetup={setupImageGen} />
-        ) : status === 'stale' ? (
-          <Alert variant="destructive">
-            <AlertDescription>{copy.staleBackend}</AlertDescription>
-          </Alert>
-        ) : status === 'hatching' ? (
-          <HatchingView stage={stage} />
-        ) : (status === 'preview' || status === 'adopting') && preview ? (
-          <HatchPreview
-            adopting={status === 'adopting'}
-            error={error}
-            onAdopt={adopt}
-            onDiscard={() => void discardHatched(requestGateway)}
-            pet={preview}
-          />
-        ) : !hasDrafts && !generating ? (
-          <EmptyHint onExample={runExample} />
-        ) : (
-          <DraftGrid
-            busy={busy}
-            drafts={drafts}
-            generating={generating}
-            hasDrafts={hasDrafts}
-            onHatch={hatch}
-            onSelect={index => $petGenSelected.set(index)}
-            selected={selected}
-          />
-        )}
-      </div>
-    </>
-  )
-}
-
-// Creative seed prompts — specifics make better pets (petdex's own advice).
-// Doubling as guidance and a one-click way to see the flow.
-const EXAMPLE_PROMPTS = ['a bubble-tea otter', 'a tiny sock elf', 'a pixel dragon', 'a grumpy office cat', 'a neon axolotl']
-
-// Shown when no reference-capable image backend is configured: generation is
-// impossible, so we replace the prompt entirely with a friendly path to set one
-// up (in-app) plus where to grab a key.
-function GenerateUnavailable({ onSetup }: { onSetup: () => void }) {
-  return (
-    <div className="flex flex-col items-center gap-4 px-2 py-6 text-center">
-      <span className="grid size-11 place-items-center rounded-full bg-primary/10 text-primary">
-        <PawPrint className="size-5" />
-      </span>
-      <div className="space-y-1.5">
-        <p className="text-[length:var(--conversation-text-font-size)] font-semibold">Add an image backend to generate</p>
-        <p className="mx-auto max-w-[19rem] text-[length:var(--conversation-caption-font-size)] leading-relaxed text-(--ui-text-tertiary)">
-          Hatching a custom pet needs a provider that can ground on a reference image.
-        </p>
-      </div>
-      <Button onClick={onSetup} size="sm">
-        <Settings2 className="size-4" />
-        Set up image generation
-      </Button>
-      <p className="flex flex-wrap items-center justify-center gap-x-1.5 text-[0.6875rem] text-(--ui-text-tertiary)">
-        <span>Grab a key from</span>
-        <ExternalLink href="https://portal.nousresearch.com" showExternalIcon={false}>
-          Nous Portal
-        </ExternalLink>
-        <span>·</span>
-        <ExternalLink
-          className="opacity-40 transition-opacity hover:opacity-100"
-          href="https://openrouter.ai/keys"
-          showExternalIcon={false}
-        >
-          OpenRouter
-        </ExternalLink>
-        <span>·</span>
-        <ExternalLink
-          className="opacity-40 transition-opacity hover:opacity-100"
-          href="https://platform.openai.com/api-keys"
-          showExternalIcon={false}
-        >
-          OpenAI
-        </ExternalLink>
-      </p>
-    </div>
-  )
-}
-
-function EmptyHint({ onExample }: { onExample: (prompt: string) => void }) {
-  return (
-    <div className="flex flex-col items-center gap-2">
-      <p className="text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">Need a spark?</p>
-      <div className="flex flex-wrap items-center justify-center gap-1.5">
-        {EXAMPLE_PROMPTS.map(example => (
-          <Button className="rounded-full" key={example} onClick={() => onExample(example)} size="xs" variant="outline">
-            {example}
-          </Button>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function HatchingView({ stage }: { stage: { phase: string; state?: string; done?: number; total?: number } | null }) {
-  const { t } = useI18n()
-  const copy = t.commandCenter.generatePet
-
-  const subtitle = stage
-    ? stage.phase === 'row'
-      ? copy.hatchRow(stage.state ?? '', stage.done ?? 0, stage.total ?? 0)
-      : stage.phase === 'compose'
-        ? copy.hatchComposing
-        : copy.hatchSaving
-    : copy.hatchingSub
-
-  return <PetEggHatch cancelLabel={t.common.cancel} onCancel={cancelHatch} subtitle={subtitle} />
-}
-
-interface DraftGridProps {
-  busy: boolean
-  drafts: { index: number; dataUri: string }[]
-  generating: boolean
-  hasDrafts: boolean
-  onHatch: () => void
-  onSelect: (index: number) => void
-  selected: number | null
-}
-
-function DraftGrid({ busy, drafts, generating, hasDrafts, onHatch, onSelect, selected }: DraftGridProps) {
-  const { t } = useI18n()
-  const copy = t.commandCenter.generatePet
-
-  const slots = generating
-    ? Array.from({ length: VARIANT_COUNT }, (_, i) => drafts.find(draft => draft.index === i) ?? null)
-    : drafts
-
-  return (
-    <div className="flex flex-col gap-2">
-      {generating && (
-        <div className="flex items-center justify-between text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-          <span className="shimmer">{copy.generating}</span>
-          <span className="tabular-nums">
-            {drafts.length}/{VARIANT_COUNT}
-          </span>
-        </div>
-      )}
-
-      <div className="grid grid-cols-2 gap-2">
-        {slots.map((draft, i) => {
-          const isSelected = !generating && draft != null && selected === draft.index
-
-          return (
-            <button
-              className={cn(
-                'relative flex aspect-[192/208] items-center justify-center overflow-hidden',
-                selectableCardClass({ active: isSelected, prominent: true })
-              )}
-              disabled={generating || busy || draft == null}
-              key={draft ? `draft-${draft.index}` : `slot-${i}`}
-              onClick={() => draft != null && onSelect(draft.index)}
-              type="button"
-            >
-              {draft != null ? (
-                // Hatches into place as each draft streams back.
-                <img alt="" className="pet-reveal size-full object-contain p-1.5" draggable={false} src={draft.dataUri} />
-              ) : (
-                // Incubating: a creme egg resting on its contact shadow.
-                <div className="relative z-10 flex flex-col items-center">
-                  <PixelEggSprite index={i} mode="bounce" size={48} />
-                  <span className="pet-egg-shadow pet-egg-shadow--sm mt-1" />
-                </div>
-              )}
-            </button>
-          )
-        })}
-      </div>
-
-      {hasDrafts && (
-        <Button className="w-full" disabled={busy || selected === null} onClick={onHatch}>
-          <PawPrint />
-          {copy.hatch}
-        </Button>
-      )}
-    </div>
-  )
-}
-
-interface HatchPreviewProps {
-  pet: PetInfo
-  adopting: boolean
-  error: string | null
-  onAdopt: (name: string) => void
-  onDiscard: () => void
-}
-
-function HatchPreview({ pet, adopting, error, onAdopt, onDiscard }: HatchPreviewProps) {
-  const { t } = useI18n()
-  const copy = t.commandCenter.generatePet
-  // Empty so the "Name your pet" placeholder shows; blank adopt keeps the
-  // provisional name from the prompt.
-  const [name, setName] = useState('')
-  // Play the egg's crack/hatch frames once before swapping in the live pet.
-  const [revealed, setRevealed] = useState(false)
-  // Right after the egg cracks the pet plays its "yay" jump a couple times, then
-  // hands off to the normal state-cycling preview.
-  const [celebrating, setCelebrating] = useState(false)
-  const [stateIndex, setStateIndex] = useState(0)
-  const previewRows = (pet.stateRows?.length ? pet.stateRows : PREVIEW_ROWS).filter(row => frameCountForRow(pet, row) > 0)
-  const rows = previewRows.length > 0 ? previewRows : ['idle']
-  const activeRow = rows[stateIndex % rows.length] ?? 'idle'
-  const canJump = frameCountForRow(pet, 'jumping') > 0
-  const rowOverride = celebrating && canJump ? 'jumping' : activeRow
-
-  useEffect(() => {
-    const id = setInterval(() => setStateIndex(i => (i + 1) % rows.length), PREVIEW_STATE_MS)
-    return () => clearInterval(id)
-  }, [rows.length])
-
-  // On reveal: celebrate (jump) ~2 loops, then drop into the cycling preview.
-  useEffect(() => {
-    if (!revealed) {
-      return
-    }
-    setCelebrating(true)
-    const id = setTimeout(() => {
-      setCelebrating(false)
-      setStateIndex(0)
-    }, 2 * (pet.loopMs ?? 1100))
-    return () => clearTimeout(id)
-  }, [revealed, pet.loopMs])
-
-  useEffect(() => {
-    setStateIndex(0)
-    setName('')
-    setRevealed(false)
-    setCelebrating(false)
-  }, [pet.slug])
-
-  const previewInfo: PetInfo = { ...pet, scale: PREVIEW_SCALE }
-
-  return (
-    <div className="flex flex-col items-center gap-2 py-1">
-      {/* Fills the (now narrow) dialog so the pet frame is the screen width. */}
-      <div className="relative flex aspect-[192/208] w-full items-center justify-center overflow-hidden rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary)">
-        {revealed ? (
-          <>
-            <div className="pet-reveal">
-              <PetSprite info={previewInfo} rowOverride={rowOverride} />
-            </div>
-            <PetStarShower />
-          </>
-        ) : (
-          // The egg cracks open, then we swap in the live pet.
-          <PixelEggSprite
-            mode="hatch"
-            onDone={() => {
-              setRevealed(true)
-              triggerHaptic('crisp')
-            }}
-            size={150}
-          />
-        )}
-      </div>
-
-      <Input
-        autoFocus
-        className="w-full"
-        onChange={event => setName(event.target.value)}
-        onKeyDown={event => {
-          if (event.key === 'Enter') {
-            event.preventDefault()
-            onAdopt(name)
-          }
-        }}
-        placeholder={copy.namePlaceholder}
-        value={name}
-      />
-
-      {error && (
-        <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
-
-      <div className="flex w-full items-center gap-1.5">
-        <Button disabled={adopting} onClick={onDiscard} variant="ghost">
-          <RefreshCw />
-          {copy.startOver}
-        </Button>
-        <Button className="flex-1" disabled={adopting} onClick={() => onAdopt(name)}>
-          {adopting ? <Loader2 className="animate-spin" /> : <PawPrint />}
-          {copy.adopt}
-        </Button>
-      </div>
-    </div>
-  )
-}
-

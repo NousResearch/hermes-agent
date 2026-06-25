@@ -76,6 +76,29 @@ def style_hint(style: str | None) -> str:
     return _STYLE_HINTS.get((style or "auto").strip().lower(), "")
 
 
+# Row strips are generated on the wider landscape canvas (see imagegen.generate /
+# orchestrate). The extra width is what lets each pose stay a healthy size AND
+# leave a real gutter — used here only to cite concrete pixel numbers.
+_ASSUMED_STRIP_WIDTH = 1536
+
+
+def _spacing_spec(frame_count: int) -> tuple[int, int]:
+    """(per-pose width px, gap px) for a row of *frame_count* poses.
+
+    Pixel counts alone don't hold — the model fills each slot edge-to-edge with
+    the full wingspan, so neighbors touch even when bodies are spaced. The lever
+    that works is proportional containment on a wide canvas: give each pose its
+    own equal cell and keep the ENTIRE silhouette (wings/tail/halo included)
+    inside it. On the 1536px landscape strip ~70% occupancy still leaves a
+    generous gutter, so the pet stays a normal, good-looking size — no shrinking.
+    """
+    slots = max(1, frame_count)
+    slot_w = _ASSUMED_STRIP_WIDTH / slots
+    pose_px = round(slot_w * 0.7)
+    gap_px = max(48, round(slot_w * 0.3))
+    return pose_px, gap_px
+
+
 # Per-draft nudges so the 4 base options are actually distinct — gpt-image returns
 # near-duplicates for a single prompt. We vary the *look* (palette, build,
 # expression, accents), NOT the pose, so the chosen base still grounds clean,
@@ -118,14 +141,24 @@ def build_row_prompt(state: str, frame_count: int, concept: str, *, style: str |
     """
     action = STATE_ACTIONS.get(state, "a simple idle pose")
     concept = (concept or "the mascot").strip()
+    pose_px, gap_px = _spacing_spec(frame_count)
     return (
         f"Using the attached reference image as the exact same character "
         f"(same species, face, colors, markings, proportions, and props), "
-        f"draw a single horizontal strip of {frame_count} animation frames showing {action}. "
-        f"The {frame_count} poses must be evenly spaced left to right, each fully separated "
-        "by clear empty chroma-key gutters; silhouettes must NEVER touch, overlap, "
-        "share a shadow, share a ground line, share motion trails, or merge into "
-        "one connected shape. "
+        f"draw a single WIDE horizontal strip of {frame_count} animation frames showing {action}. "
+        f"LAYOUT: split the wide strip into {frame_count} equal vertical cells, one "
+        "pose centered in each cell. "
+        f"SPACING (critical): draw each pose at a consistent, healthy, clearly "
+        f"visible size (roughly {pose_px}px wide on a {_ASSUMED_STRIP_WIDTH}px "
+        f"strip) — do NOT shrink it tiny — but keep its ENTIRE silhouette "
+        f"(wings, tail, halo, horns, cape, every appendage) fully INSIDE its own "
+        f"cell. Leave at least {gap_px}px of empty chroma-key background between "
+        f"neighboring silhouettes at their closest point (wingtip to wingtip), and "
+        f"the same empty margin before the first pose and after the last. If a wing, "
+        f"cape, or tail would reach into a neighbor, FOLD or angle it inward rather "
+        f"than letting it cross the gap. Silhouettes must NEVER touch, overlap, "
+        f"share a shadow, share a ground line, share motion trails, or merge into "
+        f"one connected shape. "
         # Registration: a clean sprite sheet keeps the character locked in place
         # so only the action moves — this is what stops the loop sliding/pulsing.
         "REGISTRATION (critical): the character is the SAME height and SAME width "

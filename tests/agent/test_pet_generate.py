@@ -106,6 +106,23 @@ def test_extract_strip_frames_drops_small_side_lobes_from_adjacent_frames():
     assert right_edge_mass == 0
 
 
+def test_extract_strip_frames_uses_real_gutters_when_spacing_is_uneven():
+    # gpt-image often returns a square chroma strip whose poses are separated but
+    # not laid out on exact equal-width slots. Equal slot slicing would include
+    # the next pose's wing/cape in frame 0; gutter-derived crops keep it out.
+    img = Image.new("RGBA", (600, 208), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    draw.rectangle((40, 58, 140, 178), fill=(80, 120, 220, 255))
+    draw.rectangle((182, 58, 282, 178), fill=(220, 120, 80, 255))
+    draw.rectangle((430, 58, 530, 178), fill=(80, 220, 120, 255))
+
+    frames = atlas.extract_strip_frames(img, 3, method="auto", fit=False)
+
+    assert len(frames) == 3
+    assert frames[0].getbbox()[2] <= 120
+    assert frames[1].getbbox()[0] <= 16
+
+
 def test_extract_strip_frames_slot_fallback_when_unsegmentable():
     # A single connected smear can't be split into 5 components → slot fallback.
     img = Image.new("RGBA", (200 * 5, 208), (0, 0, 0, 0))
@@ -181,6 +198,27 @@ def test_single_frame_fits_cell():
     assert frame.getchannel("A").getextrema()[1] > 0
 
 
+def test_normalize_cells_uses_consistent_pose_scale_for_motion_rows():
+    # A jump row needs a taller union crop than idle, but the pet itself should
+    # not shrink just because the motion envelope is taller.
+    idle = Image.new("RGBA", (160, 180), (0, 0, 0, 0))
+    jump_low = Image.new("RGBA", (160, 180), (0, 0, 0, 0))
+    jump_high = Image.new("RGBA", (160, 180), (0, 0, 0, 0))
+    ImageDraw.Draw(idle).rectangle((50, 80, 110, 160), fill=(80, 120, 220, 255))
+    ImageDraw.Draw(jump_low).rectangle((50, 80, 110, 160), fill=(220, 120, 80, 255))
+    ImageDraw.Draw(jump_high).rectangle((50, 60, 110, 140), fill=(220, 120, 80, 255))
+
+    normalized = atlas.normalize_cells({"idle": [idle], "jumping": [jump_low, jump_high]})
+    idle_box = normalized["idle"][0].getbbox()
+    jump_box = normalized["jumping"][0].getbbox()
+
+    assert idle_box is not None
+    assert jump_box is not None
+    idle_h = idle_box[3] - idle_box[1]
+    jump_h = jump_box[3] - jump_box[1]
+    assert abs(idle_h - jump_h) <= 8
+
+
 # ───────────────────────── store register / adopt ─────────────────────────
 
 
@@ -252,7 +290,7 @@ def test_generate_base_drafts_returns_n(monkeypatch, tmp_path):
 
     calls = {"n": 0}
 
-    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet"):
+    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         paths = []
         for i in range(n):
             calls["n"] += 1
@@ -272,7 +310,7 @@ def test_generate_base_drafts_hardens_opaque_background(monkeypatch, tmp_path):
     """A provider that ignores background=transparent still yields a cutout."""
     from agent.pet.generate import imagegen, orchestrate
 
-    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet"):
+    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         # Solid-green backdrop with a blob — i.e. the provider painted a backdrop.
         p = tmp_path / f"{prefix}_opaque.png"
         _strip(1, transparent=False, bg=(0, 255, 0, 255)).save(p)
@@ -300,7 +338,7 @@ def test_hatch_pet_end_to_end(monkeypatch, tmp_path):
     base = tmp_path / "base.png"
     _strip(1).save(base)
 
-    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet"):
+    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         # Return a synthetic row strip; frame count is inferable from the spec.
         state = prefix.replace("pet_row_", "")
         count = atlas_mod.FRAME_COUNTS.get(state, 6)
@@ -337,7 +375,7 @@ def test_hatch_pet_idle_fallback_when_row_fails(monkeypatch, tmp_path):
     base = tmp_path / "base.png"
     _strip(1).save(base)
 
-    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet"):
+    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         if prefix == "pet_row_idle":
             raise GenerationError("boom")
         state = prefix.replace("pet_row_", "")
@@ -361,7 +399,7 @@ def test_hatch_pet_rejects_missing_required_animation_rows(monkeypatch, tmp_path
     base = tmp_path / "base.png"
     _strip(1).save(base)
 
-    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet"):
+    def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         if prefix == "pet_row_running-right":
             raise GenerationError("bad row")
         state = prefix.replace("pet_row_", "")
@@ -386,6 +424,48 @@ def test_resolve_provider_errors_without_backend(monkeypatch):
 
     with pytest.raises(imagegen.GenerationError):
         imagegen.resolve_provider(require_references=True)
+
+
+class _FakeImgProvider:
+    def __init__(self, name, available=True):
+        self.name = name
+        self._available = available
+
+    def is_available(self):
+        return self._available
+
+
+def test_resolve_provider_honors_available_preference(monkeypatch):
+    """An explicit, configured, ref-capable preference wins over the active one."""
+    from agent.pet.generate import imagegen
+
+    registry = {"openai": _FakeImgProvider("openai"), "openrouter": _FakeImgProvider("openrouter")}
+    monkeypatch.setattr(imagegen, "_discover", lambda: None)
+    monkeypatch.setattr("agent.image_gen_registry.get_active_provider", lambda: registry["openai"])
+    monkeypatch.setattr("agent.image_gen_registry.get_provider", lambda name: registry.get(name))
+
+    assert imagegen.resolve_provider(prefer="openrouter").name == "openrouter"
+    # An unavailable / unknown preference is ignored — fall back to the active one.
+    registry["openrouter"]._available = False
+    assert imagegen.resolve_provider(prefer="openrouter").name == "openai"
+    assert imagegen.resolve_provider(prefer="not-a-provider").name == "openai"
+
+
+def test_list_sprite_providers_marks_default(monkeypatch):
+    """Lists only available ref-capable backends, flagging the default pick."""
+    from agent.pet.generate import imagegen
+
+    registry = {"openai": _FakeImgProvider("openai"), "nous": _FakeImgProvider("nous")}
+    monkeypatch.setattr(imagegen, "_discover", lambda: None)
+    monkeypatch.setattr("agent.image_gen_registry.get_active_provider", lambda: registry["openai"])
+    monkeypatch.setattr("agent.image_gen_registry.get_provider", lambda name: registry.get(name))
+
+    listed = imagegen.list_sprite_providers()
+    names = {p["name"] for p in listed}
+    assert names == {"openai", "nous"}
+    # Every entry carries display metadata, and exactly one is the default.
+    assert all(p["label"] and "note" in p for p in listed)
+    assert [p["name"] for p in listed if p["default"]] == ["openai"]
 
 
 def test_generate_retries_without_transparent_background(monkeypatch, tmp_path):

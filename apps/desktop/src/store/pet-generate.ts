@@ -1,8 +1,12 @@
 import { atom } from 'nanostores'
 
+import { persistString, storedString } from '@/lib/storage'
 import { $gateway } from '@/store/gateway'
+import { dispatchNativeNotification } from '@/store/native-notifications'
+import { notify } from '@/store/notifications'
 import { type PetInfo } from '@/store/pet'
-import { type GatewayRequest, applyAdoptedPet } from '@/store/pet-gallery'
+import { applyAdoptedPet, type GatewayRequest } from '@/store/pet-gallery'
+import { $activeSessionId } from '@/store/session'
 
 /**
  * Feature store for the "generate a pet" flow (Cmd-K → Pets → Generate).
@@ -57,8 +61,10 @@ export function cleanPetName(prompt: string): string {
     .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
     .split(/\s+/)
     .filter(Boolean)
+
   const meaningful = words.filter(w => !NAME_STOPWORDS.has(w.toLowerCase()))
   const picked = (meaningful.length ? meaningful : words).slice(0, 3)
+
   const name = picked
     .map(w => w.charAt(0).toUpperCase() + w.slice(1))
     .join(' ')
@@ -101,11 +107,42 @@ export const $petGenError = atom<string | null>(null)
 // re-probes on open and on return from settings.
 export const $petGenAvailable = atom<boolean | null>(null)
 
+/** A reference-capable image backend the user can pick for generation. */
+export interface PetGenProvider {
+  name: string
+  label: string
+  /** One-line speed/quality tradeoff note. */
+  note: string
+  /** Whether this is the backend's default pick (no override needed). */
+  default: boolean
+}
+
+const PROVIDER_KEY = 'hermes.desktop.petgen.provider'
+
+/** Reference-capable providers available to pick (from `pet.generate.status`). */
+export const $petGenProviders = atom<PetGenProvider[]>([])
+/** The picked provider name; `''` means "use the backend default". Persisted. */
+export const $petGenProvider = atom(storedString(PROVIDER_KEY) ?? '')
+
+/** Set (and persist) the pet-gen provider override. `''` clears it. */
+export function setPetGenProvider(name: string): void {
+  $petGenProvider.set(name)
+  persistString(PROVIDER_KEY, name || null)
+}
+
 /** Probe whether generation is possible (a reference-capable backend exists). */
 export async function checkPetGenAvailable(request: GatewayRequest): Promise<void> {
   try {
-    const res = await request<{ available: boolean }>('pet.generate.status')
+    const res = await request<{ available: boolean; providers?: PetGenProvider[] }>('pet.generate.status')
     $petGenAvailable.set(Boolean(res?.available))
+    const providers = res?.providers ?? []
+    $petGenProviders.set(providers)
+    // Drop a stale pick if that backend is no longer configured.
+    const picked = $petGenProvider.get()
+
+    if (picked && !providers.some(p => p.name === picked)) {
+      setPetGenProvider('')
+    }
   } catch {
     // Unknown (old backend / transient) — don't gate the UI on a failed probe.
     $petGenAvailable.set(true)
@@ -116,14 +153,20 @@ export async function checkPetGenAvailable(request: GatewayRequest): Promise<voi
 export const $petGenerateOpen = atom(false)
 
 export function openPetGenerate(): void {
-  // Always open on a clean slate — don't resurface the last run's drafts/preview.
-  resetPetGen()
+  // Resume an in-flight or finished-but-unadopted run (so a Stop-free close, or
+  // a "done" notification click, lands back on the right step); only start on a
+  // clean slate when nothing is going on.
+  if ($petGenStatus.get() === 'idle') {
+    resetPetGen()
+  }
+
   $petGenerateOpen.set(true)
 }
 
 export function closePetGenerate(): void {
   $petGenerateOpen.set(false)
 }
+
 export const $petGenToken = atom<string | null>(null)
 /** Prompt that produced the current draft token; hatch uses this for consistency. */
 export const $petGenPrompt = atom<string>('')
@@ -132,13 +175,20 @@ export const $petGenSelected = atom<number | null>(null)
 /** The hatched-but-unadopted pet: its renderer payload, played in the preview. */
 export const $petGenPreview = atom<PetInfo | null>(null)
 
+// Live composer inputs live in atoms (not component state) so closing the
+// overlay mid-flow — or letting it run in the background — and reopening (or
+// clicking the "done" notification) restores exactly what you had.
+export const $petGenInput = atom('')
+export const $petGenRefImage = atom<string | null>(null)
+export const $petGenRefName = atom('')
+
 function isMissingMethod(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error)
 
   return /method not found|-32601|unknown method|no such method/i.test(message)
 }
 
-/** Clear all generation state (on close, or before a fresh run). */
+/** Clear all generation state (before a fresh run). */
 export function resetPetGen(): void {
   $petGenStatus.set('idle')
   $petGenStage.set(null)
@@ -148,26 +198,44 @@ export function resetPetGen(): void {
   $petGenDrafts.set([])
   $petGenSelected.set(null)
   $petGenPreview.set(null)
+  $petGenInput.set('')
+  $petGenRefImage.set(null)
+  $petGenRefName.set('')
 }
 
 /**
- * Reset on palette close, deleting an unadopted preview pet first so a hatched-
- * but-never-adopted creature doesn't linger in the gallery. Fire-and-forget.
+ * Close-time cleanup: if a pet is already hatched but not adopted, discard it so
+ * abandoned previews do not accumulate on disk. In-flight generate/hatch runs
+ * are intentionally left alone (background-resumable).
  */
-export function cleanupPetGen(request: GatewayRequest): void {
+export function cleanupPetGenOnClose(request: GatewayRequest): void {
+  const status = $petGenStatus.get()
   const preview = $petGenPreview.get()
 
-  if ($petGenStatus.get() === 'preview' && preview?.slug) {
+  if ((status === 'preview' || status === 'adopting') && preview?.slug) {
     void request('pet.remove', { slug: preview.slug }).catch(() => {})
+    resetPetGen()
+  }
+}
+
+// A finished background run (overlay closed) nudges the user back: an in-app
+// toast with a View action always, plus an OS notification when enabled and the
+// app is in the background. Clicking either reopens the overlay to its state.
+function notifyPetGenDone(title: string, message: string, kind: 'error' | 'success'): void {
+  if ($petGenerateOpen.get()) {
+    return
   }
 
-  resetPetGen()
+  notify({ kind, title, message, action: { label: 'View', onClick: openPetGenerate } })
+  dispatchNativeNotification({ kind: 'backgroundDone', title, body: message, sessionId: $activeSessionId.get() })
 }
 
 interface GenerateOptions {
   prompt: string
   style?: string
   count?: number
+  /** Optional data-URL reference image — every draft is grounded on it. */
+  referenceImage?: string
 }
 
 // A Stop (or a fresh round) must invalidate the in-flight call. This primitive
@@ -185,6 +253,7 @@ interface Run {
 function cancelableRun(): Run {
   let id = 0
   let cancel: (() => void) | null = null
+
   return {
     begin: () => (id += 1),
     isCurrent: n => n === id,
@@ -216,11 +285,14 @@ export function cancelGenerate(): void {
   $petGenError.set(null)
 
   const drafts = $petGenDrafts.get()
+
   if (drafts.length > 0) {
     if ($petGenSelected.get() === null) {
       $petGenSelected.set(drafts[0]?.index ?? 0)
     }
+
     $petGenStatus.set('ready')
+
     return
   }
 
@@ -228,6 +300,19 @@ export function cancelGenerate(): void {
   $petGenDrafts.set([])
   $petGenSelected.set(null)
   $petGenToken.set(null)
+}
+
+/**
+ * Abandon the current drafts and return to the prompt (step 1). Stops any
+ * in-flight generation; keeps the prompt text so the user can tweak + retry.
+ */
+export function discardDrafts(): void {
+  gen.stop()
+  $petGenDrafts.set([])
+  $petGenSelected.set(null)
+  $petGenToken.set(null)
+  $petGenError.set(null)
+  $petGenStatus.set('idle')
 }
 
 const hatch = cancelableRun()
@@ -245,8 +330,10 @@ export function cancelHatch(): void {
 /** Generate (or retry) a fresh set of base-look drafts for `prompt`. */
 export async function generateDrafts(request: GatewayRequest, options: GenerateOptions): Promise<boolean> {
   const prompt = options.prompt.trim()
+  const referenceImage = options.referenceImage
 
-  if (!prompt) {
+  // Need *something* to ground on: a description or a reference image.
+  if (!prompt && !referenceImage) {
     return false
   }
 
@@ -255,6 +342,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
   gen.arm(() => {
     controller.abort()
     const token = $petGenToken.get()
+
     if (token) {
       void request('pet.cancel', { token }).catch(() => {})
     }
@@ -262,6 +350,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
 
   // Starting a fresh generation round supersedes any unadopted preview pet.
   const preview = $petGenPreview.get()
+
   if (preview?.slug) {
     await request('pet.remove', { slug: preview.slug }).catch(() => {})
   }
@@ -284,6 +373,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
         if (gen.isCurrent(runId) && $petGenStatus.get() === 'generating') {
           $petGenToken.set(draft.token)
         }
+
         return
       }
 
@@ -302,6 +392,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
       }
 
       const current = $petGenDrafts.get()
+
       if (current.some(d => d.index === draft.index)) {
         return
       }
@@ -317,7 +408,9 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
       {
         prompt,
         style: options.style ?? 'auto',
-        count: options.count ?? 4
+        count: options.count ?? 4,
+        ...(referenceImage ? { referenceImage } : {}),
+        ...($petGenProvider.get() ? { provider: $petGenProvider.get() } : {})
       },
       GENERATE_TIMEOUT_MS,
       controller.signal
@@ -333,10 +426,12 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
     }
 
     $petGenToken.set(result.token)
-    $petGenPrompt.set(prompt)
+    // Keep a concept for the hatch row prompts even on an image-only generate.
+    $petGenPrompt.set(prompt || 'a custom pet')
     $petGenDrafts.set(result.drafts)
     $petGenSelected.set(result.drafts[0]?.index ?? 0)
     $petGenStatus.set('ready')
+    notifyPetGenDone('Pet drafts ready', 'Your pet looks finished — pick one to hatch.', 'success')
 
     return true
   } catch (e) {
@@ -349,6 +444,7 @@ export async function generateDrafts(request: GatewayRequest, options: GenerateO
     } else {
       $petGenStatus.set('error')
       $petGenError.set(e instanceof Error ? e.message : 'Could not generate pet drafts.')
+      notifyPetGenDone('Pet generation failed', 'Reopen to try again.', 'error')
     }
 
     return false
@@ -381,11 +477,15 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
     return false
   }
 
+  // Hatch cancellation rides its own token (not the draft token): hatching
+  // mid-generation leaves pet.generate releasing that token, which would race
+  // the arm. The draft token still locates the staged image server-side.
+  const cancelToken = crypto.randomUUID()
   const hatchRunId = hatch.begin()
   const controller = new AbortController()
   hatch.arm(() => {
     controller.abort()
-    void request('pet.cancel', { token }).catch(() => {})
+    void request('pet.cancel', { token: cancelToken }).catch(() => {})
   })
 
   $petGenStatus.set('hatching')
@@ -399,6 +499,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
       .get()
       ?.on<{ event: string; state?: string; done?: string; total?: string }>('pet.hatch.progress', event => {
         const p = event.payload
+
         if (!p || !hatch.isCurrent(hatchRunId) || $petGenStatus.get() !== 'hatching') {
           return
         }
@@ -422,11 +523,13 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
       'pet.hatch',
       {
         token,
+        cancelToken,
         index,
         name,
         description: options.description ?? '',
         prompt: concept,
-        style: options.style ?? 'auto'
+        style: options.style ?? 'auto',
+        ...($petGenProvider.get() ? { provider: $petGenProvider.get() } : {})
       },
       HATCH_TIMEOUT_MS,
       controller.signal
@@ -437,6 +540,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
       if (result?.slug) {
         void request('pet.remove', { slug: result.slug }).catch(() => {})
       }
+
       return false
     }
 
@@ -446,6 +550,7 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
 
     $petGenPreview.set({ ...result.pet, enabled: true })
     $petGenStatus.set('preview')
+    notifyPetGenDone('Your pet hatched', 'Reopen to name and adopt it.', 'success')
 
     return true
   } catch (e) {
@@ -455,10 +560,12 @@ export async function hatchSelected(request: GatewayRequest, options: HatchOptio
 
     $petGenStatus.set('error')
     $petGenError.set(e instanceof Error ? e.message : 'Could not hatch the pet.')
+    notifyPetGenDone('Hatching failed', 'Reopen to try again.', 'error')
 
     return false
   } finally {
     offProgress()
+
     if (hatch.isCurrent(hatchRunId)) {
       $petGenStage.set(null)
       hatch.disarmIf(hatchRunId)
@@ -494,11 +601,13 @@ export async function adoptHatched(request: GatewayRequest, name?: string): Prom
     // rename failure shouldn't block adopting under the provisional slug.
     const finalName = name?.trim()
     let adoptSlug = preview.slug
+
     if (finalName && finalName !== preview.displayName) {
       const renamed = await request<{ ok: boolean; slug: string }>('pet.rename', {
         slug: preview.slug,
         name: finalName
       }).catch(() => null)
+
       if (renamed?.slug) {
         adoptSlug = renamed.slug
       }

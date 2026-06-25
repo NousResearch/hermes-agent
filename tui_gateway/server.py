@@ -5579,6 +5579,75 @@ def _pet_frame_counts(spritesheet) -> dict:
         return {}
 
 
+_pet_payload_cache_lock = threading.Lock()
+_pet_payload_cache: dict[tuple, dict] = {}
+
+
+def _pet_sheet_revision(spritesheet) -> str:
+    """Stable revision id for one spritesheet file."""
+    try:
+        stat = spritesheet.stat()
+        return f"{stat.st_mtime_ns}:{stat.st_size}"
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        return "0:0"
+
+
+def _pet_payload_cache_key(pet, *, scale: float) -> tuple | None:
+    """Cache key for the expensive sprite payload build."""
+    try:
+        stat = pet.spritesheet.stat()
+    except Exception:  # noqa: BLE001
+        return None
+    return (
+        str(pet.spritesheet),
+        stat.st_mtime_ns,
+        stat.st_size,
+        pet.slug,
+        pet.display_name,
+        round(scale, 4),
+    )
+
+
+def _clone_pet_payload(payload: dict) -> dict:
+    """Shallow-clone cached payloads so callers can't mutate shared state."""
+    out = dict(payload)
+    if isinstance(payload.get("framesByState"), dict):
+        out["framesByState"] = dict(payload["framesByState"])
+    if isinstance(payload.get("framesByRow"), dict):
+        out["framesByRow"] = dict(payload["framesByRow"])
+    if isinstance(payload.get("stateRows"), list):
+        out["stateRows"] = list(payload["stateRows"])
+    return out
+
+
+def _pet_row_frame_counts(spritesheet) -> dict:
+    """Real frame count per concrete spritesheet row name."""
+    try:
+        from PIL import Image
+
+        from agent.pet import constants, render
+
+        with Image.open(spritesheet) as opened:
+            image = opened.convert("RGBA")
+        cols = max(1, image.width // constants.FRAME_W)
+        row_count = max(1, image.height // constants.FRAME_H)
+        rows = constants.state_rows_for_grid(row_count)
+        out: dict[str, int] = {}
+        for row_idx, name in enumerate(rows[:row_count]):
+            top = row_idx * constants.FRAME_H
+            count = 0
+            for col in range(cols):
+                left = col * constants.FRAME_W
+                frame = image.crop((left, top, left + constants.FRAME_W, top + constants.FRAME_H))
+                if render._frame_is_blank(frame):
+                    break
+                count += 1
+            out[name] = count
+        return out
+    except Exception:  # noqa: BLE001 - cosmetic, never break the surface
+        return {}
+
+
 def _pet_config_scale() -> float:
     """Configured ``display.pet.scale`` (or the engine default), never raises."""
     from agent.pet import constants
@@ -5604,22 +5673,57 @@ def _pet_sprite_payload(pet, *, scale: float) -> dict:
 
     from agent.pet import constants
 
+    cache_key = _pet_payload_cache_key(pet, scale=scale)
+    if cache_key is not None:
+        with _pet_payload_cache_lock:
+            cached = _pet_payload_cache.get(cache_key)
+        if cached is not None:
+            return _clone_pet_payload(cached)
+
     raw = pet.spritesheet.read_bytes()
     suffix = pet.spritesheet.suffix.lower()
     mime = "image/png" if suffix == ".png" else "image/webp"
-    return {
+    payload = {
         "slug": pet.slug,
         "displayName": pet.display_name,
         "mime": mime,
         "spritesheetBase64": base64.standard_b64encode(raw).decode("ascii"),
+        "spritesheetRevision": _pet_sheet_revision(pet.spritesheet),
         "frameW": constants.FRAME_W,
         "frameH": constants.FRAME_H,
         "framesPerState": constants.FRAMES_PER_STATE,
         "framesByState": _pet_frame_counts(pet.spritesheet),
+        "framesByRow": _pet_row_frame_counts(pet.spritesheet),
         "loopMs": constants.LOOP_MS,
         "scale": scale,
         "stateRows": _pet_state_rows(pet.spritesheet),
     }
+    if cache_key is not None:
+        with _pet_payload_cache_lock:
+            _pet_payload_cache[cache_key] = payload
+            while len(_pet_payload_cache) > 8:
+                _pet_payload_cache.pop(next(iter(_pet_payload_cache)))
+    return _clone_pet_payload(payload)
+
+
+def _pet_active_selection():
+    """Resolve configured active pet + scale from config."""
+    from agent.pet import constants, store
+
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
+        pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
+    except Exception:
+        pet_cfg = {}
+
+    enabled = bool(pet_cfg.get("enabled"))
+    configured_slug = str(pet_cfg.get("slug", "") or "")
+    pet = store.resolve_active_pet(configured_slug) if enabled else None
+    scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
+    return enabled, pet, scale
 
 
 def _pet_state_rows(spritesheet) -> list[str]:
@@ -5658,28 +5762,37 @@ def _(rid, params: dict) -> dict:
     on any error rather than erroring the surface.
     """
     try:
-        from agent.pet import constants, store
-
-        try:
-            from hermes_cli.config import load_config
-
-            cfg = load_config()
-            display = cfg.get("display", {}) if isinstance(cfg.get("display"), dict) else {}
-            pet_cfg = display.get("pet", {}) if isinstance(display.get("pet"), dict) else {}
-        except Exception:
-            pet_cfg = {}
-
-        enabled = bool(pet_cfg.get("enabled"))
-        configured_slug = str(pet_cfg.get("slug", "") or "")
-        pet = store.resolve_active_pet(configured_slug) if enabled else None
+        enabled, pet, scale = _pet_active_selection()
 
         if not enabled or pet is None or not pet.exists:
             return _ok(rid, {"enabled": False})
 
-        scale = float(pet_cfg.get("scale", constants.DEFAULT_SCALE) or constants.DEFAULT_SCALE)
         return _ok(rid, {"enabled": True, **_pet_sprite_payload(pet, scale=scale)})
     except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
         logger.debug("pet.info failed: %s", exc)
+        return _ok(rid, {"enabled": False})
+
+
+@method("pet.info.meta")
+@_profile_scoped
+def _(rid, params: dict) -> dict:
+    """Cheap active-pet metadata used to avoid full payload refreshes."""
+    try:
+        enabled, pet, scale = _pet_active_selection()
+        if not enabled or pet is None or not pet.exists:
+            return _ok(rid, {"enabled": False})
+        return _ok(
+            rid,
+            {
+                "enabled": True,
+                "slug": pet.slug,
+                "displayName": pet.display_name,
+                "scale": scale,
+                "spritesheetRevision": _pet_sheet_revision(pet.spritesheet),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001 - cosmetic, never break the surface
+        logger.debug("pet.info.meta failed: %s", exc)
         return _ok(rid, {"enabled": False})
 
 
@@ -6107,6 +6220,53 @@ def _pet_png_data_uri(path, *, max_px: int = 160) -> str:
 # hatch_pet poll between provider calls to skip work they haven't started.
 _pet_cancel_lock = threading.Lock()
 _pet_cancelled: set[str] = set()
+_PET_REFERENCE_MIME_EXT = {
+    "png": "png",
+    "jpeg": "jpg",
+    "jpg": "jpg",
+    "webp": "webp",
+    "gif": "gif",
+}
+try:
+    _PET_REFERENCE_MAX_BYTES = max(
+        1,
+        int(os.environ.get("HERMES_PET_REFERENCE_MAX_BYTES") or str(16 * 1024 * 1024)),
+    )
+except (TypeError, ValueError):
+    _PET_REFERENCE_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _pet_reference_images_from_data_url(ref_raw: str, stage) -> list:
+    """Decode + validate a reference-image data URL into the stage dir."""
+    import base64
+    import binascii
+    import re as _re
+
+    match = _re.match(r"^data:image/([a-zA-Z0-9.+-]+);base64,(.*)$", ref_raw, _re.DOTALL)
+    if not match:
+        raise ValueError("invalid reference image format")
+
+    mime = match.group(1).lower()
+    ext = _PET_REFERENCE_MIME_EXT.get(mime)
+    if ext is None:
+        raise ValueError("unsupported reference image type")
+
+    payload = "".join(match.group(2).split())
+    approx = (len(payload) * 3) // 4
+    if approx > _PET_REFERENCE_MAX_BYTES:
+        raise ValueError("reference image too large")
+
+    try:
+        raw = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("invalid reference image data") from exc
+
+    if len(raw) > _PET_REFERENCE_MAX_BYTES:
+        raise ValueError("reference image too large")
+
+    ref_path = stage / f"reference.{ext}"
+    ref_path.write_bytes(raw)
+    return [ref_path]
 
 
 def _pet_cancel_arm(token: str) -> None:
@@ -6148,34 +6308,46 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Whether pet generation is possible right now.
 
-    True only when a reference-capable image backend (OpenRouter / Nous Portal /
+    True only when a reference-capable image backend (Nous Portal / OpenRouter /
     OpenAI gpt-image) is configured — the desktop checks this on open so it can
     offer setup instead of a dead prompt. Cheap (config + plugin discovery).
     """
     try:
-        from agent.pet.generate.imagegen import GenerationError, resolve_provider
+        from agent.pet.generate.imagegen import (
+            GenerationError,
+            list_sprite_providers,
+            resolve_provider,
+        )
 
         try:
             resolve_provider(require_references=True)
-            return _ok(rid, {"available": True})
+            available = True
         except GenerationError:
-            return _ok(rid, {"available": False})
+            available = False
+        try:
+            providers = list_sprite_providers()
+        except Exception as exc:  # noqa: BLE001 - picker is best-effort
+            logger.debug("pet provider list failed: %s", exc)
+            providers = []
+        return _ok(rid, {"available": available, "providers": providers})
     except Exception as exc:  # noqa: BLE001 - never break the surface
         logger.debug("pet.generate.status failed: %s", exc)
-        return _ok(rid, {"available": False})
+        return _ok(rid, {"available": False, "providers": []})
 
 
 @method("pet.generate")
 def _(rid, params: dict) -> dict:
     """Generate candidate base looks for a new pet (the draft/variant step).
 
-    Params: ``prompt`` (required), ``count`` (default 4), ``style`` (default
-    ``auto``). Returns ``{ok, token, drafts:[{index, dataUri}]}`` — the token
-    keys the staged base images for a later ``pet.hatch``. Retry == call again
-    (fresh token). Heavy (network): runs on the worker pool.
+    Params: ``prompt`` (required unless ``referenceImage`` is given), ``count``
+    (default 4), ``style`` (default ``auto``), ``referenceImage`` (optional data
+    URL — a user photo/reference every draft is grounded on, e.g. to make *their*
+    pet). Returns ``{ok, token, drafts:[{index, dataUri}]}`` — the token keys the
+    staged base images for a later ``pet.hatch``. Heavy (network): worker pool.
     """
     prompt = str(params.get("prompt") or "").strip()
-    if not prompt:
+    ref_raw = str(params.get("referenceImage") or "").strip()
+    if not prompt and not ref_raw:
         return _err(rid, 4004, "missing prompt")
     try:
         count = max(1, min(4, int(params.get("count") or 4)))
@@ -6188,7 +6360,7 @@ def _(rid, params: dict) -> dict:
         import uuid
 
         from agent.pet.generate import generate_base_drafts
-        from agent.pet.generate.imagegen import GenerationError
+        from agent.pet.generate.imagegen import GenerationError, resolve_provider
 
         root = _pet_gen_root()
         _pet_gen_sweep(root)
@@ -6199,6 +6371,27 @@ def _(rid, params: dict) -> dict:
         _pet_cancel_arm(token)
         stage = root / token
         stage.mkdir(parents=True, exist_ok=True)
+
+        reference_images = None
+        if ref_raw:
+            try:
+                reference_images = _pet_reference_images_from_data_url(ref_raw, stage)
+            except ValueError as exc:
+                _pet_cancel_release(token)
+                return _err(rid, 4004, str(exc))
+
+        # Optional desktop picker override: resolve the chosen provider up front so
+        # a bad/uncredentialed pick fails fast instead of mid-fan-out.
+        provider_name = str(params.get("provider") or "").strip()
+        sprite = None
+        if provider_name:
+            try:
+                sprite = resolve_provider(require_references=bool(reference_images), prefer=provider_name)
+            except GenerationError as exc:
+                _pet_cancel_release(token)
+                return _err(rid, 5031, str(exc))
+
+        concept = prompt or "a pet based on the reference image"
         out: list[dict] = []
 
         # Hand the token to the client up front (token-only init event) so a Stop
@@ -6230,9 +6423,11 @@ def _(rid, params: dict) -> dict:
 
         try:
             generate_base_drafts(
-                prompt,
+                concept,
                 n=count,
                 style=style,
+                reference_images=reference_images,
+                provider=sprite,
                 on_draft=_on_draft,
                 is_cancelled=lambda: _pet_is_cancelled(token),
             )
@@ -6268,6 +6463,11 @@ def _(rid, params: dict) -> dict:
     ``pet`` is the renderer payload. Heavy (network + raster): worker pool.
     """
     token = str(params.get("token") or "").strip()
+    # Hatch cancellation rides its own key, not the generation token: hatching a
+    # draft mid-generation means pet.generate is still releasing `token`, which
+    # would otherwise wipe the arm we set here. Falls back to `token` for clients
+    # that don't send one.
+    cancel_token = str(params.get("cancelToken") or "").strip() or token
     index = params.get("index", 0)
     name = str(params.get("name") or "").strip()
     if not token:
@@ -6282,13 +6482,22 @@ def _(rid, params: dict) -> dict:
     try:
         from agent.pet import store
         from agent.pet.generate import hatch_pet
-        from agent.pet.generate.imagegen import GenerationError
+        from agent.pet.generate.imagegen import GenerationError, resolve_provider
 
         base = _pet_gen_root() / token / f"draft-{index}.png"
         if not base.is_file():
             return _err(rid, 4004, "draft expired — generate again")
 
-        _pet_cancel_arm(token)
+        # Optional desktop picker override (rows always need reference grounding).
+        provider_name = str(params.get("provider") or "").strip()
+        sprite = None
+        if provider_name:
+            try:
+                sprite = resolve_provider(require_references=True, prefer=provider_name)
+            except GenerationError as exc:
+                return _err(rid, 5031, str(exc))
+
+        _pet_cancel_arm(cancel_token)
         slug = store.unique_slug(name)
 
         def _on_progress(event: str, detail: str) -> None:
@@ -6312,13 +6521,14 @@ def _(rid, params: dict) -> dict:
                 description=str(params.get("description") or ""),
                 concept=str(params.get("prompt") or name),
                 style=str(params.get("style") or "auto").strip() or "auto",
+                provider=sprite,
                 on_progress=_on_progress,
-                is_cancelled=lambda: _pet_is_cancelled(token),
+                is_cancelled=lambda: _pet_is_cancelled(cancel_token),
             )
         except GenerationError as exc:
             return _err(rid, 5031, str(exc))
         finally:
-            _pet_cancel_release(token)
+            _pet_cancel_release(cancel_token)
 
         pet = store.load_pet(result.slug)
         payload = _pet_sprite_payload(pet, scale=_pet_config_scale()) if pet else {}

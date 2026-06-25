@@ -42,6 +42,7 @@ import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { setPetScale } from '@/store/pet-gallery'
+import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
@@ -1177,6 +1178,18 @@ export function usePromptActions({
           } catch (err) {
             renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
+        },
+        // /hatch opens the pet generator overlay (the desktop's rich, multi-step
+        // generate→pick→hatch→adopt flow). A typed description seeds the prompt
+        // so `/hatch a cyber fox` lands on the composer step prefilled.
+        hatch: async ({ arg }) => {
+          const concept = arg.trim()
+
+          if (concept) {
+            $petGenInput.set(concept)
+          }
+
+          openPetGenerate()
         },
         pet: async ctx => {
           const [sub = '', rawValue = ''] = ctx.arg.trim().split(/\s+/)

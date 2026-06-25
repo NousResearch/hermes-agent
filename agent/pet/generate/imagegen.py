@@ -26,6 +26,16 @@ logger = logging.getLogger(__name__)
 # qualify.
 _REF_CAPABLE = ("openai", "openai-codex", "krea", "openrouter", "nous")
 
+# Friendly label + one-line speed/quality note per reference-capable provider,
+# surfaced in the desktop pet-gen picker so users can trade speed for fidelity.
+_PROVIDER_META: dict[str, dict[str, str]] = {
+    "nous": {"label": "Nous Portal", "note": "Fast, balanced quality"},
+    "openrouter": {"label": "OpenRouter", "note": "Fastest — Gemini Flash Image"},
+    "openai": {"label": "OpenAI", "note": "Highest fidelity, slower"},
+    "openai-codex": {"label": "OpenAI (Codex)", "note": "Highest fidelity, slower"},
+    "krea": {"label": "Krea", "note": "Stylized, style-reference grounding"},
+}
+
 
 class GenerationError(RuntimeError):
     """Raised on any image-generation failure (no provider, API error, IO)."""
@@ -49,15 +59,24 @@ def _discover() -> None:
         logger.debug("image-gen plugin discovery failed: %s", exc)
 
 
-def resolve_provider(*, require_references: bool = True) -> SpriteProvider:
+def resolve_provider(*, require_references: bool = True, prefer: str | None = None) -> SpriteProvider:
     """Pick the image provider to use for sprite work.
 
-    Preference: the configured provider when it's reference-capable, else the
-    first available reference-capable provider. With *require_references* off we
-    fall back to any available provider (used for prompt-only base drafts).
+    Preference: an explicit *prefer* choice (the desktop pet-gen picker) when it's
+    reference-capable and configured, then the configured/active provider when
+    it's reference-capable, else the first available reference-capable provider.
+    With *require_references* off we fall back to any available provider (used for
+    prompt-only base drafts).
     """
     _discover()
     from agent.image_gen_registry import get_active_provider, get_provider
+
+    # An explicit user pick wins when it's reference-capable and has credentials;
+    # otherwise we ignore it and fall through to the normal resolution.
+    if prefer:
+        chosen = get_provider(prefer)
+        if prefer in _REF_CAPABLE and chosen is not None and chosen.is_available():
+            return SpriteProvider(name=prefer, provider=chosen, supports_references=True)
 
     # Configured / active provider first.
     active = None
@@ -83,9 +102,42 @@ def resolve_provider(*, require_references: bool = True) -> SpriteProvider:
 
     raise GenerationError(
         "Pet generation needs an image backend that supports reference images. "
-        "Open `hermes tools` → Image Generation and configure OpenRouter, Nous "
-        "Portal, or OpenAI (gpt-image-2) with an API key."
+        "Open `hermes tools` → Image Generation and configure Nous Portal, "
+        "OpenRouter, or OpenAI (gpt-image-2) with an API key."
     )
+
+
+def list_sprite_providers() -> list[dict]:
+    """The reference-capable providers available to pick for pet generation.
+
+    Returns ``[{name, label, note, default}]`` for every ref-capable provider the
+    user actually has credentials for, marking the one :func:`resolve_provider`
+    would choose with no explicit preference. Empty when none is configured (the
+    picker hides itself). Best-effort: discovery hiccups yield an empty list.
+    """
+    _discover()
+    from agent.image_gen_registry import get_provider
+
+    try:
+        default_name = resolve_provider(require_references=True).name
+    except GenerationError:
+        default_name = ""
+
+    out: list[dict] = []
+    for name in _REF_CAPABLE:
+        provider = get_provider(name)
+        if provider is None or not provider.is_available():
+            continue
+        meta = _PROVIDER_META.get(name, {})
+        out.append(
+            {
+                "name": name,
+                "label": meta.get("label", name),
+                "note": meta.get("note", ""),
+                "default": name == default_name,
+            }
+        )
+    return out
 
 
 def _save_local(image_ref: str, *, prefix: str) -> Path:
@@ -116,10 +168,15 @@ def generate(
     reference_images: list[Path] | None = None,
     provider: SpriteProvider | None = None,
     prefix: str = "pet_gen",
+    aspect_ratio: str = "square",
 ) -> list[Path]:
-    """Generate *n* square sprite images and return their local paths.
+    """Generate *n* sprite images and return their local paths.
 
     *reference_images* grounds the output on a base image (required for rows).
+    *aspect_ratio* picks the canvas: ``"square"`` for single-character base
+    drafts, ``"landscape"`` for multi-frame row strips (the wider 1536px canvas
+    gives every frame real horizontal room so winged poses don't have to be
+    shrunk to avoid touching their neighbors).
     We *ask* for a transparent background, but fall back to an opaque generation
     (cleaned up downstream by the chroma-key pass) on models that reject the
     flag. Raises :class:`GenerationError` if nothing usable comes back.
@@ -134,7 +191,7 @@ def generate(
     refs = [str(p) for p in (reference_images or [])]
 
     def _run(extra: dict) -> tuple[Path | None, str]:
-        kwargs: dict = {"aspect_ratio": "square", **extra}
+        kwargs: dict = {"aspect_ratio": aspect_ratio, **extra}
         if refs:
             # Providers disagree on the ref kwarg name: our OpenRouter/Nous
             # backends read ``reference_images``, OpenAI's gpt-image-2 reads

@@ -670,6 +670,10 @@ export interface Translations {
       hatchSaving: string
       namePlaceholder: string
       staleBackend: string
+      backgroundHint: string
+      genericError: string
+      referenceImageTooLarge: string
+      referenceImageInvalid: string
       adopt: string
       startOver: string
     }

@@ -1491,14 +1491,33 @@ canvas {
   width: 4.5rem;
   height: 0.8rem;
   border-radius: 50%;
-  background: radial-gradient(circle, color-mix(in srgb, #000 32%, transparent) 0%, transparent 72%);
+  /* Lighter on light backgrounds (~20% less ink); dark mode keeps it grounded. */
+  background: radial-gradient(circle, color-mix(in srgb, #000 var(--pet-egg-shadow-ink, 26%), transparent) 0%, transparent 72%);
   animation: pet-egg-shadow 2.4s ease-in-out infinite;
+}
+
+.dark .pet-egg-shadow {
+  --pet-egg-shadow-ink: 32%;
 }
 
 /* Contact shadow sized for the compact incubator egg (roughly its footprint). */
 .pet-egg-shadow--sm {
   width: 3rem;
   height: 0.6rem;
+}
+
+/* Contact shadow under the revealed pet — mirrors the floating mascot's in-app
+   shadow: an ellipse at the feet, ~55% of the sprite width, sitting behind it. */
+.pet-contact-shadow {
+  position: absolute;
+  bottom: -0.15rem;
+  left: 50%;
+  width: 55%;
+  aspect-ratio: 100 / 28;
+  transform: translateX(-50%);
+  background: radial-gradient(ellipse at center, color-mix(in srgb, #000 42%, transparent) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
 }
 
 /* Hatch wiggle for the pixel egg (rocks around its base). */

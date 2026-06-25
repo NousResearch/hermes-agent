@@ -141,6 +141,8 @@ def remove_background(image, *, chroma_key: tuple[int, int, int] | None = None, 
     """
     from collections import deque
 
+    from PIL import Image, ImageChops
+
     rgba = image.convert("RGBA")
     if _has_transparency(rgba):
         return _repair_internal_alpha_holes(rgba)
@@ -153,7 +155,21 @@ def remove_background(image, *, chroma_key: tuple[int, int, int] | None = None, 
         r, g, b, a = px[x, y]
         return a > _ALPHA_FLOOR and _color_distance(r, g, b, key) <= threshold
 
+    # Fast path for strongly-saturated chroma keys (our normal sprite prompts use
+    # hot magenta): remove all near-key opaque pixels with C-level channel ops.
+    # This clears both border-connected backdrop and enclosed triangular pockets
+    # between connected limbs/capes, without a Python flood over ~1.5M pixels.
+    if max(key) - min(key) >= 120:
+        near = _near_key_mask(rgba, key)  # L mask, 255 where near key
+        opaque = rgba.getchannel("A").point(lambda a: 255 if a > _ALPHA_FLOOR else 0)
+        remove_mask = ImageChops.darker(near, opaque)
+        return Image.composite(Image.new("RGBA", rgba.size, (0, 0, 0, 0)), rgba, remove_mask)
+
     visited = bytearray(w * h)
+    # Mark removals in a flat mask and apply them in one C composite at the end —
+    # writing `px[x, y] = (0,0,0,0)` per pixel was ~3M PixelAccess calls (84% of
+    # the whole pipeline) and pegged a core in pure Python, stalling the gateway.
+    remove = bytearray(w * h)
     queue: deque[tuple[int, int]] = deque()
 
     # Seed from every border pixel that looks like background.
@@ -181,7 +197,7 @@ def remove_background(image, *, chroma_key: tuple[int, int, int] | None = None, 
 
     while queue:
         x, y = queue.popleft()
-        px[x, y] = (0, 0, 0, 0)
+        remove[y * w + x] = 1
         for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
             if 0 <= nx < w and 0 <= ny < h:
                 idx = ny * w + nx
@@ -189,7 +205,11 @@ def remove_background(image, *, chroma_key: tuple[int, int, int] | None = None, 
                     visited[idx] = 1
                     if _is_bg(nx, ny):
                         queue.append((nx, ny))
-    return rgba
+
+    # One C-level composite instead of millions of per-pixel writes: paint the
+    # flooded pixels to (0,0,0,0) wherever the mask is set.
+    mask = Image.frombytes("L", (w, h), bytes(remove)).point(lambda v: 255 if v else 0)
+    return Image.composite(Image.new("RGBA", rgba.size, (0, 0, 0, 0)), rgba, mask)
 
 
 def _repair_internal_alpha_holes(image):
@@ -298,9 +318,13 @@ def _fit_to_cell(image):
     max_h = CELL_HEIGHT - _CELL_PAD
     scale = min(max_w / sprite.width, max_h / sprite.height, 1.0)
     if scale != 1.0:
+        # NEAREST, not LANCZOS: the generated "pixel art" has hard edges, and any
+        # interpolating resample anti-aliases them into a blurry, washed-out
+        # sprite once the renderer upscales the cell. Crisp blocky downscale reads
+        # as real pixel art.
         sprite = sprite.resize(
             (max(1, round(sprite.width * scale)), max(1, round(sprite.height * scale))),
-            Image.Resampling.LANCZOS,
+            Image.Resampling.NEAREST,
         )
     left = (CELL_WIDTH - sprite.width) // 2
     top = (CELL_HEIGHT - sprite.height) // 2
@@ -324,23 +348,13 @@ def _drop_side_bleed(image):
     w, h = rgba.size
     profile = _column_profile(rgba)  # mean alpha per column (fast C resize)
 
-    segments: list[tuple[int, int, int]] = []  # (left, right, mass)
-    start = mass = 0
-    started = False
-    for x, v in enumerate(profile + [0]):
-        if v > 2:
-            if not started:
-                start, mass, started = x, 0, True
-            mass += v
-        elif started:
-            segments.append((start, x, mass))
-            started = False
-
-    if len(segments) < 2:
+    runs = _content_runs(profile)
+    if len(runs) < 2:
         return rgba
-    keep_mass = max(m for _, _, m in segments) * _SIDE_LOBE_RATIO
-    keep = [(l, r) for l, r, m in segments if m >= keep_mass]
-    if len(keep) == len(segments):
+    masses = [sum(profile[l:r]) for l, r in runs]
+    keep_mass = max(masses) * _SIDE_LOBE_RATIO
+    keep = [run for run, m in zip(runs, masses) if m >= keep_mass]
+    if len(keep) == len(runs):
         return rgba
 
     # Zero every column band that isn't a kept segment (box paste, not per-pixel).
@@ -353,53 +367,6 @@ def _drop_side_bleed(image):
     if prev < w:
         rgba.paste(cut.crop((prev, 0, w, h)), (prev, 0))
     return rgba
-
-
-def _connected_components(image) -> list[dict]:
-    """Flood-fill the alpha mask into connected blobs (4-connectivity)."""
-    alpha = image.getchannel("A")
-    w, h = image.size
-    data = alpha.tobytes()
-    visited = bytearray(w * h)
-    out: list[dict] = []
-
-    for start, a in enumerate(data):
-        if a <= _ALPHA_FLOOR or visited[start]:
-            continue
-        stack = [start]
-        visited[start] = 1
-        pixels: list[int] = []
-        min_x = w
-        min_y = h
-        max_x = 0
-        max_y = 0
-        while stack:
-            cur = stack.pop()
-            pixels.append(cur)
-            x = cur % w
-            y = cur // w
-            min_x = min(min_x, x)
-            min_y = min(min_y, y)
-            max_x = max(max_x, x)
-            max_y = max(max_y, y)
-            for nb, ok in (
-                (cur - 1, x > 0),
-                (cur + 1, x + 1 < w),
-                (cur - w, y > 0),
-                (cur + w, y + 1 < h),
-            ):
-                if ok and not visited[nb] and data[nb] > _ALPHA_FLOOR:
-                    visited[nb] = 1
-                    stack.append(nb)
-        out.append(
-            {
-                "pixels": pixels,
-                "area": len(pixels),
-                "bbox": (min_x, min_y, max_x + 1, max_y + 1),
-                "center_x": (min_x + max_x + 1) / 2,
-            }
-        )
-    return out
 
 
 def _sever_expected_gutters(strip, frame_count: int):
@@ -418,7 +385,7 @@ def _sever_expected_gutters(strip, frame_count: int):
     out = strip.copy()
     px = out.load()
     slot = out.width / frame_count
-    half = max(2, min(8, round(slot * 0.02)))
+    half = max(3, min(18, round(slot * 0.06)))
     for i in range(1, frame_count):
         x = round(i * slot)
         left = max(0, x - half)
@@ -428,21 +395,6 @@ def _sever_expected_gutters(strip, frame_count: int):
                 r, g, b, _a = px[gx, gy]
                 px[gx, gy] = (r, g, b, 0)
     return out
-
-
-def _segmentable(strip, frame_count: int) -> bool:
-    """True if the (gutter-severed) strip yields ≥ *frame_count* distinct blobs.
-
-    Used only as a quality gate: a row that can't show this many separable poses
-    is a bad generation (caller retries / falls back), never silently sliced into
-    merged frames.
-    """
-    components = _connected_components(strip)
-    if not components:
-        return False
-    largest = max(c["area"] for c in components)
-    seed_threshold = max(120, largest * 0.20)
-    return sum(1 for c in components if c["area"] >= seed_threshold) >= frame_count
 
 
 def _slot_crops(strip, frame_count: int) -> list:
@@ -458,6 +410,61 @@ def _slot_crops(strip, frame_count: int) -> list:
     return [_drop_side_bleed(strip.crop((i * w0, 0, i * w0 + w0, h))) for i in range(frame_count)]
 
 
+def _content_runs(profile: list[int], *, threshold: int = 2) -> list[tuple[int, int]]:
+    """Contiguous column spans whose alpha mass exceeds *threshold*.
+
+    A column-projection of the alpha mask: empty (background) columns separate
+    one pose from the next, so the runs ARE the candidate frames.
+    """
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for x, v in enumerate(list(profile) + [0]):
+        if v > threshold:
+            if start is None:
+                start = x
+        elif start is not None:
+            runs.append((start, x))
+            start = None
+    return runs
+
+
+def _frame_x_ranges(strip, frame_count: int) -> list[tuple[int, int]] | None:
+    """Per-frame ``(left, right)`` column ranges from the row's empty gutters.
+
+    The standard sprite-sheet slice — once poses are separated by real gaps
+    (which generation now enforces), splitting is just "find the empty columns":
+
+    * spans == frames → one span per frame.
+    * spans  > frames → merge across the smallest gaps. A detached halo/ear sits
+      a tiny gap from its body, while the inter-pose gutter is the big gap that
+      survives — so over-segmentation (and any over-eager gutter sever) repairs
+      itself by collapsing only the small internal gaps.
+    * spans  < frames → poses are touching; not separable by gutters (the caller
+      raises for ``components`` or falls back to even slots for ``auto``).
+
+    Ranges span content only; the caller crops full cell height, so tall ears /
+    halos are never cut.
+    """
+    profile = _column_profile(strip)
+    runs = _content_runs(profile)
+    if not runs:
+        return None
+
+    # Drop trivial specks so stray noise never counts as a pose.
+    masses = [sum(profile[l:r]) for l, r in runs]
+    floor = max(masses) * 0.02
+    runs = [run for run, m in zip(runs, masses) if m >= floor]
+    if len(runs) < frame_count:
+        return None
+
+    groups = [[l, r] for l, r in runs]
+    while len(groups) > frame_count:
+        gi = min(range(len(groups) - 1), key=lambda i: groups[i + 1][0] - groups[i][1])
+        groups[gi][1] = groups[gi + 1][1]
+        del groups[gi + 1]
+    return [(l, r) for l, r in groups]
+
+
 def extract_strip_frames(
     strip,
     frame_count: int,
@@ -468,10 +475,15 @@ def extract_strip_frames(
 ) -> list:
     """Turn one generated row strip into *frame_count* frames.
 
-    Background is keyed out, the expected frame gutters are severed, then the
-    strip is sliced into equal columns. Connected components only *validate* that
-    the row holds *frame_count* separable poses (``components`` raises, ``auto``
-    falls back to slicing the un-severed strip).
+    The background is keyed out, thin connecting bridges at the expected
+    boundaries are severed, then the strip is sliced at its empty chroma gutters
+    (:func:`_frame_x_ranges`) — the plain "find each object, make a frame" cut
+    that works once poses are spaced apart (which generation now enforces).
+
+    Each frame is cropped at full cell height so tall ears / halos are never
+    clipped; :func:`_drop_side_bleed` trims any faint neighbour sliver. When the
+    poses are touching (fewer gutters than frames) ``components`` raises and
+    ``auto`` falls back to equal-width slots.
 
     *fit* (default) fits+centers each frame into a 192x208 cell — the standalone
     contract for callers that don't normalize. Hatching passes ``fit=False`` to
@@ -487,12 +499,29 @@ def extract_strip_frames(
         strip = strip.convert("RGBA")
 
     strip = remove_background(strip, chroma_key=chroma_key)
-    severed = _sever_expected_gutters(strip, frame_count)
-    segmentable = _segmentable(severed, frame_count)
-    if method == "components" and not segmentable:
-        raise ValueError(f"could not segment {frame_count} sprites from strip")
 
-    frames = _slot_crops(severed if segmentable else strip, frame_count)
+    # Prefer the real gutters as-is: when poses are already spaced (generation
+    # enforces this), slicing the strip untouched keeps each pose's own bounds and
+    # never cuts through an unevenly-placed silhouette. Only fall back to severing
+    # the expected boundaries when gaps alone can't separate the row — i.e. poses
+    # are bridged by a shared shadow/glow/1px line and read as one blob.
+    source = strip
+    ranges = _frame_x_ranges(source, frame_count)
+    if ranges is None:
+        source = _sever_expected_gutters(strip, frame_count)
+        ranges = _frame_x_ranges(source, frame_count)
+
+    if ranges is None:
+        if method == "components":
+            raise ValueError(f"could not segment {frame_count} sprites from strip")
+        frames = _slot_crops(source, frame_count)
+    else:
+        h = source.height
+        pad = max(2, min(16, round((source.width / max(1, frame_count)) * 0.04)))
+        frames = [
+            _drop_side_bleed(source.crop((max(0, left - pad), 0, min(source.width, right + pad), h)))
+            for left, right in ranges
+        ]
     return [_fit_to_cell(f) for f in frames] if fit else frames
 
 
@@ -535,15 +564,22 @@ def normalize_cells(frames_by_state: dict[str, list], *, pad: int = _NORMALIZE_P
     1. **Cross-correlate** each frame's column profile against the per-state
        *median* profile to find the integer shift that locks the **body** in
        place — robust to limbs/cape because the body dominates the profile.
-    2. **Union-crop** the registered frames through one shared window and apply
-       **one shared scale** + bottom-anchor, so size and baseline are uniform and
-       intra-state vertical motion (a jump's lift) is preserved.
+    2. **Union-crop** through one shared state window, then scale every state by a
+       single global factor keyed to its median pose height, so the character is
+       the same on-screen size in every row while a jump's lift still fits.
     """
     from PIL import Image
 
     blank = lambda: Image.new("RGBA", (CELL_WIDTH, CELL_HEIGHT), (0, 0, 0, 0))
+    med = lambda vs: sorted(vs)[len(vs) // 2]  # robust center; ignores a limb/cape outlier
 
     out: dict[str, list] = {}
+    prepared: dict[str, tuple[list, tuple[int, int, int, int], tuple[int, int]]] = {}
+    # Fill the cell — real petdex pets sit ~pad from the edges; the K cap below
+    # keeps a tall pose (a jump's lift) from clipping.
+    target_w = CELL_WIDTH - pad
+    target_h = CELL_HEIGHT - pad
+
     for state, frames in frames_by_state.items():
         rgba = [f.convert("RGBA") for f in frames]
         if not any(f.getbbox() for f in rgba):
@@ -572,14 +608,34 @@ def normalize_cells(frames_by_state: dict[str, list], *, pad: int = _NORMALIZE_P
             shifted.alpha_composite(f, (margin + _best_shift(ref, prof, window), 0))
             aligned.append(shifted)
 
-        # Shared window + scale over the registered set; bottom-anchored, centered.
+        # Shared window over the registered set; scale is resolved against a
+        # common apparent-character target below.
         boxes = [b for b in (a.getbbox() for a in aligned) if b]
         left = min(b[0] for b in boxes)
         top = min(b[1] for b in boxes)
         right = max(b[2] for b in boxes)
         bottom = max(b[3] for b in boxes)
+        prepared[state] = (
+            aligned,
+            (left, top, right, bottom),
+            (med([b[2] - b[0] for b in boxes]), med([b[3] - b[1] for b in boxes])),
+        )
+
+    if not prepared:
+        return out
+
+    # Uniform apparent size: scale each state by K / pose_h, so a row the model
+    # drew small renders as big as one it drew large. K is the one global cap that
+    # keeps the tallest/widest motion envelope (a jump's lift) inside the cell —
+    # for a still row union ≈ pose so its term ≈ target_h (full fill).
+    K = target_h
+    for (_aligned, (left, top, right, bottom), (_pose_w, pose_h)) in prepared.values():
         uw, uh = right - left, bottom - top
-        scale = min((CELL_WIDTH - pad) / uw, (CELL_HEIGHT - pad) / uh)
+        K = min(K, target_h * pose_h / max(1, uh), target_w * pose_h / max(1, uw))
+
+    for state, (aligned, (left, top, right, bottom), (_pose_w, pose_h)) in prepared.items():
+        uw, uh = right - left, bottom - top
+        scale = K / max(1, pose_h)
         sw, sh = max(1, round(uw * scale)), max(1, round(uh * scale))
         px, py = round((CELL_WIDTH - sw) / 2), round((CELL_HEIGHT - pad // 2) - sh)
 
@@ -587,7 +643,8 @@ def normalize_cells(frames_by_state: dict[str, list], *, pad: int = _NORMALIZE_P
         for a in aligned:
             crop = a.crop((left, top, right, bottom))
             if crop.size != (sw, sh):
-                crop = crop.resize((sw, sh), Image.Resampling.LANCZOS)
+                # NEAREST keeps the pixel-art edges crisp; LANCZOS blurred them.
+                crop = crop.resize((sw, sh), Image.Resampling.NEAREST)
             cell = blank()
             cell.alpha_composite(crop, (px, py))
             cells.append(cell)

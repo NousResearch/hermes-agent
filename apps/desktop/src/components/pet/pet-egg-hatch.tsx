@@ -44,14 +44,16 @@ export function PetProgress({ done, total }: { done?: number; total?: number }) 
 
 export function PetEggHatch({ subtitle, onCancel, cancelLabel }: PetEggHatchProps) {
   return (
-    <div className="flex flex-col items-center justify-center gap-3 px-2 py-5">
+    <div className="flex flex-col items-center justify-center gap-3">
       <div className="flex flex-col items-center">
         <PixelEggSprite mode="bounce" size={88} />
-        <span className="pet-egg-shadow mt-1.5" />
+        {/* The egg sprite has transparent canvas below the art, so pull the
+            shadow up ~a fifth of its size to sit at the egg's base. */}
+        <span className="pet-egg-shadow" style={{ marginTop: '-0.55rem' }} />
       </div>
 
       {subtitle && (
-        <p className="shimmer max-w-[15rem] text-center text-[length:var(--conversation-caption-font-size)] leading-snug">
+        <p className="shimmer shimmer-color-primary whitespace-nowrap text-center text-[length:var(--conversation-caption-font-size)] leading-snug text-(--ui-text-tertiary)">
           {subtitle}
         </p>
       )}

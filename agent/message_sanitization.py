@@ -27,6 +27,13 @@ logger = logging.getLogger(__name__)
 # scrubbing.
 _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
+# OpenAI enforces that tool/function ``name`` fields match ``^[a-zA-Z0-9_-]+$``.
+# Synthetic names emitted by the API itself (e.g. ``multi_tool_use.parallel``
+# for parallel tool calls) violate this constraint because they contain ``.``.
+# Once such a name enters the conversation history, every subsequent request is
+# rejected with HTTP 400 and the agent silently falls back to a secondary model.
+_VALID_TOOL_NAME_RE = re.compile(r'^[a-zA-Z0-9_-]+$')
+
 
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD (replacement character).
@@ -429,11 +436,63 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
     return found
 
 
+def _sanitize_tool_name(name: str) -> str:
+    """Replace characters that violate OpenAI's ``^[a-zA-Z0-9_-]+$`` constraint.
+
+    ``multi_tool_use.parallel`` (dot) and display names with spaces are the
+    most common offenders.  Dots become underscores; all other invalid chars
+    are stripped so the result stays readable.
+    """
+    if _VALID_TOOL_NAME_RE.match(name):
+        return name
+    return re.sub(r'[^a-zA-Z0-9_-]', '_', name)
+
+
+def _sanitize_messages_tool_names(messages: list) -> bool:
+    """Coerce ``name`` and ``function.name`` fields to ``^[a-zA-Z0-9_-]+$``.
+
+    OpenAI's Chat Completions API rejects names that don't match the pattern.
+    ``multi_tool_use.parallel`` is the most common offender — it is emitted
+    by the API itself for parallel tool calls and contains a ``.`` that violates
+    the constraint.  Once in history, every subsequent request 400s and the
+    agent silently falls back to the secondary model.
+
+    Returns True if any names were sanitized.
+    """
+    found = False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        # Message-level ``name`` (tool results, custom function-call results)
+        name = msg.get("name")
+        if isinstance(name, str) and not _VALID_TOOL_NAME_RE.match(name):
+            msg["name"] = _sanitize_tool_name(name)
+            found = True
+        # ``tool_calls[*].function.name`` on assistant messages
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, list):
+            for tc in tool_calls:
+                if not isinstance(tc, dict):
+                    continue
+                fn = tc.get("function")
+                if isinstance(fn, dict):
+                    fn_name = fn.get("name")
+                    if isinstance(fn_name, str) and not _VALID_TOOL_NAME_RE.match(fn_name):
+                        fn["name"] = _sanitize_tool_name(fn_name)
+                        found = True
+    if found:
+        logger.warning("Sanitized invalid tool/message names to match ^[a-zA-Z0-9_-]+$")
+    return found
+
+
 __all__ = [
     "_SURROGATE_RE",
+    "_VALID_TOOL_NAME_RE",
     "_sanitize_surrogates",
     "_sanitize_structure_surrogates",
     "_sanitize_messages_surrogates",
+    "_sanitize_tool_name",
+    "_sanitize_messages_tool_names",
     "_escape_invalid_chars_in_json_strings",
     "_repair_tool_call_arguments",
     "_strip_non_ascii",

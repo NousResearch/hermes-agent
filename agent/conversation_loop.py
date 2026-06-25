@@ -38,6 +38,7 @@ from agent.message_sanitization import (
     _repair_tool_call_arguments,
     _sanitize_messages_non_ascii,
     _sanitize_messages_surrogates,
+    _sanitize_messages_tool_names,
     _sanitize_structure_non_ascii,
     _sanitize_structure_surrogates,
     _sanitize_surrogates,
@@ -878,6 +879,12 @@ def run_conversation(
         # lone surrogates (U+D800-U+DFFF) that crash json.dumps() inside
         # the OpenAI SDK. Sanitizing here prevents the 3-retry cycle.
         _sanitize_messages_surrogates(api_messages)
+
+        # Coerce tool/function names to OpenAI's allowed character set
+        # (^[a-zA-Z0-9_-]+$).  ``multi_tool_use.parallel`` is emitted by
+        # the API itself for parallel tool calls and contains a ``.`` that
+        # causes HTTP 400 on every subsequent request once in history.
+        _sanitize_messages_tool_names(api_messages)
 
         # Calculate approximate request size for logging
         total_chars = sum(len(str(msg)) for msg in api_messages)

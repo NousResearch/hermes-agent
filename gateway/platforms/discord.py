@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import struct
 import subprocess
 import tempfile
@@ -30,6 +31,15 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+_NATURAL_TASK_REQUEST_RE = re.compile(
+    r"(直して|修正して|実装して|作って|作成して|追加して|更新して|反映して|"
+    r"確認して|調べて|見て|進めて|対応して|テストして|登録して|整理して|"
+    r"まとめて|やって|お願いします|お願い)"
+)
+_NATURAL_TASK_QUESTION_ONLY_RE = re.compile(
+    r"(意味わかりますか|意味分かりますか|どう思|できますか|できる[？?]|可能ですか|"
+    r"教えて|説明して|なぜ|なに|何[？?]|どこ|いつ)"
+)
 
 
 def _summarize_exec_approval(command: str, description: str = "") -> str:
@@ -86,7 +96,6 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-import re
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from utils import atomic_json_write
@@ -3085,17 +3094,44 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
-    def _build_task_slash_payload(self, interaction: discord.Interaction, prompt: str) -> Dict[str, str]:
-        """Build the canonical kanban payload for the GootHands /task command."""
+    @staticmethod
+    def _natural_task_requests_enabled() -> bool:
+        raw = (
+            os.getenv("DISCORD_NATURAL_TASK_KANBAN")
+            or os.getenv("HERMES_DISCORD_NATURAL_TASK_KANBAN")
+            or "true"
+        ).strip().lower()
+        return raw in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _looks_like_natural_task_request(prompt: str) -> bool:
+        normalized = re.sub(r"\s+", " ", (prompt or "").strip())
+        if not normalized or normalized.startswith("/"):
+            return False
+        if len(normalized) < 4:
+            return False
+        if _NATURAL_TASK_QUESTION_ONLY_RE.search(normalized):
+            return False
+        return bool(_NATURAL_TASK_REQUEST_RE.search(normalized))
+
+    def _build_task_payload(
+        self,
+        *,
+        prompt: str,
+        user: Any,
+        channel: Any,
+        channel_id: Any,
+        guild: Any,
+        origin_label: str,
+    ) -> Dict[str, str]:
+        """Build the canonical AI Company kanban payload from a Discord request."""
         normalized = re.sub(r"\s+", " ", (prompt or "").strip())
         if not normalized:
             raise ValueError("prompt is required")
 
         title = normalized if len(normalized) <= 60 else normalized[:59].rstrip() + "…"
-        user = getattr(interaction, "user", None)
-        channel = getattr(interaction, "channel", None)
-        channel_name = getattr(channel, "name", None) or str(getattr(interaction, "channel_id", "") or "")
-        guild = getattr(channel, "guild", None) or getattr(interaction, "guild", None)
+        channel_name = getattr(channel, "name", None) or str(channel_id or "")
+        guild = getattr(channel, "guild", None) or guild
         if guild and getattr(guild, "name", None) and channel_name:
             channel_name = f"{guild.name} / #{channel_name}"
         user_name = (
@@ -3106,7 +3142,7 @@ class DiscordAdapter(BasePlatformAdapter):
         user_id = str(getattr(user, "id", "") or "")
 
         body = (
-            "Discordの /task から登録された依頼です。\n\n"
+            f"{origin_label}\n\n"
             "依頼内容:\n"
             f"{(prompt or '').strip()}\n\n"
             "登録元:\n"
@@ -3115,7 +3151,8 @@ class DiscordAdapter(BasePlatformAdapter):
             f"- Channel: {channel_name}\n\n"
             "運用方針:\n"
             "- 初期担当は operations-orchestrator。\n"
-            "- 外部送信、公開、削除、GitHub push/PR、VPS変更などは、必要に応じてオーナー確認へ戻す。\n"
+            "- 通常依頼は triage に固定せず、実行待ちとしてAI側で進める。\n"
+            "- 外部送信、公開、削除、GitHub push/PR、VPS変更などは、必要に応じて確認待ちへ戻す。\n"
         )
 
         return {
@@ -3125,20 +3162,105 @@ class DiscordAdapter(BasePlatformAdapter):
             "user_id": user_id,
         }
 
+    def _build_task_slash_payload(self, interaction: discord.Interaction, prompt: str) -> Dict[str, str]:
+        """Build the canonical kanban payload for the GootHands /task command."""
+        return self._build_task_payload(
+            prompt=prompt,
+            user=getattr(interaction, "user", None),
+            channel=getattr(interaction, "channel", None),
+            channel_id=getattr(interaction, "channel_id", None),
+            guild=getattr(interaction, "guild", None),
+            origin_label="Discordの /task から登録された依頼です。",
+        )
+
+    def _build_natural_task_payload(self, message: DiscordMessage, prompt: str) -> Dict[str, str]:
+        """Build the canonical kanban payload for a natural-language Discord request."""
+        return self._build_task_payload(
+            prompt=prompt,
+            user=getattr(message, "author", None),
+            channel=getattr(message, "channel", None),
+            channel_id=getattr(getattr(message, "channel", None), "id", None),
+            guild=getattr(message, "guild", None),
+            origin_label="Discordの自然文依頼から登録されたタスクです。",
+        )
+
     @staticmethod
     def _format_task_slash_status(status: str) -> str:
         mapping = {
             "ready": "実行待ち",
             "running": "作業中",
+            "scheduled": "予定待ち",
             "todo": "待機中",
             "triage": "整理中",
             "blocked": "確認待ち",
+            "review": "レビュー中",
             "done": "完了",
             "failed": "失敗",
             "crashed": "停止",
             "timed_out": "時間切れ",
         }
         return mapping.get(status, status or "-")
+
+    def _create_ai_company_task(
+        self,
+        *,
+        payload: Dict[str, str],
+        idempotency_key: Optional[str],
+        chat_id: str,
+        thread_id: Optional[str],
+    ) -> Dict[str, str]:
+        from hermes_cli import kanban_db as kb
+
+        board = (
+            os.getenv("HERMES_TASK_KANBAN_BOARD")
+            or os.getenv("HERMES_KANBAN_BOARD")
+            or "ai-company-2-0"
+        )
+        assignee = os.getenv("HERMES_TASK_DEFAULT_ASSIGNEE", "operations-orchestrator")
+
+        conn = kb.connect(board=board)
+        try:
+            task_id = kb.create_task(
+                conn,
+                title=payload["title"],
+                body=payload["body"],
+                assignee=assignee,
+                created_by=payload["created_by"],
+                workspace_kind="scratch",
+                idempotency_key=idempotency_key,
+                initial_status="running",
+                board=board,
+            )
+            task = kb.get_task(conn, task_id)
+
+            if chat_id:
+                kb.add_notify_sub(
+                    conn,
+                    task_id=task_id,
+                    platform="discord",
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    user_id=payload["user_id"] or None,
+                    notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                )
+            return {
+                "id": task_id,
+                "title": getattr(task, "title", payload["title"]),
+                "assignee": getattr(task, "assignee", assignee) or assignee,
+                "status": getattr(task, "status", "ready"),
+            }
+        finally:
+            conn.close()
+
+    def _format_task_created_notice(self, task_data: Dict[str, str]) -> str:
+        return (
+            "依頼として受け取りました。\n"
+            "カンバンでは実行待ちです。AI側で進め、確認が必要なものだけ確認待ちに戻します。\n\n"
+            f"タスクID: `{task_data['id']}`\n"
+            f"タスク: {task_data['title']}\n"
+            f"担当: {task_data['assignee']}\n"
+            f"状態: {self._format_task_slash_status(task_data['status'])}"
+        )
 
     async def _handle_task_slash(self, interaction: discord.Interaction, prompt: str) -> None:
         """Create an AI Company kanban task from an explicit Discord /task command."""
@@ -3158,55 +3280,19 @@ class DiscordAdapter(BasePlatformAdapter):
         await interaction.response.defer(ephemeral=True)
 
         def _create_task() -> Dict[str, str]:
-            from hermes_cli import kanban_db as kb
-
-            board = (
-                os.getenv("HERMES_TASK_KANBAN_BOARD")
-                or os.getenv("HERMES_KANBAN_BOARD")
-                or "ai-company-2-0"
-            )
-            assignee = os.getenv("HERMES_TASK_DEFAULT_ASSIGNEE", "operations-orchestrator")
             interaction_id = str(getattr(interaction, "id", "") or "")
             idempotency_key = (
                 f"discord-task:{interaction_id}" if interaction_id else None
             )
-
-            conn = kb.connect(board=board)
-            try:
-                task_id = kb.create_task(
-                    conn,
-                    title=payload["title"],
-                    body=payload["body"],
-                    assignee=assignee,
-                    created_by=payload["created_by"],
-                    workspace_kind="scratch",
-                    idempotency_key=idempotency_key,
-                    initial_status="running",
-                    board=board,
-                )
-                task = kb.get_task(conn, task_id)
-
-                channel = getattr(interaction, "channel", None)
-                thread_id = str(getattr(interaction, "channel_id", "") or "") if isinstance(channel, discord.Thread) else None
-                chat_id = str(getattr(interaction, "channel_id", "") or "")
-                if chat_id:
-                    kb.add_notify_sub(
-                        conn,
-                        task_id=task_id,
-                        platform="discord",
-                        chat_id=chat_id,
-                        thread_id=thread_id,
-                        user_id=payload["user_id"] or None,
-                        notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
-                    )
-                return {
-                    "id": task_id,
-                    "title": getattr(task, "title", payload["title"]),
-                    "assignee": getattr(task, "assignee", assignee) or assignee,
-                    "status": getattr(task, "status", "ready"),
-                }
-            finally:
-                conn.close()
+            channel = getattr(interaction, "channel", None)
+            thread_id = str(getattr(interaction, "channel_id", "") or "") if isinstance(channel, discord.Thread) else None
+            chat_id = str(getattr(interaction, "channel_id", "") or "")
+            return self._create_ai_company_task(
+                payload=payload,
+                idempotency_key=idempotency_key,
+                chat_id=chat_id,
+                thread_id=thread_id,
+            )
 
         try:
             task_data = await asyncio.to_thread(_create_task)
@@ -3218,14 +3304,56 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         await interaction.edit_original_response(
-            content=(
-                "タスクを追加しました。\n\n"
-                f"ID: `{task_data['id']}`\n"
-                f"タスク: {task_data['title']}\n"
-                f"担当: {task_data['assignee']}\n"
-                f"状態: {self._format_task_slash_status(task_data['status'])}"
-            ),
+            content=self._format_task_created_notice(task_data),
         )
+
+    async def _maybe_handle_natural_task_request(
+        self,
+        *,
+        message: DiscordMessage,
+        prompt: str,
+        chat_id: str,
+        thread_id: Optional[str],
+        has_attachments: bool,
+    ) -> bool:
+        if has_attachments:
+            return False
+        if not self._natural_task_requests_enabled():
+            return False
+        if not self._looks_like_natural_task_request(prompt):
+            return False
+
+        try:
+            payload = self._build_natural_task_payload(message, prompt)
+        except ValueError:
+            return False
+
+        def _create_task() -> Dict[str, str]:
+            message_id = str(getattr(message, "id", "") or "")
+            return self._create_ai_company_task(
+                payload=payload,
+                idempotency_key=f"discord-natural-task:{message_id}" if message_id else None,
+                chat_id=chat_id,
+                thread_id=thread_id,
+            )
+
+        try:
+            task_data = await asyncio.to_thread(_create_task)
+        except Exception:
+            logger.exception("[%s] Failed to create kanban task from natural Discord request", self.name)
+            await self.send(
+                chat_id,
+                "依頼として受け取りましたが、カンバン登録に失敗しました。内部ログではなく、状態を確認してからもう一度対応します。",
+                metadata={"thread_id": thread_id} if thread_id else None,
+            )
+            return True
+
+        await self.send(
+            chat_id,
+            self._format_task_created_notice(task_data),
+            metadata={"thread_id": thread_id} if thread_id else None,
+        )
+        return True
 
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
@@ -5065,6 +5193,15 @@ class DiscordAdapter(BasePlatformAdapter):
         event_text = normalized_content
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
+
+        if await self._maybe_handle_natural_task_request(
+            message=message,
+            prompt=event_text,
+            chat_id=str(effective_channel.id),
+            thread_id=thread_id,
+            has_attachments=bool(all_attachments),
+        ):
+            return
 
         # ── History backfill ─────────────────────────────────────────
         # When require_mention is active, the bot only processes messages

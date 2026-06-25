@@ -241,11 +241,14 @@ async def test_task_slash_creates_kanban_task(adapter, monkeypatch):
     assert created["kwargs"]["assignee"] == "operations-orchestrator"
     assert created["kwargs"]["idempotency_key"] == "discord-task:987654"
     assert "Discordの /task から登録された依頼です。" in created["kwargs"]["body"]
+    assert created["kwargs"]["initial_status"] == "running"
+    assert "通常依頼は triage に固定せず" in created["kwargs"]["body"]
     fake_add_notify_sub.assert_called_once()
 
     interaction.edit_original_response.assert_awaited_once()
     args, kwargs = interaction.edit_original_response.await_args
-    assert "タスクを追加しました。" in kwargs["content"]
+    assert "依頼として受け取りました。" in kwargs["content"]
+    assert "AI側で進め" in kwargs["content"]
     assert "t_123abc456def" in kwargs["content"]
     assert "operations-orchestrator" in kwargs["content"]
     assert "実行待ち" in kwargs["content"]
@@ -741,6 +744,87 @@ def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza
         created_at=None,
         id=12345,
     )
+
+
+@pytest.mark.asyncio
+async def test_natural_language_task_request_creates_ready_kanban_task(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
+    monkeypatch.delenv("HERMES_TASK_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_TASK_DEFAULT_ASSIGNEE", raising=False)
+
+    fake_conn = MagicMock()
+    fake_conn.close = MagicMock()
+    created = {}
+
+    def fake_connect(*, board=None):
+        created["board"] = board
+        return fake_conn
+
+    def fake_create_task(conn, **kwargs):
+        created["conn"] = conn
+        created["kwargs"] = kwargs
+        return "t_natural123"
+
+    def fake_get_task(conn, task_id):
+        return SimpleNamespace(
+            id=task_id,
+            title="この表示を直してください",
+            assignee="operations-orchestrator",
+            status="ready",
+        )
+
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", fake_connect)
+    monkeypatch.setattr("hermes_cli.kanban_db.create_task", fake_create_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.get_task", fake_get_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.add_notify_sub", MagicMock())
+
+    adapter._active_profile_name = MagicMock(return_value="rino")
+    adapter.handle_message = AsyncMock()
+    adapter.send = AsyncMock()
+
+    msg = _fake_message(_FakeTextChannel(), content="この表示を直してください")
+
+    await adapter._handle_message(msg)
+
+    adapter.handle_message.assert_not_awaited()
+    adapter.send.assert_awaited_once()
+    assert created["board"] == "ai-company-2-0"
+    assert created["kwargs"]["title"] == "この表示を直してください"
+    assert created["kwargs"]["assignee"] == "operations-orchestrator"
+    assert created["kwargs"]["idempotency_key"] == "discord-natural-task:12345"
+    assert created["kwargs"]["initial_status"] == "running"
+    assert "Discordの自然文依頼から登録されたタスクです。" in created["kwargs"]["body"]
+    assert "通常依頼は triage に固定せず" in created["kwargs"]["body"]
+
+    sent_content = adapter.send.await_args.args[1]
+    assert "依頼として受け取りました。" in sent_content
+    assert "AI側で進め" in sent_content
+    assert "実行待ち" in sent_content
+
+
+@pytest.mark.asyncio
+async def test_natural_language_question_stays_regular_chat(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    monkeypatch.setenv("DISCORD_NATURAL_TASK_KANBAN", "true")
+
+    captured_events = []
+
+    async def capture_handle(event):
+        captured_events.append(event)
+
+    adapter.handle_message = capture_handle
+    adapter.send = AsyncMock()
+
+    msg = _fake_message(_FakeTextChannel(), content="この説明の意味わかりますか？")
+
+    await adapter._handle_message(msg)
+
+    adapter.send.assert_not_awaited()
+    assert len(captured_events) == 1
+    assert captured_events[0].text == "この説明の意味わかりますか？"
 
 
 @pytest.mark.asyncio

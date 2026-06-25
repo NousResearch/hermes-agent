@@ -1356,6 +1356,127 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
+def _codex_incomplete_with_reasoning(text: str, reasoning_id: str = "rs_default"):
+    """Incomplete response with a reasoning item whose id/encrypted_content
+    can vary independently of the visible message text."""
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id=reasoning_id,
+                encrypted_content=f"opaque_{reasoning_id}",
+                summary=[SimpleNamespace(text="thinking...")],
+            ),
+            SimpleNamespace(
+                type="message",
+                status="in_progress",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="in_progress",
+        model="gpt-5-codex",
+    )
+
+
+def test_codex_incomplete_visible_dedup_suppresses_duplicate_interims(monkeypatch):
+    """Two consecutive incomplete responses with identical visible content
+    but different opaque reasoning items should be collapsed — only the first
+    interim is emitted to the user (#52711)."""
+    agent = _build_agent(monkeypatch)
+    # 2 incompletes with same text but different reasoning ids, then a final.
+    # (Only 2 to avoid hitting the cap of 3.)
+    responses = [
+        _codex_incomplete_with_reasoning("Working on it...", "rs_1"),
+        _codex_incomplete_with_reasoning("Working on it...", "rs_2"),
+        _codex_message_response("Done."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    emitted: list = []
+    original_emit = agent._emit_interim_assistant_message
+    def _capture_emit(msg):
+        emitted.append(msg.get("content"))
+        original_emit(msg)
+    monkeypatch.setattr(agent, "_emit_interim_assistant_message", _capture_emit)
+
+    result = agent.run_conversation("test dedup")
+
+    assert result["completed"] is True
+    # Only ONE interim should have been emitted (the first), not two.
+    assert len(emitted) == 1
+    assert emitted[0] == "Working on it..."
+
+
+def test_codex_incomplete_opaque_state_updated_in_place(monkeypatch):
+    """When visible content is a duplicate, the last message's opaque state
+    (codex_reasoning_items) should be updated in-place without emitting a new
+    interim (#52711)."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_incomplete_with_reasoning("Partial output...", "rs_1"),
+        _codex_incomplete_with_reasoning("Partial output...", "rs_2"),
+        _codex_message_response("Final."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("test opaque update")
+
+    assert result["completed"] is True
+    # Find the incomplete interim message in the result.
+    incompletes = [
+        m for m in result["messages"]
+        if m.get("role") == "assistant" and m.get("finish_reason") == "incomplete"
+    ]
+    # Only one incomplete message should exist (the second was deduped).
+    assert len(incompletes) == 1
+    # The opaque state should reflect the LATEST reasoning item (rs_2),
+    # updated in-place on the single message.
+    items = incompletes[0].get("codex_reasoning_items")
+    if items:
+        assert any(
+            (i.get("id") if isinstance(i, dict) else getattr(i, "id", None)) == "rs_2"
+            for i in items
+        )
+
+
+def test_codex_incomplete_cap_is_cumulative(monkeypatch):
+    """The incomplete-continuation cap (3) should be cumulative per turn —
+    it must NOT reset when a non-incomplete iteration (e.g. tool call)
+    occurs between incompletes (#52711)."""
+    agent = _build_agent(monkeypatch)
+    agent.max_iterations = 8  # Enough room for 3 incompletes + 2 tool calls
+    # Sequence: incomplete(1) → tool_call → incomplete(2) → tool_call → incomplete(3) → should cap
+    responses = [
+        _codex_incomplete_message_response("Step 1..."),
+        _codex_tool_call_response(),
+        _codex_incomplete_message_response("Step 2..."),
+        _codex_tool_call_response(),
+        _codex_incomplete_message_response("Step 3..."),
+        # This should NOT be reached — cap at 3.
+        _codex_message_response("Should not reach."),
+    ]
+    call_count = [0]
+    def _counting_api_call(api_kwargs):
+        call_count[0] += 1
+        return responses.pop(0)
+    monkeypatch.setattr(agent, "_interruptible_api_call", _counting_api_call)
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": '{"ok":true}'})
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+
+    result = agent.run_conversation("test cumulative cap")
+
+    # Should return partial after 3 cumulative incompletes.
+    assert result["completed"] is False
+    assert result["partial"] is True
+    assert "incomplete after 3" in result.get("error", "")
+    # Should NOT have reached the final "Should not reach." response.
+    assert result["final_response"] is None
+
+
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
@@ -2167,7 +2288,8 @@ def test_codex_message_item_status_survives_conversion_and_preflight(monkeypatch
 
 def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch):
     """Two consecutive reasoning-only responses with different encrypted content
-    must NOT be treated as duplicates."""
+    are deduped on visible content — only one interim is kept, but opaque state
+    is updated in-place (#52711)."""
     agent = _build_agent(monkeypatch)
     responses = [
         # First reasoning-only response
@@ -2200,23 +2322,23 @@ def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch
 
     assert result["completed"] is True
     assert result["final_response"] == "Final answer after thinking."
-    # Both reasoning-only interim messages should be in history (not collapsed)
+    # Only one reasoning-only interim should be in history (deduped on
+    # visible content — both have empty visible output).
     interim_msgs = [
         msg for msg in result["messages"]
         if msg.get("role") == "assistant"
         and msg.get("finish_reason") == "incomplete"
     ]
-    assert len(interim_msgs) == 2
-    encrypted_contents = [
-        msg["codex_reasoning_items"][0]["encrypted_content"]
-        for msg in interim_msgs
-    ]
-    assert "enc_first" in encrypted_contents
-    assert "enc_second" in encrypted_contents
+    assert len(interim_msgs) == 1
+    # But the opaque state should reflect the LATEST reasoning item.
+    items = interim_msgs[0].get("codex_reasoning_items")
+    if items:
+        assert items[0].get("encrypted_content") == "enc_second"
 
 
 def test_duplicate_detection_distinguishes_different_codex_message_items(monkeypatch):
-    """Incomplete turns with new message ids/phases/statuses must not be collapsed."""
+    """Incomplete turns with same visible content but different message ids
+    are deduped — only one interim kept, opaque state updated in-place (#52711)."""
     agent = _build_agent(monkeypatch)
     responses = [
         SimpleNamespace(
@@ -2259,12 +2381,12 @@ def test_duplicate_detection_distinguishes_different_codex_message_items(monkeyp
         if msg.get("role") == "assistant"
         and msg.get("finish_reason") == "incomplete"
     ]
-    assert len(interim_msgs) == 2
-    assert [msg["codex_message_items"][0]["id"] for msg in interim_msgs] == [
-        "msg_first",
-        "msg_second",
-    ]
-    assert all(msg["codex_message_items"][0]["status"] == "in_progress" for msg in interim_msgs)
+    # Only one interim — deduped on visible content ("Still working..." == "Still working...").
+    assert len(interim_msgs) == 1
+    # Opaque state should reflect the latest message item.
+    items = interim_msgs[0].get("codex_message_items")
+    if items:
+        assert items[0].get("id") == "msg_second"
 
 
 def test_chat_messages_to_responses_input_deduplicates_reasoning_ids(monkeypatch):

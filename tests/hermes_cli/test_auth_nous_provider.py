@@ -238,8 +238,8 @@ def test_resolve_nous_runtime_credentials_invoke_jwt_is_idempotent(
         "active_provider": "nous",
         "providers": {
             "nous": {
-                "portal_base_url": "https://portal.example.com",
-                "inference_base_url": "https://inference.example.com/v1",
+                "portal_base_url": "https://portal.nousresearch.com",
+                "inference_base_url": "https://inference-api.nousresearch.com/v1",
                 "client_id": "hermes-cli",
                 "token_type": "Bearer",
                 "scope": auth_mod.DEFAULT_NOUS_SCOPE,

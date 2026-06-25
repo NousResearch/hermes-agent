@@ -149,11 +149,14 @@ def test_background_command_prefers_live_env_cwd_over_init_time_cwd(monkeypatch)
     )
 
     assert result["exit_code"] == 0
+    # session_key falls back to the raw task_id when no gateway contextvar is set
+    # (it doesn't propagate to tool-worker threads), so process.kill / stop can
+    # still find and terminate this background process.
     assert registry.calls == [{
         "command": "sleep 1",
         "cwd": "/workspace/live",
         "task_id": task_id,
-        "session_key": "",
+        "session_key": task_id,
         "env_vars": {},
         "use_pty": False,
     }]

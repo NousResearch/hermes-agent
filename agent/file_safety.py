@@ -77,6 +77,42 @@ def build_write_denied_prefixes(home: str) -> list[str]:
     ]
 
 
+def build_read_denied_paths(home: str) -> set[str]:
+    """Return exact per-user credential files that must never be read."""
+    return {
+        os.path.realpath(p)
+        for p in [
+            os.path.join(home, ".netrc"),
+            os.path.join(home, ".pgpass"),
+            os.path.join(home, ".npmrc"),
+            os.path.join(home, ".pypirc"),
+            os.path.join(home, ".git-credentials"),
+        ]
+    }
+
+
+def build_read_denied_prefixes(home: str) -> list[str]:
+    """Return per-user credential directories that must never be read."""
+    return [
+        os.path.realpath(p)
+        for p in [
+            os.path.join(home, ".ssh"),
+            os.path.join(home, ".aws"),
+            os.path.join(home, ".gnupg"),
+            os.path.join(home, ".kube"),
+            os.path.join(home, ".docker"),
+            os.path.join(home, ".azure"),
+            os.path.join(home, ".config", "gh"),
+            os.path.join(home, ".config", "gcloud"),
+        ]
+    ]
+
+
+def _is_at_or_under(path: str, root: str) -> bool:
+    """Return True when ``path`` is exactly ``root`` or inside it."""
+    return path == root or path.startswith(root + os.sep)
+
+
 def get_safe_write_root() -> Optional[str]:
     """Return the resolved HERMES_WRITE_SAFE_ROOT path, or None if unset."""
     root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
@@ -148,7 +184,7 @@ _BLOCKED_PROJECT_ENV_BASENAMES: set[str] = {
 def get_read_block_error(path: str) -> Optional[str]:
     """Return an error message when a read targets a denied Hermes path.
 
-    Three categories are blocked:
+    Four categories are blocked:
 
       * Internal Hermes cache files under ``HERMES_HOME/skills/.hub`` —
         readable metadata that an attacker could use as a prompt-injection
@@ -167,6 +203,9 @@ def get_read_block_error(path: str) -> Optional[str]:
         own projects. The agent helping debug a project shouldn't normally
         need to read these — ``.env.example`` is the documented-shape
         substitute.
+      * Common per-user credential stores under the OS home directory, such as
+        ``~/.ssh/``, ``~/.aws/``, ``~/.kube/``, ``~/.docker/``, ``~/.netrc``,
+        ``~/.npmrc``, and GitHub / gcloud credential stores.
 
     **This is NOT a security boundary.** The terminal tool runs as the
     same OS user with shell access; the agent can still ``cat auth.json``
@@ -191,6 +230,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     terminal cwd differs from the process cwd.
     """
     resolved = Path(path).expanduser().resolve()
+    resolved_str = os.path.realpath(str(resolved))
 
     # Resolve BOTH the active HERMES_HOME (profile-aware) AND the global
     # Hermes root so credential stores at <root>/auth.json etc. are also
@@ -274,6 +314,27 @@ def get_read_block_error(path: str) -> Optional[str]:
             "and cannot be read directly. (Defense-in-depth — not a "
             "security boundary; the terminal tool can still bypass.)"
         )
+
+    # Common user credential stores outside HERMES_HOME. These mirror the
+    # sensitive user files/directories that write_file already treats as
+    # protected, while intentionally avoiding broad shell rc files and system
+    # files so normal debugging reads remain available.
+    home = os.path.realpath(os.path.expanduser("~"))
+    if resolved_str in build_read_denied_paths(home):
+        return (
+            f"Access denied: {path} is a user credential store "
+            "and cannot be read directly. Use the relevant provider, auth, "
+            "or platform tool instead. (Defense-in-depth — not a security "
+            "boundary; the terminal tool can still bypass.)"
+        )
+    for prefix in build_read_denied_prefixes(home):
+        if _is_at_or_under(resolved_str, prefix):
+            return (
+                f"Access denied: {path} is inside a user credential store "
+                "and cannot be read directly. Use the relevant provider, auth, "
+                "or platform tool instead. (Defense-in-depth — not a security "
+                "boundary; the terminal tool can still bypass.)"
+            )
 
     # Block common secret-bearing project-local .env files anywhere on disk.
     # The agent helping a user with their project rarely needs to read raw

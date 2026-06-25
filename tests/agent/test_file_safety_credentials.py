@@ -30,6 +30,16 @@ def fake_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture()
+def fake_user_home(tmp_path, monkeypatch):
+    """Point OS home expansion at a tmp dir for user-credential checks."""
+    home = tmp_path / "user_home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home
+
+
 def _create(home: Path, rel: str | Path) -> Path:
     """Create the file (with parents) so realpath() resolves it."""
     p = home / rel
@@ -293,6 +303,103 @@ def test_config_yaml_not_blocked(fake_home):
 
     cfg = _create(fake_home, "config.yaml")
     assert get_read_block_error(str(cfg)) is None
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    [
+        Path(".ssh") / "id_rsa",
+        Path(".ssh") / "config",
+        Path(".aws") / "credentials",
+        Path(".gnupg") / "pubring.kbx",
+        Path(".kube") / "config",
+        Path(".docker") / "config.json",
+        Path(".azure") / "azureProfile.json",
+        Path(".config") / "gh" / "hosts.yml",
+        Path(".config") / "gcloud" / "application_default_credentials.json",
+        ".netrc",
+        ".pgpass",
+        ".npmrc",
+        ".pypirc",
+        ".git-credentials",
+    ],
+)
+def test_user_credential_stores_blocked(fake_user_home, relpath):
+    """Common per-user credential stores must not be readable via read_file."""
+    from agent.file_safety import get_read_block_error
+
+    secret = _create(fake_user_home, relpath)
+    err = get_read_block_error(str(secret))
+
+    assert err is not None
+    assert "user credential store" in err
+
+
+def test_non_credential_home_file_not_blocked(fake_user_home):
+    """The user-home guard should not block arbitrary non-secret files."""
+    from agent.file_safety import get_read_block_error
+
+    note = _create(fake_user_home, "notes.txt")
+
+    assert get_read_block_error(str(note)) is None
+
+
+def test_read_file_tool_blocks_user_credential_store(
+    fake_user_home, tmp_path, monkeypatch
+):
+    """The real read_file tool must not return ~/.aws/credentials content."""
+    import json
+
+    import tools.file_tools as ft
+
+    credentials = _create(fake_user_home, Path(".aws") / "credentials")
+    credentials.write_text(
+        "[default]\naws_secret_access_key = SHOULD_NOT_LEAK\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        ft, "_get_live_tracking_cwd", lambda task_id="default": None
+    )
+    monkeypatch.setattr(
+        ft,
+        "_get_file_ops",
+        lambda task_id="default": pytest.fail("read_file should be blocked before I/O"),
+    )
+
+    out = json.loads(ft.read_file_tool(str(credentials), task_id="aws-creds-test"))
+
+    assert "error" in out
+    assert "user credential store" in out["error"]
+    assert "SHOULD_NOT_LEAK" not in json.dumps(out)
+
+
+def test_read_file_tool_blocks_relative_user_credential_store(
+    fake_user_home, tmp_path, monkeypatch
+):
+    """Relative task paths under the terminal cwd must hit the same guard."""
+    import json
+
+    import tools.file_tools as ft
+
+    credentials = _create(fake_user_home, Path(".ssh") / "id_rsa")
+    credentials.write_text("SSH_PRIVATE_KEY_MARKER", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_CWD", str(fake_user_home))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        ft, "_get_live_tracking_cwd", lambda task_id="default": None
+    )
+    monkeypatch.setattr(
+        ft,
+        "_get_file_ops",
+        lambda task_id="default": pytest.fail("read_file should be blocked before I/O"),
+    )
+
+    out = json.loads(ft.read_file_tool(".ssh/id_rsa", task_id="ssh-creds-test"))
+
+    assert "error" in out
+    assert "user credential store" in out["error"]
+    assert "SSH_PRIVATE_KEY_MARKER" not in json.dumps(out)
 
 
 def test_profile_mode_blocks_root_credentials(tmp_path, monkeypatch):

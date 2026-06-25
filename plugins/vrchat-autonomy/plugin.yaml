@@ -1,0 +1,20 @@
+name: vrchat-autonomy
+version: 0.1.0
+description: "Autonomous VRChat chatbox, loop, movement, and Neuro API bridge."
+author: "Hermes local plugin"
+kind: standalone
+platforms:
+  - windows
+  - linux
+  - macos
+provides_tools:
+  - vrchat_autonomy_plugin_status
+  - vrchat_autonomy_plugin_chatbox
+  - vrchat_autonomy_plugin_move
+  - vrchat_autonomy_plugin_tick
+  - vrchat_autonomy_plugin_enqueue
+  - vrchat_autonomy_plugin_neuro_status
+  - vrchat_autonomy_plugin_neuro_bootstrap
+  - vrchat_autonomy_plugin_neuro_handle_action
+provides_cli:
+  - vrchat-autonomy

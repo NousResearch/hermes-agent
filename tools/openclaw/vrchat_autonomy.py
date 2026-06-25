@@ -30,6 +30,11 @@ HEARTBEAT_READY_TICK_CODES = {"VRCHAT_LAUNCHED_READY", "READINESS_COMPLETE"}
 
 DEFAULT_VOICEVOX_URL = os.environ.get("VOICEVOX_URL", "http://127.0.0.1:50021")
 DEFAULT_HARNESS_URL = os.environ.get("HYPURA_HARNESS_URL", "http://127.0.0.1:18794")
+DEFAULT_IRODORI_BASE_URL = os.environ.get("IRODORI_TTS_BASE_URL", "http://127.0.0.1:8088")
+DEFAULT_IRODORI_VOICE = "hakua"
+DEFAULT_IRODORI_SPEED = 1.0
+VALID_TTS_BACKENDS = frozenset({"voicevox", "irodori"})
+DEFAULT_TTS_BACKEND = "voicevox"
 DEFAULT_VRCHAT_PROCESS_NAMES = ("VRChat.exe", "VRChat")
 VOICEVOX_UI_PROCESS_NAMES = {"voicevox.exe", "voicevox"}
 VOICEVOX_ENGINE_PROCESS_NAMES = {"run.exe", "run"}
@@ -232,6 +237,34 @@ def probe_voicevox(base_url: str = DEFAULT_VOICEVOX_URL, timeout: float = 2.0) -
         }
 
 
+def _normalize_tts_backend(value: Any) -> str:
+    backend = (_coerce_text(value) or DEFAULT_TTS_BACKEND).lower()
+    return backend if backend in VALID_TTS_BACKENDS else DEFAULT_TTS_BACKEND
+
+
+def probe_irodori(
+    base_url: str | None = None,
+    timeout: float = 3.0,
+) -> dict[str, Any]:
+    """Probe the local Irodori TTS HTTP server."""
+    try:
+        from plugins.irodori_tts.core import server_health, settings as irodori_settings
+    except ImportError:
+        return {
+            "ok": False,
+            "url": (base_url or DEFAULT_IRODORI_BASE_URL).rstrip("/"),
+            "error": "irodori_plugin_not_installed",
+        }
+
+    url = (_coerce_text(base_url) or irodori_settings().base_url).rstrip("/")
+    health = server_health(url, timeout=timeout)
+    return {
+        "ok": bool(health.get("ok")),
+        "url": url,
+        **health,
+    }
+
+
 def probe_harness(base_url: str = DEFAULT_HARNESS_URL, timeout: float = 2.0) -> dict[str, Any]:
     url = base_url.rstrip("/")
     try:
@@ -308,24 +341,38 @@ def vrchat_autonomy_readiness(
     harness_url: str = DEFAULT_HARNESS_URL,
     audio_output_device: str | None = None,
     require_harness: bool = False,
+    tts_backend: str = DEFAULT_TTS_BACKEND,
+    irodori_base_url: str | None = None,
+    require_voice: bool = False,
 ) -> dict[str, Any]:
     """Return read-only readiness for a VRChat/Hermes autonomous avatar loop."""
+    backend = _normalize_tts_backend(tts_backend)
     vrchat_running = is_vrchat_process_running()
     checks: dict[str, dict[str, Any]] = {
         "vrchat_process": inspect_vrchat_launch_state(known_running=vrchat_running),
         "python_osc": {"ok": python_osc_available()},
-        "voicevox": probe_voicevox(voicevox_url),
         "harness": probe_harness(harness_url),
         "audio_output_device": find_output_device(audio_output_device),
+        "tts_backend": {"ok": True, "backend": backend},
     }
+    if backend == "irodori":
+        checks["irodori"] = probe_irodori(irodori_base_url)
+        checks["voicevox"] = {"ok": True, "skipped": True, "reason": "tts_backend=irodori"}
+    else:
+        checks["voicevox"] = probe_voicevox(voicevox_url)
+        checks["irodori"] = {"ok": True, "skipped": True, "reason": "tts_backend=voicevox"}
 
     missing: list[str] = []
     if not checks["vrchat_process"]["ok"]:
         missing.append("VRChat.exe")
     if not checks["python_osc"]["ok"]:
         missing.append("python-osc")
-    if not checks["voicevox"]["ok"]:
-        missing.append("VOICEVOX Engine")
+    if require_voice:
+        if backend == "irodori":
+            if not checks["irodori"]["ok"]:
+                missing.append("Irodori TTS server")
+        elif not checks["voicevox"]["ok"]:
+            missing.append("VOICEVOX Engine")
     if require_harness and not checks["harness"]["ok"]:
         missing.append("Hypura harness")
     if checks["audio_output_device"].get("configured") and not checks["audio_output_device"]["ok"]:
@@ -336,6 +383,7 @@ def vrchat_autonomy_readiness(
         "ready": ready,
         "missing": missing,
         "checks": checks,
+        "tts_backend": backend,
         "mode_recommendation": "observe" if ready else "readiness_blocked",
         "safety": {
             "actuation_performed": False,
@@ -489,6 +537,10 @@ def run_autonomy_decision_turn(
     output_device: str | int | None = None,
     voicevox_speaker: int = 8,
     chatbox_immediate: bool = True,
+    tts_backend: str = DEFAULT_TTS_BACKEND,
+    irodori_voice: str = DEFAULT_IRODORI_VOICE,
+    irodori_speed: float = DEFAULT_IRODORI_SPEED,
+    irodori_base_url: str | None = None,
     provider: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
@@ -580,6 +632,10 @@ def run_autonomy_decision_turn(
         output_device=output_device,
         voicevox_speaker=voicevox_speaker,
         chatbox_immediate=chatbox_immediate,
+        tts_backend=tts_backend,
+        irodori_voice=irodori_voice,
+        irodori_speed=irodori_speed,
+        irodori_base_url=irodori_base_url,
     )
     stage = "turn_planned" if dry_run else "turn_executed"
     if not turn["success"]:
@@ -728,6 +784,10 @@ def validate_autonomy_profile(profile: dict[str, Any]) -> dict[str, Any]:
     if not bool(profile.get("enabled", False)):
         warnings.append("profile_disabled")
 
+    raw_tts = _coerce_text(profile.get("tts_backend"))
+    if raw_tts and raw_tts.lower() not in VALID_TTS_BACKENDS:
+        errors.append(f"invalid_tts_backend:{raw_tts}")
+
     return {"success": not errors, "errors": errors, "warnings": warnings}
 
 
@@ -834,6 +894,10 @@ def vrchat_autonomy_profile_tick(
         output_device=profile.get("output_device"),
         voicevox_speaker=int(profile.get("voicevox_speaker", 8)),
         chatbox_immediate=bool(profile.get("chatbox_immediate", True)),
+        tts_backend=_normalize_tts_backend(profile.get("tts_backend")),
+        irodori_voice=_coerce_text(profile.get("irodori_voice")) or DEFAULT_IRODORI_VOICE,
+        irodori_speed=float(profile.get("irodori_speed", DEFAULT_IRODORI_SPEED)),
+        irodori_base_url=_optional_text(profile.get("irodori_base_url")),
         provider=_optional_text(profile.get("provider")),
         model=_optional_text(profile.get("model")),
         base_url=_optional_text(profile.get("base_url")),
@@ -979,6 +1043,10 @@ def vrchat_autonomy_loop_tick(
     output_device: str | int | None = None,
     voicevox_speaker: int = 8,
     chatbox_immediate: bool = True,
+    tts_backend: str = DEFAULT_TTS_BACKEND,
+    irodori_voice: str = DEFAULT_IRODORI_VOICE,
+    irodori_speed: float = DEFAULT_IRODORI_SPEED,
+    irodori_base_url: str | None = None,
     provider: str | None = None,
     model: str | None = None,
     base_url: str | None = None,
@@ -1030,6 +1098,9 @@ def vrchat_autonomy_loop_tick(
         harness_url=harness_url,
         audio_output_device=audio_output_device,
         require_harness=require_harness,
+        tts_backend=tts_backend,
+        irodori_base_url=irodori_base_url,
+        require_voice=allow_voice,
     )
     if not readiness["ready"]:
         blocked = {
@@ -1112,6 +1183,10 @@ def vrchat_autonomy_loop_tick(
         output_device=output_device,
         voicevox_speaker=voicevox_speaker,
         chatbox_immediate=chatbox_immediate,
+        tts_backend=tts_backend,
+        irodori_voice=irodori_voice,
+        irodori_speed=irodori_speed,
+        irodori_base_url=irodori_base_url,
         provider=provider,
         model=model,
         base_url=base_url,
@@ -1335,6 +1410,10 @@ def plan_autonomy_turn(
     output_device: str | int | None = None,
     voicevox_speaker: int = 8,
     chatbox_immediate: bool = True,
+    tts_backend: str = DEFAULT_TTS_BACKEND,
+    irodori_voice: str = DEFAULT_IRODORI_VOICE,
+    irodori_speed: float = DEFAULT_IRODORI_SPEED,
+    irodori_base_url: str | None = None,
 ) -> dict[str, Any]:
     """Validate one autonomous turn and optionally execute permitted actions."""
     observation_state = normalize_observations(observations)
@@ -1388,6 +1467,10 @@ def plan_autonomy_turn(
         output_device=output_device,
         voicevox_speaker=voicevox_speaker,
         chatbox_immediate=chatbox_immediate,
+        tts_backend=tts_backend,
+        irodori_voice=irodori_voice,
+        irodori_speed=irodori_speed,
+        irodori_base_url=irodori_base_url,
     )
 
     missing_profile = [
@@ -1448,6 +1531,10 @@ def _build_planned_actions(
     output_device: str | int | None,
     voicevox_speaker: int,
     chatbox_immediate: bool,
+    tts_backend: str = DEFAULT_TTS_BACKEND,
+    irodori_voice: str = DEFAULT_IRODORI_VOICE,
+    irodori_speed: float = DEFAULT_IRODORI_SPEED,
+    irodori_base_url: str | None = None,
 ) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     if normalized.get("chatbox_text"):
@@ -1463,9 +1550,13 @@ def _build_planned_actions(
             {
                 "kind": "voice",
                 "text": normalized["speak_text"],
+                "tts_backend": _normalize_tts_backend(tts_backend),
                 "speaker": voicevox_speaker,
                 "emotion": normalized.get("emotion", "neutral"),
                 "output_device": output_device,
+                "irodori_voice": irodori_voice,
+                "irodori_speed": irodori_speed,
+                "irodori_base_url": irodori_base_url,
             }
         )
     if normalized.get("avatar_action"):
@@ -1484,10 +1575,14 @@ def _execute_action(action: dict[str, Any]) -> dict[str, Any]:
     if action["kind"] == "chatbox":
         return _send_chatbox(action["text"], immediate=bool(action.get("immediate", True)))
     if action["kind"] == "voice":
-        return _speak_voicevox(
+        return _speak_tts(
             action["text"],
+            tts_backend=_normalize_tts_backend(action.get("tts_backend")),
             speaker=int(action.get("speaker", 8)),
             output_device=action.get("output_device"),
+            irodori_voice=_coerce_text(action.get("irodori_voice")) or DEFAULT_IRODORI_VOICE,
+            irodori_speed=float(action.get("irodori_speed", DEFAULT_IRODORI_SPEED)),
+            irodori_base_url=action.get("irodori_base_url"),
         )
     if action["kind"] == "avatar_action":
         return _apply_avatar_action(action["action_id"], list(action.get("parameters") or []))
@@ -1594,6 +1689,10 @@ def _default_profile() -> dict[str, Any]:
         "output_device": "",
         "voicevox_speaker": 8,
         "chatbox_immediate": True,
+        "tts_backend": DEFAULT_TTS_BACKEND,
+        "irodori_voice": DEFAULT_IRODORI_VOICE,
+        "irodori_speed": DEFAULT_IRODORI_SPEED,
+        "irodori_base_url": "",
         "persona": "",
         "task": "",
         "allowed_avatar_actions": [],
@@ -1664,6 +1763,28 @@ def _send_chatbox(text: str, *, immediate: bool) -> dict[str, Any]:
     return {"kind": "chatbox", "attempted": True, "result": result, "success": bool(result.get("success"))}
 
 
+def _speak_tts(
+    text: str,
+    *,
+    tts_backend: str,
+    speaker: int,
+    output_device: str | int | None,
+    irodori_voice: str,
+    irodori_speed: float,
+    irodori_base_url: str | None,
+) -> dict[str, Any]:
+    backend = _normalize_tts_backend(tts_backend)
+    if backend == "irodori":
+        return _speak_irodori(
+            text,
+            voice=irodori_voice,
+            speed=irodori_speed,
+            irodori_base_url=irodori_base_url,
+            output_device=output_device,
+        )
+    return _speak_voicevox(text, speaker=speaker, output_device=output_device)
+
+
 def _speak_voicevox(
     text: str,
     *,
@@ -1673,7 +1794,64 @@ def _speak_voicevox(
     from tools.voicevox_tts_tool import voicevox_speak
 
     result = voicevox_speak(text, speaker=speaker, blocking=True, output_device=output_device)
-    return {"kind": "voice", "attempted": True, "result": result, "success": bool(result.get("success"))}
+    return {
+        "kind": "voice",
+        "backend": "voicevox",
+        "attempted": True,
+        "result": result,
+        "success": bool(result.get("success")),
+    }
+
+
+def _speak_irodori(
+    text: str,
+    *,
+    voice: str,
+    speed: float,
+    irodori_base_url: str | None,
+    output_device: str | int | None,
+) -> dict[str, Any]:
+    try:
+        from plugins.irodori_tts.core import synthesize_text
+
+        env_backup = os.environ.get("IRODORI_TTS_BASE_URL")
+        if irodori_base_url:
+            os.environ["IRODORI_TTS_BASE_URL"] = str(irodori_base_url).rstrip("/")
+        try:
+            synth = synthesize_text(text, voice=voice or None, speed=speed or None)
+        finally:
+            if env_backup is None:
+                os.environ.pop("IRODORI_TTS_BASE_URL", None)
+            else:
+                os.environ["IRODORI_TTS_BASE_URL"] = env_backup
+        wav_path = Path(str(synth.get("file_path") or ""))
+        if not wav_path.is_file():
+            return {
+                "kind": "voice",
+                "backend": "irodori",
+                "attempted": True,
+                "success": False,
+                "result": {"success": False, "error": "irodori_wav_missing"},
+            }
+        wav_bytes = wav_path.read_bytes()
+        from tools.voicevox_tts_tool import _play_wav
+
+        play_result = _play_wav(wav_bytes, blocking=True, output_device=output_device)
+        return {
+            "kind": "voice",
+            "backend": "irodori",
+            "attempted": True,
+            "result": {"synthesis": synth, "playback": play_result},
+            "success": bool(play_result.get("success")),
+        }
+    except Exception as exc:
+        return {
+            "kind": "voice",
+            "backend": "irodori",
+            "attempted": True,
+            "success": False,
+            "result": {"success": False, "error": type(exc).__name__, "detail": str(exc)},
+        }
 
 
 def _apply_avatar_action(action_id: str, parameters: list[dict[str, Any]]) -> dict[str, Any]:

@@ -32,10 +32,6 @@ from __future__ import annotations
 
 import pytest
 
-# Same xdist group as the other dashboard-auth tests — they all mutate
-# web_server.app.state.auth_required at module level.
-pytestmark = pytest.mark.xdist_group("dashboard_auth_app_state")
-
 from fastapi.testclient import TestClient
 
 from hermes_cli import web_server

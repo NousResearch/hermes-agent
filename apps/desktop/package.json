@@ -231,7 +231,7 @@
       ]
     },
     "win": {
-      "legalTrademarks": "Hermes",
+      "legalTrademarks": "ApexNodes",
       "target": [
         "nsis",
         "msi"
@@ -252,8 +252,8 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false,
-      "shortcutName": "Hermes",
-      "uninstallDisplayName": "Hermes",
+      "shortcutName": "ApexNodes",
+      "uninstallDisplayName": "ApexNodes",
       "warningsAsErrors": false
     }
   }

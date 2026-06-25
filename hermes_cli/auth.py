@@ -3337,6 +3337,8 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     return {
         "tokens": tokens,
         "last_refresh": state.get("last_refresh"),
+        "label": state.get("label"),
+        "auth_mode": state.get("auth_mode"),
     }
 
 

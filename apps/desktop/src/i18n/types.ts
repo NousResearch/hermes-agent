@@ -1675,6 +1675,7 @@ export interface Translations {
       failed: (error: string) => string
       timedOut: string
     }
+    quoteSelection: string
   }
 
   errors: {

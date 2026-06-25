@@ -8,6 +8,7 @@ import type {
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  CodexUsageResponse,
   ComputerUseStatus,
   ConfigSchemaResponse,
   CronJob,
@@ -61,6 +62,7 @@ export type {
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
   BackendUpdateCheckResponse,
+  CodexUsageResponse,
   ComputerUseCheck,
   ComputerUsePermissionSource,
   ComputerUseStatus,
@@ -272,6 +274,16 @@ export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
   })
 }
 
+export function getCodexUsage(): Promise<CodexUsageResponse> {
+  const scoped = profileScoped()
+  const profileParam = scoped.profile ? `?profile=${encodeURIComponent(scoped.profile)}` : ''
+
+  return window.hermesDesktop.api<CodexUsageResponse>({
+    ...scoped,
+    path: `/api/codex/usage${profileParam}`
+  })
+}
+
 export function getStatus(): Promise<StatusResponse> {
   return window.hermesDesktop.api<StatusResponse>({
     ...profileScoped(),
@@ -354,10 +366,7 @@ export function getMemoryProviderConfig(provider: string): Promise<MemoryProvide
   })
 }
 
-export function saveMemoryProviderConfig(
-  provider: string,
-  values: Record<string, string>
-): Promise<{ ok: boolean }> {
+export function saveMemoryProviderConfig(provider: string, values: Record<string, string>): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     path: `/api/memory/providers/${encodeURIComponent(provider)}/config`,
     method: 'PUT',

@@ -6541,9 +6541,26 @@ def test_prompt_submit_expands_context_refs(monkeypatch, tmp_path):
     assert captured["prompt"] == "expanded prompt"
     context_kwargs = captured["context_kwargs"]
     assert Path(context_kwargs["allowed_root"]).resolve() == workspace.resolve()
-    assert [Path(root).resolve() for root in context_kwargs["allowed_roots"]] == [
+    assert [
+        Path(root).resolve() for root in context_kwargs["extra_allowed_file_roots"]
+    ] == [
         server._desktop_attachment_fallback_dir(server._sessions["sid"]).resolve()
     ]
+
+
+def test_desktop_attachment_fallback_dir_is_session_scoped(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+
+    first = _session(cwd=str(workspace), session_key="session-a")
+    second = _session(cwd=str(workspace), session_key="session-b")
+
+    first_dir = server._desktop_attachment_fallback_dir(first)
+    second_dir = server._desktop_attachment_fallback_dir(second)
+    assert first_dir != second_dir
 
 
 def test_image_attach_appends_local_image(monkeypatch):
@@ -6694,11 +6711,104 @@ def test_file_attach_falls_back_to_hermes_home_when_workspace_is_read_only(monke
             resp["result"]["ref_text"],
             cwd=workspace,
             allowed_root=workspace,
-            allowed_roots=[server._desktop_attachment_fallback_dir(server._sessions["sid"])],
+            extra_allowed_file_roots=[
+                server._desktop_attachment_fallback_dir(server._sessions["sid"])
+            ],
             context_length=100_000,
         )
         assert ctx.blocked is False
         assert "hello world" in ctx.message
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_file_attach_fallback_ref_expands_during_prompt_submit(monkeypatch, tmp_path):
+    workspace = tmp_path / "readonly-workspace"
+    workspace.mkdir()
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+    blocked_root = workspace / ".hermes" / "desktop-attachments"
+    original_mkdir = Path.mkdir
+    captured = {}
+
+    def fake_mkdir(self, *args, **kwargs):
+        if self == blocked_root:
+            raise PermissionError("read-only workspace")
+        return original_mkdir(self, *args, **kwargs)
+
+    class _Agent:
+        model = "test/model"
+        base_url = ""
+        api_key = ""
+        provider = ""
+
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            captured["prompt"] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    fake_cli = types.ModuleType("cli")
+    fake_cli._detect_file_drop = lambda raw: None
+    fake_cli._split_path_input = lambda raw: (raw, "")
+    fake_cli._resolve_attachment_path = lambda raw: None
+
+    import agent.model_metadata as model_metadata
+
+    server._sessions["sid"] = _session(
+        agent=_Agent(),
+        cwd=str(workspace),
+        profile_home=str(hermes_home),
+    )
+    monkeypatch.setattr(server, "_hermes_home", hermes_home)
+    monkeypatch.setattr(Path, "mkdir", fake_mkdir)
+    monkeypatch.setattr(
+        model_metadata,
+        "get_model_context_length",
+        lambda *args, **kwargs: 100_000,
+    )
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setitem(sys.modules, "cli", fake_cli)
+
+    try:
+        attach = server.handle_request(
+            {
+                "id": "1",
+                "method": "file.attach",
+                "params": {
+                    "session_id": "sid",
+                    "path": "/Users/alice/Downloads/report.txt",
+                    "name": "report.txt",
+                    "data_url": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+                },
+            }
+        )
+        server.handle_request(
+            {
+                "id": "2",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": f'{attach["result"]["ref_text"]}\n\nsummarize',
+                },
+            }
+        )
+
+        assert "hello world" in captured["prompt"]
+        assert "outside the allowed workspace" not in captured["prompt"]
     finally:
         server._sessions.pop("sid", None)
 

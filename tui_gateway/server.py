@@ -10660,7 +10660,7 @@ def _run_prompt_submit(
                     prompt,
                     cwd=cwd,
                     allowed_root=cwd,
-                    allowed_roots=[_desktop_attachment_fallback_dir(session)],
+                    extra_allowed_file_roots=[_desktop_attachment_fallback_dir(session)],
                     context_length=ctx_len,
                 )
                 if ctx.blocked:
@@ -11620,8 +11620,12 @@ def _desktop_attachment_dir(session: dict) -> Path:
 def _desktop_attachment_fallback_dir(session: dict, *, workspace: Path | None = None) -> Path:
     workspace = (workspace or Path(_session_cwd(session))).resolve()
     profile_home = Path(str(session.get("profile_home") or _hermes_home)).resolve()
-    digest = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:12]
-    return profile_home / "desktop-attachments" / f"{workspace.name or 'workspace'}-{digest}"
+    workspace_digest = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:12]
+    session_digest = hashlib.sha256(
+        str(session.get("session_key") or "").encode("utf-8")
+    ).hexdigest()[:12]
+    name = workspace.name or "workspace"
+    return profile_home / "desktop-attachments" / f"{name}-{workspace_digest}-{session_digest}"
 
 
 def _should_fallback_attachment_path(exc: OSError) -> bool:

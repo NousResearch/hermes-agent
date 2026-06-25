@@ -308,7 +308,7 @@ def test_restricts_paths_to_allowed_root(tmp_path: Path):
     assert any("outside the allowed workspace" in warning for warning in result.warnings)
 
 
-def test_allows_paths_in_additional_allowed_roots(tmp_path: Path):
+def test_allows_file_paths_in_extra_allowed_file_roots(tmp_path: Path):
     from agent.context_references import preprocess_context_references
 
     workspace = tmp_path / "workspace"
@@ -325,12 +325,34 @@ def test_allows_paths_in_additional_allowed_roots(tmp_path: Path):
         cwd=workspace,
         context_length=100_000,
         allowed_root=workspace,
-        allowed_roots=[staging],
+        extra_allowed_file_roots=[staging],
     )
 
     assert result.expanded
     assert "uploaded report" in result.message
     assert "```\noutside\n```" not in result.message
+    assert any("outside the allowed workspace" in warning for warning in result.warnings)
+
+
+def test_extra_allowed_file_roots_do_not_widen_folder_refs(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    staging = tmp_path / "desktop-attachments"
+    staging.mkdir()
+    (staging / "report.txt").write_text("uploaded\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        f"list @folder:{staging}",
+        cwd=workspace,
+        context_length=100_000,
+        allowed_root=workspace,
+        extra_allowed_file_roots=[staging],
+    )
+
+    assert result.expanded
+    assert "report.txt" not in result.message
     assert any("outside the allowed workspace" in warning for warning in result.warnings)
 
 

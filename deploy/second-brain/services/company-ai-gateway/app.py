@@ -367,11 +367,14 @@ async def install_page() -> str:
           <li>Installer sẽ hỏi token, xác minh với gateway, rồi lưu cấu hình local.</li>
         </ol>
         <pre><code>{install_command}</code></pre>
+        <pre><code>second-brain me
+second-brain workspaces
+second-brain query "toi co the xem tai lieu nao?"</code></pre>
         <div class="actions">
           <a class="button" href="{installer_url}">Tải installer</a>
           <a class="button secondary" href="{bundle_url}">Tải skill bundle</a>
         </div>
-        <p class="note">Nhân sự luôn query workspace <code>company_public</code>. Admin query thêm <code>department_c_level</code>.</p>
+        <p class="note">Nhân sự luôn query workspace <code>company_public</code>. Không dùng admin key trên máy nhân sự.</p>
       </section>
 
       <section>
@@ -383,7 +386,9 @@ async def install_page() -> str:
           <div class="row"><div class="key">Workspaces</div><div><code>GET /api/workspaces</code></div></div>
         </div>
         <pre><code>second-brain query "tom tat tai lieu cong ty moi nhat"</code></pre>
-        <pre><code>Authorization: Bearer USER_TOKEN</code></pre>
+        <pre><code>Authorization: Bearer USER_TOKEN
+POST {PUBLIC_BASE_URL}/api/query
+GET {PUBLIC_BASE_URL}/api/workspaces</code></pre>
       </section>
     </div>
     <footer>Health check: <a href="/health">/health</a> · API docs: <a href="/docs">/docs</a></footer>
@@ -452,7 +457,7 @@ async def admin_page() -> str:
   <main>
     <header>
       <h1>Admin Setup</h1>
-      <p>Vận hành Company Second Brain: tạo token, upload tài liệu Public hoặc C-Level, nâng cấp skill/gateway và handoff cho agent khác.</p>
+      <p>Vận hành Company Second Brain: tạo token, upload tài liệu, cấu hình source Notion/Drive, kiểm tra lịch scan và handoff cho agent khác.</p>
     </header>
 
     <section>
@@ -482,7 +487,7 @@ async def admin_page() -> str:
   --name "Company User" \\
   --group company_all \\
   --expires-days 90</code></pre>
-        <p class="note">Gửi cho nhân sự: link <a href="/install">/install</a> + token vừa tạo. Không gửi admin key.</p>
+        <p class="note">Gửi cho nhân sự: link <a href="/install">/install</a> + token vừa tạo. Agent/IDE dùng header <code>Authorization: Bearer USER_TOKEN</code>. Không gửi admin key.</p>
       </section>
 
       <section>

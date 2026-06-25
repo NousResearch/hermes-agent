@@ -79,6 +79,49 @@ Admins can use either:
 
 Admin queries route to both `company_public` and `department_c_level`.
 
+## Agent/User Flow
+
+Send a normal employee or agent only:
+
+- the `/install` URL
+- their bearer token
+
+User setup:
+
+```bash
+curl -fsSL https://second-brain.your-company.com/install.sh \
+  -o install-company-second-brain.sh
+bash install-company-second-brain.sh
+```
+
+The installer asks for the bearer token, installs the skill/CLI, verifies
+`/api/me`, and writes local config to `~/.second-brain/config.json`.
+
+User verification:
+
+```bash
+second-brain me
+second-brain workspaces
+second-brain query "What documents can I access?"
+```
+
+Expected normal user workspace:
+
+```text
+company_public
+```
+
+Generic agent/IDE API settings:
+
+```text
+Base URL: https://second-brain.your-company.com
+Auth header: Authorization: Bearer USER_TOKEN
+Query endpoint: POST /api/query
+Workspaces endpoint: GET /api/workspaces
+```
+
+Do not send `GATEWAY_API_KEY` to normal users.
+
 ## Admin Flow
 
 Configure the admin CLI:
@@ -116,6 +159,21 @@ Send normal users only:
 - their bearer token
 
 Do not send `GATEWAY_API_KEY` to normal users.
+
+Admin verification:
+
+```bash
+second-brain queue-status
+second-brain sources-list
+second-brain query "admin workspace smoke test"
+```
+
+Expected admin workspaces:
+
+```text
+company_public
+department_c_level
+```
 
 ## Upload Documents
 

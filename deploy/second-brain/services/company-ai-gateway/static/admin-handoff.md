@@ -64,6 +64,49 @@ Valid groups for newly generated tokens:
 - `company_all`
 - `role_admin`
 
+## Agent/User Runbook
+
+Send a normal user or agent only:
+
+- __PUBLIC_BASE_URL__/install
+- their bearer token
+
+Install/connect:
+
+```bash
+curl -fsSL __PUBLIC_BASE_URL__/install.sh -o install-company-second-brain.sh
+bash install-company-second-brain.sh
+```
+
+The installer asks for the bearer token, installs the skill/CLI, verifies
+identity, and stores config at `~/.second-brain/config.json`.
+
+Verify access:
+
+```bash
+second-brain me
+second-brain workspaces
+second-brain query "toi co the xem tai lieu nao?"
+```
+
+Expected normal user workspace:
+
+```text
+company_public
+```
+
+Generic agent/IDE settings:
+
+```text
+Base URL: __PUBLIC_BASE_URL__
+Auth header: Authorization: Bearer USER_TOKEN
+Query endpoint: POST /api/query
+Workspaces endpoint: GET /api/workspaces
+```
+
+Normal users cannot upload documents, create tokens, configure sources, or query
+`department_c_level`.
+
 ## Admin Setup
 
 Install the skill/CLI:
@@ -116,6 +159,34 @@ Send normal users only:
 - their bearer token
 
 Do not send the admin key.
+
+## Admin Operations Checklist
+
+Daily/weekly checks:
+
+```bash
+second-brain queue-status
+second-brain sources-list
+docker compose ps
+docker compose logs --tail=100 knowledge-worker
+```
+
+Common admin actions:
+
+```bash
+# Upload one text document
+second-brain ingest-text --file ./company-handbook.md --title "Company Handbook" --target public
+
+# Queue source scan immediately
+second-brain source-scan SOURCE_ID
+
+# Change scan interval and restart schedule from now
+second-brain source-update SOURCE_ID --interval-minutes 1440 --reset-schedule
+
+# Pause/resume source
+second-brain source-update SOURCE_ID --disabled
+second-brain source-update SOURCE_ID --enabled --reset-schedule
+```
 
 ## Upload Documents
 

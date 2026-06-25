@@ -72,11 +72,12 @@ role_admin
 
 Old department groups are ignored by the gateway for query routing.
 
-## First-Time User Setup
+## Agent User Runbook
 
-Ask the user for their bearer token if it is not already configured.
+Use this flow for a normal employee, agent, or IDE user. They only need the
+gateway URL and their bearer token. Never ask them for the admin key.
 
-Configure the CLI:
+Install/connect:
 
 ```bash
 ~/.hermes/skills/productivity/company-second-brain/scripts/second-brain connect \
@@ -84,17 +85,37 @@ Configure the CLI:
   --token "USER_TOKEN"
 ```
 
-Verify identity and accessible workspaces:
+Verify:
 
 ```bash
 ~/.hermes/skills/productivity/company-second-brain/scripts/second-brain me
 ~/.hermes/skills/productivity/company-second-brain/scripts/second-brain workspaces
 ```
 
+Expected normal user workspace:
+
+```text
+company_public
+```
+
+Ask a question:
+
+```bash
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain query "QUESTION"
+```
+
 The CLI stores config at:
 
 ```text
 ~/.second-brain/config.json
+```
+
+For a non-Hermes agent or IDE, use the same auth contract:
+
+```text
+Base URL: __PUBLIC_BASE_URL__
+Header: Authorization: Bearer USER_TOKEN
+Endpoint: POST /api/query
 ```
 
 ## Query
@@ -114,7 +135,10 @@ For raw JSON:
 The gateway derives access from the bearer token. Do not ask the user to provide
 `groups` manually.
 
-## Admin Token Generation
+## Admin Runbook
+
+Use this flow for operators. Admin commands require `GATEWAY_API_KEY` or an
+admin bearer token. Do not send `GATEWAY_API_KEY` to employees.
 
 Configure admin key:
 
@@ -124,7 +148,7 @@ Configure admin key:
   --admin-key "GATEWAY_API_KEY"
 ```
 
-Generate a normal employee token:
+Create a normal employee token:
 
 ```bash
 ~/.hermes/skills/productivity/company-second-brain/scripts/second-brain admin-token-create \
@@ -134,7 +158,7 @@ Generate a normal employee token:
   --expires-days 30
 ```
 
-Generate an admin bearer token:
+Create an admin bearer token for agent/IDE admin work:
 
 ```bash
 ~/.hermes/skills/productivity/company-second-brain/scripts/second-brain admin-token-create \
@@ -143,6 +167,13 @@ Generate an admin bearer token:
   --group role_admin \
   --admin \
   --expires-days 365
+```
+
+Check system status:
+
+```bash
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain queue-status
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain sources-list
 ```
 
 ## Ingest Text

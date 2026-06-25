@@ -11,7 +11,8 @@ from typing import Any
 
 from hermes_constants import display_hermes_home, get_hermes_home
 
-DEFAULT_BASE_URL = "http://127.0.0.1:3001/v1"
+DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:3001/v1"
+TAILSCALE_PATH = "/freellmapi/v1"
 REPO_INSTALL_URL = "https://freellmapi.co/install.sh"
 GITHUB_URL = "https://github.com/tashfeenahmed/freellmapi"
 
@@ -46,17 +47,29 @@ def _read_env_key(name: str) -> str:
     return (os.environ.get(name) or "").strip()
 
 
+def _tailscale_base_url() -> str:
+    """Default FreeLLMAPI endpoint on this machine's tailnet (matches llama/v1 pattern)."""
+    dns = (
+        _read_env_key("TAILSCALE_DNS_NAME")
+        or (os.environ.get("TAILSCALE_DNS_NAME") or "").strip()
+    )
+    if dns:
+        return f"https://{dns.rstrip('/')}{TAILSCALE_PATH}"
+    return ""
+
+
 def _resolve_base_url(config: dict[str, Any] | None = None) -> str:
     cfg = config or {}
     model = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
     for candidate in (
         _read_env_key("FREELLMAPI_BASE_URL"),
         str(model.get("base_url") or "").strip() if model.get("provider") == "freellmapi" else "",
-        DEFAULT_BASE_URL,
+        _tailscale_base_url(),
+        DEFAULT_LOCAL_BASE_URL,
     ):
         if candidate:
             return candidate.rstrip("/")
-    return DEFAULT_BASE_URL
+    return DEFAULT_LOCAL_BASE_URL
 
 
 def _provider_registered() -> tuple[bool, str]:
@@ -157,7 +170,7 @@ def _ensure_model_defaults(config: dict[str, Any]) -> bool:
         model["default"] = "auto"
         changed = True
     if not str(model.get("base_url") or "").strip():
-        model["base_url"] = DEFAULT_BASE_URL
+        model["base_url"] = _resolve_base_url(config)
         changed = True
     return changed
 
@@ -241,8 +254,14 @@ def _next_steps(base: dict[str, Any], probe: dict[str, Any] | None) -> list[str]
             "freellmapi-… key into ~/.hermes/.env as FREELLMAPI_API_KEY"
         )
     if probe and not probe.get("ok"):
+        tailnet = _tailscale_base_url()
+        if tailnet and base.get("base_url", "").startswith("https://"):
+            steps.append(
+                f"Expose local :3001 on tailnet: tailscale serve --bg --set-path={TAILSCALE_PATH} "
+                f"{DEFAULT_LOCAL_BASE_URL}"
+            )
         steps.append(
-            f"Ensure FreeLLMAPI is listening at {base['base_url']} "
+            f"Ensure FreeLLMAPI is listening at {DEFAULT_LOCAL_BASE_URL} "
             f"(Docker: curl -fsSL {REPO_INSTALL_URL} | bash)"
         )
     if base.get("model_provider") != "freellmapi":

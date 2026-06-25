@@ -19,7 +19,8 @@ Wire Hermes to a local [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi)
 ## When to Use
 
 - You want Hermes on stacked free LLM tiers without managing 16 API keys in the agent
-- FreeLLMAPI is (or will be) running on this machine at `http://127.0.0.1:3001/v1`
+- FreeLLMAPI is (or will be) running locally on `:3001`, exposed via **Tailscale**
+  at `https://<TAILSCALE_DNS_NAME>/freellmapi/v1` (not raw `127.0.0.1` from remote agents)
 - You need setup, doctor checks, or fallback-chain wiring after installing the bundled plugin
 
 ## Prerequisites
@@ -79,18 +80,20 @@ terminal(command="curl -fsSL https://freellmapi.co/install.sh | bash")
 
 Open `http://localhost:3001`, add upstream provider keys on **Keys**, reorder **Fallback Chain**, copy the unified `freellmapi-…` bearer token.
 
+Expose the local proxy on tailnet (required for this workspace — do not point Hermes at raw `127.0.0.1` from remote agents):
+
+```
+terminal(command="tailscale serve --bg --set-path=/freellmapi/v1 http://127.0.0.1:3001/v1")
+terminal(command="tailscale serve status")
+```
+
 ### 2. Store credentials
 
 Add to `~/.hermes/.env` (secrets only):
 
 ```
 FREELLMAPI_API_KEY=freellmapi-your-unified-key
-```
-
-Optional URL override:
-
-```
-FREELLMAPI_BASE_URL=http://127.0.0.1:3001/v1
+FREELLMAPI_BASE_URL=https://downl.taile4f666.ts.net/freellmapi/v1
 ```
 
 ### 3. Enable Hermes plugin
@@ -108,7 +111,7 @@ Expected: `freellmapi` appears in `plugins.enabled`; `fallback_providers[0]` bec
 model:
   provider: freellmapi
   default: auto
-  base_url: http://127.0.0.1:3001/v1
+  base_url: https://downl.taile4f666.ts.net/freellmapi/v1
 
 fallback_providers:
   - provider: freellmapi

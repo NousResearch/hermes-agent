@@ -87,8 +87,15 @@ def test_doctor_passes_with_mock_probe(tmp_path, monkeypatch, core_module):
     assert probe_check["ok"] is True
 
 
+def test_tailscale_base_url_from_env(tmp_path, monkeypatch, core_module):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / ".env").write_text("TAILSCALE_DNS_NAME=downl.taile4f666.ts.net\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    assert core_module._resolve_base_url() == "https://downl.taile4f666.ts.net/freellmapi/v1"
+
+
 def test_register_exposes_cli():
-    init_path = _PLUGIN_DIR / "__init__.py"
     module_name = "freellmapi_plugin_init_test"
     if module_name in sys.modules:
         del sys.modules[module_name]

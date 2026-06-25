@@ -9,7 +9,9 @@ caps so free tiers stay within limits.
 Hermes integration:
   - Point ``model.provider`` at ``freellmapi`` and set ``FREELLMAPI_API_KEY``
     to the unified ``freellmapi-…`` key from the local dashboard.
-  - Default base URL: ``http://127.0.0.1:3001/v1`` (Docker / desktop app).
+  - Default base URL: ``https://<TAILSCALE_DNS_NAME>/freellmapi/v1`` when
+    ``TAILSCALE_DNS_NAME`` is set (this workspace); local bind is
+    ``http://127.0.0.1:3001/v1`` behind ``tailscale serve``.
   - Use ``model: auto`` to let the proxy pick the best free model, or pin a
     specific slug from ``GET /v1/models``.
   - ``X-Session-Id`` is forwarded from the Hermes session id so multi-turn
@@ -30,7 +32,8 @@ from providers.base import ProviderProfile
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_BASE_URL = "http://127.0.0.1:3001/v1"
+_DEFAULT_LOCAL_BASE_URL = "http://127.0.0.1:3001/v1"
+_TAILSCALE_PATH = "/freellmapi/v1"
 
 # Curated agentic models for the /model picker when live catalog fetch fails.
 _FALLBACK_MODELS = (
@@ -43,15 +46,23 @@ _FALLBACK_MODELS = (
 )
 
 
+def _tailscale_base_url() -> str:
+    dns = (os.environ.get("TAILSCALE_DNS_NAME") or "").strip()
+    if dns:
+        return f"https://{dns.rstrip('/')}{_TAILSCALE_PATH}"
+    return ""
+
+
 def _resolve_base_url(base_url: str | None = None) -> str:
-    """Resolve endpoint: explicit arg → env → profile default."""
+    """Resolve endpoint: explicit arg → env → tailnet default → localhost."""
     for candidate in (
         (base_url or "").strip(),
         os.environ.get("FREELLMAPI_BASE_URL", "").strip(),
+        _tailscale_base_url(),
     ):
         if candidate:
             return candidate.rstrip("/")
-    return _DEFAULT_BASE_URL
+    return _DEFAULT_LOCAL_BASE_URL
 
 
 class FreeLLMAPIProfile(ProviderProfile):
@@ -102,7 +113,7 @@ freellmapi = FreeLLMAPIProfile(
     description="Self-hosted free-tier router (~1.7B tokens/mo across 16 providers)",
     signup_url="https://github.com/tashfeenahmed/freellmapi",
     env_vars=("FREELLMAPI_API_KEY", "FREELLMAPI_BASE_URL"),
-    base_url=_DEFAULT_BASE_URL,
+    base_url=_DEFAULT_LOCAL_BASE_URL,
     hostname="127.0.0.1",
     supports_vision=True,
     default_aux_model="gemini-2.5-flash",

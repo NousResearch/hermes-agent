@@ -88,18 +88,34 @@ def resolve_footer_config(
     return resolved
 
 
+def _format_duration(seconds: Optional[float]) -> str:
+    """Render a duration in a human-readable short form.
+
+    ``3.4s`` → ``3.4s``; ``72.1s`` → ``1m12s``; ``125s`` → ``2m5s``.
+    """
+    if seconds is None or seconds < 0:
+        return ""
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    mins, secs = divmod(int(seconds), 60)
+    return f"{mins}m{secs}s"
+
+
 def format_runtime_footer(
     *,
     model: Optional[str],
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    duration: Optional[float] = None,
     fields: Iterable[str] = _DEFAULT_FIELDS,
 ) -> str:
     """Render the footer line, or return "" if no fields have data.
 
     Fields are skipped silently when their underlying data is missing — a
     partially-populated footer is better than a line with ``?%`` or empty slots.
+
+    Supported fields: ``model``, ``context_pct``, ``cwd``, ``duration``.
     """
     parts: list[str] = []
     for field in fields:
@@ -107,14 +123,18 @@ def format_runtime_footer(
             m = _model_short(model)
             if m:
                 parts.append(m)
-        elif field == "context_pct":
+        elif field in {"context_pct", "ctx"}:
             if context_length and context_length > 0 and context_tokens >= 0:
                 pct = max(0, min(100, round((context_tokens / context_length) * 100)))
-                parts.append(f"{pct}%")
-        elif field == "cwd":
+                parts.append(f"ctx {pct}%" if field == "ctx" else f"{pct}%")
+        elif field in {"cwd", "cwd_label"}:
             rel = _home_relative_cwd(cwd or os.environ.get("TERMINAL_CWD", ""))
             if rel:
-                parts.append(rel)
+                parts.append(f"cwd {rel}" if field == "cwd_label" else rel)
+        elif field == "duration":
+            d = _format_duration(duration)
+            if d:
+                parts.append(d)
         # Unknown field names are silently ignored.
 
     if not parts:
@@ -130,6 +150,7 @@ def build_footer_line(
     context_tokens: int,
     context_length: Optional[int],
     cwd: Optional[str] = None,
+    duration: Optional[float] = None,
 ) -> str:
     """Top-level entry point used by gateway/run.py.
 
@@ -145,5 +166,6 @@ def build_footer_line(
         context_tokens=context_tokens,
         context_length=context_length,
         cwd=cwd,
+        duration=duration,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
     )

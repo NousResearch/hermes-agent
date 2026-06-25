@@ -55,6 +55,7 @@ This helper:
 
 - prefers an authenticated `gh` session when `gh auth status` succeeds;
 - does not treat a missing `GITHUB_TOKEN` environment variable as an auth failure when `gh` is already logged in;
+- finds the real `~/.config/gh` login when a Hermes profile runs with `HOME` pointing at `~/.hermes/profiles/<name>`;
 - handles private repositories through `gh` before considering REST fallbacks;
 - keeps issue-disabled repositories as readable repos with an `issuesError`, not as repo-auth failures;
 - emits JSON with `auth.method`, per-repo `status`, `summary`, `openIssues`, and `openPullRequests`.

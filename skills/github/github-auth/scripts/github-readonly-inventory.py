@@ -56,9 +56,62 @@ PR_FIELDS = [
 ]
 
 
-def run_command(args: list[str]) -> tuple[int, str, str]:
-    proc = subprocess.run(args, text=True, capture_output=True, check=False)
+def run_command(
+    args: list[str], env: dict[str, str] | None = None
+) -> tuple[int, str, str]:
+    proc = subprocess.run(args, text=True, capture_output=True, check=False, env=env)
     return proc.returncode, proc.stdout, proc.stderr
+
+
+def _append_unique(paths: list[Path], path: Path) -> None:
+    expanded = path.expanduser()
+    if expanded not in paths:
+        paths.append(expanded)
+
+
+def _real_home_from_hermes_path(path: Path) -> Path | None:
+    text = str(path.expanduser())
+    marker = "/.hermes/profiles/"
+    if marker in text:
+        return Path(text.split(marker, 1)[0])
+    if text.endswith("/.hermes"):
+        return Path(text).parent
+    return None
+
+
+def candidate_home_dirs() -> list[Path]:
+    """Return homes that may contain gh/git credentials."""
+    homes: list[Path] = []
+    _append_unique(homes, Path.home())
+
+    for key in ("HOME", "HERMES_HOME"):
+        value = os.environ.get(key, "").strip()
+        if not value:
+            continue
+        path = Path(value)
+        _append_unique(homes, path)
+        real_home = _real_home_from_hermes_path(path)
+        if real_home is not None:
+            _append_unique(homes, real_home)
+
+    return homes
+
+
+def candidate_gh_config_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    configured = os.environ.get("GH_CONFIG_DIR", "").strip()
+    if configured:
+        _append_unique(dirs, Path(configured))
+    for home in candidate_home_dirs():
+        _append_unique(dirs, home / ".config" / "gh")
+    return dirs
+
+
+def env_with_gh_config(config_dir: str | None) -> dict[str, str]:
+    env = os.environ.copy()
+    if config_dir:
+        env["GH_CONFIG_DIR"] = config_dir
+    return env
 
 
 def load_token() -> str:
@@ -67,24 +120,25 @@ def load_token() -> str:
         if value:
             return value
 
-    env_path = Path.home() / ".hermes" / ".env"
-    if env_path.exists():
-        for line in env_path.read_text(errors="ignore").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-            key, value = stripped.split("=", 1)
-            if key.strip() in {"GH_TOKEN", "GITHUB_TOKEN"}:
-                return value.strip().strip("'\"")
+    for home in candidate_home_dirs():
+        env_path = home / ".hermes" / ".env"
+        if env_path.exists():
+            for line in env_path.read_text(errors="ignore").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                if key.strip() in {"GH_TOKEN", "GITHUB_TOKEN"}:
+                    return value.strip().strip("'\"")
 
-    credentials = Path.home() / ".git-credentials"
-    if credentials.exists():
-        for line in credentials.read_text(errors="ignore").splitlines():
-            if "github.com" not in line:
-                continue
-            parsed = urllib.parse.urlparse(line.strip())
-            if parsed.password:
-                return urllib.parse.unquote(parsed.password)
+        credentials = home / ".git-credentials"
+        if credentials.exists():
+            for line in credentials.read_text(errors="ignore").splitlines():
+                if "github.com" not in line:
+                    continue
+                parsed = urllib.parse.urlparse(line.strip())
+                if parsed.password:
+                    return urllib.parse.unquote(parsed.password)
 
     return ""
 
@@ -92,22 +146,30 @@ def load_token() -> str:
 def detect_auth() -> dict[str, Any]:
     gh_path = shutil.which("gh")
     if gh_path:
-        code, _, _ = run_command(["gh", "auth", "status"])
-        if code == 0:
+        for config_dir in candidate_gh_config_dirs():
+            config = str(config_dir)
+            env = env_with_gh_config(config)
+            code, _, _ = run_command(["gh", "auth", "status"], env=env)
+            if code != 0:
+                continue
             user = ""
-            user_code, user_out, _ = run_command([
-                "gh",
-                "api",
-                "user",
-                "--jq",
-                ".login",
-            ])
+            user_code, user_out, _ = run_command(
+                [
+                    "gh",
+                    "api",
+                    "user",
+                    "--jq",
+                    ".login",
+                ],
+                env=env,
+            )
             if user_code == 0:
                 user = user_out.strip()
             return {
                 "method": "gh",
                 "gh_available": True,
                 "gh_authenticated": True,
+                "gh_config_dir": config,
                 "user": user,
             }
 
@@ -170,17 +232,21 @@ def normalize_pr(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def collect_with_gh(repo: str) -> dict[str, Any]:
+def collect_with_gh(repo: str, config_dir: str | None) -> dict[str, Any]:
     result: dict[str, Any] = {"repo": repo, "status": "ok"}
+    env = env_with_gh_config(config_dir)
 
-    code, stdout, stderr = run_command([
-        "gh",
-        "repo",
-        "view",
-        repo,
-        "--json",
-        ",".join(MINIMAL_REPO_FIELDS),
-    ])
+    code, stdout, stderr = run_command(
+        [
+            "gh",
+            "repo",
+            "view",
+            repo,
+            "--json",
+            ",".join(MINIMAL_REPO_FIELDS),
+        ],
+        env=env,
+    )
     if code != 0:
         result.update({
             "status": "repo_error",
@@ -199,19 +265,22 @@ def collect_with_gh(repo: str) -> dict[str, Any]:
         "url": repo_data.get("url"),
     }
 
-    issue_code, issue_stdout, issue_stderr = run_command([
-        "gh",
-        "issue",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "open",
-        "--limit",
-        "100",
-        "--json",
-        ",".join(ISSUE_FIELDS),
-    ])
+    issue_code, issue_stdout, issue_stderr = run_command(
+        [
+            "gh",
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--limit",
+            "100",
+            "--json",
+            ",".join(ISSUE_FIELDS),
+        ],
+        env=env,
+    )
     if issue_code == 0:
         issues = parse_json(issue_stdout, [])
         result["openIssues"] = [
@@ -221,19 +290,22 @@ def collect_with_gh(repo: str) -> dict[str, Any]:
         result["openIssues"] = []
         result["issuesError"] = issue_stderr.strip() or issue_stdout.strip()
 
-    pr_code, pr_stdout, pr_stderr = run_command([
-        "gh",
-        "pr",
-        "list",
-        "--repo",
-        repo,
-        "--state",
-        "open",
-        "--limit",
-        "100",
-        "--json",
-        ",".join(PR_FIELDS),
-    ])
+    pr_code, pr_stdout, pr_stderr = run_command(
+        [
+            "gh",
+            "pr",
+            "list",
+            "--repo",
+            repo,
+            "--state",
+            "open",
+            "--limit",
+            "100",
+            "--json",
+            ",".join(PR_FIELDS),
+        ],
+        env=env,
+    )
     if pr_code == 0:
         prs = parse_json(pr_stdout, [])
         result["openPullRequests"] = [
@@ -362,8 +434,9 @@ def main(argv: list[str]) -> int:
 
     auth = detect_auth()
     token = load_token() if auth["method"] == "rest_token" else ""
+    gh_config_dir = auth.get("gh_config_dir") if auth["method"] == "gh" else None
     repos = [
-        collect_with_gh(repo)
+        collect_with_gh(repo, gh_config_dir)
         if auth["method"] == "gh"
         else collect_with_rest(repo, token)
         for repo in args.repos

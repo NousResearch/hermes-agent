@@ -2168,6 +2168,111 @@ class TestDeleteAndExport:
         assert len(exports) == 1
         assert exports[0]["source"] == "cli"
 
+    def test_import_exported_session_round_trips(self, db, tmp_path):
+        db.create_session(
+            session_id="s1",
+            source="cli",
+            model="test-model",
+            model_config={"temperature": 0.2},
+            user_id="user-1",
+            cwd="/workspace",
+        )
+        db.set_session_title("s1", "Imported session")
+        db.update_session_cwd(
+            "s1",
+            "/workspace/project",
+            git_branch="feature/import",
+            git_repo_root="/workspace/project",
+        )
+        db.append_message("s1", role="user", content="Hello", timestamp=10)
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Hi",
+            timestamp=11,
+            tool_calls=[{"id": "call-1", "function": {"name": "noop"}}],
+            reasoning_details=[{"type": "summary", "text": "short"}],
+        )
+        db.end_session("s1", "complete")
+
+        exported = db.export_session("s1")
+        exported["handoff_state"] = "active"
+        exported["handoff_platform"] = "telegram"
+        exported["handoff_error"] = "stale runtime state"
+        exported["rewind_count"] = 3
+        target = SessionDB(db_path=tmp_path / "target_state.db")
+        try:
+            result = target.import_sessions([exported])
+            assert result["ok"] is True
+            assert result["imported"] == 1
+            assert result["skipped"] == 0
+
+            imported = target.get_session("s1")
+            assert imported["title"] == "Imported session"
+            assert imported["source"] == "cli"
+            assert imported["model"] == "test-model"
+            assert imported["cwd"] == "/workspace/project"
+            assert imported["git_branch"] == "feature/import"
+            assert imported["git_repo_root"] == "/workspace/project"
+            assert imported["message_count"] == 2
+            assert imported["tool_call_count"] == 1
+            assert imported["handoff_state"] is None
+            assert imported["handoff_platform"] is None
+            assert imported["handoff_error"] is None
+            assert imported["rewind_count"] == 0
+
+            messages = target.get_messages("s1")
+            assert [m["role"] for m in messages] == ["user", "assistant"]
+            assert messages[0]["content"] == "Hello"
+            assert messages[1]["tool_calls"][0]["id"] == "call-1"
+
+            duplicate = target.import_sessions([exported])
+            assert duplicate["imported"] == 0
+            assert duplicate["skipped"] == 1
+            assert duplicate["skipped_ids"] == ["s1"]
+        finally:
+            target.close()
+
+    def test_import_sessions_restores_valid_parents_and_detaches_missing(self, db):
+        result = db.import_sessions(
+            [
+                {
+                    "id": "child",
+                    "source": "cli",
+                    "parent_session_id": "parent",
+                    "messages": [],
+                },
+                {"id": "parent", "source": "cli", "messages": []},
+                {
+                    "id": "orphan",
+                    "source": "cli",
+                    "parent_session_id": "missing",
+                    "messages": [],
+                },
+            ]
+        )
+
+        assert result["ok"] is True
+        assert result["imported"] == 3
+        assert result["detached"] == 1
+        assert db.get_session("child")["parent_session_id"] == "parent"
+        assert db.get_session("orphan")["parent_session_id"] is None
+
+    def test_import_sessions_rejects_invalid_batch_atomically(self, db):
+        result = db.import_sessions(
+            [
+                {"id": "valid", "source": "cli", "messages": []},
+                {"source": "cli", "messages": []},
+            ]
+        )
+
+        assert result["ok"] is False
+        assert result["imported"] == 0
+        assert result["errors"] == [
+            {"index": 1, "error": "session id is required"}
+        ]
+        assert db.get_session("valid") is None
+
 
 # =========================================================================
 # Prune

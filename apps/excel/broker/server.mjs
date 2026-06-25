@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import zlib from "node:zlib";
 import {
   translateMatrixFormulas,
@@ -165,7 +165,10 @@ function tokenOk(req) {
       provided = "";
     }
   }
-  return provided === bridgeToken;
+  // Constant-time comparison to prevent timing attacks
+  const a = Buffer.from(String(provided || ""), "utf8");
+  const b = Buffer.from(bridgeToken, "utf8");
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 function send(res, status, body, contentType = "application/json; charset=utf-8", origin = null) {

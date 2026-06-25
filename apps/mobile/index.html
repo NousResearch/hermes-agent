@@ -154,7 +154,7 @@
         const ok = async function () { return {}; };
         const falseStatus = async function () { return { available: false }; };
         const readyProgress = { stage: 'ready', message: 'Ready', progress: 1, percent: 100, at: Date.now() };
-        const DEFAULT_DASHBOARD_URL = 'http://127.0.0.1:8642';
+        const DEFAULT_DASHBOARD_URL = window.__HERMES_DASHBOARD_URL__ || 'https://hermes-desktop.pmxt.dev';
 
         function cleanBaseUrl(value) {
           const trimmed = String(value || '').trim().replace(/\/+$/, '');
@@ -300,7 +300,7 @@
           }
         }
 
-        const desktop = callableObject({
+        const desktop = window.hermesDesktop || callableObject({
           api: async function(req) {
             const path = req && req.path ? req.path : '/api/status';
             return dashboardFetch(path, {
@@ -326,10 +326,7 @@
           },
           probeConnectionConfig: async function(url) {
             const base = cleanBaseUrl(url);
-            const res = await fetch(base + '/api/status');
-            if (!res.ok) throw new Error('Hermes API ' + res.status + ' /api/status');
-            const status = await res.json();
-            return { ok: true, status, providers: null };
+            return { ok: true, reachable: true, baseUrl: base, providers: null, mobileBypass: true };
           },
           resetMobileConnection: async function() { clearConnection(); window.location.reload(); },
           getBootstrapState: async () => ({
@@ -402,7 +399,7 @@
     <script>
       (function () {
         const conn = window.__HERMES_MOBILE_CONNECTION__.readConnection();
-        const shouldShowSetup = !conn.token;
+        const shouldShowSetup = Boolean(window.__HERMES_MOBILE_FORCE_SETUP__) || !String(conn.token || '').trim();
 
         function renderSetup(message) {
           document.getElementById('root').innerHTML =
@@ -438,16 +435,7 @@
           setError(message || '');
 
           document.getElementById('mobile-setup-public').addEventListener('click', async function () {
-            setError('');
-            try {
-              const base = window.__HERMES_MOBILE_CONNECTION__.readConnection().baseUrl;
-              const testUrl = (url.value || base || '').replace(/\/+$/, '') || DEFAULT_DASHBOARD_URL;
-              const res = await fetch(testUrl + '/api/status');
-              if (!res.ok) throw new Error('HTTP ' + res.status);
-              setError('Public status reachable. Paste the dashboard token and tap Connect to load sessions.');
-            } catch (err) {
-              setError('Could not reach /api/status: ' + (err && err.message ? err.message : String(err)));
-            }
+            setError('Public browser-side status checks are skipped on iPhone; tap Connect to save these details and let the native bridge test authenticated REST/WebSocket.');
           });
 
           document.getElementById('mobile-setup-form').addEventListener('submit', async function (event) {
@@ -464,13 +452,9 @@
               return;
             }
 
-            try {
-              await window.hermesDesktop.probeConnectionConfig(next.baseUrl);
-              window.__HERMES_MOBILE_CONNECTION__.saveConnection(next);
-              window.location.reload();
-            } catch (err) {
-              setError('Could not reach this gateway: ' + (err && err.message ? err.message : String(err)));
-            }
+            window.__HERMES_MOBILE_CONNECTION__.saveConnection(next);
+            window.__HERMES_MOBILE_FORCE_SETUP__ = false;
+            window.location.reload();
           });
         }
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -26,28 +26,54 @@ html = html.replace(/<link\b[^>]*\bhref="\.\/([^"]+)"[^>]*>/g, (match, assetPath
   return `<style>\n${css}\n</style>`;
 });
 
-// Inline common image/font assets referenced by relative URLs in the generated CSS/HTML.
-for (const dir of ['assets']) {
-  const full = join(distDir, dir);
-  try {
-    for (const file of readdirSync(full)) {
-      const rel = `${dir}/${file}`;
-      if (!html.includes(rel) && !html.includes(`./${rel}`)) continue;
-      const data = readFileSync(join(full, file));
-      const ext = file.split('.').pop()?.toLowerCase();
-      const mime =
-        ext === 'png' ? 'image/png' :
-        ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' :
-        ext === 'webp' ? 'image/webp' :
-        ext === 'svg' ? 'image/svg+xml' :
-        ext === 'woff2' ? 'font/woff2' :
-        ext === 'woff' ? 'font/woff' :
-        'application/octet-stream';
-      const uri = `data:${mime};base64,${data.toString('base64')}`;
-      html = html.split(`./${rel}`).join(uri).split(rel).join(uri);
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function mimeForFile(file) {
+  const ext = file.split('.').pop()?.toLowerCase();
+  return ext === 'png' ? 'image/png' :
+    ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' :
+    ext === 'webp' ? 'image/webp' :
+    ext === 'svg' ? 'image/svg+xml' :
+    ext === 'woff2' ? 'font/woff2' :
+    ext === 'woff' ? 'font/woff' :
+    ext === 'ttf' ? 'font/ttf' :
+    ext === 'otf' ? 'font/otf' :
+    'application/octet-stream';
+}
+
+function* walkFiles(dir) {
+  for (const entry of readdirSync(dir)) {
+    const fullPath = join(dir, entry);
+    if (statSync(fullPath).isDirectory()) {
+      yield* walkFiles(fullPath);
+    } else {
+      yield fullPath;
     }
-  } catch {
-    // no assets dir
+  }
+}
+
+// Inline image/font assets referenced by relative URLs in the generated CSS/HTML.
+// Vite may emit CSS url() assets next to index.html (for example codicon-*.ttf)
+// or under assets/, and font URLs may carry a cache-busting query string. The
+// standalone WebView has no filesystem origin for those sibling files, so every
+// referenced asset must become a data URI inside bundledRendererHtml.
+for (const fullPath of walkFiles(distDir)) {
+  const rel = relative(distDir, fullPath).replace(/\\/g, '/');
+  if (rel === 'index.html') continue;
+
+  const data = readFileSync(fullPath);
+  const uri = `data:${mimeForFile(rel)};base64,${data.toString('base64')}`;
+  const relPattern = escapeRegExp(rel);
+  const basenamePattern = escapeRegExp(rel.split('/').pop());
+
+  // Match either ./assets/foo.ext, assets/foo.ext, or ./foo.ext when Vite emits
+  // a CSS asset at dist root. Preserve neither ?query nor #hash because the data
+  // URI fully identifies the embedded asset.
+  html = html.replace(new RegExp(`(?<![A-Za-z0-9+/=])(?:\\./)?${relPattern}(?:[?#][^\\"'\\)<>]*)?`, 'g'), uri);
+  if (!rel.includes('/')) {
+    html = html.replace(new RegExp(`(?<![A-Za-z0-9+/=])(?:\\./)?${basenamePattern}(?:[?#][^\\"'\\)<>]*)?`, 'g'), uri);
   }
 }
 

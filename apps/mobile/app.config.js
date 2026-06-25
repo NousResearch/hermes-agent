@@ -27,6 +27,7 @@ const config = {
   web: {
     favicon: './assets/favicon.png',
   },
+  assetBundlePatterns: ['assets/**/*'],
   plugins: [
     [
       'expo-audio',

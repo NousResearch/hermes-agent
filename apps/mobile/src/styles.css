@@ -996,6 +996,42 @@ canvas {
   }
 }
 
+/* iOS WKWebView currently mis-sizes the CSS container-query/tan/atan2 fit-text
+   wordmark and lets it overflow horizontally. This override is intentionally
+   unconditional: physical iPhones can report a wide layout viewport even though
+   the visible WebView is phone-sized. */
+.fit-text.mobile-wordmark {
+  display: block !important;
+  width: 100% !important;
+  max-width: calc(100vw - 2.25rem) !important;
+  margin-inline: auto !important;
+  overflow: visible !important;
+  text-align: center !important;
+  letter-spacing: 0.04em !important;
+}
+
+.fit-text.mobile-wordmark > [aria-hidden] {
+  display: none !important;
+}
+
+.fit-text.mobile-wordmark > :not([aria-hidden]) {
+  display: block !important;
+  width: 100% !important;
+  container-type: normal !important;
+}
+
+.fit-text.mobile-wordmark > :not([aria-hidden]) > * {
+  display: block !important;
+  inline-size: auto !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  overflow: visible !important;
+  text-align: center !important;
+  transform: none !important;
+  font-size: clamp(1.9rem, 8.1vw, 2.45rem) !important;
+  white-space: nowrap !important;
+}
+
 @property --fit-captured-length {
   syntax: '<length>';
   initial-value: 0px;

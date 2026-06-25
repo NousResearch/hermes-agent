@@ -8,6 +8,8 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   css: { postcss: { plugins: [] } },
   build: {
+    minify: false,
+    sourcemap: 'inline',
     rollupOptions: {
       output: {
         inlineDynamicImports: true,
@@ -17,6 +19,9 @@ export default defineConfig({
   resolve: {
     alias: [
       { find: '@/app', replacement: path.resolve(__dirname, 'src/hermes-app') },
+      { find: 'react-arborist', replacement: path.resolve(__dirname, 'src/mobile-shims/react-arborist.tsx') },
+      { find: 'react-shiki', replacement: path.resolve(__dirname, 'src/mobile-shims/react-shiki.tsx') },
+      { find: 'use-stick-to-bottom', replacement: path.resolve(__dirname, 'src/mobile-shims/use-stick-to-bottom.tsx') },
       { find: '@hermes/shared', replacement: path.resolve(__dirname, 'src/mobile-shims/hermes-shared') },
       { find: '@', replacement: path.resolve(__dirname, 'src') }
     ],

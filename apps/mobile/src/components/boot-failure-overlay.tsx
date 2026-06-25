@@ -124,6 +124,12 @@ export function BootFailureOverlay() {
 
   const switchToLocalGateway = async () => {
     setBusy('local')
+    const mobileWindow = window as unknown as { __HERMES_MOBILE_STANDALONE__?: boolean }
+    if (mobileWindow.__HERMES_MOBILE_STANDALONE__ && window.hermesDesktop?.resetMobileConnection) {
+      await window.hermesDesktop.resetMobileConnection().catch(() => undefined)
+      setBusy(null)
+      return
+    }
     // applyConnectionConfig reloads the window from the main process.
     await window.hermesDesktop?.applyConnectionConfig({ mode: 'local' }).catch(() => undefined)
     setBusy(null)

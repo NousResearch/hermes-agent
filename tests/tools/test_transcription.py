@@ -546,3 +546,56 @@ class TestHotwordsUnsupportedProviders:
             assert result["success"] is True
             assert any("hotwords not supported by Mistral" in r.message for r in caplog.records), \
                 f"Expected debug log with 'not supported by Mistral', got: {[r.message for r in caplog.records]}"
+
+
+class TestHotwordsCommandProviders:
+    """Command-based providers can use {hotwords} template variable."""
+
+    def test_local_command_receives_hotwords_template_var(self, tmp_path, monkeypatch):
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio")
+
+        monkeypatch.setenv("HERMES_LOCAL_STT_COMMAND", "echo '{hotwords}' > {output_dir}/transcript.txt")
+
+        stt_config = {
+            "enabled": True,
+            "provider": "local",
+            "hotwords": ["Hermes", "OpenCode"],
+            "local": {"model": "base", "language": "en"},
+        }
+
+        with patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="local_command"), \
+             patch("tools.transcription_tools._has_local_command", return_value=True), \
+             patch("tools.transcription_tools._find_whisper_binary", return_value=None):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            assert "Hermes" in result["transcript"], \
+                f"Expected 'Hermes' in transcript, got: {result['transcript']}"
+
+    def test_command_stt_placeholders_include_hotwords(self, tmp_path):
+        audio_file = tmp_path / "test.wav"
+        audio_file.write_bytes(b"fake audio")
+
+        stt_config = {
+            "enabled": True,
+            "provider": "my_custom_stt",
+            "hotwords": ["Hermes"],
+            "providers": {
+                "my_custom_stt": {
+                    "type": "command",
+                    "command": "echo '{hotwords}' > {output_path}",
+                    "format": "txt",
+                }
+            },
+        }
+
+        with patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._get_provider", return_value="my_custom_stt"), \
+             patch("tools.transcription_tools._resolve_command_stt_provider_config", return_value=stt_config["providers"]["my_custom_stt"]):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            assert "Hermes" in result["transcript"], \
+                f"Expected 'Hermes' in transcript, got: {result['transcript']}"

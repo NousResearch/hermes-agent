@@ -471,6 +471,31 @@
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
 }
 
+/* Hover-reveal suppression — the shared, declarative escape hatch.
+   A collapsed pane slides in when the pointer dwells on its thin edge trigger.
+   Controls that sit over that edge gutter would drag the panel in by accident.
+   Mark any such region and, while it's hovered, the matching edge trigger(s) go
+   pointer-transparent. Auto-resets on mouse-out, no JS.
+
+   - data-suppress-pane-reveal       → kills BOTH edges (use for small regions
+                                         like the thread timeline).
+   - data-suppress-pane-reveal-side  → kills only the hovered region's OWN side
+                                         (side read from its [data-pane-side]
+                                         pane ancestor), so the opposite sidebar
+                                         stays summonable while you work a pane. */
+[data-pane-shell]:has([data-suppress-pane-reveal]:hover) [data-pane-reveal-trigger] {
+  pointer-events: none;
+}
+
+[data-pane-shell]:has([data-pane-side='left'] [data-suppress-pane-reveal-side]:hover)
+  [data-pane-side='left']
+  [data-pane-reveal-trigger],
+[data-pane-shell]:has([data-pane-side='right'] [data-suppress-pane-reveal-side]:hover)
+  [data-pane-side='right']
+  [data-pane-reveal-trigger] {
+  pointer-events: none;
+}
+
 :root:not([style*='--theme-asset-bg:']) .theme-default-filler {
   display: block;
 }
@@ -707,6 +732,28 @@ img,
 video,
 canvas {
   -webkit-user-drag: none;
+}
+
+/* Tabs render 2-wide on every HTML code surface — the source preview, inline
+   diffs, markdown code blocks, tool output — so indentation matches the editor
+   and the terminal instead of the browser default (8). */
+pre,
+code {
+  tab-size: 2;
+  -moz-tab-size: 2;
+}
+
+/* Arc-style multicolor action surface (static, not animated). Reusable on any
+   Button via className. Unlayered so it beats Tailwind's bg-*/text-* variant
+   utilities. */
+.btn-arc {
+  background-image: linear-gradient(110deg, #5b6cff 0%, #8b5cf6 28%, #d946ef 58%, #fb7185 82%, #fb923c 100%);
+  color: #fff;
+  border-color: transparent;
+}
+
+.btn-arc:hover:not(:disabled) {
+  filter: brightness(1.08) saturate(1.06);
 }
 
 /* Shared input chrome — mirrors composer hover/focus FX. Unlayered to beat Tailwind utilities. */
@@ -1064,12 +1111,6 @@ canvas {
   border-color: var(--ui-stroke-secondary) !important;
 }
 
-/* On focus we don't change the fill — just shift the border ~15% toward the
-   foreground, which darkens it in light mode and lightens it in dark mode. */
-[data-slot='composer-surface']:focus-within {
-  border-color: color-mix(in srgb, var(--ui-stroke-secondary) 85%, var(--dt-foreground)) !important;
-}
-
 [data-slot='composer-fade'] {
   min-height: 2.375rem;
 }
@@ -1235,19 +1276,46 @@ canvas {
   opacity: 1;
 }
 
-/* Syntax-highlighted inline diff (Shiki): strip the theme's own surface +
-   default margins so context lines stay transparent and each changed line owns
-   its tint. `display: grid` on the code puts one `.line` per row and drops the
-   whitespace-only `\n` nodes between them — without it, full-width block lines
-   double up with the literal newlines (phantom blank rows). */
+/* Shiki surfaces in the inline file diff + source preview: strip the theme's
+   own background/margins, and lay each `.line` on its own grid row so the
+   inter-line `\n` text nodes can't double-space full-width rows. Empty lines
+   carry a non-breaking space so blank rows keep their height. */
 [data-slot='file-diff-panel'] .shiki,
-[data-slot='file-diff-panel'] .shiki code {
+[data-slot='file-diff-panel'] .shiki code,
+.preview-source-code .shiki,
+.preview-source-code .shiki code {
   margin: 0;
   background: transparent !important;
 }
 
-[data-slot='file-diff-panel'] .shiki code {
+[data-slot='file-diff-panel'] .shiki code,
+.preview-source-code .shiki code {
   display: grid;
+}
+
+[data-slot='file-diff-panel'] .shiki code .line:empty::before,
+.preview-source-code .shiki code .line:empty::before {
+  content: '\00a0';
+}
+
+/* Inline diff rows keep their utility-class padding; just floor the height. */
+[data-slot='file-diff-panel'] .shiki code .line {
+  min-height: 1.25rem;
+  white-space: pre;
+}
+
+/* Source rows are a fixed editor-height box so source⇄diff toggling never
+   shifts and the gutter stays aligned. */
+.preview-source-code .shiki code {
+  min-width: max-content;
+}
+
+.preview-source-code .shiki code .line {
+  display: block;
+  height: 1.25rem;
+  padding: 0 0.625rem;
+  line-height: 1.25rem;
+  white-space: pre;
 }
 
 /* The github-dark token palette reads candy-bright at our small code size.

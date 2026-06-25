@@ -6878,23 +6878,92 @@ def set_config_value(key: str, value: str):
             file=sys.stderr,
         )
         sys.exit(1)
+
     # Check if it's an API key (goes to .env)
-    api_keys = [
-        'OPENROUTER_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'VOICE_TOOLS_OPENAI_KEY',
-        'EXA_API_KEY', 'PARALLEL_API_KEY', 'FIRECRAWL_API_KEY', 'FIRECRAWL_API_URL',
-        'FIRECRAWL_GATEWAY_URL', 'TOOL_GATEWAY_DOMAIN', 'TOOL_GATEWAY_SCHEME',
-        'TOOL_GATEWAY_USER_TOKEN', 'TAVILY_API_KEY',
-        'BROWSERBASE_API_KEY', 'BROWSERBASE_PROJECT_ID', 'BROWSER_USE_API_KEY',
-        'FAL_KEY', 'TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN',
-        'TERMINAL_SSH_HOST', 'TERMINAL_SSH_USER', 'TERMINAL_SSH_KEY',
-        'SUDO_PASSWORD', 'SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN',
-        'GITHUB_TOKEN', 'HONCHO_API_KEY',
-    ]
-    
-    if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
-        save_env_value(key.upper(), value)
-        print(f"✓ Set {key} in {get_env_path()}")
-        return
+    prefixes = (
+        'API_SERVER_',
+        'AUXILIARY_VISION_',
+        'AUXILIARY_WEB_EXTRACT_',
+        'AWS_',
+        'AZURE_',
+        'BLUEBUBBLES_',
+        'CAMOFOX_',
+        'COPILOT_',
+        'DINGTALK_',
+        'DISCORD_',
+        'EMAIL_',
+        'FEISHU_',
+        'FIRECRAWL_',
+        'GOOGLE_',
+        'HERMES_',
+        'LANGFUSE_',
+        'LINE_',
+        'MATRIX_',
+        'MATTERMOST_',
+        'MSGRAPH_',
+        'NTFY_',
+        'QQ_',
+        'QQBOT_',
+        'SIGNAL_',
+        'SLACK_',
+        'SMS_',
+        'STT_',
+        'TEAMS_',
+        'TELEGRAM_',
+        'TERMINAL_',
+        'TOOL_GATEWAY_',
+        'TWILIO_',
+        'WEBHOOK_',
+        'WECOM_',
+        'WEIXIN_',
+        'WHATSAPP_'
+    )
+    suffixes = (
+        '_API_KEY',
+        '_TOKEN',
+        '_BASE_URL'
+    )
+    extra_keys = (
+        'AGENT_BROWSER_ARGS',
+        'ALIBABA_CODING_PLAN_BASE_URL',
+        'BROWSERBASE_PROJECT_ID',
+        'BROWSER_CDP_URL',
+        'BROWSER_INACTIVITY_TIMEOUT',
+        'CODEX_HOME',
+        'DELEGATION_MAX_CONCURRENT_CHILDREN',
+        'DINGTALK_CLIENT_ID',
+        'DINGTALK_CLIENT_SECRET',
+        'FAL_KEY',
+        'GATEWAY_ALLOWED_USERS',
+        'GATEWAY_ALLOW_ALL_USERS',
+        'GATEWAY_PROXY_KEY',
+        'GATEWAY_PROXY_URL',
+        'GATEWAY_RELAY_BOT_ID',
+        'GATEWAY_RELAY_DELIVERY_KEY',
+        'GATEWAY_RELAY_ENDPOINT',
+        'GATEWAY_RELAY_ID',
+        'GATEWAY_RELAY_PLATFORM',
+        'GATEWAY_RELAY_ROUTE_KEYS',
+        'GATEWAY_RELAY_SECRET',
+        'GATEWAY_RELAY_URL',
+        'HASS_URL',
+        'HINDSIGHT_TIMEOUT',
+        'HTTPS_PROXY',
+        'IDENTITY_ENDPOINT',
+        'MESSAGING_CWD',
+        'MSI_ENDPOINT',
+        'SEARXNG_URL',
+        'SESSION_IDLE_MINUTES',
+        'SESSION_RESET_HOUR',
+        'SUDO_PASSWORD',
+        'VOICE_TOOLS_OPENAI_KEY',
+    )
+
+    if "." not in key: # Sanity check, env vars should not contain '.', but config values do
+        if key.upper() in extra_keys or key.upper().startswith(prefixes) or key.upper().endswith(suffixes):
+            save_env_value(key.upper(), value)
+            print(f"✓ Set {key} in {get_env_path()}")
+            return
     
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid

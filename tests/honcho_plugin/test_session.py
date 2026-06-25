@@ -1489,7 +1489,7 @@ class TestDialecticLiveness:
     def test_stale_pending_result_is_discarded_on_read(self):
         """A pending dialectic result from many turns ago is discarded
         instead of injected against a fresh conversational pivot."""
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 2}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 2})
         p._session_key = "test"
         p._base_context_cache = "base ctx"
         with p._prefetch_lock:
@@ -1508,7 +1508,7 @@ class TestDialecticLiveness:
 
     def test_fresh_pending_result_is_kept(self):
         """A pending result within the staleness window is injected normally."""
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 3}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 3})
         p._session_key = "test"
         p._base_context_cache = ""
         with p._prefetch_lock:
@@ -1522,14 +1522,14 @@ class TestDialecticLiveness:
 
     def test_empty_streak_widens_effective_cadence(self):
         """After N empty returns, the gate waits cadence + N turns."""
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 1}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 1})
         p._dialectic_empty_streak = 3
         # cadence=1, streak=3 → effective = 4
         assert p._effective_cadence() == 4
 
     def test_backoff_is_capped(self):
         """Effective cadence is capped at cadence × _BACKOFF_MAX."""
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 2}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 2})
         p._dialectic_empty_streak = 100
         # cadence=2, ceiling = 2 × 8 = 16
         assert p._effective_cadence() == 16
@@ -1537,7 +1537,7 @@ class TestDialecticLiveness:
     def test_success_resets_empty_streak(self):
         """A non-empty result zeroes the streak so healthy operation restores
         the base cadence immediately."""
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 1}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 1})
         p._session_key = "test"
         p._dialectic_empty_streak = 5
         p._turn_count = 10
@@ -1551,7 +1551,7 @@ class TestDialecticLiveness:
         assert p._last_dialectic_turn == 10
 
     def test_empty_result_increments_streak(self):
-        p = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 1}})
+        p = self._make_provider(cfg_extra={"dialectic_cadence": 1})
         p._session_key = "test"
         p._turn_count = 5
         p._last_dialectic_turn = 0
@@ -1638,7 +1638,7 @@ class TestDialecticLifecycleSmoke:
         """
         from unittest.mock import patch, MagicMock
         provider, mgr, cfg = self._make_provider(
-            cfg_extra={"raw": {"dialecticCadence": 3}}
+            cfg_extra={"dialectic_cadence": 3}
         )
 
         # Program the dialectic responses in the exact order they'll be requested.

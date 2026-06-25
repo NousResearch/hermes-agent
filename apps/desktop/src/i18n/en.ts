@@ -1921,7 +1921,7 @@ export const en: Translations = {
         web: 'Web'
       },
       titleTemplates: {
-        actionCommand: (action, command) => `${action} · ${command}`,
+        actionCommand: (action, command) => `${action} ${command}`,
         actionQuoted: (action, value) => `${action} “${value}”`,
         actionTarget: (action, target) => `${action} ${target}`,
         prefixedDone: (prefix, action) => `${prefix} ${action}`,

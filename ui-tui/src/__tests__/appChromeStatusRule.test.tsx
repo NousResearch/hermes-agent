@@ -96,7 +96,6 @@ const baseProps = {
   liveSessionCount: 0,
   model: 'opus-4.8',
   sessionStartedAt: null,
-  showCost: false,
   status: 'ready',
   statusColor: DEFAULT_THEME.color.ok,
   t: DEFAULT_THEME,
@@ -157,7 +156,6 @@ describe('StatusRule session count click target', () => {
       model: 'kimi-k2.6',
       onSessionCountClick: openSwitcher,
       sessionStartedAt: null,
-      showCost: false,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
@@ -183,12 +181,11 @@ describe('StatusRule session count click target', () => {
       model: 'opus-4.8',
       onSessionCountClick: vi.fn(),
       sessionStartedAt: Date.now() - 60_000,
-      showCost: true,
       status: 'ready',
       statusColor: DEFAULT_THEME.color.ok,
       t: DEFAULT_THEME,
       turnStartedAt: null,
-      usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, cost_usd: 0.5, total: 50_000 },
+      usage: { calls: 0, context_max: 200_000, context_percent: 25, context_used: 50_000, input: 0, output: 0, total: 50_000 },
       voiceLabel: 'voice off'
     })
 
@@ -197,9 +194,8 @@ describe('StatusRule session count click target', () => {
     // Must-keep essentials survive intact …
     expect(rendered).toContain('ready')
     expect(rendered).toContain('opus 4.8')
-    // … while the low-value tail (session count, cost) is dropped, not truncated.
+    // … while the low-value tail (session count) is dropped, not truncated.
     expect(rendered).not.toContain('3 sessions')
-    expect(rendered).not.toContain('$0.5000')
   })
 })
 

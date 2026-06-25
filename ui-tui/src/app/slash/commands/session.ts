@@ -593,21 +593,14 @@ export const sessionCommands: SlashCommand[] = [
         }
 
         const f = (v: number | undefined) => (v ?? 0).toLocaleString()
-        const cost = r.cost_usd != null ? `${r.cost_status === 'estimated' ? '~' : ''}$${r.cost_usd.toFixed(4)}` : null
 
         const rows: [string, string][] = [
           ['Model', r.model ?? ''],
           ['Input tokens', f(r.input)],
-          ['Cache read tokens', f(r.cache_read)],
-          ['Cache write tokens', f(r.cache_write)],
           ['Output tokens', f(r.output)],
           ['Total tokens', f(r.total)],
           ['API calls', f(r.calls)]
         ]
-
-        if (cost) {
-          rows.push(['Cost', cost])
-        }
 
         const sections: PanelSection[] = [{ rows }]
 

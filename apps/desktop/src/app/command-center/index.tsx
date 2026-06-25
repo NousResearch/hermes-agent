@@ -455,20 +455,6 @@ function formatTokens(value: null | number | undefined): string {
   return num.toLocaleString()
 }
 
-function formatCost(value: null | number | undefined): string {
-  const num = Number(value || 0)
-
-  if (num === 0) {
-    return '$0.00'
-  }
-
-  if (num < 0.01) {
-    return '<$0.01'
-  }
-
-  return `$${num.toFixed(2)}`
-}
-
 function formatInteger(value: null | number | undefined): string {
   return Number(value ?? 0).toLocaleString()
 }
@@ -525,17 +511,12 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
         </span>
       )}
 
-      <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-(--ui-stroke-tertiary) pb-5 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-(--ui-stroke-tertiary) pb-5 sm:grid-cols-3">
         <UsageStat label={cc.statSessions} value={formatInteger(totals.total_sessions)} />
         <UsageStat label={cc.statApiCalls} value={formatInteger(totals.total_api_calls)} />
         <UsageStat
           label={cc.statTokens}
           value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
-        />
-        <UsageStat
-          hint={totals.total_actual_cost > 0 ? cc.actualCost(formatCost(totals.total_actual_cost)) : undefined}
-          label={cc.statCost}
-          value={formatCost(totals.total_estimated_cost)}
         />
       </div>
 
@@ -596,7 +577,7 @@ function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProp
           rows={byModel.slice(0, 6).map(entry => ({
             key: entry.model,
             label: entry.model,
-            value: `${formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))} · ${formatCost(entry.estimated_cost)}`
+            value: `${formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))}`
           }))}
           title={cc.topModels}
         />

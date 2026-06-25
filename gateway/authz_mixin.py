@@ -238,7 +238,11 @@ class GatewayAuthorizationMixin:
         # user ("Unauthorized user <id> on discord"). The adapter-flag check is
         # retained for events whose ``source.platform`` IS ``Platform.RELAY``
         # (e.g. the interaction-passthrough path).
-        if source.delivered_via_upstream_relay or self._adapter_authorization_is_upstream(
+        # ``is True`` (not just truthiness): the marker is a real bool on a
+        # SessionSource, and an explicit identity check refuses to authorize a
+        # non-bool stand-in (e.g. a MagicMock attribute auto-vivifies truthy in
+        # tests) — defensive against accidental fail-open.
+        if source.delivered_via_upstream_relay is True or self._adapter_authorization_is_upstream(
             source.platform
         ):
             return True

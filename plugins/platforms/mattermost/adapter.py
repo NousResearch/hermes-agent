@@ -1189,24 +1189,37 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
     model and merely owns the YAML→env translation here, next to the
     adapter that consumes it.
 
-    Env vars take precedence over YAML — every assignment is guarded
-    by ``not os.getenv(...)`` so an explicit env var survives a config.yaml
-    update.  Returns ``None`` because no extras are seeded into
-    ``PlatformConfig.extra`` directly (everything flows through env).
+    Env vars take precedence over YAML, and the shared gateway helper logs
+    when a non-secret env var shadows config.yaml. Returns ``None`` because
+    no extras are seeded into ``PlatformConfig.extra`` directly, everything
+    flows through env.
     """
-    if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
-        os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
+    from gateway.config import _csv_env_str, _lower_env_str, _set_env_from_yaml
+
+    if "require_mention" in mattermost_cfg:
+        _set_env_from_yaml(
+            "MATTERMOST_REQUIRE_MENTION",
+            "mattermost.require_mention",
+            mattermost_cfg["require_mention"],
+            _lower_env_str,
+        )
     frc = mattermost_cfg.get("free_response_channels")
-    if frc is not None and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
-        if isinstance(frc, list):
-            frc = ",".join(str(v) for v in frc)
-        os.environ["MATTERMOST_FREE_RESPONSE_CHANNELS"] = str(frc)
+    if frc is not None:
+        _set_env_from_yaml(
+            "MATTERMOST_FREE_RESPONSE_CHANNELS",
+            "mattermost.free_response_channels",
+            frc,
+            _csv_env_str,
+        )
     # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
     ac = mattermost_cfg.get("allowed_channels")
-    if ac is not None and not os.getenv("MATTERMOST_ALLOWED_CHANNELS"):
-        if isinstance(ac, list):
-            ac = ",".join(str(v) for v in ac)
-        os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
+    if ac is not None:
+        _set_env_from_yaml(
+            "MATTERMOST_ALLOWED_CHANNELS",
+            "mattermost.allowed_channels",
+            ac,
+            _csv_env_str,
+        )
     return None  # all settings flow through env; nothing to merge into extras
 
 

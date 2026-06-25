@@ -4497,29 +4497,57 @@ def _apply_yaml_config(yaml_cfg: dict, slack_cfg: dict) -> dict | None:
     throughout the connect / handle code paths, so rather than rewrite those
     call sites to read from ``PlatformConfig.extra``, this hook keeps the
     existing env-driven model and owns the YAML→env translation here, next to
-    the adapter that consumes it. Env vars take precedence over YAML — every
-    assignment is guarded by ``not os.getenv(...)`` so explicit env vars
-    survive a config.yaml update. Returns ``None`` because no extras are
-    seeded into ``PlatformConfig.extra`` directly (everything flows through env).
+    the adapter that consumes it. Env vars take precedence over YAML, and the
+    shared gateway helper logs when a non-secret env var shadows config.yaml.
+    Returns ``None`` because no extras are seeded into
+    ``PlatformConfig.extra`` directly (everything flows through env).
     """
-    if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
-        os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
-    if "strict_mention" in slack_cfg and not os.getenv("SLACK_STRICT_MENTION"):
-        os.environ["SLACK_STRICT_MENTION"] = str(slack_cfg["strict_mention"]).lower()
-    if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
-        os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
+    from gateway.config import _csv_env_str, _lower_env_str, _set_env_from_yaml
+
+    if "require_mention" in slack_cfg:
+        _set_env_from_yaml(
+            "SLACK_REQUIRE_MENTION",
+            "slack.require_mention",
+            slack_cfg["require_mention"],
+            _lower_env_str,
+        )
+    if "strict_mention" in slack_cfg:
+        _set_env_from_yaml(
+            "SLACK_STRICT_MENTION",
+            "slack.strict_mention",
+            slack_cfg["strict_mention"],
+            _lower_env_str,
+        )
+    if "allow_bots" in slack_cfg:
+        _set_env_from_yaml(
+            "SLACK_ALLOW_BOTS",
+            "slack.allow_bots",
+            slack_cfg["allow_bots"],
+            _lower_env_str,
+        )
     frc = slack_cfg.get("free_response_channels")
-    if frc is not None and not os.getenv("SLACK_FREE_RESPONSE_CHANNELS"):
-        if isinstance(frc, list):
-            frc = ",".join(str(v) for v in frc)
-        os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
-    if "reactions" in slack_cfg and not os.getenv("SLACK_REACTIONS"):
-        os.environ["SLACK_REACTIONS"] = str(slack_cfg["reactions"]).lower()
+    if frc is not None:
+        _set_env_from_yaml(
+            "SLACK_FREE_RESPONSE_CHANNELS",
+            "slack.free_response_channels",
+            frc,
+            _csv_env_str,
+        )
+    if "reactions" in slack_cfg:
+        _set_env_from_yaml(
+            "SLACK_REACTIONS",
+            "slack.reactions",
+            slack_cfg["reactions"],
+            _lower_env_str,
+        )
     ac = slack_cfg.get("allowed_channels")
-    if ac is not None and not os.getenv("SLACK_ALLOWED_CHANNELS"):
-        if isinstance(ac, list):
-            ac = ",".join(str(v) for v in ac)
-        os.environ["SLACK_ALLOWED_CHANNELS"] = str(ac)
+    if ac is not None:
+        _set_env_from_yaml(
+            "SLACK_ALLOWED_CHANNELS",
+            "slack.allowed_channels",
+            ac,
+            _csv_env_str,
+        )
     return None  # all settings flow through env; nothing to merge into extras
 
 

@@ -4539,38 +4539,79 @@ def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     matrix_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML. Returns None — everything flows through env.
+    take precedence over YAML, and the shared gateway helper logs when a
+    non-secret env var shadows config.yaml. Returns None, everything flows
+    through env.
     """
-    if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
-        os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
+    from gateway.config import _csv_env_str, _lower_env_str, _set_env_from_yaml
+
+    if "require_mention" in matrix_cfg:
+        _set_env_from_yaml(
+            "MATRIX_REQUIRE_MENTION",
+            "matrix.require_mention",
+            matrix_cfg["require_mention"],
+            _lower_env_str,
+        )
     au = matrix_cfg.get("allowed_users")
-    if au is not None and not os.getenv("MATRIX_ALLOWED_USERS"):
-        if isinstance(au, list):
-            au = ",".join(str(v) for v in au)
-        os.environ["MATRIX_ALLOWED_USERS"] = str(au)
+    if au is not None:
+        _set_env_from_yaml(
+            "MATRIX_ALLOWED_USERS",
+            "matrix.allowed_users",
+            au,
+            _csv_env_str,
+        )
     frc = matrix_cfg.get("free_response_rooms")
-    if frc is not None and not os.getenv("MATRIX_FREE_RESPONSE_ROOMS"):
-        if isinstance(frc, list):
-            frc = ",".join(str(v) for v in frc)
-        os.environ["MATRIX_FREE_RESPONSE_ROOMS"] = str(frc)
+    if frc is not None:
+        _set_env_from_yaml(
+            "MATRIX_FREE_RESPONSE_ROOMS",
+            "matrix.free_response_rooms",
+            frc,
+            _csv_env_str,
+        )
     ar = matrix_cfg.get("allowed_rooms")
-    if ar is not None and not os.getenv("MATRIX_ALLOWED_ROOMS"):
-        if isinstance(ar, list):
-            ar = ",".join(str(v) for v in ar)
-        os.environ["MATRIX_ALLOWED_ROOMS"] = str(ar)
+    if ar is not None:
+        _set_env_from_yaml(
+            "MATRIX_ALLOWED_ROOMS",
+            "matrix.allowed_rooms",
+            ar,
+            _csv_env_str,
+        )
     ignore_patterns = matrix_cfg.get("ignore_user_patterns")
-    if ignore_patterns is not None and not os.getenv("MATRIX_IGNORE_USER_PATTERNS"):
-        if isinstance(ignore_patterns, list):
-            ignore_patterns = ",".join(str(v) for v in ignore_patterns)
-        os.environ["MATRIX_IGNORE_USER_PATTERNS"] = str(ignore_patterns)
-    if "process_notices" in matrix_cfg and not os.getenv("MATRIX_PROCESS_NOTICES"):
-        os.environ["MATRIX_PROCESS_NOTICES"] = str(matrix_cfg["process_notices"]).lower()
-    if "session_scope" in matrix_cfg and not os.getenv("MATRIX_SESSION_SCOPE"):
-        os.environ["MATRIX_SESSION_SCOPE"] = str(matrix_cfg["session_scope"]).lower()
-    if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
-        os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
-    if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
-        os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
+    if ignore_patterns is not None:
+        _set_env_from_yaml(
+            "MATRIX_IGNORE_USER_PATTERNS",
+            "matrix.ignore_user_patterns",
+            ignore_patterns,
+            _csv_env_str,
+        )
+    if "process_notices" in matrix_cfg:
+        _set_env_from_yaml(
+            "MATRIX_PROCESS_NOTICES",
+            "matrix.process_notices",
+            matrix_cfg["process_notices"],
+            _lower_env_str,
+        )
+    if "session_scope" in matrix_cfg:
+        _set_env_from_yaml(
+            "MATRIX_SESSION_SCOPE",
+            "matrix.session_scope",
+            matrix_cfg["session_scope"],
+            _lower_env_str,
+        )
+    if "auto_thread" in matrix_cfg:
+        _set_env_from_yaml(
+            "MATRIX_AUTO_THREAD",
+            "matrix.auto_thread",
+            matrix_cfg["auto_thread"],
+            _lower_env_str,
+        )
+    if "dm_mention_threads" in matrix_cfg:
+        _set_env_from_yaml(
+            "MATRIX_DM_MENTION_THREADS",
+            "matrix.dm_mention_threads",
+            matrix_cfg["dm_mention_threads"],
+            _lower_env_str,
+        )
     return None
 
 

@@ -1113,6 +1113,30 @@ class TestLoadGatewayConfig:
             for record in caplog.records
         )
 
+    def test_warns_when_env_shadows_discord_reply_to_mode(self, tmp_path, monkeypatch, caplog):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  reply_to_mode: first\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("DISCORD_REPLY_TO_MODE", "off")
+
+        with caplog.at_level(logging.WARNING, logger="gateway.config"):
+            load_gateway_config()
+
+        assert os.environ.get("DISCORD_REPLY_TO_MODE") == "off"
+        assert any(
+            "DISCORD_REPLY_TO_MODE" in record.message
+            and "discord.reply_to_mode" in record.message
+            and "shadows" in record.message
+            for record in caplog.records
+        )
+
     def test_secret_env_shadowing_config_yaml_does_not_warn(self, tmp_path, monkeypatch, caplog):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

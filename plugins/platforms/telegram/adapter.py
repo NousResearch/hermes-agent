@@ -8695,75 +8695,136 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     telegram_cfg block from gateway/config.py::load_gateway_config(). Env vars
-    take precedence over YAML. Returns a dict of extras to merge into
-    PlatformConfig.extra (disable_topic_auto_rename + runtime flags), or None.
+    take precedence over YAML, and the shared gateway helper logs when a
+    non-secret env var shadows config.yaml. Returns a dict of extras to merge
+    into PlatformConfig.extra (disable_topic_auto_rename + runtime flags), or None.
     """
     import json as _json
+    from gateway.config import _csv_env_str, _lower_env_str, _set_env_from_yaml
+
     extras: dict = {}
 
     if "disable_topic_auto_rename" in telegram_cfg:
         extras.setdefault("disable_topic_auto_rename", telegram_cfg["disable_topic_auto_rename"])
 
     _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
-    if _effective_rm is not None and not os.getenv("TELEGRAM_REQUIRE_MENTION"):
-        os.environ["TELEGRAM_REQUIRE_MENTION"] = str(_effective_rm).lower()
-    if "mention_patterns" in telegram_cfg and not os.getenv("TELEGRAM_MENTION_PATTERNS"):
-        os.environ["TELEGRAM_MENTION_PATTERNS"] = _json.dumps(telegram_cfg["mention_patterns"])
-    if "exclusive_bot_mentions" in telegram_cfg and not os.getenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS"):
-        os.environ["TELEGRAM_EXCLUSIVE_BOT_MENTIONS"] = str(telegram_cfg["exclusive_bot_mentions"]).lower()
-    if "allow_bots" in telegram_cfg and not os.getenv("TELEGRAM_ALLOW_BOTS"):
-        os.environ["TELEGRAM_ALLOW_BOTS"] = str(telegram_cfg["allow_bots"]).lower()
-    if "guest_mode" in telegram_cfg and not os.getenv("TELEGRAM_GUEST_MODE"):
-        os.environ["TELEGRAM_GUEST_MODE"] = str(telegram_cfg["guest_mode"]).lower()
-    if "observe_unmentioned_group_messages" in telegram_cfg and not os.getenv("TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
-        os.environ["TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(telegram_cfg["observe_unmentioned_group_messages"]).lower()
+    if _effective_rm is not None:
+        _set_env_from_yaml(
+            "TELEGRAM_REQUIRE_MENTION",
+            "telegram.require_mention" if "require_mention" in telegram_cfg else "require_mention",
+            _effective_rm,
+            _lower_env_str,
+        )
+    if "mention_patterns" in telegram_cfg:
+        _set_env_from_yaml(
+            "TELEGRAM_MENTION_PATTERNS",
+            "telegram.mention_patterns",
+            telegram_cfg["mention_patterns"],
+            _json.dumps,
+        )
+    if "exclusive_bot_mentions" in telegram_cfg:
+        _set_env_from_yaml(
+            "TELEGRAM_EXCLUSIVE_BOT_MENTIONS",
+            "telegram.exclusive_bot_mentions",
+            telegram_cfg["exclusive_bot_mentions"],
+            _lower_env_str,
+        )
+    if "guest_mode" in telegram_cfg:
+        _set_env_from_yaml(
+            "TELEGRAM_GUEST_MODE",
+            "telegram.guest_mode",
+            telegram_cfg["guest_mode"],
+            _lower_env_str,
+        )
+    if "observe_unmentioned_group_messages" in telegram_cfg:
+        _set_env_from_yaml(
+            "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES",
+            "telegram.observe_unmentioned_group_messages",
+            telegram_cfg["observe_unmentioned_group_messages"],
+            _lower_env_str,
+        )
     frc = telegram_cfg.get("free_response_chats")
-    if frc is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_CHATS"):
-        if isinstance(frc, list):
-            frc = ",".join(str(v) for v in frc)
-        os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+    if frc is not None:
+        _set_env_from_yaml(
+            "TELEGRAM_FREE_RESPONSE_CHATS",
+            "telegram.free_response_chats",
+            frc,
+            _csv_env_str,
+        )
     ac = telegram_cfg.get("allowed_chats")
-    if ac is not None and not os.getenv("TELEGRAM_ALLOWED_CHATS"):
-        if isinstance(ac, list):
-            ac = ",".join(str(v) for v in ac)
-        os.environ["TELEGRAM_ALLOWED_CHATS"] = str(ac)
+    if ac is not None:
+        _set_env_from_yaml(
+            "TELEGRAM_ALLOWED_CHATS",
+            "telegram.allowed_chats",
+            ac,
+            _csv_env_str,
+        )
     allowed_topics = telegram_cfg.get("allowed_topics")
-    if allowed_topics is not None and not os.getenv("TELEGRAM_ALLOWED_TOPICS"):
-        if isinstance(allowed_topics, list):
-            allowed_topics = ",".join(str(v) for v in allowed_topics)
-        os.environ["TELEGRAM_ALLOWED_TOPICS"] = str(allowed_topics)
+    if allowed_topics is not None:
+        _set_env_from_yaml(
+            "TELEGRAM_ALLOWED_TOPICS",
+            "telegram.allowed_topics",
+            allowed_topics,
+            _csv_env_str,
+        )
     ignored_threads = telegram_cfg.get("ignored_threads")
-    if ignored_threads is not None and not os.getenv("TELEGRAM_IGNORED_THREADS"):
-        if isinstance(ignored_threads, list):
-            ignored_threads = ",".join(str(v) for v in ignored_threads)
-        os.environ["TELEGRAM_IGNORED_THREADS"] = str(ignored_threads)
-    if "reactions" in telegram_cfg and not os.getenv("TELEGRAM_REACTIONS"):
-        os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
-    if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
-        os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
+    if ignored_threads is not None:
+        _set_env_from_yaml(
+            "TELEGRAM_IGNORED_THREADS",
+            "telegram.ignored_threads",
+            ignored_threads,
+            _csv_env_str,
+        )
+    if "reactions" in telegram_cfg:
+        _set_env_from_yaml(
+            "TELEGRAM_REACTIONS",
+            "telegram.reactions",
+            telegram_cfg["reactions"],
+            _lower_env_str,
+        )
+    if "proxy_url" in telegram_cfg:
+        _set_env_from_yaml(
+            "TELEGRAM_PROXY",
+            "telegram.proxy_url",
+            telegram_cfg["proxy_url"],
+            lambda value: str(value).strip(),
+        )
     _telegram_extra = telegram_cfg.get("extra") if isinstance(telegram_cfg.get("extra"), dict) else {}
     _telegram_rtm = (
         telegram_cfg["reply_to_mode"] if "reply_to_mode" in telegram_cfg
         else _telegram_extra.get("reply_to_mode")
     )
-    if _telegram_rtm is not None and not os.getenv("TELEGRAM_REPLY_TO_MODE"):
-        _rtm_str = "off" if _telegram_rtm is False else str(_telegram_rtm).lower()
-        os.environ["TELEGRAM_REPLY_TO_MODE"] = _rtm_str
+    if _telegram_rtm is not None:
+        _set_env_from_yaml(
+            "TELEGRAM_REPLY_TO_MODE",
+            "telegram.reply_to_mode" if "reply_to_mode" in telegram_cfg else "telegram.extra.reply_to_mode",
+            _telegram_rtm,
+            lambda value: "off" if value is False else str(value).lower(),
+        )
     allowed_users = telegram_cfg.get("allow_from")
-    if allowed_users is not None and not os.getenv("TELEGRAM_ALLOWED_USERS"):
-        if isinstance(allowed_users, list):
-            allowed_users = ",".join(str(v) for v in allowed_users)
-        os.environ["TELEGRAM_ALLOWED_USERS"] = str(allowed_users)
+    if allowed_users is not None:
+        _set_env_from_yaml(
+            "TELEGRAM_ALLOWED_USERS",
+            "telegram.allow_from",
+            allowed_users,
+            _csv_env_str,
+        )
     group_allowed_users = telegram_cfg.get("group_allow_from")
-    if group_allowed_users is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_USERS"):
-        if isinstance(group_allowed_users, list):
-            group_allowed_users = ",".join(str(v) for v in group_allowed_users)
-        os.environ["TELEGRAM_GROUP_ALLOWED_USERS"] = str(group_allowed_users)
+    if group_allowed_users is not None:
+        _set_env_from_yaml(
+            "TELEGRAM_GROUP_ALLOWED_USERS",
+            "telegram.group_allow_from",
+            group_allowed_users,
+            _csv_env_str,
+        )
     group_allowed_chats = telegram_cfg.get("group_allowed_chats")
-    if group_allowed_chats is not None and not os.getenv("TELEGRAM_GROUP_ALLOWED_CHATS"):
-        if isinstance(group_allowed_chats, list):
-            group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
-        os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
+    if group_allowed_chats is not None:
+        _set_env_from_yaml(
+            "TELEGRAM_GROUP_ALLOWED_CHATS",
+            "telegram.group_allowed_chats",
+            group_allowed_chats,
+            _csv_env_str,
+        )
     for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])

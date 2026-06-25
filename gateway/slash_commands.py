@@ -44,6 +44,12 @@ from utils import (
 
 logger = logging.getLogger("gateway.run")
 
+# Upper bound on the off-loop agent-resource cleanup during a /new or /reset
+# (see _handle_reset_command). A stuck teardown must not block the event loop;
+# past this the reset proceeds and the cleanup is left to finish (or leak) in
+# its worker thread. (#35994)
+_RESET_CLEANUP_TIMEOUT_S = 30.0
+
 
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code.
@@ -111,13 +117,44 @@ class GatewaySlashCommandsMixin:
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.
         # Guard with getattr because test fixtures may skip __init__.
+        #
+        # _cleanup_agent_resources is synchronous and can block for a long time
+        # (agent.close() does subprocess teardown; shutdown_memory_provider()
+        # may do network IO). This handler runs ON the event loop when a
+        # Telegram/Discord/Slack confirm-button click resolves the slash-confirm
+        # (see _request_slash_confirm), so an inline call wedges the whole loop
+        # and the bot goes silent until restart (#35994). Offload it to a worker
+        # thread (via the contextvar-preserving executor helper) with a bounded
+        # timeout so the loop is never blocked.
         _cache_lock = getattr(self, "_agent_cache_lock", None)
         if _cache_lock is not None:
             with _cache_lock:
                 _cached = self._agent_cache.get(session_key)
                 _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
             if _old_agent is not None:
-                self._cleanup_agent_resources(_old_agent)
+                try:
+                    await asyncio.wait_for(
+                        self._run_in_executor_with_context(
+                            self._cleanup_agent_resources, _old_agent
+                        ),
+                        timeout=_RESET_CLEANUP_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    # wait_for cancels the await, but the worker thread cannot be
+                    # cancelled — a wedged teardown keeps running (or leaks) for
+                    # the gateway's lifetime. The reset proceeds regardless.
+                    logger.warning(
+                        "Agent resource cleanup for session %s exceeded %ss during "
+                        "/new reset; proceeding with reset (the worker thread is left "
+                        "to finish on its own). (#35994)",
+                        session_key, _RESET_CLEANUP_TIMEOUT_S,
+                    )
+                except Exception as cleanup_exc:
+                    logger.warning(
+                        "Agent resource cleanup for session %s failed during /new "
+                        "reset: %s (#35994)",
+                        session_key, cleanup_exc,
+                    )
         self._evict_cached_agent(session_key)
 
         # Discard any /queue overflow for this session — /new is a

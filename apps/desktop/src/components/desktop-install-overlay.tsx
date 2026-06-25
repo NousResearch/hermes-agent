@@ -407,7 +407,11 @@ export function DesktopInstallOverlay({ enabled = true }: DesktopInstallOverlayP
 
   const totalCount = stages.length
   const failed = Boolean(state.error)
-  const progressPct = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0
+  // Count the running stage as half-done so the bar advances *during* a long
+  // stage instead of sitting frozen at the last completed step while its logs
+  // stream (e.g. "0 of 2" pinned at 0% for the whole first stage).
+  const progressUnits = completedCount + (!failed && currentStage ? 0.5 : 0)
+  const progressPct = totalCount > 0 ? Math.round((progressUnits / totalCount) * 100) : 0
   const currentStartedAt = currentStage ? state.stages[currentStage]?.startedAt : null
   const currentElapsed = typeof currentStartedAt === 'number' ? formatElapsed(now - currentStartedAt) : ''
 

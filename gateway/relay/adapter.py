@@ -76,6 +76,20 @@ class RelayAdapter(BasePlatformAdapter):
 
     # ── capability surface (from descriptor) ─────────────────────────────
     @property
+    def authorization_is_upstream(self) -> bool:
+        """Relay authorization is enforced by the connector, not locally.
+
+        The connector authenticates this gateway's WS (per-instance secret) and
+        performs owner-only author-binding resolution before delivering, so any
+        inbound relay event was already authorized as THIS instance's bound user
+        (``user_instance_binding``, keyed on the connector-observed author id).
+        The instance therefore must not default-deny relay users for lack of a
+        local ``RELAY_ALLOWED_USERS`` env allowlist. See
+        ``BasePlatformAdapter.authorization_is_upstream``.
+        """
+        return True
+
+    @property
     def message_len_fn(self) -> Callable[[str], int]:
         return _LEN_FNS.get(self.descriptor.len_unit, len)
 
@@ -340,6 +354,33 @@ class RelayAdapter(BasePlatformAdapter):
                 except Exception:  # noqa: BLE001 - going-idle is an optimization, never blocks drain
                     logger.debug("relay going_idle failed during drain", exc_info=True)
             await self._transport.disconnect()
+
+    async def go_dormant(self) -> bool:
+        """Quiesce the relay for a scale-to-zero suspend (D12 / Phase 0).
+
+        Unlike ``disconnect()`` (terminal teardown for shutdown/restart), this
+        keeps the adapter's reconnect path armed so the gateway re-dials and
+        drains its buffered backlog when the machine wakes. Delegates to the
+        transport's ``go_dormant()`` when available; a transport without it (the
+        stub) is a no-op that returns False, so callers degrade safely.
+
+        NOTE: deliberately does NOT stop the revocation monitor — going dormant
+        is not a teardown; the monitor stays live so a real opt-out/revocation
+        during dormancy is still surfaced on wake.
+        """
+        if self._transport is None:
+            return False
+        go_dormant = getattr(self._transport, "go_dormant", None)
+        if not callable(go_dormant):
+            return False
+        try:
+            result: Any = go_dormant()
+            if asyncio.iscoroutine(result):
+                return bool(await result)
+            return bool(result)
+        except Exception:  # noqa: BLE001 - dormancy is best-effort, never blocks the idle path
+            logger.debug("relay go_dormant failed", exc_info=True)
+            return False
 
     async def send(
         self,

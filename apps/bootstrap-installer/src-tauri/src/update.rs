@@ -224,17 +224,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         &format!("[update] updating against branch {update_branch}"),
     );
     let child_env = update_child_env(&install_root);
-    let mut update_args: Vec<String> =
-        vec!["update".into(), "--yes".into(), "--gateway".into()];
-    // --force skips `hermes update`'s Windows running-exe guard (which would
-    // `sys.exit(2)` and dead-end the handoff). By contract the desktop has
-    // already exited and waited for the install locks to clear before launching
-    // us, and wait_for_install_locks_free below force-kills any straggler — so by the
-    // time `hermes update` runs there is no legitimate hermes.exe to protect,
-    // and the guard would only produce a false "Hermes is still running" stop.
-    update_args.push("--force".into());
-    update_args.push("--branch".into());
-    update_args.push(update_branch);
+    let update_args = build_update_args(&update_branch);
 
     emit_stage(&app, "update", StageState::Running, None, None);
     let started = Instant::now();
@@ -762,6 +752,25 @@ where
         .filter(|s| !s.is_empty())
 }
 
+fn build_update_args(update_branch: &str) -> Vec<String> {
+    vec![
+        "update".into(),
+        "--yes".into(),
+        "--gateway".into(),
+        // Desktop updates replace the app underneath the user. Force the same
+        // restore point users can request from the CLI before any mutation.
+        "--backup".into(),
+        // --force skips `hermes update`'s Windows running-exe guard (which
+        // would `sys.exit(2)` and dead-end the handoff). By contract the
+        // desktop has already exited and waited for the venv shim to unlock
+        // before launching us, and wait_for_venv_free force-kills any
+        // straggler, so the guard would only produce a false stop.
+        "--force".into(),
+        "--branch".into(),
+        update_branch.into(),
+    ]
+}
+
 fn target_app_from_args<I, S>(args: I) -> Option<PathBuf>
 where
     I: IntoIterator<Item = S>,
@@ -1099,6 +1108,25 @@ mod tests {
             Some("main".to_string())
         );
         assert_eq!(update_branch_from_args(["--update"]), None);
+    }
+
+    #[test]
+    fn desktop_update_args_force_pre_update_backup() {
+        let args = build_update_args("main");
+
+        assert!(args.contains(&"--backup".to_string()));
+        assert_eq!(
+            args,
+            vec![
+                "update".to_string(),
+                "--yes".to_string(),
+                "--gateway".to_string(),
+                "--backup".to_string(),
+                "--force".to_string(),
+                "--branch".to_string(),
+                "main".to_string(),
+            ]
+        );
     }
 
     #[test]

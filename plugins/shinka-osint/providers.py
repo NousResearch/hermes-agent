@@ -127,6 +127,28 @@ def _read_config_override() -> dict[str, Any]:
         return {}
 
 
+def _read_main_model_config() -> tuple[str, str]:
+    """Return Hermes Agent's configured main provider/model.
+
+    Shinka's optional LLM summaries should track Hermes' own model selection
+    instead of carrying a stale Codex fallback. Hermes stores the primary model
+    as ``model.default`` (with ``model.model`` accepted as a legacy alias), while
+    plugin-local overrides live under ``plugins.shinka-osint.llm``.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+        if not isinstance(model_cfg, dict):
+            return "", ""
+        provider = (model_cfg.get("provider") or "").strip().lower()
+        model = (model_cfg.get("default") or model_cfg.get("model") or "").strip()
+        return provider, model
+    except Exception:
+        return "", ""
+
+
 def _provider_priority() -> tuple[str, ...]:
     llm_cfg = _read_config_override()
     raw = llm_cfg.get("provider_priority")
@@ -137,6 +159,9 @@ def _provider_priority() -> tuple[str, ...]:
     override = (llm_cfg.get("provider") or "").strip().lower()
     if override:
         return (override, *DEFAULT_PROVIDER_PRIORITY)
+    main_provider, _ = _read_main_model_config()
+    if main_provider and main_provider in _RESOLVERS:
+        return (main_provider, *tuple(p for p in DEFAULT_PROVIDER_PRIORITY if p != main_provider))
     return DEFAULT_PROVIDER_PRIORITY
 
 
@@ -153,16 +178,18 @@ def _try_openai_codex() -> ResolvedLLM | None:
     base_url = (creds.get("base_url") or DEFAULT_CODEX_BASE).strip().rstrip("/")
     model = (creds.get("model") or "").strip()
     if not model:
+        main_provider, main_model = _read_main_model_config()
+        if main_provider in {"openai-codex", "codex", "gpt"}:
+            model = main_model
+    if not model:
         try:
-            from hermes_cli.config import load_config
+            from hermes_cli.models import get_default_model_for_provider
 
-            cfg = load_config()
-            model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-            model = (model_cfg.get("model") or "").strip()
+            model = (get_default_model_for_provider("openai-codex") or "").strip()
         except Exception:
             model = ""
     if not model:
-        model = "gpt-5.2"
+        model = "gpt-5.5"
     return ResolvedLLM(
         provider_id="openai-codex",
         model=model,
@@ -184,7 +211,12 @@ def _try_nvidia() -> ResolvedLLM | None:
     if not api_key:
         return None
     llm_cfg = _read_config_override()
-    model = (llm_cfg.get("nvidia_model") or "meta/llama-3.1-70b-instruct").strip()
+    main_provider, main_model = _read_main_model_config()
+    model = (llm_cfg.get("nvidia_model") or "").strip()
+    if not model and main_provider == "nvidia":
+        model = main_model
+    if not model:
+        model = "meta/llama-3.1-70b-instruct"
     base_url = (llm_cfg.get("nvidia_base_url") or DEFAULT_NVIDIA_BASE).strip().rstrip("/")
     return ResolvedLLM(
         provider_id="nvidia",
@@ -208,6 +240,10 @@ def _try_nous() -> ResolvedLLM | None:
         return None
     base_url = (creds.get("base_url") or DEFAULT_NOUS_BASE).strip().rstrip("/")
     model = (creds.get("model") or "").strip()
+    if not model:
+        main_provider, main_model = _read_main_model_config()
+        if main_provider == "nous":
+            model = main_model
     if not model:
         try:
             from hermes_cli.models import get_nous_recommended_aux_model
@@ -240,15 +276,10 @@ def _try_xai_oauth() -> ResolvedLLM | None:
     base_url = (creds.get("base_url") or DEFAULT_XAI_BASE).strip().rstrip("/")
     model = (creds.get("model") or "").strip()
     if not model:
-        try:
-            from hermes_cli.config import load_config
+        main_provider, main_model = _read_main_model_config()
+        if main_provider == "xai-oauth":
+            model = main_model
 
-            cfg = load_config()
-            model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
-            if str(model_cfg.get("provider") or "").strip().lower() == "xai-oauth":
-                model = (model_cfg.get("model") or "").strip()
-        except Exception:
-            model = ""
     if not model:
         model = "grok-3-mini"
     return ResolvedLLM(

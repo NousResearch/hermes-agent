@@ -62,7 +62,65 @@ def test_build_env_overlay_openai_codex():
     assert env["SHINKA_LLM_AVAILABLE"] == "1"
 
 
+def test_openai_codex_uses_hermes_main_model_when_configured():
+    providers = load_providers()
+    with patch(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        return_value={
+            "api_key": "tok",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "source": "test",
+        },
+    ), patch(
+        "hermes_cli.config.load_config",
+        return_value={"model": {"provider": "openai-codex", "default": "gpt-5.5"}},
+    ):
+        resolved = providers._try_openai_codex()
+    assert resolved is not None
+    assert resolved.model == "gpt-5.5"
+
+
+def test_openai_codex_does_not_reuse_non_codex_main_model():
+    providers = load_providers()
+    with patch(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        return_value={
+            "api_key": "tok",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "source": "test",
+        },
+    ), patch(
+        "hermes_cli.config.load_config",
+        return_value={"model": {"provider": "nvidia", "default": "nvidia/not-a-codex-model"}},
+    ), patch(
+        "hermes_cli.models.get_default_model_for_provider",
+        return_value="gpt-5.5",
+    ):
+        resolved = providers._try_openai_codex()
+    assert resolved is not None
+    assert resolved.model == "gpt-5.5"
+
+
+def test_provider_priority_prefers_configured_hermes_provider():
+    providers = load_providers()
+    with patch("hermes_cli.config.load_config", return_value={"model": {"provider": "nvidia"}}):
+        priority = providers._provider_priority()
+    assert priority[0] == "nvidia"
+
+
+def test_nvidia_uses_hermes_main_model_when_configured():
+    providers = load_providers()
+    with patch("hermes_cli.config.get_env_value", return_value="nv-token"), patch(
+        "hermes_cli.config.load_config",
+        return_value={"model": {"provider": "nvidia", "default": "nvidia/nemotron-3-super-120b-a12b"}},
+    ):
+        resolved = providers._try_nvidia()
+    assert resolved is not None
+    assert resolved.model == "nvidia/nemotron-3-super-120b-a12b"
+
+
 def test_provider_status_milspec_no_gemini_required():
+
     providers = load_providers()
     status = providers.provider_status()
     assert status["milspec_requires_gemini"] is False

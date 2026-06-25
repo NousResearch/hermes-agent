@@ -3396,6 +3396,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Initialize Rich console
         self.console = Console()
         self.config = CLI_CONFIG
+
+        # MCP tool discovery: ensure configured MCP servers are registered
+        # into the agent's tool registry before agent construction. The
+        # gateway mode does this in gateway/run.py at startup; classic CLI
+        # previously skipped it, leaving MCP tools unreachable from the
+        # agent's tool schema even though `hermes mcp test` showed them as
+        # connected (see issues #51587, #48857, #42726).
+        #
+        # Idempotent: a no-op if discovery has already run in this process.
+        # Non-fatal: a broken MCP server logs at debug and is otherwise
+        # invisible to the agent, matching gateway behavior.
+        try:
+            from tools.mcp_tool import discover_mcp_tools as _discover_mcp_tools
+            _discover_mcp_tools()
+        except Exception as _mcp_err:
+            logger.debug("MCP tool discovery failed during CLI init: %s", _mcp_err)
+
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.

@@ -2564,7 +2564,42 @@ def cmd_whatsapp(args):
             return
         print("  ✓ Dependencies installed")
     else:
-        print("✓ Bridge dependencies already installed")
+        # Verify the critical Baileys package is actually populated.
+        # A prior failed or interrupted npm install can leave node_modules/
+        # present but @whiskeysockets/baileys empty, causing the bridge to
+        # crash with ERR_MODULE_NOT_FOUND at startup (#52713).
+        _baileys_pkg = bridge_dir / "node_modules" / "@whiskeysockets" / "baileys" / "package.json"
+        if not _baileys_pkg.exists():
+            print("\n→ WhatsApp bridge packages appear incomplete — reinstalling...")
+            import shutil
+            shutil.rmtree(bridge_dir / "node_modules", ignore_errors=True)
+            npm = find_node_executable("npm")
+            if not npm:
+                print("  ✗ npm not found on PATH — install Node.js first")
+                return
+            try:
+                result = subprocess.run(
+                    [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
+                    cwd=str(bridge_dir),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=with_hermes_node_path(),
+                )
+            except KeyboardInterrupt:
+                print("\n  ✗ Install cancelled")
+                return
+            if result.returncode != 0:
+                err = (result.stderr or "").strip()
+                preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
+                print("  ✗ npm reinstall failed:")
+                print(preview)
+                return
+            print("  ✓ Dependencies reinstalled")
+        else:
+            print("✓ Bridge dependencies already installed")
 
     # ── Step 5: Check for existing session ───────────────────────────────
     session_dir = get_hermes_home() / "whatsapp" / "session"

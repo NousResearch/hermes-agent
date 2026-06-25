@@ -1574,6 +1574,29 @@ def _run_single_child(
             except Exception:
                 pass
 
+            # Force-kill any terminal subprocess the child may have left
+            # running.  The cooperative child.interrupt() only sets a
+            # thread-level flag; in edge cases (thread-mapping races,
+            # late arrival) the subprocess never sees it.  This hard stop
+            # guarantees no orphan process outlives the timeout.
+            #
+            # All children of a single parent share one terminal
+            # environment (collapsed to "default" by
+            # _resolve_container_task_id()), so iterating every active
+            # environment in _active_environments covers every in-flight
+            # subprocess.  The parent is blocked here on
+            # _child_future.result(), so it cannot be running terminal
+            # commands itself; the force-kill targets the child's
+            # session only.  (Bug #52185)
+            try:
+                from tools.terminal_tool import _active_environments
+                from tools.environments.base import BaseEnvironment
+                for _env in _active_environments.values():
+                    if isinstance(_env, BaseEnvironment):
+                        _env.kill_running_process()
+            except Exception:
+                pass
+
             is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
             duration = round(time.monotonic() - child_start, 2)
             logger.warning(

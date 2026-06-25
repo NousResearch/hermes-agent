@@ -319,6 +319,19 @@ class BaseEnvironment(ABC):
         self._cwd_file = f"{temp_dir}/hermes-cwd-{self._session_id}.txt"
         self._cwd_marker = _cwd_marker(self._session_id)
         self._snapshot_ready = False
+        # Track the currently running subprocess so delegate_tool's timeout
+        # handler can force-kill a child's terminal command even when
+        # cooperative interrupt propagation fails (Bug #52185).
+        #
+        # Cross-thread contract: delegate_tool's parent thread reads and
+        # clears this attribute (via kill_running_process()) while the
+        # child's worker thread is busy inside _wait_for_process.  We
+        # don't take a lock because the GIL makes individual attribute
+        # reads and writes atomic, and a stale read is harmless — at
+        # worst we miss a kill (the cooperative child.interrupt() path
+        # catches the orphan) or double-kill (caught by _kill_process
+        # error handling).
+        self._current_proc: ProcessHandle | None = None
 
     # ------------------------------------------------------------------
     # Abstract methods
@@ -498,6 +511,11 @@ class BaseEnvironment(ABC):
         """
         output_chunks: list[str] = []
 
+        # Track this proc so delegate_tool's timeout handler can force-kill
+        # a child's terminal command even when cooperative interrupt
+        # propagation fails (Bug #52185).  Cleared at every exit point below.
+        self._current_proc = proc
+
         # Non-blocking drain via select().
         #
         # The old pattern — ``for line in proc.stdout`` — blocks on
@@ -663,6 +681,7 @@ class BaseEnvironment(ABC):
                         )
                     self._kill_process(proc)
                     drain_thread.join(timeout=2)
+                    self._current_proc = None
                     return {
                         "output": "".join(output_chunks) + "\n[Command interrupted]",
                         "returncode": 130,
@@ -678,6 +697,7 @@ class BaseEnvironment(ABC):
                     drain_thread.join(timeout=2)
                     partial = "".join(output_chunks)
                     timeout_msg = f"\n[Command timed out after {timeout}s]"
+                    self._current_proc = None
                     return {
                         "output": partial + timeout_msg
                         if partial
@@ -736,6 +756,7 @@ class BaseEnvironment(ABC):
                 drain_thread.join(timeout=2)
             except Exception:
                 pass  # cleanup is best-effort
+            self._current_proc = None
             raise
 
         # Drain thread now exits promptly after bash does (~300ms idle
@@ -757,6 +778,7 @@ class BaseEnvironment(ABC):
                 proc.returncode,
             )
 
+        self._current_proc = None
         return {"output": "".join(output_chunks), "returncode": proc.returncode}
 
     def _kill_process(self, proc: ProcessHandle):
@@ -765,6 +787,50 @@ class BaseEnvironment(ABC):
             proc.kill()
         except (ProcessLookupError, PermissionError, OSError):
             pass
+
+    def kill_running_process(self):
+        """Force-kill the currently running subprocess (if any).
+
+        Belt-and-suspenders companion to ``child.interrupt()`` (Bug #52185).
+
+        ``child.interrupt()`` only sets a thread-level flag, so the
+        terminal-tool's ``_wait_for_process`` poll loop *should* see the
+        flag on its next iteration and tear the process group down
+        itself.  In edge cases -- thread-mapping races, late arrival of
+        the interrupt, an SDK adapter whose thread is mid-blocking
+        ``exec_fn()`` -- the flag never reaches the wait loop and the
+        subprocess would outlive the timeout as an orphan.  This method
+        is the hard stop that guarantees no orphan process survives a
+        ``child_timeout`` deadline.
+
+        **Caller contract.**  Called from a different thread (the
+        parent delegate) than the one running the proc (the child
+        subagent).  The parent is blocked inside
+        ``_child_future.result(timeout=...)`` and cannot be issuing
+        tool calls, so it is safe to reach into a shared environment
+        and kill the running subprocess -- all of which are owned by
+        the child's terminal session.
+
+        **Shared environment.**  All children of a single parent share
+        one terminal environment (collapsed to ``"default"`` by
+        ``_resolve_container_task_id()``), so iterating
+        ``_active_environments`` from the timeout handler naturally
+        covers every in-flight subprocess.
+
+        **Cross-thread safety.**  No lock.  ``_current_proc`` is read
+        and written by different threads; the GIL makes individual
+        attribute access atomic, and a stale read is harmless -- at
+        worst we miss a kill (cooperative interrupt catches the
+        orphan) or double-kill (``_kill_process`` already swallows
+        ``ProcessLookupError``).
+
+        **Windows compat.**  ``_kill_process`` dispatches to
+        ``subprocess.Popen.terminate()`` on Windows, which is
+        handled by the existing ``_IS_WINDOWS`` guard.
+        """
+        if self._current_proc is not None and self._current_proc.poll() is None:
+            self._kill_process(self._current_proc)
+            self._current_proc = None
 
     # ------------------------------------------------------------------
     # CWD extraction
@@ -869,6 +935,7 @@ class BaseEnvironment(ABC):
         proc = self._run_bash(
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
         )
+        self._current_proc = proc
         result = self._wait_for_process(proc, timeout=effective_timeout)
         self._update_cwd(result)
 

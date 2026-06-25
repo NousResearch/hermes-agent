@@ -455,6 +455,25 @@ function finishBackendApply(returned: boolean): DesktopUpdateApplyResult {
   return { ok: false, error: 'apply-failed', message: 'Backend did not come back online.' }
 }
 
+function ingestBackendActionStatus(status: Awaited<ReturnType<typeof getActionStatus>>): void {
+  const current = $backendUpdateApply.get()
+  const log = status.lines
+    .filter(line => line.trim().length > 0)
+    .map(line => ({ at: Date.now(), message: line, stage: current.stage }))
+    .slice(-50)
+  const latest = log.at(-1)?.message
+
+  if (log.length === 0 && !latest) {
+    return
+  }
+
+  $backendUpdateApply.set({
+    ...current,
+    log,
+    message: latest ?? current.message
+  })
+}
+
 export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
   dismissNotification(UPDATE_TOAST_ID)
   $backendUpdateApply.set({ ...IDLE, applying: true, stage: 'prepare', message: translateNow('updates.applyStatus.preparing') })
@@ -477,6 +496,7 @@ export async function applyBackendUpdate(): Promise<DesktopUpdateApplyResult> {
       await new Promise(resolve => globalThis.setTimeout(resolve, 1500))
       try {
         last = await getActionStatus(started.name, 200)
+        ingestBackendActionStatus(last)
       } catch {
         // The dashboard restarts mid-update, dropping this connection — expected, not a failure.
         $backendUpdateApply.set({

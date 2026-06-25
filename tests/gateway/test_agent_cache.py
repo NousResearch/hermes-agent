@@ -381,7 +381,14 @@ class TestExtractCacheBustingConfig:
         assert first["honcho.user_peer_aliases"] == [("123", "eri")]
         assert parse_calls == [config_path]
 
+        import os
+
         config_path.write_text("{\n  \"changed\": true\n}")
+        # Some CI filesystems expose coarse mtime granularity; force a newer
+        # timestamp so this test verifies memo invalidation instead of racing
+        # the filesystem clock.
+        newer_mtime = config_path.stat().st_mtime + 2.0
+        os.utime(config_path, (newer_mtime, newer_mtime))
         third = GatewayRunner._extract_honcho_cache_busting_config()
 
         assert third == first
@@ -767,12 +774,13 @@ class TestAgentCacheBoundedGrowth:
         from gateway import run as gw_run
 
         monkeypatch.setattr(gw_run, "_AGENT_CACHE_IDLE_TTL_SECS", 0.05)
+        now = 1_000_000.0
+        monkeypatch.setattr(gw_run.time, "time", lambda: now)
         runner = self._bounded_runner()
         runner._cleanup_agent_resources = MagicMock()
 
-        import time as _t
-        fresh = self._fake_agent(last_activity=_t.time())
-        stale = self._fake_agent(last_activity=_t.time() - 10.0)
+        fresh = self._fake_agent(last_activity=now)
+        stale = self._fake_agent(last_activity=now - 10.0)
         runner._agent_cache["fresh"] = (fresh, "s1")
         runner._agent_cache["stale"] = (stale, "s2")
 

@@ -432,9 +432,15 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     # name, so the published slot is unchanged.
     tmp_dir = service_dir.with_name("." + service_dir.name + ".tmp")
 
-    # Wipe any leftover tmp from a previous interrupted run.
+    # Wipe any leftover temp dirs from a previous interrupted run, including
+    # the legacy non-hidden name used by older images.
+    legacy_tmp_dir = service_dir.with_name(service_dir.name + ".tmp")
+    if legacy_tmp_dir.exists():
+        shutil.rmtree(legacy_tmp_dir, ignore_errors=True)
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir, ignore_errors=True)
+    for stale in scandir.glob(f".{service_dir.name}.tmp-*"):
+        shutil.rmtree(stale, ignore_errors=True)
     tmp_dir.mkdir(parents=True)
 
     try:

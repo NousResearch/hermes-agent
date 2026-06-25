@@ -239,6 +239,51 @@ class TestWatchdogSweep:
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Per-minute turn guard (Lane R) — gated, default OFF
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestWatchdogTurnRateLimit:
+    @pytest.mark.asyncio
+    async def test_off_by_default_redrives_every_sweep(self, hermes_home, monkeypatch):
+        """Without JB_RATE_LIMIT_ENABLED, repeated sweeps of the same stale goal
+        re-drive every time (the throttle is purely opt-in — current behavior)."""
+        monkeypatch.delenv("JB_RATE_LIMIT_ENABLED", raising=False)
+        _set_goal("mission:stale", status="active", turns_used=1, last_turn_at=_STALE)
+
+        adapter = _make_adapter()
+        runner = _runner_with_adapter(adapter)
+
+        for _ in range(5):
+            result = await runner._watchdog_sweep()
+            assert result["kicked"] == ["mission:stale"]
+        assert adapter.handle_message.await_count == 5
+
+    @pytest.mark.asyncio
+    async def test_enabled_throttles_redrive_storm(self, hermes_home, monkeypatch):
+        """With the kill-switch on and TURNS_RPM=1 (burst 1.0 → capacity 1), only the
+        FIRST sweep re-drives the stale mission; subsequent sweeps in the same minute are
+        rate-limited and skipped (a refusal path, never a deferral/queue)."""
+        monkeypatch.setenv("JB_RATE_LIMIT_ENABLED", "1")
+        monkeypatch.setenv("JB_RATE_LIMIT_TURNS_RPM", "1")
+        monkeypatch.setenv("JB_RATE_LIMIT_BURST_RATIO", "1.0")
+        _set_goal("mission:stale", status="active", turns_used=1, last_turn_at=_STALE)
+
+        adapter = _make_adapter()
+        runner = _runner_with_adapter(adapter)
+
+        first = await runner._watchdog_sweep()
+        assert first["kicked"] == ["mission:stale"]
+
+        # Same minute, bucket now empty → the next sweeps skip the kick (no re-drive).
+        for _ in range(4):
+            again = await runner._watchdog_sweep()
+            assert again["scanned"] == 1
+            assert again["kicked"] == []  # throttled, not deferred
+        adapter.handle_message.assert_awaited_once()  # re-driven exactly once
+
+
+# ──────────────────────────────────────────────────────────────────────
 # POST /v1/watchdog-tick — the thin loopback handler
 # ──────────────────────────────────────────────────────────────────────
 

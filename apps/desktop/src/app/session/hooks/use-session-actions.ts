@@ -759,14 +759,9 @@ export function useSessionActions({
                 return chatMessageArraysEquivalent(currentMessages, resumedMessages) ? currentMessages : resumedMessages
               })()
 
-        // When the prefetch already painted these exact messages (the common
-        // cold-resume path), `preferredMessages` IS the live `$messages` array.
-        // Re-running preserveLocalAssistantErrors there would build a 1000-entry
-        // Map and map the whole transcript into a throwaway array on every
-        // switch — pure main-thread cost on the hot path (the downstream
-        // sameMessageList guard already drops the publish, so it buys nothing).
-        // The prefetch branch already merged local assistant errors when it
-        // built `localSnapshot`, so reuse the ref instead.
+        // Prefetch-hit fast path: `preferredMessages` IS the live `$messages`
+        // array (already error-merged when `localSnapshot` was built), so reuse
+        // the ref instead of rebuilding a throwaway transcript+Map every switch.
         const messagesForView =
           preferredMessages === currentMessages
             ? currentMessages

@@ -28,6 +28,62 @@ logger = logging.getLogger(__name__)
 # preserved.
 MAX_PLATFORM_OUTPUT = 4000
 
+# Default retention for per-job local cron output files written under
+# cron/output/<job_id>/.  Each cron run with a "local" target appends one
+# timestamped .md file here and nothing ever pruned them, so a frequent job on
+# a long-running deploy grows this directory without bound until the volume
+# fills ("no space left on device", #52383).  Keep the N most recent files per
+# job by default; 0 disables pruning.  Overridable via
+# HERMES_CRON_OUTPUT_KEEP.
+_CRON_OUTPUT_DEFAULT_KEEP = 50
+
+
+def _cron_output_keep() -> int:
+    """Resolve the per-job cron-output retention count.
+
+    ``HERMES_CRON_OUTPUT_KEEP`` overrides the default when set to a
+    non-negative integer; 0 disables pruning.  A malformed value falls back
+    to the default so a bad env var never crashes delivery.
+    """
+    raw = os.getenv("HERMES_CRON_OUTPUT_KEEP")
+    if raw is None or not raw.strip():
+        return _CRON_OUTPUT_DEFAULT_KEEP
+    try:
+        value = int(raw.strip())
+    except (TypeError, ValueError):
+        return _CRON_OUTPUT_DEFAULT_KEEP
+    return value if value >= 0 else _CRON_OUTPUT_DEFAULT_KEEP
+
+
+def _prune_cron_output_dir(job_dir: Path, keep: int) -> int:
+    """Delete the oldest ``*.md`` files in ``job_dir`` beyond ``keep``.
+
+    Returns the number of files removed.  Best-effort: filesystem errors are
+    swallowed (delivery already succeeded, pruning is a side-effect).  When
+    ``keep <= 0`` pruning is disabled and 0 is returned.
+    """
+    if keep <= 0:
+        return 0
+    try:
+        files = [p for p in job_dir.glob("*.md") if p.is_file()]
+    except OSError:
+        return 0
+    if len(files) <= keep:
+        return 0
+    # Sort newest-first by name (timestamped, lexicographically sortable) with
+    # mtime as a tie-break, then drop everything past the keep window.
+    files.sort(key=lambda p: (p.name, p.stat().st_mtime if p.exists() else 0), reverse=True)
+    removed = 0
+    for stale in files[keep:]:
+        try:
+            stale.unlink()
+            removed += 1
+        except OSError as exc:
+            logger.warning("Could not prune stale cron output %s: %s", stale, exc)
+    if removed:
+        logger.info("Pruned %d stale cron output file(s) in %s", removed, job_dir)
+    return removed
+
 # Matches strings that are *only* a "silence" narration with optional markdown
 # wrappers. Covers: *(silent)*, _silent_, `silent`, ~silent~, (silent), silent,
 # 🔇, a bare ".", "…", and the whitespace/marker-padded variants seen in the
@@ -279,7 +335,11 @@ class DeliveryRouter:
         lines.append(content)
         
         output_path.write_text("\n".join(lines))
-        
+
+        # Enforce per-job retention so cron/output/<job_id>/ does not grow
+        # without bound on long-running deploys (#52383).
+        _prune_cron_output_dir(output_path.parent, _cron_output_keep())
+
         return {
             "path": str(output_path),
             "timestamp": timestamp

@@ -1,5 +1,7 @@
 """Tests for the delivery routing module."""
 
+from pathlib import Path
+
 import pytest
 
 from gateway.config import GatewayConfig, Platform
@@ -421,3 +423,65 @@ async def test_save_failure_during_truncation_raises_for_non_chunking_adapter(tm
         await router._deliver_to_platform(target, long_content, metadata={"job_id": "job7"})
 
 
+
+
+class TestCronOutputRetention:
+    """cron/output/<job_id>/ must not grow without bound (#52383)."""
+
+    def _write_local_outputs(self, tmp_path, monkeypatch, n, job_id="dailyjob"):
+        monkeypatch.setattr("gateway.delivery.get_hermes_home", lambda: tmp_path)
+        router = DeliveryRouter(GatewayConfig())
+        paths = []
+        for i in range(n):
+            # Stable, strictly increasing timestamps so name-sort is deterministic.
+            ts = f"20260101_{i:06d}"
+            monkeypatch.setattr(
+                "gateway.delivery.datetime",
+                _FixedDatetime(ts),
+            )
+            res = router._deliver_local(f"body {i}", job_id, "Daily Job", None)
+            paths.append(res["path"])
+        return router, paths
+
+    def test_prunes_to_keep_window(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_OUTPUT_KEEP", "5")
+        router, paths = self._write_local_outputs(tmp_path, monkeypatch, 12)
+        job_dir = tmp_path / "cron" / "output" / "dailyjob"
+        remaining = sorted(p.name for p in job_dir.glob("*.md"))
+        assert len(remaining) == 5
+        # The 5 newest (highest timestamps) survive; the oldest are gone.
+        assert remaining == sorted(Path(p).name for p in paths[-5:])
+
+    def test_keep_zero_disables_pruning(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_OUTPUT_KEEP", "0")
+        router, paths = self._write_local_outputs(tmp_path, monkeypatch, 8)
+        job_dir = tmp_path / "cron" / "output" / "dailyjob"
+        assert len(list(job_dir.glob("*.md"))) == 8
+
+    def test_malformed_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_OUTPUT_KEEP", "not-an-int")
+        from gateway.delivery import _cron_output_keep, _CRON_OUTPUT_DEFAULT_KEEP
+        assert _cron_output_keep() == _CRON_OUTPUT_DEFAULT_KEEP
+
+    def test_negative_env_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("HERMES_CRON_OUTPUT_KEEP", "-3")
+        from gateway.delivery import _cron_output_keep, _CRON_OUTPUT_DEFAULT_KEEP
+        assert _cron_output_keep() == _CRON_OUTPUT_DEFAULT_KEEP
+
+
+class _FixedDatetime:
+    """Minimal datetime stand-in returning a fixed strftime timestamp."""
+
+    def __init__(self, stamp):
+        self._stamp = stamp
+
+    def now(self):
+        return self
+
+    def strftime(self, fmt):
+        # The local-output path uses %Y%m%d_%H%M%S; the header uses a longer
+        # human format. Return the stable stamp for the path-forming call and
+        # a constant for the header (content is irrelevant to retention).
+        if fmt == "%Y%m%d_%H%M%S":
+            return self._stamp
+        return "2026-01-01 00:00:00"

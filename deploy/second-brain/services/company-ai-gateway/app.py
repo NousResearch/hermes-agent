@@ -522,7 +522,32 @@ second-brain queue-status</code></pre>
     </section>
 
     <section>
-      <h2>6. Mở rộng workspace sau MVP</h2>
+      <h2>6. Nguồn tự động: Notion và Drive public</h2>
+      <p>Admin cấu hình source một lần, worker sẽ scan theo chu kỳ. Có thể chạy manual scan bất kỳ lúc nào.</p>
+      <pre><code>second-brain source-create \\
+  --type notion \\
+  --name "Company Notion" \\
+  --notion-api-key "PASTE_NOTION_API_KEY" \\
+  --notion-page-url "https://www.notion.so/..." \\
+  --target public \\
+  --interval-minutes 360
+
+second-brain source-create \\
+  --type drive_public \\
+  --name "Public Drive Doc" \\
+  --drive-url "https://docs.google.com/document/d/.../edit" \\
+  --target public \\
+  --interval-minutes 720
+
+second-brain sources-list
+second-brain source-scan SOURCE_ID
+second-brain source-runs SOURCE_ID
+second-brain source-update SOURCE_ID --interval-minutes 1440 --reset-schedule</code></pre>
+      <p class="note">Drive public MVP hỗ trợ link Google Docs/Sheets/Slides hoặc file public. Public folder cần Drive API/OAuth nên chưa tự list folder trong MVP.</p>
+    </section>
+
+    <section>
+      <h2>7. Mở rộng workspace sau MVP</h2>
       <ul>
         <li>MVP hiện tại chỉ chạy 2 LightRAG: <code>company_public</code> và <code>department_c_level</code>.</li>
         <li>Muốn thêm phòng ban riêng thì thêm service LightRAG mới, URL trong <code>knowledge-api</code>, row <code>rag_workspaces</code>, và policy gateway.</li>
@@ -533,7 +558,7 @@ docker compose up -d --build --remove-orphans company-ai-gateway knowledge-api k
     </section>
 
     <section>
-      <h2>7. Nâng cấp và handoff</h2>
+      <h2>8. Nâng cấp và handoff</h2>
       <pre><code>cd {DEPLOY_ROOT}
 docker compose ps
 docker compose logs -f company-ai-gateway knowledge-api knowledge-worker
@@ -751,6 +776,82 @@ async def queue_status(
         raise HTTPException(status_code=403, detail="admin role required")
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.get(f"{KNOWLEDGE_API_URL}/queue/status")
+        response.raise_for_status()
+        return response.json()
+
+
+@app.get("/api/sources")
+async def list_sources(
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> Any:
+    auth = require_auth(x_api_key, authorization)
+    if auth.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(f"{KNOWLEDGE_API_URL}/sources")
+        response.raise_for_status()
+        return response.json()
+
+
+@app.post("/api/sources")
+async def create_source(
+    payload: dict[str, Any],
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> Any:
+    auth = require_auth(x_api_key, authorization)
+    if auth.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(f"{KNOWLEDGE_API_URL}/sources", json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
+@app.patch("/api/sources/{source_id}")
+async def update_source(
+    source_id: str,
+    payload: dict[str, Any],
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> Any:
+    auth = require_auth(x_api_key, authorization)
+    if auth.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.patch(f"{KNOWLEDGE_API_URL}/sources/{source_id}", json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
+@app.post("/api/sources/{source_id}/scan")
+async def scan_source(
+    source_id: str,
+    payload: dict[str, Any] | None = None,
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> Any:
+    auth = require_auth(x_api_key, authorization)
+    if auth.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(f"{KNOWLEDGE_API_URL}/sources/{source_id}/scan", json=payload or {})
+        response.raise_for_status()
+        return response.json()
+
+
+@app.get("/api/sources/{source_id}/runs")
+async def source_runs(
+    source_id: str,
+    x_api_key: str | None = Header(default=None),
+    authorization: str | None = Header(default=None),
+) -> Any:
+    auth = require_auth(x_api_key, authorization)
+    if auth.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="admin role required")
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.get(f"{KNOWLEDGE_API_URL}/sources/{source_id}/runs")
         response.raise_for_status()
         return response.json()
 

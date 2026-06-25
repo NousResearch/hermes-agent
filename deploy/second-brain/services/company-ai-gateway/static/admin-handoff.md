@@ -176,6 +176,60 @@ Treat a document as large when extracted text is over 1MB, source file is over
 For large documents, extract text first, clean boilerplate, split into stable
 sections, then upload sections.
 
+## Scheduled Sources: Notion and Drive Public
+
+Source scans are stored in Postgres and executed by `knowledge-worker`.
+
+Tables:
+
+- `document_sources`: source config, target workspace, interval, last/next scan
+- `source_scan_runs`: queued/running/complete/failed scan runs
+- `source_items`: dedupe map from external document id to checksum/document id
+
+Redis queue:
+
+```text
+second_brain:source_scan_jobs
+```
+
+Create a Notion source:
+
+```bash
+second-brain source-create \
+  --type notion \
+  --name "Company Notion" \
+  --notion-api-key "PASTE_NOTION_API_KEY" \
+  --notion-page-url "https://www.notion.so/..." \
+  --target public \
+  --interval-minutes 360
+```
+
+Create a public Drive source:
+
+```bash
+second-brain source-create \
+  --type drive_public \
+  --name "Public Drive Doc" \
+  --drive-url "https://docs.google.com/document/d/.../edit" \
+  --target public \
+  --interval-minutes 720
+```
+
+Manual scan and schedule operations:
+
+```bash
+second-brain sources-list
+second-brain source-scan SOURCE_ID
+second-brain source-runs SOURCE_ID
+second-brain source-update SOURCE_ID --interval-minutes 1440 --reset-schedule
+second-brain source-update SOURCE_ID --disabled
+second-brain source-update SOURCE_ID --enabled --reset-schedule
+```
+
+Notion supports page URL/id, data source id, or search across pages shared with
+the integration. Drive public MVP supports direct public Docs/Sheets/Slides or
+file links; public folder listing requires Drive API/OAuth.
+
 ## Query
 
 ```bash

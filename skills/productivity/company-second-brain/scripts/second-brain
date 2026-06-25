@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import os
 import shutil
@@ -72,6 +73,23 @@ def admin_or_token_headers(config: dict) -> dict:
     if config.get("admin_key"):
         return {"X-API-Key": config["admin_key"]}
     return auth_headers(config)
+
+
+def prompt_value(value: str | None, label: str, *, secret: bool = False, required: bool = True) -> str:
+    if value:
+        return value
+    prompt = f"{label}: "
+    answer = getpass.getpass(prompt) if secret else input(prompt)
+    if required and not answer.strip():
+        raise SystemExit(f"{label} is required.")
+    return answer.strip()
+
+
+def normalize_cli_source_type(value: str) -> str:
+    source_type = value.strip().lower().replace("-", "_")
+    if source_type in {"drive", "google_drive", "gdrive"}:
+        return "drive_public"
+    return source_type
 
 
 def install_hermes_skill() -> str:
@@ -249,6 +267,117 @@ def cmd_queue_status(args: argparse.Namespace) -> None:
     )
 
 
+def source_config_from_args(args: argparse.Namespace, *, update: bool = False) -> dict:
+    source_type = getattr(args, "source_type", None)
+    config: dict[str, object] = {}
+    if source_type == "notion":
+        notion_key = args.notion_api_key
+        if not update:
+            notion_key = prompt_value(notion_key, "Notion API key", secret=True)
+        if notion_key:
+            config["notion_api_key"] = notion_key
+        if args.notion_page_url:
+            config["notion_page_url"] = args.notion_page_url
+        if args.notion_page_id:
+            config["notion_page_id"] = args.notion_page_id
+        if args.notion_data_source_id:
+            config["notion_data_source_id"] = args.notion_data_source_id
+        if args.notion_search_query:
+            config["notion_search_query"] = args.notion_search_query
+    elif source_type == "drive_public":
+        drive_urls = args.drive_url or []
+        if not drive_urls and not update:
+            drive_urls = [prompt_value(None, "Public Google Drive/Docs URL")]
+        if drive_urls:
+            config["drive_urls"] = drive_urls
+    return config
+
+
+def cmd_sources_list(args: argparse.Namespace) -> None:
+    config = load_config()
+    print_json(request_json("GET", f"{config['base_url']}/api/sources", headers=auth_headers(config, admin=True), timeout=30))
+
+
+def cmd_source_create(args: argparse.Namespace) -> None:
+    config = load_config()
+    source_type = args.source_type or prompt_value(None, "Source type (notion or drive_public)")
+    args.source_type = normalize_cli_source_type(source_type)
+    body = {
+        "name": prompt_value(args.name, "Source name"),
+        "source_type": args.source_type,
+        "target": args.target,
+        "classification": args.classification,
+        "interval_minutes": args.interval_minutes,
+        "enabled": not args.disabled,
+        "config": source_config_from_args(args),
+    }
+    print_json(
+        request_json(
+            "POST",
+            f"{config['base_url']}/api/sources",
+            headers=auth_headers(config, admin=True),
+            body=body,
+            timeout=60,
+        )
+    )
+
+
+def cmd_source_update(args: argparse.Namespace) -> None:
+    config = load_config()
+    if args.source_type:
+        args.source_type = normalize_cli_source_type(args.source_type)
+    body: dict[str, object] = {}
+    for key in ("name", "source_type", "target", "classification", "interval_minutes"):
+        value = getattr(args, key, None)
+        if value is not None:
+            body[key] = value
+    if args.enabled:
+        body["enabled"] = True
+    if args.disabled:
+        body["enabled"] = False
+    if args.reset_schedule:
+        body["reset_schedule"] = True
+    config_payload = source_config_from_args(args, update=True)
+    if config_payload:
+        body["config"] = config_payload
+    if not body:
+        raise SystemExit("No source updates provided.")
+    print_json(
+        request_json(
+            "PATCH",
+            f"{config['base_url']}/api/sources/{args.source_id}",
+            headers=auth_headers(config, admin=True),
+            body=body,
+            timeout=60,
+        )
+    )
+
+
+def cmd_source_scan(args: argparse.Namespace) -> None:
+    config = load_config()
+    print_json(
+        request_json(
+            "POST",
+            f"{config['base_url']}/api/sources/{args.source_id}/scan",
+            headers=auth_headers(config, admin=True),
+            body={"trigger": "manual"},
+            timeout=60,
+        )
+    )
+
+
+def cmd_source_runs(args: argparse.Namespace) -> None:
+    config = load_config()
+    print_json(
+        request_json(
+            "GET",
+            f"{config['base_url']}/api/sources/{args.source_id}/runs",
+            headers=auth_headers(config, admin=True),
+            timeout=30,
+        )
+    )
+
+
 def cmd_snippet(args: argparse.Namespace) -> None:
     config = load_config()
     token = args.token or config.get("token") or "USER_TOKEN"
@@ -318,6 +447,50 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("queue-status", help="Admin token only: show ingest queue depth and document status counts")
     p.set_defaults(func=cmd_queue_status)
+
+    p = sub.add_parser("sources-list", help="Admin: list Notion/Drive document sources")
+    p.set_defaults(func=cmd_sources_list)
+
+    p = sub.add_parser("source-create", help="Admin: create a Notion or public Drive source")
+    p.add_argument("--type", dest="source_type", choices=["notion", "drive_public", "drive", "google_drive"])
+    p.add_argument("--name")
+    p.add_argument("--target", default="public", choices=["public", "c_level"])
+    p.add_argument("--classification", default="internal", choices=["public", "internal", "confidential", "restricted"])
+    p.add_argument("--interval-minutes", type=int, default=1440)
+    p.add_argument("--disabled", action="store_true")
+    p.add_argument("--notion-api-key")
+    p.add_argument("--notion-page-url")
+    p.add_argument("--notion-page-id")
+    p.add_argument("--notion-data-source-id")
+    p.add_argument("--notion-search-query")
+    p.add_argument("--drive-url", action="append")
+    p.set_defaults(func=cmd_source_create)
+
+    p = sub.add_parser("source-update", help="Admin: update source config or scan schedule")
+    p.add_argument("source_id")
+    p.add_argument("--type", dest="source_type", choices=["notion", "drive_public", "drive", "google_drive"])
+    p.add_argument("--name")
+    p.add_argument("--target", choices=["public", "c_level"])
+    p.add_argument("--classification", choices=["public", "internal", "confidential", "restricted"])
+    p.add_argument("--interval-minutes", type=int)
+    p.add_argument("--enabled", action="store_true")
+    p.add_argument("--disabled", action="store_true")
+    p.add_argument("--reset-schedule", action="store_true")
+    p.add_argument("--notion-api-key")
+    p.add_argument("--notion-page-url")
+    p.add_argument("--notion-page-id")
+    p.add_argument("--notion-data-source-id")
+    p.add_argument("--notion-search-query")
+    p.add_argument("--drive-url", action="append")
+    p.set_defaults(func=cmd_source_update)
+
+    p = sub.add_parser("source-scan", help="Admin: queue a manual source scan")
+    p.add_argument("source_id")
+    p.set_defaults(func=cmd_source_scan)
+
+    p = sub.add_parser("source-runs", help="Admin: show recent source scan runs")
+    p.add_argument("source_id")
+    p.set_defaults(func=cmd_source_runs)
 
     p = sub.add_parser("codex-snippet", help="Print an AGENTS.md/Codex setup snippet")
     p.add_argument("--token")

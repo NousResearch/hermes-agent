@@ -13,6 +13,7 @@ The system supports:
 - bearer-token access for employees
 - admin token generation and upload workflows
 - queued document ingestion into LightRAG
+- scheduled Notion and public Drive source scans
 - optional Honcho memory configuration for agents
 - handoff documentation for future agents/operators
 
@@ -104,6 +105,15 @@ Admin -> Gateway upload endpoint -> Knowledge API route_workspace()
       -> knowledge-worker -> target LightRAG /documents/text
 ```
 
+Scheduled source scan:
+
+```text
+Admin -> Gateway /api/sources -> Knowledge API stores source config
+Scheduler -> Redis source_scan queue -> knowledge-worker fetches source docs
+          -> source_items checksum dedupe -> document_ingest_payloads
+          -> normal LightRAG ingest queue
+```
+
 ## Auth
 
 Admin:
@@ -192,6 +202,32 @@ C-Level upload:
 }
 ```
 
+Create a scheduled source:
+
+```http
+POST /api/sources
+X-API-Key: GATEWAY_API_KEY
+Content-Type: application/json
+
+{
+  "name": "Company Notion",
+  "source_type": "notion",
+  "target": "public",
+  "interval_minutes": 360,
+  "config": {
+    "notion_api_key": "...",
+    "notion_page_url": "https://www.notion.so/..."
+  }
+}
+```
+
+Manual source scan:
+
+```http
+POST /api/sources/{source_id}/scan
+X-API-Key: GATEWAY_API_KEY
+```
+
 ## CLI Examples
 
 Employee setup:
@@ -249,6 +285,30 @@ second-brain ingest-text \
   --title "Board Plan" \
   --target c_level \
   --classification restricted
+```
+
+Create and operate sources:
+
+```bash
+second-brain source-create \
+  --type notion \
+  --name "Company Notion" \
+  --notion-api-key "PASTE_NOTION_API_KEY" \
+  --notion-page-url "https://www.notion.so/..." \
+  --target public \
+  --interval-minutes 360
+
+second-brain source-create \
+  --type drive_public \
+  --name "Public Drive Doc" \
+  --drive-url "https://docs.google.com/document/d/.../edit" \
+  --target public \
+  --interval-minutes 720
+
+second-brain sources-list
+second-brain source-scan SOURCE_ID
+second-brain source-runs SOURCE_ID
+second-brain source-update SOURCE_ID --interval-minutes 1440 --reset-schedule
 ```
 
 ## Performance

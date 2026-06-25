@@ -71,6 +71,49 @@ CREATE TABLE IF NOT EXISTS document_ingest_payloads (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS document_sources (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  source_type text NOT NULL CHECK (source_type IN ('notion', 'drive_public')),
+  target text NOT NULL DEFAULT 'public',
+  workspace_slug text NOT NULL,
+  classification text NOT NULL CHECK (classification IN ('public', 'internal', 'confidential', 'restricted')),
+  config jsonb NOT NULL DEFAULT '{}'::jsonb,
+  interval_minutes integer NOT NULL DEFAULT 1440,
+  enabled boolean NOT NULL DEFAULT true,
+  next_scan_at timestamptz,
+  last_scan_at timestamptz,
+  last_status text,
+  last_error text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS source_scan_runs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_id uuid NOT NULL REFERENCES document_sources(id) ON DELETE CASCADE,
+  trigger text NOT NULL CHECK (trigger IN ('manual', 'scheduled', 'startup')),
+  status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'complete', 'failed')),
+  queued_at timestamptz NOT NULL DEFAULT now(),
+  started_at timestamptz,
+  finished_at timestamptz,
+  items_found integer NOT NULL DEFAULT 0,
+  documents_queued integer NOT NULL DEFAULT 0,
+  error text
+);
+
+CREATE TABLE IF NOT EXISTS source_items (
+  source_id uuid NOT NULL REFERENCES document_sources(id) ON DELETE CASCADE,
+  external_id text NOT NULL,
+  checksum text NOT NULL,
+  document_id uuid REFERENCES documents(id) ON DELETE SET NULL,
+  title text NOT NULL,
+  source_uri text,
+  last_seen_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (source_id, external_id)
+);
+
 CREATE TABLE IF NOT EXISTS audit_events (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   actor_user_id uuid,

@@ -41,6 +41,7 @@ Use this skill when the user asks to:
 - Generate setup instructions for Codex, Hermes, Cursor, Claude Code, or another IDE agent.
 - Create a user/agent token as an admin.
 - Ingest a plain-text document into the company RAG.
+- Configure or manually scan Notion and public Google Drive document sources.
 
 Do not use this skill for local codebase search. Use normal repository tools for
 code files unless the user explicitly asks for company second-brain knowledge.
@@ -179,6 +180,46 @@ Treat a document as large when extracted text is over 1MB, source file is over
 10MB, PDF/DOCX is over 50 pages, or it likely creates more than 200 chunks. For
 large documents, extract and clean text first, split into stable sections, then
 upload sections separately.
+
+## Scheduled Sources
+
+Admin only. Source scans are asynchronous: a source run fetches documents from
+Notion or public Drive, then queues changed documents for LightRAG indexing.
+
+Create a Notion source:
+
+```bash
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain source-create \
+  --type notion \
+  --name "Company Notion" \
+  --notion-api-key "PASTE_NOTION_API_KEY" \
+  --notion-page-url "https://www.notion.so/..." \
+  --target public \
+  --interval-minutes 360
+```
+
+Create a public Drive source:
+
+```bash
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain source-create \
+  --type drive_public \
+  --name "Public Drive Doc" \
+  --drive-url "https://docs.google.com/document/d/.../edit" \
+  --target public \
+  --interval-minutes 720
+```
+
+Operate sources:
+
+```bash
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain sources-list
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain source-scan SOURCE_ID
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain source-runs SOURCE_ID
+~/.hermes/skills/productivity/company-second-brain/scripts/second-brain source-update SOURCE_ID --interval-minutes 1440 --reset-schedule
+```
+
+Drive public MVP supports direct public Docs/Sheets/Slides or file links. Public
+folder listing needs Drive API/OAuth.
 
 ## Codex/Hermes Snippet
 

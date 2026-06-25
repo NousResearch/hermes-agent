@@ -166,6 +166,46 @@ second-brain queue-status
 
 MVP file upload supports UTF-8 text files. Add PDF/DOCX extraction before production document ingestion.
 
+## Automatic Sources: Notion and Public Drive
+
+Admins can register document sources and let `knowledge-worker` scan them on a
+schedule. Admins can also trigger a manual scan at any time.
+
+Notion page/data source/search:
+
+```bash
+second-brain source-create \
+  --type notion \
+  --name "Company Notion" \
+  --notion-api-key "PASTE_NOTION_API_KEY" \
+  --notion-page-url "https://www.notion.so/..." \
+  --target public \
+  --interval-minutes 360
+```
+
+Public Google Docs/Sheets/Slides or public file link:
+
+```bash
+second-brain source-create \
+  --type drive_public \
+  --name "Public Drive Doc" \
+  --drive-url "https://docs.google.com/document/d/.../edit" \
+  --target public \
+  --interval-minutes 720
+```
+
+Operate sources:
+
+```bash
+second-brain sources-list
+second-brain source-scan SOURCE_ID
+second-brain source-runs SOURCE_ID
+second-brain source-update SOURCE_ID --interval-minutes 1440 --reset-schedule
+```
+
+Drive public MVP supports direct public Docs/Sheets/Slides or file links. Public
+folder listing needs Drive API/OAuth and is intentionally not scraped from HTML.
+
 ## Query Performance
 
 Normal users query one workspace: `company_public`.

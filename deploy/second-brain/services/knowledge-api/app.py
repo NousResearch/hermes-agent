@@ -1,5 +1,6 @@
 import os
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -14,13 +15,18 @@ app = FastAPI(title="Company Knowledge API", version="0.1.0")
 DATABASE_URL = os.environ["DATABASE_URL"]
 REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 INGEST_QUEUE_NAME = os.environ.get("INGEST_QUEUE_NAME", "second_brain:ingest_jobs")
+SOURCE_SCAN_QUEUE_NAME = os.environ.get("SOURCE_SCAN_QUEUE_NAME", "second_brain:source_scan_jobs")
 QUERY_WORKSPACE_CONCURRENCY = int(os.environ.get("QUERY_WORKSPACE_CONCURRENCY", "4"))
 LIGHTRAG_ROOT = Path(os.environ.get("LIGHTRAG_ROOT", "/data/lightrag"))
+MIN_SOURCE_INTERVAL_MINUTES = int(os.environ.get("MIN_SOURCE_INTERVAL_MINUTES", "15"))
+MAX_SOURCE_INTERVAL_MINUTES = int(os.environ.get("MAX_SOURCE_INTERVAL_MINUTES", str(60 * 24 * 30)))
 PUBLIC_WORKSPACE = "company_public"
 C_LEVEL_WORKSPACE = "department_c_level"
 ENABLED_WORKSPACES = [PUBLIC_WORKSPACE, C_LEVEL_WORKSPACE]
 C_LEVEL_TARGETS = {"c_level", "c-level", "clevel", "c level", "department_c_level", "admin", "executive", "board"}
 C_LEVEL_CLASSIFICATIONS = {"confidential", "restricted", "c_level", "c-level"}
+SOURCE_TYPES = {"notion", "drive_public"}
+SOURCE_SECRET_KEYS = {"notion_api_key", "api_key", "token", "access_token", "secret"}
 LIGHTRAG_API_KEY = os.environ.get("LIGHTRAG_API_KEY", "")
 LIGHTRAG_URLS = {
     PUBLIC_WORKSPACE: os.environ.get("LIGHTRAG_COMPANY_PUBLIC_URL"),
@@ -63,6 +69,62 @@ async def ensure_runtime_schema() -> None:
             )
             """
         )
+        await ensure_source_schema(conn)
+
+
+async def ensure_source_schema(conn: Any) -> None:
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS document_sources (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          name text NOT NULL,
+          source_type text NOT NULL CHECK (source_type IN ('notion', 'drive_public')),
+          target text NOT NULL DEFAULT 'public',
+          workspace_slug text NOT NULL,
+          classification text NOT NULL CHECK (classification IN ('public', 'internal', 'confidential', 'restricted')),
+          config jsonb NOT NULL DEFAULT '{}'::jsonb,
+          interval_minutes integer NOT NULL DEFAULT 1440,
+          enabled boolean NOT NULL DEFAULT true,
+          next_scan_at timestamptz,
+          last_scan_at timestamptz,
+          last_status text,
+          last_error text,
+          created_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now()
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS source_scan_runs (
+          id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+          source_id uuid NOT NULL REFERENCES document_sources(id) ON DELETE CASCADE,
+          trigger text NOT NULL CHECK (trigger IN ('manual', 'scheduled', 'startup')),
+          status text NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'running', 'complete', 'failed')),
+          queued_at timestamptz NOT NULL DEFAULT now(),
+          started_at timestamptz,
+          finished_at timestamptz,
+          items_found integer NOT NULL DEFAULT 0,
+          documents_queued integer NOT NULL DEFAULT 0,
+          error text
+        )
+        """
+    )
+    await conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS source_items (
+          source_id uuid NOT NULL REFERENCES document_sources(id) ON DELETE CASCADE,
+          external_id text NOT NULL,
+          checksum text NOT NULL,
+          document_id uuid REFERENCES documents(id) ON DELETE SET NULL,
+          title text NOT NULL,
+          source_uri text,
+          last_seen_at timestamptz NOT NULL DEFAULT now(),
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (source_id, external_id)
+        )
+        """
+    )
 
 
 @app.get("/health")
@@ -118,6 +180,119 @@ def allowed_workspaces(groups: list[str]) -> list[str]:
     if "role_admin" in normalized:
         allowed.append(C_LEVEL_WORKSPACE)
     return allowed
+
+
+def coerce_bool(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "enabled"}
+
+
+def normalize_source_type(value: Any) -> str:
+    source_type = str(value or "").strip().lower().replace("-", "_")
+    if source_type in {"drive", "google_drive", "gdrive"}:
+        source_type = "drive_public"
+    if source_type not in SOURCE_TYPES:
+        raise ValueError("source_type must be notion or drive_public")
+    return source_type
+
+
+def clamp_source_interval(value: Any) -> int:
+    try:
+        interval = int(value)
+    except (TypeError, ValueError):
+        interval = 1440
+    return max(MIN_SOURCE_INTERVAL_MINUTES, min(interval, MAX_SOURCE_INTERVAL_MINUTES))
+
+
+def source_config_from_value(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        loaded = json.loads(value)
+        return loaded if isinstance(loaded, dict) else {}
+    return {}
+
+
+def redact_source_config(config: dict[str, Any]) -> dict[str, Any]:
+    redacted: dict[str, Any] = {}
+    for key, value in config.items():
+        lower = str(key).lower()
+        if lower in SOURCE_SECRET_KEYS or lower.endswith(("_key", "_token", "_secret")):
+            redacted[key] = "set" if value else ""
+        else:
+            redacted[key] = value
+    return redacted
+
+
+def normalize_source_payload(payload: dict[str, Any], *, existing_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise ValueError("name is required")
+    source_type = normalize_source_type(payload.get("source_type") or payload.get("type"))
+    config = dict(existing_config or {})
+    config.update(source_config_from_value(payload.get("config")))
+    for key in (
+        "notion_api_key",
+        "notion_page_id",
+        "notion_page_url",
+        "notion_data_source_id",
+        "notion_search_query",
+        "drive_url",
+        "drive_urls",
+    ):
+        if payload.get(key) not in {None, ""}:
+            config[key] = payload[key]
+
+    if source_type == "notion" and not str(config.get("notion_api_key") or "").strip():
+        raise ValueError("notion_api_key is required for notion sources")
+    if source_type == "drive_public" and not (config.get("drive_url") or config.get("drive_urls")):
+        raise ValueError("drive_url or drive_urls is required for drive_public sources")
+
+    classification = str(payload.get("classification") or "internal").strip().lower()
+    if classification not in {"public", "internal", "confidential", "restricted"}:
+        raise ValueError("classification must be public, internal, confidential, or restricted")
+    target = str(payload.get("target") or "public").strip().lower().replace("-", "_")
+    workspace = route_workspace({"target": target, "classification": classification})
+    if workspace == C_LEVEL_WORKSPACE:
+        target = "c_level"
+    else:
+        target = "public"
+
+    return {
+        "name": name,
+        "source_type": source_type,
+        "target": target,
+        "workspace": workspace,
+        "classification": classification,
+        "config": config,
+        "interval_minutes": clamp_source_interval(payload.get("interval_minutes")),
+        "enabled": coerce_bool(payload.get("enabled"), True),
+    }
+
+
+def serialize_source_row(row: Any) -> dict[str, Any]:
+    data = dict(row)
+    data["id"] = str(data["id"])
+    data["config"] = redact_source_config(source_config_from_value(data.get("config")))
+    for key in ("next_scan_at", "last_scan_at", "created_at", "updated_at"):
+        value = data.get(key)
+        if hasattr(value, "isoformat"):
+            data[key] = value.isoformat()
+    return data
+
+
+def serialize_scan_run(row: Any) -> dict[str, Any]:
+    data = dict(row)
+    data["id"] = str(data["id"])
+    data["source_id"] = str(data["source_id"])
+    for key in ("queued_at", "started_at", "finished_at"):
+        value = data.get(key)
+        if hasattr(value, "isoformat"):
+            data[key] = value.isoformat()
+    return data
 
 
 @app.post("/query")
@@ -226,6 +401,169 @@ async def ingest_text(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@app.get("/sources")
+async def list_sources() -> dict[str, Any]:
+    rows = await app.state.pool.fetch(
+        """
+        SELECT id, name, source_type, target, workspace_slug, classification, config,
+               interval_minutes, enabled, next_scan_at, last_scan_at, last_status,
+               last_error, created_at, updated_at
+        FROM document_sources
+        ORDER BY created_at DESC
+        """
+    )
+    return {
+        "sources": [serialize_source_row(row) for row in rows],
+        "scan_queue": SOURCE_SCAN_QUEUE_NAME,
+        "scan_queue_depth": await app.state.redis.llen(SOURCE_SCAN_QUEUE_NAME),
+    }
+
+
+@app.post("/sources")
+async def create_source(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        source = normalize_source_payload(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    async with app.state.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            INSERT INTO document_sources (
+              name, source_type, target, workspace_slug, classification, config,
+              interval_minutes, enabled, next_scan_at
+            )
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8,
+                    CASE WHEN $8 THEN now() ELSE NULL END)
+            RETURNING id, name, source_type, target, workspace_slug, classification,
+                      config, interval_minutes, enabled, next_scan_at, last_scan_at,
+                      last_status, last_error, created_at, updated_at
+            """,
+            source["name"],
+            source["source_type"],
+            source["target"],
+            source["workspace"],
+            source["classification"],
+            json.dumps(source["config"]),
+            source["interval_minutes"],
+            source["enabled"],
+        )
+    return {"status": "created", "source": serialize_source_row(row)}
+
+
+@app.patch("/sources/{source_id}")
+async def update_source(source_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        async with app.state.pool.acquire() as conn:
+            existing = await conn.fetchrow(
+                """
+                SELECT id, name, source_type, target, classification, config,
+                       interval_minutes, enabled
+                FROM document_sources
+                WHERE id = $1::uuid
+                """,
+                source_id,
+            )
+            if not existing:
+                raise HTTPException(status_code=404, detail="source not found")
+            merged = {
+                "name": payload.get("name", existing["name"]),
+                "source_type": payload.get("source_type", existing["source_type"]),
+                "target": payload.get("target", existing["target"]),
+                "classification": payload.get("classification", existing["classification"]),
+                "interval_minutes": payload.get("interval_minutes", existing["interval_minutes"]),
+                "enabled": payload.get("enabled", existing["enabled"]),
+                "config": payload.get("config") or {},
+            }
+            source = normalize_source_payload(
+                merged,
+                existing_config=source_config_from_value(existing["config"]),
+            )
+            reset_schedule = coerce_bool(payload.get("reset_schedule"), True)
+            row = await conn.fetchrow(
+                """
+                UPDATE document_sources
+                SET name = $2,
+                    source_type = $3,
+                    target = $4,
+                    workspace_slug = $5,
+                    classification = $6,
+                    config = $7::jsonb,
+                    interval_minutes = $8,
+                    enabled = $9,
+                    next_scan_at = CASE
+                      WHEN NOT $9 THEN NULL
+                      WHEN $10 THEN now()
+                      ELSE next_scan_at
+                    END,
+                    updated_at = now()
+                WHERE id = $1::uuid
+                RETURNING id, name, source_type, target, workspace_slug, classification,
+                          config, interval_minutes, enabled, next_scan_at, last_scan_at,
+                          last_status, last_error, created_at, updated_at
+                """,
+                source_id,
+                source["name"],
+                source["source_type"],
+                source["target"],
+                source["workspace"],
+                source["classification"],
+                json.dumps(source["config"]),
+                source["interval_minutes"],
+                source["enabled"],
+                reset_schedule,
+            )
+    except asyncpg.PostgresError as exc:
+        raise HTTPException(status_code=400, detail="invalid source id") from exc
+    return {"status": "updated", "source": serialize_source_row(row)}
+
+
+@app.post("/sources/{source_id}/scan")
+async def queue_source_scan(source_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    trigger = str((payload or {}).get("trigger") or "manual").strip().lower()
+    if trigger not in {"manual", "scheduled", "startup"}:
+        trigger = "manual"
+    try:
+        async with app.state.pool.acquire() as conn:
+            source = await conn.fetchrow("SELECT id FROM document_sources WHERE id = $1::uuid", source_id)
+            if not source:
+                raise HTTPException(status_code=404, detail="source not found")
+            run = await conn.fetchrow(
+                """
+                INSERT INTO source_scan_runs (source_id, trigger, status)
+                VALUES ($1::uuid, $2, 'queued')
+                RETURNING id, source_id, trigger, status, queued_at, started_at,
+                          finished_at, items_found, documents_queued, error
+                """,
+                source_id,
+                trigger,
+            )
+    except asyncpg.PostgresError as exc:
+        raise HTTPException(status_code=400, detail="invalid source id") from exc
+    await app.state.redis.rpush(SOURCE_SCAN_QUEUE_NAME, str(run["id"]))
+    return {"status": "queued", "run": serialize_scan_run(run), "queue": SOURCE_SCAN_QUEUE_NAME}
+
+
+@app.get("/sources/{source_id}/runs")
+async def source_runs(source_id: str) -> dict[str, Any]:
+    try:
+        async with app.state.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """
+                SELECT id, source_id, trigger, status, queued_at, started_at,
+                       finished_at, items_found, documents_queued, error
+                FROM source_scan_runs
+                WHERE source_id = $1::uuid
+                ORDER BY queued_at DESC
+                LIMIT 20
+                """,
+                source_id,
+            )
+    except asyncpg.PostgresError as exc:
+        raise HTTPException(status_code=400, detail="invalid source id") from exc
+    return {"runs": [serialize_scan_run(row) for row in rows]}
+
+
 @app.get("/documents/{document_id}")
 async def document_status(document_id: str) -> dict[str, Any]:
     try:
@@ -253,6 +591,8 @@ async def queue_status() -> dict[str, Any]:
     return {
         "queue": INGEST_QUEUE_NAME,
         "queue_depth": await app.state.redis.llen(INGEST_QUEUE_NAME),
+        "source_scan_queue": SOURCE_SCAN_QUEUE_NAME,
+        "source_scan_queue_depth": await app.state.redis.llen(SOURCE_SCAN_QUEUE_NAME),
         "document_status_counts": {row["status"]: row["count"] for row in rows},
         "worker_expected": True,
     }

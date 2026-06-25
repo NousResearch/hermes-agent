@@ -3669,6 +3669,16 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_usage(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/usage")
 
+        @tree.command(name="tokens", description="Toggle a per-message token breakdown on replies")
+        @discord.app_commands.describe(state="on, off, or status")
+        @discord.app_commands.choices(state=[
+            discord.app_commands.Choice(name="on — show token breakdown on replies", value="on"),
+            discord.app_commands.Choice(name="off — hide token breakdown", value="off"),
+            discord.app_commands.Choice(name="status — show current setting", value="status"),
+        ])
+        async def slash_tokens(interaction: discord.Interaction, state: str = ""):
+            await self._run_simple_slash(interaction, f"/tokens {state}".strip())
+
         @tree.command(name="help", description="Show available commands")
         async def slash_help(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/help")

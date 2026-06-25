@@ -15,6 +15,37 @@ from typing import Any, Iterable
 
 _MAX_CHANGED_PATHS_IN_NUDGE = 8
 
+# File patterns that cannot affect code/test behaviour — editing these should
+# not trigger the verification nudge.  Kept deliberately narrow: only pure
+# documentation, license, VCS metadata, and CI workflow YAML.
+_NON_CODE_SUFFIXES = (".md", ".txt", ".rst", ".adoc", ".rdoc")
+_NON_CODE_FILENAMES = frozenset({
+    ".gitignore", ".gitattributes", ".gitmodules", ".gitkeep",
+    ".editorconfig", ".prettierrc",
+    "LICENSE", "LICENCE", "COPYING",
+    "CHANGELOG", "CHANGES", "AUTHORS", "CONTRIBUTORS",
+})
+# Directories whose contents are CI/workflow config — not runtime code.
+_NON_CODE_DIR_SEGMENTS = frozenset({".github"})
+
+
+def _is_non_code_path(raw: str) -> bool:
+    """Return *True* when *raw* cannot affect code/test behaviour."""
+    try:
+        p = Path(raw)
+    except Exception:
+        return False
+    name = p.name
+    if name in _NON_CODE_FILENAMES:
+        return True
+    if name.endswith(_NON_CODE_SUFFIXES):
+        return True
+    # Match files under .github/ (workflows, issue templates, CODEOWNERS, …)
+    parts = p.parts
+    if any(seg in _NON_CODE_DIR_SEGMENTS for seg in parts):
+        return True
+    return False
+
 
 def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether edit -> verify-before-finish behavior is enabled."""
@@ -115,6 +146,8 @@ def build_verify_on_stop_nudge(
 ) -> str | None:
     """Return a synthetic follow-up when edited code lacks fresh verification."""
     paths = sorted({str(p) for p in changed_paths if p})
+    # Filter out non-code paths (docs, license, VCS metadata, CI config).
+    paths = [p for p in paths if not _is_non_code_path(p)]
     if not paths or attempts >= max_attempts:
         return None
 

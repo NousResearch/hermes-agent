@@ -864,6 +864,41 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
     @classmethod
+    def _should_fallback_markdown_to_plain_text(cls, error: Exception) -> bool:
+        """True only for permanent markdown-formatting failures.
+
+        Telegram flood control / network faults must bubble to the outer retry
+        logic instead of degrading a streamed preview to plain text. Otherwise
+        users briefly see an unformatted first message, then a later formatted
+        continuation/final message.
+        """
+        err_lower = str(error).lower()
+        if "not modified" in err_lower:
+            return False
+        if getattr(error, "retry_after", None) is not None or "retry after" in err_lower:
+            return False
+        transient_markers = (
+            "timed out",
+            "timeout",
+            "readtimeout",
+            "writetimeout",
+            "connecterror",
+            "connect error",
+            "connection error",
+            "networkerror",
+            "network error",
+            "server disconnected",
+            "temporarily unavailable",
+            "temporary failure",
+            "httpx",
+        )
+        if any(marker in err_lower for marker in transient_markers):
+            return False
+        if cls._is_bad_request_error(error):
+            return True
+        return "parse" in err_lower or "markdown" in err_lower or "entity" in err_lower
+
+    @classmethod
     def _should_retry_without_dm_topic_reply_anchor(
         cls,
         error: Exception,
@@ -3144,6 +3179,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
+                if not self._should_fallback_markdown_to_plain_text(fmt_err):
+                    raise
                 # Fallback: strip MarkdownV2 escapes and retry as clean plain text
                 logger.warning(
                     "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
@@ -3308,11 +3345,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
+                        if not self._should_fallback_markdown_to_plain_text(fmt_err):
+                            return SendResult(
+                                success=False,
+                                error=str(fmt_err),
+                                retryable=True,
+                            )
                         logger.warning(
                             "[%s] Overflow split: MarkdownV2 first-chunk edit "
                             "failed, falling back to plain text: %s",
                             self.name, fmt_err,
                         )
+                        lossy_markdown_fallback = True
                         await self._bot.edit_message_text(
                             chat_id=int(chat_id),
                             message_id=int(message_id),
@@ -3345,6 +3389,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # fallback, mirroring send().
         continuation_ids: list[str] = []
         delivered_chunks = [first_chunk]
+        lossy_markdown_fallback = False
         prev_id = message_id
         thread_id = self._metadata_thread_id(metadata)
         for chunk in chunks[1:]:
@@ -3407,8 +3452,12 @@ class TelegramAdapter(BasePlatformAdapter):
                             sent_msg = None
                             break
                     if use_markdown:
-                        # try plain text on next loop iteration
-                        continue
+                        if self._should_fallback_markdown_to_plain_text(send_err):
+                            # try plain text on next loop iteration
+                            lossy_markdown_fallback = True
+                            continue
+                        sent_msg = None
+                        break
                     logger.warning(
                         "[%s] Overflow continuation send failed: %s",
                         self.name, send_err,
@@ -3441,6 +3490,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         "total_chunks": len(chunks),
                         "last_message_id": prev_id,
                         "delivered_prefix": delivered_prefix,
+                        "lossy_markdown_fallback": lossy_markdown_fallback,
                         "continuation_message_ids": tuple(continuation_ids),
                     },
                     continuation_message_ids=tuple(continuation_ids),

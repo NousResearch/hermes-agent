@@ -168,6 +168,11 @@ class GatewayStreamConsumer:
         # Telegram overflow delivery.  In that case the already-visible prefix
         # is intentional content, not a stale preview to delete.
         self._fallback_preserve_partial_messages = False
+        # True when the streamed/overflow prefix was visibly degraded relative
+        # to the raw final markdown (e.g. Telegram fell back from MarkdownV2 to
+        # plain text). In that case exact-prefix tail dedupe is unsafe: resend
+        # the full final text and delete the stale partial instead.
+        self._fallback_lossy_prefix = False
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
@@ -320,6 +325,7 @@ class GatewayStreamConsumer:
         self._fallback_final_send = False
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
+        self._fallback_lossy_prefix = False
         # #29346: a tool/segment boundary means what we delivered was an interim
         # preamble, not the final answer — clear the flags so a premature setter
         # can't fool the gateway. Safe: got_done returns before any reset, and
@@ -845,6 +851,8 @@ class GatewayStreamConsumer:
 
     def _continuation_text(self, final_text: str) -> str:
         """Return only the part of final_text the user has not already seen."""
+        if self._fallback_lossy_prefix:
+            return final_text
         prefix = self._fallback_prefix or self._visible_prefix()
         if prefix and final_text.startswith(prefix):
             return final_text[len(prefix):].lstrip()
@@ -1009,6 +1017,7 @@ class GatewayStreamConsumer:
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
         self._fallback_preserve_partial_messages = False
+        self._fallback_lossy_prefix = False
 
     def _is_flood_error(self, result) -> bool:
         """Check if a SendResult failure is due to flood control / rate limiting."""
@@ -1211,11 +1220,10 @@ class GatewayStreamConsumer:
         ``MAX_MESSAGE_LENGTH`` (4096 default) for everyone else.
         """
         base = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
-        # isinstance gate: MagicMock adapters return mock objects (truthy, not
-        # ints) for arbitrary attribute access — keep them on the base limit.
-        if isinstance(self.adapter, _BasePlatformAdapter):
+        fn = getattr(self.adapter, "streaming_overflow_limit", None)
+        if callable(fn):
             try:
-                cap = self.adapter.streaming_overflow_limit()
+                cap = fn()
             except Exception as e:
                 logger.debug("streaming_overflow_limit check failed: %s", e)
                 cap = None
@@ -1477,6 +1485,31 @@ class GatewayStreamConsumer:
                         )
                     ):
                         return True
+                    # Some adapters can send/finalize messages above their
+                    # legacy edit cap (e.g. Telegram rich final delivery), but
+                    # *streaming* edits still hit the lower MAX_MESSAGE_LENGTH.
+                    # Split-and-delivering overflow continuations on every
+                    # mid-stream tick produces repeated partial bubbles. Freeze
+                    # the preview once it reaches the legacy edit cap and wait
+                    # for the final finalize=True send/edit path instead.
+                    if not finalize:
+                        _legacy_edit_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
+                        _len_fn: "Callable[[str], int]" = (
+                            self.adapter.message_len_fn
+                            if isinstance(self.adapter, _BasePlatformAdapter)
+                            else len
+                        )
+                        if (
+                            isinstance(_legacy_edit_limit, int)
+                            and _legacy_edit_limit > 0
+                            and _len_fn(text) > _legacy_edit_limit
+                            and self._raw_message_limit() > _legacy_edit_limit
+                        ):
+                            logger.debug(
+                                "Skipping mid-stream edit beyond legacy cap (%d > %d); waiting for final delivery",
+                                _len_fn(text), _legacy_edit_limit,
+                            )
+                            return False
                     # Edit existing message
                     result = await self._edit_message(
                         message_id=self._message_id,
@@ -1545,14 +1578,20 @@ class GatewayStreamConsumer:
                                 or self._message_id
                             )
                             delivered_prefix = raw_response.get("delivered_prefix")
+                            lossy_markdown_fallback = bool(
+                                raw_response.get("lossy_markdown_fallback")
+                            )
                             if isinstance(delivered_prefix, str) and delivered_prefix:
                                 self._last_sent_text = delivered_prefix
                                 self._fallback_prefix = delivered_prefix
-                                self._fallback_preserve_partial_messages = text.startswith(
-                                    delivered_prefix
+                                self._fallback_lossy_prefix = lossy_markdown_fallback
+                                self._fallback_preserve_partial_messages = (
+                                    text.startswith(delivered_prefix)
+                                    and not lossy_markdown_fallback
                                 )
                             else:
                                 self._fallback_prefix = self._visible_prefix()
+                                self._fallback_lossy_prefix = False
                                 self._fallback_preserve_partial_messages = False
                             self._fallback_final_send = True
                             self._edit_supported = False

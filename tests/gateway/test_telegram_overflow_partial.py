@@ -96,6 +96,77 @@ async def test_edit_overflow_split_reports_partial_failure_when_continuation_fai
 
 
 @pytest.mark.asyncio
+async def test_edit_overflow_split_marks_lossy_markdown_fallback_when_plain_text_was_used(
+    telegram_adapter,
+):
+    """If Telegram degraded a partial overflow chunk to plain text, the
+    fallback path must know the visible prefix no longer matches the raw final
+    markdown exactly.
+    """
+    content = "**bold** line\n" * 40
+    telegram_adapter._bot.edit_message_text = AsyncMock(
+        side_effect=[RuntimeError("can't parse entities"), True]
+    )
+    telegram_adapter._bot.send_message = AsyncMock(
+        side_effect=[RuntimeError("can't parse entities"), RuntimeError("telegram send failed")]
+    )
+
+    result = await telegram_adapter._edit_overflow_split(
+        "12345", "201", content, finalize=True, metadata={"thread_id": "77"}
+    )
+
+    assert result.success is False
+    assert result.raw_response["partial_overflow"] is True
+    assert result.raw_response["lossy_markdown_fallback"] is True
+
+
+@pytest.mark.asyncio
+async def test_edit_overflow_split_does_not_fallback_first_chunk_to_plain_text_on_retry_after(
+    telegram_adapter,
+):
+    class FakeRetryAfter(Exception):
+        def __init__(self, seconds):
+            super().__init__(f"Flood control exceeded. Retry in {seconds} seconds")
+            self.retry_after = seconds
+
+    content = "**bold** line\n" * 40
+    telegram_adapter._bot.edit_message_text = AsyncMock(side_effect=FakeRetryAfter(78))
+    telegram_adapter._bot.send_message = AsyncMock()
+
+    result = await telegram_adapter._edit_overflow_split(
+        "12345", "201", content, finalize=True, metadata={"thread_id": "77"}
+    )
+
+    assert result.success is False
+    assert "Retry in 78 seconds" in result.error
+    assert telegram_adapter._bot.edit_message_text.await_count == 1
+    telegram_adapter._bot.send_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_edit_overflow_split_does_not_fallback_continuation_to_plain_text_on_retry_after(
+    telegram_adapter,
+):
+    class FakeRetryAfter(Exception):
+        def __init__(self, seconds):
+            super().__init__(f"Flood control exceeded. Retry in {seconds} seconds")
+            self.retry_after = seconds
+
+    content = "**bold** line\n" * 40
+    telegram_adapter._bot.edit_message_text = AsyncMock(return_value=True)
+    telegram_adapter._bot.send_message = AsyncMock(side_effect=FakeRetryAfter(78))
+
+    result = await telegram_adapter._edit_overflow_split(
+        "12345", "201", content, finalize=True, metadata={"thread_id": "77"}
+    )
+
+    assert result.success is False
+    assert "Retry in 78 seconds" in result.error
+    # One markdown continuation attempt only; no plain-text retry.
+    assert telegram_adapter._bot.send_message.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_stream_consumer_fallback_sends_tail_after_partial_overflow():
     """A partial overflow edit enters fallback instead of marking final delivered."""
     adapter = MagicMock()
@@ -138,3 +209,48 @@ async def test_stream_consumer_fallback_sends_tail_after_partial_overflow():
     adapter.delete_message.assert_not_awaited()
     assert consumer.final_response_sent is True
     assert consumer.final_content_delivered is True
+
+
+@pytest.mark.asyncio
+async def test_stream_consumer_resends_full_text_when_partial_overflow_prefix_was_lossy():
+    """If Telegram showed the partial prefix as plain text after MarkdownV2
+    fallback, the raw final markdown no longer shares an exact prefix. In that
+    case the safest recovery is to resend the full final text and delete the
+    stale partial instead of sending only the tail.
+    """
+    adapter = MagicMock()
+    adapter.MAX_MESSAGE_LENGTH = 4096
+    adapter.edit_message = AsyncMock(
+        return_value=SendResult(
+            success=False,
+            message_id="preview-1",
+            error="overflow_continuation_failed",
+            retryable=True,
+            raw_response={
+                "partial_overflow": True,
+                "delivered_chunks": 1,
+                "total_chunks": 2,
+                "last_message_id": "preview-1",
+                "delivered_prefix": "**bold** ",
+                "lossy_markdown_fallback": True,
+            },
+        )
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="tail-1"))
+    adapter.delete_message = AsyncMock(return_value=True)
+
+    consumer = GatewayStreamConsumer(adapter, "chat-1", metadata={"thread_id": "77"})
+    consumer._message_id = "preview-1"
+    consumer._last_sent_text = "**bold** "
+
+    ok = await consumer._send_or_edit("**bold** world", finalize=True)
+
+    assert ok is False
+    assert consumer._fallback_preserve_partial_messages is False
+
+    await consumer._send_fallback_final("**bold** world")
+
+    adapter.send.assert_awaited_once()
+    assert adapter.send.await_args.kwargs["content"] == "**bold** world"
+    adapter.delete_message.assert_awaited_once_with("chat-1", "preview-1")
+    assert consumer.final_response_sent is True

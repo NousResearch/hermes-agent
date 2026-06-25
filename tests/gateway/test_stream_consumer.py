@@ -99,6 +99,32 @@ class TestFinalizeCapabilityGate:
     """
 
     @pytest.mark.asyncio
+    async def test_skips_midstream_edit_beyond_legacy_cap_when_final_path_is_richer(self):
+        """If an adapter can finalize above its edit cap, freeze the preview
+        instead of overflow-splitting every streaming update into repeated
+        partial bubbles.
+        """
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = False
+        adapter.MAX_MESSAGE_LENGTH = 10
+        adapter.streaming_overflow_limit = MagicMock(return_value=100)
+        adapter.send = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True, message_id="m1"))
+
+        consumer = GatewayStreamConsumer(adapter, "chat_1")
+        await consumer._send_or_edit("hello")
+
+        blocked = await consumer._send_or_edit("01234567890", finalize=False)
+        assert blocked is False
+        adapter.edit_message.assert_not_called()
+        assert consumer._last_sent_text == "hello"
+
+        finished = await consumer._send_or_edit("01234567890", finalize=True)
+        assert finished is True
+        adapter.edit_message.assert_awaited_once()
+        assert adapter.edit_message.await_args.kwargs["finalize"] is True
+
+    @pytest.mark.asyncio
     async def test_identical_text_skip_respects_adapter_flag(self):
         """_send_or_edit short-circuits identical-text only when the
         adapter doesn't require an explicit finalize signal."""

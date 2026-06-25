@@ -8,7 +8,6 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { ArrowUpRight, X } from '@/lib/icons'
 import type { TodoStatus } from '@/lib/todos'
 import { cn } from '@/lib/utils'
 import type { ComposerStatusItem } from '@/store/composer-status'
@@ -50,7 +49,7 @@ function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']):
     return (
       <GlyphSpinner
         ariaLabel={s.running}
-        className="text-[0.9rem] leading-none text-muted-foreground/80"
+        className="text-[0.85rem] leading-none text-muted-foreground/80"
         spinner="braille"
       />
     )
@@ -117,11 +116,11 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
                 type="button"
                 variant="ghost"
               >
-                <X size={12} />
+                <Codicon name="close" size="0.75rem" />
               </Button>
             </Tip>
           ) : canOpen ? (
-            <ArrowUpRight aria-hidden className="size-3.5 text-muted-foreground/55" />
+            <Codicon aria-hidden className="text-muted-foreground/55" name="link-external" size="0.85rem" />
           ) : undefined
         }
       >

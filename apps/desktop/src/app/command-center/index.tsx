@@ -1,5 +1,4 @@
 import { useStore } from '@nanostores/react'
-import { IconBookmark, IconBookmarkFilled, IconDownload, IconTrash } from '@tabler/icons-react'
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
@@ -17,7 +16,7 @@ import {
 import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { Activity, AlertCircle, BarChart3, Pin } from '@/lib/icons'
+import { Activity, AlertCircle, BarChart3, Bookmark, BookmarkFilled, Download, Pin, Trash2 } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
@@ -338,23 +337,23 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                             title={pinned ? cc.unpinSession : cc.pinSession}
                           >
                             {pinned ? (
-                              <IconBookmarkFilled className="size-3.5" />
+                              <BookmarkFilled className="size-3.5" />
                             ) : (
-                              <IconBookmark className="size-3.5" />
+                              <Bookmark className="size-3.5" />
                             )}
                           </RowIconButton>
                           <RowIconButton
                             onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
                             title={cc.exportSession}
                           >
-                            <IconDownload className="size-3.5" />
+                            <Download className="size-3.5" />
                           </RowIconButton>
                           <RowIconButton
                             className="hover:text-destructive"
                             onClick={() => void onDeleteSession(session.id)}
                             title={cc.deleteSession}
                           >
-                            <IconTrash className="size-3.5" />
+                            <Trash2 className="size-3.5" />
                           </RowIconButton>
                         </div>
                       </li>

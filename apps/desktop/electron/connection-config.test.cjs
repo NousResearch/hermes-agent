@@ -24,10 +24,13 @@ const {
   cookiesHaveLiveSession,
   normAuthMode,
   normalizeRemoteBaseUrl,
+  parseDesktopConnectionConfig,
+  parseJsonWithOptionalBom,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
+  stripJsonBom,
   tokenPreview
 } = require('./connection-config.cjs')
 
@@ -45,6 +48,46 @@ test('normAuthMode coerces to token unless explicitly oauth', () => {
   assert.equal(normAuthMode('token'), 'token')
   assert.equal(normAuthMode(undefined), 'token')
   assert.equal(normAuthMode('weird'), 'token')
+})
+
+test('stripJsonBom removes only a leading UTF-8 BOM decoded as U+FEFF', () => {
+  assert.equal(stripJsonBom('\ufeff{"mode":"remote"}'), '{"mode":"remote"}')
+  assert.equal(stripJsonBom('{"mode":"remote"}'), '{"mode":"remote"}')
+  assert.equal(stripJsonBom('{"value":"\ufeffkept-inside"}'), '{"value":"\ufeffkept-inside"}')
+})
+
+test('parseJsonWithOptionalBom parses BOM-prefixed JSON for readJson callers', () => {
+  assert.deepEqual(parseJsonWithOptionalBom('\ufeff{"schemaVersion":1,"pinnedCommit":"abc1234"}'), {
+    schemaVersion: 1,
+    pinnedCommit: 'abc1234'
+  })
+})
+
+test('parseDesktopConnectionConfig keeps a BOM-prefixed remote config remote', () => {
+  const raw =
+    '\ufeff' +
+    JSON.stringify({
+      mode: 'remote',
+      remote: { url: 'https://gw.example.com', authMode: 'oauth' },
+      profiles: {
+        coder: { mode: 'remote', url: 'https://coder.example.com', authMode: 'token' },
+        'bad name': { mode: 'remote', url: 'https://bad.example.com' }
+      }
+    })
+  const parsed = parseDesktopConnectionConfig(raw)
+
+  assert.equal(parsed.mode, 'remote')
+  assert.deepEqual(parsed.remote, { url: 'https://gw.example.com', authMode: 'oauth' })
+  assert.deepEqual(parsed.profiles, {
+    coder: { mode: 'remote', url: 'https://coder.example.com', authMode: 'token' }
+  })
+})
+
+test('parseDesktopConnectionConfig still falls back to local for malformed JSON', () => {
+  const fallback = { mode: 'local', remote: {}, profiles: {} }
+
+  assert.deepEqual(parseDesktopConnectionConfig(' {"mode":"remote"'), fallback)
+  assert.deepEqual(parseDesktopConnectionConfig(' \ufeff{"mode":"remote"}'), fallback)
 })
 
 // --- profileRemoteOverride ---

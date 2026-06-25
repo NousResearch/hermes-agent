@@ -1827,8 +1827,29 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Per-attempt diagnostic dict for the retry block to consume.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
-        # Use the Anthropic SDK's streaming context manager
-        with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
+        # Defensive: strip Responses-only kwargs (instructions, input, ...)
+        # that can leak in under an api_mode-flip race. The Anthropic SDK
+        # raises a non-retryable TypeError on them, killing the turn. See
+        # #31673 / sanitize_anthropic_kwargs().
+        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+        sanitize_anthropic_kwargs(
+            api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
+        )
+        # Build a FRESH per-request Anthropic client for this streaming
+        # call to prevent connection pool state corruption in gateway runtime.
+        # The shared agent._anthropic_client accumulates stale state in threaded
+        # environments and races with the interrupt handler. See #47658.
+        from agent.anthropic_adapter import build_anthropic_client
+        _per_request_client = build_anthropic_client(
+            agent._anthropic_api_key,
+            getattr(agent, "_anthropic_base_url", None),
+            timeout=get_provider_request_timeout(agent.provider, agent.model),
+            drop_context_1m_beta=bool(
+                getattr(agent, "_oauth_1m_beta_disabled", False)
+            ),
+        )
+        request_client_holder["client"] = _per_request_client
+        with _per_request_client.messages.stream(**api_kwargs) as stream:
             # The Anthropic SDK exposes the raw httpx response on
             # ``stream.response``.  Snapshot diagnostic headers
             # immediately so they survive a stream that dies before the

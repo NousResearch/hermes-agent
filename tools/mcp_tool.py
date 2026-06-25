@@ -1705,6 +1705,41 @@ class ElicitationHandler:
         return ElicitResult(action="decline")
 
 
+def _make_redirect_secret_scrubber(original_url, header_keys):
+    """Build an httpx ``response`` event hook that strips secret headers on a
+    cross-origin redirect.
+
+    httpx only auto-strips the standard ``Authorization`` header (and not even
+    that on an http->https same-host upgrade); it never strips custom auth
+    headers such as ``X-API-Key`` / vendor tokens, which operators configure
+    for remote MCP servers (often ``${VAR}``-resolved secrets). Without this, a
+    server URL that 30x-redirects to a foreign origin exfiltrates every
+    configured secret header. The hook removes ALL caller-supplied header keys
+    whenever the redirect target's (scheme, host, port) differs from the
+    original, so the same shared policy covers the Streamable-HTTP, SSE,
+    deprecated, and preflight-probe transports.
+    """
+    import httpx as _httpx
+
+    orig = original_url if isinstance(original_url, _httpx.URL) else _httpx.URL(original_url)
+    keys = {str(k).lower() for k in (header_keys or ())}
+
+    async def _scrub(response):
+        if not keys:
+            return
+        if response.is_redirect and response.next_request is not None:
+            target = response.next_request.url
+            if (target.scheme, target.host, target.port) != (
+                orig.scheme, orig.host, orig.port,
+            ):
+                hdrs = response.next_request.headers
+                for name in list(hdrs.keys()):
+                    if name.lower() in keys:
+                        del hdrs[name]
+
+    return _scrub
+
+
 # ---------------------------------------------------------------------------
 # Server task -- each MCP server lives in one long-lived asyncio Task
 # ---------------------------------------------------------------------------
@@ -2460,6 +2495,14 @@ class MCPServerTask:
             "verify": ssl_verify,
             "follow_redirects": True,
             "timeout": _httpx.Timeout(timeout),
+            # Strip configured secret headers if the probe is redirected to a
+            # foreign origin — this HEAD/GET is the earliest egress carrying
+            # the configured auth headers, before the SDK handshake.
+            "event_hooks": {
+                "response": [
+                    _make_redirect_secret_scrubber(url, (headers or {}).keys())
+                ]
+            },
         }
         if client_cert is not None:
             client_kwargs["cert"] = client_cert
@@ -2611,16 +2654,23 @@ class MCPServerTask:
                 # behind OAuth 2.1 PKCE work. Previously built but never
                 # forwarded — SSE OAuth would silently fail with 401s.
                 _sse_kwargs["auth"] = _oauth_auth
-            if client_cert is not None or ssl_verify is not True:
-                # SSE transport doesn't expose verify/cert as kwargs, so route
-                # them through an httpx_client_factory that wraps the SDK's
-                # defaults (follow_redirects=True) and adds our TLS settings.
-                # The SDK calls the factory with (headers, auth, timeout); we
-                # forward all of those and layer verify/cert on top.
+            if headers or client_cert is not None or ssl_verify is not True:
+                # SSE transport doesn't expose verify/cert (or a redirect hook)
+                # as kwargs, so route them through an httpx_client_factory that
+                # wraps the SDK's defaults (follow_redirects=True) and adds our
+                # TLS settings plus the cross-origin secret-header scrubber. The
+                # factory must be installed whenever secret headers are present
+                # too — otherwise the default-TLS SSE path has no redirect
+                # scrubbing and custom auth headers leak cross-origin. The SDK
+                # calls the factory with (headers, auth, timeout); we forward
+                # all of those and layer verify/cert/event_hooks on top.
                 import httpx as _httpx_mod
 
                 _cert_for_factory = client_cert
                 _verify_for_factory = ssl_verify
+                _sse_scrubber = _make_redirect_secret_scrubber(
+                    url, (headers or {}).keys()
+                )
 
                 def _mcp_http_client_factory(
                     headers=None, timeout=None, auth=None,
@@ -2628,6 +2678,7 @@ class MCPServerTask:
                     kwargs: dict = {
                         "follow_redirects": True,
                         "verify": _verify_for_factory,
+                        "event_hooks": {"response": [_sse_scrubber]},
                     }
                     if timeout is not None:
                         kwargs["timeout"] = timeout
@@ -2674,23 +2725,19 @@ class MCPServerTask:
             # matching the SDK's own create_mcp_http_client defaults.
             import httpx
 
-            _original_url = httpx.URL(url)
-
-            async def _strip_auth_on_cross_origin_redirect(response):
-                """Strip Authorization headers when redirected to a different origin."""
-                if response.is_redirect and response.next_request:
-                    target = response.next_request.url
-                    if (target.scheme, target.host, target.port) != (
-                        _original_url.scheme, _original_url.host, _original_url.port,
-                    ):
-                        response.next_request.headers.pop("authorization", None)
-                        response.next_request.headers.pop("Authorization", None)
-
+            # Strip ALL configured secret headers (not just Authorization) on a
+            # cross-origin redirect. httpx only auto-strips Authorization;
+            # custom auth headers (X-API-Key, vendor tokens, ${VAR} secrets)
+            # would otherwise be forwarded to the redirect target origin.
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
-                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
+                "event_hooks": {
+                    "response": [
+                        _make_redirect_secret_scrubber(url, (headers or {}).keys())
+                    ]
+                },
             }
             if headers:
                 client_kwargs["headers"] = headers
@@ -2734,6 +2781,52 @@ class MCPServerTask:
             }
             if _oauth_auth is not None:
                 _http_kwargs["auth"] = _oauth_auth
+            # Install the cross-origin secret-header scrubber when this SDK
+            # build exposes httpx_client_factory (feature-detected for version
+            # robustness — without it the deprecated client follows redirects
+            # with the configured secret headers attached and no scrubbing).
+            # When a factory is supplied the SDK builds the client itself, so
+            # verify/cert move into the factory.
+            try:
+                import inspect as _inspect
+                import httpx as _httpx_dep
+
+                if "httpx_client_factory" in _inspect.signature(
+                    streamablehttp_client
+                ).parameters:
+                    _dep_scrubber = _make_redirect_secret_scrubber(
+                        url, (headers or {}).keys()
+                    )
+                    _dep_cert = client_cert
+                    _dep_verify = ssl_verify
+
+                    def _dep_factory(headers=None, timeout=None, auth=None):
+                        kwargs: dict = {
+                            "follow_redirects": True,
+                            "verify": _dep_verify,
+                            "event_hooks": {"response": [_dep_scrubber]},
+                        }
+                        kwargs["timeout"] = (
+                            timeout
+                            if timeout is not None
+                            else _httpx_dep.Timeout(float(connect_timeout), read=300.0)
+                        )
+                        if headers is not None:
+                            kwargs["headers"] = headers
+                        if auth is not None:
+                            kwargs["auth"] = auth
+                        if _dep_cert is not None:
+                            kwargs["cert"] = _dep_cert
+                        return _httpx_dep.AsyncClient(**kwargs)
+
+                    _http_kwargs["httpx_client_factory"] = _dep_factory
+                    _http_kwargs.pop("verify", None)  # factory owns verify now
+            except Exception:
+                logger.debug(
+                    "MCP '%s': could not install deprecated-path redirect scrubber",
+                    self.name,
+                    exc_info=True,
+                )
             async with streamablehttp_client(url, **_http_kwargs) as (
                 read_stream, write_stream, _get_session_id,
             ):

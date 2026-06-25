@@ -15555,6 +15555,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     pass
 
             if _cache_lock and _cache is not None:
+                _ev_agent = None
                 with _cache_lock:
                     cached = _cache.get(session_key)
                     if cached and cached[1] == _sig:
@@ -15576,8 +15577,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                             evicted = self._agent_cache.pop(session_key, None)
                             _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
-                            if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
-                                self._cleanup_agent_resources(_ev_agent)
                         else:
                             agent = cached[0]
                             # Refresh LRU order so the cap enforcement evicts
@@ -15592,6 +15591,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # (cached agent may have been created with old config)
                             agent.max_iterations = max_iterations
                             logger.debug("Reusing cached agent for session %s", session_key)
+
+                # Cleanup outside the lock — _cleanup_agent_resources can be
+                # slow (shutdown_memory_provider, close async clients) and
+                # must not stall the event loop while _agent_cache_lock is
+                # held.  Matches the discipline in _evict_cached_agent() and
+                # _sweep_idle_cached_agents().  (#52197)
+                if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
+                    try:
+                        self._cleanup_agent_resources(_ev_agent)
+                    except Exception:
+                        pass
 
             if agent is None:
                 # Config changed or first message — create fresh agent

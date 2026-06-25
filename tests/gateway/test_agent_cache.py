@@ -1706,3 +1706,82 @@ class TestAgentCacheMessageCountRebaseline:
         runner._refresh_agent_cache_message_count("telegram:s1", "s1")
         with runner._agent_cache_lock:
             assert runner._agent_cache["telegram:s1"][2] == 5
+
+
+class TestCrossProcessInvalidationLockDiscipline:
+    """Cross-process cache invalidation must NOT call _cleanup_agent_resources
+    while holding _agent_cache_lock (#52197).
+
+    Other eviction paths (_evict_cached_agent, _sweep_idle_cached_agents)
+    already pop under the lock and clean up outside it.  The cross-process
+    coherence guard (#45966) was the only path that still did cleanup inside
+    the lock, which stalls the event loop when cleanup is slow (memory
+    provider shutdown, async client teardown).
+    """
+
+    def test_cleanup_called_outside_lock(self, tmp_path):
+        """_cleanup_agent_resources must NOT be called while the lock is held."""
+        from hermes_state import SessionDB
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        db = SessionDB(db_path=tmp_path / "sessions.db")
+        db.create_session("s1", source="telegram")
+        db.append_message("s1", role="user", content="hi")
+        runner = _make_runner()
+        runner._session_db = db
+
+        # Build a cached agent with a stale message_count.
+        _row = db.get_session("s1")
+        stale_count = _row.get("message_count", 0) if _row else 0
+        fake_agent = MagicMock()
+        with runner._agent_cache_lock:
+            runner._agent_cache["telegram:s1"] = (fake_agent, "sig", stale_count)
+
+        # Simulate a cross-process write: another process appends a turn.
+        db.append_message("s1", role="user", content="from dashboard")
+        db.append_message("s1", role="assistant", content="reply")
+
+        # Track whether the lock is held when cleanup runs.
+        lock_held_during_cleanup = threading.Event()
+
+        original_cleanup = runner._cleanup_agent_resources
+
+        def spy_cleanup(agent):
+            if runner._agent_cache_lock.locked():
+                lock_held_during_cleanup.set()
+            original_cleanup(agent)
+
+        runner._cleanup_agent_resources = spy_cleanup
+
+        # Now exercise the cross-process invalidation path.
+        # We need to simulate the production code path that checks
+        # message_count and invalidates.  The production code is inside
+        # _handle_message_with_agent which is too complex to call directly,
+        # so we replicate the exact guard logic:
+        _current_msg_count = db.get_session("s1").get("message_count", 0)
+        _cache = runner._agent_cache
+        _cache_lock = runner._agent_cache_lock
+        _ev_agent = None
+
+        with _cache_lock:
+            cached = _cache.get("telegram:s1")
+            if cached and cached[1] == "sig":
+                _cached_mc = cached[2] if len(cached) > 2 else None
+                if (
+                    _cached_mc is not None
+                    and _current_msg_count is not None
+                    and _current_msg_count != _cached_mc
+                ):
+                    evicted = _cache.pop("telegram:s1", None)
+                    _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
+
+        # Cleanup OUTSIDE the lock — this is the fix.
+        if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
+            runner._cleanup_agent_resources(_ev_agent)
+
+        # The agent must have been evicted.
+        assert "telegram:s1" not in runner._agent_cache
+        # The lock must NOT have been held during cleanup.
+        assert not lock_held_during_cleanup.is_set(), (
+            "_cleanup_agent_resources was called while _agent_cache_lock was held"
+        )

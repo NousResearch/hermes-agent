@@ -1,0 +1,20 @@
+name: Excel Broker Tests
+
+on:
+  push:
+    paths:
+      - "apps/excel/broker/**"
+  pull_request:
+    paths:
+      - "apps/excel/broker/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run broker unit tests
+        run: node --test apps/excel/broker/*.test.mjs

@@ -68,6 +68,15 @@ def _budget_for_agent(agent) -> BudgetConfig:
 # Mirrors the constant in ``run_agent`` for tests/imports that look here.
 _MAX_TOOL_WORKERS = 8
 
+# Hard wall-clock deadline for a single concurrent tool batch. A tool with no
+# internal timeout (e.g. read_file shelling out to a wedged terminal backend)
+# can otherwise hang the whole agent run indefinitely: the batch heartbeat keeps
+# resetting the gateway's idle clock, so the idle-based inactivity monitor never
+# fires. This deadline is measured from batch start and is independent of idle,
+# so it cannot be defeated by the heartbeat. Set HERMES_TOOL_BATCH_TIMEOUT=0 to
+# disable (not recommended).
+_TOOL_BATCH_TIMEOUT_S = float(os.environ.get("HERMES_TOOL_BATCH_TIMEOUT", "600"))
+
 
 def _flush_session_db_after_tool_progress(
     agent,
@@ -606,9 +615,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if block_result is None
         ]
         futures = []
+        _batch_timed_out = False
         if runnable_calls:
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Manage the executor manually (not via ``with``) so we can shut it
+            # down WITHOUT waiting when we abandon a wedged worker. The ``with``
+            # form calls shutdown(wait=True) on exit, which would join the hung
+            # thread and re-introduce the indefinite block we are fixing.
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+            _hung_workers = False
+            try:
                 for submit_index, (i, tc, name, args) in enumerate(runnable_calls):
                     # Propagate the agent turn's ContextVars (e.g.
                     # _approval_session_key) AND thread-local approval/sudo
@@ -674,12 +690,42 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             )
                         for f in not_done:
                             f.cancel()
+                        # An already-running tool may not be cancellable; record
+                        # that we are abandoning workers so the executor is shut
+                        # down without joining them.
+                        _hung_workers = True
                         # Give already-running tools a moment to notice the
                         # per-thread interrupt signal and exit gracefully.
                         concurrent.futures.wait(not_done, timeout=3.0)
                         break
 
                     _conc_elapsed = int(time.time() - _conc_start)
+
+                    # Hard wall-clock deadline, measured from batch start and
+                    # independent of the idle clock, so the heartbeat below
+                    # cannot keep a wedged tool alive forever. Abandon the
+                    # unfinished workers; the post-execution loop fills a timeout
+                    # result for each so the turn can proceed.
+                    if _TOOL_BATCH_TIMEOUT_S > 0 and _conc_elapsed >= _TOOL_BATCH_TIMEOUT_S:
+                        _still_running = [
+                            parsed_calls[futures.index(f)][1]
+                            for f in not_done
+                            if f in futures
+                        ]
+                        logger.error(
+                            "Concurrent tool batch exceeded %ss wall-clock deadline; "
+                            "abandoning %d unfinished tool(s): %s",
+                            _TOOL_BATCH_TIMEOUT_S,
+                            len(not_done),
+                            ", ".join(_still_running[:3]),
+                        )
+                        for f in not_done:
+                            f.cancel()
+                        _batch_timed_out = True
+                        _hung_workers = True
+                        concurrent.futures.wait(not_done, timeout=3.0)
+                        break
+
                     # Heartbeat every ~30s (6 × 5s poll intervals)
                     if _conc_elapsed > 0 and _conc_elapsed % 30 < 6:
                         _still_running = [
@@ -691,6 +737,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             f"concurrent tools running ({_conc_elapsed}s, "
                             f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
                         )
+            finally:
+                # If we abandoned not-done workers (interrupt or deadline), shut
+                # down WITHOUT waiting so a wedged thread cannot block the turn;
+                # cancel_futures drops any that never started. Otherwise join
+                # cleanly so completed workers are reaped.
+                executor.shutdown(wait=not _hung_workers, cancel_futures=True)
     finally:
         if spinner:
             # Build a summary message for the spinner stop
@@ -716,6 +768,23 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     status="cancelled",
                     error_type="keyboard_interrupt",
                     error_message="Tool execution cancelled by user interrupt",
+                    middleware_trace=list(middleware_trace),
+                )
+            elif _batch_timed_out:
+                function_result = (
+                    f"Error executing tool '{name}': exceeded the "
+                    f"{_TOOL_BATCH_TIMEOUT_S:.0f}s tool execution deadline and was abandoned"
+                )
+                _emit_terminal_post_tool_call(
+                    agent,
+                    function_name=name,
+                    function_args=args,
+                    result=function_result,
+                    effective_task_id=effective_task_id,
+                    tool_call_id=getattr(tc, "id", "") or "",
+                    status="error",
+                    error_type="tool_timeout",
+                    error_message=function_result,
                     middleware_trace=list(middleware_trace),
                 )
             else:

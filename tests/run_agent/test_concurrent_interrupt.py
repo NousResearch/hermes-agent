@@ -143,3 +143,49 @@ def test_clear_interrupt_clears_worker_tids(monkeypatch):
         "worker tid — stale interrupt can leak into the next turn"
     )
 
+
+def test_concurrent_tool_batch_hard_deadline_abandons_wedged_tool(monkeypatch):
+    """A tool with no internal timeout (e.g. read_file shelling out to a wedged
+    backend) must not hang the whole batch forever. The wall-clock deadline
+    abandons the unfinished worker and the turn proceeds with a timeout result,
+    instead of blocking on the executor join (the ~11h production hang)."""
+    import agent.tool_executor as te
+
+    agent = _make_agent(monkeypatch)
+    # This test runs a tool through the full executor path (the other tests
+    # short-circuit at the preflight interrupt), so stub the guardrail gate to
+    # permit execution.
+    agent._tool_guardrails = MagicMock()
+    agent._tool_guardrails.before_call.return_value = MagicMock(allows_execution=True)
+    agent._tool_result_content_for_active_model = lambda name, content, *a, **kw: content
+    agent._subdirectory_hints.check_tool_call.return_value = ""  # no extra hint appended
+    # Short deadline so the test is fast (the 5s poll is the real granularity).
+    monkeypatch.setattr(te, "_TOOL_BATCH_TIMEOUT_S", 1.0)
+
+    started = threading.Event()
+    release = threading.Event()  # never set during the assert → tool stays wedged
+
+    def _wedged_tool(*args, **kwargs):
+        started.set()
+        release.wait(timeout=30)  # would block the batch ~30s without the deadline
+        return '{"ok": true}'
+
+    agent._invoke_tool = MagicMock(side_effect=_wedged_tool)
+
+    msg = _FakeAssistantMsg([_FakeToolCall("slow_tool", call_id="tc_slow")])
+    messages = []
+
+    t0 = time.time()
+    try:
+        agent._execute_tool_calls_concurrent(msg, messages, "test_task")
+        elapsed = time.time() - t0
+
+        # Must return promptly (deadline + ~3s grace + one 5s poll), NOT ~30s,
+        # and crucially must not block joining the still-wedged worker.
+        assert elapsed < 12, f"batch did not honor the deadline (took {elapsed:.1f}s)"
+        assert started.is_set(), "the tool never actually started"
+        assert len(messages) == 1
+        assert "deadline" in messages[0]["content"].lower(), messages[0]["content"]
+    finally:
+        release.set()  # let the abandoned worker unwind so the test process is clean
+

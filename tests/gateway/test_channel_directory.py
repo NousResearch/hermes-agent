@@ -15,6 +15,7 @@ from gateway.channel_directory import (
     _apply_channel_aliases,
     _build_from_sessions,
     _build_slack,
+    _build_telegram,
 )
 
 
@@ -495,6 +496,125 @@ class TestBuildSlack:
             entries = asyncio.run(_build_slack(_make_slack_adapter({"T1": client})))
 
         assert entries == []
+
+
+class TestBuildTelegram:
+    """_build_telegram merges configured DM topics with session entries."""
+
+    def _make_adapter(self, dm_topics_config):
+        return SimpleNamespace(_dm_topics_config=dm_topics_config)
+
+    def _write_sessions(self, tmp_path, sessions_data):
+        sessions_path = tmp_path / "sessions" / "sessions.json"
+        sessions_path.parent.mkdir(parents=True)
+        sessions_path.write_text(json.dumps(sessions_data))
+
+    def test_configured_topics_appear_without_sessions(self, tmp_path):
+        """DM topics with thread_ids appear even when no session entries exist."""
+        from gateway.channel_directory import _build_telegram
+
+        adapter = self._make_adapter([{
+            "chat_id": -1001,
+            "topics": [
+                {"name": "General", "thread_id": 306210},
+                {"name": "SmartHome", "thread_id": 306211},
+            ],
+        }])
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_telegram(adapter)
+
+        ids = {e["id"] for e in entries}
+        assert "-1001:306210" in ids
+        assert "-1001:306211" in ids
+        names = {e["name"] for e in entries}
+        assert "General" in names
+        assert "SmartHome" in names
+
+    def test_session_entries_still_included(self, tmp_path):
+        """Session-discovered entries are preserved alongside config topics."""
+        from gateway.channel_directory import _build_telegram
+
+        self._write_sessions(tmp_path, {
+            "s1": {
+                "origin": {"platform": "telegram", "chat_id": "-1001", "chat_name": "Chat"},
+                "chat_type": "group",
+            },
+        })
+        adapter = self._make_adapter([{
+            "chat_id": -1001,
+            "topics": [{"name": "General", "thread_id": 306210}],
+        }])
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_telegram(adapter)
+
+        ids = {e["id"] for e in entries}
+        assert "-1001" in ids  # from session
+        assert "-1001:306210" in ids  # from config
+
+    def test_no_duplicate_when_session_already_has_topic(self, tmp_path):
+        """Config topics that already exist in session entries are not duplicated."""
+        from gateway.channel_directory import _build_telegram
+
+        self._write_sessions(tmp_path, {
+            "topic_s": {
+                "origin": {
+                    "platform": "telegram",
+                    "chat_id": "-1001",
+                    "chat_name": "Chat",
+                    "thread_id": "306210",
+                },
+                "chat_type": "group",
+            },
+        })
+        adapter = self._make_adapter([{
+            "chat_id": -1001,
+            "topics": [{"name": "General", "thread_id": 306210}],
+        }])
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_telegram(adapter)
+
+        count = sum(1 for e in entries if e["id"] == "-1001:306210")
+        assert count == 1
+
+    def test_topics_without_thread_id_skipped(self, tmp_path):
+        """Topics that haven't been created yet (no thread_id) are skipped."""
+        from gateway.channel_directory import _build_telegram
+
+        adapter = self._make_adapter([{
+            "chat_id": -1001,
+            "topics": [
+                {"name": "General", "thread_id": 306210},
+                {"name": "Pending"},  # no thread_id
+            ],
+        }])
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_telegram(adapter)
+
+        ids = {e["id"] for e in entries}
+        assert "-1001:306210" in ids
+        assert len(entries) == 1
+
+    def test_no_dm_topics_config_attribute(self, tmp_path):
+        """Adapter without _dm_topics_config falls back to session-only."""
+        from gateway.channel_directory import _build_telegram
+
+        self._write_sessions(tmp_path, {
+            "s1": {
+                "origin": {"platform": "telegram", "chat_id": "123", "chat_name": "Alice"},
+                "chat_type": "dm",
+            },
+        })
+        adapter = SimpleNamespace()  # no _dm_topics_config
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_telegram(adapter)
+
+        assert len(entries) == 1
+        assert entries[0]["id"] == "123"
 
 
 class TestChannelAliases:

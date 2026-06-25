@@ -124,6 +124,8 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms["discord"] = _build_discord(adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = await _build_slack(adapter)
+            elif platform == Platform.TELEGRAM:
+                platforms["telegram"] = _build_telegram(adapter)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
@@ -260,6 +262,41 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
             seen_ids.add(entry.get("id"))
 
     return channels
+
+
+def _build_telegram(adapter) -> List[Dict[str, str]]:
+    """Include configured DM topics alongside session-discovered entries.
+
+    Reads ``extra.dm_topics`` from the Telegram adapter config so that
+    configured topics always appear in the channel directory, even when
+    they have no active session entries in sessions.json.
+    """
+    entries = _build_from_sessions("telegram")
+    seen_ids = {e["id"] for e in entries}
+
+    dm_topics_config = getattr(adapter, "_dm_topics_config", None) or []
+    for chat_entry in dm_topics_config:
+        chat_id = chat_entry.get("chat_id")
+        if chat_id is None:
+            continue
+        chat_id_str = str(chat_id)
+        for topic in chat_entry.get("topics", []):
+            topic_name = topic.get("name", "")
+            thread_id = topic.get("thread_id")
+            if not thread_id:
+                continue
+            entry_id = f"{chat_id_str}:{thread_id}"
+            if entry_id in seen_ids:
+                continue
+            seen_ids.add(entry_id)
+            entries.append({
+                "id": entry_id,
+                "name": topic_name,
+                "type": "dm",
+                "thread_id": str(thread_id),
+            })
+
+    return entries
 
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:

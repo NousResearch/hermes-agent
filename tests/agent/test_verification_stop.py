@@ -7,6 +7,7 @@ from agent.verification_evidence import (
     record_terminal_result,
 )
 from agent.verification_stop import (
+    _is_non_code_path,
     build_verify_on_stop_nudge,
     verify_on_stop_enabled,
 )
@@ -163,3 +164,82 @@ def test_nudge_attempts_are_bounded(tmp_path, monkeypatch):
         attempts=2,
         max_attempts=2,
     ) is None
+
+
+# --- Non-code path filtering (issue #52612) ---
+
+
+def test_no_nudge_when_only_non_code_paths(tmp_path, monkeypatch):
+    """Editing docs, gitignore, LICENSE etc. should NOT trigger the nudge."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    mark_workspace_edited(
+        session_id="s1",
+        cwd=tmp_path,
+        paths=[
+            str(tmp_path / "README.md"),
+            str(tmp_path / ".gitignore"),
+            str(tmp_path / "LICENSE"),
+            str(tmp_path / ".github" / "workflows" / "ci.yml"),
+        ],
+    )
+
+    assert build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[
+            str(tmp_path / "README.md"),
+            str(tmp_path / ".gitignore"),
+            str(tmp_path / "LICENSE"),
+            str(tmp_path / ".github" / "workflows" / "ci.yml"),
+        ],
+    ) is None
+
+
+def test_nudge_still_fires_for_mixed_code_and_non_code(tmp_path, monkeypatch):
+    """Editing code + docs together should still trigger the nudge."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    _node_project(tmp_path)
+    code_path = str(tmp_path / "src" / "app.ts")
+    mark_workspace_edited(
+        session_id="s1", cwd=tmp_path, paths=[code_path],
+    )
+
+    nudge = build_verify_on_stop_nudge(
+        session_id="s1",
+        changed_paths=[code_path, str(tmp_path / "README.md")],
+    )
+
+    assert nudge is not None
+    assert "fresh passing verification evidence" in nudge
+
+
+def test_is_non_code_path_markdown():
+    assert _is_non_code_path("README.md") is True
+    assert _is_non_code_path("/repo/docs/architecture.rst") is True
+    assert _is_non_code_path("notes.txt") is True
+
+
+def test_is_non_code_path_git_metadata():
+    assert _is_non_code_path(".gitignore") is True
+    assert _is_non_code_path(".gitattributes") is True
+    assert _is_non_code_path(".gitmodules") is True
+
+
+def test_is_non_code_path_license():
+    assert _is_non_code_path("LICENSE") is True
+    assert _is_non_code_path("LICENCE") is True
+    assert _is_non_code_path("COPYING") is True
+
+
+def test_is_non_code_path_github_dir():
+    assert _is_non_code_path(".github/workflows/ci.yml") is True
+    assert _is_non_code_path(".github/ISSUE_TEMPLATE/bug.yml") is True
+    assert _is_non_code_path(".github/CODEOWNERS") is True
+
+
+def test_is_non_code_path_code_files_not_filtered():
+    assert _is_non_code_path("src/app.ts") is False
+    assert _is_non_code_path("agent/verification_stop.py") is False
+    assert _is_non_code_path("package.json") is False
+    assert _is_non_code_path("tsconfig.json") is False
+    assert _is_non_code_path("pyproject.toml") is False

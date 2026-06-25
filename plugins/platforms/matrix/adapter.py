@@ -2456,6 +2456,24 @@ class MatrixAdapter(BasePlatformAdapter):
             )
             return False
 
+    def _is_media_download_authorized(self, sender: str) -> bool:
+        """Whether to fetch+cache attacker-supplied media bytes for *sender*.
+
+        Gates the network fetch and host cache write that currently happen
+        BEFORE the gateway's pairing/allowlist runs. Open by default (no
+        ``MATRIX_ALLOWED_USERS`` configured) to preserve the adapter's existing
+        intake posture where the gateway handles pairing downstream; when an
+        operator sets an allowlist (or ``GATEWAY_ALLOW_ALL_USERS``) it is
+        honored here too so unauthorized senders can't drive pre-auth
+        downloads. Unauthorized senders still reach the gateway via the
+        HTTP-fallback envelope, so pairing/denial is unchanged.
+        """
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        if not self._allowed_user_ids:
+            return True
+        return bool(sender) and sender in self._allowed_user_ids
+
     async def _on_room_message(self, event: Any) -> None:
         """Handle incoming room message events (text, media)."""
         room_id = str(getattr(event, "room_id", ""))
@@ -2873,9 +2891,22 @@ class MatrixAdapter(BasePlatformAdapter):
         should_cache_locally = msg_type in {
             MessageType.PHOTO, MessageType.AUDIO, MessageType.VIDEO, MessageType.DOCUMENT,
         } or is_voice_message or is_encrypted_media
-        if should_cache_locally and url:
+        if should_cache_locally and url and self._is_media_download_authorized(sender):
             try:
                 file_bytes = await self._client.download_media(ContentURI(url))
+                if file_bytes is not None and len(file_bytes) > self._max_media_bytes:
+                    # The pre-download check trusts the attacker-declared
+                    # content_info.size; enforce the cap against the REAL
+                    # downloaded length too so a lying/absent size can't smuggle
+                    # an oversized payload into memory/cache.
+                    logger.warning(
+                        "[Matrix] Discarding inbound media %s: real size %d "
+                        "exceeds limit %d bytes",
+                        event_id,
+                        len(file_bytes),
+                        self._max_media_bytes,
+                    )
+                    file_bytes = None
                 if file_bytes is not None:
                     if is_encrypted_media:
                         from mautrix.crypto.attachments import decrypt_attachment
@@ -2991,13 +3022,55 @@ class MatrixAdapter(BasePlatformAdapter):
 
         await self.handle_message(msg_event)
 
+    def _invite_auto_join_allowed(self, room_id: str, inviter: str) -> bool:
+        """Whether to auto-join an invite given the configured allowlists.
+
+        Open by default (no allowlist configured) to preserve existing
+        behavior. When ``MATRIX_ALLOWED_ROOMS`` or ``MATRIX_ALLOWED_USERS`` is
+        set (and ``GATEWAY_ALLOW_ALL_USERS`` is not), only auto-join rooms or
+        inviters the operator allowlisted — otherwise an arbitrary external
+        user could DM-invite the bot, get auto-joined, and (because DMs are
+        exempt from the room allowlist) manufacture an authorized-looking
+        context for later message/media processing.
+        """
+        if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}:
+            return True
+        if not self._allowed_user_ids and not self._allowed_room_ids:
+            return True
+        if room_id and room_id in self._allowed_room_ids:
+            return True
+        return bool(inviter) and inviter in self._allowed_user_ids
+
+    @staticmethod
+    def _invite_state_sender(invite_entry: Any) -> str:
+        """Best-effort extraction of the inviter from a sync invite entry."""
+        try:
+            events = (invite_entry or {}).get("invite_state", {}).get("events", [])
+            for ev in events:
+                if ev.get("type") == "m.room.member" and (
+                    ev.get("content") or {}
+                ).get("membership") == "invite":
+                    return str(ev.get("sender", "") or "")
+        except Exception:
+            pass
+        return ""
+
     async def _on_invite(self, event: Any) -> None:
         """Auto-join rooms when invited, recording DM rooms in m.direct."""
 
         room_id = str(getattr(event, "room_id", ""))
         content = getattr(event, "content", None)
         is_direct = bool(getattr(content, "is_direct", False))
-        inviter = str(getattr(event, "sender", ""))
+        inviter = str(getattr(event, "sender", "") or "")
+
+        if not self._invite_auto_join_allowed(room_id, inviter):
+            logger.info(
+                "Matrix: declining invite to %s from unauthorized inviter %s "
+                "(not in MATRIX_ALLOWED_ROOMS / MATRIX_ALLOWED_USERS)",
+                room_id,
+                inviter or "<unknown>",
+            )
+            return
 
         # Only auto-join when the inviter is authorized. Without this, any
         # federated Matrix user could invite the bot into arbitrary rooms,
@@ -3102,6 +3175,15 @@ class MatrixAdapter(BasePlatformAdapter):
             return
         for room_id in invites:
             if room_id in self._joined_rooms:
+                continue
+            inviter = self._invite_state_sender(invites.get(room_id))
+            if not self._invite_auto_join_allowed(str(room_id), inviter):
+                logger.info(
+                    "Matrix: declining pending invite to %s from unauthorized "
+                    "inviter %s",
+                    room_id,
+                    inviter or "<unknown>",
+                )
                 continue
             logger.info("Matrix: reconciling pending invite for %s", room_id)
             self._schedule_invite_join(str(room_id))

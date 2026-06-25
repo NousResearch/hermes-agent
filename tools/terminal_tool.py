@@ -324,12 +324,17 @@ _SUDO_WRONG_PASSWORD_MARKERS = (
     "sudo: incorrect password attempt",
     "sudo: maximum 3 incorrect authentication attempts",
     "sudo: 3 incorrect password attempts",
-    # Real `sudo -S` summarises a rejected piped password with a counted
-    # line, e.g. "sudo: 1 incorrect password attempt" (or "... 3 incorrect
-    # password attempts"). None of the fixed-count markers above match a
-    # single piped attempt, so also match the count-independent core — it is
-    # a substring of both the singular and plural forms.
-    "incorrect password attempt",
+)
+
+# Real `sudo -S` summarises a rejected piped password with a counted line,
+# e.g. "sudo: 1 incorrect password attempt" or "sudo: 3 incorrect password
+# attempts". None of the fixed-count markers above match an arbitrary count
+# (e.g. a single piped attempt), so match the `sudo:`-anchored counted form
+# explicitly. The `sudo:` prefix is required so ordinary command output that
+# merely contains the phrase "incorrect password attempt" (e.g. a build log)
+# is NOT mistaken for a sudo auth failure and does not clear the cache.
+_SUDO_COUNTED_WRONG_PASSWORD_RE = re.compile(
+    r"sudo:\s+\d+\s+incorrect password attempts?\b"
 )
 
 
@@ -338,7 +343,9 @@ def _sudo_wrong_password_failure(output: str) -> bool:
     if not output:
         return False
     lowered = output.lower()
-    return any(marker in lowered for marker in _SUDO_WRONG_PASSWORD_MARKERS)
+    if any(marker in lowered for marker in _SUDO_WRONG_PASSWORD_MARKERS):
+        return True
+    return _SUDO_COUNTED_WRONG_PASSWORD_RE.search(lowered) is not None
 
 
 def _invalidate_cached_sudo_on_auth_failure(

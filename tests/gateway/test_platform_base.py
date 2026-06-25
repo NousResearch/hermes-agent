@@ -1009,6 +1009,53 @@ class TestMediaDeliveryDefaultMode:
         out = BasePlatformAdapter.filter_local_delivery_paths([str(notes)])
         assert out == [str(notes.resolve())]
 
+    def test_inbound_document_cache_file_is_not_deliverable(self, tmp_path, monkeypatch):
+        """Uploaded documents are readable by the agent but must not echo back
+        as native attachments when the model repeats their cache path.
+        """
+        self._patch_roots(monkeypatch)
+
+        doc_cache = tmp_path / "doc_cache"
+        doc_cache.mkdir()
+        doc = doc_cache / "doc_abc_notes.md"
+        doc.write_text("# uploaded by user\n")
+        monkeypatch.setattr(
+            "gateway.platforms.base.DOCUMENT_CACHE_DIR",
+            doc_cache,
+        )
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(doc)) is None
+        assert BasePlatformAdapter.filter_local_delivery_paths([str(doc)]) == []
+
+    def test_inbound_document_cache_media_tag_is_not_deliverable(self, tmp_path, monkeypatch):
+        """The same guard applies when the model emits an explicit MEDIA tag."""
+        self._patch_roots(monkeypatch)
+
+        doc_cache = tmp_path / "doc_cache"
+        doc_cache.mkdir()
+        doc = doc_cache / "doc_abc_report.pdf"
+        doc.write_bytes(b"%PDF-1.4")
+        monkeypatch.setattr(
+            "gateway.platforms.base.DOCUMENT_CACHE_DIR",
+            doc_cache,
+        )
+
+        media, _ = BasePlatformAdapter.extract_media(f"MEDIA:{doc}")
+        assert media == [(str(doc), False)]
+        assert BasePlatformAdapter.filter_media_delivery_paths(media) == []
+
+    def test_temp_inbound_document_cache_file_is_not_deliverable(self, tmp_path, monkeypatch):
+        """Container/temp Hermes document caches use /tmp/hermes*/cache/documents."""
+        self._patch_roots(monkeypatch)
+        monkeypatch.setenv("TMPDIR", str(tmp_path))
+
+        doc_cache = tmp_path / "hermes-test-run" / "cache" / "documents"
+        doc_cache.mkdir(parents=True)
+        doc = doc_cache / "doc_abc_upload.md"
+        doc.write_text("# uploaded by user\n")
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(doc)) is None
+
     def test_root_home_deliverable_is_accepted(self, tmp_path, monkeypatch):
         """The motivating bug (#38106): a root-run gateway has ``$HOME=/root``,
         which is on the system-prefix denylist. A plain deliverable the agent

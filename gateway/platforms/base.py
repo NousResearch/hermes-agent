@@ -15,6 +15,7 @@ import re
 import socket as _socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -1010,6 +1011,24 @@ _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS = (
 )
 
 
+def _media_delivery_inbound_document_roots() -> List[Path]:
+    """Return inbound document-cache roots that must never be re-uploaded.
+
+    Uploaded chat documents are cached here so the agent can inspect them.
+    They are not agent-produced deliverables. If the model repeats one of
+    these paths in its final answer, the bare-path attachment detector must not
+    echo the user's original file back into the chat.
+    """
+    roots = [
+        DOCUMENT_CACHE_DIR,
+        _HERMES_HOME / "document_cache",
+        _HERMES_HOME / "cache" / "documents",
+    ]
+    tmp = Path(os.environ.get("TMPDIR") or tempfile.gettempdir())
+    roots.append(tmp / "hermes" / "cache" / "documents")
+    return roots
+
+
 def _media_delivery_allowed_roots() -> List[Path]:
     """Return roots from which model-emitted local media may be delivered."""
     roots = [Path(root) for root in MEDIA_DELIVERY_SAFE_ROOTS]
@@ -1108,6 +1127,31 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
     return False
 
 
+def _path_under_inbound_document_cache(resolved: Path) -> bool:
+    """Return True when ``resolved`` is an inbound document-cache file."""
+    for root in _media_delivery_inbound_document_roots():
+        try:
+            resolved_root = root.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if _path_is_within(resolved, resolved_root):
+            return True
+    try:
+        tmp_root = Path(os.environ.get("TMPDIR") or tempfile.gettempdir()).resolve(strict=False)
+        rel = resolved.relative_to(tmp_root)
+        parts = rel.parts
+        if (
+            len(parts) >= 4
+            and parts[0].startswith("hermes")
+            and parts[1] == "cache"
+            and parts[2] == "documents"
+        ):
+            return True
+    except (OSError, RuntimeError, ValueError):
+        pass
+    return False
+
+
 def _file_is_recently_produced(resolved: Path, window_seconds: float) -> bool:
     """Return True if the file's mtime is within ``window_seconds`` of now.
 
@@ -1177,6 +1221,9 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
         return None
 
     if not resolved.is_file():
+        return None
+
+    if _path_under_inbound_document_cache(resolved):
         return None
 
     # Cache / operator allowlist is always honored — these are unconditionally

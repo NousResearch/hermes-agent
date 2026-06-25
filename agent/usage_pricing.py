@@ -6,8 +6,17 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
-from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
+from agent.model_metadata import (
+    fetch_endpoint_model_metadata,
+    fetch_model_metadata,
+    is_local_endpoint,
+)
 from utils import base_url_host_matches
+
+# Provider ids that always denote a self-hosted/local model server (no per-token
+# cost), regardless of base_url. Loopback/LAN/Tailscale base_urls are detected
+# separately via is_local_endpoint().
+_LOCAL_PROVIDERS = frozenset({"custom", "local", "lmstudio", "ollama", "vllm", "llamacpp"})
 
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
@@ -611,7 +620,7 @@ def resolve_billing_route(
     # the OpenAI-compat endpoint requires so the pricing key matches.
     if provider_name == "vertex" or base_url_host_matches(base_url or "", "aiplatform.googleapis.com"):
         return BillingRoute(provider="gemini", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
-    if provider_name in {"custom", "local"} or (base and "localhost" in base):
+    if provider_name in _LOCAL_PROVIDERS or (base_url and is_local_endpoint(base_url)):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
 

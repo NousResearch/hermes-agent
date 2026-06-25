@@ -223,6 +223,14 @@ def cmd_gateway_enroll(args) -> None:
     if explicit_url:
         to_write["GATEWAY_RELAY_URL"] = explicit_url.rstrip("/")
 
+    # Phase 5 §5.2: persist the wake URL so self_provision_relay forwards it to
+    # the connector (which pokes it to wake this gateway when buffered work
+    # arrives while it's idle). Optional — omitted ⇒ the connector can't wake it,
+    # but the gateway still drains on its next reconnect.
+    explicit_wake_url = (getattr(args, "wake_url", None) or "").strip()
+    if explicit_wake_url:
+        to_write["GATEWAY_RELAY_WAKE_URL"] = explicit_wake_url.rstrip("/")
+
     for key, value in to_write.items():
         if not value:
             continue
@@ -242,6 +250,8 @@ def cmd_gateway_enroll(args) -> None:
     print("    GATEWAY_RELAY_DELIVERY_KEY=<hidden>")
     if explicit_url:
         print(f"    GATEWAY_RELAY_URL={explicit_url.rstrip('/')}")
+    if explicit_wake_url:
+        print(f"    GATEWAY_RELAY_WAKE_URL={explicit_wake_url.rstrip('/')}")
     print()
     print(
         "  The gateway now authenticates its relay WS upgrade with the per-gateway\n"

@@ -17,6 +17,41 @@ def test_sidecar_applies_spectrum_patch_before_importing_sdk() -> None:
     assert index.index("patchSpectrumTs();") < index.index('await import("spectrum-ts")')
 
 
+def test_sidecar_healthz_reports_stream_health() -> None:
+    """Local process health must include upstream stream health."""
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    assert "function streamHealthSnapshot()" in index
+    assert 'return ok(res, { stream: streamHealthSnapshot() });' in index
+    assert "STREAM_INTERRUPTED_DEGRADE_COUNT" in index
+    assert "process.exit(75);" in index
+
+
+def test_sidecar_intercepts_both_console_channels() -> None:
+    """spectrum-ts routes its stream telemetry through @photon-ai/otel, which
+    sends severity >= ERROR to console.error and WARN/INFO to console.log.
+    The two lines the health monitor keys off land on *different* channels:
+    `log.error("stream persistently failing")` -> console.error, but
+    `log.warn("stream interrupted; reconnecting")` -> console.log. Patching
+    only console.error would miss every interrupt burst (the primary silent-
+    inbound symptom), so both channels must be intercepted.
+    """
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    assert "function classifyStreamLog(" in index
+    assert "console.error = (...args) =>" in index
+    assert "console.log = (...args) =>" in index
+    # Both wrappers must feed the shared classifier.
+    assert index.count("classifyStreamLog(text)") >= 2
+
+
+def test_sidecar_labels_catchup_internal_errors_as_upstream_photon() -> None:
+    """Photon cloud stream failures should not look like local auth problems."""
+    index = Path("plugins/platforms/photon/sidecar/index.mjs").read_text(encoding="utf-8")
+    assert "function inboundStreamErrorMessage" in index
+    assert "EventService/CatchUpEvents" in index
+    assert "this is upstream of Hermes" in index
+    assert "PHOTON_ALLOWED_USERS" in index
+
+
 def test_spectrum_patch_preserves_text_when_single_attachment(tmp_path: Path) -> None:
     """The sidecar dependency patch must turn text+one attachment into group content."""
     dist = tmp_path / "node_modules" / "spectrum-ts" / "dist"

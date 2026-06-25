@@ -57,6 +57,7 @@ export const ja = defineLocale({
       backgroundExitedDuringStartup: '起動中に Hermes バックグラウンドプロセスが終了しました。',
       backendStopped: 'バックエンドが停止しました',
       desktopBootFailed: 'デスクトップの起動に失敗しました',
+      gatewayConnectionLost: 'ゲートウェイへの接続が切断されました',
       gatewaySignInRequired: 'ゲートウェイへのサインインが必要です',
       ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。'
     },
@@ -200,8 +201,7 @@ export const ja = defineLocale({
     },
     notifications: {
       title: '通知',
-      intro:
-        'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
+      intro: 'アプリ内トーストとは別の、ネイティブのデスクトップ通知です。設定は端末ごとに保存されます。',
       enableAll: '通知を有効にする',
       enableAllDesc: 'マスタースイッチ。オフにすると以下のすべての通知を無効にします。',
       focusedHint: '完了通知は Hermes がバックグラウンドにあるときのみ表示されます。',
@@ -287,7 +287,44 @@ export const ja = defineLocale({
       installError: 'そのテーマをインストールできませんでした。',
       installed: name => `「${name}」をインストールしました。`,
       removeTheme: 'テーマを削除',
-      importedBadge: 'インポート済み'
+      importedBadge: 'インポート済み',
+      pet: {
+        title: 'ペット',
+        intro:
+          'アプリ上に浮かぶ petdex のアニメーションマスコットを採用しましょう。ツール実行中は走り、成功すると喜び、エラーでしょんぼりと、Hermes の状態に反応します。',
+        restartHint:
+          'ペット機能には再起動が必要です。この機能が追加される前に起動したアプリが動作中です。Hermes を終了して再度開き、このページに戻ってください。',
+        scaleTitle: 'サイズ',
+        scaleDesc: '浮遊マスコットの大きさを変更します。すべての画面に即時反映されます。',
+        on: 'オン',
+        off: 'オフ',
+        chooseTitle: 'ペットを選ぶ',
+        chooseDesc: '選ぶと（必要に応じて）インストールされ、アクティブになります。',
+        searchPlaceholder: 'ペットを検索…',
+        unreachable: 'petdex ギャラリーに接続できませんでした。接続を確認してこのページを開き直してください。',
+        noMatch: query => `「${query}」に一致するペットがありません。`,
+        installedTag: 'インストール済み',
+        generatedTag: '生成',
+        countCapped: (cap, total) => `${total} 件中 ${cap} 件を表示中——入力して絞り込めます。`,
+        count: n => `${n} 件のペット。`,
+        uninstall: name => `${name} をアンインストール`,
+        delete: name => `${name} を削除`,
+        deleteTitle: name => `${name} を削除しますか？`,
+        deleteBody: 'ペットを完全に削除します。再インストールはできません。',
+        deleteConfirm: '削除',
+        rename: name => `${name} の名前を変更`,
+        renameTitle: 'ペットの名前を変更',
+        renamePlaceholder: 'ペットに名前を付ける',
+        renameSave: '保存',
+        exportPet: name => `${name} をエクスポート`,
+        adoptFailed: slug => `${slug} を採用できませんでした`,
+        uninstallFailed: slug => `${slug} をアンインストールできませんでした`,
+        renameFailed: slug => `${slug} の名前を変更できませんでした`,
+        exportFailed: slug => `${slug} をエクスポートできませんでした`,
+        noneAvailable: 'オンにできるペットがありません。',
+        turnOnFailed: 'ペットをオンにできませんでした。',
+        turnOffFailed: 'ペットをオフにできませんでした。'
+      }
     },
     fieldLabels: defineFieldCopy({
       model: 'デフォルトモデル',
@@ -506,6 +543,7 @@ export const ja = defineLocale({
       checkNow: '今すぐ確認',
       checking: '確認中…',
       seeWhatsNew: '新機能を見る',
+      updateNow: '今すぐ更新',
       releaseNotes: 'リリースノート',
       onLatest: '最新バージョンです。',
       installing: '更新をインストール中です。',
@@ -842,8 +880,52 @@ export const ja = defineLocale({
     commandCenter: 'コマンドセンター',
     appearance: '外観',
     settings: '設定',
-    changeTheme: 'テーマを変更...',
+    changeTheme: 'テーマを変更',
     changeColorMode: 'カラーモードを変更...',
+    pets: {
+      title: 'ペット',
+      placeholder: 'ペットを検索…',
+      loading: 'petdex ギャラリーを読み込み中…',
+      error: 'petdex ギャラリーに接続できません。',
+      staleBackend: 'ペット機能を使うには Hermes を再起動してください。',
+      empty: '一致するペットがありません。',
+      turnOff: 'オフ',
+      turnOn: 'オン',
+      installed: 'インストール済み',
+      generatedTag: '生成',
+      adoptFailed: 'ペットを採用できませんでした。',
+      toggleFailed: 'ペットを切り替えできませんでした。',
+      noneAvailable: '利用可能なペットがありません。'
+    },
+    generatePet: {
+      title: 'ペットを生成',
+      placeholder: '生成するペットを説明…',
+      promptHint: '説明を入力して Enter を押すと、4 つの見た目を生成します。',
+      readyHint: 'Enter を押すと、説明から 4 つの見た目を生成します。',
+      generate: '生成',
+      generating: '生成中…',
+      retry: '再試行',
+      hatch: '孵化',
+      spawning: 'スポーン中…',
+      hatching: 'ペットを孵化しています…',
+      hatchingSub: '命を吹き込んでいます…',
+      hatched: '孵化しました！',
+      hatchRow: (_state, done, total) => `フレームを描画中… ${done}/${total}`,
+      hatchComposing: 'まとめています…',
+      hatchSaving: 'もうすぐです…',
+      namePlaceholder: 'ペットに名前を付ける',
+      staleBackend: 'ペットを生成するには Hermes を更新してください。',
+      backgroundHint: 'このウィンドウは閉じても大丈夫です。完了したら Hermes が通知します。',
+      slowProviderHint: '数分かかることがあります',
+      remix: 'リミックス',
+      remixConfirmTitle: 'この見た目でリミックスしますか？',
+      remixConfirmBody: 'これを起点に新しい候補を生成します。数分かかることがあります。',
+      genericError: '生成に失敗しました。もう一度試すか、候補を選んでください。',
+      referenceImageTooLarge: '参照画像が大きすぎます。16 MB 未満の画像を使ってください。',
+      referenceImageInvalid: '参照画像を読み込めませんでした。PNG/JPG/WebP/GIF を試してください。',
+      adopt: '迎え入れる',
+      startOver: 'やり直す'
+    },
     installTheme: {
       title: 'テーマをインストール...',
       placeholder: 'VS Code Marketplace を検索...',
@@ -1419,7 +1501,8 @@ export const ja = defineLocale({
     queueSend: '送信',
     queueDelete: '削除',
     queueStuckTitle: 'キュー内のメッセージを送信できません',
-    queueStuckBody: 'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
+    queueStuckBody:
+      'キューに入れたターンの送信が繰り返し失敗しました。まだキューに残っています。もう一度送信してください。',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,
@@ -1482,8 +1565,12 @@ export const ja = defineLocale({
       fetch: 'ダウンロード中…',
       pull: 'もうすぐ完了…',
       pydeps: '仕上げ中…',
+      update: 'Hermes を更新中…',
+      rebuild: 'デスクトップアプリを再ビルド中…',
       restart: 'Hermes を再起動中…',
+      done: '更新が完了しました',
       manual: 'ターミナルから更新',
+      guiSkew: 'デスクトップアプリを更新してください',
       error: '更新が一時停止中'
     },
     checking: '更新を確認中…',
@@ -1508,12 +1595,16 @@ export const ja = defineLocale({
     manualBody:
       'Hermes をコマンドラインからインストールしたため、更新もそこで実行されます。これをターミナルに貼り付けてください:',
     manualPickedUp: 'Hermes は次回起動時に新しいバージョンを読み込みます。',
+    guiSkewTitle: 'デスクトップアプリを更新してください',
+    guiSkewBody:
+      'バックエンドは更新されましたが、このデスクトップアプリのパッケージは変更されていません。一致させるために Hermes デスクトップアプリ（AppImage / .deb / .rpm）を更新または再インストールしてください。',
     copy: 'コピー',
     copied: 'コピーしました',
     done: '完了',
-    applyingBody: 'Hermes アップデーターが独自のウィンドウで引き継ぎ、完了後に Hermes を再度開きます。',
+    applyingBody:
+      'Hermes アップデーターが独自のウィンドウで引き継ぎ、完了後に自動的に Hermes を再度開きます。更新中はご自分で Hermes を開き直さないでください。',
     applyingBodyBackend: 'リモートバックエンドが更新を適用して再起動します。復帰すると Hermes が自動的に再接続します。',
-    applyingClose: 'Hermes は更新を適用するために閉じます。',
+    applyingClose: 'このウィンドウは更新中に閉じ、その後 Hermes が自動的に再度開きます。',
     errorTitle: '更新が完了しませんでした',
     errorBody: 'ご安心ください。何も失われていません。今すぐ再試行できます。',
     notNow: '今は後で',
@@ -1792,6 +1883,7 @@ export const ja = defineLocale({
     opening: '開いています...',
     hide: '非表示',
     openPreview: 'プレビューを開く',
+    openInBrowser: 'ブラウザで開く',
     sourceLineTitle: 'クリックして選択 · Shift クリックで拡張 · コンポーザーにドラッグ',
     source: 'ソース',
     renderedPreview: 'プレビュー',
@@ -1942,7 +2034,83 @@ export const ja = defineLocale({
       statusRunning: '実行中',
       statusError: 'エラー',
       statusRecovered: '回復しました',
-      statusDone: '完了'
+      statusDone: '完了',
+      actions: {
+        read: '読み取り完了',
+        reading: '読み取り中',
+        opened: 'オープン済み',
+        opening: 'オープン中',
+        searched: '検索完了',
+        searching: '検索中',
+        ran: '実行完了',
+        running: '実行中',
+        ranCode: 'コード実行完了',
+        runningCode: 'スクリプト作成中'
+      },
+      prefixes: {
+        browser: 'ブラウザー',
+        web: 'Web'
+      },
+      titleTemplates: {
+        actionCommand: (action, command) => `${action} ${command}`,
+        actionQuoted: (action, value) => `「${value}」を${action}`,
+        actionTarget: (action, target) => `${target} を${action}`,
+        prefixedDone: (prefix, action) => `${prefix} ${action}`,
+        runningPrefixedTool: (prefix, action) => `${prefix} ${action}を実行中`,
+        runningTool: action => `${action}を実行中`
+      },
+      titles: {
+        browser_click: {
+          done: 'ページ要素をクリックしました',
+          pending: 'ページ要素をクリック中',
+          pendingAction: 'クリック中'
+        },
+        browser_fill: { done: 'フォーム欄に入力しました', pending: 'フォーム欄に入力中', pendingAction: '入力中' },
+        browser_navigate: { done: 'ページを開きました', pending: 'ページをオープン中', pendingAction: 'オープン中' },
+        browser_snapshot: {
+          done: 'ページスナップショットを取得しました',
+          pending: 'ページスナップショットを取得中',
+          pendingAction: '取得中'
+        },
+        browser_take_screenshot: {
+          done: 'スクリーンショットを取得しました',
+          pending: 'スクリーンショットを取得中',
+          pendingAction: '取得中'
+        },
+        browser_type: { done: 'ページに入力しました', pending: 'ページに入力中', pendingAction: '入力中' },
+        clarify: { done: '質問しました', pending: '質問中', pendingAction: '質問中' },
+        cronjob: { done: 'Cron ジョブ', pending: 'Cron ジョブをスケジュール中', pendingAction: 'スケジュール中' },
+        edit_file: { done: 'ファイルを編集しました', pending: 'ファイルを編集中', pendingAction: '編集中' },
+        execute_code: { done: 'コードを実行しました', pending: 'スクリプト作成中', pendingAction: 'スクリプト作成中' },
+        image_generate: { done: '画像を生成しました', pending: '画像を生成中', pendingAction: '生成中' },
+        list_files: {
+          done: 'ファイルを一覧表示しました',
+          pending: 'ファイルを一覧表示中',
+          pendingAction: '一覧表示中'
+        },
+        patch: {
+          done: 'ファイルにパッチを適用しました',
+          pending: 'ファイルにパッチ適用中',
+          pendingAction: 'パッチ適用中'
+        },
+        read_file: { done: 'ファイルを読み取りました', pending: 'ファイルを読み取り中', pendingAction: '読み取り中' },
+        search_files: { done: 'ファイルを検索しました', pending: 'ファイルを検索中', pendingAction: '検索中' },
+        session_search_recall: {
+          done: 'セッション履歴を検索しました',
+          pending: 'セッション履歴を検索中',
+          pendingAction: '検索中'
+        },
+        terminal: { done: 'コマンドを実行しました', pending: 'コマンドを実行中', pendingAction: '実行中' },
+        todo: { done: 'Todo を更新しました', pending: 'Todo を更新中', pendingAction: '更新中' },
+        vision_analyze: { done: '画像を分析しました', pending: '画像を分析中', pendingAction: '分析中' },
+        web_extract: {
+          done: 'Web ページを読み取りました',
+          pending: 'Web ページを読み取り中',
+          pendingAction: '読み取り中'
+        },
+        web_search: { done: 'Web を検索しました', pending: 'Web を検索中', pendingAction: '検索中' },
+        write_file: { done: 'ファイルを編集しました', pending: 'ファイルを編集中', pendingAction: '編集中' }
+      }
     }
   },
 
@@ -1986,7 +2154,8 @@ export const ja = defineLocale({
     editFailed: '編集に失敗しました',
     resumeFailed: '再開に失敗しました',
     resumeStrandedTitle: 'このセッションを読み込めませんでした',
-    resumeStrandedBody: 'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
+    resumeStrandedBody:
+      'このセッションへの接続に失敗し、自動再試行も停止しました。ゲートウェイが実行中か確認してから、もう一度お試しください。',
     resumeRetry: '再試行',
     nothingToBranch: 'ブランチするものがありません',
     branchNeedsChat: 'ブランチする前にチャットを開始または再開してください。',

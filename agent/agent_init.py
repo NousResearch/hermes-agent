@@ -106,7 +106,12 @@ def _custom_provider_extra_body_for_agent(
     base_url: str,
     custom_providers: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    if (provider or "").strip().lower() != "custom":
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm == "custom":
+        provider_key_filter = ""
+    elif provider_norm.startswith("custom:"):
+        provider_key_filter = provider_norm.split(":", 1)[1].strip()
+    else:
         return None
 
     target_url = _normalized_custom_base_url(base_url)
@@ -117,6 +122,13 @@ def _custom_provider_extra_body_for_agent(
     for entry in custom_providers or []:
         if not isinstance(entry, dict):
             continue
+        if provider_key_filter:
+            entry_keys = {
+                str(entry.get("provider_key", "") or "").strip().lower(),
+                str(entry.get("name", "") or "").strip().lower(),
+            }
+            if provider_key_filter not in entry_keys:
+                continue
         if _normalized_custom_base_url(entry.get("base_url")) != target_url:
             continue
         extra_body = entry.get("extra_body")
@@ -809,6 +821,8 @@ def init_agent(
                 # _default_headers instead.
                 _routed_headers = getattr(_routed_client, "_custom_headers", None)
                 if not _routed_headers:
+                    _routed_headers = getattr(_routed_client, "default_headers", None)
+                if not _routed_headers:
                     _routed_headers = getattr(_routed_client, "_default_headers", None)
                 if _routed_headers:
                     client_kwargs["default_headers"] = dict(_routed_headers)
@@ -861,6 +875,8 @@ def init_agent(
                             if _provider_timeout is not None:
                                 client_kwargs["timeout"] = _provider_timeout
                             _fb_headers = getattr(_fb_client, "_custom_headers", None)
+                            if not _fb_headers:
+                                _fb_headers = getattr(_fb_client, "default_headers", None)
                             if not _fb_headers:
                                 _fb_headers = getattr(_fb_client, "_default_headers", None)
                             if _fb_headers:
@@ -1096,6 +1112,12 @@ def init_agent(
     agent._parent_session_id = parent_session_id
     agent._last_flushed_db_idx = 0  # tracks DB-write cursor to prevent duplicate writes
     agent._session_db_created = False  # DB row deferred to run_conversation()
+    # Most agents own their session row and should finalize it on close().
+    # Some temporary helper agents (manual compression / session-hygiene /
+    # background-review forks) rotate or share the session forward to a
+    # continuation row that must remain open after the helper is torn down;
+    # those callers explicitly set this flag to False.
+    agent._end_session_on_close = True
     agent._session_init_model_config = {
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
@@ -1496,6 +1518,7 @@ def init_agent(
     # 3. Check general plugin system (user-installed plugins)
     # 4. Fall back to built-in ContextCompressor
     _selected_engine = None
+    _copy_failed = False
     _engine_name = "compressor"  # default
     try:
         _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
@@ -1513,15 +1536,35 @@ def init_agent(
 
         # Try general plugin system as fallback
         if _selected_engine is None:
+            _candidate = None
             try:
                 from hermes_cli.plugins import get_plugin_context_engine
                 _candidate = get_plugin_context_engine()
-                if _candidate and _candidate.name == _engine_name:
-                    _selected_engine = _candidate
             except Exception:
-                pass
+                _candidate = None
+            if _candidate is not None and _candidate.name == _engine_name:
+                # Deep-copy the shared plugin singleton so a child agent's
+                # update_model() can't mutate the parent's compressor (#42449).
+                # Copy can fail for engines holding uncopyable state (locks, DB
+                # connections, clients); in that case fall back to the built-in
+                # compressor with an ACCURATE message rather than silently
+                # mislabelling it "not found".
+                import copy
+                try:
+                    _selected_engine = copy.deepcopy(_candidate)
+                except Exception as _copy_err:
+                    _copy_failed = True
+                    _ra().logger.warning(
+                        "Context engine '%s' could not be safely copied for this "
+                        "agent (%s) — falling back to built-in compressor. Plugin "
+                        "engines that hold uncopyable state (locks, DB connections) "
+                        "should implement __deepcopy__ to copy only mutable budget "
+                        "state.",
+                        _engine_name, _copy_err,
+                    )
+                    _selected_engine = None
 
-        if _selected_engine is None:
+        if _selected_engine is None and not _copy_failed:
             _ra().logger.warning(
                 "Context engine '%s' not found — falling back to built-in compressor",
                 _engine_name,
@@ -1565,6 +1608,7 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            max_tokens=agent.max_tokens,
         )
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
@@ -1610,16 +1654,27 @@ def init_agent(
             for t in agent.tools
             if isinstance(t, dict)
         }
-        for _schema in agent.context_compressor.get_tool_schemas():
-            _tname = _schema.get("name", "")
-            if _tname and _tname in _existing_tool_names:
+        from agent.memory_manager import normalize_tool_schema as _normalize_tool_schema
+        for _raw_schema in agent.context_compressor.get_tool_schemas():
+            _schema = _normalize_tool_schema(_raw_schema)
+            if _schema is None:
+                # A schema with no resolvable name (e.g. an already-wrapped
+                # entry) would append a nameless tool that strict providers
+                # 400 on, disabling the whole toolset (#47707). Skip it.
+                _ra().logger.warning(
+                    "Context engine returned a tool schema with no resolvable "
+                    "name; skipping to avoid poisoning the request (%r)",
+                    _raw_schema,
+                )
+                continue
+            _tname = _schema["name"]
+            if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
             _wrapped = {"type": "function", "function": _schema}
             agent.tools.append(_wrapped)
-            if _tname:
-                agent.valid_tool_names.add(_tname)
-                agent._context_engine_tool_names.add(_tname)
-                _existing_tool_names.add(_tname)
+            agent.valid_tool_names.add(_tname)
+            agent._context_engine_tool_names.add(_tname)
+            _existing_tool_names.add(_tname)
 
     # Notify context engine of session start
     if hasattr(agent, "context_compressor") and agent.context_compressor:

@@ -734,6 +734,100 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
     assert all(sid == winner for sid in server._sessions)
 
 
+def test_session_resume_reuses_live_agent_after_compression_rotation(server, monkeypatch):
+    """Resume must match the live agent's current session_id, not stale session_key."""
+
+    target = "20260409_020202_child"
+    stale_parent = "20260409_010101_parent"
+    sid = "live-rotated"
+    server._sessions[sid] = {
+        "agent": types.SimpleNamespace(model="test/model", session_id=target),
+        "created_at": 123.0,
+        "display_history_prefix": [],
+        "history": [{"role": "assistant", "content": "live child"}],
+        "history_lock": threading.RLock(),
+        "last_active": 123.0,
+        "running": False,
+        "session_key": stale_parent,
+        "transport": server._stdio_transport,
+    }
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, _target):
+            return target
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    result = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100},
+        }
+    )
+
+    assert "error" not in result
+    assert result["result"]["session_id"] == sid
+    assert result["result"]["session_key"] == target
+    assert len(server._sessions) == 1
+
+
+def test_sync_session_key_after_compress_reanchors_active_session_lease(
+    server, monkeypatch, tmp_path
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from hermes_cli.active_sessions import (
+        active_session_registry_snapshot,
+        try_acquire_active_session,
+    )
+
+    lease, message = try_acquire_active_session(
+        session_id="session-old",
+        surface="tui",
+        config={"max_concurrent_sessions": 1},
+        metadata={"live_session_id": "ui-1"},
+    )
+    assert message is None
+    assert lease is not None
+
+    session = {
+        "active_session_lease": lease,
+        "agent": types.SimpleNamespace(session_id="session-new"),
+        "session_key": "session-old",
+    }
+    fake_approval = types.SimpleNamespace(
+        disable_session_yolo=lambda *_args, **_kwargs: None,
+        enable_session_yolo=lambda *_args, **_kwargs: None,
+        is_session_yolo_enabled=lambda *_args, **_kwargs: False,
+        register_gateway_notify=lambda *_args, **_kwargs: None,
+        unregister_gateway_notify=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda *_args, **_kwargs: None)
+
+    with patch.dict(sys.modules, {"tools.approval": fake_approval}):
+        server._sync_session_key_after_compress("ui-1", session)
+
+    snapshot = active_session_registry_snapshot()
+    assert session["session_key"] == "session-new"
+    assert lease.session_id == "session-new"
+    assert [entry["session_id"] for entry in snapshot] == ["session-new"]
+    lease.release()
+
+
 def test_session_resume_live_payload_uses_current_history_with_ancestors(server, monkeypatch):
     """Live resume should not reuse a stale ancestor-inclusive snapshot."""
 
@@ -1120,7 +1214,7 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
     assert worker.calls == []
 
 
-@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan", "learn create a skill from https://example.com/docs"])
 def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
     """slash.exec must route _pending_input commands to command.dispatch
     internally instead of returning the old 4018 "use command.dispatch"
@@ -1192,6 +1286,38 @@ def test_command_dispatch_queue_requires_arg(server):
 
     assert "error" in resp
     assert resp["error"]["code"] == 4004
+
+
+def test_command_dispatch_learn_sends_built_prompt(server):
+    """command.dispatch /learn returns {type: 'send', message: <built prompt>}
+    so the TUI fires a real agent turn (#51829). The CLI handler queues onto
+    _pending_input — a queue the TUI slash worker has no reader for — so the
+    prompt was silently dropped after the ack. Routing through command.dispatch
+    injects the standards-guided prompt as a normal turn instead.
+    """
+    from agent.learn_prompt import build_learn_prompt
+
+    sid = "test-session"
+    server._sessions[sid] = {"session_key": sid}
+
+    arg = "create a skill from https://example.com/docs"
+    resp = server.handle_request({
+        "id": "r-learn",
+        "method": "command.dispatch",
+        "params": {"name": "learn", "arg": arg, "session_id": sid},
+    })
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["type"] == "send"
+    assert result["message"] == build_learn_prompt(arg)
+
+
+def test_pending_input_commands_includes_learn(server):
+    """Guard: _PENDING_INPUT_COMMANDS must list 'learn' — without it slash.exec
+    routes /learn to the slash worker, which only prints the ack and drops the
+    prompt onto the dead _pending_input queue (#51829)."""
+    assert "learn" in server._PENDING_INPUT_COMMANDS
 
 
 def test_skills_manage_search_uses_tools_hub_sources(server):

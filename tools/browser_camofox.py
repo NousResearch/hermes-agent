@@ -93,15 +93,39 @@ def get_camofox_url() -> str:
     return os.getenv("CAMOFOX_URL", "").rstrip("/")
 
 
+def _config_cdp_url() -> str:
+    """Persistent ``browser.cdp_url`` from config.yaml, or empty string.
+
+    Read here (instead of importing ``browser_tool._get_cdp_override`` to avoid
+    a circular import) so Camofox can yield to a config-based CDP override the
+    same way it already yields to the ``BROWSER_CDP_URL`` env override.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+
+        browser_cfg = read_raw_config().get("browser", {})
+        if isinstance(browser_cfg, dict):
+            return str(browser_cfg.get("cdp_url", "") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def is_camofox_mode() -> bool:
     """True when Camofox backend is configured and no CDP override is active.
 
-    When the user has explicitly connected to a live Chromium-family browser via
-    ``/browser connect`` (which sets ``BROWSER_CDP_URL``), the CDP connection
-    takes priority over Camofox so the browser tools operate on the real
-    browser instead of being silently routed to the Camofox backend.
+    A CDP override takes priority over Camofox so the browser tools operate on
+    the real CDP browser (and a CDP backend is treated as non-local for SSRF
+    checks) instead of being silently routed to Camofox. The override may come
+    from the ``BROWSER_CDP_URL`` env var (set by ``/browser connect``) OR a
+    persistent ``browser.cdp_url`` in config.yaml — both are honored, matching
+    ``browser_tool._get_cdp_override()``'s precedence. (Previously only the env
+    var suppressed Camofox, so ``CAMOFOX_URL`` + a config CDP override still
+    routed navigation through Camofox.)
     """
     if os.getenv("BROWSER_CDP_URL", "").strip():
+        return False
+    if _config_cdp_url():
         return False
     return bool(get_camofox_url())
 

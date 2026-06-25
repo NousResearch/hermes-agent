@@ -10,6 +10,12 @@ const { execFile } = require('node:child_process')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
+// simple-git is a pure-JS dep that workspace dedup hoists into the repo-root
+// node_modules, out of reach of electron-builder's default file collection (the
+// `files` allow-list ships no node_modules). scripts/stage-native-deps.cjs
+// stages its dependency closure into build/native-deps/node_modules and a
+// `files` entry copies that into the asar at /node_modules, so this resolves
+// in packaged builds exactly as it does in dev.
 const simpleGit = require('simple-git')
 
 const { resolveRequestedPathForIpc } = require('./hardening.cjs')

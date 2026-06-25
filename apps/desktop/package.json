@@ -157,7 +157,11 @@
       "assets/**",
       "electron/**",
       "public/**",
-      "package.json"
+      "package.json",
+      {
+        "from": "build/native-deps/node_modules",
+        "to": "node_modules"
+      }
     ],
     "beforeBuild": "scripts/before-build.cjs",
     "beforePack": "scripts/before-pack.cjs",

@@ -148,12 +148,105 @@ function stageOne(spec) {
   console.log(`[stage-native-deps] ${path.relative(APP_ROOT, spec.to)}: ${copied} files`)
 }
 
+// Pure-JS runtime modules that the Electron main process require()s directly
+// (currently simple-git, used by electron/git-review-ops.cjs).  Workspace dedup
+// hoists these into the repo-root node_modules where electron-builder's file
+// collector can't see them -- same root cause as node-pty above -- but they
+// have no .node binary, so the include-glob staging doesn't apply.  Instead we
+// resolve each module's full dependency closure and copy the package dirs into
+// build/native-deps/node_modules/ as a flat tree (no version conflicts in these
+// closures, so flat resolution is sufficient).  A `files` entry in package.json
+// (from: build/native-deps/node_modules, to: node_modules) copies that tree into
+// the asar at /node_modules, so a plain require('simple-git') resolves in
+// packaged builds exactly as it does in dev.  (extraResources can't be used for
+// this -- electron-builder strips directories named node_modules out of
+// extraResources/extraFiles copies; the asar `files` collection does not.)
+const JS_MODULE_CLOSURES = ['simple-git']
+
+// Locate a package's on-disk directory the way Node's resolver does -- walk up
+// the directory tree from `fromDir` checking each node_modules/<name> -- and
+// confirm via package.json existence rather than require.resolve(). Packages
+// with an `exports` map (e.g. simple-git) reject require.resolve of their
+// package.json with ERR_PACKAGE_PATH_NOT_EXPORTED, so we probe the filesystem.
+function resolvePackageDir(name, fromDir) {
+  const candidates = []
+  let cur = fromDir
+  while (cur) {
+    candidates.push(path.join(cur, 'node_modules', name))
+    const parent = path.dirname(cur)
+    if (parent === cur) break
+    cur = parent
+  }
+  candidates.push(path.join(REPO_ROOT, 'node_modules', name))
+  for (const candidate of candidates) {
+    if (fs.existsSync(path.join(candidate, 'package.json'))) return candidate
+  }
+  throw new Error(`unresolved: ${name}`)
+}
+
+// Walk the dependency graph of the given roots, resolving each package to its
+// on-disk directory.  Returns a Map<name, absoluteDir>.
+function collectClosure(rootNames) {
+  const dirs = new Map()
+  const stack = rootNames.map(name => ({ name, fromDir: REPO_ROOT }))
+  while (stack.length) {
+    const { name, fromDir } = stack.pop()
+    if (dirs.has(name)) continue
+    let dir
+    try {
+      dir = resolvePackageDir(name, fromDir)
+    } catch {
+      throw new Error(
+        `stage-native-deps: cannot resolve "${name}" from ${fromDir}.  Run ` +
+          `\`npm install\` at the workspace root first.`
+      )
+    }
+    dirs.set(name, dir)
+    const pkg = require(path.join(dir, 'package.json'))
+    for (const dep of Object.keys(pkg.dependencies || {})) {
+      if (!dirs.has(dep)) stack.push({ name: dep, fromDir: dir })
+    }
+  }
+  return dirs
+}
+
+// Recursively copy a package directory, skipping its own node_modules (the full
+// closure is staged flat alongside it) and .bin shims.  These are small pure-JS
+// packages, so a plain file copy is cheap.
+function copyPackageDir(src, dest) {
+  ensureDir(dest)
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name === '.bin') continue
+    const from = path.join(src, entry.name)
+    const to = path.join(dest, entry.name)
+    if (entry.isDirectory()) {
+      copyPackageDir(from, to)
+    } else if (entry.isFile()) {
+      fs.copyFileSync(from, to)
+    }
+  }
+}
+
+function stageModuleClosures() {
+  if (!JS_MODULE_CLOSURES.length) return
+  const dirs = collectClosure(JS_MODULE_CLOSURES)
+  const modulesRoot = path.join(STAGE_ROOT, 'node_modules')
+  for (const [name, dir] of dirs) {
+    copyPackageDir(dir, path.join(modulesRoot, name))
+  }
+  console.log(
+    `[stage-native-deps] node_modules: ${dirs.size} packages ` +
+      `(${JS_MODULE_CLOSURES.join(', ')} + transitive deps)`
+  )
+}
+
 function main() {
   rmrf(STAGE_ROOT)
   ensureDir(STAGE_ROOT)
   for (const spec of NATIVE_DEPS) {
     stageOne(spec)
   }
+  stageModuleClosures()
 }
 
 main()

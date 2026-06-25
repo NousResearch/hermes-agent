@@ -158,6 +158,9 @@ class TodoStore:
         Ensures required fields exist and status is valid.
         Returns a clean dict with only {id, content, status}.
         """
+        if not isinstance(item, dict):
+            return {"id": "?", "content": "(invalid item)", "status": "pending"}
+
         item_id = str(item.get("id", "")).strip()
         if not item_id:
             item_id = "?"
@@ -179,6 +182,10 @@ class TodoStore:
         """Collapse duplicate ids, keeping the last occurrence in its position."""
         last_index: Dict[str, int] = {}
         for i, item in enumerate(todos):
+            if not isinstance(item, dict):
+                # Non-dict items get a synthetic key so _validate can handle them
+                last_index[f"__invalid_{i}"] = i
+                continue
             item_id = str(item.get("id", "")).strip() or "?"
             last_index[item_id] = i
         return [todos[i] for i in sorted(last_index.values())]
@@ -204,6 +211,16 @@ def todo_tool(
         return tool_error("TodoStore not initialized")
 
     if todos is not None:
+        # Guard: LLM sometimes sends todos as a JSON string instead of a list
+        if isinstance(todos, str):
+            try:
+                todos = json.loads(todos)
+            except (json.JSONDecodeError, TypeError):
+                return tool_error("todos must be a list of objects, got unparseable string")
+        if not isinstance(todos, list):
+            return tool_error(
+                f"todos must be a list, got {type(todos).__name__}"
+            )
         items = store.write(todos, merge)
     else:
         items = store.read()

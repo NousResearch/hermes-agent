@@ -5659,16 +5659,14 @@ def call_llm(
             or _is_rate_limit_error(first_err)
         )
         # Respect explicit provider choice for transient errors (auth, request
-        # validation, etc.) but allow fallback when the provider clearly cannot
-        # serve the request due to capacity: payment/quota exhaustion and
-        # connection failures are capacity problems, not request constraints.
-        # See #26803: daily token quota (429 + "too many tokens per day") must
-        # fall back just like a 402 credit error.
+        # validation, etc.) but fall back when the provider clearly cannot serve
+        # the request due to capacity. Every class in should_fallback above is
+        # such a capacity error — payment/quota exhaustion, connection failure,
+        # or a rate limit that outlived retries — so it falls back regardless of
+        # whether the provider was auto-detected or explicitly configured.
+        # See #26803 (daily token quota) and #52228 (rate limits, explicit providers).
         is_auto = resolved_provider in {"auto", "", None}
-        # Capacity errors bypass the explicit-provider gate: the provider
-        # literally cannot serve this request regardless of user intent.
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
-        if should_fallback and (is_auto or is_capacity_error):
+        if should_fallback:
             if _is_payment_error(first_err):
                 reason = "payment error"
                 # Resolve the actual provider label (resolved_provider may be
@@ -6110,12 +6108,12 @@ async def async_call_llm(
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
         )
-        # Capacity errors (payment/quota/connection) bypass the explicit-provider
-        # gate — the provider cannot serve the request regardless of user intent.
-        # See #26803: daily token quota must fall back like a 402 credit error.
+        # Every class in should_fallback above is a capacity error — the provider
+        # cannot serve the request regardless of user intent — so it falls back
+        # whether the provider was auto-detected or explicitly configured.
+        # See #26803 (daily token quota) and #52228 (rate limits, explicit providers).
         is_auto = resolved_provider in {"auto", "", None}
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
-        if should_fallback and (is_auto or is_capacity_error):
+        if should_fallback:
             if _is_payment_error(first_err):
                 reason = "payment error"
                 _mark_provider_unhealthy(

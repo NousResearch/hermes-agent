@@ -1870,6 +1870,36 @@ class TestAuxiliaryFallbackLayering:
 
         assert main_client.chat.completions.create.called
 
+    def test_explicit_provider_falls_back_on_rate_limit(self, monkeypatch):
+        """#52228: an explicit provider hit by a 429 must still fall back."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        rate_err = Exception("Rate limit exceeded, try again in 60 seconds")
+        rate_err.status_code = 429
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = rate_err
+
+        main_client = MagicMock()
+        main_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from main agent after rate limit"))
+        ])
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("openai-codex", "gpt-5.5", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(None, None, "")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   return_value=(main_client, "claude-sonnet-4", "main-agent(openrouter)")):
+            call_llm(
+                task="kanban_decomposer",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert main_client.chat.completions.create.called
+
     def test_warning_emitted_when_all_fallbacks_exhausted(self, monkeypatch, caplog):
         """When chain AND main model both fail, a user-visible warning fires before re-raise."""
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")

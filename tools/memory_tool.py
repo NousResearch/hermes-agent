@@ -23,9 +23,11 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
+import hashlib
 import json
 import logging
 import os
+import re
 import tempfile
 import time
 from contextlib import contextmanager
@@ -52,9 +54,55 @@ logger = logging.getLogger(__name__)
 # (HERMES_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
-def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
-    return get_hermes_home() / "memories"
+#
+# When a platform ``user_id`` is present (gateway multi-user sessions —
+# WeCom, Telegram, Discord, …), memory is bucketed per user under
+# ``memories/<user_id>/`` so one user's MEMORY.md/USER.md never bleeds into
+# another's. With no user_id (CLI, cron, bare scripts) memory stays at the
+# root ``memories/`` directory — byte-identical to the historical layout, so
+# existing single-user installs and every positional reader are unaffected.
+_MEMORY_USER_SLUG_RE = re.compile(r"[^A-Za-z0-9_.-]")
+
+
+def _user_slug(user_id: Optional[str]) -> str:
+    """Reduce a platform user_id to a filename-safe path component.
+
+    Platform user_ids are untrusted, free-form strings. Before joining one
+    into a path under ``memories/`` it MUST be sanitized so a value like
+    ``../../etc/passwd`` cannot traverse out of the store root. Collapses
+    every non ``[A-Za-z0-9_.-]`` character to ``_`` and caps the length; an
+    empty or traversal-shaped result falls back to a sha256 prefix.
+    """
+    if not user_id:
+        return ""
+    slug = _MEMORY_USER_SLUG_RE.sub("_", str(user_id)).strip("._-")[:128]
+    if not slug or slug in {".", ".."}:
+        return "u_" + hashlib.sha256(str(user_id).encode("utf-8")).hexdigest()[:16]
+    return slug
+
+
+def get_memory_dir(user_id: Optional[str] = None,
+                   chat_type: Optional[str] = None,
+                   chat_id: Optional[str] = None) -> Path:
+    """Return the memories directory, scoped per-user or per-group.
+
+    Resolution order:
+      1. Group chat (``chat_type == "group"`` with a ``chat_id``) →
+         ``$HERMES_HOME/memories/groups/<slug>/`` — every member of the group
+         shares one MEMORY.md/USER.md. This matches a shared group session
+         (``group_sessions_per_user=false``): everyone @-ing the bot in the
+         group reads/writes the same memory, instead of it being attributed to
+         whichever user happened to create the cached agent first.
+      2. DM / single user (``user_id`` given) → ``$HERMES_HOME/memories/<slug>/``
+         so gateway multi-user sessions are isolated per user.
+      3. No identity (CLI / cron / bare scripts) → ``$HERMES_HOME/memories/``
+         (the historical, single-user layout — unchanged).
+    """
+    base = get_hermes_home() / "memories"
+    if (chat_type or "").lower() == "group" and chat_id:
+        return base / "groups" / _user_slug(chat_id)
+    slug = _user_slug(user_id)
+    return base / slug if slug else base
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -121,11 +169,23 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+                 user_id: Optional[str] = None, chat_type: Optional[str] = None,
+                 chat_id: Optional[str] = None):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
+        # Platform user identifier for per-user bucketing. None (CLI / cron /
+        # bare scripts) keeps the historical root ``memories/`` layout; a
+        # gateway user_id buckets under ``memories/<slug>/`` so multi-user
+        # platforms don't share one MEMORY.md/USER.md.
+        self._user_id = user_id
+        # Chat context for group-shared bucketing: a group chat buckets under
+        # ``memories/groups/<chat_id>/`` (all members share), DMs stay
+        # per-user. See ``get_memory_dir``.
+        self._chat_type = chat_type
+        self._chat_id = chat_id
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
@@ -146,7 +206,7 @@ class MemoryStore:
         Scanning is deterministic from disk bytes, so the snapshot remains
         stable for the entire session (prefix-cache invariant holds).
         """
-        mem_dir = get_memory_dir()
+        mem_dir = get_memory_dir(self._user_id, self._chat_type, self._chat_id)
         mem_dir.mkdir(parents=True, exist_ok=True)
 
         self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
@@ -241,9 +301,8 @@ class MemoryStore:
                     pass
             fd.close()
 
-    @staticmethod
-    def _path_for(target: str) -> Path:
-        mem_dir = get_memory_dir()
+    def _path_for(self, target: str) -> Path:
+        mem_dir = get_memory_dir(self._user_id, self._chat_type, self._chat_id)
         if target == "user":
             return mem_dir / "USER.md"
         return mem_dir / "MEMORY.md"
@@ -272,7 +331,7 @@ class MemoryStore:
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        get_memory_dir().mkdir(parents=True, exist_ok=True)
+        get_memory_dir(self._user_id, self._chat_type, self._chat_id).mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
@@ -735,7 +794,9 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
-def load_on_disk_store() -> "MemoryStore":
+def load_on_disk_store(user_id: Optional[str] = None,
+                       chat_type: Optional[str] = None,
+                       chat_id: Optional[str] = None) -> "MemoryStore":
     """Build a fresh on-disk :class:`MemoryStore`, honoring configured char limits.
 
     Use this from any context that has no live agent (the messaging gateway, the
@@ -744,6 +805,11 @@ def load_on_disk_store() -> "MemoryStore":
     in ``agent/agent_init.py`` — including the user's ``memory.memory_char_limit``
     / ``memory.user_char_limit`` overrides — so an approval applied without a live
     agent enforces the SAME caps as one applied with one.
+
+    ``user_id`` buckets the store per platform user (gateway multi-user
+    sessions); omit it for the single-user root layout (CLI). The gateway's
+    ``/memory`` slash command passes the session's user_id so an approval
+    lands in the SAME per-user store the live agent uses.
 
     Falls back to the built-in defaults if config can't be loaded, so this can
     never raise on a missing/unreadable config.
@@ -762,6 +828,9 @@ def load_on_disk_store() -> "MemoryStore":
     store = MemoryStore(
         memory_char_limit=memory_char_limit,
         user_char_limit=user_char_limit,
+        user_id=user_id,
+        chat_type=chat_type,
+        chat_id=chat_id,
     )
     store.load_from_disk()
     return store

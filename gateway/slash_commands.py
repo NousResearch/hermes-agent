@@ -2456,7 +2456,17 @@ class GatewaySlashCommandsMixin:
         # Apply approved writes against a fresh on-disk store (the gateway has
         # no long-lived agent; the store persists to the same MEMORY/USER.md).
         # load_on_disk_store() honors the user's configured char limits.
-        store = load_on_disk_store()
+        # Bucket by the session's platform user_id so a gateway /memory command
+        # touches the SAME per-user store the live agent uses (multi-user
+        # isolation — no cross-user bleed).
+        _memory_user_id = getattr(event.source, "user_id", None)
+        _memory_chat_type = getattr(event.source, "chat_type", None)
+        _memory_chat_id = getattr(event.source, "chat_id", None)
+        store = load_on_disk_store(
+            user_id=_memory_user_id,
+            chat_type=_memory_chat_type,
+            chat_id=_memory_chat_id,
+        )
 
         out = handle_pending_subcommand(
             wa.MEMORY, args, memory_store=store, set_mode_fn=_set_approval,

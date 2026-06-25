@@ -4,10 +4,91 @@ Delegates to the existing adapter functions in agent/anthropic_adapter.py.
 This transport owns format conversion and normalization — NOT client lifecycle.
 """
 
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse
+
+# ── Text-embedded tool-call salvage (issue: opus-4-8 antml: prefix drop) ──
+# Anthropic OAuth turns tool calls into structured ``tool_use`` blocks ONLY
+# when the model emits the namespaced ``antml:invoke`` markup correctly.
+# Some Claude builds (observed: opus-4-8) intermittently drop the ``antml:``
+# namespace prefix and emit a bare ``<invoke name="...">`` block instead.
+# The API can't recognise it, so it comes back as a plain ``text`` block with
+# ``stop_reason="end_turn"`` and NO ``tool_use`` — the agent loop then treats
+# the turn as a final answer and halts WITHOUT running the tool.
+#
+# These regexes recover a *complete* invoke block (closing tag required) from
+# assistant text so the transport can re-promote it to a real tool call.
+# Both the namespaced (``antml:invoke``) and bare (``invoke``) spellings are
+# matched, as are self-closing and value-bearing parameters.
+_SALVAGE_INVOKE_RE = re.compile(
+    r"<(?:antml:)?invoke\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</(?:antml:)?invoke\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+_SALVAGE_PARAM_RE = re.compile(
+    r"<(?:antml:)?parameter\s+name\s*=\s*\"([^\"]+)\"\s*>(.*?)</(?:antml:)?parameter\s*>",
+    re.DOTALL | re.IGNORECASE,
+)
+
+
+def _coerce_salvaged_value(raw: str) -> Any:
+    """Best-effort type recovery for a text-extracted parameter value.
+
+    Structured ``tool_use`` blocks carry already-typed JSON (ints, bools,
+    lists). Text-embedded parameters are always strings, so we try
+    ``json.loads`` to mirror what the structured call would have contained
+    (``"61"`` -> ``61``, ``"true"`` -> ``True``, ``'{"a": 1}'`` -> dict).
+    Anything that isn't valid JSON (file paths, shell commands, prose) is
+    kept as the trimmed string — identical to how the model would pass it.
+    """
+    import json
+
+    s = raw.strip()
+    if s == "":
+        return ""
+    try:
+        return json.loads(s)
+    except (ValueError, TypeError):
+        return s
+
+
+def salvage_tool_calls_from_text(text: str) -> Tuple[List[Dict[str, Any]], str]:
+    """Recover bare ``<invoke>`` tool-call markup left in assistant text.
+
+    Returns ``(calls, cleaned_text)`` where ``calls`` is a list of
+    ``{"name": str, "arguments": {...}}`` dicts (empty when nothing is
+    salvageable) and ``cleaned_text`` is ``text`` with every salvaged
+    invoke block removed so the raw markup never reaches the user.
+
+    Only *complete* blocks (with a closing ``</invoke>``) are salvaged;
+    a truncated tail is left untouched so a half-streamed call is not
+    executed with partial arguments.
+    """
+    if not text or "invoke" not in text.lower():
+        return [], text
+
+    calls: List[Dict[str, Any]] = []
+
+    def _replace(match: "re.Match") -> str:
+        name = (match.group(1) or "").strip()
+        body = match.group(2) or ""
+        if not name:
+            # No tool name — leave the original markup in place.
+            return match.group(0)
+        args: Dict[str, Any] = {}
+        for pname, pval in _SALVAGE_PARAM_RE.findall(body):
+            key = (pname or "").strip()
+            if key:
+                args[key] = _coerce_salvaged_value(pval)
+        calls.append({"name": name, "arguments": args})
+        return ""
+
+    cleaned = _SALVAGE_INVOKE_RE.sub(_replace, text)
+    if not calls:
+        return [], text
+    return calls, cleaned.strip()
 
 
 class AnthropicTransport(ProviderTransport):
@@ -160,6 +241,31 @@ class AnthropicTransport(ProviderTransport):
                 )
 
         finish_reason = self._STOP_REASON_MAP.get(response.stop_reason, "stop")
+
+        # ── Salvage bare <invoke> markup the API failed to promote ──────────
+        # When a Claude build drops the ``antml:`` namespace prefix the API
+        # returns the tool call as plain text with no ``tool_use`` block and
+        # ``stop_reason="end_turn"``. Without recovery the agent loop halts
+        # WITHOUT running the tool. If we got no structured tool_calls but the
+        # text carries a complete invoke block, re-promote it to a real call
+        # and re-map the finish reason so the loop keeps executing. Skipped
+        # entirely when the turn already produced structured tool_calls (the
+        # healthy path) so well-formed turns pay nothing.
+        if not tool_calls and text_parts:
+            _joined = "\n".join(text_parts)
+            _salvaged, _cleaned = salvage_tool_calls_from_text(_joined)
+            if _salvaged:
+                import json as _json
+                for _sc in _salvaged:
+                    tool_calls.append(
+                        ToolCall(
+                            id=None,
+                            name=_sc["name"],
+                            arguments=_json.dumps(_sc.get("arguments", {})),
+                        )
+                    )
+                text_parts = [_cleaned] if _cleaned else []
+                finish_reason = self._STOP_REASON_MAP.get("tool_use", "tool_calls")
 
         provider_data = {}
         if reasoning_details:

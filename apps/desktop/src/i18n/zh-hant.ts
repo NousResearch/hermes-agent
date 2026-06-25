@@ -57,6 +57,7 @@ export const zhHant = defineLocale({
       backgroundExitedDuringStartup: 'Hermes 背景程序在啟動期間結束。',
       backendStopped: '後端已停止',
       desktopBootFailed: '桌面啟動失敗',
+      gatewayConnectionLost: '與閘道的連線已中斷',
       gatewaySignInRequired: '需要閘道登入',
       ipcBridgeUnavailable: '桌面 IPC 橋接器不可用。'
     },
@@ -279,7 +280,8 @@ export const zhHant = defineLocale({
       importedBadge: '已匯入',
       pet: {
         title: '寵物',
-        intro: '領養一隻懸浮在應用上的 petdex 動畫寵物，它會根據 Hermes 的狀態做出反應——工具執行時奔跑、成功時歡呼、出錯時沮喪。',
+        intro:
+          '領養一隻懸浮在應用上的 petdex 動畫寵物，它會根據 Hermes 的狀態做出反應——工具執行時奔跑、成功時歡呼、出錯時沮喪。',
         restartHint: '寵物功能需要重新啟動——目前執行的應用在此功能加入前啟動。請結束並重新開啟 Hermes，然後回到此處。',
         scaleTitle: '大小',
         scaleDesc: '調整懸浮寵物的大小，所有介面即時生效。',
@@ -291,11 +293,23 @@ export const zhHant = defineLocale({
         unreachable: '無法連線至 petdex 畫廊。請檢查網路連線並重新開啟此頁面。',
         noMatch: query => `沒有符合「${query}」的寵物。`,
         installedTag: '已安裝',
+        generatedTag: '生成',
         countCapped: (cap, total) => `顯示 ${total} 個中的 ${cap} 個——輸入關鍵字以縮小範圍。`,
         count: n => `${n} 個寵物。`,
         uninstall: name => `解除安裝 ${name}`,
+        delete: name => `刪除 ${name}`,
+        deleteTitle: name => `刪除 ${name}？`,
+        deleteBody: '此操作會永久刪除寵物，且無法重新安裝。',
+        deleteConfirm: '刪除',
+        rename: name => `重新命名 ${name}`,
+        renameTitle: '重新命名寵物',
+        renamePlaceholder: '為寵物取個名字',
+        renameSave: '儲存',
+        exportPet: name => `匯出 ${name}`,
         adoptFailed: slug => `無法領養 ${slug}`,
         uninstallFailed: slug => `無法解除安裝 ${slug}`,
+        renameFailed: slug => `無法重新命名 ${slug}`,
+        exportFailed: slug => `無法匯出 ${slug}`,
         noneAvailable: '目前沒有可開啟的寵物。',
         turnOnFailed: '無法開啟寵物。',
         turnOffFailed: '無法關閉寵物。'
@@ -850,9 +864,35 @@ export const zhHant = defineLocale({
       turnOff: '關閉',
       turnOn: '開啟',
       installed: '已安裝',
+      generatedTag: '生成',
       adoptFailed: '無法領養該寵物。',
       toggleFailed: '無法切換寵物顯示。',
       noneAvailable: '尚無可用寵物——請在下方選擇一個安裝。'
+    },
+    generatePet: {
+      title: '生成寵物',
+      placeholder: '描述要生成的寵物……',
+      promptHint: '輸入描述，然後按 Enter 生成四種造型。',
+      readyHint: '按 Enter 依描述生成四種造型。',
+      generate: '生成',
+      generating: '生成中……',
+      retry: '重試',
+      hatch: '孵化',
+      spawning: '召喚中……',
+      hatching: '正在孵化你的寵物……',
+      hatchingSub: '正在注入生命……',
+      hatched: '孵化成功！',
+      hatchRow: (_state, done, total) => `正在繪製畫面…… ${done}/${total}`,
+      hatchComposing: '正在拼合……',
+      hatchSaving: '快好了……',
+      namePlaceholder: '為寵物命名',
+      staleBackend: '請更新 Hermes 以生成寵物。',
+      backgroundHint: '你可以關閉此視窗——完成後 Hermes 會通知你。',
+      genericError: '生成失敗——請重試或選一個建議。',
+      referenceImageTooLarge: '參考圖片過大。請使用小於 16 MB 的圖片。',
+      referenceImageInvalid: '無法讀取該參考圖片。請嘗試 PNG、JPG、WebP 或 GIF。',
+      adopt: '領養',
+      startOver: '重新開始'
     },
     installTheme: {
       title: '安裝主題...',
@@ -1507,7 +1547,8 @@ export const zhHant = defineLocale({
     copy: '複製',
     copied: '已複製',
     done: '完成',
-    applyingBody: 'Hermes 更新程式會在自己的視窗中接管，並在完成後自動重新開啟 Hermes。更新期間請勿自行重新開啟 Hermes。',
+    applyingBody:
+      'Hermes 更新程式會在自己的視窗中接管，並在完成後自動重新開啟 Hermes。更新期間請勿自行重新開啟 Hermes。',
     applyingBodyBackend: '遠端後端正在套用更新並將重新啟動。恢復後 Hermes 會自動重新連線。',
     applyingClose: '此視窗會在更新期間關閉，隨後 Hermes 會自動重新開啟。',
     errorTitle: '更新未完成',
@@ -1929,7 +1970,59 @@ export const zhHant = defineLocale({
       statusRunning: '執行中',
       statusError: '錯誤',
       statusRecovered: '已復原',
-      statusDone: '完成'
+      statusDone: '完成',
+      actions: {
+        read: '已讀取',
+        reading: '正在讀取',
+        opened: '已開啟',
+        opening: '正在開啟',
+        searched: '已搜尋',
+        searching: '正在搜尋',
+        ran: '已執行',
+        running: '正在執行',
+        ranCode: '已執行程式碼',
+        runningCode: '正在撰寫腳本'
+      },
+      prefixes: {
+        browser: '瀏覽器',
+        web: '網頁'
+      },
+      titleTemplates: {
+        actionCommand: (action, command) => `${action} · ${command}`,
+        actionQuoted: (action, value) => `${action}「${value}」`,
+        actionTarget: (action, target) => `${action} ${target}`,
+        prefixedDone: (prefix, action) => `${prefix}${action}`,
+        runningPrefixedTool: (prefix, action) => `正在執行${prefix}${action}`,
+        runningTool: action => `正在執行 ${action}`
+      },
+      titles: {
+        browser_click: { done: '已點擊頁面元素', pending: '正在點擊頁面元素', pendingAction: '正在點擊' },
+        browser_fill: { done: '已填寫表單欄位', pending: '正在填寫表單欄位', pendingAction: '正在填寫' },
+        browser_navigate: { done: '已開啟頁面', pending: '正在開啟頁面', pendingAction: '正在開啟' },
+        browser_snapshot: { done: '已擷取頁面快照', pending: '正在擷取頁面快照', pendingAction: '正在擷取' },
+        browser_take_screenshot: { done: '已擷取截圖', pending: '正在擷取截圖', pendingAction: '正在擷取' },
+        browser_type: { done: '已在頁面輸入', pending: '正在頁面輸入', pendingAction: '正在輸入' },
+        clarify: { done: '已提問', pending: '正在提問', pendingAction: '正在提問' },
+        cronjob: { done: 'Cron 工作', pending: '正在安排 Cron 工作', pendingAction: '正在安排' },
+        edit_file: { done: '已編輯檔案', pending: '正在編輯檔案', pendingAction: '正在編輯' },
+        execute_code: { done: '已執行程式碼', pending: '正在撰寫腳本', pendingAction: '正在撰寫腳本' },
+        image_generate: { done: '已生成圖片', pending: '正在生成圖片', pendingAction: '正在生成' },
+        list_files: { done: '已列出檔案', pending: '正在列出檔案', pendingAction: '正在列出' },
+        patch: { done: '已修補檔案', pending: '正在修補檔案', pendingAction: '正在修補' },
+        read_file: { done: '已讀取檔案', pending: '正在讀取檔案', pendingAction: '正在讀取' },
+        search_files: { done: '已搜尋檔案', pending: '正在搜尋檔案', pendingAction: '正在搜尋' },
+        session_search_recall: {
+          done: '已搜尋工作階段歷史',
+          pending: '正在搜尋工作階段歷史',
+          pendingAction: '正在搜尋'
+        },
+        terminal: { done: '已執行指令', pending: '正在執行指令', pendingAction: '正在執行' },
+        todo: { done: '已更新待辦', pending: '正在更新待辦', pendingAction: '正在更新' },
+        vision_analyze: { done: '已分析圖片', pending: '正在分析圖片', pendingAction: '正在分析' },
+        web_extract: { done: '已讀取網頁', pending: '正在讀取網頁', pendingAction: '正在讀取' },
+        web_search: { done: '已搜尋網頁', pending: '正在搜尋網頁', pendingAction: '正在搜尋' },
+        write_file: { done: '已編輯檔案', pending: '正在編輯檔案', pendingAction: '正在編輯' }
+      }
     }
   },
 

@@ -1,6 +1,7 @@
 """Tests for hermes_cli configuration management."""
 
 import os
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,7 +32,12 @@ class TestGetHermesHome:
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("HERMES_HOME", None)
             home = get_hermes_home()
-            assert home == Path.home() / ".hermes"
+            if sys.platform == "win32":
+                local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+                base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+                assert home == base / "hermes"
+            else:
+                assert home == Path.home() / ".hermes"
 
     def test_env_override(self):
         with patch.dict(os.environ, {"HERMES_HOME": "/custom/path"}):
@@ -61,6 +67,30 @@ class TestEnsureHermesHome:
             soul_path.write_text("custom soul", encoding="utf-8")
             ensure_hermes_home()
             assert soul_path.read_text(encoding="utf-8") == "custom soul"
+
+    def test_upgrades_legacy_template_soul_md(self, tmp_path):
+        # Older installers seeded a comment-only scaffold that shadowed the
+        # runtime default. A SOUL.md still matching that scaffold carries no
+        # user persona and should be upgraded in place to DEFAULT_SOUL_MD.
+        from hermes_cli.default_soul import DEFAULT_SOUL_MD, _LEGACY_TEMPLATE_SOULS
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(_LEGACY_TEMPLATE_SOULS[0] + "\n", encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == DEFAULT_SOUL_MD
+
+    def test_preserves_legacy_template_with_user_persona(self, tmp_path):
+        # If the user typed a persona alongside the scaffold, the content no
+        # longer matches the known empty template — leave it untouched.
+        from hermes_cli.default_soul import _LEGACY_TEMPLATE_SOULS
+
+        mixed = _LEGACY_TEMPLATE_SOULS[0] + "\nYou are a helpful pirate."
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            soul_path = tmp_path / "SOUL.md"
+            soul_path.write_text(mixed, encoding="utf-8")
+            ensure_hermes_home()
+            assert soul_path.read_text(encoding="utf-8") == mixed
 
 
 class TestLoadConfigDefaults:
@@ -1137,7 +1167,7 @@ class TestWriteApprovalMigration:
     """
 
     def _write(self, tmp_path, body: str):
-        (tmp_path / "config.yaml").write_text(body)
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
 
     def test_approve_maps_to_true(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
@@ -1145,7 +1175,7 @@ class TestWriteApprovalMigration:
                         "_config_version: 28\nmemory:\n  write_mode: approve\n"
                         "skills:\n  write_mode: approve\n")
             migrate_config(interactive=False, quiet=True)
-            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             assert raw["memory"]["write_approval"] is True
             assert raw["skills"]["write_approval"] is True
             assert "write_mode" not in raw["memory"]
@@ -1159,7 +1189,7 @@ class TestWriteApprovalMigration:
                         "_config_version: 28\nmemory:\n  write_mode: 'on'\n"
                         "skills:\n  write_mode: 'off'\n")
             migrate_config(interactive=False, quiet=True)
-            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             assert raw["memory"]["write_approval"] is False
             assert raw["skills"]["write_approval"] is False
 
@@ -1167,7 +1197,7 @@ class TestWriteApprovalMigration:
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
             self._write(tmp_path, "_config_version: 28\nmemory:\n  memory_enabled: true\n")
             migrate_config(interactive=False, quiet=True)
-            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
             # No write_mode was persisted, so the rename is a no-op; the missing-
             # field pass then seeds the default (False = gate off). Either way the
             # gate ends up off and there's no leftover write_mode key.

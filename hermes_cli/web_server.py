@@ -12746,6 +12746,20 @@ async def set_dashboard_font(body: FontSetBody):
 # ---------------------------------------------------------------------------
 
 
+def _dashboard_plugin_config_identity(plugin_dir: Path, dashboard_name: str) -> tuple[str, str]:
+    plugin_yaml = plugin_dir / "plugin.yaml"
+    config_name = dashboard_name
+    if plugin_yaml.exists():
+        try:
+            data = yaml.safe_load(plugin_yaml.read_text(encoding="utf-8")) or {}
+            raw_name = data.get("name")
+            if isinstance(raw_name, str) and raw_name.strip():
+                config_name = raw_name.strip()
+        except Exception as exc:
+            _log.warning("Bad plugin manifest %s: %s", plugin_yaml, exc)
+    return config_name, plugin_dir.name
+
+
 def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional[str]:
     """Validate the manifest's ``api`` field for the plugin loader.
 
@@ -12783,34 +12797,12 @@ def _safe_plugin_api_relpath(api_field: Any, *, dashboard_dir: Path) -> Optional
     return api_field
 
 
-# Plugin sources whose Python backend (dashboard manifest `api` file) must NEVER
-# be auto-imported by the dashboard web server — only bundled plugins may. Shared
-# by the discovery-time scrub and the mount-time refuse guards so a typo in one
-# site cannot silently disable a security gate (GHSA-5qr3-c538-wm9j / #43719).
-_NON_BUNDLED_PLUGIN_SOURCES = frozenset({"user", "project"})
-
-
-def _dashboard_plugin_config_identity(plugin_dir: Path, dashboard_name: str) -> tuple[str, str]:
-    plugin_yaml = plugin_dir / "plugin.yaml"
-    config_name = dashboard_name
-    if plugin_yaml.exists():
-        try:
-            data = yaml.safe_load(plugin_yaml.read_text(encoding="utf-8")) or {}
-            raw_name = data.get("name")
-            if isinstance(raw_name, str) and raw_name.strip():
-                config_name = raw_name.strip()
-        except Exception as exc:
-            _log.warning("Bad plugin manifest %s: %s", plugin_yaml, exc)
-    return config_name, plugin_dir.name
-
-
 def _discover_dashboard_plugins() -> list:
     """Scan plugins/*/dashboard/manifest.json for dashboard extensions.
 
-    Checks three plugin sources. Bundled dashboard plugins win name conflicts
-    so non-bundled plugins cannot shadow trusted backend-capable routes:
-    1. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
-    2. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
+    Checks three plugin sources (same as hermes_cli.plugins):
+    1. User plugins:    ~/.hermes/plugins/<name>/dashboard/manifest.json
+    2. Bundled plugins: <repo>/plugins/<name>/dashboard/manifest.json  (memory/, etc.)
     3. Project plugins: ./.hermes/plugins/  (only if HERMES_ENABLE_PROJECT_PLUGINS)
     """
     plugins = []
@@ -12820,9 +12812,9 @@ def _discover_dashboard_plugins() -> list:
 
     bundled_root = get_bundled_plugins_dir()
     search_dirs = [
+        (get_hermes_home() / "plugins", "user"),
         (bundled_root / "memory", "bundled"),
         (bundled_root, "bundled"),
-        (get_hermes_home() / "plugins", "user"),
     ]
     # GHSA-5qr3-c538-wm9j (#29156): the previous ``os.environ.get(...)``
     # check treated *any* non-empty string as truthy, so ``=0``, ``=false``,
@@ -12886,26 +12878,10 @@ def _discover_dashboard_plugins() -> list:
                 raw_api = data.get("api")
                 dashboard_dir = child / "dashboard"
                 safe_api = _safe_plugin_api_relpath(raw_api, dashboard_dir=dashboard_dir)
-                if source == "project" and safe_api:
-                    _log.warning(
-                        "Plugin %s: refusing dashboard backend api=%s "
-                        "(project plugins may not auto-import Python "
-                        "backend routes; they may extend "
-                        "the dashboard with static UI assets only)",
-                        name, safe_api,
-                    )
-                    safe_api = None
-                    raw_api = None
-                if source == "user" and safe_api:
-                    from hermes_cli.plugins import is_plugin_enabled_by_config
-
-                    if not is_plugin_enabled_by_config(config_name, key=config_key):
-                        safe_api = None
-                        raw_api = None
                 if raw_api and safe_api is None:
                     _log.warning(
                         "Plugin %s: refusing unsafe api path %r (must be a "
-                        "relative file inside a bundled plugin's dashboard/ "
+                        "relative file inside the plugin's dashboard/ "
                         "directory); backend routes from this plugin will "
                         "not be mounted",
                         name,
@@ -13332,36 +13308,23 @@ def _mount_plugin_api_routes():
     a ``router`` (FastAPI APIRouter).  Routes are mounted under
     ``/api/plugins/<name>/``.
 
-    Backend import is restricted to bundled plugins. User and project
-    plugins can extend the dashboard UI via static JS/CSS, but their
-    Python ``api`` files are never auto-imported by the web server.
-    See GHSA-5qr3-c538-wm9j (#29156) and #43719.
+    Backend import is restricted to ``bundled`` and ``user`` sources.
+    Project plugins (``./.hermes/plugins/``) ship with the CWD and are
+    therefore attacker-controlled in any threat model where the user
+    opens a malicious repo; they can extend the dashboard UI via
+    static JS/CSS but their Python ``api`` file is never auto-imported
+    by the web server.  See GHSA-5qr3-c538-wm9j (#29156).
     """
     for plugin in _get_dashboard_plugins():
         api_file_name = plugin.get("_api_file")
         if not api_file_name:
             continue
-        source = plugin.get("source")
-        if source == "project":
-            # Backend Python auto-import is reserved for bundled plugins; user
-            # and project plugins extend the dashboard with static UI assets
-            # only (GHSA-5qr3-c538-wm9j / #43719). Defence-in-depth: discovery
-            # already nulls _api_file for these sources, but re-refusing here —
-            # at the actual importlib call site — keeps the import primitive
-            # contained even if a future caller or a tampered cache entry slips
-            # a non-bundled plugin through with an _api_file set.
-            _reason = {
-                "user": (
-                    "user-installed plugins may not auto-import Python code"
-                ),
-                "project": (
-                    "project plugins may not auto-import Python code; backend "
-                    "auto-import is reserved for bundled plugins"
-                ),
-            }.get(source, "only bundled plugins may auto-import Python code")
+        if plugin.get("source") == "project":
             _log.warning(
-                "Plugin %s: ignoring backend api=%s (%s)",
-                plugin["name"], api_file_name, _reason,
+                "Plugin %s: ignoring backend api=%s (project plugins may "
+                "not auto-import Python code; move the plugin to "
+                "~/.hermes/plugins/ if you trust it)",
+                plugin["name"], api_file_name,
             )
             continue
         if plugin.get("source") == "user":

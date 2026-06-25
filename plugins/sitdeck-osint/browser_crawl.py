@@ -184,7 +184,10 @@ def _goto_page(page, url: str, *, timeout_ms: int, wait_until: str = DEFAULT_GOT
 
 def _wait_after_login(page, *, timeout_ms: int) -> None:
     """Post-auth settle: DOM ready + optional dashboard chrome (not networkidle)."""
-    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+    try:
+        from playwright.sync_api import TimeoutError as PlaywrightTimeout
+    except ModuleNotFoundError:
+        PlaywrightTimeout = TimeoutError
 
     try:
         page.wait_for_load_state(POST_LOGIN_LOAD_STATE, timeout=min(timeout_ms, 30_000))

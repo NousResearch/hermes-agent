@@ -39,6 +39,10 @@
 
 const path = require('node:path')
 
+function pathForPlatform(platform) {
+  return platform === 'win32' ? path.win32 : path.posix
+}
+
 // Map process.platform → electron-builder's `release/<dir>-unpacked` name.
 function unpackedDirName(platform) {
   if (platform === 'darwin') return 'mac-unpacked' // not used (mac swaps bundles)
@@ -57,11 +61,12 @@ function unpackedDirName(platform) {
  */
 function resolveUnpackedRelease(execPath, updateRoot, platform) {
   if (!execPath || !updateRoot) return null
-  const releaseDir = path.join(updateRoot, 'apps', 'desktop', 'release')
-  const unpacked = path.join(releaseDir, unpackedDirName(platform))
-  const normalizedExec = path.resolve(String(execPath))
+  const platformPath = pathForPlatform(platform)
+  const releaseDir = platformPath.join(updateRoot, 'apps', 'desktop', 'release')
+  const unpacked = platformPath.resolve(platformPath.join(releaseDir, unpackedDirName(platform)))
+  const normalizedExec = platformPath.resolve(String(execPath))
   // execPath must be the unpacked dir itself or a descendant of it.
-  const withSep = unpacked.endsWith(path.sep) ? unpacked : unpacked + path.sep
+  const withSep = unpacked.endsWith(platformPath.sep) ? unpacked : unpacked + platformPath.sep
   if (normalizedExec === unpacked || normalizedExec.startsWith(withSep)) {
     return unpacked
   }

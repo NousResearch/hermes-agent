@@ -317,7 +317,6 @@ def _popen_kwargs(cwd: Path) -> dict[str, Any]:
         "cwd": str(cwd),
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
-        "stdin": subprocess.DEVNULL,
     }
     if _is_windows():
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(
@@ -516,7 +515,12 @@ def start_dev(
     env = os.environ.copy()
     env["PORT"] = str(port)
     try:
-        proc = subprocess.Popen(command, env=env, **_popen_kwargs(root))
+        proc = subprocess.Popen(
+            command,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            **_popen_kwargs(root),
+        )
     except OSError as exc:
         return {"ok": False, "error": str(exc), "command": command}
 
@@ -587,9 +591,16 @@ def stop_dev(*, pid: int | None = None, force: bool = False) -> dict[str, Any]:
             kill_cmd = ["taskkill", "/PID", str(target_pid), "/T"]
             if force:
                 kill_cmd.append("/F")
-            subprocess.run(kill_cmd, capture_output=True, text=True, check=False)
+            subprocess.run(
+                kill_cmd,
+                capture_output=True,
+                text=True,
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
         else:
-            sig = signal.SIGKILL if force else signal.SIGTERM
+            sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+            sig = sigkill if force else signal.SIGTERM
             os.kill(target_pid, sig)
     except OSError as exc:
         return {"ok": False, "error": str(exc), "pid": target_pid}

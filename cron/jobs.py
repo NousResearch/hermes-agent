@@ -732,6 +732,45 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _resolve_default_model_snapshot() -> Optional[str]:
+    """Resolve the global default model the same way the cron ticker does.
+
+    Mirrors the unpinned-model resolution in ``cron/scheduler.py`` ``run_job``:
+    read ``config.yaml`` ``model.default`` (or the ``model`` alias / bare string
+    form), applying the managed-scope overlay and env expansion. Used by
+    ``create_job`` to snapshot the default model for unpinned jobs so a later
+    swap of the global default is detected at fire time (#44585).
+
+    Returns the resolved model string, or ``None`` if config is missing/empty
+    or resolution fails (fail-open — caller treats ``None`` as "no snapshot").
+    """
+    try:
+        import yaml
+        from hermes_cli.config import _expand_env_vars
+
+        cfg_path = get_hermes_home() / "config.yaml"
+        if not cfg_path.exists():
+            return None
+        with cfg_path.open(encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+        try:
+            from hermes_cli import managed_scope
+            cfg = managed_scope.apply_managed_overlay(cfg)
+        except Exception:
+            pass
+        cfg = _expand_env_vars(cfg)
+        model_cfg = cfg.get("model") or {}
+        if isinstance(model_cfg, str):
+            return model_cfg.strip() or None
+        if isinstance(model_cfg, dict):
+            default = model_cfg.get("default") or model_cfg.get("model")
+            if isinstance(default, str):
+                return default.strip() or None
+        return None
+    except Exception:
+        return None
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -847,6 +886,47 @@ def create_job(
 
     prompt_text = _coerce_job_text(prompt)
     label_source = (prompt_text or (normalized_skills[0] if normalized_skills else None) or (normalized_script if normalized_no_agent else None)) or "cron job"
+
+    # Provider/model-drift guard (#44585). When the caller does NOT pin a
+    # provider and/or model, the job follows the global default — model.default
+    # in config.yaml and whatever resolve_runtime_provider() picks at fire time.
+    # That global state can change (e.g. a temporary switch to a paid provider
+    # OR a paid model like claude-fable-5 on the SAME provider), and an unpinned
+    # job would then silently inherit it and spend real money. To detect that,
+    # snapshot what resolution WOULD pick *right now*, at creation, for each
+    # axis the job leaves unpinned. The fire-time guard (run_job) fails closed
+    # when an unpinned job's currently-resolved provider OR model differs from
+    # its snapshot.
+    #
+    # Only captured for agent-backed jobs (no_agent script jobs make no paid
+    # inference). Each axis is snapshotted only when that axis is unpinned —
+    # a pinned provider/model doesn't drift with global state. Fail-open to None
+    # on any resolution error so job creation never breaks; a missing snapshot
+    # preserves the legacy no-guard behaviour for that axis.
+    provider_snapshot: Optional[str] = None
+    model_snapshot: Optional[str] = None
+    if not normalized_no_agent:
+        if normalized_provider is None:
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                _runtime_kwargs = {"requested": None}
+                if normalized_base_url:
+                    _runtime_kwargs["explicit_base_url"] = normalized_base_url
+                _snap = resolve_runtime_provider(**_runtime_kwargs)
+                _snap_provider = str(_snap.get("provider") or "").strip().lower()
+                provider_snapshot = _snap_provider or None
+            except Exception:
+                provider_snapshot = None
+        if normalized_model is None:
+            # Mirror the fire-time unpinned-model resolution (run_job reads
+            # config.yaml model.default / model). Capture that value so a later
+            # swap of the global default model is detected even when the
+            # provider is unchanged (e.g. a premium model on the same endpoint).
+            try:
+                model_snapshot = _resolve_default_model_snapshot() or None
+            except Exception:
+                model_snapshot = None
+
     job = {
         "id": job_id,
         "name": name or label_source[:50].strip(),
@@ -855,6 +935,11 @@ def create_job(
         "skill": normalized_skills[0] if normalized_skills else None,
         "model": normalized_model,
         "provider": normalized_provider,
+        # Provider/model resolution captured at creation for unpinned jobs
+        # (#44585). None for pinned axes, no_agent jobs, resolution failures, and
+        # any pre-existing job written before these fields existed (back-compat).
+        "provider_snapshot": provider_snapshot,
+        "model_snapshot": model_snapshot,
         "base_url": normalized_base_url,
         "script": normalized_script,
         "no_agent": normalized_no_agent,

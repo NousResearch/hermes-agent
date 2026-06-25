@@ -18,6 +18,17 @@ HARNESS_SCRIPTS = REPO_ROOT / "vendor" / "openclaw-mirror" / "extensions" / "hyp
 NC_KAN = VENDOR_AI / "templates" / "nc_kan"
 
 
+def _require_nc_kan_template() -> Path:
+    if not NC_KAN.is_dir():
+        pytest.skip("AI-Scientist submodule is not checked out")
+    pytest.importorskip("numpy")
+    return NC_KAN
+
+
+def _require_pythonosc() -> None:
+    pytest.importorskip("pythonosc")
+
+
 @pytest.fixture()
 def harness_scripts_path():
     path = str(HARNESS_SCRIPTS)
@@ -30,16 +41,16 @@ def harness_scripts_path():
 
 
 def test_nc_kan_template_experiment_smoke() -> None:
-    assert NC_KAN.is_dir(), "sync vendor + overlay first"
+    nc_kan = _require_nc_kan_template()
     proc = subprocess.run(
         [sys.executable, "experiment.py", "--out_dir=run_smoke"],
-        cwd=str(NC_KAN),
+        cwd=str(nc_kan),
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert proc.returncode == 0, proc.stderr
-    payload = json.loads((NC_KAN / "run_smoke" / "final_info.json").read_text(encoding="utf-8"))
+    payload = json.loads((nc_kan / "run_smoke" / "final_info.json").read_text(encoding="utf-8"))
     assert "nc_kan" in payload
     assert "accuracy" in payload["nc_kan"]["means"]
 
@@ -125,6 +136,7 @@ def test_runner_stores_findings_in_fake_redis(harness_scripts_path) -> None:
 
 
 def test_harness_scientist_run_nc_kan_e2e(harness_scripts_path) -> None:
+    _require_pythonosc()
     from fastapi.testclient import TestClient
 
     import harness_daemon as hd
@@ -165,6 +177,7 @@ def test_harness_scientist_run_nc_kan_e2e(harness_scripts_path) -> None:
 
 
 def test_harness_scientist_status_reads_fake_redis(harness_scripts_path) -> None:
+    _require_pythonosc()
     from fastapi.testclient import TestClient
 
     import harness_daemon as hd

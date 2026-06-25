@@ -727,11 +727,16 @@ def stop_bridge(values: dict[str, Any] | None = None) -> dict[str, Any]:
     force = bool(values.get("force"))
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False)
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                check=False,
+                stdin=subprocess.DEVNULL,
+            )
         else:
             import signal
 
-            os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+            sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+            os.kill(pid, sigkill if force else signal.SIGTERM)
     except OSError as exc:
         return {"ok": False, "error": str(exc), "pid": pid}
     _clear_bridge_state()

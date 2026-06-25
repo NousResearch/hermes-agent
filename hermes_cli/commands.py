@@ -181,6 +181,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills"),
     CommandDef("pet", "Toggle or adopt a petdex mascot (/pet, /pet list, /pet <slug>)", "Tools & Skills",
                cli_only=True, args_hint="[toggle|list|scale <n>|<slug>]", subcommands=("toggle", "list", "scale", "off")),
+    CommandDef("hatch", "Generate a new petdex pet from a description",
+               "Tools & Skills", cli_only=True, aliases=("generate-pet",), args_hint="[description]"),
     CommandDef("learn", "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)",
                "Tools & Skills", args_hint="<what to learn from>"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",

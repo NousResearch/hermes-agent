@@ -2466,6 +2466,23 @@ def _reset_server_error(server_name: str) -> None:
     _server_error_counts[server_name] = 0
     _server_breaker_opened_at.pop(server_name, None)
 
+
+def _server_is_reconnecting(server) -> bool:
+    """Return True when a server's background task is mid-reconnect.
+
+    A keepalive-triggered reconnect (#17003 path) makes the run loop set
+    ``session = None`` for a few hundred milliseconds while it tears down
+    and rebuilds the transport. During that window ``server.session`` is
+    None even though the server is healthy and its background ``run()``
+    task is still alive.
+
+    Handlers use this to tell that transient gap apart from a genuinely
+    dead server (task finished or never started), so they can avoid
+    counting the reconnect window as a circuit-breaker failure.
+    """
+    task = getattr(server, "_task", None)
+    return task is not None and not task.done()
+
 # ---------------------------------------------------------------------------
 # Auth-failure detection helpers (Task 6 of MCP OAuth consolidation)
 # ---------------------------------------------------------------------------
@@ -3152,6 +3169,19 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
+            # A keepalive-triggered reconnect sets session=None for a few
+            # hundred ms while the run loop rebuilds the transport. Counting
+            # that transient gap as a failure bumps the circuit breaker and,
+            # after _CIRCUIT_BREAKER_THRESHOLD such bumps, opens it for the
+            # full cooldown on an otherwise-healthy server. Only bump when the
+            # server is genuinely gone (task finished or never started).
+            if server is not None and _server_is_reconnecting(server):
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' is reconnecting; "
+                        f"retry shortly."
+                    )
+                }, ensure_ascii=False)
             _bump_server_error(server_name)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
@@ -3274,6 +3304,13 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
+            if server is not None and _server_is_reconnecting(server):
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' is reconnecting; "
+                        f"retry shortly."
+                    )
+                }, ensure_ascii=False)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
@@ -3334,6 +3371,13 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
+            if server is not None and _server_is_reconnecting(server):
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' is reconnecting; "
+                        f"retry shortly."
+                    )
+                }, ensure_ascii=False)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
@@ -3392,6 +3436,13 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
+            if server is not None and _server_is_reconnecting(server):
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' is reconnecting; "
+                        f"retry shortly."
+                    )
+                }, ensure_ascii=False)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)
@@ -3457,6 +3508,13 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
         with _lock:
             server = _servers.get(server_name)
         if not server or not server.session:
+            if server is not None and _server_is_reconnecting(server):
+                return json.dumps({
+                    "error": (
+                        f"MCP server '{server_name}' is reconnecting; "
+                        f"retry shortly."
+                    )
+                }, ensure_ascii=False)
             return json.dumps({
                 "error": f"MCP server '{server_name}' is not connected"
             }, ensure_ascii=False)

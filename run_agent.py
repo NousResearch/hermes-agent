@@ -1155,10 +1155,26 @@ class AIAgent:
         from agent.chat_completion_helpers import estimate_request_context_tokens
         est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:
-            return max(stale_base, 240.0)
-        if est_tokens > 50_000:
-            return max(stale_base, 150.0)
-        return stale_base
+            timeout = max(stale_base, 240.0)
+        elif est_tokens > 50_000:
+            timeout = max(stale_base, 150.0)
+        else:
+            timeout = stale_base
+
+        # Reasoning models can think for 120-300+ seconds before responding.
+        _model_lower = (self.model or "").lower()
+        _reasoning_prefixes = (
+            "o1", "o3", "o4",
+            "deepseek-r", "deepseek-reasoner",
+            "nemotron",
+            "qwq", "qwen3",
+            "grok-4",
+        )
+        if any(_model_lower.startswith(p) or f"/{p}" in _model_lower
+               for p in _reasoning_prefixes):
+            timeout = max(timeout, 300.0)
+
+        return timeout
 
     def _codex_silent_hang_hint(self, model: Optional[str] = None) -> Optional[str]:
         """Return an actionable hint when this request matches a known

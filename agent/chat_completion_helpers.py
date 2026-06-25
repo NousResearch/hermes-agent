@@ -2562,6 +2562,26 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         else:
             _stream_stale_timeout = _stream_stale_timeout_base
 
+        # Reasoning models (o1/o3, DeepSeek R1, Nemotron, Grok reasoning,
+        # QwQ, etc.) can think for 120-300+ seconds before producing the
+        # first token.  Bump the stale timeout so the detector doesn't kill
+        # healthy connections during the thinking phase.
+        _model_lower = (agent.model or "").lower()
+        _reasoning_prefixes = (
+            "o1", "o3", "o4",
+            "deepseek-r", "deepseek-reasoner",
+            "nemotron",
+            "qwq", "qwen3",
+            "grok-4",  # grok-4.x-reasoning variants
+        )
+        if any(_model_lower.startswith(p) or f"/{p}" in _model_lower
+               for p in _reasoning_prefixes):
+            _stream_stale_timeout = max(_stream_stale_timeout, 300.0)
+            logger.debug(
+                "Reasoning model detected (%s) — stale stream timeout raised to %.0fs",
+                agent.model, _stream_stale_timeout,
+            )
+
     t = threading.Thread(target=_call, daemon=True)
     t.start()
     _last_heartbeat = time.time()

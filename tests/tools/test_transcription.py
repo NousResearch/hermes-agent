@@ -318,3 +318,102 @@ class TestNormalizeLocalModel:
                 )
         finally:
             os.unlink(audio_file)
+
+
+# ---------------------------------------------------------------------------
+# Hotwords for local provider
+# ---------------------------------------------------------------------------
+
+
+class TestHotwordsLocalProvider:
+    """hotwords from stt config are forwarded to faster-whisper."""
+
+    def test_hotwords_passed_to_faster_whisper(self, tmp_path, caplog):
+        import logging
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = MagicMock()
+        mock_info = MagicMock(language="en", duration=1.0)
+        mock_segment = MagicMock()
+        mock_segment.text = "hello"
+        mock_model.transcribe.return_value = (iter([mock_segment]), mock_info)
+
+        stt_config = {
+            "enabled": True,
+            "provider": "local",
+            "hotwords": ["Hermes", "OpenCode"],
+            "local": {"model": "base", "language": ""},
+        }
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch.dict("sys.modules", {"faster_whisper": _fake_faster_whisper_module(mock_model)}):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            mock_model.transcribe.assert_called_once()
+            kwargs = mock_model.transcribe.call_args.kwargs
+            assert "hotwords" in kwargs
+            assert "Hermes" in kwargs["hotwords"]
+            assert "OpenCode" in kwargs["hotwords"]
+
+    def test_empty_hotwords_skips_kwarg(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = MagicMock()
+        mock_info = MagicMock(language="en", duration=1.0)
+        mock_segment = MagicMock()
+        mock_segment.text = "hello"
+        mock_model.transcribe.return_value = (iter([mock_segment]), mock_info)
+
+        stt_config = {
+            "enabled": True,
+            "provider": "local",
+            "hotwords": [],
+            "local": {"model": "base", "language": ""},
+        }
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch.dict("sys.modules", {"faster_whisper": _fake_faster_whisper_module(mock_model)}):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            kwargs = mock_model.transcribe.call_args.kwargs
+            assert "hotwords" not in kwargs
+
+    def test_defensive_filter_strips_empty_and_nonstring(self, tmp_path):
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_model = MagicMock()
+        mock_info = MagicMock(language="en", duration=1.0)
+        mock_segment = MagicMock()
+        mock_segment.text = "hello"
+        mock_model.transcribe.return_value = (iter([mock_segment]), mock_info)
+
+        stt_config = {
+            "enabled": True,
+            "provider": "local",
+            "hotwords": ["", "Hermes", None, "  OpenCode  ", 42],
+            "local": {"model": "base", "language": ""},
+        }
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("tools.transcription_tools._load_stt_config", return_value=stt_config), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None), \
+             patch.dict("sys.modules", {"faster_whisper": _fake_faster_whisper_module(mock_model)}):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            kwargs = mock_model.transcribe.call_args.kwargs
+            assert "hotwords" in kwargs
+            # Only "Hermes" and "OpenCode" survive filtering
+            assert kwargs["hotwords"] == "Hermes, OpenCode"

@@ -128,6 +128,12 @@ def _load_stt_config() -> dict:
         return {}
 
 
+def _get_hotwords(stt_config: dict) -> list:
+    """Return cleaned hotwords list from stt config."""
+    raw = stt_config.get("hotwords", [])
+    return [w.strip() for w in raw if isinstance(w, str) and w.strip()]
+
+
 def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
     """Return whether STT is enabled in config."""
     if stt_config is None:
@@ -1156,6 +1162,9 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
         transcribe_kwargs = {"beam_size": 5}
         if _forced_lang:
             transcribe_kwargs["language"] = _forced_lang
+        hotwords = _get_hotwords(_load_stt_config())
+        if hotwords:
+            transcribe_kwargs["hotwords"] = ", ".join(hotwords)
 
         try:
             segments, info = _local_model.transcribe(file_path, **transcribe_kwargs)

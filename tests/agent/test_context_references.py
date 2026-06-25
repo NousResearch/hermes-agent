@@ -308,6 +308,32 @@ def test_restricts_paths_to_allowed_root(tmp_path: Path):
     assert any("outside the allowed workspace" in warning for warning in result.warnings)
 
 
+def test_allows_paths_in_additional_allowed_roots(tmp_path: Path):
+    from agent.context_references import preprocess_context_references
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    staging = tmp_path / "desktop-attachments"
+    staging.mkdir()
+    staged = staging / "report.txt"
+    staged.write_text("uploaded report\n", encoding="utf-8")
+    secret = tmp_path / "secret.txt"
+    secret.write_text("outside\n", encoding="utf-8")
+
+    result = preprocess_context_references(
+        f"read @file:{staged} and @file:{secret}",
+        cwd=workspace,
+        context_length=100_000,
+        allowed_root=workspace,
+        allowed_roots=[staging],
+    )
+
+    assert result.expanded
+    assert "uploaded report" in result.message
+    assert "```\noutside\n```" not in result.message
+    assert any("outside the allowed workspace" in warning for warning in result.warnings)
+
+
 def test_defaults_allowed_root_to_cwd(tmp_path: Path):
     from agent.context_references import preprocess_context_references
 

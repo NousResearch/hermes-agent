@@ -6473,7 +6473,7 @@ def test_prompt_submit_sets_approval_session_key(monkeypatch):
     assert captured["session_key"] == "session-key"
 
 
-def test_prompt_submit_expands_context_refs(monkeypatch):
+def test_prompt_submit_expands_context_refs(monkeypatch, tmp_path):
     captured = {}
 
     class _Agent:
@@ -6497,20 +6497,31 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
         def start(self):
             self._target()
 
-    fake_ctx = types.ModuleType("agent.context_references")
-    fake_ctx.preprocess_context_references = (
-        lambda message, **kwargs: types.SimpleNamespace(
+    def fake_preprocess_context_references(message, **kwargs):
+        captured["context_kwargs"] = kwargs
+        return types.SimpleNamespace(
             blocked=False,
             message="expanded prompt",
             warnings=[],
             references=[],
             injected_tokens=0,
         )
-    )
+
+    fake_ctx = types.ModuleType("agent.context_references")
+    fake_ctx.preprocess_context_references = fake_preprocess_context_references
     fake_meta = types.ModuleType("agent.model_metadata")
     fake_meta.get_model_context_length = lambda *args, **kwargs: 100000
 
-    server._sessions["sid"] = _session(agent=_Agent())
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    hermes_home = tmp_path / "hermes-home"
+    hermes_home.mkdir()
+
+    server._sessions["sid"] = _session(
+        agent=_Agent(),
+        cwd=str(workspace),
+        profile_home=str(hermes_home),
+    )
     monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
@@ -6527,6 +6538,11 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
     )
 
     assert captured["prompt"] == "expanded prompt"
+    context_kwargs = captured["context_kwargs"]
+    assert Path(context_kwargs["allowed_root"]).resolve() == workspace.resolve()
+    assert [Path(root).resolve() for root in context_kwargs["allowed_roots"]] == [
+        server._desktop_attachment_fallback_dir(server._sessions["sid"]).resolve()
+    ]
 
 
 def test_image_attach_appends_local_image(monkeypatch):
@@ -6670,6 +6686,18 @@ def test_file_attach_falls_back_to_hermes_home_when_workspace_is_read_only(monke
         assert resp["result"]["ref_text"] == f"@file:{stored}"
         assert stored.read_text(encoding="utf-8") == "hello world"
         assert not blocked_root.exists()
+
+        from agent.context_references import preprocess_context_references
+
+        ctx = preprocess_context_references(
+            resp["result"]["ref_text"],
+            cwd=workspace,
+            allowed_root=workspace,
+            allowed_roots=[server._desktop_attachment_fallback_dir(server._sessions["sid"])],
+            context_length=100_000,
+        )
+        assert ctx.blocked is False
+        assert "hello world" in ctx.message
     finally:
         server._sessions.pop("sid", None)
 

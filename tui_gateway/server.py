@@ -10659,6 +10659,7 @@ def _run_prompt_submit(
                     prompt,
                     cwd=cwd,
                     allowed_root=cwd,
+                    allowed_roots=[_desktop_attachment_fallback_dir(session)],
                     context_length=ctx_len,
                 )
                 if ctx.blocked:
@@ -11608,11 +11609,16 @@ def _desktop_attachment_dir(session: dict) -> Path:
         root.mkdir(parents=True, exist_ok=True)
         return root
     except PermissionError:
-        profile_home = Path(str(session.get("profile_home") or _hermes_home)).resolve()
-        digest = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:12]
-        fallback = profile_home / "desktop-attachments" / f"{workspace.name or 'workspace'}-{digest}"
+        fallback = _desktop_attachment_fallback_dir(session, workspace=workspace)
         fallback.mkdir(parents=True, exist_ok=True)
         return fallback
+
+
+def _desktop_attachment_fallback_dir(session: dict, *, workspace: Path | None = None) -> Path:
+    workspace = (workspace or Path(_session_cwd(session))).resolve()
+    profile_home = Path(str(session.get("profile_home") or _hermes_home)).resolve()
+    digest = hashlib.sha256(str(workspace).encode("utf-8")).hexdigest()[:12]
+    return profile_home / "desktop-attachments" / f"{workspace.name or 'workspace'}-{digest}"
 
 
 def _sanitize_attachment_name(name: str) -> str:

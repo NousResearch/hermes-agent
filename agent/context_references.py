@@ -9,7 +9,7 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterable
 
 from agent.model_metadata import estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
@@ -110,6 +110,7 @@ def preprocess_context_references(
     context_length: int,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
     allowed_root: str | Path | None = None,
+    allowed_roots: Iterable[str | Path] | None = None,
 ) -> ContextReferenceResult:
     coro = preprocess_context_references_async(
         message,
@@ -117,6 +118,7 @@ def preprocess_context_references(
         context_length=context_length,
         url_fetcher=url_fetcher,
         allowed_root=allowed_root,
+        allowed_roots=allowed_roots,
     )
     # Safe for both CLI (no loop) and gateway (loop already running).
     try:
@@ -137,6 +139,7 @@ async def preprocess_context_references_async(
     context_length: int,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
     allowed_root: str | Path | None = None,
+    allowed_roots: Iterable[str | Path] | None = None,
 ) -> ContextReferenceResult:
     refs = parse_context_references(message)
     if not refs:
@@ -145,8 +148,10 @@ async def preprocess_context_references_async(
     cwd_path = Path(cwd).expanduser().resolve()
     # Default to the current working directory so @ references cannot escape
     # the active workspace unless a caller explicitly widens the root.
-    allowed_root_path = (
-        Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd_path
+    allowed_root_paths = _normalize_allowed_roots(
+        cwd_path,
+        allowed_root=allowed_root,
+        allowed_roots=allowed_roots,
     )
     warnings: list[str] = []
     blocks: list[str] = []
@@ -164,7 +169,7 @@ async def preprocess_context_references_async(
                 ref,
                 cwd_path,
                 url_fetcher=url_fetcher,
-                allowed_root=allowed_root_path,
+                allowed_roots=allowed_root_paths,
             )
             for ref in refs
         )
@@ -220,13 +225,13 @@ async def _expand_reference(
     cwd: Path,
     *,
     url_fetcher: Callable[[str], str | Awaitable[str]] | None = None,
-    allowed_root: Path | None = None,
+    allowed_roots: list[Path] | None = None,
 ) -> tuple[str | None, str | None]:
     try:
         if ref.kind == "file":
-            return _expand_file_reference(ref, cwd, allowed_root=allowed_root)
+            return _expand_file_reference(ref, cwd, allowed_roots=allowed_roots)
         if ref.kind == "folder":
-            return _expand_folder_reference(ref, cwd, allowed_root=allowed_root)
+            return _expand_folder_reference(ref, cwd, allowed_roots=allowed_roots)
         if ref.kind == "diff":
             return _expand_git_reference(ref, cwd, ["diff"], "git diff")
         if ref.kind == "staged":
@@ -249,9 +254,9 @@ def _expand_file_reference(
     ref: ContextReference,
     cwd: Path,
     *,
-    allowed_root: Path | None = None,
+    allowed_roots: list[Path] | None = None,
 ) -> tuple[str | None, str | None]:
-    path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
+    path = _resolve_path(cwd, ref.target, allowed_roots=allowed_roots)
     _ensure_reference_path_allowed(path)
     if not path.exists():
         return f"{ref.raw}: file not found", None
@@ -283,9 +288,9 @@ def _expand_folder_reference(
     ref: ContextReference,
     cwd: Path,
     *,
-    allowed_root: Path | None = None,
+    allowed_roots: list[Path] | None = None,
 ) -> tuple[str | None, str | None]:
-    path = _resolve_path(cwd, ref.target, allowed_root=allowed_root)
+    path = _resolve_path(cwd, ref.target, allowed_roots=allowed_roots)
     _ensure_reference_path_allowed(path)
     if not path.exists():
         return f"{ref.raw}: folder not found", None
@@ -348,17 +353,35 @@ async def _default_url_fetcher(url: str) -> str:
     return str(doc.get("content") or doc.get("raw_content") or "").strip()
 
 
-def _resolve_path(cwd: Path, target: str, *, allowed_root: Path | None = None) -> Path:
+def _normalize_allowed_roots(
+    cwd: Path,
+    *,
+    allowed_root: str | Path | None = None,
+    allowed_roots: Iterable[str | Path] | None = None,
+) -> list[Path]:
+    roots = [Path(allowed_root).expanduser().resolve() if allowed_root is not None else cwd]
+    if allowed_roots is not None:
+        if isinstance(allowed_roots, (str, Path)):
+            roots.append(Path(allowed_roots).expanduser().resolve())
+        else:
+            roots.extend(Path(root).expanduser().resolve() for root in allowed_roots)
+    return roots
+
+
+def _resolve_path(cwd: Path, target: str, *, allowed_roots: list[Path] | None = None) -> Path:
     path = Path(os.path.expanduser(target))
     if not path.is_absolute():
         path = cwd / path
     resolved = path.resolve()
-    if allowed_root is not None:
+    if allowed_roots is None:
+        return resolved
+    for allowed_root in allowed_roots:
         try:
             resolved.relative_to(allowed_root)
-        except ValueError as exc:
-            raise ValueError("path is outside the allowed workspace") from exc
-    return resolved
+            return resolved
+        except ValueError:
+            continue
+    raise ValueError("path is outside the allowed workspace")
 
 
 def _ensure_reference_path_allowed(path: Path) -> None:

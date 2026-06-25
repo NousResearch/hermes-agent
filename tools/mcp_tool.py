@@ -34,6 +34,20 @@ Example config::
         headers:
           Authorization: "Bearer sk-..."
         timeout: 180
+        # OPTIONAL — for HTTP/StreamableHTTP servers whose Authorization
+        # bearer is short-lived (typical OAuth client_credentials TTL is
+        # ~1h). Runs the configured shell command on auth failure (401)
+        # during reconnect, captures stdout as the fresh bearer, replaces
+        # the in-memory Authorization header, and retries WITHOUT
+        # incrementing the give-up counter. Stops the "token expires
+        # mid-run → 5 reconnect failures → systemd restarts hermes"
+        # cycle that older deployments hit when the bearer is sourced
+        # from a startup-only env var (e.g. ${GBRAIN_MCP_BEARER}).
+        # The command MUST print ONLY the new token to stdout (one line,
+        # no `Bearer ` prefix). Runs with a 10s timeout, 60s cooldown
+        # between attempts. Inherits hermes' process env so the script
+        # can read whatever credentials it needs to mint a fresh token.
+        bearer_refresh_cmd: "/etc/hermes/refresh-bearer.sh remote_api"
       searxng:
         url: "http://localhost:8000/sse"
         transport: sse       # use SSE transport instead of Streamable HTTP
@@ -290,6 +304,13 @@ _MAX_BACKOFF_SECONDS = 60
 # stops a misconfigured tiny interval from busy-looping the keepalive.
 _DEFAULT_KEEPALIVE_INTERVAL = 180  # seconds between liveness pings
 _MIN_KEEPALIVE_INTERVAL = 5        # clamp floor for configured intervals
+
+# bearer_refresh_cmd (per-server config option): runs an operator-provided
+# shell command on 401-during-reconnect, captures stdout as the new Bearer,
+# updates the in-memory Authorization header, and retries without escalating
+# to a hard reconnect failure. See _refresh_bearer_via_command.
+_BEARER_REFRESH_TIMEOUT_S = 10.0    # kill the mint command past this
+_BEARER_REFRESH_COOLDOWN_S = 60.0   # min seconds between refresh attempts
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -1420,6 +1441,7 @@ class MCPServerTask:
         "_rpc_lock", "_pending_refresh_tasks",
         "_pending_call_context",
         "initialize_result", "_ping_unsupported",
+        "_bearer_refresh_last_attempt",
     )
 
     def __init__(self, name: str):
@@ -1666,6 +1688,134 @@ class MCPServerTask:
 
         # Fallback probe for servers without ping support.
         await asyncio.wait_for(self.session.list_tools(), timeout=30.0)
+
+    async def _refresh_bearer_via_command(self) -> bool:
+        """Re-mint the Authorization bearer by running a configured shell
+        command. Returns True when the in-memory header was successfully
+        replaced. Returns False when the feature isn't configured, the
+        command failed, the cooldown is active, or the output didn't look
+        like a usable token.
+
+        Use case: HTTP/StreamableHTTP MCP servers fronted by a short-lived
+        OAuth client_credentials bearer (typical TTL ~1h). Without this
+        path, the token silently expires mid-run, every subsequent
+        request returns 401, the 5-attempt reconnect loop burns through,
+        ``run()`` returns, and systemd's ``Restart=on-failure`` cycles
+        hermes — turning a routine token rotation into a hard service
+        restart. With this path, the wrapper detects the auth failure,
+        invokes the operator's mint script, swaps the header, and
+        reconnects without ever telling systemd that anything went
+        wrong.
+
+        Config schema (per-server, in ``mcp_servers`` map)::
+
+            bearer_refresh_cmd: "/etc/hermes/refresh-bearer.sh <args>"
+
+        Contract for the script:
+          * Prints ONLY the new bearer token (no ``Bearer`` prefix, no
+            JSON wrapping, no trailing newline beyond the usual). Stripped
+            and validated as a single ~16+ char token; rejected if it
+            contains whitespace internal to the token, looks empty, or
+            looks like an error message.
+          * Inherits hermes' process env (so it can read any credentials
+            already present, e.g. KV-fetched client_id/client_secret).
+          * Must complete within 10 seconds. Killed otherwise.
+
+        Cooldown: 60 seconds between refresh attempts. Prevents a
+        persistent auth-error condition (revoked client, wrong KV key)
+        from hammering the mint endpoint.
+        """
+        cmd = self._config.get("bearer_refresh_cmd")
+        if not cmd or not isinstance(cmd, str):
+            return False
+
+        now = time.monotonic()
+        last = getattr(self, "_bearer_refresh_last_attempt", 0.0)
+        if (now - last) < _BEARER_REFRESH_COOLDOWN_S:
+            logger.debug(
+                "MCP server '%s': bearer_refresh_cmd skipped — cooldown "
+                "(%.0fs since last attempt; floor %.0fs)",
+                self.name, now - last, _BEARER_REFRESH_COOLDOWN_S,
+            )
+            return False
+        self._bearer_refresh_last_attempt = now
+
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=_BEARER_REFRESH_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.communicate()
+                logger.warning(
+                    "MCP server '%s': bearer_refresh_cmd timed out after %.0fs",
+                    self.name, _BEARER_REFRESH_TIMEOUT_S,
+                )
+                return False
+        except Exception as exc:
+            logger.warning(
+                "MCP server '%s': bearer_refresh_cmd spawn failed: %s",
+                self.name, exc,
+            )
+            return False
+
+        if proc.returncode != 0:
+            _stderr_preview = (stderr or b"").decode("utf-8", errors="replace")[:200]
+            logger.warning(
+                "MCP server '%s': bearer_refresh_cmd exited %s — stderr: %s",
+                self.name, proc.returncode, _stderr_preview.strip() or "(empty)",
+            )
+            return False
+
+        token = (stdout or b"").decode("utf-8", errors="replace").strip()
+        # Defensive validation — reject obvious non-tokens. A script that
+        # accidentally echoes an error string ("ERROR: vault unreachable")
+        # should NOT silently become a header value.
+        if (
+            not token
+            or len(token) < 16
+            or any(ch.isspace() for ch in token)
+            or token.lower().startswith(("error", "fail", "{", "<"))
+        ):
+            _preview = token[:80] if token else "(empty)"
+            logger.warning(
+                "MCP server '%s': bearer_refresh_cmd produced an output "
+                "that doesn't look like a token — refusing to install. "
+                "First 80 chars: %r",
+                self.name, _preview,
+            )
+            return False
+
+        # Swap the header in-place. The reconnect loop reads
+        # ``self._config["headers"]`` on every fresh ``_run_http`` entry,
+        # so the next attempt picks up the new value.
+        headers = self._config.setdefault("headers", {})
+        if not isinstance(headers, dict):
+            logger.warning(
+                "MCP server '%s': bearer_refresh_cmd succeeded but config "
+                "headers field is not a dict (%s) — refusing to install",
+                self.name, type(headers).__name__,
+            )
+            return False
+        # Preserve operator's casing if `authorization` was lowercase, etc.
+        auth_key = next(
+            (k for k in headers if k.lower() == "authorization"),
+            "Authorization",
+        )
+        headers[auth_key] = f"Bearer {token}"
+        logger.info(
+            "MCP server '%s': bearer refreshed via bearer_refresh_cmd "
+            "(new token ends in '...%s')",
+            self.name, token[-6:] if len(token) >= 6 else "?",
+        )
+        return True
 
     async def _wait_for_lifecycle_event(self) -> str:
         """Block until either _shutdown_event or _reconnect_event fires.
@@ -2294,6 +2444,25 @@ class MCPServerTask:
                 raise
             except Exception as exc:
                 self.session = None
+
+                # bearer_refresh_cmd hook: if this is an auth failure and
+                # the operator has configured a refresh command, try it
+                # once before counting this against retries. Works both
+                # for the initial connect (e.g. hermes started with a
+                # stale env-baked bearer) and for the steady-state
+                # reconnect path (token expired mid-run). Idempotent
+                # under cooldown — if refresh just ran 60s ago without
+                # fixing things, falls through to normal retry logic.
+                if _is_auth_error(exc) and await self._refresh_bearer_via_command():
+                    logger.info(
+                        "MCP server '%s': bearer refreshed; retrying "
+                        "connection immediately (no retry burn)",
+                        self.name,
+                    )
+                    backoff = 1.0
+                    if self._shutdown_event.is_set():
+                        return
+                    continue
 
                 # If this is the first connection attempt, retry with backoff
                 # before giving up. A transient DNS/network blip at startup

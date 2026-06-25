@@ -1266,8 +1266,43 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     return None
 
 
+def _mark_verification_stale(
+    task_id: str,
+    resolved_paths: list[str],
+    session_id: str | None = None,
+) -> None:
+    """Best-effort note that successful edits made prior verification stale."""
+    paths = [p for p in resolved_paths if p]
+    if not paths:
+        return
+    try:
+        from agent.coding_context import project_facts_for
+        from agent.verification_evidence import mark_workspace_edited
+
+        cwd = None
+        for path in paths:
+            try:
+                candidate = str(Path(path).parent)
+            except Exception:
+                continue
+            if project_facts_for(candidate):
+                cwd = candidate
+                break
+        if cwd is None:
+            cwd = _authoritative_workspace_root(task_id)
+        if cwd is None:
+            try:
+                cwd = str(Path(paths[0]).parent)
+            except Exception:
+                cwd = None
+        mark_workspace_edited(session_id=session_id or task_id, cwd=cwd, paths=paths)
+    except Exception:
+        logger.debug("verification stale marker failed", exc_info=True)
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default",
-                    cross_profile: bool = False) -> str:
+                    cross_profile: bool = False,
+                    session_id: str | None = None) -> str:
     """Write content to a file.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard. The
@@ -1305,6 +1340,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             result_dict = result.to_dict()
             if stale_warning:
                 result_dict["_warning"] = stale_warning
+            if not result_dict.get("error"):
+                _mark_verification_stale(task_id, [path], session_id=session_id)
             _update_read_timestamp(path, task_id)
             return json.dumps(result_dict, ensure_ascii=False)
 
@@ -1331,6 +1368,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             result_dict["resolved_path"] = _resolved
             if not result_dict.get("error"):
                 result_dict["files_modified"] = [_resolved]
+                _mark_verification_stale(task_id, [_resolved], session_id=session_id)
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.
             _update_read_timestamp(path, task_id)
@@ -1347,7 +1385,8 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                new_string: str = None, replace_all: bool = False, patch: str = None,
-               task_id: str = "default", cross_profile: bool = False) -> str:
+               task_id: str = "default", cross_profile: bool = False,
+               session_id: str | None = None) -> str:
     """Patch a file using replace mode or V4A patch format.
 
     ``cross_profile`` opts out of the soft cross-Hermes-profile guard for
@@ -1465,6 +1504,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 result_dict["files_modified"] = _resolved_modified
                 if len(_resolved_modified) == 1:
                     result_dict["resolved_path"] = _resolved_modified[0]
+                _mark_verification_stale(task_id, _resolved_modified, session_id=session_id)
                 for _p in _paths_to_check:
                     _update_read_timestamp(_p, task_id)
                     _r = _path_to_resolved.get(_p)
@@ -1730,6 +1770,7 @@ def _handle_write_file(args, **kw):
     return write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
+        session_id=kw.get("session_id"),
     )
 
 
@@ -1740,6 +1781,7 @@ def _handle_patch(args, **kw):
         old_string=args.get("old_string"), new_string=args.get("new_string"),
         replace_all=args.get("replace_all", False), patch=args.get("patch"), task_id=tid,
         cross_profile=bool(args.get("cross_profile", False)),
+        session_id=kw.get("session_id"),
     )
 
 

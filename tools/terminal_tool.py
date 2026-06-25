@@ -1872,6 +1872,7 @@ def terminal_tool(
     background: bool = False,
     timeout: Optional[int] = None,
     task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
     force: bool = False,
     workdir: Optional[str] = None,
     pty: bool = False,
@@ -1886,6 +1887,7 @@ def terminal_tool(
         background: Whether to run in background (default: False)
         timeout: Command timeout in seconds (default: from config)
         task_id: Unique identifier for environment isolation (optional)
+        session_id: Conversation/session identifier for durable observability
         force: If True, skip dangerous command check (use after user confirms)
         workdir: Working directory for this command (optional, uses session cwd if not set)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
@@ -2441,16 +2443,18 @@ def terminal_tool(
             max_retries = 3
             retry_count = 0
             result = None
+            command_cwd = None
             
             while retry_count <= max_retries:
                 try:
+                    command_cwd = _resolve_command_cwd(
+                        workdir=workdir,
+                        env=env,
+                        default_cwd=cwd,
+                    )
                     execute_kwargs = {
                         "timeout": effective_timeout,
-                        "cwd": _resolve_command_cwd(
-                            workdir=workdir,
-                            env=env,
-                            default_cwd=cwd,
-                        ),
+                        "cwd": command_cwd,
                     }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
@@ -2541,6 +2545,25 @@ def terminal_tool(
                 "exit_code": returncode,
                 "error": None,
             }
+            try:
+                from agent.verification_evidence import record_terminal_result
+
+                evidence = record_terminal_result(
+                    command=command,
+                    cwd=command_cwd,
+                    session_id=session_id or task_id or effective_task_id or "default",
+                    exit_code=returncode,
+                    output=output,
+                )
+                if evidence:
+                    result_dict["verification_evidence"] = {
+                        "status": evidence.get("status"),
+                        "kind": evidence.get("kind"),
+                        "scope": evidence.get("scope"),
+                        "canonical_command": evidence.get("canonical_command"),
+                    }
+            except Exception:
+                logger.debug("verification evidence recording failed", exc_info=True)
             if approval_note:
                 result_dict["approval"] = approval_note
             if exit_note:
@@ -2774,6 +2797,7 @@ def _handle_terminal(args, **kw):
         background=args.get("background", False),
         timeout=args.get("timeout"),
         task_id=kw.get("task_id"),
+        session_id=kw.get("session_id"),
         workdir=args.get("workdir"),
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),

@@ -63,7 +63,7 @@ trustedrouter = TrustedRouterProfile(
     display_name="TrustedRouter.com",
     description="TrustedRouter.com - end-to-end encrypted OpenRouter-compatible LLM router",
     signup_url="https://trustedrouter.com/",
-    base_url="https://api.quillrouter.com/v1",
+    base_url="https://api.trustedrouter.com/v1",
     fallback_models=("trustedrouter/auto",),
 )
 

@@ -46,14 +46,20 @@ def test_bundled_plugins_discovered():
         assert (child / "plugin.yaml").exists(), f"{child.name} missing plugin.yaml"
 
 
-def test_all_35_profiles_register():
-    """After discovery, the registry must contain exactly 35 distinct profiles."""
+def test_all_bundled_profiles_register():
+    """After discovery, every bundled model-provider plugin should register."""
     _clear_provider_caches()
     from providers import list_providers
 
     profiles = list_providers()
     names = sorted(p.name for p in profiles)
-    assert len(names) == 35, f"Expected 35 profiles, got {len(names)}: {names}"
+    bundled_plugins = {
+        p.name
+        for p in (REPO_ROOT / "plugins" / "model-providers").iterdir()
+        if p.is_dir() and not p.name.startswith(("_", "."))
+    }
+    missing = sorted(bundled_plugins - set(names))
+    assert not missing, f"Missing bundled provider profiles: {missing}"
 
     # Spot-check representative providers from different categories
     for required in (

@@ -220,7 +220,7 @@ class TestTrustedRouterProfile:
         assert p is not None
         assert p.name == "trustedrouter"
         assert p.display_name == "TrustedRouter.com"
-        assert p.base_url == "https://api.quillrouter.com/v1"
+        assert p.base_url == "https://api.trustedrouter.com/v1"
         assert p.env_vars == ("TRUSTEDROUTER_API_KEY", "TRUSTEDROUTER_BASE_URL")
 
     def test_aliases(self):

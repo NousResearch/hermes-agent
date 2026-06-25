@@ -117,7 +117,7 @@ class TestProviderRegistry:
         pconfig = PROVIDER_REGISTRY["trustedrouter"]
         assert pconfig.api_key_env_vars == ("TRUSTEDROUTER_API_KEY",)
         assert pconfig.base_url_env_var == "TRUSTEDROUTER_BASE_URL"
-        assert pconfig.inference_base_url == "https://api.quillrouter.com/v1"
+        assert pconfig.inference_base_url == "https://api.trustedrouter.com/v1"
 
     def test_huggingface_env_vars(self):
         pconfig = PROVIDER_REGISTRY["huggingface"]
@@ -136,7 +136,7 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
-        assert PROVIDER_REGISTRY["trustedrouter"].inference_base_url == "https://api.quillrouter.com/v1"
+        assert PROVIDER_REGISTRY["trustedrouter"].inference_base_url == "https://api.trustedrouter.com/v1"
 
     def test_oauth_providers_unchanged(self):
         """Ensure we didn't break the existing OAuth providers."""

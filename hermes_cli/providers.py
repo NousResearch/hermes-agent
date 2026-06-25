@@ -54,7 +54,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         is_aggregator=True,
         extra_env_vars=("TRUSTEDROUTER_API_KEY",),
-        base_url_override="https://api.quillrouter.com/v1",
+        base_url_override="https://api.trustedrouter.com/v1",
         base_url_env_var="TRUSTEDROUTER_BASE_URL",
     ),
     "nous": HermesOverlay(

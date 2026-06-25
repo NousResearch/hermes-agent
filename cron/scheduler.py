@@ -43,6 +43,11 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
+# Thread-level lock for tick(): prevents concurrent ticks within the same
+# process (e.g. gateway ticker thread + manual `hermes cron tick` overlap).
+# fcntl.flock() alone does not serialize threads within the same process.
+_tick_thread_lock = threading.Lock()
+
 logger = logging.getLogger(__name__)
 
 
@@ -2774,6 +2779,14 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
     lock_dir, lock_file = _get_lock_paths()
     lock_dir.mkdir(parents=True, exist_ok=True)
 
+    # Thread-level gate: prevents concurrent ticks within the same process.
+    # fcntl.flock() alone does not serialize threads sharing the same PID,
+    # so concurrent gateway ticks or a manual `hermes cron tick` overlapping
+    # with the background ticker can both get past the file lock.
+    if not _tick_thread_lock.acquire(blocking=False):
+        logger.debug("Tick skipped — another tick is already running in this process")
+        return 0
+
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
     try:
@@ -2786,6 +2799,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         logger.debug("Tick skipped — another instance holds the lock")
         if lock_fd is not None:
             lock_fd.close()
+        _tick_thread_lock.release()
         return 0
 
     try:
@@ -2793,6 +2807,7 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
 
         if verbose and not due_jobs:
             logger.info("%s - No jobs due", _hermes_now().strftime('%H:%M:%S'))
+            _tick_thread_lock.release()
             return 0
 
         if verbose:
@@ -2965,6 +2980,14 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             except (OSError, IOError):
                 pass
         lock_fd.close()
+
+        # Release thread lock after file lock is cleaned up.
+        # This must complete before tick() returns so the next tick
+        # can acquire the thread lock.
+        try:
+            _tick_thread_lock.release()
+        except (RuntimeError, OSError, IOError):
+            pass
 
 
 if __name__ == "__main__":

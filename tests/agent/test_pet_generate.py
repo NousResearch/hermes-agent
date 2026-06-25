@@ -426,6 +426,35 @@ def test_generate_base_drafts_hardens_opaque_background(monkeypatch, tmp_path):
     assert rgba.getpixel((rgba.width // 2, rgba.height // 2))[3] > 0
 
 
+def test_harden_transparency_removes_non_png_original(tmp_path):
+    """A non-PNG base draft is replaced by a hardened PNG, and the original
+    draft file is not left behind in the image cache."""
+    from agent.pet.generate import orchestrate
+
+    src = tmp_path / "pet_base_sample.webp"
+    _strip(1).save(src, format="WEBP")
+
+    out = orchestrate._harden_transparency(src)
+
+    assert out.suffix == ".png"
+    assert out.exists()
+    assert not src.exists()
+
+
+def test_harden_transparency_keeps_png_input_in_place(tmp_path):
+    """A PNG base draft is hardened in place, so the returned path is the input
+    path and there is no separate original to remove."""
+    from agent.pet.generate import orchestrate
+
+    src = tmp_path / "pet_base_sample.png"
+    _strip(1).save(src, format="PNG")
+
+    out = orchestrate._harden_transparency(src)
+
+    assert out == src
+    assert out.exists()
+
+
 def test_hatch_pet_end_to_end(monkeypatch, tmp_path):
     from agent.pet import store
     from agent.pet.generate import atlas as atlas_mod

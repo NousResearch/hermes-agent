@@ -71,10 +71,13 @@ class _FakeAgent:
         self._invalid_tool_retries = -1
         self._vision_supported = None
         self._persist_calls = 0
+        # Records _cached_system_prompt at the moment _ensure_db_session()
+        # is called (regression guard for #45499 turn-setup ordering).
+        self._ensure_db_prompt_at_call = "<unset>"
 
     # --- methods the prologue calls ---
     def _ensure_db_session(self):
-        pass
+        self._ensure_db_prompt_at_call = self._cached_system_prompt
 
     def _restore_primary_runtime(self):
         pass
@@ -188,6 +191,29 @@ def test_no_review_when_memory_disabled():
     agent = _FakeAgent()
     ctx = _build(agent)
     assert ctx.should_review_memory is False
+
+
+def test_ensure_db_session_runs_after_system_prompt_restore():
+    """Regression for #45499.
+
+    On a fresh API/gateway agent (``_cached_system_prompt is None``) the DB
+    session row must be created AFTER the system prompt is restored/built, so
+    the persisted snapshot is written non-NULL. If ``_ensure_db_session()``
+    ran first it would insert ``system_prompt=NULL`` and trip the misleading
+    "stored system prompt is null; rebuilding" warning plus a first-turn
+    prefix cache miss.
+    """
+    agent = _FakeAgent()
+    agent._cached_system_prompt = None  # fresh agent, no cached prompt yet
+
+    def _restore(_agent, _system_message, _history):
+        _agent._cached_system_prompt = "REBUILT-SYSTEM"
+
+    _build(agent, restore_or_build_system_prompt=_restore)
+
+    # The prompt was populated before the DB row was created.
+    assert agent._ensure_db_prompt_at_call == "REBUILT-SYSTEM"
+    assert agent._cached_system_prompt == "REBUILT-SYSTEM"
 
 
 # ── Between-turns MCP refresh (cache-safe late-binding) ──────────────────────

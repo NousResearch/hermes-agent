@@ -120,6 +120,14 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         guild_id=src.get("guild_id"),
         parent_chat_id=src.get("parent_chat_id"),
         message_id=src.get("message_id"),
+        # Authentic upstream-trust signal: this event arrived over the
+        # per-instance-authenticated relay WS, so the connector already resolved
+        # it to this instance's owner-bound author. ``platform`` is the
+        # UNDERLYING platform (e.g. discord), not ``relay`` — authz keys the
+        # upstream-trust decision off THIS flag, not off ``platform`` (which
+        # would miss because the relay adapter is registered under
+        # ``Platform.RELAY``). Stamped here, never read off the wire.
+        delivered_via_upstream_relay=True,
     )
     try:
         msg_type = MessageType(raw.get("message_type", "text"))

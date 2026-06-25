@@ -32,6 +32,7 @@ export type DesktopActionId =
   | 'branch'
   | 'browser'
   | 'handoff'
+  | 'hatch'
   | 'help'
   | 'new'
   | 'pet'
@@ -130,6 +131,7 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/goal', description: 'Manage the standing goal for this session', surface: exec() },
   { name: '/personality', description: 'Switch personality for this session', surface: exec(), args: true },
   { name: '/pet', description: 'Toggle or adopt a petdex mascot (/pet, /pet list, /pet boba)', surface: action('pet'), args: true },
+  { name: '/hatch', description: 'Generate a new pet (opens the pet generator)', aliases: ['/generate-pet'], surface: action('hatch') },
   { name: '/queue', description: 'Queue a prompt for the next turn', aliases: ['/q'], surface: exec() },
   { name: '/retry', description: 'Retry the last user message', surface: exec() },
   { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },

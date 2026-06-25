@@ -1051,6 +1051,74 @@ class CLICommandsMixin:
         _set_active(arg)
         print(f"(^_^)b {pet.display_name} is out — it'll pop in shortly.")
 
+    def _handle_hatch_command(self, cmd: str):
+        """Generate ("hatch") a brand-new petdex pet from a description.
+
+        ``/hatch <description>`` runs the full pet pipeline in-process: a base
+        look, then one grounded animation row per state, sliced + normalized into
+        a spritesheet, then adopted as the active mascot. Progress streams inline
+        (it's ~a minute of image-model calls). In the desktop app this command
+        opens the richer generate overlay instead; here we run it directly.
+        """
+        from agent.pet import store
+        from agent.pet.generate import orchestrate
+        from agent.pet.generate.imagegen import GenerationError
+        from hermes_cli.pets import _set_active
+
+        parts = cmd.split(maxsplit=1)
+        concept = parts[1].strip() if len(parts) > 1 else ""
+
+        if not concept:
+            try:
+                concept = input("(o_o) Describe your pet: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return
+
+        if not concept:
+            print("(o_o) Usage: /hatch <description>  (e.g. /hatch a tiny cyber fox)")
+            return
+
+        # A short, friendly display name from the first few words of the concept.
+        display_name = " ".join(w.capitalize() for w in concept.split()[:3])[:28].strip() or "Pet"
+        slug = store.slugify(display_name) or store.slugify(concept) or "pet"
+
+        print(f"(o_o) Designing '{concept}'… (a minute of image-model calls)")
+        try:
+            drafts = orchestrate.generate_base_drafts(concept, n=1)
+        except GenerationError as exc:
+            print(f"(x_x) Couldn't generate a base look: {exc}")
+            return
+
+        if not drafts:
+            print("(x_x) No base draft came back — try again.")
+            return
+
+        def _progress(event: str, detail: str) -> None:
+            if event == "row":
+                # detail is "<state>:<done>:<total>"; show the state name.
+                state = detail.split(":", 1)[0]
+                print(f"  ┊ drawing {state}…")
+            elif event == "compose":
+                print("  ┊ composing spritesheet…")
+            elif event == "save":
+                print("  ┊ saving…")
+
+        try:
+            result = orchestrate.hatch_pet(
+                base_image=drafts[0],
+                slug=slug,
+                display_name=display_name,
+                concept=concept,
+                on_progress=_progress,
+            )
+        except GenerationError as exc:
+            print(f"(x_x) Hatch failed: {exc}")
+            return
+
+        _set_active(result.slug)
+        print(f"(^_^)b {result.display_name} hatched and adopted — it'll pop in shortly!")
+
     def _handle_cron_command(self, cmd: str):
         """Handle the /cron command to manage scheduled tasks."""
         from cli import get_job

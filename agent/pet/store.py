@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,10 +42,15 @@ class InstalledPet:
     description: str
     directory: Path
     spritesheet: Path
+    created_by: str = ""  # "generator" for pets hatched locally; "" for petdex installs
 
     @property
     def exists(self) -> bool:
         return self.spritesheet.is_file()
+
+    @property
+    def generated(self) -> bool:
+        return self.created_by == "generator"
 
 
 def pets_dir() -> Path:
@@ -113,6 +119,7 @@ def load_pet(slug: str) -> InstalledPet | None:
         description=str(meta.get("description", "") or ""),
         directory=directory,
         spritesheet=_resolve_spritesheet(directory, meta),
+        created_by=str(meta.get("createdBy", "") or ""),
     )
 
 
@@ -195,6 +202,101 @@ def install_pet(slug: str, *, force: bool = False, timeout: float = _DOWNLOAD_TI
     if pet is None or not pet.exists:
         raise PetStoreError(f"install of '{slug}' did not produce a spritesheet")
     return pet
+
+
+def slugify(name: str) -> str:
+    """Lowercase, hyphenate, and strip a display name into a filesystem slug."""
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").strip().lower()).strip("-")
+    return slug or "pet"
+
+
+def unique_slug(name: str) -> str:
+    """A :func:`slugify` result that doesn't collide with an existing pet dir."""
+    base = slugify(name)
+    slug = base
+    counter = 2
+    while (pets_dir() / slug).exists():
+        slug = f"{base}-{counter}"
+        counter += 1
+    return slug
+
+
+def _write_spritesheet(source, dest: Path) -> None:
+    """Write *source* (PIL image, bytes, or path) as a lossless WebP at *dest*."""
+    if isinstance(source, (bytes, bytearray)):
+        dest.write_bytes(bytes(source))
+        return
+
+    from PIL import Image
+
+    if isinstance(source, (str, Path)):
+        with Image.open(source) as opened:
+            image = opened.convert("RGBA")
+    else:
+        image = source.convert("RGBA")
+    image.save(dest, format="WEBP", lossless=True, quality=100, method=6, exact=True)
+
+
+def register_local_pet(
+    spritesheet,
+    *,
+    slug: str,
+    display_name: str = "",
+    description: str = "",
+) -> InstalledPet:
+    """Write a locally-generated pet into the store and return it.
+
+    *spritesheet* may be a PIL image, raw WebP/PNG bytes, or a path. The pet
+    appears in :func:`installed_pets` immediately, and because :func:`install_pet`
+    returns an already-on-disk pet before consulting the manifest, it can be
+    adopted (``pet.select`` / ``/pet <slug>``) without a manifest entry.
+    """
+    slug = slugify(slug)
+    directory = pets_dir() / slug
+    directory.mkdir(parents=True, exist_ok=True)
+    sprite_path = directory / "spritesheet.webp"
+    try:
+        _write_spritesheet(spritesheet, sprite_path)
+    except Exception as exc:  # noqa: BLE001 - normalize to one error type
+        raise PetStoreError(f"could not write spritesheet for '{slug}': {exc}") from exc
+
+    meta = {
+        "id": slug,
+        "displayName": display_name or slug,
+        "description": description or "",
+        "spritesheetPath": sprite_path.name,
+        "createdBy": "generator",
+    }
+    (directory / "pet.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    pet = load_pet(slug)
+    if pet is None or not pet.exists:
+        raise PetStoreError(f"register of generated pet '{slug}' did not produce a spritesheet")
+    return pet
+
+
+def export_pet(slug: str) -> tuple[str, bytes]:
+    """Zip an installed pet's folder (pet.json + spritesheet) → (filename, bytes).
+
+    Dotfiles (cached thumbs, backups) are skipped so the archive is a clean,
+    re-importable pet package. Raises :class:`PetStoreError` if not installed.
+    """
+    import io
+    import zipfile
+
+    root = pets_dir()
+    directory = root / slug.strip()
+    # Guard against traversal: the target must be a direct child of pets_dir.
+    if directory.resolve().parent != root.resolve() or not directory.is_dir():
+        raise PetStoreError(f"pet '{slug}' is not installed")
+
+    name = directory.name
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in sorted(directory.iterdir()):
+            if path.is_file() and not path.name.startswith("."):
+                archive.write(path, f"{name}/{path.name}")
+    return f"{name}.zip", buf.getvalue()
 
 
 _THUMB_FRAME_W = 192
@@ -301,11 +403,69 @@ def remove_pet(slug: str) -> bool:
     slug = _safe_slug(slug)
     if not slug:
         return False
+
+    # The cached thumbnail lives in pets/.thumbs/<slug>.png — OUTSIDE the pet
+    # dir, so rmtree won't catch it. Drop it too, or a later pet that reuses this
+    # slug renders this one's stale thumbnail.
+    try:
+        (_thumbs_dir() / f"{slug}.png").unlink(missing_ok=True)
+    except OSError:
+        pass
+
     directory = pets_dir() / slug
     if not directory.is_dir():
         return False
     shutil.rmtree(directory, ignore_errors=True)
     return not directory.exists()
+
+
+def rename_pet(slug: str, display_name: str) -> str | None:
+    """Rename a pet's ``displayName`` AND realign its slug/dir to match.
+
+    Generated pets are hatched under a provisional, prompt-derived slug; when
+    the user names the pet on the reveal screen we make that name the real
+    identity so lists/subtitles show what they typed, not the prompt. The dir is
+    renamed to ``slugify(name)`` (and the cached thumbnail moved alongside it)
+    whenever that yields a free, different slug — otherwise the slug is left as
+    is. Returns the resulting slug on success, or ``None`` on failure.
+    """
+    slug = _safe_slug(slug)
+    display_name = (display_name or "").strip()
+    if not slug or not display_name:
+        return None
+    directory = pets_dir() / slug
+    pet_json = directory / "pet.json"
+    if not pet_json.is_file():
+        return None
+    try:
+        meta = json.loads(pet_json.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        meta = {}
+    if not isinstance(meta, dict):
+        meta = {}
+    meta["displayName"] = display_name
+
+    new_slug = slug
+    desired = slugify(display_name)
+    if desired and desired != slug and not (pets_dir() / desired).exists():
+        try:
+            directory.rename(pets_dir() / desired)
+            try:
+                (_thumbs_dir() / f"{slug}.png").rename(_thumbs_dir() / f"{desired}.png")
+            except OSError:
+                pass
+            directory = pets_dir() / desired
+            pet_json = directory / "pet.json"
+            new_slug = desired
+            meta["id"] = new_slug
+        except OSError:
+            new_slug = slug  # keep the provisional slug if the move fails
+
+    try:
+        pet_json.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    except OSError:
+        return None
+    return new_slug
 
 
 def _download(url: str, dest: Path, *, timeout: float) -> None:

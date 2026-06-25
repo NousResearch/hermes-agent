@@ -77,6 +77,36 @@ describe('buildToolView terminal exit-code status', () => {
   })
 })
 
+describe('buildToolView browser_navigate title', () => {
+  it('shows failed title when navigate returns success=false', () => {
+    const view = buildToolView(
+      part({
+        toolName: 'browser_navigate',
+        args: { url: 'https://hermes-agent.nousresearch.com/docs' },
+        result: { success: false, error: 'Command timed out after 60 seconds' }
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('error')
+    expect(view.title).toBe('Failed to open hermes-agent.nousresearch.com')
+  })
+
+  it('shows opened title on success', () => {
+    const view = buildToolView(
+      part({
+        toolName: 'browser_navigate',
+        args: { url: 'https://hermes-agent.nousresearch.com/docs' },
+        result: { success: true, url: 'https://hermes-agent.nousresearch.com/docs', title: 'Docs' }
+      }),
+      ''
+    )
+
+    expect(view.status).toBe('success')
+    expect(view.title).toBe('Opened hermes-agent.nousresearch.com')
+  })
+})
+
 describe('buildToolView file edit diffs', () => {
   const patchDiff = '--- a/src/demo.ts\n+++ b/src/demo.ts\n@@ -1 +1 @@\n-old\n+new'
 

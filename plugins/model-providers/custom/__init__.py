@@ -20,9 +20,11 @@ class CustomProfile(ProviderProfile):
         *,
         reasoning_config: dict | None = None,
         ollama_num_ctx: int | None = None,
+        session_id: str | None = None,
         **ctx: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
+        top_level: dict[str, Any] = {}
 
         # Ollama context window
         if ollama_num_ctx:
@@ -37,7 +39,10 @@ class CustomProfile(ProviderProfile):
             if _effort == "none" or _enabled is False:
                 extra_body["think"] = False
 
-        return extra_body, {}
+        if session_id:
+            top_level["extra_headers"] = {"x-session-id": session_id}
+
+        return extra_body, top_level
 
     def fetch_models(
         self,

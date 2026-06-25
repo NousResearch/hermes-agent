@@ -457,7 +457,13 @@ class HonchoClientConfig:
             or os.environ.get("HONCHO_BASE_URL", "").strip()
             or None
         )
+        # Host block wins, then flat/global, then env — consistent with every
+        # other field above. Previously the host block was skipped, silently
+        # dropping a per-host `timeout`/`requestTimeout` and falling through to
+        # config.yaml honcho.timeout (or the 30s default).
         timeout = _resolve_optional_float(
+            host_block.get("timeout"),
+            host_block.get("requestTimeout"),
             raw.get("timeout"),
             raw.get("requestTimeout"),
             os.environ.get("HONCHO_TIMEOUT"),

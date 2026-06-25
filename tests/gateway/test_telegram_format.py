@@ -768,6 +768,80 @@ class TestWrapMarkdownTables:
                 f"got {line_count}:\n{group}"
             )
 
+    def test_heading_with_inline_code_skips_bold_wrapper(self):
+        """Regression: when the first column already contains backticked
+        tokens (very common — service names, image tags), the heading
+        must NOT be wrapped in ``**...**`` because MarkdownV2 rejects
+        ``*` `` (italic marker directly adjacent to inline code). Telegram
+        Web refuses to render such messages at all and shows
+        "This message is not supported on the web version of Telegram".
+
+        Additionally, any `*` / `_` markers INSIDE the heading's inline
+        code entities must be escaped as `\*` / `\_` so that the parser
+        doesn't see them as italic/underline boundaries next to the
+        code entity's backticks.
+
+        Pre-fix output: ``*`sonarr`*`` — invalid.
+        Post-fix output: `` `\*`code`\*` `` — code stays, markers escaped.
+        """
+        text = (
+            "| Container | Error | Bewertung |\n"
+            "|---|---|---|\n"
+            "| `sonarr`/`radarr` | 429 | Auto-throttling |\n"
+            "| `adguard_sync_server` | no route | Server offline |\n"
+        )
+        out = _wrap_markdown_tables(text)
+
+        # Bug markers must NOT appear — `*` adjacent to a backtick without
+        # an escape is the exact pattern Telegram Web rejects.
+        assert not re.search(r"(?<!\\)\*`", out), (
+            f"Found unescaped '*`' (italic before inline-code) in output — "
+            f"Telegram Web refuses to render this. Output:\n{out}"
+        )
+        assert not re.search(r"`(?<!\\)\*", out), (
+            f"Found unescaped '`*' (inline-code before italic) in output. "
+            f"Output:\n{out}"
+        )
+
+        # Code headings are preserved verbatim (no bold wrapper).
+        assert "`sonarr`/`radarr`" in out
+        # `_` inside a multi-word code identifier (e.g. `adguard_sync_server`)
+        # is not adjacent to a backtick, so the global MDv2 escaper handles
+        # it after table-rewriting; we only need `*` and `_` adjacent to
+        # backticks escaped at this stage.  The bare `adguard_sync_server`
+        # will appear in the output (possibly with `\_` if the global
+        # escaper ran first), so we check for the *adguard* token only.
+        assert "adguard" in out and "sync" in out and "server" in out
+
+        # Body bullets still rendered.
+        assert "• Error: 429" in out
+        assert "• Bewertung: Auto-throttling" in out
+
+    def test_heading_with_inline_code_escapes_inner_asterisks(self):
+        """When a heading cell already contains `*` next to a backtick
+        (e.g. ``*`code`*``), the inner `*` markers must be escaped to
+        `\*` so Telegram Web's parser doesn't try to start an italic
+        entity right next to the inline-code entity's backticks.  This
+        is the exact pattern that broke Manu's status-report table.
+        """
+        text = (
+            "| | Status |\n"
+            "|---|---|\n"
+            "| Tabellen-Bug (`*`code`*` Pattern) | ✅ fixed |\n"
+        )
+        out = _wrap_markdown_tables(text)
+        # The asterisks must be escaped (`\*`) so they don't collide with
+        # the inline-code entity boundaries.
+        assert "\\*`" in out, (
+            f"Expected escaped '\\*` in heading, got: {out!r}"
+        )
+        assert "`\\*" in out, (
+            f"Expected escaped '`\\*' in heading, got: {out!r}"
+        )
+        # Unescaped * adjacent to ` is still the bug we are fixing.
+        assert not re.search(r"(?<!\\)\*`", out)
+        assert not re.search(r"`(?<!\\)\*", out)
+
     def test_row_label_column_preserves_first_bullet(self):
         """When the table has a row-label column (data rows have one more
         cell than the header row), the heading comes from the label cell

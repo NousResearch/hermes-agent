@@ -291,7 +291,32 @@ def _render_table_block_for_telegram(table_block: list[str]) -> str:
         # Within a row-group: single newline between heading and its bullets,
         # and between successive bullets.  This keeps the row visually tight
         # on Telegram instead of stretching each bullet into its own paragraph.
-        group_lines = [f"**{heading}**", *bullets]
+        #
+        # MarkdownV2 cannot place `*` (italic) directly adjacent to `` ` ``
+        # (inline code), which happens whenever a heading cell already
+        # contains backticked tokens (e.g. service names like `sonarr`).
+        # Telegram Web refuses to render such messages at all.  Skip the bold
+        # wrapper when the heading already carries code markup — the inline
+        # code formatting alone makes the heading stand out.
+        if '`' in heading:
+            # Skip the bold wrapper so the heading can't place `*` next to `` ` ``.
+            # Telegram Web's parser refuses the whole message when an
+            # italic-marker `*` (or underline-marker `_`) ends up adjacent
+            # to `` ` `` — which is what happens for any heading like
+            # "`*`code`*` Pattern" once we drop the bold wrapper.  Escape
+            # only the entity-marker chars (`*` and `_`); leave the
+            # backticks themselves alone so they still open/close inline
+            # code entities.  Other MDv2-reserved chars (parentheses,
+            # periods, etc.) are also handled by the global MDv2 escaper
+            # that runs after the table-rewriter, so we only need to fix
+            # the `*`/`_` ↔ `` ` `` collision here.
+            marker_chars = '*_'
+            group_lines = [
+                ''.join('\\' + ch if ch in marker_chars else ch for ch in heading),
+                *bullets,
+            ]
+        else:
+            group_lines = [f"**{heading}**", *bullets]
         rendered_groups.append("\n".join(group_lines))
 
     # Between row-groups: blank line so each group reads as a distinct block.

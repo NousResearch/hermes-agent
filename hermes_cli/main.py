@@ -2316,6 +2316,14 @@ def cmd_chat(args):
     if getattr(args, "yolo", False):
         os.environ["HERMES_YOLO_MODE"] = "1"
 
+    # --autopilot: inject system-prompt rules telling the model NEVER to ask
+    # the user clarifying questions. See agent/prompt_builder.py
+    # AUTOPILOT_GUIDANCE. Implies --yolo for unattended ergonomics (no point
+    # bypassing the model's questions if the bash sandbox still prompts).
+    if getattr(args, "autopilot", False):
+        os.environ["HERMES_AUTOPILOT"] = "1"
+        os.environ["HERMES_YOLO_MODE"] = "1"
+
     # --safe-mode: troubleshooting mode that disables ALL customizations.
     # Inspired by Claude Code v2.1.169's --safe-mode (June 2026): run with a
     # pristine environment to isolate whether a problem comes from the user's
@@ -11544,7 +11552,7 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "auth", "autopilot", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -12333,6 +12341,19 @@ def main():
     )
     from hermes_cli.checkpoints import register_cli as _register_checkpoints_cli
     _register_checkpoints_cli(checkpoints_parser)
+
+    # =========================================================================
+    # autopilot command — inspect/grow the deception dictionary
+    # =========================================================================
+    autopilot_parser = subparsers.add_parser(
+        "autopilot",
+        help="Autopilot maintenance: harvest the deception dictionary from ADR logs",
+        description="Inspect and grow the autopilot anti-deception dictionary. "
+        "`harvest-deceptions` mines the ADR decision logs for caught "
+        "deceptions and surfaces novel phrasings to promote.",
+    )
+    from hermes_cli.autopilot_cmd import register_cli as _register_autopilot_cli
+    _register_autopilot_cli(autopilot_parser)
 
     # =========================================================================
     # import command  (parser built in hermes_cli/subcommands/import_cmd.py)
@@ -13173,6 +13194,16 @@ def main():
     # list, gateway status, mcp add, ...) don't pay discovery cost or
     # trigger consent prompts for hooks the user is still inspecting.
     _prepare_agent_startup(args)
+
+    # Universal --autopilot / --yolo env wiring. The `chat` subcommand sets these
+    # in cmd_chat(), but the top-level -z/--oneshot path (and any other non-chat
+    # entry) bypasses it. Without this, `hermes -z "..." --autopilot` would not
+    # activate the autopilot engine. Idempotent; safe to set again in cmd_chat.
+    if getattr(args, "yolo", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
+    if getattr(args, "autopilot", False):
+        os.environ["HERMES_AUTOPILOT"] = "1"
+        os.environ["HERMES_YOLO_MODE"] = "1"
 
     # Handle top-level --oneshot / -z: single-shot mode, stdout = final
     # response only, nothing else. Bypasses cli.py entirely.

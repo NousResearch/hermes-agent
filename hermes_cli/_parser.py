@@ -194,6 +194,19 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--autopilot",
+        action="store_true",
+        default=False,
+        help=(
+            "Autopilot mode: inject system-prompt instructions telling the model "
+            "to NEVER ask the user clarifying / confirmation questions. Pairs with "
+            "--yolo (which only bypasses dangerous-command approvals). For unattended "
+            "runs (kanban workers, GSD auto-mode, overnight cron). Also enable via "
+            "env HERMES_AUTOPILOT=1."
+        ),
+    )
+    _inherited_flag(
+        parser,
         "--pass-session-id",
         action="store_true",
         default=False,

@@ -1591,6 +1591,16 @@ DEFAULT_CONFIG = {
         # behavior of showing tool-call summaries inline.
         "resume_skip_tool_only": True,
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        # When the TUI notification poller may auto-START an agent turn to react
+        # to a completed background process (subagent, terminal background task,
+        # watch match). The completion is ALWAYS shown to the TUI; this only
+        # controls the autonomous turn:
+        #   "autopilot" — (default) auto-react only when the session is in
+        #                 autopilot; otherwise just show the notification. Stops
+        #                 a plain chat from "responding by itself".
+        #   "always"    — legacy behavior: auto-react in every idle session.
+        #   "never"     — never auto-react; only ever show the notification.
+        "notify_autodispatch": "autopilot",  # autopilot | always | never
         # Which interface bare `hermes` (and `hermes chat`) launches by default:
         #   "cli" — the classic prompt_toolkit REPL (default, preserves prior behavior)
         #   "tui" — the modern Ink TUI (same as passing `--tui`)
@@ -2047,6 +2057,31 @@ DEFAULT_CONFIG = {
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
         "max_turns": 20,
+    },
+
+    # Autopilot: engine-enforced goal-chasing (agent/autopilot/). When enabled,
+    # the agent keeps working until an independent Hermes Council pass confirms
+    # the goal is verifiably complete, and clarify questions are auto-answered
+    # with the most-recommended choice. Distinct from "goals" above: autopilot is
+    # engine-level (works in CLI, gateway, cron, delegation) and Council-judged;
+    # "goals" is the CLI standing-goal loop with a lightweight auxiliary judge.
+    "autopilot": {
+        "enabled": False,          # same effect as --autopilot / HERMES_AUTOPILOT=1
+        "max_continuations": 0,    # 0 = unlimited; the goal gate governs termination
+        "no_progress_k": 3,        # stop after this many continuations with no progress
+        "council_model": "",       # "" = use the main model via the Council hermes lane
+        "verify_on_complete": "low_confidence",  # low_confidence | always
+        # Decision log (ADR): when on, every autopilot judgment (completion,
+        # continue, clarify) is appended to a human-readable markdown file so you
+        # can review, after an unattended run, what was sent for verification,
+        # what the reviewer returned, and which path was taken. Off by default.
+        "adr": False,
+        "adr_path": "",            # "" = <workspace>/.hermes/autopilot/adr/AUTOPILOT-<session>-<date>.md
+        # Anti-deception reinforcement: re-assert the behavioral contract every N
+        # continuations so it stays salient over a long run (a one-time system
+        # prompt fades by recency, which is when models derail). 0 disables the
+        # cadence; deception detections still trigger reinforcement regardless.
+        "reinforce_every_n": 5,
     },
 
     # Skills — external skill directories for sharing skills across tools/agents.

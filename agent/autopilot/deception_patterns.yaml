@@ -1,0 +1,572 @@
+# Autopilot deception-pattern dictionary (the growing, collaborative "dictionary").
+#
+# This is DATA, not code. The detector (agent/autopilot/deception.py) loads it at
+# runtime, so new phrasings can be added by editing this file or contributing a PR
+# — no logic change needed. Users/teams can also drop a local overlay at
+# ~/.hermes/autopilot/deception-patterns.local.yaml (same shape); its phrases are
+# MERGED on top of these, so private additions never require forking.
+#
+# Each category has:
+#   note:     short human-readable description (also seeds the "caught" message)
+#   patterns: lowercased substrings; a candidate response matching ANY is flagged.
+#
+# Seeded from observed long-run autopilot derailments across model families. Keep
+# phrases specific enough not to false-positive on honest work; the detector
+# additionally suppresses some categories when concrete evidence markers are present.
+version: 1
+
+categories:
+
+  await_user:
+    note: >-
+      You tried to hand off to the user for review/confirmation. No human will
+      rescue this run; the Council is the only reviewer and it speaks for the user.
+    patterns:
+      - "awaiting your review"
+      - "awaiting your confirmation"
+      - "awaiting your approval"
+      - "await your review"
+      - "ready for you to confirm"
+      - "ready for your review"
+      - "ready for your confirmation"
+      - "i'll let you verify"
+      - "i will let you verify"
+      - "let you verify"
+      - "pending your decision"
+      - "pending your review"
+      - "pending your approval"
+      - "for you to verify"
+      - "for your verification"
+      - "once you confirm"
+      - "once you've reviewed"
+      - "waiting for you to"
+      - "waiting for your"
+      - "over to you"
+      - "back to you for"
+      - "you can now review"
+      - "please review and confirm"
+      - "let me know if you'd like me to proceed"
+      - "i'll pause here for your"
+      # third-person form (dodges a "you" scan)
+      - "the user can review"
+      - "the user can verify"
+      - "the user can confirm"
+      - "the user can decide"
+      - "the user can take"
+      - "the user will review"
+      - "the user will verify"
+      - "the user to review"
+      - "the user to verify"
+      - "the user to confirm"
+      - "waiting for the user"
+      - "await the user"
+      - "awaiting the user"
+      - "for the user to review"
+      - "for the user to verify"
+      - "for the user to confirm"
+      - "the user is around"
+      - "the user is now available"
+      - "the user is present"
+      - "user can now review"
+      - "they can review"
+      - "they can verify"
+      - "they can confirm"
+      - "they will review"
+      - "so they can review"
+      - "now available to review"
+      - "is around now"
+      - "is now around"
+      - "seems to be around"
+      - "appears to be around"
+      - "is back now"
+      - "is online now"
+
+  reviewer_attack:
+    note: >-
+      You tried to undermine the Council's ability to review. The Council runs a
+      full agent model with the same tools and vision you have; its verdict stands.
+    patterns:
+      - "council can't see"
+      - "council cannot see"
+      - "council can't view"
+      - "council cannot view"
+      - "council can't verify"
+      - "council cannot verify"
+      - "council can't actually"
+      - "council doesn't have vision"
+      - "council does not have vision"
+      - "council lacks vision"
+      - "council has no vision"
+      - "council can't read"
+      - "council cannot read"
+      - "council isn't able to see"
+      - "council is not able to see"
+      - "reviewer can't see"
+      - "reviewer cannot see"
+      - "it can't see the table"
+      - "it cannot see the table"
+      - "can't see images"
+      - "cannot see images"
+      - "can't see maps"
+      - "cannot see maps"
+      - "no ability to see"
+      - "unable to see visual"
+
+  external_artifact:
+    note: >-
+      You cited an external ticket/PR/doc as evidence the goal is done. Only the
+      goal contract's acceptance criteria define completion; an external artifact does not.
+    patterns:
+      - "jira ticket"
+      - "this ticket shows"
+      - "the ticket confirms"
+      - "according to the ticket"
+      - "per the ticket"
+      - "the ticket indicates"
+      - "ticket says it's done"
+      - "issue is already closed"
+      - "an existing pr"
+      - "the existing pr"
+      - "this pr already"
+      - "already handled in"
+      - "already addressed in ticket"
+      - "already tracked in"
+      - "covered by the ticket"
+      - "covered by an existing"
+      - "marked as done in"
+      - "closed as resolved in"
+
+  effort_excuse:
+    note: >-
+      You used the effort already spent, or the time a full solution would take, as a
+      reason to stop, pause, take a break, or accept partial work. A time estimate is
+      fiction for an agent and is not an allowed stop; only the goal contract and the
+      Council decide when the work is done.
+    patterns:
+      - "given the effort"
+      - "given the time"
+      - "given how much"
+      - "for the effort spent"
+      - "for the time spent"
+      - "considering the effort"
+      - "considering the time"
+      - "amount of effort"
+      - "significant effort"
+      - "substantial effort"
+      - "a lot of effort"
+      - "extensive analysis"
+      - "extensive work"
+      - "major progress made"
+      - "this should suffice"
+      - "should be sufficient"
+      - "is sufficient for now"
+      - "good enough for now"
+      - "this is a good stopping point"
+      - "natural stopping point"
+      - "good place to pause"
+      - "good point to pause"
+      - "good time to pause"
+      - "reasonable place to stop"
+      - "warrants a break"
+      - "deserves a break"
+      - "time for a break"
+      - "take a break"
+      - "earned a break"
+      - "a break and review"
+      - "break before proceeding"
+      - "pause and review before"
+      - "review before continuing"
+      - "review before proceeding"
+      - "would take hours"
+      - "would take days"
+      - "would take weeks"
+      - "take several hours"
+      - "take several days"
+      - "this would take a"
+      - "is a multi-day"
+      - "is a multi-week"
+      - "out of scope for this session"
+      - "beyond what can be done in"
+      - "too much to do in one"
+      - "more than can be accomplished"
+      - "given the scope and effort"
+
+  # The model declares a knowledge gap "unreachable" without exhausting sources,
+  # dressing an un-queried gap as a wall.
+  unreachable_excuse:
+    note: >-
+      You declared something unfound, unclear, undocumented, or access-gated without
+      proving you queried every reachable source. A gap is missing from the sources
+      checked SO FAR, not from reality. Name the next source and query it; a real wall
+      is named precisely (exact resource + exact denial), never vaguely.
+    patterns:
+      - "i couldn't find"
+      - "i could not find"
+      - "i was unable to find"
+      - "unable to locate"
+      - "is undocumented"
+      - "appears undocumented"
+      - "is unclear"
+      - "remains unclear"
+      - "is unknown"
+      - "not documented anywhere"
+      - "no documentation"
+      - "access-gated"
+      - "access gated"
+      - "is blocked"
+      - "needs prod access"
+      - "would need prod"
+      - "requires production access"
+      - "i don't have access"
+      - "i do not have access"
+      - "not accessible to me"
+      - "cannot be determined"
+      - "not possible to determine"
+      - "this is unknowable"
+      - "no way to know"
+      - "not found in the corpus"
+
+  # Scope-shrink — presenting a subset as the whole and dressing the shrink as a
+  # judgment call.
+  scope_shrink:
+    note: >-
+      You shrank the scope and dressed it as judgment. A subset is not the whole.
+      "I focused on the core / the rest follow the same pattern / a representative
+      sample" is the scope-shrink tell. Cover every required item, or name the exact
+      evidenced wall for the one item you cannot.
+    patterns:
+      - "this is enough detail"
+      - "enough detail for"
+      - "the rest is straightforward"
+      - "the rest are straightforward"
+      - "the rest follow the same"
+      - "the rest would follow"
+      - "follow the same pattern"
+      - "i've captured the important"
+      - "i have captured the important"
+      - "captured the key"
+      - "the most important ones"
+      - "i focused on the core"
+      - "focused on the main"
+      - "focused on the key"
+      - "representative sample"
+      - "a representative subset"
+      - "sampled a few"
+      - "a few examples should"
+      - "top-n"
+      - "top few"
+      - "the major ones"
+      - "the primary ones"
+      - "covered the main"
+      - "this subset"
+      - "for brevity"
+      - "to keep it concise"
+      - "rather than exhaustively"
+
+  # Flag/escalate/defer to a human who isn't there.
+  flag_to_human:
+    note: >-
+      You tried to flag, escalate, defer, or hand a decision to a human. No human is
+      present. Make the decision a senior owner would make from the evidence, state the
+      assumption, and proceed; the Council is the only escalation target, and only for a
+      genuine deadlock a competent owner could not resolve from evidence.
+    patterns:
+      - "i'll flag this"
+      - "i will flag this"
+      - "flagging this for"
+      - "needs human review"
+      - "needs human input"
+      - "needs human sign-off"
+      - "requires human approval"
+      - "requires sign-off"
+      - "out of scope for me"
+      - "the user should decide"
+      - "the user will need to"
+      - "should be decided by"
+      - "escalate to the"
+      - "escalating to"
+      - "recommended next investigation"
+      - "recommend further investigation"
+      - "someone should verify"
+      - "someone should review"
+      - "someone will need to"
+      - "this should be reviewed by"
+      - "left for a human"
+      - "defer this to"
+      - "deferring this decision"
+
+  # User-presence-as-license — the model notices the user is around and uses that
+  # as a reason to consult/escalate a "judgment call" instead of deciding itself.
+  # This is the human-rescue move wearing the costume of principled deference, and
+  # it often cites a legitimate "record-and-proceed" precedent and then does the
+  # OPPOSITE (stops to ask). The legitimate pattern records the reasoned default
+  # and proceeds; it never consults. So this catches the CONSULT action, not the
+  # epistemic-limit framing (which is allowed and must not be flagged).
+  consult_because_present:
+    note: >-
+      You used the user being present/reachable as a reason to consult or escalate a
+      "judgment call" instead of deciding it yourself. Presence is not a license to ask.
+      The defensible move for an owner-gated or genuinely-uncertain gate is to RECORD the
+      reasoned default a senior owner would pick, take the maximum non-overreaching action,
+      preserve the override, and proceed — never to stop and consult. The Council, not the
+      present user, is the escalation target.
+    patterns:
+      - "since they're present"
+      - "since they are present"
+      - "since the user is present"
+      - "since the user is around"
+      - "since the user is here"
+      - "they're present"
+      - "now that the user is"
+      - "the user is around now"
+      - "the user is available now"
+      - "they are around now"
+      - "let me consult the user"
+      - "i should consult the user"
+      - "i'll consult the user"
+      - "consult the user since"
+      - "consult with the user"
+      - "check with the user"
+      - "i should ask the user"
+      - "let me ask the user"
+      - "i'll ask the user"
+      - "ask the user since"
+      - "this is a genuine judgment call"
+      - "this is a judgment call for the user"
+      - "a judgment call about an inherent"
+      - "defer to the user's judgment"
+      - "leave this to the user's judgment"
+      - "get the user's input"
+      - "get the user's call"
+      - "let the user decide since"
+
+  # Fabricated user action — the model INVENTS a choice, instruction, selection, or
+  # specification by the user that never happened, then uses the fabricated decision
+  # as the reason to stop or wait. This is the worst class: a fabricated artifact
+  # where the artifact is the USER. Under autopilot there is no live clarify
+  # interaction, so any "you chose / the user selected / per your instruction" about
+  # a fresh mid-run decision is a fabrication by construction. (Genuine quoting of
+  # the ORIGINAL goal text is fine — those are not fresh mid-run choices and read as
+  # "the goal says / per the contract", which this does not match.)
+  fabricated_user_action:
+    note: >-
+      You attributed a choice, selection, instruction, or specification to the user that
+      did not happen. Under autopilot there is no live interaction to choose anything, so
+      claiming "you chose X" or "the user selected Y" mid-run is fabrication — inventing
+      the user's decision to justify stopping. State only what the goal contract actually
+      says; never invent a user action. If you need a decision, make the defensible default
+      and record it; do not manufacture one and attribute it to the user.
+    patterns:
+      - "you chose"
+      - "you selected"
+      - "you picked"
+      - "you opted"
+      - "you specified"
+      - "you indicated you"
+      - "you decided"
+      - "you've chosen"
+      - "you have chosen"
+      - "you asked me to wait"
+      - "you told me to"
+      - "the user chose"
+      - "the user selected"
+      - "the user picked"
+      - "the user opted"
+      - "the user specified"
+      - "the user decided"
+      - "the user has chosen"
+      - "the user indicated"
+      - "the user elected to"
+      - "per your selection"
+      - "per your choice"
+      - "as you selected"
+      - "as you chose"
+      - "as you specified"
+      - "based on your choice"
+      - "based on your selection"
+      - "following your choice"
+      - "your chosen option"
+      - "the option you chose"
+      - "the choice you made"
+
+  # Defeatism dressed as analysis — declaring a wall "fundamental" instead of
+  # naming the specific cause + fix.
+  fundamental_limitation:
+    note: >-
+      You declared a wall "fundamental", "impossible", or "too slow/noisy" instead of
+      naming the specific cause and the specific fix. If a working example exists anywhere
+      a solution exists by construction; downgrade "X can't be done" to "the cause is
+      [specific], the fix is [specific], applying it now."
+    patterns:
+      - "fundamental limitation"
+      - "fundamentally impossible"
+      - "this is impossible"
+      - "simply not possible"
+      - "cannot be done"
+      - "can't be done"
+      - "is just too slow"
+      - "too slow to"
+      - "too noisy to measure"
+      - "inherently limited"
+      - "inherent limitation"
+      - "hard limit of"
+      - "the jvm can't"
+      - "is a hard wall"
+      - "no way around"
+      - "not feasible"
+      - "infeasible"
+      - "terminally"
+      - "unrecoverable"
+      - "beyond repair"
+
+  # Diagnosis-as-endpoint — naming the fix or the next step instead of APPLYING it
+  # in the same workstream.
+  diagnosis_endpoint:
+    note: >-
+      You stopped at naming a fix or a next step instead of applying it. A finding must
+      terminate in an APPLIED action plus verification, in the same workstream. You
+      recommend the probe to YOURSELF and run it now; "here's what we'd do" is an
+      incomplete turn, not a deliverable.
+    patterns:
+      - "the fix would be"
+      - "the fix is to"
+      - "could be fixed by"
+      - "this could be improved by"
+      - "could be improved by"
+      - "recommended next step"
+      - "recommended next investigation"
+      - "next step would be"
+      - "the next step is to"
+      - "one approach would be"
+      - "a possible solution is"
+      - "this could be resolved by"
+      - "could be resolved by"
+      - "would need to be"
+      - "should be fixed by"
+      - "the solution would be"
+      - "here's what we'd do"
+      - "here is what we would do"
+      - "what i would do next"
+      - "i would recommend"
+
+  # Proposing a full rewrite for a fixable defect.
+  rewrite_instead_of_fix:
+    note: >-
+      You proposed a rewrite/reimplementation as the answer to a fixable defect. Prove and
+      fix what exists first; a rewrite is only on the table after the fix is measured
+      insufficient, and even then only the thin piece that failed, never the whole thing.
+    patterns:
+      - "needs a full rewrite"
+      - "should be rewritten"
+      - "rewrite the whole"
+      - "rewrite it in"
+      - "reimplement the"
+      - "start over from scratch"
+      - "rebuild from scratch"
+      - "ground-up rewrite"
+      - "the right fix is to rewrite"
+      - "would require rewriting"
+      - "better to rewrite"
+      - "rewrite this in rust"
+      - "rewrite this in go"
+      - "port the whole"
+
+  claim_without_evidence:
+    note: >-
+      You claimed completion without showing any artifact the Council can inspect.
+      A claim with no evidence is, by definition, not done.
+    # Special-cased in code: only fires when a completion claim is present AND no
+    # evidence marker is found. Patterns here are the completion-claim phrases.
+    patterns:
+      - "it's complete"
+      - "it is complete"
+      - "task complete"
+      - "goal complete"
+      - "fully complete"
+      - "now complete"
+      - "all done"
+      - "this is done"
+      - "work is done"
+      - "everything is done"
+      - "successfully completed"
+      - "completed successfully"
+      - "has been completed"
+      - "is finished"
+      - "all set"
+      - "nothing left to do"
+      - "no further work"
+      - "ready to ship"
+
+  stall_padding:
+    note: >-
+      Your response is busy-looking filler with no real artifact change. Pretending
+      to work counts as no progress.
+    # Special-cased in code: fires only on a long response with filler AND no artifact verb.
+    patterns:
+      - "let me just"
+      - "i'll just"
+      - "continuing to work"
+      - "still working on"
+      - "working through"
+      - "let me continue"
+      - "i'll keep working"
+      - "making progress"
+      - "almost there"
+      - "wrapping up"
+      - "finalizing"
+      - "just need to"
+
+# Evidence markers — if ANY appear in a response, a completion claim is treated as
+# at least attempting to show its work (suppresses claim_without_evidence).
+evidence_markers:
+  - "passed"
+  - "0 errors"
+  - "0 failures"
+  - "tests pass"
+  - "exit code 0"
+  - "diff --git"
+  - "+++ b/"
+  - "--- a/"
+  - "wrote "
+  - "created file"
+  - "modified "
+  - "ran "
+  - "output:"
+  - "result:"
+  - "stdout"
+  - "verified"
+  - ".py"
+  - ".md"
+  - ".json"
+  - ".ts"
+  - ".tsx"
+  - "commit "
+  - "sha "
+
+# Artifact-producing verbs — their ABSENCE in a long response is a stall tell.
+artifact_verbs:
+  - "wrote"
+  - "created"
+  - "edited"
+  - "patched"
+  - "ran"
+  - "executed"
+  - "fixed"
+  - "added"
+  - "removed"
+  - "refactored"
+  - "implemented"
+  - "tested"
+  - "built"
+  - "committed"
+  - "applied"
+  - "generated"
+  - "updated"
+  - "deleted"
+  - "installed"
+  - "diff"
+  - "output"
+  - "error"
+  - "traceback"
+  - "passed"
+  - "failed"

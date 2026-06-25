@@ -181,6 +181,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                "Tools & Skills"),
     CommandDef("pet", "Toggle or adopt a petdex mascot (/pet, /pet list, /pet <slug>)", "Tools & Skills",
                cli_only=True, args_hint="[toggle|list|scale <n>|<slug>]", subcommands=("toggle", "list", "scale", "off")),
+    CommandDef("hatch", "Generate a new petdex pet from a description",
+               "Tools & Skills", cli_only=True, aliases=("generate-pet",), args_hint="[description]"),
     CommandDef("learn", "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)",
                "Tools & Skills", args_hint="<what to learn from>"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
@@ -534,6 +536,14 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     return result
 
 
+# Telegram allows up to 100 BotCommands. Hermes ships ~50 built-in commands;
+# a 60-slot default keeps every built-in plus common skill commands visible in
+# the `/` menu while staying comfortably under Telegram's ~4KB payload limit.
+# Users can tune this via platforms.telegram.extra.command_menu.max_commands.
+_DEFAULT_TELEGRAM_MENU_MAX_COMMANDS = 60
+_TELEGRAM_BOT_API_MAX_COMMANDS = 100
+_TELEGRAM_PRIORITY_MODES = {"prepend", "append", "replace"}
+
 _TELEGRAM_MENU_PRIORITY = (
     # Most-typed everyday commands first.
     "help",
@@ -571,12 +581,92 @@ need to survive the visible menu cap ahead of lower-priority built-ins.
 """
 
 
+def _nested_mapping(root: Mapping[str, Any], *path: str) -> Mapping[str, Any]:
+    node: Any = root
+    for key in path:
+        if not isinstance(node, Mapping):
+            return {}
+        node = node.get(key)
+    return node if isinstance(node, Mapping) else {}
+
+
+def _telegram_command_menu_config() -> dict[str, Any]:
+    """Return normalized Telegram command-menu config with safe defaults.
+
+    Canonical user-facing path:
+    ``platforms.telegram.extra.command_menu``.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        raw_cfg = read_raw_config() or {}
+    except Exception:
+        raw_cfg = {}
+    if not isinstance(raw_cfg, Mapping):
+        raw_cfg = {}
+
+    menu_cfg = dict(_nested_mapping(raw_cfg, "platforms", "telegram", "extra", "command_menu"))
+
+    max_commands = menu_cfg.get("max_commands", _DEFAULT_TELEGRAM_MENU_MAX_COMMANDS)
+    try:
+        max_commands = int(max_commands)
+    except (TypeError, ValueError):
+        max_commands = _DEFAULT_TELEGRAM_MENU_MAX_COMMANDS
+    max_commands = max(1, min(_TELEGRAM_BOT_API_MAX_COMMANDS, max_commands))
+
+    priority_mode = str(menu_cfg.get("priority_mode") or "prepend").strip().lower()
+    if priority_mode not in _TELEGRAM_PRIORITY_MODES:
+        priority_mode = "prepend"
+
+    raw_priority = menu_cfg.get("priority")
+    if isinstance(raw_priority, list):
+        priority = [str(item) for item in raw_priority if str(item).strip()]
+    else:
+        priority = []
+
+    return {
+        "max_commands": max_commands,
+        "priority_mode": priority_mode,
+        "priority": priority,
+    }
+
+
+def telegram_menu_max_commands() -> int:
+    """Return configured Telegram BotCommand menu cap with safe bounds."""
+    return int(_telegram_command_menu_config()["max_commands"])
+
+
+def _dedupe_sanitized_names(raw_names: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw_name in raw_names:
+        name = _sanitize_telegram_name(str(raw_name))
+        if name and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return tuple(result)
+
+
+def _telegram_effective_priority() -> tuple[str, ...]:
+    menu_cfg = _telegram_command_menu_config()
+    configured = list(_dedupe_sanitized_names(menu_cfg["priority"]))
+    defaults = list(_dedupe_sanitized_names(_TELEGRAM_MENU_PRIORITY))
+
+    if menu_cfg["priority_mode"] == "replace":
+        raw_priority = configured
+    elif menu_cfg["priority_mode"] == "append":
+        raw_priority = defaults + configured
+    else:
+        raw_priority = configured + defaults
+
+    return _dedupe_sanitized_names(raw_priority)
+
+
 def _prioritize_telegram_menu_commands(
     commands: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
     priority = {
-        _sanitize_telegram_name(name): index
-        for index, name in enumerate(_TELEGRAM_MENU_PRIORITY)
+        name: index
+        for index, name in enumerate(_telegram_effective_priority())
     }
     return [
         command

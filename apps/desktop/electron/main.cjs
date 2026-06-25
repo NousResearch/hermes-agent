@@ -12,6 +12,7 @@ const {
   powerMonitor,
   protocol,
   safeStorage,
+  screen,
   session,
   shell,
   systemPreferences
@@ -56,6 +57,7 @@ const {
 const { gitRootForIpc } = require('./git-root.cjs')
 const { worktreesForIpc } = require('./git-worktrees.cjs')
 const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
+const { resolveBehindCount, shouldCountCommits } = require('./update-count.cjs')
 const { runRebuildWithRetry } = require('./update-rebuild.cjs')
 const {
   buildPosixCleanupScript,
@@ -67,6 +69,13 @@ const {
   uninstallArgsForMode
 } = require('./desktop-uninstall.cjs')
 const { isPackagedInstallPath: isPackagedInstallPathUnderRoots } = require('./workspace-cwd.cjs')
+const {
+  MIN_WIDTH: WINDOW_MIN_WIDTH,
+  MIN_HEIGHT: WINDOW_MIN_HEIGHT,
+  sanitizeWindowState,
+  computeWindowOptions,
+  debounce
+} = require('./window-state.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -320,6 +329,7 @@ const BOOTSTRAP_MARKER_SCHEMA_VERSION = 1
 
 const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'connection.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
+const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
 // active-profile.json records which Hermes profile the desktop launches its
 // local backend as. When set, startHermes() passes `hermes --profile <name>
 // dashboard …`, which deterministically pins HERMES_HOME (see
@@ -1522,6 +1532,36 @@ function writeDesktopUpdateConfig(config) {
   writeFileAtomic(DESKTOP_UPDATE_CONFIG_PATH, JSON.stringify(config, null, 2))
 }
 
+// ─── Main-window geometry persistence (window-state.json) ──────────────────
+
+function readWindowState() {
+  try {
+    return sanitizeWindowState(JSON.parse(fs.readFileSync(DESKTOP_WINDOW_STATE_PATH, 'utf8')))
+  } catch {
+    return null
+  }
+}
+
+// Persist the window's restored (non-maximized) bounds plus its maximized flag.
+// getNormalBounds() keeps the pre-maximize size, so un-maximizing next session
+// lands back where the user actually sized the window.
+function persistWindowState() {
+  if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized()) return
+  try {
+    const { x, y, width, height } = mainWindow.getNormalBounds()
+    fs.mkdirSync(path.dirname(DESKTOP_WINDOW_STATE_PATH), { recursive: true })
+    writeFileAtomic(
+      DESKTOP_WINDOW_STATE_PATH,
+      JSON.stringify({ x, y, width, height, isMaximized: mainWindow.isMaximized() }, null, 2)
+    )
+  } catch (err) {
+    rememberLog(`[window-state] persist failed: ${err?.message || err}`)
+  }
+}
+
+// resized/moved fire many times mid-drag on Linux; debounce to one write.
+const schedulePersistWindowState = debounce(persistWindowState, 250)
+
 // Match the backend's source resolution but bias toward a real git checkout.
 // Dev → SOURCE_REPO_ROOT. Packaged/CLI install → ACTIVE_HERMES_ROOT.
 // HERMES_DESKTOP_HERMES_ROOT always wins so devs can pin a worktree.
@@ -1667,15 +1707,34 @@ async function checkUpdates() {
   }
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
-  const [currentSha, targetSha, countStr, dirtyStr, currentBranch] = await Promise.all([
+  const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr, mergeBaseStr] = await Promise.all([
     git(['rev-parse', 'HEAD']),
     git(['rev-parse', `origin/${branch}`]),
-    git(['rev-list', `HEAD..origin/${branch}`, '--count']),
     git(['status', '--porcelain']),
-    git(['rev-parse', '--abbrev-ref', 'HEAD'])
+    git(['rev-parse', '--abbrev-ref', 'HEAD']),
+    git(['rev-parse', '--is-shallow-repository']),
+    // merge-base exits non-zero with empty stdout when HEAD shares no common
+    // ancestor with the freshly fetched tip — exactly the shallow-clone case.
+    git(['merge-base', 'HEAD', `origin/${branch}`])
   ])
 
-  const behind = Number.parseInt(countStr, 10) || 0
+  const isShallow = shallowStr === 'true'
+  const hasMergeBase = Boolean(mergeBaseStr)
+  // Only enumerate the commit count when it is meaningful. On a shallow checkout
+  // with no merge-base, `rev-list --count` walks the entire remote ancestry
+  // (thousands of commits, see #51922) and resolveBehindCount discards the
+  // result anyway in favour of a SHA compare — so skip the expensive query.
+  const countStr = shouldCountCommits({ isShallow, hasMergeBase })
+    ? await git(['rev-list', `HEAD..origin/${branch}`, '--count'])
+    : ''
+
+  const behind = resolveBehindCount({
+    countStr,
+    currentSha,
+    targetSha,
+    isShallow,
+    hasMergeBase
+  })
   const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
 
   return {
@@ -5523,11 +5582,11 @@ function closePetOverlay() {
 
 function createWindow() {
   const icon = getAppIconPath()
+  const savedWindowState = readWindowState()
   mainWindow = new BrowserWindow({
-    width: 1220,
-    height: 800,
-    minWidth: 400,
-    minHeight: 620,
+    ...computeWindowOptions(savedWindowState, screen.getAllDisplays()),
+    minWidth: WINDOW_MIN_WIDTH,
+    minHeight: WINDOW_MIN_HEIGHT,
     title: 'Hermes',
     // Frameless title bar on every platform so the renderer can paint the
     // "hide sidebar" button (and other left-side titlebar tools) flush with
@@ -5569,6 +5628,8 @@ function createWindow() {
     }
   }
 
+  if (savedWindowState?.isMaximized) mainWindow.maximize()
+
   mainWindow.once('ready-to-show', () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
   })
@@ -5577,6 +5638,14 @@ function createWindow() {
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('will-leave-full-screen', () => sendWindowStateChanged(false))
   mainWindow.on('leave-full-screen', () => sendWindowStateChanged(false))
+
+  // Reopen where the user left off. resized/moved settle once per drag; close is
+  // the cross-platform backstop, flushed synchronously before the window is gone.
+  mainWindow.on('resized', schedulePersistWindowState)
+  mainWindow.on('moved', schedulePersistWindowState)
+  mainWindow.on('maximize', schedulePersistWindowState)
+  mainWindow.on('unmaximize', schedulePersistWindowState)
+  mainWindow.on('close', () => schedulePersistWindowState.flush())
 
   // The overlay rides the main window — closing the app's primary window must
   // tear it down too (otherwise it strands as an orphan that blocks

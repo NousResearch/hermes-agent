@@ -71,8 +71,24 @@ def _harden_transparency(path: Path) -> Path:
         # Zero the RGB of any leftover semi-transparent edge pixels so a keyed
         # draft has no colored halo when composited on the dark UI.
         keyed = atlas._clear_transparent_rgb(keyed)
-        out = path.with_suffix(".png")
+        # PNG inputs are hardened in place, including mixed-case suffixes like
+        # .PNG. with_suffix(".png") would name a different Path string that still
+        # resolves to the same file on case-insensitive filesystems (macOS APFS,
+        # Windows), and unlinking path after save would delete the hardened output.
+        if path.suffix.lower() == ".png":
+            out = path
+        else:
+            out = path.with_suffix(".png")
         keyed.save(out, format="PNG")
+        if out != path:
+            # The hardened PNG stands in for the draft. When the provider handed
+            # back a non-PNG file (webp, jpg, gif), out is a different path, so
+            # remove the original instead of leaving it behind in cache/images
+            # (nothing prunes that directory outside the gateway loop).
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
         return out
     except Exception as exc:  # noqa: BLE001 - cosmetic; fall back to the raw image
         logger.debug("base draft transparency hardening failed for %s: %s", path, exc)

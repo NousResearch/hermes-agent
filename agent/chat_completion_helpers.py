@@ -2163,72 +2163,106 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         sanitize_anthropic_kwargs(
             api_kwargs, log_prefix=getattr(agent, "log_prefix", "")
         )
-        # Use the Anthropic SDK's streaming context manager
-        with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
-            # The Anthropic SDK exposes the raw httpx response on
-            # ``stream.response``.  Snapshot diagnostic headers
-            # immediately so they survive a stream that dies before the
-            # first event.
-            try:
-                agent._stream_diag_capture_response(
-                    _diag, getattr(stream, "response", None)
-                )
-            except Exception:
-                pass
-            for event in stream:
-                # Update stale-stream timer on every event so the
-                # outer poll loop knows data is flowing.  Without
-                # this, the detector kills healthy long-running
-                # Opus streams after 180 s even when events are
-                # actively arriving (the chat_completions path
-                # already does this at the top of its chunk loop).
-                last_chunk_time["t"] = time.time()
-                agent._touch_activity("receiving stream response")
+        # Build a FRESH per-request Anthropic client for this streaming
+        # call instead of reusing the shared, long-lived
+        # ``agent._anthropic_client``.  The shared client's httpx
+        # connection pool accumulates stale state inside the gateway's
+        # threaded runtime (triggering APIConnectionError on
+        # Anthropic-compatible providers like MiniMax), and is also
+        # force-closed/rebuilt by the outer poll loop's interrupt
+        # handler while this worker thread may still be using it.  A
+        # fresh client per request eliminates both the stale-pool
+        # failures and the shared-client race -- mirroring the
+        # chat_completions path, which already creates a fresh OpenAI
+        # client per stream via ``_create_request_openai_client``.
+        # See issue #47658.
+        from agent.anthropic_adapter import build_anthropic_client
 
-                # Update per-attempt diagnostic counters (best-effort).
+        _per_request_client = build_anthropic_client(
+            agent._anthropic_api_key,
+            getattr(agent, "_anthropic_base_url", None),
+            timeout=get_provider_request_timeout(agent.provider, agent.model),
+            drop_context_1m_beta=bool(
+                getattr(agent, "_oauth_1m_beta_disabled", False)
+            ),
+        )
+        # Stash the per-request client so the stale-stream detector /
+        # interrupt handler in the outer poll loop can close it.
+        request_client_holder["client"] = _per_request_client
+
+        # Always close the per-request client once the stream is done,
+        # whether it succeeded, was interrupted, or raised.
+        try:
+            with _per_request_client.messages.stream(**api_kwargs) as stream:
+                # The Anthropic SDK exposes the raw httpx response on
+                # ``stream.response``.  Snapshot diagnostic headers
+                # immediately so they survive a stream that dies before the
+                # first event.
                 try:
-                    _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
-                    if _diag.get("first_chunk_at") is None:
-                        _diag["first_chunk_at"] = last_chunk_time["t"]
-                    try:
-                        _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(event))
-                    except Exception:
-                        pass
+                    agent._stream_diag_capture_response(
+                        _diag, getattr(stream, "response", None)
+                    )
                 except Exception:
                     pass
+                for event in stream:
+                    # Update stale-stream timer on every event so the
+                    # outer poll loop knows data is flowing.  Without
+                    # this, the detector kills healthy long-running
+                    # Opus streams after 180 s even when events are
+                    # actively arriving (the chat_completions path
+                    # already does this at the top of its chunk loop).
+                    last_chunk_time["t"] = time.time()
+                    agent._touch_activity("receiving stream response")
 
-                if agent._interrupt_requested:
-                    break
+                    # Update per-attempt diagnostic counters (best-effort).
+                    try:
+                        _diag["chunks"] = int(_diag.get("chunks", 0)) + 1
+                        if _diag.get("first_chunk_at") is None:
+                            _diag["first_chunk_at"] = last_chunk_time["t"]
+                        try:
+                            _diag["bytes"] = int(_diag.get("bytes", 0)) + len(repr(event))
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
 
-                event_type = getattr(event, "type", None)
+                    if agent._interrupt_requested:
+                        break
 
-                if event_type == "content_block_start":
-                    block = getattr(event, "content_block", None)
-                    if block and getattr(block, "type", None) == "tool_use":
-                        has_tool_use = True
-                        tool_name = getattr(block, "name", None)
-                        if tool_name:
-                            _fire_first_delta()
-                            agent._fire_tool_gen_started(tool_name)
+                    event_type = getattr(event, "type", None)
 
-                elif event_type == "content_block_delta":
-                    delta = getattr(event, "delta", None)
-                    if delta:
-                        delta_type = getattr(delta, "type", None)
-                        if delta_type == "text_delta":
-                            text = getattr(delta, "text", "")
-                            if text and not has_tool_use:
+                    if event_type == "content_block_start":
+                        block = getattr(event, "content_block", None)
+                        if block and getattr(block, "type", None) == "tool_use":
+                            has_tool_use = True
+                            tool_name = getattr(block, "name", None)
+                            if tool_name:
                                 _fire_first_delta()
-                                agent._fire_stream_delta(text)
-                                deltas_were_sent["yes"] = True
-                        elif delta_type == "thinking_delta":
-                            thinking_text = getattr(delta, "thinking", "")
-                            if thinking_text:
-                                _fire_first_delta()
-                                agent._fire_reasoning_delta(thinking_text)
+                                agent._fire_tool_gen_started(tool_name)
 
-            # Return the native Anthropic Message for downstream processing
-            return stream.get_final_message()
+                    elif event_type == "content_block_delta":
+                        delta = getattr(event, "delta", None)
+                        if delta:
+                            delta_type = getattr(delta, "type", None)
+                            if delta_type == "text_delta":
+                                text = getattr(delta, "text", "")
+                                if text and not has_tool_use:
+                                    _fire_first_delta()
+                                    agent._fire_stream_delta(text)
+                                    deltas_were_sent["yes"] = True
+                            elif delta_type == "thinking_delta":
+                                thinking_text = getattr(delta, "thinking", "")
+                                if thinking_text:
+                                    _fire_first_delta()
+                                    agent._fire_reasoning_delta(thinking_text)
+
+                # Return the native Anthropic Message for downstream processing
+                return stream.get_final_message()
+        finally:
+            try:
+                _per_request_client.close()
+            except Exception:
+                pass
 
     def _call():
         import httpx as _httpx

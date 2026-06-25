@@ -2163,6 +2163,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             last_activity = time.monotonic()
+            streamed_content_parts: list[str] = []
 
             # Role chunk
             role_chunk = {
@@ -2190,6 +2191,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
                 else:
+                    if isinstance(item, str) and item:
+                        streamed_content_parts.append(item)
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": model,
@@ -2227,11 +2230,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            result = {}
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
+
+            final_response = str(result.get("final_response") or "")
+            streamed_content = "".join(streamed_content_parts)
+            if final_response and not streamed_content:
+                last_activity = await _emit(final_response)
 
             # Finish chunk
             finish_chunk = {

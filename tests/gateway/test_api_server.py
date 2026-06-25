@@ -1007,6 +1007,88 @@ class TestChatCompletionsEndpoint:
                 assert "Hello!" in body
 
     @pytest.mark.asyncio
+    async def test_stream_falls_back_to_final_response_when_no_deltas(self, adapter):
+        """Regression: streaming clients must receive content even if no deltas fire."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return (
+                    {"final_response": "pong", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "stream": True,
+                    },
+                )
+
+            assert resp.status == 200
+            body = await resp.text()
+            assert "[DONE]" in body
+
+            content_chunks = []
+            finish_chunks = []
+            for line in body.splitlines():
+                if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                    continue
+                chunk = json.loads(line[len("data: "):])
+                choice = chunk["choices"][0]
+                content = choice.get("delta", {}).get("content")
+                if content:
+                    content_chunks.append(content)
+                if choice.get("finish_reason") == "stop":
+                    finish_chunks.append(chunk)
+
+            assert content_chunks == ["pong"]
+            assert finish_chunks[-1]["usage"] == {
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "total_tokens": 12,
+            }
+
+    @pytest.mark.asyncio
+    async def test_stream_final_response_fallback_does_not_duplicate_deltas(self, adapter):
+        """If live content streamed, final_response is not emitted again."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Hello!")
+                return (
+                    {"final_response": "Hello!", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "stream": True,
+                    },
+                )
+
+            assert resp.status == 200
+            body = await resp.text()
+            content_chunks = []
+            for line in body.splitlines():
+                if not line.startswith("data: ") or line.strip() == "data: [DONE]":
+                    continue
+                chunk = json.loads(line[len("data: "):])
+                content = chunk["choices"][0].get("delta", {}).get("content")
+                if content:
+                    content_chunks.append(content)
+
+            assert content_chunks == ["Hello!"]
+
+    @pytest.mark.asyncio
     async def test_stream_string_false_returns_json_completion(self, adapter):
         """Quoted false must not route chat completions into SSE mode."""
         mock_result = {

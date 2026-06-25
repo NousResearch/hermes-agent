@@ -888,7 +888,10 @@ export const zhHant = defineLocale({
       namePlaceholder: '為寵物命名',
       staleBackend: '請更新 Hermes 以生成寵物。',
       backgroundHint: '你可以關閉此視窗——完成後 Hermes 會通知你。',
-      slowProviderHint: '這可能最多需要 5 分鐘。',
+      slowProviderHint: '這可能需要幾分鐘',
+      remix: '混合生成',
+      remixConfirmTitle: '以此造型混合生成？',
+      remixConfirmBody: '將以此造型為起點生成一組新草圖，可能需要幾分鐘。',
       genericError: '生成失敗——請重試或選一個建議。',
       referenceImageTooLarge: '參考圖片過大。請使用小於 16 MB 的圖片。',
       referenceImageInvalid: '無法讀取該參考圖片。請嘗試 PNG、JPG、WebP 或 GIF。',
@@ -1989,7 +1992,7 @@ export const zhHant = defineLocale({
         web: '網頁'
       },
       titleTemplates: {
-        actionCommand: (action, command) => `${action} · ${command}`,
+        actionCommand: (action, command) => `${action} ${command}`,
         actionQuoted: (action, value) => `${action}「${value}」`,
         actionTarget: (action, target) => `${action} ${target}`,
         prefixedDone: (prefix, action) => `${prefix}${action}`,

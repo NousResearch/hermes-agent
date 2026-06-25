@@ -144,3 +144,102 @@ def test_upstream_authz_helper_false_for_unknown_platform(monkeypatch):
     # A platform with no registered adapter must not be treated as upstream-authz.
     assert runner._adapter_authorization_is_upstream(Platform.DISCORD) is False
     assert runner._adapter_authorization_is_upstream(None) is False
+
+
+# ---------------------------------------------------------------------------
+# The underlying-platform regression: a relay *message* inbound carries the
+# UNDERLYING platform (source.platform == Platform.DISCORD), not Platform.RELAY,
+# because the connector's wire payload sets platform="discord" and
+# ws_transport._event_from_wire maps it straight onto SessionSource. The relay
+# adapter is registered ONLY under Platform.RELAY, so keying upstream-authz off
+# source.platform misses and the user hits default-deny ("Unauthorized user
+# <id> (<name>) on discord"). The authentic trust signal is that the event was
+# delivered over the per-instance-authenticated relay WS — carried by
+# source.delivered_via_upstream_relay, set by the relay transport, NOT by
+# source.platform.
+# ---------------------------------------------------------------------------
+
+
+def test_relay_message_with_underlying_discord_platform_authorized(monkeypatch):
+    """The live message path: source.platform=DISCORD + relay-delivered marker.
+
+    Reproduces the staging bug exactly — a relay-delivered Discord message whose
+    source.platform is the underlying "discord" (not "relay"). The relay adapter
+    is registered only under Platform.RELAY, so the OLD source.platform-keyed
+    check missed and default-denied. Authorization must come from the
+    relay-delivery marker instead.
+    """
+    _clear_auth_env(monkeypatch)
+    runner, _ = _make_runner(platform=Platform.RELAY, authorization_is_upstream=True)
+    src = SessionSource(
+        platform=Platform.DISCORD,  # underlying platform off the wire
+        user_id="267171776755269633",
+        chat_id="1400724139874058314",
+        user_name="rewbs",
+        chat_type="dm",
+        delivered_via_upstream_relay=True,
+    )
+    assert runner._is_user_authorized(src) is True
+
+
+def test_direct_discord_event_not_authorized_by_relay_presence(monkeypatch):
+    """A DIRECT Discord event must NOT be authorized just because a relay adapter
+    is registered (multiplexing gateway: direct Discord adapter + relay adapter).
+
+    Without the delivery marker, the relay's upstream-authz must not leak onto a
+    direct Discord inbound — that would be a fail-open. Only events the relay
+    transport actually delivered carry delivered_via_upstream_relay=True.
+    """
+    _clear_auth_env(monkeypatch)
+    runner, _ = _make_runner(platform=Platform.RELAY, authorization_is_upstream=True)
+    src = SessionSource(
+        platform=Platform.DISCORD,
+        user_id="999",
+        chat_id="456",
+        user_name="direct_discord_user",
+        chat_type="dm",
+        # delivered_via_upstream_relay defaults to False (direct delivery)
+    )
+    assert runner._is_user_authorized(src) is False
+
+
+def test_relay_delivery_marker_is_wire_invisible():
+    """delivered_via_upstream_relay is an INTERNAL trust signal, never serialized.
+
+    It must not appear in to_dict() (the wire/persistence surface) — it is set
+    locally by the relay transport from the authenticated socket, never trusted
+    off the wire.
+    """
+    src = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="1",
+        user_id="2",
+        delivered_via_upstream_relay=True,
+    )
+    assert "delivered_via_upstream_relay" not in src.to_dict()
+    # And it does not survive a wire round-trip (a peer can't forge it).
+    assert SessionSource.from_dict(src.to_dict()).delivered_via_upstream_relay is False
+
+
+def test_event_from_wire_sets_relay_delivery_marker():
+    """The relay transport stamps the marker on every event it rebuilds.
+
+    This is the authentic injection point: _event_from_wire only runs for frames
+    that arrived over the per-instance-authenticated relay WS.
+    """
+    from gateway.relay.ws_transport import _event_from_wire
+
+    event = _event_from_wire(
+        {
+            "text": "hello!",
+            "source": {
+                "platform": "discord",
+                "chat_id": "123",
+                "chat_type": "dm",
+                "user_id": "267171776755269633",
+                "user_name": "rewbs",
+            },
+        }
+    )
+    assert event.source.platform is Platform.DISCORD
+    assert event.source.delivered_via_upstream_relay is True

@@ -119,7 +119,20 @@ class SessionSource:
     # None => the gateway's active/default profile. Drives both session-key
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
-    
+
+    # Internal, wire-INVISIBLE trust signal: True when this event was delivered
+    # to the gateway over the per-instance-authenticated relay WebSocket (the
+    # Team Gateway connector). The connector authenticates the gateway's socket
+    # with a per-instance secret and resolves owner-only author bindings BEFORE
+    # delivering, so a relay-delivered event is already authorized as this
+    # instance's bound user. ``platform`` carries the UNDERLYING platform
+    # (e.g. ``discord``) for session-keying/egress, NOT ``relay`` — so authz
+    # must key the upstream-trust decision off THIS flag, not off ``platform``.
+    # Set locally by the relay transport (``ws_transport._event_from_wire``);
+    # deliberately excluded from ``to_dict``/``from_dict`` so a peer can never
+    # forge it across the wire or have it restored from persistence.
+    delivered_via_upstream_relay: bool = False
+
     @property
     def description(self) -> str:
         """Human-readable description of the source."""

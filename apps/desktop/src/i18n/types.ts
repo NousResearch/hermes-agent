@@ -703,6 +703,9 @@ export interface Translations {
       staleBackend: string
       backgroundHint: string
       slowProviderHint: string
+      remix: string
+      remixConfirmTitle: string
+      remixConfirmBody: string
       genericError: string
       referenceImageTooLarge: string
       referenceImageInvalid: string

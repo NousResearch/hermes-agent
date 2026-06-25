@@ -136,14 +136,14 @@ describe('buildToolView title actions', () => {
       ''
     )
 
-    expect(read.title).toBe('Reading file')
-    expect(read.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' file' })
+    expect(read.title).toBe('Reading demo.txt')
+    expect(read.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' demo.txt' })
     expect(web.title).toBe('Reading example.com/docs')
     expect(web.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' example.com/docs' })
-    expect(terminal.title).toBe('Running · npm test -- --runInBand')
-    expect(terminal.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' · npm test -- --runInBand' })
-    expect(code.title).toBe('Scripting · print("hello")')
-    expect(code.titleAction).toEqual({ prefix: '', text: 'Scripting', suffix: ' · print("hello")' })
+    expect(terminal.title).toBe('Running npm test -- --runInBand')
+    expect(terminal.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' npm test -- --runInBand' })
+    expect(code.title).toBe('Scripting print("hello")')
+    expect(code.titleAction).toEqual({ prefix: '', text: 'Scripting', suffix: ' print("hello")' })
   })
 
   it('does not mark completed tool titles as pending actions', () => {
@@ -151,6 +151,124 @@ describe('buildToolView title actions', () => {
 
     expect(view.title).toBe('Read example.com/docs')
     expect(view.titleAction).toBeUndefined()
+  })
+
+  it('uses the filename for completed read_file rows', () => {
+    const view = buildToolView(
+      part({ args: { path: './package.json' }, result: { content: '1|{"name":"demo"}' }, toolName: 'read_file' }),
+      ''
+    )
+
+    expect(view.title).toBe('Read package.json')
+    expect(view.subtitle).toBe('')
+    expect(view.titleAction).toBeUndefined()
+  })
+
+  it('adds a compact line range to line-scoped read_file rows', () => {
+    const view = buildToolView(
+      part({
+        args: { limit: 10, offset: 25, path: './src/main.ts' },
+        result: { content: '25|function toggleDock() {\n26|  dock.classList.toggle("hidden");\n34|}' },
+        toolName: 'read_file'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Read main.ts L25-34')
+    expect(view.subtitle).toBe('')
+  })
+
+  it('uses the requested positive offset/limit for read_file row line ranges', () => {
+    const view = buildToolView(
+      part({
+        args: { limit: 5, offset: 1, path: './package.json' },
+        result: { content: '1|{\n2|  "name": "bb-rainbows",\n3|  "private": true,\n4|  "version": "0.0.1",\n5|  "type": "module",\n6|  "description": "extra"' },
+        toolName: 'read_file'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Read package.json L1-5')
+  })
+
+  it('uses inherited backend context for live read_file rows', () => {
+    const view = buildToolView(
+      part({
+        args: { context: 'package.json L1-5', path: './package.json' },
+        result: undefined,
+        toolName: 'read_file'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Reading package.json L1-5')
+    expect(view.titleAction).toEqual({ prefix: '', text: 'Reading', suffix: ' package.json L1-5' })
+  })
+
+  it('uses returned line numbers for negative-offset read_file rows', () => {
+    const view = buildToolView(
+      part({
+        args: { limit: 2, offset: -2, path: './src/main.ts' },
+        result: { content: '99|lastLine();\n100|done();' },
+        toolName: 'read_file'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Read main.ts L99-100')
+  })
+
+  it('renders compact terminal titles for session 20260624_231846_bdbd1e commands', () => {
+    const rows = [
+      [
+        'cd /Users/brooklyn/www/bb-rainbows && pnpm run lint 2>&1 | tail -20; echo "lint_exit=${PIPESTATUS[0]}"',
+        'Ran pnpm run lint'
+      ],
+      [
+        'cd /Users/brooklyn/www/bb-rainbows && pnpm run build 2>&1 | tail -20; echo "build_exit=${PIPESTATUS[0]}"',
+        'Ran pnpm run build'
+      ],
+      [
+        'which node pnpm corepack; node -v; echo "---"; corepack --version 2>&1; echo "---pnpm via corepack---"; pnpm --version 2>&1 | tail -5',
+        'Ran which node pnpm corepack + 3 commands'
+      ],
+      [
+        'echo "--- proto pnpm direct ---"; ~/.proto/tools/node/24.11.0/bin/pnpm --version 2>&1 | tail -3; echo "--- proto node ---"; ls ~/.proto/tools/node/ 2>&1; echo "--- corepack cache ---"; ls ~/.cache/node/corepack/v1/pnpm/ 2>&1',
+        'Ran ~/.proto/tools/node/24.11.0/bin/pnpm --version + 2 commands'
+      ],
+      [
+        'cd /Users/brooklyn/www/bb-rainbows && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm@10.20.0 --version 2>&1 | tail -3',
+        'Ran COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack pnpm@10.20.0 --version'
+      ],
+      [
+        'cd /Users/brooklyn/www/bb-rainbows && COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack use pnpm@10.20.0 2>&1 | tail -10; echo "exit=$?"',
+        'Ran COREPACK_ENABLE_DOWNLOAD_PROMPT=0 corepack use pnpm@10.20.0'
+      ]
+    ] as const
+
+    for (const [command, expectedTitle] of rows) {
+      const view = buildToolView(part({ args: { command }, result: { output: 'ok', exit_code: 0 }, toolName: 'terminal' }), '')
+
+      expect(view.title).toBe(expectedTitle)
+    }
+  })
+
+  it('uses inherited backend context for live terminal rows', () => {
+    const view = buildToolView(
+      part({
+        args: {
+          command: 'cd /Users/brooklyn/www/bb-rainbows && pnpm run lint 2>&1 | tail -20',
+          context: 'pnpm run lint'
+        },
+        result: undefined,
+        toolName: 'terminal'
+      }),
+      ''
+    )
+
+    expect(view.title).toBe('Running pnpm run lint')
+    expect(view.subtitle).toBe('')
+    expect(view.titleAction).toEqual({ prefix: '', text: 'Running', suffix: ' pnpm run lint' })
   })
 
   it('uses the runtime locale for title text and action placement', () => {
@@ -163,8 +281,8 @@ describe('buildToolView title actions', () => {
       ''
     )
 
-    expect(read.title).toBe('ファイルを読み取り中')
-    expect(read.titleAction).toEqual({ prefix: 'ファイルを', text: '読み取り中', suffix: '' })
+    expect(read.title).toBe('demo.txt を読み取り中')
+    expect(read.titleAction).toEqual({ prefix: 'demo.txt を', text: '読み取り中', suffix: '' })
     expect(web.title).toBe('example.com/docs を読み取り中')
     expect(web.titleAction).toEqual({ prefix: 'example.com/docs を', text: '読み取り中', suffix: '' })
   })

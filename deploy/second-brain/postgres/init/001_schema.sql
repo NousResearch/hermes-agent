@@ -90,22 +90,12 @@ ON CONFLICT (email) DO NOTHING;
 
 INSERT INTO groups (slug, name, type) VALUES
   ('company_all', 'Company All', 'company'),
-  ('department_marketing', 'Marketing', 'department'),
-  ('department_financial', 'Financial', 'department'),
-  ('department_hr', 'HR', 'department'),
-  ('department_engineering', 'Engineering', 'department'),
-  ('department_c_level', 'C Level', 'department'),
   ('role_admin', 'Admin', 'role')
 ON CONFLICT (slug) DO NOTHING;
 
 INSERT INTO rag_workspaces (slug, name, visibility_boundary) VALUES
   ('company_public', 'Company Public', 'company'),
-  ('company_internal', 'Company Internal', 'company'),
-  ('department_marketing', 'Marketing', 'department'),
-  ('department_financial', 'Financial', 'department'),
-  ('department_hr', 'HR', 'department'),
-  ('department_engineering', 'Engineering', 'department'),
-  ('department_c_level', 'C Level', 'department')
+  ('department_c_level', 'C Level', 'admin')
 ON CONFLICT (slug) DO NOTHING;
 
 INSERT INTO user_groups (user_id, group_id)

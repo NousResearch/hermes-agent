@@ -21,55 +21,48 @@ Do not expose `.env` or admin keys on public pages.
 ## Running Services
 
 - company-ai-gateway: public FastAPI gateway behind Traefik
-- knowledge-api: internal RAG routing and ingestion API
+- knowledge-api: internal workspace policy, query fan-out, and ingestion API
 - knowledge-worker: background Redis queue consumer that indexes documents into LightRAG
 - lightrag-company-public
-- lightrag-company-internal
-- lightrag-marketing
-- lightrag-financial
-- lightrag-hr
-- lightrag-engineering
 - lightrag-c-level
 - ollama-embed: local embedding model
 - postgres: metadata and workspace registry
 - redis
 - minio
 
+Old upgraded servers may still have data directories for department workspaces.
+They are dormant unless Compose services and API policy are re-added.
+
+## Workspace Policy
+
+Current query workspaces:
+
+- `company_public`: all employee tokens can query this.
+- `department_c_level`: only admins can query this.
+
+Normal users always query only `company_public`. Existing or accidental old
+groups like `department_marketing` do not grant extra query access.
+
+Admins query both `company_public` and `department_c_level`.
+
 ## Auth Model
 
 Admin has two auth options:
 
 - `X-API-Key: GATEWAY_API_KEY`
-- Bearer token with `role=admin`
+- bearer token with `role=admin` / `role_admin`
 
 Normal users use:
 
 - `Authorization: Bearer USER_TOKEN`
 
-User access is decided by token groups. User-supplied groups in `/api/query` are ignored by the gateway for bearer-token requests.
+User-supplied groups in `/api/query` are ignored by the gateway. The gateway
+derives query groups from authenticated role on every request.
 
-## Groups and Workspaces
+Valid groups for newly generated tokens:
 
-Current groups:
-
-- `department_marketing`
-- `department_financial`
-- `department_hr`
-- `department_engineering`
-- `department_c_level`
+- `company_all`
 - `role_admin`
-
-Current query workspaces:
-
-- `company_public`
-- `company_internal`
-- `department_marketing`
-- `department_financial`
-- `department_hr`
-- `department_engineering`
-- `department_c_level`
-
-Every normal user can query `company_public` and `company_internal`, plus their department workspaces.
 
 ## Admin Setup
 
@@ -94,15 +87,15 @@ Configure local admin CLI:
   --admin-key "PASTE_GATEWAY_API_KEY"
 ```
 
-## Create User Tokens
+## Create Tokens
 
-Marketing:
+Employee token:
 
 ```bash
 second-brain admin-token-create \
   --email user@company.com \
-  --name "Marketing User" \
-  --group department_marketing \
+  --name "Company User" \
+  --group company_all \
   --expires-days 90
 ```
 
@@ -113,11 +106,6 @@ second-brain admin-token-create \
   --email admin@company.com \
   --name "Admin" \
   --group role_admin \
-  --group department_marketing \
-  --group department_financial \
-  --group department_hr \
-  --group department_engineering \
-  --group department_c_level \
   --admin \
   --expires-days 365
 ```
@@ -131,26 +119,23 @@ Do not send the admin key.
 
 ## Upload Documents
 
-Department-scoped document:
+Public document:
 
 ```bash
 second-brain ingest-text \
-  --file ./marketing-plan.md \
-  --title "Marketing Plan Q3" \
-  --department marketing \
-  --visibility department \
-  --classification internal
+  --file ./company-handbook.md \
+  --title "Company Handbook" \
+  --target public
 ```
 
-Company-wide public document:
+C-Level document:
 
 ```bash
 second-brain ingest-text \
-  --file ./company-faq.md \
-  --title "Company FAQ" \
-  --department marketing \
-  --visibility company \
-  --classification public
+  --file ./board-plan.md \
+  --title "Board Plan" \
+  --target c_level \
+  --classification restricted
 ```
 
 Multipart API upload:
@@ -158,11 +143,9 @@ Multipart API upload:
 ```bash
 curl -X POST __PUBLIC_BASE_URL__/api/documents/file \
   -H "X-API-Key: PASTE_GATEWAY_API_KEY" \
-  -F "file=@./marketing-plan.md" \
-  -F "title=Marketing Plan Q3" \
-  -F "department=marketing" \
-  -F "visibility=department" \
-  -F "classification=internal"
+  -F "file=@./company-handbook.md" \
+  -F "title=Company Handbook" \
+  -F "target=public"
 ```
 
 MVP upload supports UTF-8 text files. Extract PDF/DOCX to text before upload, or add parser support in the gateway.
@@ -188,23 +171,28 @@ Document statuses:
 - `indexed`: LightRAG accepted the document
 - `failed`: max retries reached; inspect `ingest_error`
 
-Treat a document as large when extracted text is over 1MB, source file is over 10MB, PDF/DOCX is over 50 pages, or the document likely creates more than 200 chunks. For large documents, extract text first, clean boilerplate, split into stable sections, then upload sections.
+Treat a document as large when extracted text is over 1MB, source file is over
+10MB, PDF/DOCX is over 50 pages, or the document likely creates more than 200 chunks.
+For large documents, extract text first, clean boilerplate, split into stable
+sections, then upload sections.
 
 ## Query
 
 ```bash
-second-brain query "tom tat tai lieu marketing"
+second-brain query "tom tat tai lieu cong ty"
 ```
 
-Gateway query fan-out runs in parallel across allowed workspaces. Tune concurrency with:
+Normal user response should show:
 
 ```text
-QUERY_WORKSPACE_CONCURRENCY=4
+Allowed workspaces: company_public
 ```
 
-Parallel fan-out helps when LightRAG/LLM capacity is available. If the shared
-embedding service or remote LLM provider becomes the bottleneck, lower this
-value for more stable latency.
+Admin response should show:
+
+```text
+Allowed workspaces: company_public, department_c_level
+```
 
 Raw API:
 
@@ -212,39 +200,16 @@ Raw API:
 curl -X POST __PUBLIC_BASE_URL__/api/query \
   -H "Authorization: Bearer USER_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"query":"tom tat tai lieu marketing","mode":"mix","include_references":true}'
+  -d '{"query":"tom tat tai lieu cong ty","mode":"mix","include_references":true}'
 ```
 
-## Add a Department
+## Performance Notes
 
-MVP departments are static. To add a department, update these places:
+The old multi-department design queried two or more workspaces for many users.
+The current MVP queries one workspace for normal users and two for admins, so
+latency is lower and fewer LightRAG containers compete for RAM/CPU.
 
-1. Gateway:
-   - `services/company-ai-gateway/app.py`
-   - Add `department_new_name` to `ALLOWED_GROUPS`.
-2. Knowledge API:
-   - `services/knowledge-api/app.py`
-   - Add the new workspace to `DEPARTMENT_WORKSPACES`.
-   - Add `LIGHTRAG_DEPARTMENT_NEW_NAME_URL` to `LIGHTRAG_URLS`.
-3. Docker Compose:
-   - `docker-compose.yml`
-   - Add a `lightrag-new-name` service using the existing LightRAG service pattern.
-   - Add the env var under `knowledge-api`.
-   - Add dependency from `knowledge-api` to the new LightRAG service.
-4. Postgres seed:
-   - `postgres/init/001_schema.sql`
-   - Add row to `rag_workspaces`.
-   - For an existing database, also run an `INSERT ... ON CONFLICT DO NOTHING`.
-5. CLI:
-   - `tools/second-brain`
-   - `skills/productivity/company-second-brain/scripts/second-brain`
-   - Add the short department name to `ingest-text --department choices`.
-6. Rebuild:
-
-```bash
-cd __DEPLOY_ROOT__
-docker compose up -d --build
-```
+`QUERY_WORKSPACE_CONCURRENCY=4` is enough for the current two-workspace setup.
 
 ## Upgrade Flow
 
@@ -281,7 +246,7 @@ ssh __ADMIN_SSH_TARGET__ '
   chmod +x __DEPLOY_ROOT__/scripts/configure-host-swap.sh
   chmod +x __DEPLOY_ROOT__/services/company-ai-gateway/static/install-company-second-brain-skill.sh
   cd __DEPLOY_ROOT__
-  docker compose up -d --build company-ai-gateway knowledge-api knowledge-worker
+  docker compose up -d --build --remove-orphans company-ai-gateway knowledge-api knowledge-worker lightrag-company-public lightrag-c-level
 '
 ```
 
@@ -295,7 +260,7 @@ curl -fsSIL __PUBLIC_BASE_URL__/download/company-second-brain-skill.tar.gz
 curl -fsSL __PUBLIC_BASE_URL__/api/queue/status -H "X-API-Key: PASTE_GATEWAY_API_KEY"
 ```
 
-Use a department user token:
+Use an employee token:
 
 ```bash
 second-brain me
@@ -308,16 +273,31 @@ Check runtime services:
 ```bash
 cd __DEPLOY_ROOT__
 docker compose ps
+docker ps --format '{{.Names}}' | grep second-brain-lightrag
 docker compose logs -f knowledge-worker
 swapon --show
 ```
+
+Expected LightRAG containers:
+
+```text
+second-brain-lightrag-company-public
+second-brain-lightrag-c-level
+```
+
+## Extending Beyond MVP
+
+Add a new dedicated department workspace only when there is a real isolation or
+performance reason. To do that, add a LightRAG service in Compose, add the URL
+to `knowledge-api`, add `rag_workspaces` metadata, update gateway policy, update
+CLI/docs, then deploy with `--remove-orphans`.
 
 ## Production Gaps
 
 - Add proper admin web login instead of CLI-only admin setup.
 - Add token revoke/rotation list with token IDs stored in Postgres.
 - Add PDF/DOCX parser pipeline for upload.
-- Add dynamic department management instead of static Compose services.
+- Add dynamic workspace provisioning if departments need dedicated containers again.
 - Add audit log for token creation, document upload, and queries.
 - Add backup/restore jobs for Postgres and LightRAG volumes.
 - Rotate root password and move VPS access to SSH keys.

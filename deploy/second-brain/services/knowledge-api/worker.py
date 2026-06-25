@@ -16,11 +16,6 @@ INGEST_RETRY_BACKOFF_SECONDS = int(os.environ.get("INGEST_RETRY_BACKOFF_SECONDS"
 LIGHTRAG_API_KEY = os.environ.get("LIGHTRAG_API_KEY", "")
 LIGHTRAG_URLS = {
     "company_public": os.environ.get("LIGHTRAG_COMPANY_PUBLIC_URL"),
-    "company_internal": os.environ.get("LIGHTRAG_COMPANY_INTERNAL_URL"),
-    "department_marketing": os.environ.get("LIGHTRAG_DEPARTMENT_MARKETING_URL"),
-    "department_financial": os.environ.get("LIGHTRAG_DEPARTMENT_FINANCIAL_URL"),
-    "department_hr": os.environ.get("LIGHTRAG_DEPARTMENT_HR_URL"),
-    "department_engineering": os.environ.get("LIGHTRAG_DEPARTMENT_ENGINEERING_URL"),
     "department_c_level": os.environ.get("LIGHTRAG_DEPARTMENT_C_LEVEL_URL"),
 }
 

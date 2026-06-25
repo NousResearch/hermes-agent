@@ -16,24 +16,15 @@ REDIS_URL = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 INGEST_QUEUE_NAME = os.environ.get("INGEST_QUEUE_NAME", "second_brain:ingest_jobs")
 QUERY_WORKSPACE_CONCURRENCY = int(os.environ.get("QUERY_WORKSPACE_CONCURRENCY", "4"))
 LIGHTRAG_ROOT = Path(os.environ.get("LIGHTRAG_ROOT", "/data/lightrag"))
-DEPARTMENT_WORKSPACES = [
-    "company_public",
-    "company_internal",
-    "department_marketing",
-    "department_financial",
-    "department_hr",
-    "department_engineering",
-    "department_c_level",
-]
+PUBLIC_WORKSPACE = "company_public"
+C_LEVEL_WORKSPACE = "department_c_level"
+ENABLED_WORKSPACES = [PUBLIC_WORKSPACE, C_LEVEL_WORKSPACE]
+C_LEVEL_TARGETS = {"c_level", "c-level", "clevel", "c level", "department_c_level", "admin", "executive", "board"}
+C_LEVEL_CLASSIFICATIONS = {"confidential", "restricted", "c_level", "c-level"}
 LIGHTRAG_API_KEY = os.environ.get("LIGHTRAG_API_KEY", "")
 LIGHTRAG_URLS = {
-    "company_public": os.environ.get("LIGHTRAG_COMPANY_PUBLIC_URL"),
-    "company_internal": os.environ.get("LIGHTRAG_COMPANY_INTERNAL_URL"),
-    "department_marketing": os.environ.get("LIGHTRAG_DEPARTMENT_MARKETING_URL"),
-    "department_financial": os.environ.get("LIGHTRAG_DEPARTMENT_FINANCIAL_URL"),
-    "department_hr": os.environ.get("LIGHTRAG_DEPARTMENT_HR_URL"),
-    "department_engineering": os.environ.get("LIGHTRAG_DEPARTMENT_ENGINEERING_URL"),
-    "department_c_level": os.environ.get("LIGHTRAG_DEPARTMENT_C_LEVEL_URL"),
+    PUBLIC_WORKSPACE: os.environ.get("LIGHTRAG_COMPANY_PUBLIC_URL"),
+    C_LEVEL_WORKSPACE: os.environ.get("LIGHTRAG_DEPARTMENT_C_LEVEL_URL"),
 }
 
 
@@ -42,7 +33,7 @@ async def startup() -> None:
     app.state.pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
     app.state.redis = redis.from_url(REDIS_URL, decode_responses=True)
     await ensure_runtime_schema()
-    for workspace in DEPARTMENT_WORKSPACES:
+    for workspace in ENABLED_WORKSPACES:
         base = LIGHTRAG_ROOT / "workspaces" / workspace
         for child in ("docs", "kv_store", "vector_store", "graph_store"):
             (base / child).mkdir(parents=True, exist_ok=True)
@@ -82,7 +73,13 @@ async def health() -> dict[str, str]:
 @app.get("/workspaces")
 async def workspaces() -> dict[str, Any]:
     rows = await app.state.pool.fetch(
-        "SELECT slug, name, visibility_boundary FROM rag_workspaces ORDER BY slug"
+        """
+        SELECT slug, name, visibility_boundary
+        FROM rag_workspaces
+        WHERE slug = ANY($1::text[])
+        ORDER BY array_position($1::text[], slug)
+        """,
+        ENABLED_WORKSPACES,
     )
     return {
         "workspaces": [dict(row) for row in rows],
@@ -90,23 +87,37 @@ async def workspaces() -> dict[str, Any]:
     }
 
 
+def normalize_value(value: Any) -> str:
+    return str(value or "").strip().lower().replace("_", " ").replace("-", " ")
+
+
 def route_workspace(payload: dict[str, Any]) -> str:
-    visibility = payload.get("visibility", "department")
-    department = str(payload.get("department", "")).lower().replace(" ", "_")
-    if visibility == "company":
-        classification = payload.get("classification", "internal")
-        return "company_public" if classification == "public" else "company_internal"
-    if visibility == "department":
-        return f"department_{department}"
-    raise ValueError("only company and department visibility are enabled in this MVP")
+    explicit_workspace = str(payload.get("workspace") or "").strip()
+    if explicit_workspace == C_LEVEL_WORKSPACE:
+        return C_LEVEL_WORKSPACE
+    if explicit_workspace == PUBLIC_WORKSPACE:
+        return PUBLIC_WORKSPACE
+
+    target_values = {
+        normalize_value(payload.get("target")),
+        normalize_value(payload.get("workspace")),
+        normalize_value(payload.get("visibility")),
+        normalize_value(payload.get("department")),
+    }
+    classification = normalize_value(payload.get("classification"))
+    if target_values & {normalize_value(value) for value in C_LEVEL_TARGETS}:
+        return C_LEVEL_WORKSPACE
+    if classification in {normalize_value(value) for value in C_LEVEL_CLASSIFICATIONS}:
+        return C_LEVEL_WORKSPACE
+    return PUBLIC_WORKSPACE
 
 
 def allowed_workspaces(groups: list[str]) -> list[str]:
-    allowed = ["company_public", "company_internal"]
-    for group in groups:
-        if group.startswith("department_") and group in LIGHTRAG_URLS:
-            allowed.append(group)
-    return sorted(set(allowed))
+    normalized = {str(group).strip().lower() for group in groups}
+    allowed = [PUBLIC_WORKSPACE]
+    if "role_admin" in normalized:
+        allowed.append(C_LEVEL_WORKSPACE)
+    return allowed
 
 
 @app.post("/query")
@@ -155,9 +166,10 @@ async def ingest_text(payload: dict[str, Any]) -> dict[str, Any]:
     title = payload["title"]
     text = payload["text"]
     classification = payload.get("classification", "internal")
-    department = payload.get("department")
+    department = payload.get("department") or ("c_level" if workspace == C_LEVEL_WORKSPACE else "public")
     source_text = (
         f"Title: {title}\n"
+        f"Workspace: {workspace}\n"
         f"Department: {department}\n"
         f"Classification: {classification}\n\n"
         f"{text}"

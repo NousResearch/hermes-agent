@@ -57,56 +57,6 @@ services:
     networks:
       - second-brain
 
-  lightrag-company-internal:
-    <<: *lightrag-service
-    container_name: second-brain-lightrag-company-internal
-    environment:
-      <<: *lightrag-env
-      WORKSPACE: company_internal
-      INPUT_DIR: /data/workspaces/company_internal/inputs
-      WORKING_DIR: /data/workspaces/company_internal/rag_storage
-      WEBUI_TITLE: Company Internal
-
-  lightrag-marketing:
-    <<: *lightrag-service
-    container_name: second-brain-lightrag-marketing
-    environment:
-      <<: *lightrag-env
-      WORKSPACE: department_marketing
-      INPUT_DIR: /data/workspaces/department_marketing/inputs
-      WORKING_DIR: /data/workspaces/department_marketing/rag_storage
-      WEBUI_TITLE: Marketing
-
-  lightrag-financial:
-    <<: *lightrag-service
-    container_name: second-brain-lightrag-financial
-    environment:
-      <<: *lightrag-env
-      WORKSPACE: department_financial
-      INPUT_DIR: /data/workspaces/department_financial/inputs
-      WORKING_DIR: /data/workspaces/department_financial/rag_storage
-      WEBUI_TITLE: Financial
-
-  lightrag-hr:
-    <<: *lightrag-service
-    container_name: second-brain-lightrag-hr
-    environment:
-      <<: *lightrag-env
-      WORKSPACE: department_hr
-      INPUT_DIR: /data/workspaces/department_hr/inputs
-      WORKING_DIR: /data/workspaces/department_hr/rag_storage
-      WEBUI_TITLE: HR
-
-  lightrag-engineering:
-    <<: *lightrag-service
-    container_name: second-brain-lightrag-engineering
-    environment:
-      <<: *lightrag-env
-      WORKSPACE: department_engineering
-      INPUT_DIR: /data/workspaces/department_engineering/inputs
-      WORKING_DIR: /data/workspaces/department_engineering/rag_storage
-      WEBUI_TITLE: Engineering
-
   lightrag-c-level:
     <<: *lightrag-service
     container_name: second-brain-lightrag-c-level
@@ -166,11 +116,6 @@ services:
       LIGHTRAG_ROOT: /data/lightrag
       LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY}
       LIGHTRAG_COMPANY_PUBLIC_URL: http://lightrag-company-public:9621
-      LIGHTRAG_COMPANY_INTERNAL_URL: http://lightrag-company-internal:9621
-      LIGHTRAG_DEPARTMENT_MARKETING_URL: http://lightrag-marketing:9621
-      LIGHTRAG_DEPARTMENT_FINANCIAL_URL: http://lightrag-financial:9621
-      LIGHTRAG_DEPARTMENT_HR_URL: http://lightrag-hr:9621
-      LIGHTRAG_DEPARTMENT_ENGINEERING_URL: http://lightrag-engineering:9621
       LIGHTRAG_DEPARTMENT_C_LEVEL_URL: http://lightrag-c-level:9621
     depends_on:
       postgres:
@@ -180,16 +125,6 @@ services:
       minio:
         condition: service_started
       lightrag-company-public:
-        condition: service_started
-      lightrag-company-internal:
-        condition: service_started
-      lightrag-marketing:
-        condition: service_started
-      lightrag-financial:
-        condition: service_started
-      lightrag-hr:
-        condition: service_started
-      lightrag-engineering:
         condition: service_started
       lightrag-c-level:
         condition: service_started
@@ -216,11 +151,6 @@ services:
       INGEST_RETRY_BACKOFF_SECONDS: ${INGEST_RETRY_BACKOFF_SECONDS:-10}
       LIGHTRAG_API_KEY: ${LIGHTRAG_API_KEY}
       LIGHTRAG_COMPANY_PUBLIC_URL: http://lightrag-company-public:9621
-      LIGHTRAG_COMPANY_INTERNAL_URL: http://lightrag-company-internal:9621
-      LIGHTRAG_DEPARTMENT_MARKETING_URL: http://lightrag-marketing:9621
-      LIGHTRAG_DEPARTMENT_FINANCIAL_URL: http://lightrag-financial:9621
-      LIGHTRAG_DEPARTMENT_HR_URL: http://lightrag-hr:9621
-      LIGHTRAG_DEPARTMENT_ENGINEERING_URL: http://lightrag-engineering:9621
       LIGHTRAG_DEPARTMENT_C_LEVEL_URL: http://lightrag-c-level:9621
     depends_on:
       postgres:
@@ -228,16 +158,6 @@ services:
       redis:
         condition: service_started
       lightrag-company-public:
-        condition: service_started
-      lightrag-company-internal:
-        condition: service_started
-      lightrag-marketing:
-        condition: service_started
-      lightrag-financial:
-        condition: service_started
-      lightrag-hr:
-        condition: service_started
-      lightrag-engineering:
         condition: service_started
       lightrag-c-level:
         condition: service_started

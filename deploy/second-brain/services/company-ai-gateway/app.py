@@ -23,6 +23,8 @@ ADMIN_SSH_TARGET = os.environ.get("ADMIN_SSH_TARGET", "root@YOUR_SERVER_IP")
 DEPLOY_ROOT = os.environ.get("DEPLOY_ROOT", "/opt/second-brain")
 INSTALL_ASSET_VERSION = os.environ.get("SECOND_BRAIN_INSTALL_VERSION", "20260624-generic")
 MAX_TEXT_UPLOAD_BYTES = int(os.environ.get("MAX_TEXT_UPLOAD_BYTES", str(10 * 1024 * 1024)))
+PUBLIC_WORKSPACE = "company_public"
+C_LEVEL_WORKSPACE = "department_c_level"
 
 
 def resolve_public_base_url() -> str:
@@ -41,11 +43,6 @@ PUBLIC_BASE_URL = resolve_public_base_url()
 
 ALLOWED_GROUPS = {
     "company_all",
-    "department_marketing",
-    "department_financial",
-    "department_hr",
-    "department_engineering",
-    "department_c_level",
     "role_admin",
 }
 
@@ -121,6 +118,23 @@ def normalize_groups(groups: list[Any]) -> list[str]:
         if value in ALLOWED_GROUPS:
             normalized.append(value)
     return sorted(set(normalized))
+
+
+def is_admin_auth(auth: dict[str, Any]) -> bool:
+    groups = set(auth.get("groups") or [])
+    return auth.get("type") == "admin_api_key" or auth.get("role") == "admin" or "role_admin" in groups
+
+
+def query_groups_for_auth(auth: dict[str, Any]) -> list[str]:
+    if is_admin_auth(auth):
+        return ["role_admin"]
+    return ["company_all"]
+
+
+def visible_workspace_slugs(auth: dict[str, Any]) -> set[str]:
+    if is_admin_auth(auth):
+        return {PUBLIC_WORKSPACE, C_LEVEL_WORKSPACE}
+    return {PUBLIC_WORKSPACE}
 
 
 def ide_config(token: str) -> dict[str, Any]:
@@ -335,7 +349,7 @@ async def install_page() -> str:
     <header>
       <div>
         <h1>Company Second Brain</h1>
-        <p>Cài skill cho agent hoặc IDE, nhập token nhân sự, rồi query tài liệu theo đúng phòng ban được cấp quyền.</p>
+        <p>Cài skill cho agent hoặc IDE, nhập token nhân sự, rồi query tài liệu public của công ty. C-Level chỉ mở cho admin.</p>
       </div>
       <div class="status" aria-label="Compatibility">
         <span class="pill">Hermes skill</span>
@@ -348,7 +362,7 @@ async def install_page() -> str:
       <section>
         <h2>Cài nhanh</h2>
         <ol>
-          <li>Admin tạo token theo phòng ban và gửi token cho nhân sự.</li>
+          <li>Admin tạo token nhân sự và gửi token cho user.</li>
           <li>Nhân sự chạy lệnh dưới đây trong terminal của agent hoặc IDE.</li>
           <li>Installer sẽ hỏi token, xác minh với gateway, rồi lưu cấu hình local.</li>
         </ol>
@@ -357,7 +371,7 @@ async def install_page() -> str:
           <a class="button" href="{installer_url}">Tải installer</a>
           <a class="button secondary" href="{bundle_url}">Tải skill bundle</a>
         </div>
-        <p class="note">Token quyết định quyền truy cập. User thuộc Marketing chỉ thấy workspace chung và Marketing; HR, Financial, Engineering, C Level tách riêng.</p>
+        <p class="note">Nhân sự luôn query workspace <code>company_public</code>. Admin query thêm <code>department_c_level</code>.</p>
       </section>
 
       <section>
@@ -368,7 +382,7 @@ async def install_page() -> str:
           <div class="row"><div class="key">Identity</div><div><code>GET /api/me</code></div></div>
           <div class="row"><div class="key">Workspaces</div><div><code>GET /api/workspaces</code></div></div>
         </div>
-        <pre><code>second-brain query "tom tat tai lieu marketing moi nhat"</code></pre>
+        <pre><code>second-brain query "tom tat tai lieu cong ty moi nhat"</code></pre>
         <pre><code>Authorization: Bearer USER_TOKEN</code></pre>
       </section>
     </div>
@@ -438,14 +452,14 @@ async def admin_page() -> str:
   <main>
     <header>
       <h1>Admin Setup</h1>
-      <p>Vận hành Company Second Brain: tạo token, phân quyền phòng ban, upload tài liệu, nâng cấp skill/gateway và handoff cho agent khác.</p>
+      <p>Vận hành Company Second Brain: tạo token, upload tài liệu Public hoặc C-Level, nâng cấp skill/gateway và handoff cho agent khác.</p>
     </header>
 
     <section>
       <h2>1. Cài CLI/skill cho admin</h2>
       <ol>
         <li>Chạy installer như user bình thường.</li>
-        <li>Khi installer hỏi token, có thể bỏ qua bằng token admin sau khi tạo, hoặc dùng CLI bằng admin key.</li>
+        <li>Khi installer hỏi token, dùng token admin bearer nếu muốn query C-Level; các lệnh quản trị dùng admin key.</li>
       </ol>
       <pre><code>{install_command}</code></pre>
     </section>
@@ -465,8 +479,8 @@ async def admin_page() -> str:
         <h2>3. Tạo token nhân sự</h2>
         <pre><code>second-brain admin-token-create \\
   --email user@company.com \\
-  --name "Marketing User" \\
-  --group department_marketing \\
+  --name "Company User" \\
+  --group company_all \\
   --expires-days 90</code></pre>
         <p class="note">Gửi cho nhân sự: link <a href="/install">/install</a> + token vừa tạo. Không gửi admin key.</p>
       </section>
@@ -477,11 +491,6 @@ async def admin_page() -> str:
   --email admin@company.com \\
   --name "Admin" \\
   --group role_admin \\
-  --group department_marketing \\
-  --group department_financial \\
-  --group department_hr \\
-  --group department_engineering \\
-  --group department_c_level \\
   --admin \\
   --expires-days 365</code></pre>
       </section>
@@ -491,19 +500,21 @@ async def admin_page() -> str:
       <h2>5. Upload tài liệu</h2>
       <p>CLI ingest file text-friendly hoặc gọi API multipart. Upload trả <code>queued</code>, worker sẽ index nền vào LightRAG.</p>
       <pre><code>second-brain ingest-text \\
-  --file ./marketing-plan.md \\
-  --title "Marketing Plan Q3" \\
-  --department marketing \\
-  --visibility department \\
-  --classification internal
+  --file ./company-handbook.md \\
+  --title "Company Handbook" \\
+  --target public
+
+second-brain ingest-text \\
+  --file ./board-plan.md \\
+  --title "Board Plan" \\
+  --target c_level \\
+  --classification restricted
 
 curl -X POST {PUBLIC_BASE_URL}/api/documents/file \\
   -H "X-API-Key: PASTE_GATEWAY_API_KEY" \\
-  -F "file=@./marketing-plan.md" \\
-  -F "title=Marketing Plan Q3" \\
-  -F "department=marketing" \\
-  -F "visibility=department" \\
-  -F "classification=internal"
+  -F "file=@./company-handbook.md" \\
+  -F "title=Company Handbook" \\
+  -F "target=public"
 
 second-brain document-status DOCUMENT_ID
 second-brain queue-status</code></pre>
@@ -511,16 +522,14 @@ second-brain queue-status</code></pre>
     </section>
 
     <section>
-      <h2>6. Thêm phòng ban mới</h2>
+      <h2>6. Mở rộng workspace sau MVP</h2>
       <ul>
-        <li>Thêm group mới vào gateway: <code>ALLOWED_GROUPS</code>.</li>
-        <li>Thêm LightRAG service mới trong <code>docker-compose.yml</code>.</li>
-        <li>Thêm URL workspace trong <code>knowledge-api</code>.</li>
-        <li>Thêm row vào bảng <code>rag_workspaces</code>.</li>
-        <li>Thêm choice CLI nếu muốn admin dùng lệnh ngắn.</li>
+        <li>MVP hiện tại chỉ chạy 2 LightRAG: <code>company_public</code> và <code>department_c_level</code>.</li>
+        <li>Muốn thêm phòng ban riêng thì thêm service LightRAG mới, URL trong <code>knowledge-api</code>, row <code>rag_workspaces</code>, và policy gateway.</li>
+        <li>Chỉ mở rộng khi có nhu cầu cách ly thật sự; càng nhiều workspace thì query càng fan-out chậm hơn.</li>
       </ul>
       <pre><code>cd {DEPLOY_ROOT}
-docker compose up -d --build</code></pre>
+docker compose up -d --build --remove-orphans company-ai-gateway knowledge-api knowledge-worker lightrag-company-public lightrag-c-level</code></pre>
     </section>
 
     <section>
@@ -640,11 +649,10 @@ async def workspaces(
         response = await client.get(f"{KNOWLEDGE_API_URL}/workspaces")
         response.raise_for_status()
         body = response.json()
-    allowed = {"company_public", "company_internal"}
-    allowed.update(group for group in auth.get("groups", []) if group.startswith("department_"))
+    allowed = visible_workspace_slugs(auth)
     body["workspaces"] = [
         workspace for workspace in body.get("workspaces", [])
-        if workspace.get("slug") in allowed or auth.get("role") == "admin"
+        if workspace.get("slug") in allowed
     ]
     return body
 
@@ -656,10 +664,9 @@ async def query(
     authorization: str | None = Header(default=None),
 ) -> Any:
     auth = require_auth(x_api_key, authorization)
-    if auth.get("type") != "admin_api_key":
-        payload = dict(payload)
-        payload["groups"] = auth.get("groups", [])
-        payload["actor_email"] = auth.get("email")
+    payload = dict(payload)
+    payload["groups"] = query_groups_for_auth(auth)
+    payload["actor_email"] = auth.get("email")
     async with httpx.AsyncClient(timeout=180) as client:
         response = await client.post(f"{KNOWLEDGE_API_URL}/query", json=payload)
         response.raise_for_status()
@@ -685,8 +692,9 @@ async def ingest_text(
 async def ingest_file(
     file: UploadFile = File(...),
     title: str | None = Form(default=None),
-    department: str = Form(...),
-    visibility: str = Form(default="department"),
+    target: str = Form(default="public"),
+    department: str | None = Form(default=None),
+    visibility: str = Form(default="public"),
     classification: str = Form(default="internal"),
     x_api_key: str | None = Header(default=None),
     authorization: str | None = Header(default=None),
@@ -706,7 +714,8 @@ async def ingest_file(
         ) from exc
     payload = {
         "title": title or file.filename or "uploaded-document",
-        "department": department,
+        "target": target,
+        "department": department or target,
         "visibility": visibility,
         "classification": classification,
         "text": text,

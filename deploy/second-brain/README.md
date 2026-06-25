@@ -1,13 +1,21 @@
 # Company Second Brain Deployment
 
-This package deploys a multi-department second brain using:
+This package deploys a two-workspace company second brain:
 
-- Company AI Gateway: public FastAPI entrypoint for auth, install pages, token creation, and upload.
-- Knowledge API: internal router for LightRAG workspaces.
-- Knowledge Worker: background Redis queue consumer for document ingestion.
-- LightRAG: one workspace per company/department boundary.
-- Postgres: metadata, workspace registry, and ingest job payloads.
-- Redis: durable-ish ingest queue with append-only persistence.
+- `company_public`: all employees and agents can query this workspace.
+- `department_c_level`: only admins can query this workspace.
+
+The simplified layout reduces normal query fan-out to one LightRAG container
+and admin fan-out to two containers.
+
+## Services
+
+- Company AI Gateway: public FastAPI entrypoint for auth, install pages, token creation, query, and upload.
+- Knowledge API: internal router for workspace policy and queued ingestion.
+- Knowledge Worker: Redis queue consumer that indexes documents into LightRAG.
+- LightRAG: `lightrag-company-public` and `lightrag-c-level`.
+- Postgres: metadata, workspace registry, and ingest payloads.
+- Redis: ingest queue with append-only persistence.
 - Ollama embedding service.
 - Optional Honcho memory integration hook via `HONCHO_API_KEY`.
 
@@ -40,8 +48,7 @@ This package deploys a multi-department second brain using:
    ./scripts/build-install-assets.sh
    ```
 
-4. Configure host swap on small VPS hosts. A 4-8GB swap file is recommended for
-   4 vCPU / 16GB RAM deployments running multiple LightRAG containers.
+4. Configure host swap on small VPS hosts:
 
    ```bash
    sudo ./scripts/configure-host-swap.sh 6G
@@ -60,6 +67,18 @@ This package deploys a multi-department second brain using:
    https://second-brain.your-company.com/admin
    ```
 
+## Auth Model
+
+Normal users use bearer tokens and are always routed to `company_public`.
+Department groups are not used for query routing in this MVP.
+
+Admins can use either:
+
+- `X-API-Key: GATEWAY_API_KEY`
+- bearer token with `role_admin`
+
+Admin queries route to both `company_public` and `department_c_level`.
+
 ## Admin Flow
 
 Configure the admin CLI:
@@ -70,17 +89,28 @@ Configure the admin CLI:
   --admin-key "GATEWAY_API_KEY"
 ```
 
-Create a department user token:
+Create a normal employee token:
 
 ```bash
 second-brain admin-token-create \
   --email user@your-company.com \
-  --name "Marketing User" \
-  --group department_marketing \
+  --name "Company User" \
+  --group company_all \
   --expires-days 90
 ```
 
-Send the user:
+Create an admin bearer token:
+
+```bash
+second-brain admin-token-create \
+  --email admin@your-company.com \
+  --name "Admin" \
+  --group role_admin \
+  --admin \
+  --expires-days 365
+```
+
+Send normal users only:
 
 - the `/install` URL
 - their bearer token
@@ -89,15 +119,23 @@ Do not send `GATEWAY_API_KEY` to normal users.
 
 ## Upload Documents
 
-Plain text upload through the CLI:
+Public document:
 
 ```bash
 second-brain ingest-text \
-  --file ./document.md \
-  --title "Document Title" \
-  --department marketing \
-  --visibility department \
-  --classification internal
+  --file ./company-handbook.md \
+  --title "Company Handbook" \
+  --target public
+```
+
+C-Level document:
+
+```bash
+second-brain ingest-text \
+  --file ./board-plan.md \
+  --title "Board Plan" \
+  --target c_level \
+  --classification restricted
 ```
 
 Multipart upload through the gateway:
@@ -105,11 +143,9 @@ Multipart upload through the gateway:
 ```bash
 curl -X POST https://second-brain.your-company.com/api/documents/file \
   -H "X-API-Key: GATEWAY_API_KEY" \
-  -F "file=@./document.md" \
-  -F "title=Document Title" \
-  -F "department=marketing" \
-  -F "visibility=department" \
-  -F "classification=internal"
+  -F "file=@./company-handbook.md" \
+  -F "title=Company Handbook" \
+  -F "target=public"
 ```
 
 Uploads are queued. The API returns `status: queued` plus a `document_id`; the
@@ -132,11 +168,16 @@ MVP file upload supports UTF-8 text files. Add PDF/DOCX extraction before produc
 
 ## Query Performance
 
-Gateway query fan-out is parallelized across allowed LightRAG workspaces and
-bounded by `QUERY_WORKSPACE_CONCURRENCY`. The default is `4`. Tune this value:
-parallel fan-out helps when LightRAG/LLM capacity is available, but a single
-shared embedding service or remote LLM rate limit can make lower concurrency
-more stable.
+Normal users query one workspace: `company_public`.
+Admins query two workspaces: `company_public` and `department_c_level`.
+
+`QUERY_WORKSPACE_CONCURRENCY` bounds parallel admin fan-out. The default is
+`4`; with two workspaces this is already enough. Lower it only if the LLM or
+embedding provider becomes the bottleneck.
+
+Old department workspace rows or volume directories can remain on upgraded
+servers. The current API filters them out and Compose removes the old containers
+when deployed with `docker compose up -d --build --remove-orphans`.
 
 ## Large Document Thresholds
 
@@ -160,13 +201,13 @@ After deployment, the gateway serves an agent-ready handoff document at:
 /download/admin-handoff.md
 ```
 
-Give that URL to another agent with the repo branch and target organization settings. The handoff document includes service layout, auth model, add-department steps, upgrade flow, and verification commands.
+Give that URL to another agent with the repo branch and target organization settings.
 
 ## Production Gaps
 
 - Add token revoke/rotation storage.
 - Add audit log writes for query/upload/token creation.
 - Add PDF/DOCX parser pipeline.
-- Convert static department workspaces to dynamic workspace provisioning.
+- Add dynamic workspace provisioning if the organization later needs separate department containers.
 - Add scheduled backups for Postgres and LightRAG volumes.
 - Use SSH keys and rotate bootstrap passwords after initial setup.

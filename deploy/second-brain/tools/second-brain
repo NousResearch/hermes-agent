@@ -68,6 +68,12 @@ def auth_headers(config: dict, *, admin: bool = False) -> dict:
     return {"Authorization": f"Bearer {config['token']}"}
 
 
+def admin_or_token_headers(config: dict) -> dict:
+    if config.get("admin_key"):
+        return {"X-API-Key": config["admin_key"]}
+    return auth_headers(config)
+
+
 def cmd_config(args: argparse.Namespace) -> None:
     config = load_config()
     if args.base_url:
@@ -212,9 +218,16 @@ def cmd_ingest_text(args: argparse.Namespace) -> None:
         raise SystemExit("Missing title. Pass --title or use --file.")
     if not text.strip():
         raise SystemExit("Missing text. Pass --file or pipe text on stdin.")
+    target = args.target
+    legacy_department = (args.department or "").strip().lower().replace("-", "_")
+    if target == "public" and legacy_department in {"c_level", "clevel", "department_c_level"}:
+        target = "c_level"
+    if target == "public" and args.classification in {"confidential", "restricted"}:
+        target = "c_level"
     body = {
         "title": title,
-        "department": args.department,
+        "target": target,
+        "department": args.department or target,
         "visibility": args.visibility,
         "classification": args.classification,
         "text": text,
@@ -222,7 +235,7 @@ def cmd_ingest_text(args: argparse.Namespace) -> None:
     data = request_json(
         "POST",
         f"{config['base_url']}/api/documents/text",
-        headers=auth_headers(config),
+        headers=admin_or_token_headers(config),
         body=body,
     )
     print_json(data)
@@ -312,8 +325,9 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("ingest-text", help="Admin token only: ingest text into RAG")
     p.add_argument("--title")
     p.add_argument("--file")
-    p.add_argument("--department", required=True, choices=["marketing", "financial", "hr", "engineering", "c_level"])
-    p.add_argument("--visibility", default="department", choices=["company", "department"])
+    p.add_argument("--target", default="public", choices=["public", "c_level"], help="RAG target workspace")
+    p.add_argument("--department", help="Legacy metadata field; use --target for routing")
+    p.add_argument("--visibility", default="public")
     p.add_argument("--classification", default="internal", choices=["public", "internal", "confidential", "restricted"])
     p.set_defaults(func=cmd_ingest_text)
 

@@ -487,7 +487,7 @@ def render_login_html(*, next_path: str = "") -> str:
             buttons.append(_render_password_form(p, next_path))
         else:
             buttons.append(
-                f'      <a class="provider-btn" '
+                '      <a class="provider-btn" '
                 f'href="/auth/login?provider={html.escape(p.name, quote=True)}{next_qs}">'
                 f'Sign in with {html.escape(p.display_name)}</a>'
             )
@@ -514,21 +514,21 @@ def _render_password_form(provider, next_path: str) -> str:
     safe_next = html.escape(next_path, quote=True) if next_path else ""
     return (
         f'      <form class="provider-form" data-provider="{pname}" '
-        f'autocomplete="on">\n'
+        'autocomplete="on">\n'
         f'        <div class="form-title">Sign in with {plabel}</div>\n'
         f'        <input type="hidden" name="next" value="{safe_next}">\n'
-        f'        <label class="field">\n'
-        f'          <span class="field-label">Username</span>\n'
-        f'          <input class="field-input" type="text" name="username" '
-        f'autocomplete="username" autocapitalize="none" '
-        f'autocorrect="off" spellcheck="false" required>\n'
-        f'        </label>\n'
-        f'        <label class="field">\n'
-        f'          <span class="field-label">Password</span>\n'
-        f'          <input class="field-input" type="password" name="password" '
-        f'autocomplete="current-password" required>\n'
-        f'        </label>\n'
-        f'        <div class="form-error" role="alert" hidden></div>\n'
-        f'        <button class="provider-btn" type="submit">Sign in</button>\n'
-        f'      </form>'
+        '        <label class="field">\n'
+        '          <span class="field-label">Username</span>\n'
+        '          <input class="field-input" type="text" name="username" '
+        'autocomplete="username" autocapitalize="none" '
+        'autocorrect="off" spellcheck="false" required>\n'
+        '        </label>\n'
+        '        <label class="field">\n'
+        '          <span class="field-label">Password</span>\n'
+        '          <input class="field-input" type="password" name="password" '
+        'autocomplete="current-password" required>\n'
+        '        </label>\n'
+        '        <div class="form-error" role="alert" hidden></div>\n'
+        '        <button class="provider-btn" type="submit">Sign in</button>\n'
+        '      </form>'
     )

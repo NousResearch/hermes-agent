@@ -3694,7 +3694,7 @@ def validate_requested_model(
             return {
                 "accepted": False, "persist": False, "recognized": False,
                 "message": (
-                    f"LM Studio is reachable but no chat-capable models are loaded. "
+                    "LM Studio is reachable but no chat-capable models are loaded. "
                     f"Load `{requested}` in LM Studio (Developer tab → Load Model) and try again."
                 ),
             }
@@ -3745,7 +3745,7 @@ def validate_requested_model(
             if probe.get("used_fallback"):
                 message += (
                     f"\n  Endpoint verification succeeded after trying `{probe.get('resolved_base_url')}`. "
-                    f"Consider saving that as your base URL."
+                    "Consider saving that as your base URL."
                 )
 
             return {
@@ -3827,10 +3827,10 @@ def validate_requested_model(
                     "recognized": False,
                     "message": (
                         f"`{requested}` doesn't look like a {provider_label} model "
-                        f"and isn't in its listing, so it was not accepted. If it "
-                        f"belongs to another configured provider, switch with "
-                        f"`--provider <slug>` (or select it from the `/model` "
-                        f"picker)."
+                        "and isn't in its listing, so it was not accepted. If it "
+                        "belongs to another configured provider, switch with "
+                        "`--provider <slug>` (or select it from the `/model` "
+                        "picker)."
                         f"{suggestion_text}"
                     ),
                 }
@@ -3931,7 +3931,7 @@ def validate_requested_model(
                 "recognized": False,
                 "message": (
                     f"Note: `{requested}` was not found in Anthropic's /v1/models listing. "
-                    f"It may still work if you have early-access or snapshot IDs."
+                    "It may still work if you have early-access or snapshot IDs."
                     f"{suggestion_text}"
                 ),
             }
@@ -3967,9 +3967,9 @@ def validate_requested_model(
             "recognized": False,
             "message": (
                 f"Note: could not verify `{requested}` against this endpoint's "
-                f"model listing.  Many Anthropic-compatible proxies do not "
-                f"implement GET /v1/models.  The model name has been accepted "
-                f"without verification."
+                "model listing.  Many Anthropic-compatible proxies do not "
+                "implement GET /v1/models.  The model name has been accepted "
+                "without verification."
             ),
         }
 
@@ -4031,7 +4031,7 @@ def validate_requested_model(
                     "recognized": True,
                     "message": (
                         f"Note: `{requested}` was not found in the live /v1/models listing "
-                        f"but exists in the curated catalog — accepted."
+                        "but exists in the curated catalog — accepted."
                     ),
                 }
 
@@ -4076,7 +4076,7 @@ def validate_requested_model(
                 "recognized": False,
                 "message": (
                     f"Note: `{requested}` was not found in Bedrock model discovery for {region}. "
-                    f"It may still work with custom inference profiles or cross-account access."
+                    "It may still work with custom inference profiles or cross-account access."
                     f"{suggestion_text}"
                 ),
             }
@@ -4134,7 +4134,7 @@ def validate_requested_model(
             "message": (
                 f"Note: `{requested}` was not found in the {provider_label} curated catalog "
                 f"and the /models endpoint was unreachable.{suggestion_text}"
-                f"\n  The model may still work if it exists on the provider."
+                "\n  The model may still work if it exists on the provider."
             ),
         }
 
@@ -4146,6 +4146,6 @@ def validate_requested_model(
         "recognized": False,
         "message": (
             f"Note: could not reach the {provider_label} API to validate `{requested}`. "
-            f"If the service isn't down, this model may not be valid."
+            "If the service isn't down, this model may not be valid."
         ),
     }

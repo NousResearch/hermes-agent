@@ -629,7 +629,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                         help="Cap number of spawns this pass")
     p_disp.add_argument("--failure-limit", type=int,
                         default=kb.DEFAULT_SPAWN_FAILURE_LIMIT,
-                        help=f"Auto-block a task after this many consecutive non-success attempts "
+                        help="Auto-block a task after this many consecutive non-success attempts "
                              f"(spawn_failed, timed_out, or crashed; default: {kb.DEFAULT_SPAWN_FAILURE_LIMIT})")
     p_disp.add_argument("--json", action="store_true")
 
@@ -1235,7 +1235,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
         profiles = []
     if profiles:
         print(f"Discovered {len(profiles)} profile(s) on disk; any of these can "
-              f"be an --assignee:")
+              "be an --assignee:")
         for name in profiles:
             print(f"  {name}")
     else:
@@ -1418,7 +1418,7 @@ def _cmd_list(args: argparse.Namespace) -> int:
         print(
             f"Board: {current} "
             f"({other_count} other board{'s' if other_count != 1 else ''} — "
-            f"`hermes kanban boards list`)\n"
+            "`hermes kanban boards list`)\n"
         )
     if not tasks:
         print("(no matching tasks)")
@@ -1637,7 +1637,7 @@ def _cmd_reassign(args: argparse.Namespace) -> int:
     if not ok:
         print(
             f"cannot reassign {args.task_id} "
-            f"(unknown id, or still running — pass --reclaim to release first)",
+            "(unknown id, or still running — pass --reclaim to release first)",
             file=sys.stderr,
         )
         return 1
@@ -2184,7 +2184,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             )
     if res.skipped_nonspawnable:
         print(
-            f"Skipped (non-spawnable assignee — terminal lane, OK): "
+            "Skipped (non-spawnable assignee — terminal lane, OK): "
             f"{', '.join(res.skipped_nonspawnable)}"
         )
     return 0
@@ -2242,11 +2242,11 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
 
     verbose = bool(getattr(args, "verbose", False))
     print(
-        f"Kanban dispatcher running STANDALONE via --force "
+        "Kanban dispatcher running STANDALONE via --force "
         f"(interval={args.interval}s, pid={os.getpid()}). "
-        f"Ctrl-C to stop. NOTE: if a gateway is also running with "
-        f"dispatch_in_gateway=true (default), you have two dispatchers "
-        f"racing for claims.",
+        "Ctrl-C to stop. NOTE: if a gateway is also running with "
+        "dispatch_in_gateway=true (default), you have two dispatchers "
+        "racing for claims.",
         file=sys.stderr,
     )
 
@@ -2274,11 +2274,11 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 print(
                     f"[{_fmt_ts(now)}] WARN dispatcher stuck: "
                     f"ready queue non-empty for {health_state['bad_ticks']} "
-                    f"consecutive ticks but 0 workers spawned successfully. "
-                    f"Check profile health (venv, PATH, credentials) and "
-                    f"`hermes kanban list --status ready` / "
-                    f"`hermes kanban list --status blocked` for recent "
-                    f"spawn_failed tasks.",
+                    "consecutive ticks but 0 workers spawned successfully. "
+                    "Check profile health (venv, PATH, credentials) and "
+                    "`hermes kanban list --status ready` / "
+                    "`hermes kanban list --status blocked` for recent "
+                    "spawn_failed tasks.",
                     file=sys.stderr, flush=True,
                 )
                 health_state["last_warn_at"] = now

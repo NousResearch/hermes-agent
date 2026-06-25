@@ -5823,7 +5823,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._console_print()
             self._console_print(
                 f"[yellow]⚠️  Context length is only {ctx_len:,} tokens — "
-                f"this is likely too low for agent use with tools.[/]"
+                "this is likely too low for agent use with tools.[/]"
             )
             self._console_print(
                 f"[dim]   Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens. Tool schemas + system prompt use a large fixed prefix.[/]"
@@ -6058,15 +6058,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     description = result.get("analysis", "")
                     enriched_parts.append(
                         f"[The user attached an image. Here's what it contains:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
+                        "[If you need a closer look, use vision_analyze with "
                         f"image_url: {img_path}]"
                     )
                     if announce:
                         _cprint(f"  {_DIM}✓ image analyzed{_RST}")
                 else:
                     enriched_parts.append(
-                        f"[The user attached an image but it couldn't be analyzed. "
-                        f"You can try examining it with vision_analyze using "
+                        "[The user attached an image but it couldn't be analyzed. "
+                        "You can try examining it with vision_analyze using "
                         f"image_url: {img_path}]"
                     )
                     if announce:
@@ -6074,7 +6074,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             except Exception as e:
                 enriched_parts.append(
                     f"[The user attached an image but analysis failed ({e}). "
-                    f"You can try examining it with vision_analyze using "
+                    "You can try examining it with vision_analyze using "
                     f"image_url: {img_path}]"
                 )
                 if announce:
@@ -6811,7 +6811,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         last_message = self.conversation_history[last_user_idx].get("content", "")
         self.conversation_history = self.conversation_history[:last_user_idx]
         
-        print(f"(^_^)b Retrying: \"{last_message[:60]}{'...' if len(last_message) > 60 else ''}\"")
+        print("(^_^)b Retrying: \"{last_message[:60]}{'...' if len(last_message) > 60 else ''}\"")
         return last_message
     
     def undo_last(self, n: int = 1, prefill: bool = True):
@@ -6927,7 +6927,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         msg_count = rewound_rows or removed_count
         print(
             f"(^_^)b Undid {turns_undone} {turn_word} ({msg_count} message(s)). "
-            f"Backed up to: \"{removed_text[:60]}{'...' if len(removed_text) > 60 else ''}\""
+            "Backed up to: \"{removed_text[:60]}{'...' if len(removed_text) > 60 else ''}\""
         )
         remaining = len(self.conversation_history)
         print(f"  {remaining} message(s) remaining in history.")
@@ -7460,7 +7460,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._pending_model_switch_note = (
             f"[Note: model was just switched from {old_model} to {result.new_model} "
             f"via {result.provider_label or result.target_provider}. "
-            f"Adjust your self-identification accordingly.]"
+            "Adjust your self-identification accordingly.]"
         )
 
         provider_label = result.provider_label or result.target_provider
@@ -7770,7 +7770,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._pending_model_switch_note = (
             f"[Note: model was just switched from {old_model} to {result.new_model} "
             f"via {result.provider_label or result.target_provider}. "
-            f"Adjust your self-identification accordingly.]"
+            "Adjust your self-identification accordingly.]"
         )
 
         # Display confirmation with full metadata
@@ -8971,7 +8971,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                           f"keeping last {keep_last} exchange(s) verbatim...")
                 elif focus_topic:
                     print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens), "
-                          f"focus: \"{focus_topic}\"...")
+                          "focus: \"{focus_topic}\"...")
                 else:
                     print(f"🗜️  Compressing {original_count} messages (~{approx_tokens:,} tokens)...")
 
@@ -9606,8 +9606,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _time.sleep(interval)
 
         # Past the cap with no terminal state = timeout (not an error).
-        print(f"  🟡 Still processing after 5 minutes — this is a timeout, not a "
-              f"failure. Check /billing or the portal shortly.")
+        print("  🟡 Still processing after 5 minutes — this is a timeout, not a "
+              "failure. Check /billing or the portal shortly.")
         self._billing_portal_hint(state)
 
     def _billing_render_charge_failed(self, state, reason):
@@ -9807,7 +9807,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _ar_consent = (
             f"By confirming, you authorize Nous Research to charge {card.masked} "
             f"whenever your balance reaches {format_money(threshold_amt)}. "
-            f"Turn off any time here or on the portal."
+            "Turn off any time here or on the portal."
         )
         _cprint(f"  {_d(_ar_consent)}")
         confirm_choices = [
@@ -12161,7 +12161,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             )
             print(f"  hermes --resume {self.session_id}{profile_flag}")
             if session_title:
-                print(f"  hermes -c \"{session_title}\"{profile_flag}")
+                print("  hermes -c \"{session_title}\"{profile_flag}")
             print()
             print(f"Session:        {self.session_id}")
             if session_title:
@@ -15161,10 +15161,10 @@ def main(
     # Inject worktree context into agent's system prompt
     if wt_info:
         wt_note = (
-            f"\n\n[System note: You are working in an isolated git worktree at "
+            "\n\n[System note: You are working in an isolated git worktree at "
             f"{wt_info['path']}. Your branch is `{wt_info['branch']}`. "
-            f"Changes here do not affect the main working tree or other agents. "
-            f"Remember to commit and push your changes, and create a PR if appropriate. "
+            "Changes here do not affect the main working tree or other agents. "
+            "Remember to commit and push your changes, and create a PR if appropriate. "
             f"The original repo is at {wt_info['repo_root']}.]"
         )
         cli.system_prompt = (cli.system_prompt or "") + wt_note

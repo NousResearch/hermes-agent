@@ -105,7 +105,7 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
         conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
         # FK safety: orphan any untagged stragglers pointing at a doomed row.
         conn.execute(
-            f"UPDATE sessions SET parent_session_id = NULL "
+            "UPDATE sessions SET parent_session_id = NULL "
             f"WHERE parent_session_id IN ({ph})",
             ids,
         )
@@ -848,7 +848,7 @@ class SessionDB:
     def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:
         placeholders = ",".join("?" for _ in _FTS_TRIGGERS)
         row = cursor.execute(
-            f"SELECT COUNT(*) FROM sqlite_master "
+            "SELECT COUNT(*) FROM sqlite_master "
             f"WHERE type = 'trigger' AND name IN ({placeholders})",
             _FTS_TRIGGERS,
         ).fetchone()
@@ -1284,7 +1284,7 @@ class SessionDB:
                     cursor.execute(
                         "UPDATE sessions SET model_config = json_set("
                         "COALESCE(model_config, '{}'), '$._delegate_from', parent_session_id) "
-                        f"WHERE parent_session_id IS NOT NULL "
+                        "WHERE parent_session_id IS NOT NULL "
                         "AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
                         f"AND {_ephemeral_child_sql('sessions')}"
                     )
@@ -1867,7 +1867,7 @@ class SessionDB:
         # continuation edges, and check whether ancestor_id is reached.
         edge = _COMPRESSION_CHILD_SQL.format(a="child")
         row = conn.execute(
-            f"""
+            """
             WITH RECURSIVE ancestors(id) AS (
                 SELECT ?
                 UNION
@@ -2224,7 +2224,7 @@ class SessionDB:
                 outer_where = (
                     f"{where_sql} AND {id_clause}" if where_sql else f"WHERE {id_clause}"
                 )
-            query = f"""
+            query = """
                 WITH RECURSIVE chain(root_id, cur_id) AS (
                     SELECT s.id, s.id FROM sessions s {where_sql}
                     UNION ALL
@@ -2268,7 +2268,7 @@ class SessionDB:
             # only applies to the outer select.
             params = params + params + id_params + [limit, offset]
         else:
-            query = f"""
+            query = """
                 SELECT s.*,
                     COALESCE(
                         (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
@@ -2953,18 +2953,18 @@ class SessionDB:
                     role_params = list(keep_roles)
 
                 bookend_start_rows = self._conn.execute(
-                    f"SELECT * FROM messages "
+                    "SELECT * FROM messages "
                     f"WHERE session_id = ? AND id < ?{role_clause} "
-                    f"AND length(content) > 0 "
-                    f"ORDER BY id ASC LIMIT ?",
+                    "AND length(content) > 0 "
+                    "ORDER BY id ASC LIMIT ?",
                     (session_id, window_min_id, *role_params, bookend),
                 ).fetchall()
 
                 bookend_end_rows = self._conn.execute(
-                    f"SELECT * FROM messages "
+                    "SELECT * FROM messages "
                     f"WHERE session_id = ? AND id > ?{role_clause} "
-                    f"AND length(content) > 0 "
-                    f"ORDER BY id DESC LIMIT ?",
+                    "AND length(content) > 0 "
+                    "ORDER BY id DESC LIMIT ?",
                     (session_id, window_max_id, *role_params, bookend),
                 ).fetchall()
                 # End rows came back DESC for the LIMIT cap; flip to ASC.
@@ -3247,7 +3247,7 @@ class SessionDB:
         target_row = dict(row)
         if target_row.get("role") != "user":
             raise ValueError(
-                f"rewind target must be a 'user' message (got role="
+                "rewind target must be a 'user' message (got role="
                 f"{target_row.get('role')!r}, id={target_message_id})"
             )
 
@@ -3558,7 +3558,7 @@ class SessionDB:
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
 
-        sql = f"""
+        sql = """
             SELECT
                 m.id,
                 m.session_id,
@@ -3630,7 +3630,7 @@ class SessionDB:
                 if role_filter:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
-                tri_sql = f"""
+                tri_sql = """
                     SELECT
                         m.id,
                         m.session_id,
@@ -3687,7 +3687,7 @@ class SessionDB:
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
-                like_sql = f"""
+                like_sql = """
                     SELECT m.id, m.session_id, m.role,
                            substr(m.content,
                                   max(1, instr(m.content, ?) - 40),
@@ -4142,7 +4142,7 @@ class SessionDB:
             # of survivors — the IN list on ``parent_session_id`` does
             # exactly this.
             conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
+                "UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({existing_placeholders})",
                 existing,
             )
@@ -4234,7 +4234,7 @@ class SessionDB:
 
             placeholders = ",".join("?" * len(session_ids))
             conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
+                "UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({placeholders})",
                 list(session_ids),
             )
@@ -4294,7 +4294,7 @@ class SessionDB:
             # Orphan any sessions whose parent is about to be deleted
             placeholders = ",".join("?" * len(session_ids))
             conn.execute(
-                f"UPDATE sessions SET parent_session_id = NULL "
+                "UPDATE sessions SET parent_session_id = NULL "
                 f"WHERE parent_session_id IN ({placeholders})",
                 list(session_ids),
             )

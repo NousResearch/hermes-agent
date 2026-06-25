@@ -783,7 +783,7 @@ class TelegramAdapter(BasePlatformAdapter):
             str(getattr(user, "username", "") or getattr(user, "full_name", "") or "").strip()
             or None
         )
-        # Channel posts have no from_user — authorize the sender chat instead.
+        # Channel posts have no from_user - authorize the sender chat instead.
         if not user_id:
             sender_chat = getattr(message, "sender_chat", None)
             if sender_chat is not None:
@@ -850,7 +850,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         source = self._source_from_message_for_auth(message)
         user_id = source.user_id
-        # No identity at all → genuine group service message (pin, delete,
+        # No identity at all -> genuine group service message (pin, delete,
         # new_chat_members, etc.). Defer to the cold path. Channel posts
         # without sender_chat already resolved to None above and fall here;
         # they carry no authorizable identity, so let the normal
@@ -866,7 +866,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # Test/custom injection only. The class method named
         # _is_callback_user_authorized is for inline button callbacks and must
-        # not be treated as a user-id-only shortcut for real messages — only
+        # not be treated as a user-id-only shortcut for real messages - only
         # honor an instance-level override (set in tests).
         callback_auth = self.__dict__.get("_is_callback_user_authorized")
         if callable(callback_auth):
@@ -905,6 +905,46 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         allowed_ids = {uid.strip() for uid in allowed_csv.split(",") if uid.strip()}
         return "*" in allowed_ids or user_id in allowed_ids
+
+    def _is_event_sender_authorized(self, event: "MessageEvent") -> bool:
+        """Return whether an inbound message's sender may trigger media work.
+
+        Mirrors the gateway's own authorization (``_is_user_authorized``) so the
+        media path does not download / cache / call a provider (vision/STT)
+        before the gateway's allowlist+pairing gate runs. Fail-closed via the
+        same env fallback used by ``_is_callback_user_authorized`` when the
+        runner handle is unavailable.
+        """
+        source = getattr(event, "source", None)
+        # No source means no identifiable sender to gate on. Production media
+        # events always carry one (built by _build_message_event); defer to the
+        # downstream gateway gating rather than fail closed here.
+        if source is None:
+            return True
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        auth_fn = getattr(runner, "_is_user_authorized", None)
+        if callable(auth_fn):
+            try:
+                return bool(auth_fn(source))
+            except Exception:
+                logger.debug(
+                    "[Telegram] Falling back to env-only media auth for sender %s",
+                    getattr(source, "user_id", None),
+                    exc_info=True,
+                )
+
+        allowed_csv = os.getenv("TELEGRAM_ALLOWED_USERS", "").strip()
+        uid = str(getattr(source, "user_id", "") or "").strip()
+        if not allowed_csv:
+            # No allowlist → the bot is open to all senders, so there is no
+            # unauthorized sender to gate and media work is expected. Mirror the
+            # intake prefilter (_is_user_authorized_from_message), which also
+            # defaults open here, instead of silently dropping all media on a
+            # default (no-allowlist) deployment. The pre-auth protection applies
+            # precisely when an allowlist IS configured.
+            return True
+        allowed_ids = {u.strip() for u in allowed_csv.split(",") if u.strip()}
+        return "*" in allowed_ids or (bool(uid) and uid in allowed_ids)
 
     @classmethod
     def _metadata_thread_id(cls, metadata: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -7220,6 +7260,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _cache_replied_media(self, msg: Any, event: MessageEvent) -> None:
         """Cache media from the message this turn replies to, if any."""
+        # SECURITY: this is a second pre-auth media-download path (reached from
+        # _handle_text_message / _handle_command before the gateway authorizes
+        # the sender). Apply the same allowlist+pairing gate used by
+        # _handle_media_message so an unauthorized sender can't drive a download
+        # by replying to a message that contains media. The event still flows on
+        # to the gateway for pairing/ignore.
+        if not self._is_event_sender_authorized(event):
+            return
+
         from gateway.platforms.base import cache_media_bytes
 
         reply_msg = getattr(msg, "reply_to_message", None)
@@ -7788,11 +7837,30 @@ class TelegramAdapter(BasePlatformAdapter):
         msg_type = self._media_message_type(msg)
 
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
-        
+
         # Add caption as text
         if msg.caption:
             event.text = self._clean_bot_trigger_text(msg.caption)
-        
+
+        # SECURITY: authorize the sender BEFORE any download / cache write /
+        # provider (vision/STT) call. _should_process_message only enforces
+        # group trigger rules and returns True for every DM; the real
+        # allowlist+pairing gate lives in the gateway (_is_user_authorized),
+        # which otherwise runs only AFTER the media has been fetched and (for
+        # stickers) sent to the vision provider. Forward the bare event so the
+        # gateway can still issue a pairing code / ignore per policy, but skip
+        # all media download/cache/vision work for unauthorized senders.
+        if not self._is_event_sender_authorized(event):
+            logger.info(
+                "[Telegram] Skipping media download/analysis for unauthorized "
+                "sender %s in chat %s",
+                getattr(event.source, "user_id", None),
+                getattr(event.source, "chat_id", None),
+            )
+            event = self._apply_telegram_group_observe_attribution(event)
+            await self.handle_message(event)
+            return
+
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
             await self._handle_sticker(msg, event)

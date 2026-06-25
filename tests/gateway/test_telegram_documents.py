@@ -138,6 +138,10 @@ def adapter():
     # document-routing tests need to bypass the new gate so messages from fake
     # senders reach handle_message.
     a._is_callback_user_authorized = lambda user_id, **_kw: True
+    # The media pre-auth gate skips download/cache/vision for unauthorized
+    # senders; these routing tests exercise the authorized path, so treat the
+    # fake sender as authorized (the deny path is covered separately).
+    a._is_event_sender_authorized = lambda event: True
     return a
 
 

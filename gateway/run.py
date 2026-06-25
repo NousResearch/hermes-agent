@@ -6471,6 +6471,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         with self.session_store._lock:
                             entry.expiry_finalized = True
                             self.session_store._save()
+                        # Write ended_at to SQLite so the sessions API
+                        # stops returning this session as live.  Without
+                        # this, GET /api/sessions shows ended_at=null even
+                        # after the watcher has finalized the session in
+                        # memory, causing external API clients to keep
+                        # addressing a stale session the gateway has already
+                        # discarded.  Matches the reset_reason used by
+                        # get_or_create_session on the next-message path.
+                        # Refs: #28746.
+                        _db = getattr(self.session_store, "_db", None)
+                        if _db is not None:
+                            try:
+                                _db.end_session(entry.session_id, "idle")
+                            except Exception as _db_exc:
+                                logger.debug(
+                                    "Session expiry: failed to write ended_at for %s: %s",
+                                    entry.session_id, _db_exc,
+                                )
                         logger.debug(
                             "Session expiry finalized for %s",
                             entry.session_id,

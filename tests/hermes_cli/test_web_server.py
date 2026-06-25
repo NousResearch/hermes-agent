@@ -530,9 +530,9 @@ class TestWebServerEndpoints:
         assert row["cwd"] is None
 
     def test_get_sessions_returns_session_key(self):
-        """/api/sessions exposes session_key so external consumers (e.g.
-        Otto-Voice) can map a live session to a specific Telegram chat/group
-        without guessing from user_id alone."""
+        """/api/sessions exposes session_key so external consumers can map
+        a live session to a specific Telegram chat/group without guessing
+        from user_id alone."""
         from hermes_state import SessionDB
 
         db = SessionDB()

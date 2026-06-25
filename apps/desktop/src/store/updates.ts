@@ -531,7 +531,9 @@ function ingestProgress(payload: DesktopUpdateProgress): void {
     applying: !terminal,
     stage: payload.stage,
     message: payload.message,
-    percent: payload.percent,
+    // Streamed log lines carry percent: null; keep the last milestone percent
+    // (10/60/…) instead of resetting the bar to indeterminate on every line.
+    percent: payload.percent ?? current.percent,
     error: payload.error,
     // 'manual' carries the command to run in its message field.
     command: payload.stage === 'manual' ? payload.message : current.command,

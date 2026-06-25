@@ -35,7 +35,8 @@ def test_trends_empty():
     assert out["totals"]["input"] == 0
 
 
-pytest.importorskip("aiohttp")
+import importlib.util as _ilu
+_needs_aiohttp = pytest.mark.skipif(_ilu.find_spec("aiohttp") is None, reason="aiohttp not installed")
 
 
 @pytest.fixture()
@@ -53,6 +54,7 @@ def _adapter(db):
     return a
 
 
+@_needs_aiohttp
 def test_token_trends_endpoint(db):
     now = time.time()
     db.create_session(session_id="s1", source="cli")
@@ -68,6 +70,7 @@ def test_token_trends_endpoint(db):
     assert body["cache_hit_rate"] == 90.0  # 1800/2000
 
 
+@_needs_aiohttp
 def test_token_trends_custom_bucket(db):
     req = SimpleNamespace(query={"window": "1h", "bucket": "30"})
     resp = asyncio.run(_adapter(db)._handle_analytics_token_trends(req))
@@ -75,6 +78,7 @@ def test_token_trends_custom_bucket(db):
     assert body["bucket_seconds"] == 60  # clamped to min 60
 
 
+@_needs_aiohttp
 def test_token_trends_bad_bucket(db):
     req = SimpleNamespace(query={"window": "1h", "bucket": "abc"})
     resp = asyncio.run(_adapter(db)._handle_analytics_token_trends(req))

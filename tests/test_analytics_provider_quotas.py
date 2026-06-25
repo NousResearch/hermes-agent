@@ -29,7 +29,8 @@ def test_get_and_list():
     assert {p["provider"] for p in allq} >= {"anthropic", "openai", "google"}
 
 
-pytest.importorskip("aiohttp")
+import importlib.util as _ilu
+_needs_aiohttp = pytest.mark.skipif(_ilu.find_spec("aiohttp") is None, reason="aiohttp not installed")
 
 
 def _adapter():
@@ -43,6 +44,7 @@ def _req(provider=None):
     return SimpleNamespace(query=({"provider": provider} if provider else {}))
 
 
+@_needs_aiohttp
 def test_endpoint_all():
     resp = asyncio.run(_adapter()._handle_analytics_provider_quotas(_req()))
     body = json.loads(resp.text)
@@ -50,6 +52,7 @@ def test_endpoint_all():
     assert any(p["provider"] == "anthropic" for p in body["data"])
 
 
+@_needs_aiohttp
 def test_endpoint_filtered():
     resp = asyncio.run(_adapter()._handle_analytics_provider_quotas(_req("claude")))
     body = json.loads(resp.text)

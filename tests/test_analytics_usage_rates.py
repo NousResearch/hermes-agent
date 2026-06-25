@@ -69,7 +69,8 @@ def test_empty_is_zero():
     assert out["rpm"]["peak"] == 0 and out["tpd"] == 0 and out["providers"] == []
 
 
-pytest.importorskip("aiohttp")
+import importlib.util as _ilu
+_needs_aiohttp = pytest.mark.skipif(_ilu.find_spec("aiohttp") is None, reason="aiohttp not installed")
 
 
 def _adapter(db):
@@ -90,6 +91,7 @@ def _seed_recent(db):
                       token_count=pack_assistant_tokens(200, 30), timestamp=now - 19)
 
 
+@_needs_aiohttp
 def test_usage_rates_endpoint(db):
     _seed_recent(db)
     req = SimpleNamespace(query={"window": "24h"})
@@ -101,6 +103,7 @@ def test_usage_rates_endpoint(db):
     assert "providers" in body
 
 
+@_needs_aiohttp
 def test_usage_rates_invalid_window(db):
     req = SimpleNamespace(query={"window": "bogus"})
     resp = asyncio.run(_adapter(db)._handle_analytics_usage_rates(req))

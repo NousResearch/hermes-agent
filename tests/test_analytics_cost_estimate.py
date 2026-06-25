@@ -59,7 +59,8 @@ def test_lookup_exception_falls_back():
     assert est["models"][0]["cost_usd"] == 9.9
 
 
-pytest.importorskip("aiohttp")
+import importlib.util as _ilu
+_needs_aiohttp = pytest.mark.skipif(_ilu.find_spec("aiohttp") is None, reason="aiohttp not installed")
 
 
 @pytest.fixture()
@@ -69,6 +70,7 @@ def db():
     d.close()
 
 
+@_needs_aiohttp
 def test_cost_estimate_endpoint_aggregates_sessions(db):
     now = time.time()
     db.create_session(session_id="s1", source="cli", model="m1")

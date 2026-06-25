@@ -55,8 +55,9 @@ class TestBuildLearnPrompt:
         assert "count" in std and "60" in std
         # #3 platforms gating against OS-bound primitives.
         assert "platforms" in std
-        # #4 author credits the human first.
-        assert "author" in std
+        # author is always the literal Hermes, never the host/OS identity (#52368).
+        assert "author: always the literal value `hermes`" in std
+        assert "never fill it from the host" in std
         # #2 Hermes-tool framing names the wrapped tools, not shell utilities.
         for tool in ("read_file", "search_files", "patch", "write_file"):
             assert tool in std

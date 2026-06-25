@@ -3094,6 +3094,11 @@ class SlackAdapter(BasePlatformAdapter):
             user_id=user_id,
             user_name=user_name,
             thread_id=thread_ts,
+            # Slack Workflow Builder / app posts arrive as
+            # subtype=bot_message with user=None; flag them so the
+            # gateway SLACK_ALLOW_BOTS bypass can authorize them
+            # (they carry no user_id to match against the allowlist).
+            is_bot=bool(event.get("bot_id")) or event.get("subtype") == "bot_message",
         )
 
         # Per-channel ephemeral prompt

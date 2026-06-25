@@ -572,6 +572,10 @@ def run_conversation(
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
+    # Reset the per-turn delegation spawn counter so each user turn starts
+    # with a fresh budget (issue #52484: runaway delegate_task loops).
+    agent._turn_spawn_count = 0
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.

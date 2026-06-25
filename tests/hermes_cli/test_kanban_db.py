@@ -1562,6 +1562,53 @@ def test_list_tasks_order_by(kanban_home):
         except ValueError as e:
             assert "order_by must be one of" in str(e)
 
+def test_list_tasks_done_default_sort_is_completed_desc(kanban_home):
+    """done 狀態無明確 order_by 時，預設應按 completed_at DESC 排序"""
+    import time
+    with kb.connect() as conn:
+        t_a = kb.create_task(conn, title="first-done", priority=1)
+        t_b = kb.create_task(conn, title="second-done", priority=1)
+        t_c = kb.create_task(conn, title="third-done", priority=1)
+
+        # 依序完成，再手動覆寫 completed_at（complete_task 使用整數秒，
+        # 同一秒內無法區分），確保排序測試可靠
+        kb.complete_task(conn, t_a)
+        kb.complete_task(conn, t_b)
+        kb.complete_task(conn, t_c)
+
+        base_ts = int(time.time())
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (base_ts - 2, t_a))
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (base_ts - 1, t_b))
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (base_ts, t_c))
+        conn.commit()
+
+        # 不傳 order_by，預設應是最新完成在最前
+        result = kb.list_tasks(conn, status="done")
+        ids = [t.id for t in result]
+        assert ids == [t_c, t_b, t_a], f"Expected newest-done first, got {ids}"
+
+
+def test_list_tasks_completed_desc_sort_key(kanban_home):
+    """`completed-desc` sort key 可被明確指定使用"""
+    import time
+    with kb.connect() as conn:
+        t_a = kb.create_task(conn, title="alpha-done", priority=2)
+        t_b = kb.create_task(conn, title="beta-done", priority=1)
+
+        kb.complete_task(conn, t_a)
+        kb.complete_task(conn, t_b)
+
+        # 手動覆寫 completed_at 確保 t_b 完成較晚
+        base_ts = int(time.time())
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (base_ts - 1, t_a))
+        conn.execute("UPDATE tasks SET completed_at = ? WHERE id = ?", (base_ts, t_b))
+        conn.commit()
+
+        # t_b 完成較晚，應在最前
+        result = kb.list_tasks(conn, order_by="completed-desc")
+        assert result[0].id == t_b
+
+
 def test_delete_task_removes_task_and_cascades(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="to-delete", assignee="alice")

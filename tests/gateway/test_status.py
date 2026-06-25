@@ -428,6 +428,33 @@ class TestGatewayRuntimeStatus:
             is None
         )
 
+    def test_runtime_status_running_pid_rejects_sibling_prefix_profile(self, monkeypatch):
+        """A dead profile whose name is a PREFIX of a live sibling's must not be
+        reported running. ``coder``'s recycled PID 139 now hosts ``coder2``'s
+        live gateway; a substring profile match (``-p coder`` is a substring of
+        ``-p coder2``) would defeat the cross-profile scope and report ``coder``
+        up. Both names are valid (``^[a-z0-9][a-z0-9_-]{0,63}$``)."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+        }
+        coder_home = Path("/opt/data/profiles/coder")
+
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: None)
+        for cmdline in (
+            "hermes -p coder2 gateway run --replace",
+            "/opt/hermes/.venv/bin/hermes --profile coder2 gateway run",
+            "hermes_home=/opt/data/profiles/coder2 hermes gateway run",
+        ):
+            monkeypatch.setattr(status, "_read_process_cmdline", lambda pid, c=cmdline: c)
+            assert (
+                status.get_runtime_status_running_pid(payload, expected_home=coder_home)
+                is None
+            ), cmdline
+
     def test_runtime_status_running_pid_accepts_matching_profile_cmdline(self, monkeypatch):
         """A genuinely-live named gateway carries ``-p <profile>`` / ``--profile``
         on its command line and must be reported running for that profile."""

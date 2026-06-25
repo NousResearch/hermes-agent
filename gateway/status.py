@@ -336,11 +336,16 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
 
     if profile_name is not None and profile_name != "default":
         profile_lc = profile_name.lower()
-        return (
-            f"--profile {profile_lc}" in command_lc
-            or f"-p {profile_lc}" in command_lc
-            or f"hermes_home={home_lc}" in command_lc
-        )
+        # Match the flag VALUE as a whole token, not a substring. "-p coder" is
+        # a substring of "-p coder2", so a substring check reports a dead
+        # ``coder`` profile running on a live ``coder2`` gateway whose PID the
+        # OS recycled — the very cross-profile leak this scope exists to stop.
+        # (``coder`` and ``coder2`` are both valid profile names.)
+        tokens = command_lc.split()
+        for idx in range(len(tokens) - 1):
+            if tokens[idx] in ("--profile", "-p") and tokens[idx + 1] == profile_lc:
+                return True
+        return any(tok == f"hermes_home={home_lc}" for tok in tokens)
 
     # Default/root profile: the gateway runs with no profile flag. Accept unless
     # the command advertises *some other* profile (an explicit -p/--profile) or

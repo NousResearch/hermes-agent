@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — bundled and standalone options for persistent recall"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent supports external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. The providers below include both bundled providers and standalone community providers that use the same plugin discovery path. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,8 +22,12 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # e.g. honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, memori, scope-recall
 ```
+
+:::info Standalone providers
+New memory backends should ship as standalone plugins instead of new directories under `plugins/memory/`. Install them into `$HERMES_HOME/plugins/` or through their package installer, then select the provider with `hermes memory setup`, `hermes plugins`, or `memory.provider`.
+:::
 
 ## How It Works
 
@@ -613,6 +617,45 @@ hermes memory setup
 
 ---
 
+### Scope Recall
+
+Local-first scoped memory with current-turn recall, SQLite truth storage, optional vector companions, and conservative governance tooling. Durable `user`, `memory`, `project`, and `ops` rows can follow the same user + agent identity across windows or chats, while `general` scratch and raw journal evidence stay local to the current runtime scope.
+
+| | |
+|---|---|
+| **Best for** | Auditable local recall with shared durable facts and chat/thread scratch boundaries |
+| **Requires** | `python -m pip install "hermes-scope-recall[lancedb]"` + `hermes-scope-recall install` |
+| **Data storage** | Local SQLite truth store plus optional LanceDB, SQLite, or PGVector companion |
+| **Cost** | Free locally; optional embedding API costs if configured |
+
+**Tools (6 by default, compact profile):** `scope_recall_store`, `scope_recall_search`, `scope_recall_context`, `scope_recall_profile`, `scope_recall_memory`, `scope_recall_entity`. Set `tool_schema_profile: standard` to expose the expanded non-maintenance surface; operator-only maintenance tools remain hidden unless `maintenance_tools_enabled=true`.
+
+**Setup:**
+```bash
+python -m pip install "hermes-scope-recall[lancedb]"
+hermes-scope-recall install --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+hermes config set memory.provider scope-recall
+hermes memory setup
+
+# Optional local smoke check
+hermes-scope-recall verify --hermes-home "${HERMES_HOME:-$HOME/.hermes}"
+hermes memory status
+```
+
+If LanceDB/PyArrow wheels are not safe on the target CPU, install without the `[lancedb]` extra and configure `vector.backend: sqlite-bruteforce`; SQLite remains the truth source either way.
+
+**Key features:**
+- Current-turn recall — retrieval is based on the active user query, not stale queued context from a previous topic
+- SQLite truth store — durable records stay inspectable; vector indexes are rebuildable companions
+- Scoped memory boundaries — durable targets can be shared deliberately, while local scratch stays in the current chat/thread/session scope
+- Hybrid retrieval — lexical/FTS/BM25 candidates plus vector candidates with RRF ranking
+- Governance and observability — inspect, explain, benchmark, feedback, export, and operator-only maintenance paths
+- Secret index support — searchable credential metadata can point to an external vault without storing plaintext secrets
+
+**Support:** [GitHub](https://github.com/410979729/scope-recall-hermes) · [PyPI](https://pypi.org/project/hermes-scope-recall/) · related RFC [#42864](https://github.com/NousResearch/hermes-agent/issues/42864)
+
+---
+
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
@@ -626,14 +669,15 @@ hermes memory setup
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
 | **Memori** | Cloud | Free/Paid | 5 | `hermes-memori` | Tool-aware memory + structured recall |
+| **Scope Recall** | Local | Free | 6 default | `hermes-scope-recall` + optional vector backend | Scoped current-turn recall + SQLite truth/vector companion |
 
 ## Profile Isolation
 
 Each provider's data is isolated per [profile](/user-guide/profiles):
 
-- **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
-- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
-- **Cloud providers** (RetainDB) auto-derive profile-scoped project names
+- **Local storage providers** (Holographic, ByteRover, Scope Recall) use `$HERMES_HOME/` paths which differ per profile
+- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory, Scope Recall) store config in `$HERMES_HOME/` so each profile has its own settings and credentials where applicable
+- **Cloud providers** (RetainDB, Memori) auto-derive or configure profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 
 ## Building a Memory Provider

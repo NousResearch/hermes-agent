@@ -69,6 +69,9 @@ export type GatewayEventPayload = {
   count?: number
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
+  // session.title (live auto-title push) — stored session id + generated title
+  session_id?: string
+  title?: string
 }
 
 export function textPart(text: string): ChatMessagePart {

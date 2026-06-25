@@ -15,7 +15,7 @@ import {
 } from 'react'
 
 import { cn } from '@/lib/utils'
-import { $paneHoverRevealSuppressed, $paneStates, ensurePaneRegistered, setPaneWidthOverride } from '@/store/panes'
+import { $paneStates, ensurePaneRegistered, setPaneWidthOverride } from '@/store/panes'
 
 import { PaneShellContext, type PaneShellContextValue, type PaneSlot } from './context'
 
@@ -38,6 +38,8 @@ export interface PaneProps {
   forceCollapsed?: boolean
   /** When collapsed, float the contents over the main column on hover/focus instead of hiding them (track stays 0px). */
   hoverReveal?: boolean
+  /** Width of the collapsed-overlay panel. Defaults to the docked width (or its resize override); set this to render a narrower overlay than the docked pane (e.g. min width on mobile). */
+  overlayWidth?: WidthValue
   /** Called with true while the pane is a collapsed hover-reveal overlay, so the consumer can keep contents mounted (ready to slide). */
   onOverlayActiveChange?: (overlayActive: boolean) => void
   id: string
@@ -227,7 +229,7 @@ export function PaneShell({ children, className, style }: PaneShellProps) {
 
   return (
     <PaneShellContext.Provider value={{ mainColumn: ctxValue.mainColumn, paneById: ctxValue.paneById }}>
-      <div className={cn('relative grid h-full min-h-0', className)} style={composedStyle}>
+      <div className={cn('relative grid h-full min-h-0', className)} data-pane-shell="" style={composedStyle}>
         {children}
       </div>
     </PaneShellContext.Provider>
@@ -241,6 +243,7 @@ export function Pane({
   divider = false,
   disabled = false,
   hoverReveal = false,
+  overlayWidth: overlayWidthProp,
   id,
   maxWidth,
   minWidth,
@@ -250,7 +253,6 @@ export function Pane({
 }: PaneProps) {
   const ctx = useContext(PaneShellContext)
   const paneStates = useStore($paneStates)
-  const hoverRevealSuppressed = useStore($paneHoverRevealSuppressed)
   const registered = useRef(false)
   const paneRef = useRef<HTMLDivElement | null>(null)
   // Keyboard (mod+b / mod+j) pins the reveal open while collapsed; hover is CSS.
@@ -263,7 +265,14 @@ export function Pane({
   // hover/focus instead of hiding them. Honors any persisted resize width.
   const overlayActive = !open && hoverReveal && !disabled
   const override = resizable ? paneStates[id]?.widthOverride : undefined
-  const overlayWidth = override !== undefined ? `${override}px` : widthToCss(width, DEFAULT_WIDTH)
+  // Overlay width: an explicit `overlayWidth` (e.g. min width on mobile) wins,
+  // else the persisted resize override, else the docked width.
+  const overlayWidth =
+    overlayWidthProp !== undefined
+      ? widthToCss(overlayWidthProp, DEFAULT_WIDTH)
+      : override !== undefined
+        ? `${override}px`
+        : widthToCss(width, DEFAULT_WIDTH)
 
   useEffect(() => {
     if (registered.current) {
@@ -379,10 +388,8 @@ export function Pane({
       >
         <div
           aria-hidden="true"
-          className={cn(
-            'absolute inset-y-0 z-30 [-webkit-app-region:no-drag]',
-            hoverRevealSuppressed ? 'pointer-events-none' : 'pointer-events-auto'
-          )}
+          className="pointer-events-auto absolute inset-y-0 z-30 [-webkit-app-region:no-drag]"
+          data-pane-reveal-trigger=""
           style={{ [edge]: HOVER_REVEAL_EDGE_GUTTER, width: HOVER_REVEAL_TRIGGER_WIDTH }}
         />
 
@@ -392,8 +399,7 @@ export function Pane({
           className={cn(
             'pointer-events-none absolute inset-y-0 z-30 overflow-hidden transition-transform delay-0',
             offscreen,
-            !hoverRevealSuppressed &&
-              'group-hover/reveal:pointer-events-auto group-hover/reveal:translate-x-0 group-hover/reveal:delay-[var(--reveal-enter-delay)] group-hover/reveal:shadow-[var(--reveal-shadow)]',
+            'group-hover/reveal:pointer-events-auto group-hover/reveal:translate-x-0 group-hover/reveal:delay-[var(--reveal-enter-delay)] group-hover/reveal:shadow-[var(--reveal-shadow)]',
             'group-data-[forced]/reveal:pointer-events-auto group-data-[forced]/reveal:translate-x-0 group-data-[forced]/reveal:delay-0 group-data-[forced]/reveal:shadow-[var(--reveal-shadow)]'
           )}
           key={edge}

@@ -1,4 +1,4 @@
-import { type ReactNode } from 'react'
+import { type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 
 import { cn } from '@/lib/utils'
 
@@ -8,8 +8,10 @@ interface StatusRowProps {
   /** Leading glyph slot (spinner / status dot / selection circle). */
   leading?: ReactNode
   /** Makes the whole row activatable (adds `cursor-pointer` + keyboard a11y).
-   *  Trailing-slot buttons should `stopPropagation` so they don't also fire it. */
-  onActivate?: () => void
+   *  Receives the originating event so consumers can branch on modifier keys
+   *  (e.g. ⌘/Ctrl-click). Trailing-slot buttons should `stopPropagation` so
+   *  they don't also fire it. */
+  onActivate?: (event: KeyboardEvent | MouseEvent) => void
   /** Right-aligned actions. Revealed on row hover/focus unless `trailingVisible`. */
   trailing?: ReactNode
   trailingVisible?: boolean
@@ -43,7 +45,7 @@ export function StatusRow({
           ? event => {
               if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault()
-                onActivate()
+                onActivate(event)
               }
             }
           : undefined

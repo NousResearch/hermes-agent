@@ -58,9 +58,17 @@ from typing import Optional, Sequence
 # module (class declaration, ``isinstance`` checks, docstring) working
 # unchanged. See #44873.
 if sys.platform == "win32":
-    from concurrent_log_handler import (  # noqa: E402
-        ConcurrentRotatingFileHandler as RotatingFileHandler,
-    )
+    try:
+        from concurrent_log_handler import (  # noqa: E402
+            ConcurrentRotatingFileHandler as RotatingFileHandler,
+        )
+    except ImportError:
+        # concurrent-log-handler is a declared core dependency on Windows
+        # (see pyproject.toml #44873).  If it is somehow absent (e.g. a
+        # partial install or a stripped dev environment), fall back to the
+        # stdlib handler.  Log rotation may fail with WinError 32 under
+        # concurrent writers, but the rest of the application stays functional.
+        from logging.handlers import RotatingFileHandler  # noqa: E402
 else:
     from logging.handlers import RotatingFileHandler  # noqa: E402
 

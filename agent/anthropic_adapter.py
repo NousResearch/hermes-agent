@@ -2336,6 +2336,7 @@ def build_anthropic_kwargs(
     base_url: str | None = None,
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
+    bedrock_guardrail_headers: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -2563,6 +2564,15 @@ def build_anthropic_kwargs(
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+
+    if bedrock_guardrail_headers:
+        # Merge Bedrock guardrail headers without overwriting an existing
+        # extra_headers dict (fast_mode may have already set anthropic-beta).
+        # Header keys are disjoint: X-Amzn-Bedrock-Guardrail* vs anthropic-beta.
+        kwargs["extra_headers"] = {
+            **kwargs.get("extra_headers", {}),
+            **bedrock_guardrail_headers,
+        }
 
     return kwargs
 

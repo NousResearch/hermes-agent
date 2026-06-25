@@ -645,8 +645,26 @@ def init_agent(
             agent.api_key = "aws-sdk"
             agent.client = None
             agent._client_kwargs = {}
+            # Guardrail config for Bedrock Claude via InvokeModel headers.
+            # The Converse API uses guardrailConfig body param; InvokeModel uses
+            # X-Amzn-Bedrock-Guardrail* HTTP headers — same enforcement, same
+            # guarantee, preserves prompt caching / thinking / 1M context.
+            agent._bedrock_guardrail_headers = None
+            try:
+                from hermes_cli.config import load_config as _load_gr_cfg
+                _gr = _load_gr_cfg().get("bedrock", {}).get("guardrail", {})
+                if _gr.get("guardrail_identifier") and _gr.get("guardrail_version"):
+                    agent._bedrock_guardrail_headers = {
+                        "X-Amzn-Bedrock-GuardrailIdentifier": _gr["guardrail_identifier"],
+                        "X-Amzn-Bedrock-GuardrailVersion": str(_gr["guardrail_version"]),
+                    }
+                    if _gr.get("trace"):
+                        agent._bedrock_guardrail_headers["X-Amzn-Bedrock-Trace"] = "ENABLED"
+            except Exception:
+                pass
             if not agent.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+                _gr_label = " + Guardrails" if agent._bedrock_guardrail_headers else ""
+                print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region}{_gr_label})")
         else:
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.

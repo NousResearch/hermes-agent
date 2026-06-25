@@ -590,3 +590,249 @@ class TestAuxiliaryClientBedrockResolution:
             _, model = resolve_provider_client("bedrock", None)
 
         assert "haiku" in model.lower()
+
+
+# ---------------------------------------------------------------------------
+# Guardrail-aware dual-path routing (PR #50773 fix)
+# ---------------------------------------------------------------------------
+
+class TestBedrockGuardrailRouting:
+    """Verify Claude models always use anthropic_messages (AnthropicBedrock SDK)
+    regardless of guardrail configuration.
+
+    Option B architecture: guardrails for Claude+Bedrock are enforced via
+    X-Amzn-Bedrock-Guardrail* HTTP headers injected into every InvokeModel
+    request, NOT by rerouting to the Converse API.  This preserves all Claude
+    features: prompt caching, thinking budgets, 1M context.
+
+    Non-Claude models continue to use the Converse API (bedrock_converse).
+    """
+
+    _GUARDRAIL_CFG = {
+        "bedrock": {
+            "guardrail": {
+                "guardrail_identifier": "gr-abc123",
+                "guardrail_version": "1",
+            }
+        }
+    }
+
+    def _resolve(self, monkeypatch, model: str, config: dict):
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_provider",
+            lambda *a, **k: "bedrock",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {"provider": "bedrock", "default": model},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.load_config",
+            lambda: config,
+        )
+        monkeypatch.setattr(
+            "agent.bedrock_adapter.has_aws_credentials",
+            lambda **_: True,
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        return resolve_runtime_provider(requested="bedrock")
+
+    def test_claude_without_guardrail_uses_anthropic_messages(self, monkeypatch):
+        """Claude + no guardrail → AnthropicBedrock SDK path (full feature parity)."""
+        resolved = self._resolve(
+            monkeypatch,
+            model="us.anthropic.claude-sonnet-4-6",
+            config={"bedrock": {}},
+        )
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["bedrock_anthropic"] is True
+
+    def test_claude_with_guardrail_stays_on_anthropic_messages(self, monkeypatch):
+        """Claude + guardrail → still uses anthropic_messages (Option B: header injection).
+
+        Guardrails are enforced via X-Amzn-Bedrock-Guardrail* headers in InvokeModel,
+        NOT by rerouting to Converse.  This preserves prompt caching / thinking / 1M ctx.
+        """
+        resolved = self._resolve(
+            monkeypatch,
+            model="us.anthropic.claude-sonnet-4-6",
+            config=self._GUARDRAIL_CFG,
+        )
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["bedrock_anthropic"] is True
+
+    def test_global_inference_profile_with_guardrail_stays_on_anthropic_messages(
+        self, monkeypatch
+    ):
+        """global.anthropic.* inference profile + guardrail also stays on anthropic_messages."""
+        resolved = self._resolve(
+            monkeypatch,
+            model="global.anthropic.claude-opus-4-7",
+            config=self._GUARDRAIL_CFG,
+        )
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["bedrock_anthropic"] is True
+
+    def test_non_claude_with_guardrail_stays_on_bedrock_converse(self, monkeypatch):
+        """Non-Claude model + guardrail → Converse (existing behaviour, no regression)."""
+        resolved = self._resolve(
+            monkeypatch,
+            model="amazon.nova-pro-v1:0",
+            config=self._GUARDRAIL_CFG,
+        )
+        assert resolved["api_mode"] == "bedrock_converse"
+
+    def test_non_claude_without_guardrail_stays_on_bedrock_converse(self, monkeypatch):
+        """Non-Claude model + no guardrail → Converse (unchanged behaviour)."""
+        resolved = self._resolve(
+            monkeypatch,
+            model="amazon.nova-lite-v1:0",
+            config={"bedrock": {}},
+        )
+        assert resolved["api_mode"] == "bedrock_converse"
+
+    def test_incomplete_guardrail_config_does_not_trigger_reroute(self, monkeypatch):
+        """Guardrail with identifier but no version is incomplete → stays on anthropic_messages."""
+        resolved = self._resolve(
+            monkeypatch,
+            model="us.anthropic.claude-sonnet-4-6",
+            config={"bedrock": {"guardrail": {"guardrail_identifier": "gr-abc123"}}},
+        )
+        assert resolved["api_mode"] == "anthropic_messages"
+
+
+class TestBedrockGuardrailHeaderInjection:
+    """Verify guardrail headers are injected correctly into build_anthropic_kwargs.
+
+    These tests exercise the transport layer (Option B architecture):
+    X-Amzn-Bedrock-GuardrailIdentifier and X-Amzn-Bedrock-GuardrailVersion
+    are passed as extra_headers in the AnthropicBedrock SDK call.
+    """
+
+    def test_guardrail_headers_appear_in_extra_headers(self):
+        """build_anthropic_kwargs merges guardrail headers into extra_headers."""
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        headers = {
+            "X-Amzn-Bedrock-GuardrailIdentifier": "gr-abc123",
+            "X-Amzn-Bedrock-GuardrailVersion": "1",
+        }
+        kwargs = build_anthropic_kwargs(
+            model="anthropic.claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            bedrock_guardrail_headers=headers,
+        )
+        assert "extra_headers" in kwargs
+        assert kwargs["extra_headers"]["X-Amzn-Bedrock-GuardrailIdentifier"] == "gr-abc123"
+        assert kwargs["extra_headers"]["X-Amzn-Bedrock-GuardrailVersion"] == "1"
+
+    def test_guardrail_trace_header_included_when_set(self):
+        """X-Amzn-Bedrock-Trace header is included when trace is enabled."""
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        headers = {
+            "X-Amzn-Bedrock-GuardrailIdentifier": "gr-abc123",
+            "X-Amzn-Bedrock-GuardrailVersion": "2",
+            "X-Amzn-Bedrock-Trace": "ENABLED",
+        }
+        kwargs = build_anthropic_kwargs(
+            model="anthropic.claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=None,
+            max_tokens=512,
+            reasoning_config=None,
+            bedrock_guardrail_headers=headers,
+        )
+        assert kwargs["extra_headers"]["X-Amzn-Bedrock-Trace"] == "ENABLED"
+
+    def test_no_guardrail_headers_produces_no_extra_headers(self):
+        """Without guardrail headers, extra_headers is absent from kwargs."""
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        kwargs = build_anthropic_kwargs(
+            model="anthropic.claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            bedrock_guardrail_headers=None,
+        )
+        assert "extra_headers" not in kwargs or not kwargs.get("extra_headers")
+
+    def test_guardrail_headers_do_not_overwrite_existing_extra_headers(self):
+        """Guardrail headers are merged with pre-existing extra_headers (e.g. fast_mode).
+
+        fast_mode is only supported on opus-4-6; use that model to trigger
+        the anthropic-beta header so we can verify the two sets coexist.
+        """
+        from agent.anthropic_adapter import build_anthropic_kwargs
+
+        headers = {
+            "X-Amzn-Bedrock-GuardrailIdentifier": "gr-xyz",
+            "X-Amzn-Bedrock-GuardrailVersion": "3",
+        }
+        # fast_mode on opus-4-6 adds extra_headers with anthropic-beta
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=1024,
+            reasoning_config=None,
+            fast_mode=True,
+            bedrock_guardrail_headers=headers,
+        )
+        assert "extra_headers" in kwargs
+        # Guardrail headers are present
+        assert kwargs["extra_headers"]["X-Amzn-Bedrock-GuardrailIdentifier"] == "gr-xyz"
+        # fast_mode beta header must also still be present (not overwritten)
+        assert "anthropic-beta" in kwargs["extra_headers"]
+
+    def test_transport_build_kwargs_passes_guardrail_headers(self):
+        """AnthropicTransport.build_kwargs correctly forwards bedrock_guardrail_headers."""
+        from agent.transports.anthropic import AnthropicTransport
+
+        transport = AnthropicTransport()
+        headers = {
+            "X-Amzn-Bedrock-GuardrailIdentifier": "gr-transport-test",
+            "X-Amzn-Bedrock-GuardrailVersion": "1",
+        }
+        kwargs = transport.build_kwargs(
+            model="anthropic.claude-haiku-4-5",
+            messages=[{"role": "user", "content": "test"}],
+            tools=None,
+            max_tokens=256,
+            bedrock_guardrail_headers=headers,
+        )
+        assert kwargs["extra_headers"]["X-Amzn-Bedrock-GuardrailIdentifier"] == "gr-transport-test"
+
+
+class TestBedrockGuardrailStopReason:
+    """Verify guardrail_intervened stop_reason is handled correctly."""
+
+    def test_guardrail_intervened_maps_to_content_filter(self):
+        """guardrail_intervened stop_reason → content_filter finish_reason."""
+        from agent.transports.anthropic import AnthropicTransport
+
+        transport = AnthropicTransport()
+        assert transport.map_finish_reason("guardrail_intervened") == "content_filter"
+
+    def test_validate_response_accepts_empty_content_on_guardrail_intervened(self):
+        """Empty content with guardrail_intervened is a valid (blocked) response."""
+        from types import SimpleNamespace
+        from agent.transports.anthropic import AnthropicTransport
+
+        transport = AnthropicTransport()
+        response = SimpleNamespace(content=[], stop_reason="guardrail_intervened")
+        assert transport.validate_response(response) is True
+
+    def test_validate_response_rejects_empty_content_on_unknown_stop_reason(self):
+        """Empty content without a known terminal stop_reason is invalid."""
+        from types import SimpleNamespace
+        from agent.transports.anthropic import AnthropicTransport
+
+        transport = AnthropicTransport()
+        response = SimpleNamespace(content=[], stop_reason="unknown_reason")
+        assert transport.validate_response(response) is False

@@ -1747,9 +1747,12 @@ def resolve_runtime_provider(
                 guardrail_config["streamProcessingMode"] = _gr["stream_processing_mode"]
             if _gr.get("trace"):
                 guardrail_config["trace"] = _gr["trace"]
-        # Dual-path routing: Claude models use AnthropicBedrock SDK for full
-        # feature parity (prompt caching, thinking budgets, adaptive thinking).
-        # Non-Claude models use the Converse API for multi-model support.
+        # Dual-path routing:
+        # - Claude models → AnthropicBedrock SDK (InvokeModel) → anthropic_messages path.
+        #   Full feature parity: prompt caching, thinking budgets, 1M context.
+        #   Guardrails are enforced via X-Amzn-Bedrock-Guardrail* HTTP headers injected
+        #   into every InvokeModel request (see agent_init.py + anthropic_adapter.py).
+        # - Non-Claude models → boto3 Converse API → bedrock_converse path.
         _current_model = str(target_model or model_cfg.get("default") or "").strip()
         if is_anthropic_bedrock_model(_current_model):
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
@@ -1764,7 +1767,7 @@ def resolve_runtime_provider(
                 "requested_provider": requested_provider,
             }
         else:
-            # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
+            # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API.
             runtime = {
                 "provider": "bedrock",
                 "api_mode": "bedrock_converse",
@@ -1774,8 +1777,6 @@ def resolve_runtime_provider(
                 "region": region,
                 "requested_provider": requested_provider,
             }
-        if guardrail_config:
-            runtime["guardrail_config"] = guardrail_config
         return runtime
 
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)

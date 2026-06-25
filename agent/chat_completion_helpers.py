@@ -576,6 +576,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+            bedrock_guardrail_headers=getattr(agent, "_bedrock_guardrail_headers", None),
         )
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.

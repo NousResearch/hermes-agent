@@ -1,0 +1,85 @@
+# Hermes Agent Pi2 RAG profile
+# Uses native Hermes memory plus optional Honcho/cloud memory and lightweight
+# document parsers. Avoids default local torch/sentence-transformers on Pi2.
+
+model: ""
+providers: {}
+fallback_providers: []
+toolsets:
+  - hermes-cli
+
+agent:
+  max_turns: 75
+  gateway_timeout: 1200
+  restart_drain_timeout: 90
+  api_max_retries: 2
+  tool_use_enforcement: auto
+  task_completion_guidance: true
+  environment_probe: true
+  coding_context: auto
+  image_input_mode: text
+  disabled_toolsets:
+    - browser
+    - image_gen
+    - video
+    - video_gen
+    - tts
+    - computer_use
+    - messaging
+    - spotify
+    - discord
+    - discord_admin
+    - feishu_doc
+    - feishu_drive
+    - yuanbao
+    - moa
+    - rl
+
+terminal:
+  backend: local
+  cwd: .
+  timeout: 150
+  home_mode: auto
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  write_approval: false
+  memory_char_limit: 2200
+  user_char_limit: 1375
+  # Leave empty for built-in markdown/SQLite session memory.
+  # Set to "honcho" after installing/configuring the honcho memory plugin/API key.
+  provider: ""
+
+rag:
+  # Documentation-only section for the Pi2 profile. Hermes ignores unknown keys,
+  # but keeping this in config records the intended lightweight RAG posture.
+  local_vectors: optional
+  preferred_embedding: remote
+  avoid_by_default:
+    - torch
+    - sentence-transformers
+    - chromadb
+
+delegation:
+  max_concurrent_children: 1
+  max_async_children: 1
+  max_spawn_depth: 1
+
+display:
+  show_cost: false
+  show_reasoning: false
+
+stt:
+  enabled: false
+
+tts:
+  provider: edge
+
+browser:
+  engine: auto
+
+compression:
+  enabled: true
+  threshold: 0.45
+  target_ratio: 0.20

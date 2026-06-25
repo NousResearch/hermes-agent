@@ -1,0 +1,74 @@
+# Hermes Agent Pi2 native profile
+# Slightly broader than core: keeps MCP/ACP/Home Assistant/SMS dependencies
+# available when installed with setup-pi2-minimal.sh --profile native, but still
+# disables heavy interactive/media/browser surfaces by default.
+
+model: ""
+providers: {}
+fallback_providers: []
+toolsets:
+  - hermes-cli
+
+agent:
+  max_turns: 75
+  gateway_timeout: 1200
+  restart_drain_timeout: 90
+  api_max_retries: 2
+  tool_use_enforcement: auto
+  task_completion_guidance: true
+  environment_probe: true
+  coding_context: auto
+  image_input_mode: text
+  disabled_toolsets:
+    - browser
+    - image_gen
+    - video
+    - video_gen
+    - tts
+    - computer_use
+    - messaging
+    - spotify
+    - discord
+    - discord_admin
+    - feishu_doc
+    - feishu_drive
+    - yuanbao
+    - moa
+    - rl
+
+terminal:
+  backend: local
+  cwd: .
+  timeout: 150
+  home_mode: auto
+
+memory:
+  memory_enabled: true
+  user_profile_enabled: true
+  write_approval: false
+  memory_char_limit: 1800
+  user_char_limit: 1100
+  provider: ""
+
+delegation:
+  max_concurrent_children: 1
+  max_async_children: 1
+  max_spawn_depth: 1
+
+display:
+  show_cost: false
+  show_reasoning: false
+
+stt:
+  enabled: false
+
+tts:
+  provider: edge
+
+browser:
+  engine: auto
+
+compression:
+  enabled: true
+  threshold: 0.45
+  target_ratio: 0.20

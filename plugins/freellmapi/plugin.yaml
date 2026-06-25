@@ -1,0 +1,11 @@
+name: freellmapi
+version: 1.0.0
+description: "Setup and doctor checks for FreeLLMAPI free-tier LLM routing."
+author: zapabob
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+provides_cli:
+  - freellmapi

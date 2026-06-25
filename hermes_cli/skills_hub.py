@@ -109,8 +109,99 @@ def _format_extra_metadata_lines(extra: Dict[str, Any]) -> list[str]:
     return lines
 
 
+_GITHUB_REPO_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+
+
+def _repo_slug_skill_name_variants(repo_name: str) -> set[str]:
+    """Return likely skill-directory names for a bare GitHub repo slug.
+
+    Several skill repos are named ``<skill>-skill`` while the actual runtime
+    skill lives under ``skills/<skill>/``.  When a user types
+    ``owner/repo-name`` they usually mean "install the skill from this GitHub
+    repo", not "search every registry for a same-named legacy package".
+    """
+    slug = repo_name.strip().strip("/").lower()
+    variants = {slug} if slug else set()
+    for suffix in ("-skill", "_skill", "-skills", "_skills"):
+        if slug.endswith(suffix):
+            variants.add(slug[: -len(suffix)])
+    return {v for v in variants if v}
+
+
+def _resolve_bare_github_repo_skill(identifier: str, sources):
+    """Resolve ``owner/repo`` to the repo's canonical skill before registries.
+
+    Direct GitHub repo identifiers are ambiguous because they lack a skill path.
+    If the repository contains exactly one ``*/SKILL.md`` below the repo root,
+    or a skill directory whose basename matches the repo slug (with common
+    ``-skill`` / ``-skills`` suffixes stripped), prefer that GitHub skill.  This
+    avoids stale registry aliases (ClawHub/skills.sh) shadowing the current
+    GitHub repo, while leaving short names and explicit registry identifiers
+    unchanged.
+    """
+    if not _GITHUB_REPO_IDENTIFIER_RE.match(identifier):
+        return None, None, None
+
+    github = next((src for src in sources if src.source_id() == "github"), None)
+    if github is None or not hasattr(github, "_get_repo_tree"):
+        return None, None, None
+
+    repo = identifier
+    repo_name = repo.split("/", 1)[1]
+    preferred_names = _repo_slug_skill_name_variants(repo_name)
+
+    try:
+        cached = github._get_repo_tree(repo)  # type: ignore[attr-defined]
+    except Exception:
+        cached = None
+    if cached is None:
+        return None, None, None
+
+    _default_branch, tree_entries = cached
+    skill_dirs: list[str] = []
+    for entry in tree_entries:
+        if entry.get("type") != "blob":
+            continue
+        path = entry.get("path", "")
+        if not isinstance(path, str) or path == "SKILL.md" or not path.endswith("/SKILL.md"):
+            continue
+        skill_dir = path[: -len("/SKILL.md")]
+        if any(part.startswith((".", "_")) for part in skill_dir.split("/")):
+            continue
+        skill_dirs.append(skill_dir)
+
+    if not skill_dirs:
+        return None, None, None
+
+    preferred = [d for d in skill_dirs if d.rstrip("/").split("/")[-1].lower() in preferred_names]
+    if len(preferred) == 1:
+        skill_dir = preferred[0]
+    elif len(skill_dirs) == 1:
+        skill_dir = skill_dirs[0]
+    else:
+        return None, None, None
+
+    resolved_identifier = f"{repo}/{skill_dir}"
+    try:
+        bundle = github.fetch(resolved_identifier)
+    except Exception:
+        bundle = None
+    if not bundle:
+        return None, None, None
+
+    try:
+        meta = github.inspect(resolved_identifier)
+    except Exception:
+        meta = None
+    return meta, bundle, github
+
+
 def _resolve_source_meta_and_bundle(identifier: str, sources):
     """Resolve metadata and bundle for a specific identifier."""
+    meta, bundle, matched_source = _resolve_bare_github_repo_skill(identifier, sources)
+    if bundle:
+        return meta, bundle, matched_source
+
     meta = None
     bundle = None
     matched_source = None

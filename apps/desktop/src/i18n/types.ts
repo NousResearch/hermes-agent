@@ -1076,7 +1076,9 @@ export interface Translations {
       convertBranchDesc: string
       convertBranchPlaceholder: string
       convertBranchInstead: string
-      branchCheckedOut: string
+      branchOpenExisting: string
+      branchSwitchHome: string
+      branchCreateWorktree: string
       branchesLoading: string
       noBranches: string
       removeWorktree: string

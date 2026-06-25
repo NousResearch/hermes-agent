@@ -108,9 +108,31 @@ test('listBranches: lists locals and flags the checked-out branch', async () => 
     assert.deepEqual(names, [current, 'feature'].sort())
     // The repo's own checkout is flagged; the unused branch is convertible.
     assert.equal(branches.find(b => b.name === current).checkedOut, true)
+    assert.equal(branches.find(b => b.name === current).isDefault, true)
     assert.equal(fs.realpathSync(branches.find(b => b.name === current).worktreePath), fs.realpathSync(dir))
     assert.equal(branches.find(b => b.name === 'feature').checkedOut, false)
+    assert.equal(branches.find(b => b.name === 'feature').isDefault, false)
     assert.equal(branches.find(b => b.name === 'feature').worktreePath, null)
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('listBranches: flags a free default branch as default, not checked out', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-branches-default-'))
+  const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
+
+  try {
+    await ensureGitRepo('git', dir)
+    const trunk = git('branch', '--show-current')
+    execFileSync('git', ['switch', '-c', 'rawr'], { cwd: dir })
+
+    const branches = await listBranches(dir, 'git')
+    const defaultBranch = branches.find(b => b.name === trunk)
+
+    assert.equal(defaultBranch.checkedOut, false)
+    assert.equal(defaultBranch.isDefault, true)
+    assert.equal(defaultBranch.worktreePath, null)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }
@@ -166,6 +188,26 @@ test('addWorktree: existingBranch checks the branch out without a new branch', a
       execFileSync('git', ['branch', '--show-current'], { cwd: result.path }).toString().trim(),
       'cool/feature'
     )
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('addWorktree: existing default branch switches the main checkout, not .worktrees/main', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-convert-default-'))
+  const git = (...args) => execFileSync('git', args, { cwd: dir }).toString().trim()
+
+  try {
+    await ensureGitRepo('git', dir)
+    const trunk = git('branch', '--show-current')
+    execFileSync('git', ['switch', '-c', 'rawr'], { cwd: dir })
+
+    const result = await addWorktree(dir, { existingBranch: trunk }, 'git')
+
+    assert.equal(result.branch, trunk)
+    assert.equal(fs.realpathSync(result.path), fs.realpathSync(dir))
+    assert.equal(git('branch', '--show-current'), trunk)
+    assert.equal(fs.existsSync(path.join(dir, '.worktrees', trunk)), false)
   } finally {
     fs.rmSync(dir, { recursive: true, force: true })
   }

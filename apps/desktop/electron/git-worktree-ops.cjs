@@ -111,6 +111,41 @@ function slugify(name) {
   return slug || 'work'
 }
 
+const TRUNK_BRANCHES = ['main', 'master']
+
+async function gitLine(gitBin, args, cwd) {
+  try {
+    return (await runGit(gitBin, args, cwd)).trim()
+  } catch {
+    return ''
+  }
+}
+
+async function defaultBranch(gitBin, cwd) {
+  const remote = (await gitLine(gitBin, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], cwd)).replace(
+    /^origin\//,
+    ''
+  )
+
+  if (remote) {
+    return remote
+  }
+
+  const configured = await gitLine(gitBin, ['config', '--get', 'init.defaultBranch'], cwd)
+
+  if (configured) {
+    return configured
+  }
+
+  for (const branch of TRUNK_BRANCHES) {
+    if (await gitLine(gitBin, ['show-ref', '--verify', `refs/heads/${branch}`], cwd)) {
+      return branch
+    }
+  }
+
+  return ''
+}
+
 // A brand-new project folder isn't a git repo — and a freshly-init'd one has no
 // commit to branch from — so `git worktree add` would fail. Make the dir a repo
 // with a root commit on the user's behalf so worktrees "just work". No-op for a
@@ -169,6 +204,25 @@ function uniqueDir(base) {
   return dir
 }
 
+async function addExistingBranchWorktree(gitBin, root, name) {
+  const branch = sanitizeBranch(name)
+
+  if (!branch) {
+    throw new Error('Branch name is required.')
+  }
+
+  if (branch === (await defaultBranch(gitBin, root))) {
+    await runGit(gitBin, ['switch', branch], root)
+
+    return { path: root, branch, repoRoot: root }
+  }
+
+  const dir = uniqueDir(path.join(root, '.worktrees', slugify(branch)))
+  await runGit(gitBin, ['worktree', 'add', dir, branch], root)
+
+  return { path: dir, branch, repoRoot: root }
+}
+
 async function addWorktree(repoPath, options, gitBin) {
   const resolved = resolveRequestedPathForIpc(repoPath, { purpose: 'Worktree add' })
   // A new project's folder may not be a git repo yet — init it (with a root
@@ -177,20 +231,8 @@ async function addWorktree(repoPath, options, gitBin) {
   const root = await mainRoot(gitBin, resolved)
   const opts = options || {}
 
-  // "Convert an existing branch into a worktree": check the branch out into a
-  // fresh worktree dir as-is (no `-b`, no new branch). Dir is named off the
-  // branch slug so it reads like the branch it carries.
   if (opts.existingBranch) {
-    const existing = sanitizeBranch(opts.existingBranch)
-
-    if (!existing) {
-      throw new Error('Branch name is required.')
-    }
-
-    const dir = uniqueDir(path.join(root, '.worktrees', slugify(existing)))
-    await runGit(gitBin, ['worktree', 'add', dir, existing], root)
-
-    return { path: dir, branch: existing, repoRoot: root }
+    return addExistingBranchWorktree(gitBin, root, opts.existingBranch)
   }
 
   const slug = slugify(opts.name || `work-${Date.now().toString(36)}`)
@@ -255,12 +297,18 @@ async function listBranches(repoPath, gitBin) {
     )
     const trees = await listWorktrees(resolved, gitBin)
     const pathByBranch = new Map(trees.filter(tree => tree.branch).map(tree => [tree.branch, tree.path]))
+    const trunk = await defaultBranch(gitBin, resolved)
 
     return out
       .split('\n')
       .map(line => line.trim())
       .filter(Boolean)
-      .map(name => ({ name, checkedOut: pathByBranch.has(name), worktreePath: pathByBranch.get(name) || null }))
+      .map(name => ({
+        name,
+        checkedOut: pathByBranch.has(name),
+        isDefault: Boolean(trunk && name === trunk),
+        worktreePath: pathByBranch.get(name) || null
+      }))
   } catch {
     return []
   }

@@ -40,6 +40,20 @@ import { $newWorktreeRequest } from '@/store/projects'
 // Tiny uppercase section header, matching the composer "+" menu's labels.
 const MENU_SECTION = 'text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
 
+interface BranchActionCopy {
+  branchCreateWorktree: string
+  branchOpenExisting: string
+  branchSwitchHome: string
+}
+
+const branchActionLabel = (branch: HermesGitBranch, copy: BranchActionCopy) => {
+  if (branch.checkedOut) {
+    return copy.branchOpenExisting
+  }
+
+  return branch.isDefault ? copy.branchSwitchHome : copy.branchCreateWorktree
+}
+
 interface CodingStatusRowProps {
   /** Branch the current draft off into a fresh worktree + session, based on
    *  `base` (a branch name; omitted = current HEAD). The composer owns the
@@ -48,7 +62,7 @@ interface CodingStatusRowProps {
   onBranchOff?: (branch: string, base?: string) => Promise<void>
   /** Check an existing branch out into a fresh worktree + session (no new
    *  branch). Drives the dialog's "convert a branch" picker. */
-  onConvertBranch?: (branch: string, path?: null | string) => Promise<void>
+  onConvertBranch?: (branch: string, path?: null | string, isDefault?: boolean) => Promise<void>
   /** List the repo's local branches for the "convert a branch" picker. */
   onListBranches?: () => Promise<HermesGitBranch[]>
   /** Open the review pane (changed files + diffs). */
@@ -84,15 +98,10 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   const [branchName, setBranchName] = useState('')
   const [branchBase, setBranchBase] = useState<string | undefined>(undefined)
   const [branchPending, setBranchPending] = useState(false)
-  // "Convert an existing branch into a worktree" sub-mode of the dialog: the body
-  // swaps the new-branch name input for a filterable list of the repo's branches.
   const [convertMode, setConvertMode] = useState(false)
   const [branches, setBranches] = useState<HermesGitBranch[]>([])
   const [branchesLoading, setBranchesLoading] = useState(false)
 
-  // Pull the repo's branches the first time the convert picker is shown for an
-  // open dialog. Cheap + bounded; refreshed each time the picker is entered so a
-  // branch created mid-session shows up.
   const loadBranches = useCallback(async () => {
     if (!onListBranches) {
       return
@@ -119,7 +128,6 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     setTimeout(() => setBranchOpen(true), 0)
   }
 
-  // Open the dialog straight into the convert-a-branch picker.
   const startConvert = () => {
     setBranchBase(undefined)
     setBranchName('')
@@ -128,7 +136,6 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     setTimeout(() => setBranchOpen(true), 0)
   }
 
-  // Flip an already-open dialog into the picker (the in-dialog link).
   const enterConvert = () => {
     setConvertMode(true)
     void loadBranches()
@@ -142,7 +149,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     setBranchPending(true)
 
     try {
-      await onConvertBranch(branch.name, branch.worktreePath)
+      await onConvertBranch(branch.name, branch.worktreePath, branch.isDefault)
       setBranchOpen(false)
     } catch (err) {
       notifyError(err, p.startWorkFailed)
@@ -393,11 +400,9 @@ export const CodingStatusRow = memo(function CodingStatusRow({
                     >
                       <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="git-branch" size="0.8rem" />
                       <span className="truncate">{branch.name}</span>
-                      {branch.checkedOut && (
-                        <span className="ml-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">
-                          {p.branchCheckedOut}
-                        </span>
-                      )}
+                      <span className="ml-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">
+                        {branchActionLabel(branch, p)}
+                      </span>
                     </CommandItem>
                   ))}
                 </CommandGroup>
@@ -423,8 +428,6 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           )}
 
           {convertMode ? (
-            // The picker is a sub-screen: a single "Cancel" link steps back to
-            // the new-branch screen (the dialog's own ✕ / Esc still closes it).
             <DialogFooter className="sm:justify-start">
               <Button
                 className="px-0 text-(--ui-text-secondary) hover:text-foreground"
@@ -438,7 +441,6 @@ export const CodingStatusRow = memo(function CodingStatusRow({
             </DialogFooter>
           ) : (
             <DialogFooter className="sm:justify-between">
-              {/* Switch into the convert-an-existing-branch picker. */}
               {onConvertBranch ? (
                 <Button
                   className="px-0 text-(--ui-text-secondary) hover:text-foreground"

@@ -1387,7 +1387,7 @@ export function ChatBar({
   // Mirrors handleBranchOff's hand-off: create the worktree, then open a session
   // anchored there carrying the draft.
   const handleConvertBranch = useCallback(
-    async (branch: string, path?: null | string) => {
+    async (branch: string, path?: null | string, isDefault?: boolean) => {
       if (path?.trim()) {
         openInWorktree(path)
 
@@ -1395,6 +1395,14 @@ export function ChatBar({
       }
 
       const repoPath = cwd?.trim()
+
+      if (repoPath && isDefault) {
+        await switchBranchInRepo(repoPath, branch)
+        openInWorktree(repoPath)
+
+        return
+      }
+
       const result = repoPath && (await startWorkInRepo(repoPath, { existingBranch: branch }))
 
       if (result) {

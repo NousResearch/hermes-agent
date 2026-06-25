@@ -19,7 +19,7 @@ import { useI18n } from '@/i18n'
 import { gitRef } from '@/lib/sanitize'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
-import { copyPath, listRepoBranches, revealPath, startWorkInRepo } from '@/store/projects'
+import { copyPath, listRepoBranches, revealPath, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
 
 import { SidebarCount, SidebarRowLead } from '../chrome'
 
@@ -39,6 +39,20 @@ function LaneLabel({ label, title }: { label: string; title?: string }) {
       <span className="shrink-0 whitespace-pre">{tail}</span>
     </span>
   )
+}
+
+interface BranchActionCopy {
+  branchCreateWorktree: string
+  branchOpenExisting: string
+  branchSwitchHome: string
+}
+
+const branchActionLabel = (branch: HermesGitBranch, copy: BranchActionCopy) => {
+  if (branch.checkedOut) {
+    return copy.branchOpenExisting
+  }
+
+  return branch.isDefault ? copy.branchSwitchHome : copy.branchCreateWorktree
 }
 
 // "+" affordance shared by repo and worktree headers — reveals on header hover.
@@ -120,14 +134,10 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
   const [open, setOpen] = useState(false)
   const [name, setName] = useState('')
   const [pending, setPending] = useState(false)
-  // "Convert an existing branch into a worktree" sub-mode: the body swaps the
-  // new-branch name input for a filterable list of the repo's branches.
   const [convertMode, setConvertMode] = useState(false)
   const [branches, setBranches] = useState<HermesGitBranch[]>([])
   const [branchesLoading, setBranchesLoading] = useState(false)
 
-  // Pull the repo's branches each time the picker is entered (cheap + bounded),
-  // so a branch created mid-session shows up.
   const loadBranches = useCallback(async () => {
     if (!repoPath) {
       return
@@ -170,7 +180,6 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
     }
   }
 
-  // Check an EXISTING branch out into a fresh worktree (no new branch).
   const convert = async (branch: HermesGitBranch) => {
     if (pending || !repoPath || !branch) {
       return
@@ -179,9 +188,16 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
     setPending(true)
 
     try {
-      const result = branch.worktreePath
-        ? { branch: branch.name, path: branch.worktreePath }
-        : await startWorkInRepo(repoPath, { existingBranch: branch.name })
+      let result: null | { branch: string; path: string }
+
+      if (branch.worktreePath) {
+        result = { branch: branch.name, path: branch.worktreePath }
+      } else if (branch.isDefault) {
+        await switchBranchInRepo(repoPath, branch.name)
+        result = { branch: branch.name, path: repoPath }
+      } else {
+        result = await startWorkInRepo(repoPath, { existingBranch: branch.name })
+      }
 
       if (result) {
         onStarted(result.path)
@@ -238,11 +254,9 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
                     >
                       <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="git-branch" size="0.8rem" />
                       <span className="truncate">{branch.name}</span>
-                      {branch.checkedOut && (
-                        <span className="ml-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">
-                          {p.branchCheckedOut}
-                        </span>
-                      )}
+                      <span className="ml-auto shrink-0 text-[0.625rem] text-(--ui-text-tertiary)">
+                        {branchActionLabel(branch, p)}
+                      </span>
                     </CommandItem>
                   ))}
                 </CommandGroup>
@@ -268,8 +282,6 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
           )}
 
           {convertMode ? (
-            // The picker is a sub-screen: a single "Cancel" link steps back to
-            // the new-branch screen (the dialog's own ✕ / Esc still closes it).
             <DialogFooter className="sm:justify-start">
               <Button
                 className="px-0 text-(--ui-text-secondary) hover:text-foreground"
@@ -283,7 +295,6 @@ export function StartWorkButton({ repoPath, onStarted }: { repoPath: string; onS
             </DialogFooter>
           ) : (
             <DialogFooter className="sm:justify-between">
-              {/* Switch into the convert-an-existing-branch picker. */}
               <Button
                 className="px-0 text-(--ui-text-secondary) hover:text-foreground"
                 disabled={pending}

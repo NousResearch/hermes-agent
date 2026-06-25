@@ -576,10 +576,12 @@ export interface HermesGitWorktree {
 }
 
 // A local branch as offered by the "convert a branch into a worktree" picker.
-// `checkedOut` marks branches git won't let a second worktree claim.
+// `checkedOut` means selecting opens that checkout; `isDefault` means selecting
+// switches the main checkout instead of creating `.worktrees/main`.
 export interface HermesGitBranch {
   name: string
   checkedOut: boolean
+  isDefault: boolean
   worktreePath: null | string
 }
 

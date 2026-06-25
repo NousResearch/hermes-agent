@@ -421,14 +421,15 @@ def test_hatch_pet_end_to_end(monkeypatch, tmp_path):
     from agent.pet.generate import imagegen, orchestrate
 
     base = tmp_path / "base.png"
-    _strip(1).save(base)
+    _strip(1, size=(64, 64)).save(base)
 
     def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         # Return a synthetic row strip; frame count is inferable from the spec.
+        # Use small cells (64×64) to keep PIL BFS fast under the CI 140s limit.
         state = prefix.replace("pet_row_", "")
         count = atlas_mod.FRAME_COUNTS.get(state, 6)
         p = tmp_path / f"{prefix}.png"
-        _strip(count).save(p)
+        _strip(count, size=(64, 64)).save(p)
         return [p]
 
     monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
@@ -458,7 +459,7 @@ def test_hatch_pet_idle_fallback_when_row_fails(monkeypatch, tmp_path):
     from agent.pet.generate.imagegen import GenerationError
 
     base = tmp_path / "base.png"
-    _strip(1).save(base)
+    _strip(1, size=(64, 64)).save(base)
 
     def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         if prefix == "pet_row_idle":
@@ -466,7 +467,7 @@ def test_hatch_pet_idle_fallback_when_row_fails(monkeypatch, tmp_path):
         state = prefix.replace("pet_row_", "")
         count = atlas_mod.FRAME_COUNTS.get(state, 6)
         p = tmp_path / f"{prefix}.png"
-        _strip(count).save(p)
+        _strip(count, size=(64, 64)).save(p)
         return [p]
 
     monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())
@@ -482,7 +483,7 @@ def test_hatch_pet_rejects_missing_required_animation_rows(monkeypatch, tmp_path
     from agent.pet.generate.imagegen import GenerationError
 
     base = tmp_path / "base.png"
-    _strip(1).save(base)
+    _strip(1, size=(64, 64)).save(base)
 
     def fake_generate(prompt, *, n=1, reference_images=None, provider=None, prefix="pet", aspect_ratio="square"):
         if prefix == "pet_row_running-right":
@@ -490,7 +491,7 @@ def test_hatch_pet_rejects_missing_required_animation_rows(monkeypatch, tmp_path
         state = prefix.replace("pet_row_", "")
         count = atlas_mod.FRAME_COUNTS.get(state, 6)
         p = tmp_path / f"{prefix}.png"
-        _strip(count).save(p)
+        _strip(count, size=(64, 64)).save(p)
         return [p]
 
     monkeypatch.setattr(imagegen, "resolve_provider", lambda **_: object())

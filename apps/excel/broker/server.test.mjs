@@ -707,6 +707,10 @@ test("matrixToCsv: neutralizes CSV formula injection", () => {
   assert.strictEqual(matrixToCsv([['+cmd|dir']]), "'+cmd|dir");
   assert.strictEqual(matrixToCsv([['-IF(1,1)']]), "\"'-IF(1,1)\"");
   assert.strictEqual(matrixToCsv([['@evil']]), "'@evil");
+
+  // Whitespace-prefixed formulas are also neutralized
+  assert.strictEqual(matrixToCsv([[" =cmd"]]), "' =cmd");
+  assert.strictEqual(matrixToCsv([["	=cmd"]]), "'	=cmd");
   assert.strictEqual(matrixToCsv([["hello"]]), "hello");
   assert.strictEqual(matrixToCsv([["123"]]), "123");
   assert.strictEqual(matrixToCsv([["=evil"], ["normal"]]), "'=evil\r\nnormal");

@@ -774,7 +774,8 @@ function matrixToCsv(values) {
         .map((cell) => {
           const str = cell === null || cell === undefined ? "" : String(cell);
           // Neutralize CSV formula injection: prefix with ' if it starts with = + - @
-          const safe = /^[=+\-@]/.test(str) ? `'${str}` : str;
+          // (also catch whitespace-prefixed formulas like " =cmd" or "\t=cmd")
+          const safe = /^\s*[=+\-@]/.test(str) ? `'${str}` : str;
           return /[",\r\n]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
         })
         .join(",")

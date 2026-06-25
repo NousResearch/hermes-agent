@@ -96,6 +96,25 @@ class TestParseSchedule:
         assert result["kind"] == "cron"
         assert result["expr"] == "0 9 * * *"
 
+    def test_cron_named_weekdays_and_months(self):
+        # Named months/weekdays (and ranges/lists) are valid cron and must
+        # route to croniter, not be rejected as "Invalid schedule".
+        pytest.importorskip("croniter")
+        for expr in (
+            "0 9 * * MON",
+            "*/15 9-17 * * MON-FRI",
+            "0 9 1 JAN *",
+            "0 9 * * MON,WED,FRI",
+        ):
+            result = parse_schedule(expr)
+            assert result["kind"] == "cron", expr
+            assert result["expr"] == expr
+
+    def test_invalid_named_cron_still_rejected(self):
+        pytest.importorskip("croniter")
+        with pytest.raises(ValueError):
+            parse_schedule("0 9 * * FUNDAY")
+
     def test_iso_timestamp(self):
         result = parse_schedule("2030-01-15T14:00:00")
         assert result["kind"] == "once"

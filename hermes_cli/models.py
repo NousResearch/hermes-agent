@@ -1321,6 +1321,8 @@ def hidden_model_provider_slugs(config: Optional[dict[str, Any]] = None) -> set[
     return hidden
 
 
+# Cost-safe overrides for the *silent* auto-default
+# (``get_default_model_for_provider``). Most providers' curated lists lead with a
 # sensible default, but Nous Portal is a per-token *metered aggregator* whose
 # list is ordered best-/most-capable-first — entry [0] is the priciest flagship
 # (``anthropic/claude-opus-4.8``, $5/$25 per Mtok). Using that as the

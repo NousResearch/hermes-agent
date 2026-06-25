@@ -3284,6 +3284,69 @@ class TestMessageSplitting:
         assert "<https://en.wikipedia.org/wiki/Foo_(bar)|Foo>" in kwargs["text"]
 
 
+class TestEmptyTextGuard:
+    """Guard against Slack ``no_text`` errors when content is empty/whitespace."""
+
+    @pytest.mark.asyncio
+    async def test_send_skips_empty_string(self, adapter):
+        """Empty content must not call chat_postMessage."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        result = await adapter.send("C123", "")
+        assert result.success is True
+        adapter._app.client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_skips_whitespace_only(self, adapter):
+        """Whitespace-only content must not call chat_postMessage."""
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "ts1"})
+        result = await adapter.send("C123", "   \n\t  ")
+        assert result.success is True
+        adapter._app.client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_skips_empty(self, monkeypatch):
+        """_standalone_send returns success without HTTP call on empty text."""
+        from plugins.platforms.slack.adapter import _standalone_send
+        from types import SimpleNamespace
+
+        pconfig = SimpleNamespace(token="xoxb-test", extra={})
+
+        # Patch aiohttp so the import succeeds, but it should never be used.
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(
+            "plugins.platforms.slack.adapter.aiohttp",
+            MagicMock(ClientSession=MagicMock(return_value=mock_session)),
+        )
+
+        result = await _standalone_send(pconfig, "C123", "")
+        assert result.get("success") is True
+        assert result.get("skipped") == "empty_text"
+        mock_session.post.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_skips_whitespace(self, monkeypatch):
+        """_standalone_send returns success without HTTP call on whitespace."""
+        from plugins.platforms.slack.adapter import _standalone_send
+        from types import SimpleNamespace
+
+        pconfig = SimpleNamespace(token="xoxb-test", extra={})
+
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(
+            "plugins.platforms.slack.adapter.aiohttp",
+            MagicMock(ClientSession=MagicMock(return_value=mock_session)),
+        )
+
+        result = await _standalone_send(pconfig, "C123", "   \n  ")
+        assert result.get("success") is True
+        assert result.get("skipped") == "empty_text"
+        mock_session.post.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # TestReplyBroadcast
 # ---------------------------------------------------------------------------

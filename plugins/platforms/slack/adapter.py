@@ -1250,6 +1250,11 @@ class SlackAdapter(BasePlatformAdapter):
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
 
+            # Guard against empty/whitespace-only messages — Slack API
+            # returns ``no_text`` for chat.postMessage with blank text.
+            if not formatted or not formatted.strip():
+                return SendResult(success=True)
+
             # Split long messages, preserving code block boundaries
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
@@ -4047,6 +4052,14 @@ async def _standalone_send(
                 "Failed to apply Slack mrkdwn formatting in _standalone_send",
                 exc_info=True,
             )
+
+    if not formatted or not formatted.strip():
+        logger.debug("[Slack] _standalone_send: skipping empty/whitespace message")
+        return {
+            "success": True,
+            "platform": "slack",
+            "skipped": "empty_text",
+        }
 
     try:
         import aiohttp

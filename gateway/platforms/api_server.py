@@ -1830,6 +1830,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
 
+        # Read display.show_reasoning from user config (issue #7556).
+        # When True, the agent's internal reasoning trace (last_reasoning) is
+        # injected into the response as a <think>…</think> block so that
+        # OpenAI-compatible clients (Open WebUI, etc.) can render it.
+        try:
+            from hermes_cli.config import load_config as _load_hermes_config
+            _hermes_cfg = _load_hermes_config()
+            _show_reasoning: bool = bool(
+                (_hermes_cfg.get("display") or {}).get("show_reasoning", False)
+            )
+        except Exception:
+            _show_reasoning = False
+
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
         conversation_messages: List[Dict[str, str]] = []
@@ -1850,6 +1863,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     content = _normalize_multimodal_content(raw_content)
                 except ValueError as exc:
                     return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
+                # Strip <think>…</think> blocks injected by a previous
+                # show_reasoning response so they don't pollute the agent's
+                # conversation history on the next turn (issue #7556).
+                if role == "assistant" and isinstance(content, str):
+                    content = re.sub(
+                        r"<think>.*?</think>\s*", "", content, flags=re.DOTALL
+                    ).lstrip()
                 conversation_messages.append({"role": role, "content": content})
 
         # Extract the last user message as the primary input
@@ -2018,6 +2038,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 request, completion_id, model_name, created, _stream_q,
                 agent_task, agent_ref, session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                show_reasoning=_show_reasoning,
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
@@ -2052,6 +2073,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
 
         final_response = result.get("final_response") or ""
+        # Prepend reasoning trace when display.show_reasoning is enabled (issue #7556).
+        # Mirrors the tui_gateway behaviour; uses the <think>…</think> convention
+        # understood by Open WebUI and other OpenAI-compatible frontends.
+        if _show_reasoning:
+            _last_reasoning = result.get("last_reasoning") if isinstance(result, dict) else None
+            if isinstance(_last_reasoning, str) and _last_reasoning.strip():
+                final_response = (
+                    f"<think>\n{_last_reasoning.strip()}\n</think>\n\n{final_response}"
+                )
         is_partial = bool(result.get("partial"))
         is_failed = bool(result.get("failed"))
         completed = bool(result.get("completed", True))
@@ -2133,7 +2163,7 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
         created: int, stream_q, agent_task, agent_ref=None, session_id: str = None,
-        gateway_session_key: str = None,
+        gateway_session_key: str = None, show_reasoning: bool = False,
     ) -> "web.StreamResponse":
         """Write real streaming SSE from agent's stream_delta_callback queue.
 
@@ -2227,11 +2257,26 @@ class APIServerAdapter(BasePlatformAdapter):
 
             # Get usage from completed agent
             usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            result = None
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
+
+            # Emit reasoning trace as a custom SSE event when show_reasoning is
+            # enabled (issue #7556).  Sent after content deltas so the stream
+            # order is preserved; clients that don't recognise the custom event
+            # type safely ignore it.  The `hermes.reasoning` event carries the
+            # same data as the non-streaming <think>…</think> prepend so
+            # frontends can choose their preferred rendering strategy.
+            if show_reasoning and isinstance(result, dict):
+                _last_reasoning = result.get("last_reasoning")
+                if isinstance(_last_reasoning, str) and _last_reasoning.strip():
+                    _reasoning_payload = json.dumps({"reasoning": _last_reasoning.strip()})
+                    await response.write(
+                        f"event: hermes.reasoning\ndata: {_reasoning_payload}\n\n".encode()
+                    )
 
             # Finish chunk
             finish_chunk = {

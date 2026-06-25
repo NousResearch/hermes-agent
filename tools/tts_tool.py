@@ -90,7 +90,7 @@ def _import_edge_tts():
     except ImportError:
         pass
     except Exception as e:
-        raise ImportError(str(e))
+        raise ImportError(str(e)) from e
     import edge_tts
     return edge_tts
 
@@ -111,7 +111,7 @@ def _import_elevenlabs():
         # so older code paths still get a clean ImportError.
         pass
     except Exception as e:  # FeatureUnavailable or any unexpected error
-        raise ImportError(str(e))
+        raise ImportError(str(e)) from e
     from elevenlabs.client import ElevenLabs
     return ElevenLabs
 
@@ -134,7 +134,7 @@ def _import_mistral_client():
     except ImportError:
         pass
     except Exception as e:  # FeatureUnavailable or any unexpected error
-        raise ImportError(str(e))
+        raise ImportError(str(e)) from e
     from mistralai.client import Mistral
     return Mistral
 

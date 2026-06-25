@@ -88,7 +88,7 @@ def _ensure_modal_sdk() -> None:
     except ImportError:
         pass
     except Exception as e:
-        raise ImportError(str(e))
+        raise ImportError(str(e)) from e
 
 
 def _resolve_modal_image(image_spec: Any) -> Any:

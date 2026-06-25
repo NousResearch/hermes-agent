@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 import os
 import threading
 import time
+from collections import OrderedDict
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
@@ -148,6 +149,19 @@ _active_subagents_lock = threading.Lock()
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
 
+# subagent_id -> record of a child that just finished.  The TUI /agents
+# overlay polls delegation.status every ~5s; if we removed finished children
+# immediately they would never appear with a terminal status and the overlay
+# would stay stuck on "running" (see issue #52318).  We keep finished records
+# here briefly so at least one poll cycle observes the terminal status, then
+# prune by age and count to avoid unbounded growth.
+_recently_finished_subagents: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+# How long a finished record stays visible (seconds) and the hard cap on how
+# many we retain.  The TTL only needs to comfortably exceed the TUI poll
+# interval (~5s); the count cap protects against spawn storms.
+_FINISHED_SUBAGENT_TTL_SECONDS = 30.0
+_FINISHED_SUBAGENT_MAX = 64
+
 
 def set_spawn_paused(paused: bool) -> bool:
     """Globally block/unblock new delegate_task spawns.
@@ -179,6 +193,53 @@ def _unregister_subagent(subagent_id: str) -> None:
         _active_subagents.pop(subagent_id, None)
 
 
+_TERMINAL_SUBAGENT_STATUSES = ("completed", "failed", "interrupted", "error")
+
+
+def _prune_finished_subagents(now: float) -> None:
+    """Drop finished records past their TTL or beyond the count cap.
+
+    Caller must hold ``_active_subagents_lock``.
+    """
+    # Age-based pruning: records are inserted in finish order, so the oldest
+    # live at the front of the OrderedDict.
+    while _recently_finished_subagents:
+        sid, rec = next(iter(_recently_finished_subagents.items()))
+        finished_at = rec.get("finished_at") or 0.0
+        if now - finished_at < _FINISHED_SUBAGENT_TTL_SECONDS:
+            break
+        _recently_finished_subagents.pop(sid, None)
+    # Count-based cap: evict oldest beyond the hard limit.
+    while len(_recently_finished_subagents) > _FINISHED_SUBAGENT_MAX:
+        _recently_finished_subagents.popitem(last=False)
+
+
+def _finalize_subagent(subagent_id: str, status: str) -> None:
+    """Mark a subagent terminal and retain it briefly for the TUI overlay.
+
+    The /agents overlay polls ``delegation.status`` on an interval; removing a
+    child the instant it finishes means the overlay never observes a terminal
+    status and stays stuck on "running" (issue #52318).  We move the record
+    into a short-lived "recently finished" store with its terminal status so at
+    least one poll cycle surfaces it, then prune by age and count.
+    """
+    if not status:
+        status = "completed"
+    with _active_subagents_lock:
+        record = _active_subagents.pop(subagent_id, None)
+        now = time.time()
+        if record is not None:
+            # Drop the live agent handle; the snapshot never exposes it and we
+            # don't want to keep the child agent alive past its lifetime.
+            record.pop("agent", None)
+            record["status"] = status
+            record["finished_at"] = now
+            # Re-insert at the end to preserve finish-time ordering.
+            _recently_finished_subagents.pop(subagent_id, None)
+            _recently_finished_subagents[subagent_id] = record
+        _prune_finished_subagents(now)
+
+
 def interrupt_subagent(subagent_id: str) -> bool:
     """Request that a single running subagent stop at its next iteration boundary.
 
@@ -203,16 +264,26 @@ def interrupt_subagent(subagent_id: str) -> bool:
 
 
 def list_active_subagents() -> List[Dict[str, Any]]:
-    """Snapshot of the currently running subagent tree.
+    """Snapshot of the running subagent tree plus recently-finished children.
 
     Each record: {subagent_id, parent_id, depth, goal, model, started_at,
-    tool_count, status}.  Safe to call from any thread — returns a copy.
+    tool_count, status}.  Children that just finished are included for a short
+    window with their terminal status (completed/failed/interrupted) and a
+    ``finished_at`` timestamp, so the TUI /agents overlay — which polls on an
+    interval — observes the terminal transition instead of staying stuck on
+    "running" (issue #52318).  Safe to call from any thread — returns copies.
     """
     with _active_subagents_lock:
-        return [
+        _prune_finished_subagents(time.time())
+        snapshot = [
             {k: v for k, v in r.items() if k != "agent"}
             for r in _active_subagents.values()
         ]
+        snapshot.extend(
+            {k: v for k, v in r.items() if k != "agent"}
+            for r in _recently_finished_subagents.values()
+        )
+        return snapshot
 
 
 def _extract_output_tail(
@@ -2273,10 +2344,20 @@ def _run_single_child(
         if _heartbeat_thread.ident is not None:
             _heartbeat_thread.join(timeout=5)
 
-        # Drop the TUI-facing registry entry.  Safe to call even if the
-        # child was never registered (e.g. ID missing on test doubles).
+        # Move the TUI-facing registry entry to its terminal state and retain
+        # it briefly so the /agents overlay's next poll observes the final
+        # status instead of staying stuck on "running" (issue #52318).  Safe to
+        # call even if the child was never registered (e.g. ID missing on test
+        # doubles).  Resolve the status defensively: the local `status` is bound
+        # on the normal path, otherwise fall back to whatever `result` reported,
+        # then to a generic "failed" for unexpected early exits.
         if _subagent_id:
-            _unregister_subagent(_subagent_id)
+            terminal_status = locals().get("status")
+            if not terminal_status:
+                _result = locals().get("result")
+                if isinstance(_result, dict):
+                    terminal_status = _result.get("status")
+            _finalize_subagent(_subagent_id, terminal_status or "failed")
 
         if child_pool is not None and leased_cred_id is not None:
             try:

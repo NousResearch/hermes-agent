@@ -4,7 +4,7 @@ import time
 
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from plugins.memory.honcho.session import (
     HonchoSession,
@@ -257,9 +257,8 @@ class TestPeerLookupHelpers:
             SimpleNamespace(content="Robert runs neuralancer", peer_id="hermes", session_id="s-old", id="m1"),
             SimpleNamespace(content="I founded neuralancer in 2019", peer_id="robert", session_id="s-old", id="m2"),
         ]
-        mgr._honcho = honcho_client
-
-        result = mgr.search_context(session.key, "neuralancer")
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            result = mgr.search_context(session.key, "neuralancer")
 
         # Returns the actual message content, ranked.
         assert "Robert runs neuralancer" in result
@@ -278,9 +277,8 @@ class TestPeerLookupHelpers:
         honcho_client.search.return_value = [
             SimpleNamespace(content="Assistant note", peer_id="hermes", session_id="s1", id="m1"),
         ]
-        mgr._honcho = honcho_client
-
-        result = mgr.search_context(session.key, "assistant", peer=session.assistant_peer_id)
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            result = mgr.search_context(session.key, "assistant", peer=session.assistant_peer_id)
 
         assert "Assistant note" in result
         _args, kwargs = honcho_client.search.call_args
@@ -289,9 +287,9 @@ class TestPeerLookupHelpers:
     def test_search_context_empty_query_returns_empty(self):
         mgr, session = self._make_cached_manager()
         honcho_client = MagicMock()
-        mgr._honcho = honcho_client
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            assert mgr.search_context(session.key, "   ") == ""
 
-        assert mgr.search_context(session.key, "   ") == ""
         honcho_client.search.assert_not_called()
 
     def test_search_context_falls_back_to_peer_search_on_filter_error(self):
@@ -300,14 +298,14 @@ class TestPeerLookupHelpers:
         mgr, session = self._make_cached_manager()
         honcho_client = MagicMock()
         honcho_client.search.side_effect = RuntimeError("peer_perspective unsupported")
-        mgr._honcho = honcho_client
         peer_obj = MagicMock()
         peer_obj.search.return_value = [
             SimpleNamespace(content="fallback hit", peer_id="robert", session_id="s1", id="m1"),
         ]
         mgr._get_or_create_peer = MagicMock(return_value=peer_obj)
 
-        result = mgr.search_context(session.key, "anything")
+        with patch.object(HonchoSessionManager, "honcho", new_callable=lambda: property(lambda s: honcho_client)):
+            result = mgr.search_context(session.key, "anything")
 
         assert "fallback hit" in result
         peer_obj.search.assert_called_once()
@@ -968,8 +966,18 @@ class TestDialecticCadenceDefaults:
 
     def test_config_override(self):
         """dialecticCadence from config overrides the default."""
-        provider = self._make_provider(cfg_extra={"raw": {"dialecticCadence": 5}})
+        provider = self._make_provider(cfg_extra={"dialectic_cadence": 5})
         assert provider._dialectic_cadence == 5
+
+    def test_injection_frequency_from_config(self):
+        """injectionFrequency from config (including host block) is respected."""
+        provider = self._make_provider(cfg_extra={"injection_frequency": "first-turn"})
+        assert provider._injection_frequency == "first-turn"
+
+    def test_context_cadence_from_config(self):
+        """contextCadence from config (including host block) is respected."""
+        provider = self._make_provider(cfg_extra={"context_cadence": 999})
+        assert provider._context_cadence == 999
 
 
 class TestBaseContextSummary:

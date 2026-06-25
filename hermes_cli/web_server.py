@@ -9,6 +9,7 @@ Usage:
     python -m hermes_cli.main web --port 8080
 """
 
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, contextmanager
 
 import asyncio
@@ -16,6 +17,7 @@ import base64
 import binascii
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 import hmac
 import importlib.util
 import json
@@ -44,26 +46,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli import __version__, __release_date__
-from hermes_cli.config import (
-    cfg_get,
-    DEFAULT_CONFIG,
-    OPTIONAL_ENV_VARS,
-    clear_model_endpoint_credentials,
-    get_config_path,
-    get_env_path,
-    get_hermes_home,
-    load_config,
-    load_env,
-    save_config,
-    save_env_value,
-    remove_env_value,
-    check_config_version,
-    detect_install_method,
-    format_docker_update_message,
-    recommended_update_command_for_method,
-    redact_key,
-    write_platform_config_field,
-)
+from hermes_constants import get_hermes_home
 from hermes_cli.memory_providers import (
     MemoryProvider,
     ProviderField,
@@ -112,6 +95,66 @@ except ImportError:
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
+
+@lru_cache(maxsize=1)
+def _config_module():
+    """Import ``hermes_cli.config`` only when the web server actually needs it."""
+    import hermes_cli.config as config_mod
+
+    return config_mod
+
+
+def cfg_get(*args, **kwargs):
+    return _config_module().cfg_get(*args, **kwargs)
+
+
+def clear_model_endpoint_credentials(*args, **kwargs):
+    return _config_module().clear_model_endpoint_credentials(*args, **kwargs)
+
+
+def get_config_path(*args, **kwargs):
+    return _config_module().get_config_path(*args, **kwargs)
+
+
+def get_env_path(*args, **kwargs):
+    return _config_module().get_env_path(*args, **kwargs)
+
+
+def load_config(*args, **kwargs):
+    return _config_module().load_config(*args, **kwargs)
+
+
+def load_env(*args, **kwargs):
+    return _config_module().load_env(*args, **kwargs)
+
+
+def save_config(*args, **kwargs):
+    return _config_module().save_config(*args, **kwargs)
+
+
+def save_env_value(*args, **kwargs):
+    return _config_module().save_env_value(*args, **kwargs)
+
+
+def remove_env_value(*args, **kwargs):
+    return _config_module().remove_env_value(*args, **kwargs)
+
+
+def check_config_version(*args, **kwargs):
+    return _config_module().check_config_version(*args, **kwargs)
+
+
+def redact_key(*args, **kwargs):
+    return _config_module().redact_key(*args, **kwargs)
+
+
+def _default_config() -> dict[str, Any]:
+    return _config_module().DEFAULT_CONFIG
+
+
+def _optional_env_vars() -> dict[str, Any]:
+    return _config_module().OPTIONAL_ENV_VARS
+
 # ---------------------------------------------------------------------------
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -152,6 +195,13 @@ def _warm_gateway_module() -> None:
         pass
 
 
+def _warm_config_module() -> None:
+    try:
+        _config_module()
+    except Exception:
+        pass
+
+
 def _resolve_restart_drain_timeout() -> float:
     try:
         from hermes_cli.gateway import _get_restart_drain_timeout
@@ -178,6 +228,7 @@ async def _lifespan(app: "FastAPI"):
     # Running in an executor means the cost is paid in a worker thread while
     # the server socket is already open and accepting probes.
     asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
+    asyncio.get_event_loop().run_in_executor(None, _warm_config_module)
 
     # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
     # since the app has no gateway running the scheduler. Server `hermes
@@ -697,18 +748,51 @@ def _build_schema_from_config(
     return schema
 
 
-CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
+_CONFIG_SCHEMA_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
 
-# Inject virtual fields that don't live in DEFAULT_CONFIG but are surfaced
-# by the normalize/denormalize cycle.  Insert model_context_length right after
-# the "model" key so it renders adjacent in the frontend.
-_mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
-_ordered_schema: Dict[str, Dict[str, Any]] = {}
-for _k, _v in CONFIG_SCHEMA.items():
-    _ordered_schema[_k] = _v
-    if _k == "model":
-        _ordered_schema["model_context_length"] = _mcl_entry
-CONFIG_SCHEMA = _ordered_schema
+
+def _get_config_schema() -> Dict[str, Dict[str, Any]]:
+    global _CONFIG_SCHEMA_CACHE
+    if _CONFIG_SCHEMA_CACHE is None:
+        config_schema = _build_schema_from_config(_default_config())
+
+        # Inject virtual fields that don't live in DEFAULT_CONFIG but are
+        # surfaced by the normalize/denormalize cycle. Insert
+        # model_context_length right after the "model" key so it renders
+        # adjacent in the frontend.
+        mcl_entry = _SCHEMA_OVERRIDES["model_context_length"]
+        ordered_schema: Dict[str, Dict[str, Any]] = {}
+        for key, value in config_schema.items():
+            ordered_schema[key] = value
+            if key == "model":
+                ordered_schema["model_context_length"] = mcl_entry
+        _CONFIG_SCHEMA_CACHE = ordered_schema
+    return _CONFIG_SCHEMA_CACHE
+
+
+class _LazyConfigSchema(Mapping[str, Dict[str, Any]]):
+    """Mapping proxy that builds the config schema only on first access."""
+
+    def __getitem__(self, key: str) -> Dict[str, Any]:
+        return _get_config_schema()[key]
+
+    def __iter__(self):
+        return iter(_get_config_schema())
+
+    def __len__(self) -> int:
+        return len(_get_config_schema())
+
+    def items(self):
+        return _get_config_schema().items()
+
+    def keys(self):
+        return _get_config_schema().keys()
+
+    def values(self):
+        return _get_config_schema().values()
+
+
+CONFIG_SCHEMA: Mapping[str, Dict[str, Any]] = _LazyConfigSchema()
 
 
 class ConfigUpdate(BaseModel):
@@ -3495,12 +3579,12 @@ async def get_config(profile: Optional[str] = None):
 
 @app.get("/api/config/defaults")
 async def get_defaults():
-    return DEFAULT_CONFIG
+    return _default_config()
 
 
 @app.get("/api/config/schema")
 async def get_schema():
-    return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
+    return {"fields": _get_config_schema(), "category_order": _CATEGORY_ORDER}
 
 
 _EMPTY_MODEL_INFO: dict = {
@@ -4099,11 +4183,11 @@ def _catalog_provider_env_metadata() -> dict:
     # promoted into a provider card. Copilot lists GITHUB_TOKEN among its auth
     # aliases, but its provider card uses the provider-owned COPILOT_GITHUB_TOKEN.
     try:
-        from hermes_cli.config import OPTIONAL_ENV_VARS as _OPT
+        opt = _optional_env_vars()
     except Exception:
-        _OPT = {}
+        opt = {}
     _non_provider_keys = {
-        k for k, v in _OPT.items()
+        k for k, v in opt.items()
         if (v or {}).get("category") and (v or {}).get("category") != "provider"
     }
 
@@ -4196,7 +4280,7 @@ async def get_env_vars(profile: Optional[str] = None):
         }
 
     result = {}
-    for var_name, info in OPTIONAL_ENV_VARS.items():
+    for var_name, info in _optional_env_vars().items():
         result[var_name] = _row(var_name, info)
     # Synthesize rows for catalog provider env vars that have no hand entry in
     # OPTIONAL_ENV_VARS — these are the providers that were CLI-configurable but
@@ -4818,7 +4902,7 @@ def _discover_platform_env_vars(platform_id: str) -> tuple[str, ...]:
     """All messaging-category env vars for a platform (override + plugin + prefix)."""
     prefixes = _platform_env_prefixes(platform_id)
     keys: list[str] = []
-    for name, info in OPTIONAL_ENV_VARS.items():
+    for name, info in _optional_env_vars().items():
         if info.get("category") != "messaging":
             continue
         if name in _MESSAGING_KEYS_PAGE_KEYS:
@@ -4886,7 +4970,7 @@ def _catalog_lookup(platform_id: str) -> dict[str, Any] | None:
 
 
 def _messaging_env_info(key: str) -> dict[str, Any]:
-    info = OPTIONAL_ENV_VARS.get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
+    info = _optional_env_vars().get(key) or _MESSAGING_ENV_FALLBACKS.get(key) or {}
     return {
         "description": info.get("description", ""),
         "prompt": info.get("prompt", key),

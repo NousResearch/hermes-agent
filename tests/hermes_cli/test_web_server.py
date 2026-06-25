@@ -215,6 +215,29 @@ class TestSessionTokenInjection:
         assert ws._SESSION_TOKEN and len(ws._SESSION_TOKEN) >= 32
 
 
+class TestConfigImportLaziness:
+    def test_reload_defers_config_import_until_first_use(self, monkeypatch):
+        import builtins
+        import importlib
+        import hermes_cli.web_server as ws
+
+        real_import = builtins.__import__
+        sys.modules.pop("hermes_cli.config", None)
+        seen = {"config": False}
+
+        def _guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == "hermes_cli.config":
+                seen["config"] = True
+                raise AssertionError("web_server eagerly imported hermes_cli.config")
+            return real_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr(builtins, "__import__", _guarded_import)
+        importlib.reload(ws)
+
+        assert seen["config"] is False
+        assert "hermes_cli.config" not in sys.modules
+
+
 # ---------------------------------------------------------------------------
 # web_server tests (FastAPI endpoints)
 # ---------------------------------------------------------------------------

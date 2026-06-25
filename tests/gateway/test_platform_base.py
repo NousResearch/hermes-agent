@@ -795,6 +795,29 @@ class TestMediaDeliveryPathValidation:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
 
+    def test_recency_trust_denies_mcp_tokens_even_when_fresh(self, tmp_path, monkeypatch):
+        """MCP OAuth tokens under ~/.hermes/mcp-tokens/ are rewritten in place
+        on refresh, so their mtime is ~now on every turn — exactly the case the
+        recency window would otherwise re-trust (cf. the google_token.json
+        re-send exploit). The credential denylist must win over recency trust.
+        """
+        self._patch_roots(monkeypatch)
+        monkeypatch.delenv("HERMES_MEDIA_ALLOW_DIRS", raising=False)
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_FILES", "1")
+        monkeypatch.setenv("HERMES_MEDIA_TRUST_RECENT_SECONDS", "600")
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        mcp_tokens = hermes_dir / "mcp-tokens"
+        mcp_tokens.mkdir(parents=True)
+        token = mcp_tokens / "github.json"
+        token.write_text('{"access_token": "gho_***"}')  # mtime = now -> "recent"
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
+
     def test_recency_trust_allows_pdf_in_project_dir(self, tmp_path, monkeypatch):
         """The motivating case: agent produces a PDF in a project directory.
 
@@ -1021,6 +1044,28 @@ class TestMediaDeliveryDefaultMode:
         pairing.mkdir(parents=True)
         token = pairing / "telegram-approved.json"
         token.write_text('{"approved": ["123"]}')
+        monkeypatch.setenv("HOME", str(fake_home))
+        monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
+        monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(token)) is None
+
+    def test_denylist_blocks_mcp_tokens_directory_contents(self, tmp_path, monkeypatch):
+        """Files under ~/.hermes/mcp-tokens/ hold per-server MCP OAuth tokens
+        and must not be deliverable. The read guard (get_read_block_error) and
+        the write guard (is_write_denied) in agent/file_safety.py already block
+        this tree; the delivery denylist mirrors them so an
+        ``MEDIA:~/.hermes/mcp-tokens/github.json`` tag can't exfiltrate the
+        token JSON to a chat platform as a native attachment.
+        """
+        self._patch_roots(monkeypatch)
+
+        fake_home = tmp_path / "home"
+        hermes_dir = fake_home / ".hermes"
+        mcp_tokens = hermes_dir / "mcp-tokens"
+        mcp_tokens.mkdir(parents=True)
+        token = mcp_tokens / "github.json"
+        token.write_text('{"access_token": "gho_***", "refresh_token": "ghr_***"}')
         monkeypatch.setenv("HOME", str(fake_home))
         monkeypatch.setattr("gateway.platforms.base._HERMES_HOME", hermes_dir)
         monkeypatch.setattr("gateway.platforms.base._HERMES_ROOT", hermes_dir)

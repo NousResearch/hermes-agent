@@ -1096,12 +1096,15 @@ def _media_delivery_denied_paths() -> List[Path]:
         # Bitwarden Secrets Manager plaintext disk cache.
         os.path.join("cache", "bws_cache.json"),
     )
-    # Directory trees whose every child is credential material. (MCP OAuth
-    # tokens under mcp-tokens/ are handled by the sibling targeted PR #37222;
-    # session/kanban SQLite stores by #41071 — kept out of this diff to avoid
-    # overlap.)
+    # Directory trees whose every child is credential material. ``mcp-tokens/``
+    # holds per-server MCP OAuth tokens; it mirrors the read guard
+    # (get_read_block_error) and the write guard (is_write_denied) in
+    # agent/file_safety.py, both of which already block the whole tree, so the
+    # delivery side must not trail them. (Session/kanban SQLite stores are
+    # handled by the sibling PR #41071 — kept out of this diff to avoid overlap.)
     _ROOT_CREDENTIAL_DIRS = (
         "pairing",
+        "mcp-tokens",
     )
     for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
         for rel in _ROOT_CREDENTIAL_FILES:

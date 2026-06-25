@@ -333,6 +333,29 @@ PORT_BINDING_PLATFORM_VALUES = frozenset({
     "line",
 })
 
+# Platforms whose port-binding status depends on connection mode. Feishu in
+# websocket mode (its default) uses an outbound long connection — no listener.
+# Only webhook/callback mode binds a port. Maps platform value → the mode
+# value that actually binds (#52563).
+PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {
+    "feishu": "webhook",
+}
+
+
+def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
+    """Return True when *platform_value* actually binds a port for *extra* config.
+
+    Mode-conditional platforms (Feishu) only bind in their listener mode;
+    everything else in ``PORT_BINDING_PLATFORM_VALUES`` always binds.
+    """
+    if platform_value not in PORT_BINDING_PLATFORM_VALUES:
+        return False
+    expected_mode = PORT_BINDING_CONDITIONAL_MODES.get(platform_value)
+    if expected_mode is not None:
+        actual = str((extra or {}).get("connection_mode", "websocket")).strip().lower()
+        return actual == expected_mode
+    return True
+
 
 @dataclass
 class HomeChannel:

@@ -85,8 +85,8 @@ cronjob(
 
 或显式指定目标 topic：
 
-```python
-send_message(target="ntfy:alerts-channel", message="Done!")
+```bash
+hermes send --to ntfy:alerts-channel "Done!"
 ```
 
 即使 cron 在 gateway 进程外运行，此功能也有效——插件注册了一个 `standalone_sender_fn`，会自行建立 HTTP 连接。

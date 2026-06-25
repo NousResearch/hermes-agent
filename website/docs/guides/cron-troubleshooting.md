@@ -115,7 +115,7 @@ Skill names are case-sensitive and must match the installed skill's folder name.
 
 ### Check 3: Skills that require interactive tools
 
-Cron jobs run with the `cronjob`, `messaging`, and `clarify` toolsets disabled. This prevents recursive cron creation, direct message sending (delivery is handled by the scheduler), and interactive prompts. If a skill relies on these toolsets, it won't work in a cron context.
+Cron jobs run with the `cronjob` and `clarify` toolsets disabled. This prevents recursive cron creation and interactive prompts. Cron output delivery is handled by the scheduler via the job's `deliver` setting; there is no agent-callable `send_message` tool in cron context.
 
 Check the skill's documentation to confirm it works in non-interactive (headless) mode.
 

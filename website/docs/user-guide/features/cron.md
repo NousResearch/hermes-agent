@@ -22,13 +22,7 @@ Cron jobs can:
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
 :::tip
-**Which model does a cron job run on?** Resolution at fire time is: per-job pin → `cron.model` in `config.yaml` → the global default from `hermes model`.
-
-- **Per-job pin** — set by *you* via the dashboard, `hermes cron create/edit --model … --provider …`, or by editing `~/.hermes/cron/jobs.json`. Once set, it sticks until you change it. The agent's `cronjob` tool cannot set or change per-job models — inference pins are user-owned.
-- **`cron.model` / `cron.model_provider`** — a cron-fleet default: every unpinned job runs on this model, independent of your chat model. Set it once (`hermes config set cron.model <name>`) and switching your chat model with `hermes model` or `/model` never touches your cron fleet.
-- **Global default** — only when neither of the above is set does a job follow `hermes model`. In this case Hermes **snapshots** the provider and model at creation, and if the global default later changes the job **fails closed**: it skips the run, makes no inference call, and alerts you to pin the provider/model explicitly (#44585). This prevents an unattended job from silently inheriting a switch to a paid provider/model. Setting `cron.model` (or a per-job pin) is the deliberate way to route cron spend, and the drift guard does not engage for an axis covered by it. Operators who instead want unpinned jobs to track the changing global default can [disable the drift guard](#letting-unpinned-jobs-track-global-defaults).
-
-`hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
+At creation, an unpinned job (one you don't give an explicit `provider`/`model`) follows the global default selected by `hermes model` — and Hermes **snapshots** that provider and model on the job. If the global default later changes, the job **fails closed**: it skips the run, makes no inference call, and sends an alert telling you to pin the provider/model explicitly (`cronjob action=update job_id=… provider=… model=…`) to proceed. This prevents an unattended job from silently inheriting a switch to a paid provider/model and spending money you didn't intend (#44585). To make a job deliberately track your global default, pin it to the new values after changing them. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
 :::
 
 :::warning
@@ -66,60 +60,6 @@ Every morning at 9am, check Hacker News for AI news and send me a summary on Tel
 ```
 
 Hermes will use the unified `cronjob` tool internally.
-
-## Pre-dispatch configuration validation
-
-Before constructing any agent machinery for a scheduled run, the scheduler
-validates that the job's configuration can actually produce a successful run:
-
-- the provider API key resolves (skipped when a `fallback_providers` chain is
-  configured, since the fallback path may rescue a missing primary key),
-- attached skills are ready (no missing required environment variables,
-  commands, or credential files),
-- delivery platform targets are known and have gateway credentials configured
-  (`local`/`origin` targets are never checked).
-
-When validation fails, the job's `last_status` becomes `blocked_config`, ONE
-alert is delivered (it is not repeated every tick), and **no LLM call is
-made** — a misconfigured job never spends tokens. The next healthy run clears
-the blocked state so a future configuration break alerts again.
-
-To disable the validation and restore the old behavior (the run proceeds and
-fails during execution):
-
-```yaml
-cron:
-  preflight: false
-```
-
-Or: `hermes config set cron.preflight false`
-
-## Letting unpinned jobs track global defaults
-
-The model/provider drift guard is enabled by default. If your unpinned cron
-jobs should deliberately follow every global model or provider change, disable
-it in `config.yaml`:
-
-```yaml
-cron:
-  model_drift_guard: false
-```
-
-Or use the config command:
-
-```bash
-hermes config set cron.model_drift_guard false
-```
-
-This disables both the runtime block and the warning shown when global
-inference settings change. Existing snapshots remain stored, so setting the
-option back to `true` re-enables protection without recreating jobs.
-
-:::warning
-With the guard disabled, unattended unpinned jobs immediately inherit changed
-global defaults. A switch to a paid provider or model can therefore spend money
-on every scheduled run.
-:::
 
 ## Skill-backed cron jobs
 
@@ -285,20 +225,6 @@ On each tick Hermes:
 
 A file lock at `~/.hermes/cron/.tick.lock` prevents overlapping scheduler ticks from double-running the same job batch.
 
-### Execution history
-
-Hermes records each claimed cron attempt in the profile-local
-`~/.hermes/cron/executions.db` before executor or provider dispatch. Attempts
-move through `claimed`, `running`, and one immutable terminal state:
-`completed`, `failed`, or `unknown`. After restart, Hermes marks an abandoned
-attempt `unknown` only when the original PID and process-start fingerprint prove
-that its owner is gone. Unknown attempts are audit records and are never
-automatically rerun.
-
-Inspect recent attempts with `hermes cron runs [job-id] --limit 20` (alias:
-`history`). Terminal history is bounded; active attempts are never pruned. The
-ledger is included in quick backups.
-
 ## Delivery options
 
 When scheduling jobs, you specify where the output goes:
@@ -330,7 +256,7 @@ When scheduling jobs, you specify where the output goes:
 | `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
 | `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
-The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
+The agent's final response is automatically delivered. You do not need an agent-callable messaging tool in the cron prompt.
 
 ### Routing intent (`all`)
 
@@ -405,63 +331,6 @@ explicit other-chat deliveries) are never made continuable. The mirror is
 written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
 the conversation history alternation-safe across all model providers.
 
-#### Flat, in-channel continuation (Slack)
-
-The thread-preferred behaviour above mints a dedicated thread on every
-delivery. If you'd rather have a continuable job land **flat in the channel
-timeline** — no thread — set the Slack **continuable surface** to `in_channel`:
-
-```yaml
-# ~/.hermes/config.yaml
-slack:
-  cron_continuable_surface: in_channel   # default: thread
-  reply_in_thread: false                 # required pairing (see below)
-  require_mention: false                 # so a plain reply continues the job
-```
-
-In `in_channel` mode the brief is delivered as an ordinary top-level channel
-message (no thread is opened), and your reply continues the job via the
-channel's shared session. Three settings work together:
-
-- **`cron_continuable_surface: in_channel`** — skips thread creation on delivery.
-- **`reply_in_thread: false`** (required) — makes the bot answer your reply
-  *flat* in the channel and key it to the same whole-channel session the brief
-  was seeded into. Without it the continuation still works but arrives in a
-  thread (it falls back safely to thread-style continuation, never a dropped
-  reply — the gateway logs a warning at startup so you can spot the mismatch).
-- **`require_mention: false`** (or add the channel to `free_response_channels`)
-  — so you can reply with a plain message; otherwise the bot only wakes when you
-  `@`-mention it on each reply.
-
-Because the continuation is the **whole-channel** session, it is shared: other
-chatter in the channel — and a second continuable in-channel job — join the same
-rolling conversation. That is inherent to "flat in a channel" and is the same
-tradeoff `reply_in_thread: false` users already accept; use the default
-`thread` surface when you want each delivery's follow-up isolated.
-
-This is a Slack capability today. Other platforms accept the key but fall back
-to the `thread` surface (their continuation primitives differ); the choice is
-per-platform, set under each platform's config. It's a gateway-side config flag
-— a `/restart` picks it up; no Slack app reinstall is needed.
-
-:::note 1:1 DMs
-`cron_continuable_surface` is a **channel** setting — a 1:1 DM has no
-thread-vs-timeline split to choose between (the DM is already flat), so the key
-has no effect there. What governs whether a DM cron delivery is continuable is
-the separate, pre-existing knob **`slack.dm_top_level_threads_as_sessions`**:
-
-- **`false`** — all top-level DMs share one rolling DM session, so a continuable
-  cron brief and your reply land in the **same** session and the job continues in
-  context. This is what you want for continuable cron in a DM.
-- **`true`** (default) — each top-level DM message is its own session, so a reply
-  to a delivered brief starts a *fresh* session that has no record of the brief.
-  Continuation does not work in this mode (for cron or any other flat delivery).
-
-So for a continuable cron job delivered to a 1:1 DM, set
-`slack.dm_top_level_threads_as_sessions: false`. `cron_continuable_surface` is
-not required (and is ignored) for DMs.
-:::
-
 ### Silent suppression
 
 If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.
@@ -477,15 +346,15 @@ Failed jobs always deliver regardless of the `[SILENT]` marker — only successf
 
 ## Script timeout
 
-Pre-run scripts (attached via the `script` parameter) have a default timeout of 3600 seconds (1 hour). This bounds the **script only** — skill-based / LLM-driven jobs run on a separate inactivity budget and are not capped by this value. If your scripts need a different limit, you can change it:
+Pre-run scripts (attached via the `script` parameter) have a default timeout of 120 seconds. If your scripts need longer — for example, to include randomized delays that avoid bot-like timing patterns — you can increase this:
 
 ```yaml
 # ~/.hermes/config.yaml
 cron:
-  script_timeout_seconds: 1800   # 30 minutes
+  script_timeout_seconds: 300   # 5 minutes
 ```
 
-Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 3600s default.
+Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 120s default.
 
 ## No-agent mode (script-only jobs)
 
@@ -507,7 +376,7 @@ Semantics:
 - `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
 - No tokens, no model, no provider fallback — the job never touches the inference layer.
 
-`.sh` / `.bash` files run under `bash` from `PATH` when available, otherwise `/bin/bash` (important on Windows Git Bash). Anything else runs under the current Python interpreter (`sys.executable`). Scripts must resolve inside `$HERMES_HOME/scripts/` — relative names, absolute paths, and `~`-prefixed paths are accepted when the resolved target stays in that directory; paths that escape it are rejected. Subprocess env is sanitized (`_sanitize_subprocess_env`): provider API credentials and other Hermes-managed secrets are **not** inherited by cron scripts.
+`.sh` / `.bash` files run under `/bin/bash`; anything else under the current Python interpreter (`sys.executable`). Scripts must live in `~/.hermes/scripts/` (same sandboxing rule as the pre-run script gate).
 
 ### The agent sets these up for you
 
@@ -595,7 +464,7 @@ This means cron jobs that run at high frequency or during peak hours are more re
 
 ## Schedule formats
 
-The agent's final response is automatically delivered to the job's `deliver:` target — the agent no longer fires messages itself, so the user-facing content simply goes in the final response. To deliver to **additional or different** targets, list multiple `deliver:` targets on the cron job (comma-separated, e.g. `deliver: "telegram,discord"`) rather than having the agent send them.
+The agent's final response is automatically delivered — you do **not** need an agent-callable messaging tool in the cron prompt. For additional destinations, configure the cron job's `deliver` field instead of asking the model to send messages itself.
 
 ### Relative delays (one-shot)
 
@@ -664,30 +533,6 @@ cronjob(action="remove", job_id="...")
 
 For `update`, pass `skills=[]` to remove all attached skills.
 
-### Manual runs are asynchronous
-
-`cronjob(action="run")` fires the job immediately **in the background** (like
-`delegate_task`): the tool call returns at once with a handle, and the job's
-outcome — success/failure, delivery target, next scheduled run, and an output
-excerpt — re-enters the conversation as a new message when the run finishes.
-The agent (and you) can keep working in the meantime, and a job that is
-already mid-run is refused with "already running" instead of double-firing.
-
-You can also pass `prompt` with `action="run"` to inject transient per-run
-context:
-
-```python
-cronjob(action="run", job_id="...", prompt="CONTEXT: focus on the EU region today")
-```
-
-The context is appended to the job's stored prompt under a `## Run Context`
-header for that single fire only — it is never persisted to the job
-definition, and it passes the same prompt-injection scan as stored prompts.
-
-Runtimes that can't receive detached results (one-shot `hermes -z`, `hermes
-cron run` from the CLI, cron child sessions, Kanban workers) fall back to
-synchronous execution automatically.
-
 ## Toolsets available to cron jobs
 
 Cron runs each job in a fresh agent session with no chat platform attached. By default the cron agent gets **the toolset you configured for the `cron` platform in `hermes tools`** — not the CLI default, not everything under the sun.
@@ -707,7 +552,7 @@ cronjob(action="create", name="weekly-news-summary",
         prompt="Summarize this week's AI news: ...")
 ```
 
-When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. This matters for cost control: carrying `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
+When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. This matters for cost control: carrying `moa`, `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
 
 ### Skipping the agent entirely: `wakeAgent`
 
@@ -829,12 +674,6 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 ## Job storage
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
-
-Job definitions are plain JSON on disk: they survive `hermes update`, gateway restarts, and machine reboots. A job that was mid-run during a restart is marked `unknown` in the execution ledger — it is not automatically retried, but the job's next scheduled tick fires normally. See [Execution history](#execution-history) for details.
-
-:::tip
-Ask the agent to manage jobs through the `cronjob` tool, `hermes cron edit`, or `/cron` — not by patching `jobs.json` directly. Direct edits can fail silently when [file write safety](../security.md#file-write-safety) blocks the path (for example when `HERMES_WRITE_SAFE_ROOT` is set), and the [file-mutation verifier](../configuration.md#file-mutation-verifier) footer is the authoritative signal that nothing was saved.
-:::
 
 Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
 

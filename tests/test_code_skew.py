@@ -107,3 +107,132 @@ class TestBootstrapBytecodePurge:
 
         assert gateway_bootstrap.purge_stale_gateway_pycache_before_import() is True
         assert not stale_pyc.exists()
+    def test_guard_falls_back_to_manual_when_restart_fails(self, monkeypatch):
+        """If request_restart returns False (e.g. already restarting), the
+        guard falls back to the manual restart message."""
+        from gateway import slash_commands
+
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
+
+        class FakeRunner:
+            def request_restart(self, *, detached=False, via_service=False):
+                return False  # restart already in progress
+
+        msg = slash_commands._model_switch_skew_guard(runner=FakeRunner())
+        assert msg is not None
+        assert "hermes gateway restart" in msg  # manual fallback
+
+    def test_guard_falls_back_to_manual_without_runner(self, monkeypatch):
+        """Without a runner, the guard returns the manual restart message
+        (preserving backwards compatibility for any caller not yet passing one)."""
+        from gateway import slash_commands
+
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
+        msg = slash_commands._model_switch_skew_guard()
+        assert msg is not None
+        assert "hermes gateway restart" in msg
+
+    def test_guard_passes_correct_restart_flags_for_env(self, monkeypatch):
+        """The guard must mirror _handle_restart_command's environment
+        detection: under launchd/systemd or in a container, use the service
+        path (via_service=True); otherwise detached=True. The defaults
+        (detached=False, via_service=False) match neither path and can
+        leave the gateway stopped instead of restarted."""
+        from gateway import slash_commands
+
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
+
+        calls = []
+
+        class FakeRunner:
+            def request_restart(self, *, detached=False, via_service=False):
+                calls.append((detached, via_service))
+                return True
+
+        # Simulate macOS launchd (XPC_SERVICE_NAME set, not "0")
+        monkeypatch.setenv("XPC_SERVICE_NAME", "com.apple.xpc.launchd")
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        slash_commands._model_switch_skew_guard(runner=FakeRunner())
+        assert calls == [(False, True)], f"service path expected, got {calls}"
+
+        # Simulate plain shell (no service manager) → detached path
+        calls.clear()
+        monkeypatch.delenv("XPC_SERVICE_NAME", raising=False)
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
+        slash_commands._model_switch_skew_guard(runner=FakeRunner())
+        assert calls == [(True, False)], f"detached path expected, got {calls}"
+
+
+class TestPurgeStalePycache:
+    """Tests for purge_stale_pycache — purging __pycache__ when the checkout
+    advanced between the previous gateway boot and the current one."""
+
+    def test_no_purge_when_previous_fingerprint_missing(self, monkeypatch, tmp_path):
+        """No persisted fingerprint file → nothing to compare → no purge."""
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:abc1234567")
+        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: tmp_path / "nonexistent")
+        monkeypatch.setattr(code_skew, "_PROJECT_ROOT", tmp_path)
+        assert code_skew.purge_stale_pycache() is False
+
+    def test_no_purge_when_fingerprints_match(self, monkeypatch, tmp_path):
+        """Same checkout as previous boot → no drift → no purge."""
+        fp_file = tmp_path / ".gateway_boot_fingerprint"
+        fp_file.write_text("git:refs/heads/main:abc1234567")
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:abc1234567")
+        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: fp_file)
+        monkeypatch.setattr(code_skew, "_PROJECT_ROOT", tmp_path)
+        assert code_skew.purge_stale_pycache() is False
+
+    def test_purges_pyc_files_on_drift(self, monkeypatch, tmp_path):
+        """Drift detected → .pyc files inside __pycache__ are deleted."""
+        fp_file = tmp_path / ".gateway_boot_fingerprint"
+        fp_file.write_text("git:refs/heads/main:oldhash123")
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:newhash456")
+        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: fp_file)
+        monkeypatch.setattr(code_skew, "_PROJECT_ROOT", tmp_path)
+
+        # Create a fake __pycache__ with .pyc files
+        pycache = tmp_path / "gateway" / "__pycache__"
+        pycache.mkdir(parents=True)
+        (pycache / "slash_commands.cpython-311.pyc").write_bytes(b"stale bytecode")
+        (pycache / "run.cpython-311.pyc").write_bytes(b"stale bytecode")
+
+        assert code_skew.purge_stale_pycache() is True
+        assert not (pycache / "slash_commands.cpython-311.pyc").exists()
+        assert not (pycache / "run.cpython-311.pyc").exists()
+
+    def test_skips_venv_pycache(self, monkeypatch, tmp_path):
+        """.pyc inside .venv are not purged (they're managed by pip)."""
+        fp_file = tmp_path / ".gateway_boot_fingerprint"
+        fp_file.write_text("git:refs/heads/main:oldhash123")
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: "git:refs/heads/main:newhash456")
+        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: fp_file)
+        monkeypatch.setattr(code_skew, "_PROJECT_ROOT", tmp_path)
+
+        venv_pycache = tmp_path / ".venv" / "lib" / "__pycache__"
+        venv_pycache.mkdir(parents=True)
+        (venv_pycache / "site.cpython-311.pyc").write_bytes(b"should not be touched")
+
+        code_skew.purge_stale_pycache()
+        assert (venv_pycache / "site.cpython-311.pyc").exists()
+
+    def test_no_purge_when_fingerprint_unreadable(self, monkeypatch, tmp_path):
+        """If _fingerprint returns None (non-git), no purge."""
+        monkeypatch.setattr(code_skew, "_fingerprint", lambda: None)
+        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: tmp_path / "x")
+        monkeypatch.setattr(code_skew, "_PROJECT_ROOT", tmp_path)
+        assert code_skew.purge_stale_pycache() is False
+
+
+class TestPersistBootFingerprint:
+    def test_persists_fingerprint_to_file(self, monkeypatch, tmp_path):
+        fp_file = tmp_path / ".gateway_boot_fingerprint"
+        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: fp_file)
+        code_skew._persist_boot_fingerprint("git:refs/heads/main:abcdef1234")
+        assert fp_file.read_text() == "git:refs/heads/main:abcdef1234"
+
+    def test_does_not_persist_none(self, monkeypatch, tmp_path):
+        fp_file = tmp_path / ".gateway_boot_fingerprint"
+        monkeypatch.setattr(code_skew, "_fingerprint_file", lambda: fp_file)
+        code_skew._persist_boot_fingerprint(None)
+        assert not fp_file.exists()

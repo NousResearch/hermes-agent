@@ -37,6 +37,8 @@ class AccountUsageSnapshot:
     fetched_at: datetime
     title: str = "Account limits"
     plan: Optional[str] = None
+    account_id: Optional[str] = None
+    account_label: Optional[str] = None
     windows: tuple[AccountUsageWindow, ...] = ()
     details: tuple[str, ...] = ()
     unavailable_reason: Optional[str] = None
@@ -438,9 +440,19 @@ def _resolve_codex_usage_url(base_url: str) -> str:
 
 def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
+    account_id = None
+    account_label = None
+    try:
+        token_data = _read_codex_tokens()
+        tokens = token_data.get("tokens") or {}
+        account_id = str(tokens.get("account_id", "") or "").strip() or None
+        account_label = str(token_data.get("label", "") or "").strip() or None
+    except Exception:
+        # Pool-only Codex credentials may not have a singleton token record.
+        # Quota fetching should still work; the account metadata simply remains
+        # absent unless the usage payload itself includes it.
+        account_id = None
+        account_label = None
     headers = {
         "Authorization": f"Bearer {creds['api_key']}",
         "Accept": "application/json",
@@ -452,6 +464,17 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
         response = client.get(_resolve_codex_usage_url(creds.get("base_url", "")), headers=headers)
         response.raise_for_status()
     payload = response.json() or {}
+    account = payload.get("account") or {}
+    if not account_id:
+        account_id = str(payload.get("account_id") or account.get("id") or "").strip() or None
+    if not account_label:
+        account_label = str(
+            payload.get("account_label")
+            or account.get("label")
+            or account.get("name")
+            or account.get("email")
+            or ""
+        ).strip() or None
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
     for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
@@ -479,6 +502,8 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
         source="usage_api",
         fetched_at=_utc_now(),
         plan=_title_case_slug(payload.get("plan_type")),
+        account_id=account_id,
+        account_label=account_label,
         windows=tuple(windows),
         details=tuple(details),
     )

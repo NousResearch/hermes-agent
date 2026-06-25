@@ -275,9 +275,12 @@ export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
 }
 
 export function getCodexUsage(): Promise<CodexUsageResponse> {
+  const scoped = profileScoped()
+  const profileParam = scoped.profile ? `?profile=${encodeURIComponent(scoped.profile)}` : ''
+
   return window.hermesDesktop.api<CodexUsageResponse>({
-    ...profileScoped(),
-    path: '/api/codex/usage'
+    ...scoped,
+    path: `/api/codex/usage${profileParam}`
   })
 }
 

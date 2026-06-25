@@ -58,14 +58,14 @@ describe('Hermes REST session helpers', () => {
     })
   })
 
-  it('routes Codex usage through the active profile backend', async () => {
+  it('routes Codex usage through the active profile backend and query scope', async () => {
     api.mockResolvedValue({ available: false, details: [], provider: 'openai-codex', windows: [] })
     setApiRequestProfile('acewill-dev')
 
     await getCodexUsage()
 
     expect(api).toHaveBeenCalledWith({
-      path: '/api/codex/usage',
+      path: '/api/codex/usage?profile=acewill-dev',
       profile: 'acewill-dev'
     })
   })

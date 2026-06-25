@@ -51,12 +51,21 @@ export const CodexQuotaCard: FC<CodexQuotaCardProps> = ({ enabled, profile, prov
 
   const windows = data.windows ?? []
   const plan = data.plan ? ` · ${data.plan}` : ''
+  const accountDisplay = formatAccountDisplay(data.account_label, data.account_id)
 
   return (
     <div className="min-w-52 max-w-64 select-none px-3 py-2.5 text-xs">
       {/* Header */}
       <div className="mb-2 flex items-center gap-1.5 text-(--ui-text-secondary)">
         <span className="font-medium">OpenAI Codex{plan}</span>
+      </div>
+
+      {/* Current routing context. Values intentionally wrap instead of truncating. */}
+      <div className="mb-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5 rounded-md bg-(--ui-control-background) px-2 py-1.5 text-[0.65rem] leading-snug">
+        <span className="text-(--ui-text-tertiary)">Profile</span>
+        <span className="break-all text-(--ui-text-secondary)">{normalizedProfile}</span>
+        <span className="text-(--ui-text-tertiary)">Account</span>
+        <span className="break-all text-(--ui-text-secondary)">{accountDisplay}</span>
       </div>
 
       {/* Rate-limit windows */}
@@ -117,6 +126,17 @@ function normalizeProvider(value: string): string {
   return String(value || '')
     .trim()
     .toLowerCase()
+}
+
+function formatAccountDisplay(label?: null | string, accountId?: null | string): string {
+  const cleanLabel = String(label || '').trim()
+  const cleanId = String(accountId || '').trim()
+
+  if (cleanLabel && cleanId && cleanLabel !== cleanId) {
+    return `${cleanLabel} (${cleanId})`
+  }
+
+  return cleanLabel || cleanId || 'Unknown'
 }
 
 function clampPercent(value: number): number {

@@ -1,4 +1,4 @@
-import { cleanup, render } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
@@ -45,5 +45,33 @@ describe('CodexQuotaCard', () => {
         queryKey: ['codex-usage', 'default', 'anthropic']
       })
     )
+  })
+
+  it('renders the full active profile and Codex account identity', () => {
+    const fullAccountId = 'acct_user_01JYQ4ZLONGFULLACCOUNTIDENTIFIER_abcdef1234567890'
+
+    mocks.useQuery.mockReturnValue({
+      isPending: false,
+      data: {
+        account_id: fullAccountId,
+        account_label: 'work-codex-account',
+        available: true,
+        details: [],
+        error: null,
+        fetched_at: '2026-06-25T12:00:00Z',
+        plan: 'Prolite',
+        provider: 'openai-codex',
+        source: 'usage_api',
+        title: 'OpenAI Codex quota',
+        windows: []
+      }
+    })
+
+    render(<CodexQuotaCard enabled profile="acewill-dev" provider="openai-codex" />)
+
+    expect(screen.getByText('Profile')).toBeTruthy()
+    expect(screen.getByText('acewill-dev')).toBeTruthy()
+    expect(screen.getByText('Account')).toBeTruthy()
+    expect(screen.getByText(`work-codex-account (${fullAccountId})`)).toBeTruthy()
   })
 })

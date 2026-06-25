@@ -88,20 +88,29 @@ def check_ssl(host, port=443, timeout=10):
             with ctx.wrap_socket(sock, server_hostname=host) as s:
                 cert, cipher, proto = s.getpeercert(), s.cipher(), s.version()
     except ssl.SSLCertVerificationError as e:
-        warning = str(e)
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        with socket.create_connection((host, port), timeout=timeout) as sock:
-            with ctx.wrap_socket(sock, server_hostname=host) as s:
-                cert, cipher, proto = s.getpeercert(), s.cipher(), s.version()
+        # Certificate verification failed. Return error instead of disabling verification
+        # (which would enable MITM attacks). The caller can choose to retry with
+        # explicit override if needed, but we don't silently bypass security.
+        warning = f"TLS verification failed: {e}"
+        cert = {
+            "subject": [[("CN", f"VERIFICATION_FAILED")]],
+            "issuer": [[("CN", "VERIFICATION_FAILED")]],
+            "notBefore": "",
+            "notAfter": "",
+            "serialNumber": "",
+            "subjectAltName": [],
+        }
+        cipher = None
+        proto = None
 
     not_after = parse_date(cert.get("notAfter", ""))
     now = datetime.now(timezone.utc)
     days = (not_after - now).days if not_after else None
     is_expired = days is not None and days < 0
 
-    if is_expired:
+    if warning:
+        status = f"VERIFICATION FAILED — {warning}"
+    elif is_expired:
         status = f"EXPIRED ({abs(days)} days ago)"
     elif days is not None and days <= 14:
         status = f"CRITICAL — {days} day(s) left"
@@ -269,16 +278,15 @@ def check_available(domain):
     signals["dns_ns"] = ns
     dns_exists = bool(a or ns)
 
-    # SSL
+    # SSL — check if domain has valid SSL certificate (with proper verification)
     ssl_up = False
     try:
-        ctx = ssl.create_default_context()
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
+        ctx = ssl.create_default_context()  # Uses system CA bundle by default
         with socket.create_connection((domain, 443), timeout=3) as s:
             with ctx.wrap_socket(s, server_hostname=domain):
                 ssl_up = True
-    except Exception:
+    except (ssl.SSLError, ssl.SSLCertVerificationError, OSError):
+        # SSL connection or certificate verification failed; mark as down
         pass
     signals["ssl_reachable"] = ssl_up
 

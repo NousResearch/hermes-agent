@@ -2272,6 +2272,10 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
     structured ``{urls, failures, redacted, ...}`` payload directly. The
     dashboard renders those as real, copyable links instead of scraping a log
     tail. Pastes auto-delete after 6 hours (handled inside the share core).
+
+    SECURITY: Redaction is ALWAYS enabled for this endpoint to prevent
+    accidental credential leakage in shared logs. The redact field in the
+    request is ignored; sensitive data is always scrubbed before upload.
     """
     from hermes_cli.debug import build_debug_share
 
@@ -2280,7 +2284,7 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
         result = await asyncio.to_thread(
             build_debug_share,
             log_lines=max(1, min(int(req.lines), 5000)),
-            redact=bool(req.redact),
+            redact=True,  # Always redact; client cannot opt-out
         )
     except RuntimeError as exc:
         # Required summary-report upload failed (offline / paste service down).
@@ -11808,19 +11812,23 @@ def mount_spa(application: FastAPI):
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         gated_js = "true" if gated else "false"
+        # Escape prefix and token using json.dumps() to prevent XSS via unescaped
+        # quotes or special characters in JavaScript string context
+        prefix_escaped = json.dumps(prefix)
+        token_escaped = json.dumps(_SESSION_TOKEN)
         if gated:
             bootstrap_script = (
                 f"<script>"
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-                f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_BASE_PATH__={prefix_escaped};"
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
                 f"</script>"
             )
         else:
             bootstrap_script = (
-                f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+                f"<script>window.__HERMES_SESSION_TOKEN__={token_escaped};"
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-                f'window.__HERMES_BASE_PATH__="{prefix}";'
+                f"window.__HERMES_BASE_PATH__={prefix_escaped};"
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
                 f"</script>"
             )

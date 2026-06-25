@@ -816,9 +816,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         delivery_content = (
             f"Cronjob Response: {task_name}\n"
             f"(job_id: {job_id})\n"
-            f"-------------\n\n"
+            "-------------\n\n"
             f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
+            "To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
         )
     else:
         delivery_content = content
@@ -1220,7 +1220,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         path.relative_to(scripts_dir_resolved)
     except ValueError:
         return False, (
-            f"Blocked: script path resolves outside the scripts directory "
+            "Blocked: script path resolves outside the scripts directory "
             f"({scripts_dir_resolved}): {script_path!r}"
         )
 
@@ -1512,9 +1512,9 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     if skipped:
         notice = (
-            f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
+            "[IMPORTANT: The following skill(s) were listed for this job but could not be found "
             f"and were skipped: {', '.join(skipped)}. "
-            f"Start your response with a brief notice so the user is aware, e.g.: "
+            "Start your response with a brief notice so the user is aware, e.g.: "
             f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
         )
         parts.insert(0, notice)
@@ -1665,8 +1665,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
                 f"**Run Time:** {now_iso}\n"
-                f"**Mode:** no_agent (script)\n"
-                f"**Status:** script failed\n\n"
+                "**Mode:** no_agent (script)\n"
+                "**Status:** script failed\n\n"
                 f"{output}\n"
             )
             return False, doc, alert, output
@@ -1681,8 +1681,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
                 f"**Run Time:** {now_iso}\n"
-                f"**Mode:** no_agent (script)\n"
-                f"**Status:** silent (wakeAgent=false)\n"
+                "**Mode:** no_agent (script)\n"
+                "**Status:** silent (wakeAgent=false)\n"
             )
             return True, silent_doc, SILENT_MARKER, None
 
@@ -1692,8 +1692,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"# Cron Job: {job_name}\n\n"
                 f"**Job ID:** {job_id}\n"
                 f"**Run Time:** {now_iso}\n"
-                f"**Mode:** no_agent (script)\n"
-                f"**Status:** silent (empty output)\n"
+                "**Mode:** no_agent (script)\n"
+                "**Status:** silent (empty output)\n"
             )
             return True, silent_doc, SILENT_MARKER, None
 
@@ -1701,8 +1701,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             f"# Cron Job: {job_name}\n\n"
             f"**Job ID:** {job_id}\n"
             f"**Run Time:** {now_iso}\n"
-            f"**Mode:** no_agent (script)\n\n"
-            f"---\n\n"
+            "**Mode:** no_agent (script)\n\n"
+            "---\n\n"
             f"{output}\n"
         )
         return True, doc, output, None
@@ -1761,7 +1761,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             f"# Cron Job: {job_name}\n\n"
             f"**Job ID:** {job_id}\n"
             f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"**Status:** BLOCKED\n\n"
+            "**Status:** BLOCKED\n\n"
             "The assembled prompt (user prompt + loaded skill content) tripped "
             "the cron injection scanner and the agent was NOT run.\n\n"
             f"**Scanner result:** {block_exc}\n\n"
@@ -1916,7 +1916,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 f"(job.model={job.get('model')!r}, "
                 f"HERMES_MODEL={os.getenv('HERMES_MODEL', '')!r}, "
                 "config.yaml model.default missing or empty). "
-                f"Set a per-job model via "
+                "Set a per-job model via "
                 f"`cronjob action=update job_id={job_id} model=<name>` or set a "
                 "default with `hermes model <name>`."
             )
@@ -2054,12 +2054,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 job_id,
             )
             raise RuntimeError(
-                f"Skipped to prevent unintended spend: global inference config "
+                "Skipped to prevent unintended spend: global inference config "
                 f"drifted since this job was created ({_changes}), and this job "
-                f"is unpinned. No inference call was made. To run on the new "
-                f"config, pin it explicitly: `cronjob action=update "
+                "is unpinned. No inference call was made. To run on the new "
+                "config, pin it explicitly: `cronjob action=update "
                 f"job_id={job_id} provider=<provider> model=<model>` "
-                f"(or pin the original values to keep them). See #44585."
+                "(or pin the original values to keep them). See #44585."
             )
 
         fallback_model = _cfg.get("fallback_providers") or _cfg.get("fallback_model") or None
@@ -2265,7 +2265,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
         
-        output = f"""# Cron Job: {job_name}
+        output = """# Cron Job: {job_name}
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -2287,7 +2287,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
         
-        output = f"""# Cron Job: {job_name} (FAILED)
+        output = """# Cron Job: {job_name} (FAILED)
 
 **Job ID:** {job_id}
 **Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}

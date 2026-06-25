@@ -11810,11 +11810,11 @@ def mount_spa(application: FastAPI):
         gated_js = "true" if gated else "false"
         if gated:
             bootstrap_script = (
-                f"<script>"
+                "<script>"
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
-                f"</script>"
+                "</script>"
             )
         else:
             bootstrap_script = (
@@ -11822,7 +11822,7 @@ def mount_spa(application: FastAPI):
                 f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
                 f'window.__HERMES_BASE_PATH__="{prefix}";'
                 f"window.__HERMES_AUTH_REQUIRED__={gated_js};"
-                f"</script>"
+                "</script>"
             )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
@@ -11858,7 +11858,7 @@ def mount_spa(application: FastAPI):
         if prefix:
             for asset_dir in ("/fonts/", "/fonts-terminal/", "/ds-assets/", "/assets/"):
                 css = css.replace(f"url({asset_dir}", f"url({prefix}{asset_dir}")
-                css = css.replace(f"url(\"{asset_dir}", f"url(\"{prefix}{asset_dir}")
+                css = css.replace("url(\"{asset_dir}", "url(\"{prefix}{asset_dir}")
                 css = css.replace(f"url('{asset_dir}", f"url('{prefix}{asset_dir}")
         return Response(content=css, media_type="text/css")
 
@@ -12977,17 +12977,17 @@ def start_server(
             if skip_reasons:
                 raise SystemExit(
                     f"Refusing to bind dashboard to {host} — the auth gate "
-                    f"engages on non-loopback binds, but no auth providers "
-                    f"are registered.\n\n"
-                    f"Bundled providers reported these issues:\n"
+                    "engages on non-loopback binds, but no auth providers "
+                    "are registered.\n\n"
+                    "Bundled providers reported these issues:\n"
                     + "\n".join(skip_reasons)
                     + "\n\n"
                     + _fix_hint
                 )
             raise SystemExit(
                 f"Refusing to bind dashboard to {host} — the auth gate "
-                f"engages on non-loopback binds, but no auth providers are "
-                f"registered.\n\n" + _fix_hint
+                "engages on non-loopback binds, but no auth providers are "
+                "registered.\n\n" + _fix_hint
             )
         _log.info(
             "Dashboard binding to %s with auth gate enabled. Providers: %s",

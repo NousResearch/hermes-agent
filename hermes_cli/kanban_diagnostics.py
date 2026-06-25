@@ -355,11 +355,11 @@ def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
         severity="error",
         title="Worker claimed cards that don't exist",
         detail=(
-            f"The completing worker declared created_cards that either didn't "
-            f"exist or weren't created by its profile. The completion was "
-            f"blocked and the task stayed in its prior state. "
-            f"Usually means the worker hallucinated ids instead of capturing "
-            f"return values from kanban_create."
+            "The completing worker declared created_cards that either didn't "
+            "exist or weren't created by its profile. The completion was "
+            "blocked and the task stayed in its prior state. "
+            "Usually means the worker hallucinated ids instead of capturing "
+            "return values from kanban_create."
         ),
         actions=actions,
         first_seen_at=first,
@@ -462,11 +462,11 @@ def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnosti
         severity="warning",
         title=f"Triage {primary_desc} has no usable model",
         detail=(
-            f"This task is still in triage and no working auxiliary model is "
+            "This task is still in triage and no working auxiliary model is "
             f"visible to the dispatcher. {detail_path} The default slot uses "
-            f"`provider: auto` which falls back to the main model, but no main "
-            f"model is configured either. Configure the slot directly or set a "
-            f"main model so the auto fallback can take over."
+            "`provider: auto` which falls back to the main model, but no main "
+            "model is configured either. Configure the slot directly or set a "
+            "main model so the auto fallback can take over."
         ),
         actions=actions,
         first_seen_at=now,
@@ -607,16 +607,16 @@ def _rule_repeated_failures(task, events, runs, now, cfg) -> list[Diagnostic]:
             f"This task has failed {failures} times in a row "
             f"(most recent: {outcome_label}). Full last error:\n\n"
             f"{err_snippet}\n\n"
-            f"The dispatcher circuit breaker is configured for "
+            "The dispatcher circuit breaker is configured for "
             f"{failure_limit} consecutive non-success attempts. Fix the "
-            f"root cause and reclaim or unblock the task to retry."
+            "root cause and reclaim or unblock the task to retry."
         )
     else:
         title = f"Agent {outcome_label} x{failures} (no error recorded)"
         detail = (
             f"This task has failed {failures} times in a row "
             f"(most recent: {outcome_label}) but no error text was "
-            f"captured. Check the suggested command or the worker log."
+            "captured. Check the suggested command or the worker log."
         )
     return [Diagnostic(
         kind="repeated_failures",
@@ -709,7 +709,7 @@ def _rule_repeated_crashes(task, events, runs, now, cfg) -> list[Diagnostic]:
         title = f"Agent crashed {consecutive}x (no error recorded)"
         detail = (
             f"The last {consecutive} runs ended with outcome=crashed but "
-            f"no error text was captured. Check the worker log for more."
+            "no error text was captured. Check the worker log for more."
         )
     return [Diagnostic(
         kind="repeated_crashes",
@@ -762,9 +762,9 @@ def _rule_stuck_in_blocked(task, events, runs, now, cfg) -> list[Diagnostic]:
         title=f"Task has been blocked for {int(age_hours)}h",
         detail=(
             f"This task transitioned to blocked {int(age_hours)}h ago and "
-            f"has had no comments or unblock attempts since. Blocked tasks "
-            f"are waiting for human input — check the block reason and "
-            f"either unblock with feedback or answer with a comment."
+            "has had no comments or unblock attempts since. Blocked tasks "
+            "are waiting for human input — check the block reason and "
+            "either unblock with feedback or answer with a comment."
         ),
         actions=actions,
         first_seen_at=last_blocked_ts,
@@ -957,9 +957,9 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
         detail=(
             f"This task has been ready for {age_str} but nothing has "
             f"claimed it. Common causes: assignee {assignee!r} is "
-            f"misspelled, the profile was deleted, or the external "
-            f"worker pool for this lane is down. Confirm the assignee "
-            f"is correct and that a worker is actually polling for it."
+            "misspelled, the profile was deleted, or the external "
+            "worker pool for this lane is down. Confirm the assignee "
+            "is correct and that a worker is actually polling for it."
         ),
         actions=actions,
         first_seen_at=last_ready_ts,

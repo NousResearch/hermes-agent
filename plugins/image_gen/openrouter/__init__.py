@@ -64,7 +64,10 @@ _ASPECT_RATIOS = {
 # so we never overflow the model's limit.
 _MAX_REFERENCE_IMAGES = 3
 
-_REQUEST_TIMEOUT = 180.0
+# Per single image call. The quality-first default (OpenAI image via OpenRouter)
+# is genuinely slow — a single cold row can run well past 3 minutes — so give
+# each call real headroom before we treat it as hung and fall back / retry.
+_REQUEST_TIMEOUT = 300.0
 
 
 def _load_image_gen_config() -> Dict[str, Any]:

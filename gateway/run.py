@@ -5464,6 +5464,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for entry in candidates:
             marker = entry.last_resume_marked_at or entry.updated_at
             if marker is not None and (now - marker).total_seconds() > window:
+                # Stale marker: clear it so resume_pending flags don't
+                # accumulate across restarts. The next user message will
+                # still trigger normal reset-policy evaluation in
+                # get_or_create_session().
+                try:
+                    self.session_store.clear_resume_pending(entry.session_key)
+                except Exception:
+                    pass
                 continue
 
             # Already being resumed (e.g. scheduled at startup and still

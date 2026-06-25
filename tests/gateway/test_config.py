@@ -415,6 +415,34 @@ class TestLoadGatewayConfig:
 
         assert config.thread_sessions_per_user is False
 
+    def test_multiplex_profiles_from_top_level_key(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text("multiplex_profiles: true\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True
+
+    def test_multiplex_profiles_from_nested_gateway_key(self, tmp_path, monkeypatch):
+        """hermes config set gateway.multiplex_profiles true writes the key
+        nested under gateway:.  load_gateway_config must honor it."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n  multiplex_profiles: true\n", encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.multiplex_profiles is True
+
     def test_bridges_top_level_max_concurrent_sessions_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

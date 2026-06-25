@@ -681,10 +681,12 @@ class HonchoMemoryProvider(MemoryProvider):
             if not self._session_ready():
                 return ""
 
-        # B5: injection_frequency — if "first-turn" and past first turn, return empty.
-        # _turn_count is 1-indexed (first user message = 1), so > 1 means "past first".
-        if self._injection_frequency == "first-turn" and self._turn_count > 1:
-            return ""
+        # B5: injection_frequency — if "first-turn" and past first turn, skip
+        # the base context layer (static representation + card). The dialectic
+        # supplement has its own cadence and must still be consumed below.
+        _skip_base = (
+            self._injection_frequency == "first-turn" and self._turn_count > 1
+        )
 
         # Trivial prompts ("ok", "yes", slash commands) carry no semantic
         # signal, so we don't fetch base context or fire new dialectic work for
@@ -702,71 +704,79 @@ class HonchoMemoryProvider(MemoryProvider):
         parts = []
 
         # ----- Layer 1: Base context (representation + card) -----
-        # Base context is pure retrieval (no LLM): representation + peer card +
-        # session summary. On the FIRST fetch (cache is None, i.e. turn 1 of a
-        # session) we fetch it SYNCHRONOUSLY with a short bound so the peer card
-        # is injected immediately. Firing it async and popping in the same call
-        # always lost the race on turn 1 (background thread can't finish inside
-        # one synchronous pass), which is why new sessions saw zero context
-        # until turn 2. Subsequent turns consume the background-refreshed result
-        # primed by queue_prefetch() at the end of the previous turn.
-        with self._base_context_lock:
-            _first_base_fetch = self._base_context_cache is None
-            if _first_base_fetch:
-                self._base_context_cache = ""
-                self._last_context_turn = self._turn_count
-            base_context = self._base_context_cache
+        # Skipped when injectionFrequency is "first-turn" past turn 1 — the
+        # representation + card are static within a session and re-injecting
+        # them every turn is pure token waste.
+        if _skip_base:
+            # Still drain any pending dialectic result below; just don't
+            # fetch or inject the base context layer.
+            pass
+        else:
+            # Base context is pure retrieval (no LLM): representation + peer card +
+            # session summary. On the FIRST fetch (cache is None, i.e. turn 1 of a
+            # session) we fetch it SYNCHRONOUSLY with a short bound so the peer card
+            # is injected immediately. Firing it async and popping in the same call
+            # always lost the race on turn 1 (background thread can't finish inside
+            # one synchronous pass), which is why new sessions saw zero context
+            # until turn 2. Subsequent turns consume the background-refreshed result
+            # primed by queue_prefetch() at the end of the previous turn.
+            with self._base_context_lock:
+                _first_base_fetch = self._base_context_cache is None
+                if _first_base_fetch:
+                    self._base_context_cache = ""
+                    self._last_context_turn = self._turn_count
+                base_context = self._base_context_cache
 
-        if _first_base_fetch and self._manager:
-            # Synchronous, bounded fetch so turn 1 gets the peer card now.
-            _ctx_holder: dict[str, dict] = {}
+            if _first_base_fetch and self._manager:
+                # Synchronous, bounded fetch so turn 1 gets the peer card now.
+                _ctx_holder: dict[str, dict] = {}
 
-            def _fetch_base() -> None:
-                try:
-                    _ctx_holder["ctx"] = self._manager.get_prefetch_context(
-                        self._session_key, query or None
-                    ) or {}
-                except Exception as e:
-                    logger.debug("Honcho first-turn base context failed: %s", e)
+                def _fetch_base() -> None:
+                    try:
+                        _ctx_holder["ctx"] = self._manager.get_prefetch_context(
+                            self._session_key, query or None
+                        ) or {}
+                    except Exception as e:
+                        logger.debug("Honcho first-turn base context failed: %s", e)
 
-            _bt = threading.Thread(
-                target=_fetch_base, daemon=True, name="honcho-base-first"
-            )
-            _bt.start()
-            # Bound the synchronous wait by the smaller of the base timeout and
-            # any configured request timeout, so a deliberately tight
-            # config.timeout (fail-fast deployments, tests) is still honored.
-            _base_wait = self._FIRST_TURN_BASE_TIMEOUT
-            if self._config and self._config.timeout:
-                _base_wait = min(_base_wait, self._config.timeout)
-            _bt.join(timeout=_base_wait)
-            _ctx = _ctx_holder.get("ctx")
-            if _ctx:
-                formatted = self._format_first_turn_context(_ctx)
-                if formatted:
-                    with self._base_context_lock:
-                        self._base_context_cache = formatted
-                    base_context = formatted
-            elif _bt.is_alive():
-                logger.debug(
-                    "Honcho first-turn base context still running after %.1fs — "
-                    "will surface on next turn", self._FIRST_TURN_BASE_TIMEOUT,
+                _bt = threading.Thread(
+                    target=_fetch_base, daemon=True, name="honcho-base-first"
                 )
+                _bt.start()
+                # Bound the synchronous wait by the smaller of the base timeout and
+                # any configured request timeout, so a deliberately tight
+                # config.timeout (fail-fast deployments, tests) is still honored.
+                _base_wait = self._FIRST_TURN_BASE_TIMEOUT
+                if self._config and self._config.timeout:
+                    _base_wait = min(_base_wait, self._config.timeout)
+                _bt.join(timeout=_base_wait)
+                _ctx = _ctx_holder.get("ctx")
+                if _ctx:
+                    formatted = self._format_first_turn_context(_ctx)
+                    if formatted:
+                        with self._base_context_lock:
+                            self._base_context_cache = formatted
+                        base_context = formatted
+                elif _bt.is_alive():
+                    logger.debug(
+                        "Honcho first-turn base context still running after %.1fs — "
+                        "will surface on next turn", self._FIRST_TURN_BASE_TIMEOUT,
+                    )
 
-        # Check if a background context prefetch (primed last turn) has a
-        # fresher result. On turn 1 this is normally empty; turn 2+ consumes
-        # the result queued by queue_prefetch().
-        if not _first_base_fetch and self._manager:
-            fresh_ctx = self._manager.pop_context_result(self._session_key)
-            if fresh_ctx:
-                formatted = self._format_first_turn_context(fresh_ctx)
-                if formatted:
-                    with self._base_context_lock:
-                        self._base_context_cache = formatted
-                    base_context = formatted
+            # Check if a background context prefetch (primed last turn) has a
+            # fresher result. On turn 1 this is normally empty; turn 2+ consumes
+            # the result queued by queue_prefetch().
+            if not _first_base_fetch and self._manager:
+                fresh_ctx = self._manager.pop_context_result(self._session_key)
+                if fresh_ctx:
+                    formatted = self._format_first_turn_context(fresh_ctx)
+                    if formatted:
+                        with self._base_context_lock:
+                            self._base_context_cache = formatted
+                        base_context = formatted
 
-        if base_context:
-            parts.append(base_context)
+            if base_context:
+                parts.append(base_context)
 
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the

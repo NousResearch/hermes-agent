@@ -3758,6 +3758,66 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_action_menu(
+        self,
+        chat_id: str,
+        text: str,
+        actions: list,
+        session_key: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a message with inline action buttons (one per follow-up action).
+
+        ``actions`` is a list of dicts/``Action`` (see ``tools.action_gateway``). Each
+        renders as a button labelled by the action's human description; a tap is routed
+        by the ``ca:`` branch in ``_handle_callback_query``. Distinct actions never
+        render as identical buttons — labels are de-duplicated in the registry (the
+        duplicate-button bug from #52252). A trailing "Skip" button dismisses the set,
+        and plain-text replies remain a valid fallback.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            from tools import action_gateway
+
+            entry = action_gateway.register(actions, session_key=session_key)
+            thread_id = self._metadata_thread_id(metadata)
+
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                **self._link_preview_kwargs(),
+            }
+            # Caller controls formatting; pass a parse_mode through metadata if set.
+            parse_mode = (metadata or {}).get("parse_mode")
+            if parse_mode:
+                kwargs["parse_mode"] = parse_mode
+
+            rows = [
+                [InlineKeyboardButton(label, callback_data=cb) for (label, cb) in row]
+                for row in action_gateway.build_keyboard_rows(entry.set_id)
+            ]
+            if rows:
+                kwargs["reply_markup"] = InlineKeyboardMarkup(rows)
+
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            kwargs["reply_to_message_id"] = reply_to_id
+            kwargs.update(
+                self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                )
+            )
+
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_action_menu failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -4425,6 +4485,61 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._send_message_with_thread_fallback(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Action-menu callbacks (ca:set_id:token) — tools.action_gateway / #52252 ---
+        if data.startswith("ca:"):
+            from tools import action_gateway
+
+            parsed = action_gateway.parse_callback(data)
+            if not parsed:
+                await query.answer(text="Invalid action data.")
+                return
+            set_id, token = parsed
+
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to act on this.")
+                return
+
+            chosen = action_gateway.resolve(set_id, token)
+
+            if chosen is None:
+                # skip / already-resolved / unknown — clear the buttons and stop.
+                await query.answer(text="Dismissed.")
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+                return
+
+            await query.answer(text=f"✓ {chosen.label[:60]}")
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+            # Hand the chosen action back to the agent. This dispatch hook is the
+            # integration seam under discussion in #52252; until the gateway registers
+            # one, log so the tap is observable rather than silently dropped.
+            dispatch = action_gateway.get_dispatch(None)
+            if dispatch is not None:
+                try:
+                    dispatch(set_id, chosen)
+                except Exception as exc:
+                    logger.error("[%s] action dispatch failed: %s", self.name, exc)
+            else:
+                logger.info(
+                    "Telegram action button tapped, no dispatch wired "
+                    "(set=%s, action=%r, op=%s) — see #52252",
+                    set_id, chosen.label, chosen.op,
+                )
             return
 
         # --- Clarify callbacks (cl:clarify_id:idx | cl:clarify_id:other) ---

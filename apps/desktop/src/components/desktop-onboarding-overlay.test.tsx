@@ -1,10 +1,10 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopOnboarding, type DesktopOnboardingState, type OnboardingContext } from '@/store/onboarding'
 import type { OAuthProvider } from '@/types/hermes'
 
-import { Picker } from './desktop-onboarding-overlay'
+import { ApiKeyForm, Picker } from './desktop-onboarding-overlay'
 
 function provider(id: string, name = id): OAuthProvider {
   return {
@@ -98,5 +98,40 @@ describe('onboarding Picker', () => {
     render(<Picker ctx={ctx} />)
 
     expect(screen.queryByRole('button', { name: "I'll choose a provider later" })).toBeNull()
+  })
+})
+
+describe('ApiKeyForm', () => {
+  it('forwards the manual local-model fallback for custom endpoints', async () => {
+    const onSave = vi.fn(async () => ({ ok: true }))
+
+    render(
+      <ApiKeyForm
+        canGoBack={false}
+        initialEnvKey="OPENAI_BASE_URL"
+        onBack={() => undefined}
+        onSave={onSave}
+      />
+    )
+
+    fireEvent.change(screen.getByPlaceholderText('http://127.0.0.1:8000/v1'), {
+      target: { value: 'https://api.cohere.ai/compatibility/v1' }
+    })
+    fireEvent.change(screen.getByPlaceholderText('API key (optional — only if your endpoint requires one)'), {
+      target: { value: 'sk-secret' }
+    })
+    fireEvent.change(screen.getByPlaceholderText('Model name (optional fallback when /v1/models is empty)'), {
+      target: { value: 'command-a-plus-05-2026' }
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }))
+
+    expect(onSave).toHaveBeenCalledWith(
+      'OPENAI_BASE_URL',
+      'https://api.cohere.ai/compatibility/v1',
+      'Local / custom endpoint',
+      'sk-secret',
+      'command-a-plus-05-2026'
+    )
   })
 })

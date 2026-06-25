@@ -64,6 +64,8 @@ export interface ApiKeyOption {
   short?: string
 }
 
+const LOCAL_MODEL_PLACEHOLDER = 'Model name (optional fallback when /v1/models is empty)'
+
 const API_KEY_OPTIONS: ApiKeyOption[] = [
   {
     id: 'openrouter',
@@ -447,7 +449,9 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           canGoBack={hasOauth && !localEndpoint}
           initialEnvKey={localEndpoint ? 'OPENAI_BASE_URL' : undefined}
           onBack={() => setOnboardingMode('oauth')}
-          onSave={(envKey, value, name, apiKey) => saveOnboardingApiKey(envKey, value, name, ctx, apiKey)}
+          onSave={(envKey, value, name, apiKey, modelName) =>
+            saveOnboardingApiKey(envKey, value, name, ctx, apiKey, modelName)
+          }
           options={apiKeyOptions}
         />
         {manual ? null : (
@@ -654,7 +658,8 @@ export function ApiKeyForm({
     envKey: string,
     value: string,
     name: string,
-    apiKey?: string
+    apiKey?: string,
+    modelName?: string
   ) => Promise<{ message?: string; ok: boolean }>
   options?: ApiKeyOption[]
   redactedValue?: (envKey: string) => null | string | undefined
@@ -669,6 +674,9 @@ export function ApiKeyForm({
   // Optional endpoint API key, only used by the local / custom endpoint option
   // (whose `value` is the base URL). Cleared whenever the option changes.
   const [localKey, setLocalKey] = useState('')
+  // Optional manual fallback when the endpoint is reachable but doesn't expose
+  // an OpenAI-shaped /v1/models catalog.
+  const [localModel, setLocalModel] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<null | string>(null)
   // `options` can change at runtime when callers filter the catalog (e.g. the
@@ -679,6 +687,7 @@ export function ApiKeyForm({
       setOption(options[0])
       setValue('')
       setLocalKey('')
+      setLocalModel('')
       setError(null)
     }
   }, [option.envKey, options])
@@ -691,6 +700,7 @@ export function ApiKeyForm({
     setOption(o)
     setValue('')
     setLocalKey('')
+    setLocalModel('')
     setError(null)
     requestAnimationFrame(() => {
       entryRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
@@ -716,11 +726,12 @@ export function ApiKeyForm({
 
     setSaving(true)
     setError(null)
-    const result = await onSave(option.envKey, value, option.name, isLocal ? localKey : undefined)
+    const result = await onSave(option.envKey, value, option.name, isLocal ? localKey : undefined, isLocal ? localModel : undefined)
 
     if (result.ok) {
       setValue('')
       setLocalKey('')
+      setLocalModel('')
     } else {
       setError(result.message ?? t.onboarding.couldNotSave)
     }
@@ -784,15 +795,29 @@ export function ApiKeyForm({
           value={value}
         />
         {isLocal ? (
-          <Input
-            autoComplete="off"
-            className="font-mono"
-            onChange={e => setLocalKey(e.target.value)}
-            onKeyDown={e => e.key === 'Enter' && void submit()}
-            placeholder={t.onboarding.localApiKeyPlaceholder}
-            type="password"
-            value={localKey}
-          />
+          <>
+            <Input
+              autoComplete="off"
+              className="font-mono"
+              onChange={e => setLocalKey(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && void submit()}
+              placeholder={t.onboarding.localApiKeyPlaceholder}
+              type="password"
+              value={localKey}
+            />
+            <Input
+              autoComplete="off"
+              className="font-mono"
+              onChange={e => setLocalModel(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && void submit()}
+              placeholder={LOCAL_MODEL_PLACEHOLDER}
+              type="text"
+              value={localModel}
+            />
+            <p className="text-xs text-muted-foreground">
+              If this endpoint does not advertise models, Hermes can save the model name you enter here instead.
+            </p>
+          </>
         ) : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>

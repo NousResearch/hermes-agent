@@ -507,3 +507,42 @@ class TestHotwordsCloudProviders:
             call_kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
             assert "prompt" in call_kwargs
             assert "Hermes" in call_kwargs["prompt"]
+
+
+class TestHotwordsUnsupportedProviders:
+    """Unsupported providers log debug and continue."""
+
+    def test_mistral_logs_debug_on_hotwords(self, tmp_path, caplog, monkeypatch):
+        monkeypatch.setenv("MISTRAL_API_KEY", "sk-test")
+        audio_file = tmp_path / "test.ogg"
+        audio_file.write_bytes(b"fake audio")
+
+        mock_client = MagicMock()
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=None)
+        mock_result = MagicMock(text="hello")
+        mock_client.audio.transcriptions.complete.return_value = mock_result
+
+        stt_config = {
+            "enabled": True,
+            "provider": "mistral",
+            "hotwords": ["Hermes"],
+            "mistral": {"model": "voxtral-mini-latest"},
+        }
+
+        import logging
+        import sys
+        import tools.transcription_tools as ttt
+        fake_mistralai = MagicMock()
+        fake_mistralai_client = MagicMock()
+        fake_mistralai_client.Mistral = MagicMock(return_value=mock_client)
+        with patch.dict(sys.modules, {"mistralai": fake_mistralai, "mistralai.client": fake_mistralai_client}), \
+             patch.object(ttt, "_HAS_MISTRAL", True), \
+             patch.object(ttt, "_load_stt_config", return_value=stt_config), \
+             patch.object(ttt, "_get_provider", return_value="mistral"):
+            from tools.transcription_tools import transcribe_audio
+            with caplog.at_level(logging.DEBUG, logger="tools.transcription_tools"):
+                result = transcribe_audio(str(audio_file))
+            assert result["success"] is True
+            assert any("hotwords not supported by Mistral" in r.message for r in caplog.records), \
+                f"Expected debug log with 'not supported by Mistral', got: {[r.message for r in caplog.records]}"

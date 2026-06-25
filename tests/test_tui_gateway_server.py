@@ -8152,3 +8152,157 @@ def test_persist_model_switch_clears_stale_base_url(tmp_path, monkeypatch):
     assert saved["model"]["provider"] == "anthropic"
     # Stale custom base_url must be cleared (null coalesces to absent on read).
     assert not saved["model"].get("base_url"), saved["model"].get("base_url")
+
+
+def test_prompt_submit_clamps_stale_ordinal_after_compression(monkeypatch):
+    """When context compression shrinks history, a stale ordinal should clamp
+    to the last user message instead of erroring (issue #52514)."""
+
+    seen = {}
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            seen["prompt"] = prompt
+            seen["history"] = conversation_history
+            return {
+                "final_response": "restored",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "restored"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    # Simulate post-compression history: summary + one user/assistant pair.
+    # The frontend computed ordinal=3 (from a longer pre-compression list).
+    compressed_history = [
+        {"role": "assistant", "content": "summary of earlier conversation"},
+        {"role": "user", "content": "recent question"},
+        {"role": "assistant", "content": "recent answer"},
+    ]
+    server._sessions["sid"] = _session(agent=_Agent(), history=compressed_history)
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages):
+            self.replaced.append((session_id, list(messages)))
+
+    stub_db = _StubDb()
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "restore this",
+                    "truncate_before_user_ordinal": 3,  # stale, only 1 user msg
+                },
+            }
+        )
+        # Should succeed (clamped) instead of returning error 4018
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        # Clamped to last user index → history[:1] = [summary]
+        assert seen["prompt"] == "restore this"
+        assert seen["history"] == compressed_history[:1]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_rejects_negative_ordinal(monkeypatch):
+    """Negative truncate_before_user_ordinal should be rejected."""
+
+    server._sessions["sid"] = _session(
+        history=[{"role": "user", "content": "hello"}]
+    )
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "test",
+                    "truncate_before_user_ordinal": -1,
+                },
+            }
+        )
+        assert "error" in resp
+        assert resp["error"]["code"] == 4004
+        assert "non-negative" in resp["error"]["message"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_empty_history_with_ordinal(monkeypatch):
+    """When history has no user messages, truncation should clear history."""
+
+    seen = {}
+
+    class _Agent:
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            seen["prompt"] = prompt
+            seen["history"] = conversation_history
+            return {
+                "final_response": "ok",
+                "messages": [
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "ok"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(
+        agent=_Agent(),
+        history=[{"role": "assistant", "content": "orphan"}],
+    )
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_db", lambda: None)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "sid",
+                    "text": "fresh start",
+                    "truncate_before_user_ordinal": 0,
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert seen["prompt"] == "fresh start"
+        assert seen["history"] == []
+    finally:
+        server._sessions.pop("sid", None)

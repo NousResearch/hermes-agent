@@ -115,6 +115,64 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     return "gemini" in m or "gemma" in m
 
 
+# Keep only the most recent N computer-use screenshots in the outbound request.
+# Mirrors agent.anthropic_adapter._evict_old_screenshots, which runs on every
+# Anthropic request. The OpenAI/chat_completions path historically had no such
+# always-on guard — base64 screenshots (~250K chars / ~60K tokens each) only got
+# pruned when *full context compression* happened to fire, so a screenshot-heavy
+# computer_use session on an OpenAI-format provider (e.g. gpt-5.5 via Codex)
+# could balloon context into the millions of tokens and burn a usage allowance
+# before compression caught up. This evicts on every request, cheaply, like the
+# Anthropic side already does.
+_MAX_KEEP_IMAGES = 3
+_SCREENSHOT_REMOVED_TEXT = "[screenshot removed to save context]"
+
+
+def _content_has_openai_image(content: Any) -> bool:
+    """True if an OpenAI-format message content list carries an image_url part."""
+    if not isinstance(content, list):
+        return False
+    return any(
+        isinstance(p, dict) and p.get("type") in {"image_url", "image", "input_image"}
+        for p in content
+    )
+
+
+def _strip_images_from_content(content: list) -> list:
+    """Replace image parts with a text placeholder; keep all other parts."""
+    stripped = []
+    for p in content:
+        if isinstance(p, dict) and p.get("type") in {"image_url", "image", "input_image"}:
+            stripped.append({"type": "text", "text": _SCREENSHOT_REMOVED_TEXT})
+        else:
+            stripped.append(p)
+    return stripped
+
+
+def _evict_old_screenshots_openai(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep only the most recent ``_MAX_KEEP_IMAGES`` screenshots.
+
+    Walks messages newest-first, counts tool/user messages whose content list
+    carries an image part, and replaces image parts in the older ones with a
+    text placeholder. Returns the original list unchanged when there is nothing
+    to evict (<= N image-bearing messages); otherwise returns a deep-copied list
+    with the old images stripped — never mutates the caller's canonical history.
+    """
+    image_msg_indices = [
+        i for i, msg in enumerate(messages)
+        if isinstance(msg, dict) and _content_has_openai_image(msg.get("content"))
+    ]
+    if len(image_msg_indices) <= _MAX_KEEP_IMAGES:
+        return messages
+
+    # Older = all but the most recent N.
+    to_strip = set(image_msg_indices[:-_MAX_KEEP_IMAGES])
+    out = copy.deepcopy(messages)
+    for i in to_strip:
+        out[i]["content"] = _strip_images_from_content(out[i]["content"])
+    return out
+
+
 class ChatCompletionsTransport(ProviderTransport):
     """Transport for api_mode='chat_completions'.
 
@@ -193,7 +251,7 @@ class ChatCompletionsTransport(ProviderTransport):
                     break
 
         if not needs_sanitize:
-            return messages
+            return _evict_old_screenshots_openai(messages)
 
         sanitized = copy.deepcopy(messages)
         for msg in sanitized:
@@ -216,7 +274,7 @@ class ChatCompletionsTransport(ProviderTransport):
                         tc.pop("response_item_id", None)
                         if strip_extra_content:
                             tc.pop("extra_content", None)
-        return sanitized
+        return _evict_old_screenshots_openai(sanitized)
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Tools are already in OpenAI format — identity."""

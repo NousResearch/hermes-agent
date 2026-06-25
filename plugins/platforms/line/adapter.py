@@ -973,12 +973,24 @@ class LineAdapter(BasePlatformAdapter):
         if chat_type == "dm" and self._client:
             asyncio.create_task(self._client.loading(chat_id))
 
+        # _dispatch_event already authorized this source against all three LINE
+        # allowlists (users / groups / rooms). The gateway then re-runs its own
+        # authorization, but for plugin platforms it only consults
+        # LINE_ALLOWED_USERS (registered as allowed_users_env) — it has no path
+        # to LINE_ALLOWED_GROUPS / LINE_ALLOWED_ROOMS. Mark group/room sources we
+        # already admitted as role-authorized so the gateway honors that
+        # collective grant (mirrors the Discord role-allowlist bridge via
+        # SessionSource.role_authorized). DM sources stay unflagged: the gateway
+        # can — and still does — re-verify them against LINE_ALLOWED_USERS.
+        role_authorized = chat_type in {"group", "room"}
+
         source_obj = self.build_source(
             chat_id=chat_id,
             chat_type=chat_type,
             user_id=user_id,
             user_name=user_id,
             chat_name=chat_id,
+            role_authorized=role_authorized,
         )
 
         event_obj = MessageEvent(

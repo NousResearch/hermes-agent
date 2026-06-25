@@ -19,10 +19,12 @@ import hashlib
 import hmac
 import base64
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from gateway.session import Platform, SessionSource
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/line/adapter.py under plugin_adapter_line so it
@@ -674,3 +676,137 @@ class TestMessageTypeMapping:
     def test_unknown_type_falls_back_to_text(self):
         MessageType = _line.MessageType
         assert _line._LINE_MESSAGE_TYPES.get("flex", MessageType.TEXT) == MessageType.TEXT
+
+
+# ---------------------------------------------------------------------------
+# 10. Gateway authorization bridge — group/room allowlist
+# ---------------------------------------------------------------------------
+
+class TestGatewayAuthBridge:
+    """The adapter gates group/room traffic against LINE_ALLOWED_GROUPS /
+    LINE_ALLOWED_ROOMS, but the gateway's second authorization layer
+    (``_is_user_authorized``) only knows LINE_ALLOWED_USERS — wired as
+    ``allowed_users_env``. Without bridging the adapter's group/room decision, a
+    member of an allowlisted group/room passes the adapter gate yet is rejected
+    by the gateway ("I'm on the allowlist but the bot won't answer"). The
+    adapter marks group/room sources it already admitted as ``role_authorized``
+    so the gateway honors that collective grant — the same bridge Discord uses
+    for DISCORD_ALLOWED_ROLES.
+    """
+
+    def _make_adapter(self, monkeypatch, **env):
+        for k in (
+            "LINE_ALLOW_ALL_USERS",
+            "LINE_ALLOWED_USERS",
+            "LINE_ALLOWED_GROUPS",
+            "LINE_ALLOWED_ROOMS",
+            "GATEWAY_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        for k, v in env.items():
+            monkeypatch.setenv(k, v)
+        from gateway.config import PlatformConfig
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        # Only the DM path touches the client (typing indicator); mock it so the
+        # fire-and-forget loading task has something awaitable to call.
+        ad._client = MagicMock()
+        ad._client.loading = AsyncMock()
+        return ad
+
+    def _dispatch_capture_source(self, adapter, event):
+        """Run a webhook event through the real gate + dispatch path and return
+        the SessionSource the adapter would hand to the gateway."""
+        captured = {}
+
+        async def _fake_handle(event_obj):
+            captured["event"] = event_obj
+
+        adapter.handle_message = _fake_handle  # type: ignore[assignment]
+        asyncio.run(adapter._dispatch_event(event))
+        ev = captured.get("event")
+        return ev.source if ev is not None else None
+
+    @staticmethod
+    def _make_event(source: dict) -> dict:
+        return {
+            "type": "message",
+            "source": source,
+            "message": {"type": "text", "id": "m1", "text": "hi"},
+            "replyToken": "rt",
+            "webhookEventId": "w1",
+        }
+
+    @staticmethod
+    def _bare_runner():
+        """GatewayRunner skeleton with just enough wiring for the auth check
+        (see tests/gateway/test_discord_bot_auth_bypass.py for the pattern)."""
+        from gateway.run import GatewayRunner
+        runner = object.__new__(GatewayRunner)
+        runner.pairing_store = SimpleNamespace(is_approved=lambda *_a, **_kw: False)
+        return runner
+
+    def test_group_message_marks_source_role_authorized(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, LINE_ALLOWED_GROUPS="C1")
+        source = self._dispatch_capture_source(
+            ad, self._make_event({"type": "group", "groupId": "C1", "userId": "Umember"})
+        )
+        assert source is not None
+        assert source.chat_type == "group"
+        assert source.role_authorized is True
+
+    def test_room_message_marks_source_role_authorized(self, monkeypatch):
+        ad = self._make_adapter(monkeypatch, LINE_ALLOWED_ROOMS="R1")
+        source = self._dispatch_capture_source(
+            ad, self._make_event({"type": "room", "roomId": "R1", "userId": "Umember"})
+        )
+        assert source is not None
+        assert source.chat_type == "room"
+        assert source.role_authorized is True
+
+    def test_dm_message_not_role_authorized(self, monkeypatch):
+        # DMs are individual-user grants the gateway can (and still does)
+        # re-verify against LINE_ALLOWED_USERS, so they must stay unflagged.
+        ad = self._make_adapter(monkeypatch, LINE_ALLOWED_USERS="Uok")
+        source = self._dispatch_capture_source(
+            ad, self._make_event({"type": "user", "userId": "Uok"})
+        )
+        assert source is not None
+        assert source.chat_type == "dm"
+        assert source.role_authorized is False
+
+    def test_group_source_passes_gateway_authorization(self, monkeypatch):
+        # End-to-end: only LINE_ALLOWED_GROUPS is configured (no
+        # LINE_ALLOWED_USERS). The source the adapter produces must now pass the
+        # gateway's own authorization layer.
+        ad = self._make_adapter(monkeypatch, LINE_ALLOWED_GROUPS="C1")
+        source = self._dispatch_capture_source(
+            ad, self._make_event({"type": "group", "groupId": "C1", "userId": "Umember"})
+        )
+        assert self._bare_runner()._is_user_authorized(source) is True
+
+    def test_unbridged_group_source_rejected_regression(self, monkeypatch):
+        # Counterfactual proving the bug: the same group source as the gateway
+        # would have seen it BEFORE the fix (role_authorized=False) is rejected
+        # when only LINE_ALLOWED_GROUPS is configured — the gateway has no
+        # group/room allowlist path of its own.
+        for k in (
+            "LINE_ALLOWED_USERS",
+            "LINE_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOW_ALL_USERS",
+            "GATEWAY_ALLOWED_USERS",
+        ):
+            monkeypatch.delenv(k, raising=False)
+        monkeypatch.setenv("LINE_ALLOWED_GROUPS", "C1")
+        unbridged = SessionSource(
+            platform=Platform("line"),
+            chat_id="C1",
+            chat_type="group",
+            user_id="Umember",
+            role_authorized=False,
+        )
+        assert self._bare_runner()._is_user_authorized(unbridged) is False

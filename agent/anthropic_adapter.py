@@ -2412,6 +2412,12 @@ def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
                 ]
 
 
+def _ensure_leading_user_turn(result: List[Dict[str, Any]], system: Any) -> None:
+    """Anthropic requires messages[0] to be user when system is extracted."""
+    if system is not None and result and result[0].get("role") != "user":
+        result.insert(0, {"role": "user", "content": [{"type": "text", "text": " "}]})
+
+
 def convert_messages_to_anthropic(
     messages: List[Dict],
     base_url: str | None = None,
@@ -2470,6 +2476,7 @@ def convert_messages_to_anthropic(
 
     _strip_orphaned_tool_blocks(result)
     result = _merge_consecutive_roles(result)
+    _ensure_leading_user_turn(result, system)
     _manage_thinking_signatures(result, base_url, model)
     _evict_old_screenshots(result)
 

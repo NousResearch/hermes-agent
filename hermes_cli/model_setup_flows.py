@@ -2392,19 +2392,29 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             pass
     effective_base = current_base or pconfig.inference_base_url
 
-    try:
-        override = input(f"Base URL [{effective_base}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print()
-        override = ""
-    if override and base_url_env:
-        if not override.startswith(("http://", "https://")):
-            print(
-                "  Invalid URL — must start with http:// or https://. Keeping current value."
-            )
-        else:
-            save_env_value(base_url_env, override)
-            effective_base = override
+    if provider_id == "zai":
+        # Z.AI has four official endpoints (Global, China, Coding Plan
+        # Global, Coding Plan China) with separate billing paths.  Present
+        # a picker instead of a plain text input so users can explicitly
+        # choose the endpoint that matches their key type.
+        chosen_base = _select_zai_endpoint(effective_base)
+        if chosen_base and chosen_base != effective_base and base_url_env:
+            save_env_value(base_url_env, chosen_base)
+        effective_base = chosen_base or effective_base
+    else:
+        try:
+            override = input(f"Base URL [{effective_base}]: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            override = ""
+        if override and base_url_env:
+            if not override.startswith(("http://", "https://")):
+                print(
+                    "  Invalid URL — must start with http:// or https://. Keeping current value."
+                )
+            else:
+                save_env_value(base_url_env, override)
+                effective_base = override
 
     # Model selection — resolution order:
     #   1. models.dev registry (cached, filtered for agentic/tool-capable models)

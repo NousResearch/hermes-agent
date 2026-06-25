@@ -4663,6 +4663,30 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"facts": None})
 
 
+@method("verification.status")
+def _(rid, params: dict) -> dict:
+    """Best known coding verification evidence for a cwd/session.
+
+    Read-only consumer of the core ledger. It never runs checks and never
+    upgrades targeted evidence into a repository-wide guarantee.
+    """
+    try:
+        from agent.verification_evidence import verification_status
+
+        return _ok(
+            rid,
+            {
+                "verification": verification_status(
+                    session_id=params.get("session_id") or params.get("session_key"),
+                    cwd=params.get("cwd"),
+                )
+            },
+        )
+    except Exception:
+        logger.exception("verification.status failed")
+        return _ok(rid, {"verification": {"status": "unknown", "evidence": None}})
+
+
 @method("session.resume")
 def _(rid, params: dict) -> dict:
     target = params.get("session_id", "")

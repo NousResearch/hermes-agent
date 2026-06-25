@@ -106,10 +106,10 @@ def _spacing_spec(frame_count: int) -> tuple[int, int]:
 BASE_VARIATIONS: tuple[str, ...] = (
     "",
     "a distinctly different colour palette and markings",
-    "rounder, chunkier chibi proportions and a bigger head",
-    "a different face and expression, with unique accent/accessory details",
+    "a heavier, broader silhouette with sturdier proportions",
+    "a different facial structure and expression matching the concept tone, with unique accent/accessory details",
     "a leaner, taller build and an alternate colour scheme",
-    "bolder, more saturated colours and a playful expression",
+    "bolder, more saturated colours and a stronger expression matching the concept tone",
 )
 
 
@@ -118,12 +118,14 @@ def build_base_prompt(concept: str, *, style: str | None = "auto", variation: st
 
     *variation* differentiates one draft from the next (see :data:`BASE_VARIATIONS`).
     """
-    concept = (concept or "a cute friendly mascot creature").strip()
+    concept = (concept or "a distinctive mascot creature").strip()
     nudge = f" Make this design distinct: {variation}." if variation else ""
     return (
-        f"A cute, characterful mascot pet: {concept}. "
+        f"A stylized mascot pet character: {concept}. "
+        "Honor the requested tone and mood exactly (cute, eerie, scary, menacing, whimsical, etc.) "
+        "while staying non-graphic. "
         "Compact, whole-body silhouette that reads clearly at small size, "
-        "appealing face, simple consistent palette. "
+        "clear readable facial features, simple consistent palette. "
         # A neutral, symmetric, at-rest stance makes the cleanest identity anchor
         "Neutral front-facing standing pose, upright and symmetric, arms/limbs "
         "relaxed at the sides, feet together on the ground, any cape/accessories "
@@ -145,6 +147,7 @@ def build_row_prompt(state: str, frame_count: int, concept: str, *, style: str |
     return (
         f"Using the attached reference image as the exact same character "
         f"(same species, face, colors, markings, proportions, and props), "
+        "preserving the same emotional tone/mood (e.g., scary stays scary, cute stays cute), "
         f"draw a single WIDE horizontal strip of {frame_count} animation frames showing {action}. "
         f"LAYOUT: split the wide strip into {frame_count} equal vertical cells, one "
         "pose centered in each cell. "

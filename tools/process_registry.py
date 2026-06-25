@@ -1939,7 +1939,7 @@ def _format_async_delegation(evt: dict) -> str:
 
 
 def format_process_notification(evt: dict) -> "str | None":
-    """Format a process notification event into a [IMPORTANT: ...] message.
+    """Format a process notification event into an [INTERNAL BACKGROUND PROCESS NOTIFICATION] message.
 
     Handles completion events (notify_on_complete), watch pattern matches,
     and watch disabled events from the unified completion_queue.
@@ -1949,21 +1949,26 @@ def format_process_notification(evt: dict) -> "str | None":
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        return (
+            f"[INTERNAL BACKGROUND PROCESS NOTIFICATION \u2014 NOT A USER MESSAGE]\n"
+            f"{evt.get('message', '')}\n"
+            f"[/INTERNAL BACKGROUND PROCESS NOTIFICATION]"
+        )
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[IMPORTANT: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
+            f"[INTERNAL BACKGROUND PROCESS NOTIFICATION \u2014 NOT A USER MESSAGE]\n"
+            f"Background process {_sid} matched "
+            f'watch pattern \"{_pat}\".\n'
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
         )
         if _sup:
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
-        text += "]"
+        text += "\n[/INTERNAL BACKGROUND PROCESS NOTIFICATION]"
         return text
 
     if evt_type == "async_delegation":
@@ -1987,10 +1992,12 @@ def format_process_notification(evt: dict) -> "str | None":
     else:
         _status = "exited"
     return (
-        f"[IMPORTANT: Background process {_sid} {_status} "
+        f"[INTERNAL BACKGROUND PROCESS NOTIFICATION \u2014 NOT A USER MESSAGE]\n"
+        f"Background process {_sid} {_status} "
         f"(exit code {_exit}{_signal}).\n"
         f"Command: {_cmd}\n"
-        f"Output:\n{_out}]"
+        f"Output:\n{_out}\n"
+        f"[/INTERNAL BACKGROUND PROCESS NOTIFICATION]"
     )
 
 

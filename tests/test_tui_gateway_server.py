@@ -7191,7 +7191,8 @@ def test_notification_poller_delivers_completion(monkeypatch):
 
         # Should have triggered an agent turn
         assert len(turns) == 1
-        assert "[IMPORTANT: Background process proc_poller_test completed normally" in turns[0]
+        assert "[INTERNAL BACKGROUND PROCESS NOTIFICATION" in turns[0]
+        assert "Background process proc_poller_test completed normally" in turns[0]
     finally:
         server._sessions.pop("sid_poll", None)
         while not process_registry.completion_queue.empty():

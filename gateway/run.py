@@ -2261,21 +2261,26 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
-        return f"[IMPORTANT: {evt.get('message', '')}]"
+        return (
+            f"[INTERNAL BACKGROUND PROCESS NOTIFICATION \u2014 NOT A USER MESSAGE]\n"
+            f"{evt.get('message', '')}\n"
+            f"[/INTERNAL BACKGROUND PROCESS NOTIFICATION]"
+        )
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[IMPORTANT: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
+            f"[INTERNAL BACKGROUND PROCESS NOTIFICATION \u2014 NOT A USER MESSAGE]\n"
+            f"Background process {_sid} matched "
+            f'watch pattern \"{_pat}\".\n'
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
         )
         if _sup:
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
-        text += "]"
+        text += "\n[/INTERNAL BACKGROUND PROCESS NOTIFICATION]"
         return text
 
     if evt_type == "async_delegation":

@@ -2392,6 +2392,58 @@ def test_run_conversation_codex_disables_reasoning_replay_after_invalid_encrypte
     assert agent._codex_reasoning_replay_enabled is False
 
 
+def test_run_conversation_codex_recovers_from_unsupported_content_type_reasoning_replay(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+
+    request_payloads = []
+
+    class _UnsupportedContentTypeError(Exception):
+        def __init__(self):
+            super().__init__("Error code: 400 - Bad request")
+            self.status_code = 400
+            self.body = {"detail": "Unsupported content type"}
+
+    responses = [
+        _UnsupportedContentTypeError(),
+        _codex_message_response("Recovered after unsupported content retry."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        request_payloads.append(api_kwargs)
+        current = responses.pop(0)
+        if isinstance(current, Exception):
+            raise current
+        return current
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "finish_reason": "incomplete",
+            "codex_reasoning_items": [
+                {"type": "reasoning", "id": "rs_unsupported", "encrypted_content": "enc_bad", "summary": []},
+            ],
+        }
+    ]
+
+    result = agent.run_conversation("continue", conversation_history=history)
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after unsupported content retry."
+    assert len(request_payloads) == 2
+    assert responses == []
+    assert any(item.get("type") == "reasoning" for item in request_payloads[0]["input"])
+    assert not any(item.get("type") == "reasoning" for item in request_payloads[1]["input"])
+    assert request_payloads[0].get("include") == ["reasoning.encrypted_content"]
+    assert request_payloads[1].get("include") == []
+    assert result["messages"][0].get("codex_reasoning_items") is None
+    assert agent._codex_reasoning_replay_enabled is False
+
+
 def test_run_conversation_codex_invalid_encrypted_content_without_replay_state_does_not_disable_replay(monkeypatch):
     agent = _build_agent(monkeypatch)
     agent.provider = "custom"

@@ -146,7 +146,40 @@ TOOLSETS = {
             "screenshots, mouse, keyboard, scroll, drag. Does NOT steal the "
             "user's cursor or keyboard focus. Works with any tool-capable model."
         ),
-        "tools": ["computer_use"],
+        "tools": [
+            "computer_use_list_apps",
+            "computer_use_launch_app",
+            "computer_use_get_app_state",
+            "computer_use_click",
+            "computer_use_perform_secondary_action",
+            "computer_use_scroll",
+            "computer_use_drag",
+            "computer_use_type_text",
+            "computer_use_set_value",
+            "computer_use_press_key",
+            "computer_use_select_text",
+            "computer_use_daemon",
+        ],
+        "includes": []
+    },
+
+    "cursor_agent": {
+        "description": (
+            "Cursor SDK agent bridge for running Composer 2.5 or other Cursor "
+            "models as a specialist coding/design agent. Opt-in and gated on "
+            "CURSOR_API_KEY plus Node.js."
+        ),
+        "tools": ["cursor_agent"],
+        "includes": []
+    },
+
+    "cursor_agent": {
+        "description": (
+            "Cursor SDK agent bridge for running Composer 2.5 or other Cursor "
+            "models as a specialist coding/design agent. Opt-in and gated on "
+            "CURSOR_API_KEY plus Node.js."
+        ),
+        "tools": ["cursor_agent"],
         "includes": []
     },
 

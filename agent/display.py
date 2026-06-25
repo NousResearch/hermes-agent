@@ -436,6 +436,61 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         query = _oneline(args.get("query", ""))
         return f"recall: \"{query[:25]}{'...' if len(query) > 25 else ''}\""
 
+    if tool_name.startswith("computer_use_"):
+        action = tool_name.removeprefix("computer_use_")
+        app = args.get("app") or args.get("bundle_id") or ""
+        if action == "list_apps":
+            return None
+        if action == "launch_app":
+            target = args.get("app") or args.get("bundle_id") or "?"
+            return str(target)
+        if action == "get_app_state":
+            mode = args.get("mode")
+            label = str(app or "<active window>")
+            return f"{label} ({mode})" if mode else label
+        if action == "click":
+            element = args.get("element")
+            coord = args.get("coordinate")
+            target = f"#{element}" if element is not None else (f"@{tuple(coord)}" if coord else "?")
+            return f"{app or '?'} {target}".strip()
+        if action == "scroll":
+            direction = args.get("direction", "?")
+            pages = args.get("pages")
+            amount = args.get("amount")
+            distance = f"{pages}pg" if pages is not None else (f"x{amount}" if amount is not None else "")
+            return " ".join(p for p in [app or "?", direction, distance] if p).strip()
+        if action == "drag":
+            src = args.get("from_element") or args.get("from_coordinate") or "?"
+            dst = args.get("to_element") or args.get("to_coordinate") or "?"
+            return f"{app or '?'} {src} → {dst}"
+        if action == "type_text":
+            body = _oneline(args.get("text", ""))
+            preview = body[:20] + ("…" if len(body) > 20 else "")
+            return f"{app or '?'}: \"{preview}\""
+        if action == "set_value":
+            value = _oneline(str(args.get("value", "")))
+            preview = value[:20] + ("…" if len(value) > 20 else "")
+            element = args.get("element")
+            target = f"#{element}" if element is not None else ""
+            return f"{app or '?'} {target} = \"{preview}\"".strip()
+        if action == "press_key":
+            key = args.get("key") or args.get("keys") or "?"
+            return f"{app or '?'} {key}".strip()
+        if action == "select_text":
+            selection = args.get("selection") or "all"
+            element = args.get("element")
+            target = f"#{element}" if element is not None else ""
+            return f"{app or '?'} {target} ({selection})".strip()
+        if action == "perform_secondary_action":
+            secondary = args.get("secondary_action") or "AXShowMenu"
+            element = args.get("element")
+            target = f"#{element}" if element is not None else ""
+            return f"{app or '?'} {target} {secondary}".strip()
+        if action == "daemon":
+            sub = args.get("action") or "status"
+            return sub
+        return app or None
+
     if tool_name == "memory":
         action = args.get("action", "")
         target = args.get("target", "")
@@ -1192,6 +1247,61 @@ def get_cute_tool_message(
             return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
     if tool_name == "session_search":
         return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
+    if tool_name.startswith("computer_use_"):
+        action = tool_name.removeprefix("computer_use_")
+        app = args.get("app") or args.get("bundle_id") or ""
+        if action == "list_apps":
+            return None
+        if action == "launch_app":
+            target = args.get("app") or args.get("bundle_id") or "?"
+            return str(target)
+        if action == "get_app_state":
+            mode = args.get("mode")
+            label = str(app or "<active window>")
+            return f"{label} ({mode})" if mode else label
+        if action == "click":
+            element = args.get("element")
+            coord = args.get("coordinate")
+            target = f"#{element}" if element is not None else (f"@{tuple(coord)}" if coord else "?")
+            return f"{app or '?'} {target}".strip()
+        if action == "scroll":
+            direction = args.get("direction", "?")
+            pages = args.get("pages")
+            amount = args.get("amount")
+            distance = f"{pages}pg" if pages is not None else (f"x{amount}" if amount is not None else "")
+            return " ".join(p for p in [app or "?", direction, distance] if p).strip()
+        if action == "drag":
+            src = args.get("from_element") or args.get("from_coordinate") or "?"
+            dst = args.get("to_element") or args.get("to_coordinate") or "?"
+            return f"{app or '?'} {src} → {dst}"
+        if action == "type_text":
+            body = _oneline(args.get("text", ""))
+            preview = body[:20] + ("…" if len(body) > 20 else "")
+            return f"{app or '?'}: \"{preview}\""
+        if action == "set_value":
+            value = _oneline(str(args.get("value", "")))
+            preview = value[:20] + ("…" if len(value) > 20 else "")
+            element = args.get("element")
+            target = f"#{element}" if element is not None else ""
+            return f"{app or '?'} {target} = \"{preview}\"".strip()
+        if action == "press_key":
+            key = args.get("key") or args.get("keys") or "?"
+            return f"{app or '?'} {key}".strip()
+        if action == "select_text":
+            selection = args.get("selection") or "all"
+            element = args.get("element")
+            target = f"#{element}" if element is not None else ""
+            return f"{app or '?'} {target} ({selection})".strip()
+        if action == "perform_secondary_action":
+            secondary = args.get("secondary_action") or "AXShowMenu"
+            element = args.get("element")
+            target = f"#{element}" if element is not None else ""
+            return f"{app or '?'} {target} {secondary}".strip()
+        if action == "daemon":
+            sub = args.get("action") or "status"
+            return sub
+        return app or None
+
     if tool_name == "memory":
         action = args.get("action", "?")
         target = args.get("target", "")

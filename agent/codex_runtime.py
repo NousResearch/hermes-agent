@@ -695,6 +695,25 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 )
                 continue
             raise
+        except TypeError as exc:
+            err_text = str(exc)
+            sdk_none_iterable = "'NoneType' object is not iterable" in err_text
+            if sdk_none_iterable and attempt < max_stream_retries:
+                logger.debug(
+                    "Responses stream parser hit None output shape (attempt %s/%s); retrying. %s",
+                    attempt + 1,
+                    max_stream_retries + 1,
+                    agent._client_log_context(),
+                )
+                continue
+            if sdk_none_iterable:
+                logger.debug(
+                    "Responses stream parser hit None output shape; falling back to create(stream=True). %s err=%s",
+                    agent._client_log_context(),
+                    err_text,
+                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
+            raise
 
         try:
             # Compatibility: some mocks/providers return a concrete response

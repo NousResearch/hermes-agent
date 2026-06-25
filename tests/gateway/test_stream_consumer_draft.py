@@ -129,7 +129,12 @@ class TestDraftStreamingHappyPath:
             transport="auto", chat_type="dm",
             edit_interval=0.01, buffer_threshold=5, cursor="",
         )
-        consumer = GatewayStreamConsumer(adapter, "12345", cfg)
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "12345",
+            cfg,
+            metadata={"expect_edits": True},
+        )
 
         consumer.on_delta("Hello ")
         task = asyncio.create_task(consumer.run())
@@ -148,10 +153,13 @@ class TestDraftStreamingHappyPath:
         # All draft frames in this run shared a single draft_id (animation).
         draft_ids = {c["draft_id"] for c in adapter.draft_calls}
         assert len(draft_ids) == 1
-        # Final answer was delivered as a regular sendMessage so the user
-        # sees a real message in their history (drafts have no message_id).
+        # Final answer was delivered as a regular send so the user sees a real
+        # message in their history (drafts have no message_id).
         adapter.send.assert_awaited()
-        # And the final send carried the complete reply.
+        # And the final send carried the complete reply without the streaming
+        # preview flag. Telegram rich messages key off this: preview sends keep
+        # legacy editability, but final draft-stream sends must be allowed to
+        # use sendRichMessage.
         final_call = adapter.send.call_args
         sent_content = (
             final_call.kwargs.get("content")
@@ -159,6 +167,7 @@ class TestDraftStreamingHappyPath:
             else final_call.args[1] if len(final_call.args) > 1 else None
         )
         assert sent_content == "Hello world!"
+        assert final_call.kwargs.get("metadata") == {"notify": True}
 
     @pytest.mark.asyncio
     async def test_group_chat_skips_draft_path(self):

@@ -223,6 +223,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    local_tools: List[Dict[str, Any]] | None = None,
 ):
     """
     Initialize the AI Agent.
@@ -755,7 +756,7 @@ def init_agent(
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
             if _provider_timeout is not None:
                 client_kwargs["timeout"] = _provider_timeout
-            if agent.provider == "copilot-acp":
+            if agent.provider in {"copilot-acp", "cursor"}:
                 client_kwargs["command"] = agent.acp_command
                 client_kwargs["args"] = agent.acp_args
             effective_base = base_url
@@ -978,6 +979,28 @@ def init_agent(
         disabled_toolsets=disabled_toolsets,
         quiet_mode=agent.quiet_mode,
     )
+    agent._local_tool_handlers = {}
+    for _tool in local_tools or []:
+        if not isinstance(_tool, dict):
+            continue
+        _name = str(_tool.get("name") or "").strip()
+        _handler = _tool.get("handler")
+        if not _name or not callable(_handler):
+            continue
+        _schema = {
+            "type": "function",
+            "function": {
+                "name": _name,
+                "description": str(_tool.get("description") or ""),
+                "parameters": _tool.get("parameters") or {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+        }
+        agent.tools.append(_schema)
+        agent._local_tool_handlers[_name] = _handler
     
     # Show tool configuration and store valid tool names for validation
     agent.valid_tool_names = set()

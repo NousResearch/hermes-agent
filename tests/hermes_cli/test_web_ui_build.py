@@ -248,6 +248,7 @@ class TestBuildWebUISkipsWhenFresh:
             "--workspace",
             "web",
             "--include-workspace-root=false",
+            "--include=dev",
             "--silent",
         ]
         assert kwargs["cwd"] == tmp_path
@@ -269,8 +270,31 @@ class TestBuildWebUISkipsWhenFresh:
 
         assert result is True
         args, kwargs = mock_run.call_args
-        assert args[0] == ["/usr/bin/npm", "ci", "--workspace", "web", "--silent"]
+        assert args[0] == ["/usr/bin/npm", "ci", "--include=dev", "--silent"]
         assert kwargs["cwd"] == tmp_path
+
+    def test_web_install_includes_dev_dependencies_under_production_env(
+        self, tmp_path, monkeypatch
+    ):
+        """Dashboard builds need TypeScript/Vite even when NODE_ENV=production.
+
+        Without --include=dev, npm can leave tsc absent and dashboard falls
+        back to stale dist with ``sh: tsc: command not found``.
+        """
+        web_dir, _ = _make_web_dir(tmp_path)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.setenv("NODE_ENV", "production")
+
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        args, _kwargs = mock_run.call_args
+        assert "--include=dev" in args[0]
 
 
 class TestBuildWebUIRetryAndStaleFallback:

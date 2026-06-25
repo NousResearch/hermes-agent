@@ -895,6 +895,12 @@ def set_approval_callback(*args, **kwargs):
     return _set_approval_callback(*args, **kwargs)
 
 
+def set_computer_use_approval_callback(*args, **kwargs):
+    from tools.computer_use.tool import set_approval_callback as _set_computer_use_approval_callback
+
+    return _set_computer_use_approval_callback(*args, **kwargs)
+
+
 def set_secret_capture_callback(*args, **kwargs):
     from tools.skills_tool import set_secret_capture_callback as _set_secret_capture_callback
 
@@ -3596,9 +3602,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _resolve_prefill_messages_file(CLI_CONFIG)
         )
         
-        # Reasoning config (OpenRouter reasoning effort level)
+        # Reasoning config (OpenRouter/Responses effort level).  The env var
+        # gives subprocess orchestrators (e.g. hermes update conflict resolver)
+        # a one-shot override without mutating the user's global config.
         self.reasoning_config = _parse_reasoning_config(
-            CLI_CONFIG["agent"].get("reasoning_effort", "")
+            os.getenv("HERMES_REASONING_EFFORT", "")
+            or CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
@@ -3747,6 +3756,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._approval_lock = threading.Lock()
         self._slash_confirm_state = None
         self._slash_confirm_deadline = 0
+        # Ctrl+S stash: stores the current draft prompt so the user can
+        # run a slash command without losing what they typed. The stashed
+        # text is automatically restored to the input buffer after the
+        # next slash command completes. Mirrors Claude Code's Ctrl+S.
+        self._stashed_input: str | None = None
         self._model_picker_state = None
         # Armed when a bare `/resume` prints the recent-sessions list so the
         # very next bare numeric input (e.g. `3`) resolves to that session.
@@ -6275,6 +6289,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
+        _cprint(f"  {_DIM}Stash draft: Ctrl+S to stash/restore your prompt while running a command{_RST}")
         if _is_termux_environment():
             _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
         else:
@@ -6630,11 +6645,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        # Reasoning effort changes are session-scoped by default. A fresh
+        # session returns to the persisted default unless the user explicitly
+        # used `/reasoning <level> --global`.
+        self.reasoning_config = _parse_reasoning_config(
+            os.getenv("HERMES_REASONING_EFFORT", "")
+            or CLI_CONFIG["agent"].get("reasoning_effort", "")
+        )
         _sync_process_session_id(self.session_id)
 
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
+            self.agent.reasoning_config = self.reasoning_config
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
@@ -7583,14 +7606,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         Supports:
           /model                              — show current model + usage hints
-          /model <name>                       — switch model (persists by default)
+          /model <name>                       — switch model (session only)
           /model <name> --session             — switch for this session only
-          /model <name> --global              — switch and persist (explicit)
+          /model <name> --global              — switch and persist to config
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
 
-        Persistence defaults to on (``model.persist_switch_by_default`` in
-        config.yaml, default True). Use ``--session`` for a one-off switch.
+        Persistence defaults to off (``model.persist_switch_by_default`` in
+        config.yaml, default False). Use ``--global`` to persist for new sessions.
         """
         from hermes_cli.model_switch import (
             switch_model,
@@ -7613,8 +7636,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         ) = parse_model_flags(raw_args)
         # Resolve the effective persistence once: --session overrides the
         # config-gated default, --global forces persist, otherwise defer to
-        # model.persist_switch_by_default (defaults to True so /model survives
-        # across sessions).
+        # model.persist_switch_by_default (defaults to False so /model is
+        # session-only by default).
         persist_global = resolve_persist_behavior(is_global_flag, is_session)
 
         # --refresh: wipe the on-disk picker cache before building the
@@ -7663,8 +7686,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if not providers:
                 _cprint("  No authenticated providers found.")
                 _cprint("")
-                _cprint("  /model <name>                        switch model (persists)")
+                _cprint("  /model <name>                        switch model (session only)")
                 _cprint("  /model <name> --session              switch for this session only")
+                _cprint("  /model <name> --global               switch and persist to config")
                 _cprint("  /model --provider <slug>             switch provider")
                 _cprint("  /model --refresh                     re-fetch live model lists")
                 return
@@ -7981,6 +8005,41 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
     
+    def _maybe_restore_stashed_input(self) -> None:
+        """Restore Ctrl+S-stashed input to the buffer after a slash command.
+
+        Called from the background process_loop thread, so the actual buffer
+        write is scheduled on the prompt_toolkit event loop via
+        ``call_soon_threadsafe``. If the buffer already has text (user started
+        typing during the command), the stash is silently discarded.
+        """
+        if not self._stashed_input:
+            return
+        stash = self._stashed_input
+        self._stashed_input = None
+
+        def _restore() -> None:
+            try:
+                if not self._app or not self._app.is_running:
+                    return
+                buf = self._app.current_buffer
+                if not buf.text.strip():
+                    buf.text = stash
+                    buf.cursor_position = len(stash)
+                    _cprint(f"\n  {_DIM}📋 Restored stashed input ({len(stash)} char{'s' if len(stash) != 1 else ''}).{_RST}")
+                    self._invalidate()
+            except Exception:
+                pass
+
+        try:
+            app_loop = getattr(self._app, "loop", None)
+            if app_loop:
+                app_loop.call_soon_threadsafe(_restore)
+            else:
+                _restore()
+        except Exception:
+            pass
+
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -8568,6 +8627,161 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         
         return True
     
+    def _handle_background_command(self, cmd: str):
+        """Handle /background <prompt> — run a prompt in a separate background session.
+
+        Spawns a new AIAgent in a background thread with its own session.
+        When it completes, prints the result to the CLI without modifying
+        the active session's conversation history.
+        """
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            _cprint("  Usage: /background <prompt>")
+            _cprint("  Example: /background Summarize the top HN stories today")
+            _cprint("  The task runs in a separate session and results display here when done.")
+            return
+
+        prompt = parts[1].strip()
+        self._background_task_counter += 1
+        task_num = self._background_task_counter
+        task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+        # Make sure we have valid credentials
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot start background task: no valid credentials.")
+            return
+
+        _cprint(f"  🔄 Background task #{task_num} started: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+        _cprint(f"  Task ID: {task_id}")
+        _cprint("  You can continue chatting — results will appear when done.\n")
+
+        turn_route = self._resolve_turn_agent_config(prompt)
+
+        def run_background():
+            set_sudo_password_callback(self._sudo_password_callback)
+            set_approval_callback(self._approval_callback)
+            set_computer_use_approval_callback(self._computer_use_approval_callback)
+            try:
+                set_secret_capture_callback(self._secret_capture_callback)
+            except Exception:
+                pass
+            try:
+                bg_agent = AIAgent(
+                    model=turn_route["model"],
+                    api_key=turn_route["runtime"].get("api_key"),
+                    base_url=turn_route["runtime"].get("base_url"),
+                    provider=turn_route["runtime"].get("provider"),
+                    api_mode=turn_route["runtime"].get("api_mode"),
+                    acp_command=turn_route["runtime"].get("command"),
+                    acp_args=turn_route["runtime"].get("args"),
+                    max_tokens=turn_route["runtime"].get("max_tokens"),
+                    max_iterations=self.max_turns,
+                    enabled_toolsets=self.enabled_toolsets,
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    session_id=task_id,
+                    platform="cli",
+                    session_db=self._session_db,
+                    reasoning_config=self.reasoning_config,
+                    service_tier=self.service_tier,
+                    request_overrides=turn_route.get("request_overrides"),
+                    providers_allowed=self._providers_only,
+                    providers_ignored=self._providers_ignore,
+                    providers_order=self._providers_order,
+                    provider_sort=self._provider_sort,
+                    provider_require_parameters=self._provider_require_params,
+                    provider_data_collection=self._provider_data_collection,
+                    openrouter_min_coding_score=self._openrouter_min_coding_score,
+                    fallback_model=self._fallback_model,
+                )
+                # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
+                bg_agent._print_fn = lambda *_a, **_kw: None
+
+                def _bg_thinking(text: str) -> None:
+                    # Concurrent bg tasks may race on _spinner_text; acceptable for best-effort UI.
+                    if not self._agent_running:
+                        self._spinner_text = text
+                        if self._app:
+                            self._app.invalidate()
+
+                bg_agent.thinking_callback = _bg_thinking
+
+                result = bg_agent.run_conversation(
+                    user_message=prompt,
+                    task_id=task_id,
+                )
+
+                response = result.get("final_response", "") if result else ""
+                if not response and result and result.get("error"):
+                    response = f"Error: {result['error']}"
+
+                # Display result in the CLI (thread-safe via patch_stdout).
+                # Force a TUI refresh first so spinner/status bar don't overlap
+                # with the output (fixes #2718).
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)  # brief pause for refresh
+                print()
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                _cprint(f"  ✅ Background task #{task_num} complete")
+                _cprint(f"  Prompt: \"{prompt[:60]}{'...' if len(prompt) > 60 else ''}\"")
+                ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
+                if response:
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        _skin = get_active_skin()
+                        label = _skin.get_branding("response_label", "⚕ Hermes")
+                        _resp_color = _maybe_remap_for_light_mode(_skin.get_color("response_border", "#CD7F32"))
+                        _resp_text = _maybe_remap_for_light_mode(_skin.get_color("banner_text", "#FFF8DC"))
+                    except Exception:
+                        label = "⚕ Hermes"
+                        _resp_color = "#CD7F32"
+                        _resp_text = "#FFF8DC"
+
+                    _chat_console = ChatConsole()
+                    _chat_console.print(Panel(
+                        _render_final_assistant_content(response, mode=self.final_response_markdown),
+                        title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
+                        title_align="left",
+                        border_style=_resp_color,
+                        style=_resp_text,
+                        box=rich_box.HORIZONTALS,
+                        padding=(1, 4),
+                        width=self._scrollback_box_width(),
+                    ))
+                else:
+                    _cprint("  (No response generated)")
+
+                # Play bell if enabled
+                if self.bell_on_complete:
+                    sys.stdout.write("\a")
+                    sys.stdout.flush()
+
+            except Exception as e:
+                # Same TUI refresh pattern as success path (#2718)
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                _cprint(f"  ❌ Background task #{task_num} failed: {e}")
+            finally:
+                try:
+                    set_sudo_password_callback(None)
+                    set_approval_callback(None)
+                    set_computer_use_approval_callback(None)
+                    set_secret_capture_callback(None)
+                except Exception:
+                    pass
+                self._background_tasks.pop(task_id, None)
+                # Clear spinner only if no foreground agent owns it
+                if not self._agent_running:
+                    self._spinner_text = ""
+                if self._app:
+                    self._invalidate(min_interval=0)
+
+        thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
+        self._background_tasks[task_id] = thread
+        thread.start()
 
     @staticmethod
     def _try_launch_chrome_debug(port: int, system: str) -> bool:
@@ -11634,6 +11848,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 # by acp_adapter/server.py for ACP sessions.
                 set_sudo_password_callback(self._sudo_password_callback)
                 set_approval_callback(self._approval_callback)
+                set_computer_use_approval_callback(self._computer_use_approval_callback)
                 try:
                     set_secret_capture_callback(self._secret_capture_callback)
                 except Exception:
@@ -11702,6 +11917,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     try:
                         set_sudo_password_callback(None)
                         set_approval_callback(None)
+                        set_computer_use_approval_callback(None)
                         set_secret_capture_callback(None)
                     except Exception:
                         pass
@@ -12535,6 +12751,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._last_turn_interrupted = False
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+        self._stashed_input = None  # Clear any stale Ctrl+S stash on (re)start
 
         # Give plugin manager a CLI reference so plugins can inject messages
         from hermes_cli.plugins import get_plugin_manager
@@ -12728,6 +12945,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # redraw fires. Every other early-return branch in this
                     # handler invalidates after reset — match them.
                     event.app.invalidate()
+                    # Restore stashed input (Ctrl+S) after inline slash command
+                    if self._stashed_input and not self._should_exit:
+                        _stash = self._stashed_input
+                        self._stashed_input = None
+                        event.app.current_buffer.text = _stash
+                        event.app.current_buffer.cursor_position = len(_stash)
                     return
 
                 # Handle /steer while the agent is running immediately on the
@@ -12746,6 +12969,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     # linger in the input area (looking unsent) and invite an
                     # accidental re-submit. See issue #34569.
                     event.app.invalidate()
+                    # Restore stashed input (Ctrl+S) after inline slash command
+                    if self._stashed_input:
+                        _stash = self._stashed_input
+                        self._stashed_input = None
+                        event.app.current_buffer.text = _stash
+                        event.app.current_buffer.cursor_position = len(_stash)
                     return
 
                 # Snapshot and clear attached images
@@ -13247,6 +13476,48 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             else:
                 self._should_exit = True
                 event.app.exit()
+
+        # Ctrl+S filter: only active during normal input (not in modal prompts).
+        _stash_filter = Condition(
+            lambda: not self._clarify_state and not self._approval_state
+            and not self._slash_confirm_state and not self._sudo_state
+            and not self._secret_state and not self._model_picker_state
+        )
+
+        @kb.add('c-s', filter=_stash_filter)
+        def handle_ctrl_s(event):
+            """Ctrl+S: stash the current draft prompt (or restore a stashed one).
+
+            Mirrors Claude Code's Ctrl+S: stashes whatever you've typed so you
+            can run a slash command, then the stashed text is automatically
+            restored to the input buffer after the command completes.
+
+            Toggle behaviour:
+            - Buffer has text → stash it, clear the buffer.
+            - Buffer is empty and a stash exists → restore the stash.
+            - Buffer is empty and no stash → no-op.
+
+            Note: some terminals intercept Ctrl+S as XOFF flow control. If the
+            key doesn't reach Hermes, run ``stty -ixon`` in your shell or add
+            it to your shell profile. prompt_toolkit's raw mode usually disables
+            IXON, but tmux/SSH/screen layers can re-enable it.
+            """
+            buf = event.app.current_buffer
+            current = buf.text
+            if current.strip():
+                self._stashed_input = current
+                buf.reset()
+                _plural = "s" if len(current) != 1 else ""
+                _cprint(f"\n  {_DIM}📋 Stashed {len(current)} char{_plural}. Will restore after next slash command.{_RST}")
+                event.app.invalidate()
+            elif self._stashed_input:
+                stash = self._stashed_input
+                self._stashed_input = None
+                buf.text = stash
+                buf.cursor_position = len(stash)
+                _plural = "s" if len(stash) != 1 else ""
+                _cprint(f"\n  {_DIM}📋 Restored stashed input ({len(stash)} char{_plural}).{_RST}")
+                event.app.invalidate()
 
         _modal_prompt_active = Condition(
             lambda: bool(self._secret_state or self._sudo_state or self._slash_confirm_state)
@@ -14505,6 +14776,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             self._pending_agent_seed = None
                             user_input = _seed
                         else:
+                            # Restore stashed input (Ctrl+S) after slash command
+                            self._maybe_restore_stashed_input()
                             continue
                     
                     # Expand paste references back to full content
@@ -14574,6 +14847,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                                 self._pending_input.put(_synth)
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
+
+                        # Restore stashed input (Ctrl+S) after agent responds.
+                        # The stash persists across regular messages too — user
+                        # can stash a draft, send a quick question, and when the
+                        # agent is done the draft is back in the input bar.
+                        self._maybe_restore_stashed_input()
 
                 except Exception as e:
                     logger.warning("process_loop unhandled error (msg may be lost): %s", e)

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.main import cmd_update, PROJECT_ROOT
+from hermes_cli.main import cmd_update, PROJECT_ROOT, _git_cmd_for_update
 
 
 def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
@@ -32,6 +32,13 @@ def _make_run_side_effect(branch="main", verify_ok=True, commit_count="0"):
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     return side_effect
+
+
+def test_git_cmd_for_update_resolves_and_strips_quoted_git(monkeypatch):
+    """Regression: update must not try to exec a literal `git\"` token."""
+    monkeypatch.setattr("shutil.which", lambda name: '/usr/bin/git"' if name == "git" else None)
+
+    assert _git_cmd_for_update()[0] == "/usr/bin/git"
 
 
 @pytest.fixture
@@ -246,7 +253,7 @@ class TestCmdUpdateBranchFallback:
         ), patch.object(hm, "_sync_with_upstream_if_needed") as sync_mock:
             cmd_update(mock_args)
 
-        sync_mock.assert_called_once_with(["git"], PROJECT_ROOT)
+        sync_mock.assert_called_once_with(hm._git_cmd_for_update(), PROJECT_ROOT)
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 
@@ -267,6 +274,7 @@ class TestCmdUpdateBranchFallback:
         import subprocess as _subprocess
         build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_web_ui_build_needed", return_value=True), \
              patch.object(hm, "_run_with_idle_timeout", return_value=build_ok) as mock_idle:
             cmd_update(mock_args)
 
@@ -319,7 +327,7 @@ class TestCmdUpdateBranchFallback:
             # The web/ install runs from the workspace root when the root
             # lockfile exists (npm workspaces hoist node_modules upward).
             assert npm_calls[2:] == [
-                (["/usr/bin/npm", "ci", "--workspace", "web", "--silent"], PROJECT_ROOT),
+                (["/usr/bin/npm", "ci", "--workspace", "web", "--include=dev", "--silent"], PROJECT_ROOT),
             ]
 
         # The web UI build itself went through the streaming helper.

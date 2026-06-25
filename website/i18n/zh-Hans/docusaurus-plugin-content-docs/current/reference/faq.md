@@ -644,7 +644,7 @@ Profiles 是构建在 `HERMES_HOME` 之上的托管层。您*可以*在每次命
 
 **场景：** 您日常使用 GPT-5.4，但 Gemini 或 Grok 写社交媒体内容更好。每次手动切换模型很繁琐。
 
-**解决方案：委托配置。** Hermes 可以自动将子智能体路由到不同的模型。在 `~/.hermes/config.yaml` 中设置：
+**解决方案：委托配置或单次委派路由。** Hermes 可以自动将子智能体路由到不同的模型。若要让所有子智能体默认使用某个专用模型，可在 `~/.hermes/config.yaml` 中设置：
 
 ```yaml
 delegation:
@@ -653,6 +653,21 @@ delegation:
 ```
 
 现在当您告诉 Hermes "帮我写一个关于 X 的 Twitter 帖子"并生成 `delegate_task` 子智能体时，该子智能体将在 Gemini 上运行，而非您的主模型。您的主对话仍在 GPT-5.4 上进行。
+
+如需一次性路由，智能体可以直接在 `delegate_task` 中传入 `model` 和
+`provider`，无需修改配置：
+
+```python
+delegate_task(
+    goal="Draft three social posts for this launch",
+    context="Tone: concise, specific, no hashtags. Include three variants.",
+    toolsets=["file"],
+    model="google/gemini-3-flash-preview",
+    provider="openrouter",
+)
+```
+
+批处理 task 也可以分别设置 `model`/`provider`，因此同一次委派可以让便宜扫描和深度审查使用不同子智能体模型。省略这些字段，或使用 `"self"`，表示继承父智能体或默认委派配置。
 
 您也可以在 prompt 中明确指定：*"委托一个任务来撰写关于我们产品发布的社交媒体帖子。让你的子智能体负责实际写作。"* 智能体将使用 `delegate_task`，它会自动读取委托配置。
 

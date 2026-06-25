@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import re
 import struct
 import subprocess
@@ -23,6 +24,11 @@ import time
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
+
+try:
+    import audioop
+except ImportError:  # pragma: no cover - Python 3.13+ fallback is not bundled yet
+    audioop = None
 
 logger = logging.getLogger(__name__)
 
@@ -358,6 +364,7 @@ class VoiceReceiver:
 
         # Per-user audio buffers
         self._buffers: Dict[int, bytearray] = defaultdict(bytearray)
+        self._stream_buffers: Dict[int, bytearray] = defaultdict(bytearray)
         self._last_packet_time: Dict[int, float] = {}
 
         # Opus decoder per SSRC (each user needs own decoder state)
@@ -394,6 +401,7 @@ class VoiceReceiver:
             pass
         with self._lock:
             self._buffers.clear()
+            self._stream_buffers.clear()
             self._last_packet_time.clear()
             self._decoders.clear()
             self._ssrc_to_user.clear()
@@ -579,6 +587,7 @@ class VoiceReceiver:
             pcm = self._decoders[ssrc].decode(decrypted)
             with self._lock:
                 self._buffers[ssrc].extend(pcm)
+                self._stream_buffers[ssrc].extend(pcm)
                 self._last_packet_time[ssrc] = time.monotonic()
         except Exception as e:
             with self._lock:
@@ -653,6 +662,33 @@ class VoiceReceiver:
 
         return completed
 
+    def drain_stream_chunks(self, *, min_bytes: int = 1920) -> list:
+        """Return recent decoded PCM chunks for low-latency realtime streaming.
+
+        Chunks are raw Discord PCM16 at 48 kHz stereo. Unlike
+        :meth:`check_silence`, this does not wait for utterance end and does not
+        clear the utterance buffer used by the turn-based STT path.
+        """
+        chunks = []
+        with self._lock:
+            ssrc_user_map = dict(self._ssrc_to_user)
+            ssrc_list = list(self._stream_buffers.keys())
+            for ssrc in ssrc_list:
+                buf = self._stream_buffers.get(ssrc)
+                if not buf or len(buf) < min_bytes:
+                    continue
+                user_id = ssrc_user_map.get(ssrc, 0)
+                if not user_id:
+                    user_id = self._infer_user_for_ssrc(ssrc)
+                if not user_id:
+                    # Keep a short tail while we wait for a SPEAKING event, but
+                    # don't let unmapped audio grow without bound.
+                    self._stream_buffers[ssrc] = bytearray(buf[-min_bytes * 4:])
+                    continue
+                chunks.append((user_id, bytes(buf)))
+                self._stream_buffers[ssrc] = bytearray()
+        return chunks
+
     # ------------------------------------------------------------------
     # PCM -> WAV conversion (for Whisper STT)
     # ------------------------------------------------------------------
@@ -685,6 +721,104 @@ class VoiceReceiver:
                 os.unlink(pcm_path)
             except OSError:
                 pass
+
+
+_AudioSourceBase = getattr(discord, "AudioSource", object) if DISCORD_AVAILABLE and discord is not None else object
+
+
+class RealtimePCMQueueAudioSource(_AudioSourceBase):
+    """Queue-backed PCM source for Discord realtime voice playback.
+
+    Discord's player thread calls :meth:`read` synchronously every 20 ms and
+    expects 48 kHz stereo PCM16 frames. xAI emits 24 kHz mono PCM16 deltas, so
+    enqueue converts provider chunks into Discord-native frames and read pads
+    short gaps with silence while the realtime session remains alive.
+    """
+
+    SAMPLE_RATE = 48000
+    CHANNELS = 2
+    SAMPLE_WIDTH = 2
+    FRAME_MS = 20
+    FRAME_SIZE = int(SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH * (FRAME_MS / 1000.0))
+
+    def __init__(self, *, max_queue_chunks: int = 200):
+        if audioop is None:
+            raise RuntimeError("audioop is required for Discord realtime voice resampling")
+        super().__init__()
+        self._queue: "queue.Queue[bytes]" = queue.Queue(maxsize=max_queue_chunks)
+        self._buffer = bytearray()
+        self._closed = threading.Event()
+        self._resample_state = None
+
+    def enqueue_pcm16(self, pcm16: bytes, sample_rate: int) -> None:
+        if not pcm16 or self._closed.is_set():
+            return
+        if audioop is None:
+            raise RuntimeError("audioop is required for Discord realtime voice resampling")
+        audio_ops = audioop
+        chunk = pcm16
+        if sample_rate != self.SAMPLE_RATE:
+            chunk, self._resample_state = audio_ops.ratecv(
+                chunk,
+                self.SAMPLE_WIDTH,
+                1,
+                int(sample_rate),
+                self.SAMPLE_RATE,
+                self._resample_state,
+            )
+        # Provider output is mono PCM16; Discord requires stereo PCM16.
+        chunk = audio_ops.tostereo(chunk, self.SAMPLE_WIDTH, 1.0, 1.0)
+        try:
+            self._queue.put_nowait(chunk)
+        except queue.Full:
+            # Drop the oldest queued audio rather than letting latency grow.
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._queue.put_nowait(chunk)
+            except queue.Full:
+                pass
+
+    def read(self) -> bytes:
+        if self._closed.is_set() and self._queue.empty() and not self._buffer:
+            return b""
+        while len(self._buffer) < self.FRAME_SIZE:
+            try:
+                self._buffer.extend(self._queue.get_nowait())
+            except queue.Empty:
+                break
+        if len(self._buffer) >= self.FRAME_SIZE:
+            frame = bytes(self._buffer[:self.FRAME_SIZE])
+            del self._buffer[:self.FRAME_SIZE]
+            return frame
+        if self._closed.is_set():
+            if not self._buffer:
+                return b""
+            frame = bytes(self._buffer)
+            self._buffer.clear()
+            return frame.ljust(self.FRAME_SIZE, b"\x00")
+        frame = bytes(self._buffer).ljust(self.FRAME_SIZE, b"\x00")
+        self._buffer.clear()
+        return frame
+
+    def is_opus(self) -> bool:
+        return False
+
+    def close(self) -> None:
+        self._closed.set()
+
+    def clear(self) -> None:
+        self._buffer.clear()
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def cleanup(self) -> None:
+        self.close()
 
 
 def _read_dm_role_auth_guild() -> Optional[int]:
@@ -735,8 +869,12 @@ class DiscordAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Discord markdown renders fenced code blocks natively
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
-    # Auto-disconnect from voice channel after this many seconds of inactivity
-    VOICE_TIMEOUT = 300
+    # Auto-disconnect from voice channel after this many seconds of inactivity.
+    # Voice calls often have natural pauses longer than five minutes, so the
+    # default must be call-friendly rather than cleanup-aggressive.  Set
+    # discord.voice_timeout_seconds or HERMES_DISCORD_VOICE_TIMEOUT_SECONDS to
+    # 0 to keep the bot connected until /voice leave or gateway shutdown.
+    VOICE_TIMEOUT = 3600
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -760,6 +898,9 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
         self._voice_input_callback: Optional[Callable] = None  # set by run.py
+        self._voice_realtime_audio_callback: Optional[Callable] = None  # set by run.py for /voice realtime
+        self._voice_realtime_sources: Dict[int, RealtimePCMQueueAudioSource] = {}
+        self._voice_realtime_resample_state: Dict[Tuple[int, int], Any] = {}
         self._on_voice_disconnect: Optional[Callable] = None  # set by run.py
         # Resolves the current voice-reply mode ("off"|"voice_only"|"all") for a
         # linked text-channel id; set by run.py. Lets the inactivity timer leave
@@ -858,6 +999,39 @@ class DiscordAdapter(BasePlatformAdapter):
                 )
 
         asyncio.create_task(_notify())
+
+    def _get_voice_timeout_seconds(self) -> int:
+        """Return the configured Discord voice-channel inactivity timeout.
+
+        Precedence:
+        1. ``discord.voice_timeout_seconds`` from config.yaml, stored in
+           ``PlatformConfig.extra`` by the gateway config loader.
+        2. ``HERMES_DISCORD_VOICE_TIMEOUT_SECONDS`` environment variable.
+        3. ``VOICE_TIMEOUT`` class default.
+
+        ``0`` disables automatic voice disconnects. Invalid values fall back to
+        the class default so a bad env/config edit does not crash the adapter.
+        """
+        raw = None
+        try:
+            extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+            raw = extra.get("voice_timeout_seconds")
+        except Exception:
+            raw = None
+        if raw is None or raw == "":
+            raw = os.getenv("HERMES_DISCORD_VOICE_TIMEOUT_SECONDS")
+        if raw is None or raw == "":
+            return int(self.VOICE_TIMEOUT)
+        try:
+            return max(0, int(float(raw)))
+        except (TypeError, ValueError):
+            logger.warning(
+                "Invalid Discord voice timeout value %r; using default %ss",
+                raw,
+                self.VOICE_TIMEOUT,
+            )
+            return int(self.VOICE_TIMEOUT)
+
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -2409,6 +2583,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Disconnect from the voice channel in a guild."""
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
             # Stop voice receiver first
+            self.stop_realtime_audio(guild_id)
             receiver = self._voice_receivers.pop(guild_id, None)
             if receiver:
                 receiver.stop()
@@ -2433,6 +2608,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 task.cancel()
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
+            realtime_resample = getattr(self, "_voice_realtime_resample_state", None)
+            if isinstance(realtime_resample, dict):
+                for key in list(realtime_resample.keys()):
+                    if key[0] == guild_id:
+                        realtime_resample.pop(key, None)
 
     # Maximum seconds to wait for voice playback before giving up
     PLAYBACK_TIMEOUT = 120
@@ -2480,6 +2660,32 @@ class DiscordAdapter(BasePlatformAdapter):
         if receiver:
             receiver.pause()
 
+        resume_realtime_audio = False
+        sources = getattr(self, "_voice_realtime_sources", None)
+        if isinstance(sources, dict):
+            realtime_source = sources.get(guild_id)
+        else:
+            sources = None
+            realtime_source = None
+        if realtime_source is not None:
+            # Realtime playback is a long-lived silence-padded source.  Treating
+            # it like a normal finite clip makes text/TTS replies wait for the
+            # full PLAYBACK_TIMEOUT before they can speak.  Stop just the
+            # queue-backed source, play the finite clip, then recreate the
+            # realtime source so the live session can keep listening/speaking.
+            resume_realtime_audio = True
+            try:
+                assert sources is not None
+                sources.pop(guild_id, None)
+                realtime_source.close()
+            except Exception:
+                logger.debug("Failed to close realtime audio source before TTS", exc_info=True)
+            try:
+                if vc.is_playing():
+                    vc.stop()
+            except Exception:
+                logger.debug("Failed to stop realtime playback before TTS", exc_info=True)
+
         try:
             # Wait for current playback to finish (with timeout)
             wait_start = time.monotonic()
@@ -2509,8 +2715,141 @@ class DiscordAdapter(BasePlatformAdapter):
             self._reset_voice_timeout(guild_id)
             return True
         finally:
+            if resume_realtime_audio:
+                try:
+                    if vc and vc.is_connected() and not vc.is_playing():
+                        self.start_realtime_audio(guild_id)
+                except Exception:
+                    logger.debug("Failed to resume realtime playback after TTS", exc_info=True)
             if receiver:
                 receiver.resume()
+
+    def _discord_pcm_to_realtime_pcm(self, guild_id: int, user_id: int, pcm_data: bytes) -> bytes:
+        """Convert Discord 48 kHz stereo PCM16 to provider 24 kHz mono PCM16."""
+        if not pcm_data:
+            return b""
+        if audioop is None:
+            logger.warning("audioop unavailable; cannot stream Discord audio to realtime provider")
+            return b""
+        audio_ops = audioop
+        try:
+            mono = audio_ops.tomono(pcm_data, 2, 0.5, 0.5)
+            state_key = (int(guild_id), int(user_id))
+            resample_state = getattr(self, "_voice_realtime_resample_state", None)
+            if not isinstance(resample_state, dict):
+                resample_state = {}
+                self._voice_realtime_resample_state = resample_state
+            converted, state = audio_ops.ratecv(
+                mono,
+                2,
+                1,
+                VoiceReceiver.SAMPLE_RATE,
+                24000,
+                resample_state.get(state_key),
+            )
+            resample_state[state_key] = state
+            return converted
+        except Exception as exc:
+            logger.debug("Discord realtime input resample failed: %s", exc)
+            return b""
+
+    def start_realtime_audio(self, guild_id: int) -> Optional[RealtimePCMQueueAudioSource]:
+        """Start queue-backed realtime playback in the connected voice channel."""
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return None
+        sources = getattr(self, "_voice_realtime_sources", None)
+        if not isinstance(sources, dict):
+            sources = {}
+            self._voice_realtime_sources = sources
+        source = RealtimePCMQueueAudioSource()
+        old_source = sources.pop(guild_id, None)
+        if old_source:
+            old_source.close()
+        try:
+            if vc.is_playing():
+                vc.stop()
+        except Exception:
+            logger.debug("Failed to stop prior Discord playback before realtime", exc_info=True)
+
+        def _after(error):
+            if error:
+                logger.error("Realtime voice playback error: %s", error)
+
+        vc.play(source, after=_after)
+        sources[guild_id] = source
+        self._reset_voice_timeout(guild_id)
+        return source
+
+    def enqueue_realtime_audio(self, guild_id: int, pcm16: bytes, sample_rate: int) -> bool:
+        sources = getattr(self, "_voice_realtime_sources", None)
+        if not isinstance(sources, dict):
+            return False
+        source = sources.get(guild_id)
+        if source is None:
+            return False
+        source.enqueue_pcm16(pcm16, sample_rate)
+        self._reset_voice_timeout(guild_id)
+        return True
+
+    def clear_realtime_audio(self, guild_id: int) -> bool:
+        sources = getattr(self, "_voice_realtime_sources", None)
+        if not isinstance(sources, dict):
+            return False
+        source = sources.get(guild_id)
+        if source is None:
+            return False
+        source.clear()
+        return True
+
+    def stop_realtime_audio(self, guild_id: int) -> bool:
+        sources = getattr(self, "_voice_realtime_sources", None)
+        if not isinstance(sources, dict):
+            sources = {}
+            self._voice_realtime_sources = sources
+        source = sources.pop(guild_id, None)
+        stopped = False
+        if source is not None:
+            source.close()
+            stopped = True
+        vc = self._voice_clients.get(guild_id)
+        if vc and vc.is_connected():
+            try:
+                if vc.is_playing():
+                    vc.stop()
+                    stopped = True
+            except Exception as exc:
+                logger.warning("Failed to stop realtime voice playback: %s", exc)
+        return stopped
+
+    def stop_voice_playback(self, guild_id: int) -> bool:
+        """Stop any active voice-channel playback and resume listening.
+
+        This is intentionally separate from the agent-level /stop path: users
+        need a low-latency way to stop spoken output even when the agent turn
+        has already completed and the adapter is only playing the generated
+        TTS file.
+        """
+        vc = self._voice_clients.get(guild_id)
+        if not vc or not vc.is_connected():
+            return False
+
+        was_playing = False
+        try:
+            was_playing = bool(vc.is_playing())
+            if was_playing:
+                vc.stop()
+        except Exception as exc:
+            logger.warning("Failed to stop Discord voice playback: %s", exc)
+            return False
+        finally:
+            receiver = self._voice_receivers.get(guild_id)
+            if receiver:
+                receiver.resume()
+
+        if was_playing:
+            self._reset_voice_timeout(guild_id)
+        return was_playing
 
     async def get_user_voice_channel(self, guild_id: int, user_id: str):
         """Return the voice channel the user is currently in, or None."""
@@ -2529,14 +2868,20 @@ class DiscordAdapter(BasePlatformAdapter):
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
+        timeout_seconds = self._get_voice_timeout_seconds()
+        if timeout_seconds <= 0:
+            return
         self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
             self._voice_timeout_handler(guild_id)
         )
 
     async def _voice_timeout_handler(self, guild_id: int) -> None:
         """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
+        timeout_seconds = self._get_voice_timeout_seconds()
+        if timeout_seconds <= 0:
+            return
         try:
-            await asyncio.sleep(self.VOICE_TIMEOUT)
+            await asyncio.sleep(timeout_seconds)
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)
@@ -2671,6 +3016,30 @@ class DiscordAdapter(BasePlatformAdapter):
                             vc._connection.send_packet(b'\xf8\xff\xfe')
                     except Exception:
                         pass
+
+                realtime_callback = getattr(self, "_voice_realtime_audio_callback", None)
+                if realtime_callback:
+                    chunks = receiver.drain_stream_chunks(min_bytes=1920)
+                    _vc_guild = self._client.get_guild(guild_id) if self._client is not None else None
+                    for user_id, pcm_data in chunks:
+                        if not self._is_allowed_user(
+                            str(user_id),
+                            guild=_vc_guild,
+                            is_dm=False,
+                        ):
+                            continue
+                        converted = self._discord_pcm_to_realtime_pcm(guild_id, user_id, pcm_data)
+                        if not converted:
+                            continue
+                        result = realtime_callback(
+                            guild_id=guild_id,
+                            user_id=user_id,
+                            pcm16=converted,
+                            sample_rate=24000,
+                        )
+                        if asyncio.iscoroutine(result) or hasattr(result, "__await__"):
+                            await result
+                    continue
 
                 completed = receiver.check_silence()
                 # Voice inputs always originate from a specific guild
@@ -3557,7 +3926,7 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, "/reload-skills")
 
         @tree.command(name="voice", description="Toggle voice reply mode")
-        @discord.app_commands.describe(mode="Voice mode: join, channel, leave, on, tts, off, or status")
+        @discord.app_commands.describe(mode="Voice mode: join, channel, leave, stop, realtime status/join/leave, on, tts, off, or status")
         @discord.app_commands.choices(mode=[
             # `join` and `channel` both route to _handle_voice_channel_join in
             # gateway/run.py — expose both in the slash UI so autocomplete
@@ -3566,6 +3935,10 @@ class DiscordAdapter(BasePlatformAdapter):
             discord.app_commands.Choice(name="join — join your voice channel", value="join"),
             discord.app_commands.Choice(name="channel — join your voice channel (alias)", value="channel"),
             discord.app_commands.Choice(name="leave — leave voice channel", value="leave"),
+            discord.app_commands.Choice(name="stop — stop playback without leaving", value="stop"),
+            discord.app_commands.Choice(name="realtime status — show experimental realtime config", value="realtime status"),
+            discord.app_commands.Choice(name="realtime join — experimental realtime join", value="realtime join"),
+            discord.app_commands.Choice(name="realtime leave — experimental realtime leave", value="realtime leave"),
             discord.app_commands.Choice(name="on — voice reply to voice messages", value="on"),
             discord.app_commands.Choice(name="tts — voice reply to all messages", value="tts"),
             discord.app_commands.Choice(name="off — text only", value="off"),

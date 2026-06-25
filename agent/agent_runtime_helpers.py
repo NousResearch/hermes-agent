@@ -1378,6 +1378,35 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             agent._client_log_context(),
         )
         return client
+    if agent.provider == "cursor" or str(client_kwargs.get("base_url", "")).startswith("cursor://"):
+        from agent.cursor_agent_client import CursorAgentClient
+
+        def _bump_compressor_estimate(tokens: int, reset: bool = False) -> None:
+            try:
+                compressor = getattr(agent, "context_compressor", None)
+                if compressor is None:
+                    return
+                if reset:
+                    compressor.last_prompt_tokens = int(tokens)
+                    return
+                prev = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+                if tokens > prev:
+                    compressor.last_prompt_tokens = int(tokens)
+            except Exception:
+                pass
+
+        client = CursorAgentClient(
+            tool_progress_callback=getattr(agent, "tool_progress_callback", None),
+            context_estimate_callback=_bump_compressor_estimate,
+            **client_kwargs,
+        )
+        _ra().logger.info(
+            "Cursor Agent client created (%s, shared=%s) %s",
+            reason,
+            shared,
+            agent._client_log_context(),
+        )
+        return client
     if agent.provider == "gemini":
         from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
 

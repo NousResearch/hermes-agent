@@ -1108,7 +1108,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 # Lazy-resumed (watch) sessions carry the stored conversation
                 # id — pass it through so the upgrade continues that session
                 # instead of starting a fresh one under the same key.
-                kw = {"session_db": session_db}
+                kw: dict[str, Any] = {"session_db": session_db}
                 if resume_sid := current.get("resume_session_id"):
                     kw["session_id"] = resume_sid
                 # Model/effort/fast the desktop picked for a brand-new chat ride
@@ -1116,7 +1116,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 # directly (no global config, no build-then-switch).
                 if override := current.get("model_override"):
                     kw["model_override"] = override
-                if (reasoning := current.get("create_reasoning_override")) is not None:
+                if current.get("reasoning_config_override") is not None:
+                    kw["reasoning_config_override"] = current.get("reasoning_config_override")
+                elif (reasoning := current.get("create_reasoning_override")) is not None:
                     kw["reasoning_config_override"] = reasoning
                 if (tier := current.get("create_service_tier_override")) is not None:
                     kw["service_tier_override"] = tier
@@ -3730,6 +3732,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
             # session set). See the cross-session-contamination note in
             # _apply_model_switch.
             model_override=session.get("model_override"),
+            reasoning_config_override=session.get("reasoning_config_override"),
         )
     finally:
         _clear_session_context(tokens)
@@ -4014,6 +4017,9 @@ def _init_session(
             # Honored on rebuild (/new, resume) so a switch in THIS session
             # never leaks into siblings via process-global env vars.
             "model_override": None,
+            # Per-session reasoning override set by `/reasoning <level>`.
+            # Only `/reasoning <level> --global` updates config.yaml.
+            "reasoning_config_override": None,
             # Pin async event emissions to whichever transport created the
             # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
             "transport": current_transport() or _stdio_transport,
@@ -9208,7 +9214,11 @@ def _(rid, params: dict) -> dict:
         try:
             from hermes_constants import parse_reasoning_effort
 
-            arg = str(value or "").strip().lower()
+            raw_arg = str(value or "").strip().lower()
+            tokens = raw_arg.split()
+            persist_global = any(t in {"--global", "--save"} for t in tokens)
+            tokens = [t for t in tokens if t not in {"--global", "--save"}]
+            arg = " ".join(tokens).strip()
             if arg in {"show", "on"}:
                 cfg = _load_cfg()
                 display = (
@@ -9288,7 +9298,25 @@ def _(rid, params: dict) -> dict:
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
-            _write_config_key("agent.reasoning_effort", arg)
+            if persist_global:
+                _write_config_key("agent.reasoning_effort", arg)
+                if session:
+                    session["reasoning_config_override"] = None
+            elif not session:
+                return _err(
+                    rid,
+                    4002,
+                    "session_id required for session-scoped reasoning; use --global to persist",
+                )
+            elif session.get("running"):
+                return _err(
+                    rid,
+                    4009,
+                    "session busy — /interrupt the current turn before changing reasoning",
+                )
+            else:
+                session["reasoning_config_override"] = parsed
+
             if session and session.get("agent") is not None:
                 session["agent"].reasoning_config = parsed
                 _persist_live_session_runtime(session)
@@ -9297,7 +9325,14 @@ def _(rid, params: dict) -> dict:
                     params.get("session_id", ""),
                     _session_info(session["agent"], session),
                 )
-            return _ok(rid, {"key": key, "value": arg})
+            return _ok(
+                rid,
+                {
+                    "key": key,
+                    "value": arg,
+                    "scope": "global" if persist_global else "session",
+                },
+            )
         except Exception as e:
             return _err(rid, 5001, str(e))
 
@@ -9539,9 +9574,19 @@ def _(rid, params: dict) -> dict:
         )
     if key == "reasoning":
         cfg = _load_cfg()
-        effort = str(
-            (cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium"
-        )
+        session = _sessions.get(params.get("session_id", ""))
+        rc = None
+        if session:
+            agent = session.get("agent")
+            rc = getattr(agent, "reasoning_config", None) if agent is not None else None
+            if rc is None:
+                rc = session.get("reasoning_config_override")
+        if isinstance(rc, dict):
+            effort = "none" if rc.get("enabled") is False else str(rc.get("effort") or "medium")
+        else:
+            effort = str(
+                (cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium"
+            )
         display = (
             "show"
             if bool((cfg.get("display") or {}).get("show_reasoning", False))

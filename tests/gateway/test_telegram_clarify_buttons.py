@@ -190,6 +190,32 @@ class TestTelegramSendClarify:
         assert "&lt;script&gt;" in kwargs["text"]
 
 
+    @pytest.mark.asyncio
+    async def test_structured_choice_renders_label_and_description(self):
+        adapter = _make_adapter()
+        mock_msg = MagicMock()
+        mock_msg.message_id = 104
+        adapter._bot.send_message = AsyncMock(return_value=mock_msg)
+
+        result = await adapter.send_clarify(
+            chat_id="12345",
+            question="Choose path?",
+            choices=[{
+                "label": "Ship it",
+                "description": "Fastest path, minimal ceremony",
+                "value": "ship",
+            }],
+            clarify_id="cid_struct_render",
+            session_key="sk_struct_render",
+        )
+
+        assert result.success is True
+        text = adapter._bot.send_message.call_args[1]["text"]
+        assert "Ship it" in text
+        assert "Fastest path" in text
+        assert "{'label'" not in text
+
+
 # ===========================================================================
 # Callback dispatch — _handle_callback_query routing for cl:* prefixes
 # ===========================================================================
@@ -241,6 +267,43 @@ class TestTelegramClarifyCallback:
         assert entry.event.is_set()
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_numeric_structured_choice_resolves_with_value(self):
+        from tools import clarify_gateway as cm
+
+        adapter = _make_adapter()
+        cm.register("cidStruct", "sk-struct", "Pick", [{
+            "label": "Recommended",
+            "description": "Best default",
+            "value": "recommended_value",
+        }])
+        adapter._clarify_state["cidStruct"] = "sk-struct"
+
+        query = AsyncMock()
+        query.data = "cl:cidStruct:0"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.text = "Pick"
+        query.from_user = MagicMock()
+        query.from_user.id = "777"
+        query.from_user.first_name = "Tester"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+        context = MagicMock()
+
+        with patch.dict(os.environ, {"TELEGRAM_ALLOWED_USERS": "*"}, clear=False):
+            await adapter._handle_callback_query(update, context)
+
+        with cm._lock:
+            entry = cm._entries.get("cidStruct")
+        assert entry is not None
+        assert entry.response == "recommended_value"
+        assert entry.event.is_set()
+        assert "Recommended" in query.answer.call_args[1]["text"]
 
     @pytest.mark.asyncio
     async def test_other_button_flips_to_text_mode(self):

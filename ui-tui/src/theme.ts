@@ -587,3 +587,48 @@ export function fromSkin(
     bannerHero
   }, process.env, DEFAULT_LIGHT_MODE)
 }
+
+function asStringRecord(value: unknown): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+
+  const out: Record<string, string> = {}
+
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === 'string') {
+      out[key] = raw
+    }
+  }
+
+  return out
+}
+
+const asString = (value: unknown): string => (typeof value === 'string' ? value : '')
+
+export function initialThemeFromEnv(env: NodeJS.ProcessEnv = process.env): Theme | null {
+  const raw = env.HERMES_TUI_INITIAL_SKIN?.trim()
+
+  if (!raw) {
+    return null
+  }
+
+  try {
+    const payload = JSON.parse(raw) as Record<string, unknown>
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return null
+    }
+
+    return fromSkin(
+      asStringRecord(payload.colors),
+      asStringRecord(payload.branding),
+      asString(payload.banner_logo),
+      asString(payload.banner_hero),
+      asString(payload.tool_prefix),
+      asString(payload.help_header)
+    )
+  } catch {
+    return null
+  }
+}

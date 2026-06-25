@@ -679,6 +679,45 @@ Hermes Agent supports Discord voice messages:
 - **Incoming voice messages** are automatically transcribed using the configured STT provider: local `faster-whisper` (no key), Groq Whisper (`GROQ_API_KEY`), or OpenAI Whisper (`VOICE_TOOLS_OPENAI_KEY`).
 - **Text-to-speech**: Use `/voice tts` to have the bot send spoken audio responses alongside text replies.
 - **Discord voice channels**: Hermes can also join a voice channel, listen to users speaking, and talk back in the channel.
+- **Stop spoken output**: Use `/voice stop` to stop the current voice-channel playback without disconnecting the bot from the voice channel.
+- **Experimental realtime surface**: `/voice realtime status`, `/voice realtime join`, and `/voice realtime leave` run a low-latency provider session in Discord voice. The first provider adapter is xAI/Grok Voice. Realtime custom tool calls are bridged back into Hermes through the default tools listed below.
+
+Voice channel connections auto-disconnect after an inactivity window so forgotten bots do not sit in calls forever. The default is one hour. Override it with `discord.voice_timeout_seconds` in `config.yaml`, or set `HERMES_DISCORD_VOICE_TIMEOUT_SECONDS`. Use `0` to disable auto-disconnect and keep the bot connected until `/voice leave` or gateway shutdown.
+
+To make normal `/voice join` use the realtime backend instead of the turn-based WAV/STT/TTS path, configure:
+
+```yaml
+discord:
+  voice_backend: realtime  # turn_based | realtime
+
+realtime_voice:
+  provider: xai
+  model: grok-voice-latest
+  voice: ara
+  max_session_minutes: 20
+  max_background_tasks: 3
+  transcript_to_text_channel: true
+  allow_tools:
+    - ask_agent
+    - start_agent_task
+    - get_agent_task_status
+    - summarize_agent_task
+    - ask_context
+```
+
+Realtime voice uses a provider-neutral runtime layer. To add another provider, implement a `RealtimeVoiceSession` adapter and register it through `gateway.realtime_voice.providers`; Discord command handling should not need provider-specific changes.
+
+The default Hermes realtime tools are:
+
+- `ask_agent`: ask Hermes for a concise answer and return it to the realtime provider. If the tool result includes separate `speak`, `display`, or `artifacts`, only `speak` is sent back to audio; display/artifact content is posted to the text channel.
+- `start_agent_task`: start a bounded background Hermes task and immediately return an internal `task_id` plus a human-readable `title`. User-facing Discord status messages use the title, not the raw id.
+- `get_agent_task_status`: check a realtime background task by `task_id` or title.
+- `summarize_agent_task`: return the completed task result or current task state by `task_id` or title.
+- `ask_context`: read-only lookup over durable memory and past session history for narrow continuity questions. It does not write memory or execute side effects.
+
+Background realtime agents also receive a private `realtime_task_update` local tool. That tool is injected only into the inner agent for the current realtime task, not into the global Hermes tool registry, plugin list, MCP discovery, or unrelated agents. When the inner agent calls it, Hermes posts a one-line progress update to the Discord text channel while the voice conversation stays responsive.
+
+Set `discord.voice_backend: turn_based` or omit it to keep the existing behavior.
 
 For the full setup and operational guide, see:
 - [Voice Mode](/user-guide/features/voice-mode)

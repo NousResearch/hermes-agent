@@ -35,7 +35,7 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,7 @@ class _ClarifyEntry:
     clarify_id: str
     session_key: str
     question: str
-    choices: Optional[List[str]]
+    choices: Optional[List[Any]]
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
@@ -79,7 +79,7 @@ def register(
     clarify_id: str,
     session_key: str,
     question: str,
-    choices: Optional[List[str]],
+    choices: Optional[List[Any]],
 ) -> _ClarifyEntry:
     """Register a pending clarify request and return the entry.
 

@@ -57,7 +57,7 @@ hermes tools                            # curses UI to enable/disable per platfo
 | `code_execution` | `execute_code` | 运行以编程方式调用 Hermes 工具的 Python 脚本。 |
 | `cronjob` | `cronjob` | 调度和管理周期性任务。 |
 | `debugging` | 复合（`file` + `terminal` + `web`） | 调试套件——文件、进程/终端、网页提取/搜索。 |
-| `delegation` | `delegate_task` | 生成隔离的子 agent 实例以并行执行工作。 |
+| `delegation` | `delegate_task` | 生成隔离的子 agent 实例以并行执行工作，并支持按调用或按 task 设置 `model`/`provider` 路由。 |
 | `discord` | `discord` | 核心 Discord 文本/嵌入/私信操作（仅限 gateway）。在 `hermes-discord` 工具集上激活。 |
 | `discord_admin` | `discord_admin` | Discord 管理操作（封禁、角色变更、频道管理）。在 `hermes-discord` 工具集上激活；需要 bot 持有相关 Discord 权限。 |
 | `feishu_doc` | `feishu_doc_read` | 读取飞书/Lark 文档内容。由飞书文档评论智能回复处理器使用。 |

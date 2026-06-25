@@ -77,18 +77,29 @@ def clarify_tool(
 
     question = question.strip()
 
-    # Validate and trim choices
+    # Validate and trim choices. Choices may be plain strings or structured
+    # objects like {"label": "Fast", "description": "Shortest path", "value": "fast"}.
+    # Structured objects with a "label" key are preserved for platforms that
+    # render rich buttons (Telegram, Discord). Dicts without "label" are
+    # flattened to plain text via _flatten_choice so no dict repr leaks.
     if choices is not None:
         if not isinstance(choices, list):
-            return tool_error("choices must be a list of strings.")
-        # LLMs sometimes emit dict-shaped choices (e.g. [{"description": "..."}])
-        # instead of bare strings. _flatten_choice unwraps them to their
-        # user-facing text here — the single platform-agnostic entry point —
-        # so the CLI panel, Discord buttons, and Telegram list all render clean
-        # text and the resolved answer is never a raw Python dict repr.
-        choices = [s for s in (_flatten_choice(c) for c in choices) if s]
-        if len(choices) > MAX_CHOICES:
-            choices = choices[:MAX_CHOICES]
+            return tool_error("choices must be a list of strings or choice objects.")
+        normalized_choices = []
+        for choice in choices:
+            if isinstance(choice, dict) and "label" in choice:
+                label = str(choice.get("label") or "").strip()
+                if label:
+                    normalized_choices.append({
+                        "label": label,
+                        "description": str(choice.get("description") or choice.get("subtext") or "").strip(),
+                        "value": str(choice.get("value") or label).strip(),
+                    })
+            else:
+                text = _flatten_choice(choice)
+                if text:
+                    normalized_choices.append(text)
+        choices = normalized_choices[:MAX_CHOICES]
         if not choices:
             choices = None  # empty list → open-ended
 

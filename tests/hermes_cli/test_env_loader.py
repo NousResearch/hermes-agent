@@ -69,12 +69,42 @@ def test_user_env_takes_precedence_over_project_env(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_API_KEY") == "project-key"
 
 
+def test_path_shell_references_expand_against_original_environment(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    user_env = home / ".env"
+    user_env.write_text("PATH=$HOME/.local/bin:$PATH\n", encoding="utf-8")
+
+    monkeypatch.setenv("HOME", "/Users/tester")
+    monkeypatch.setenv("PATH", "/opt/node/bin:/usr/bin:/bin")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [user_env]
+    assert os.getenv("PATH") == "/Users/tester/.local/bin:/opt/node/bin:/usr/bin:/bin"
+
+
+def test_path_shell_references_do_not_reinject_literal_parent_placeholders(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    user_env = home / ".env"
+    user_env.write_text("PATH=$HOME/.local/bin:$PATH\n", encoding="utf-8")
+
+    monkeypatch.setenv("HOME", "/Users/tester")
+    monkeypatch.setenv("PATH", "/opt/node/bin:$HOME/bin:$PATH:/usr/bin")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert "$" not in os.getenv("PATH")
+    assert os.getenv("PATH") == "/Users/tester/.local/bin:/opt/node/bin:/Users/tester/bin:/usr/bin"
+
+
 def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()
     env_file = home / ".env"
     # Null bytes can be introduced when copy-pasting API keys.
-    env_file.write_text("GLM_API_KEY=abc\x00\x00\nOPENAI_API_KEY=sk-123\n", encoding="utf-8")
+    env_file.write_text("GLM_API_KEY=abc\\x0...\n", encoding="utf-8")
 
     monkeypatch.delenv("GLM_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
@@ -84,6 +114,36 @@ def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
     assert loaded == [env_file]
     assert os.getenv("GLM_API_KEY") == "abc"
     assert os.getenv("OPENAI_API_KEY") == "sk-123"
+
+
+def test_path_shell_references_expand_against_original_environment(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    user_env = home / ".env"
+    user_env.write_text("PATH=$HOME/.local/bin:$PATH\n", encoding="utf-8")
+
+    monkeypatch.setenv("HOME", "/Users/tester")
+    monkeypatch.setenv("PATH", "/opt/node/bin:/usr/bin:/bin")
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [user_env]
+    assert os.getenv("PATH") == "/Users/tester/.local/bin:/opt/node/bin:/usr/bin:/bin"
+
+
+def test_path_shell_references_do_not_reinject_literal_parent_placeholders(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    user_env = home / ".env"
+    user_env.write_text("PATH=$HOME/.local/bin:$PATH\n", encoding="utf-8")
+
+    monkeypatch.setenv("HOME", "/Users/tester")
+    monkeypatch.setenv("PATH", "/opt/node/bin:$HOME/bin:$PATH:/usr/bin")
+
+    load_hermes_dotenv(hermes_home=home)
+
+    assert "$" not in os.getenv("PATH")
+    assert os.getenv("PATH") == "/Users/tester/.local/bin:/opt/node/bin:/Users/tester/bin:/usr/bin"
 
 
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):

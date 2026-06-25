@@ -26,6 +26,23 @@ def reset_tool_preview_max_len():
 class TestBuildToolPreview:
     """Tests for build_tool_preview defensive handling and normal operation."""
 
+    def test_computer_use_list_apps_returns_none(self):
+        assert build_tool_preview("computer_use_list_apps", {}) is None
+
+    def test_computer_use_get_app_state_includes_app(self):
+        out = build_tool_preview("computer_use_get_app_state", {"app": "Safari", "mode": "som"})
+        assert out is not None and "Safari" in out and "som" in out
+
+    def test_computer_use_click_shows_app_and_element(self):
+        out = build_tool_preview("computer_use_click", {"app": "Messages", "element": 7})
+        assert "Messages" in out and "#7" in out
+
+    def test_computer_use_launch_app_uses_target(self):
+        assert build_tool_preview("computer_use_launch_app", {"app": "TextEdit"}) == "TextEdit"
+
+    def test_computer_use_daemon_uses_action_subkey(self):
+        assert build_tool_preview("computer_use_daemon", {"action": "start"}) == "start"
+
     def test_none_args_returns_none(self):
         """PR #453: None args should not crash, should return None."""
         assert build_tool_preview("terminal", None) is None

@@ -182,6 +182,10 @@ class GatewaySlashCommandsMixin:
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
+        # Also clear the model lock so the new session picks up the current
+        # config default (e.g. if the user ran `hermes model` in between).
+        if hasattr(self, "_session_model_locks"):
+            self._session_model_locks.pop(session_key, None)
         self._set_session_reasoning_override(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
@@ -1108,9 +1112,9 @@ class GatewaySlashCommandsMixin:
 
         Supports:
           /model                              — interactive picker (Telegram/Discord) or text list
-          /model <name>                       — switch model (persists by default)
+          /model <name>                       — switch model (session only)
           /model <name> --session             — switch for this session only
-          /model <name> --global              — switch and persist (explicit)
+          /model <name> --global              — switch and persist to config
           /model <name> --provider <provider> — switch provider + model
           /model --provider <provider>        — switch to provider, auto-detect model
         """
@@ -1325,6 +1329,9 @@ class GatewaySlashCommandsMixin:
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
                         }
+                        # Update the model lock to match the explicit switch.
+                        if hasattr(_self, "_session_model_locks"):
+                            _self._session_model_locks[_session_key] = result.new_model
 
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
@@ -1556,6 +1563,10 @@ class GatewaySlashCommandsMixin:
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
             }
+            # Update the model lock to match so a subsequent /new or agent
+            # rebuild picks up the explicitly-switched model, not a stale lock.
+            if hasattr(self, "_session_model_locks"):
+                self._session_model_locks[session_key] = result.new_model
 
             # Evict cached agent so the next turn creates a fresh agent from the
             # override rather than relying on cache signature mismatch detection.
@@ -2127,7 +2138,7 @@ class GatewaySlashCommandsMixin:
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
+        """Handle /voice [on|off|tts|channel|leave|stop|status|realtime ...] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         platform = event.source.platform
@@ -2153,10 +2164,20 @@ class GatewaySlashCommandsMixin:
             if adapter:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
             return t("gateway.voice.tts_enabled")
+        elif args == "realtime" or args.startswith("realtime "):
+            return await self._handle_voice_realtime_command(event, args)
         elif args in {"channel", "join"}:
+            if self._get_discord_voice_backend(adapter) == "realtime":
+                return await self._handle_voice_realtime_command(event, "realtime join")
             return await self._handle_voice_channel_join(event)
         elif args == "leave":
+            guild_id = self._get_guild_id(event)
+            sessions, _ = self._realtime_voice_state()
+            if guild_id in sessions or self._get_discord_voice_backend(adapter) == "realtime":
+                return await self._handle_voice_realtime_command(event, "realtime leave")
             return await self._handle_voice_channel_leave(event)
+        elif args == "stop":
+            return await self._handle_voice_channel_stop(event)
         elif args == "status":
             mode = self._voice_mode.get(voice_key, "off")
             labels = {

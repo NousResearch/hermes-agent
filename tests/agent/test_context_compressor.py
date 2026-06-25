@@ -526,6 +526,7 @@ class TestNonStringContent:
 
         kwargs = mock_call.call_args.kwargs
         assert "temperature" not in kwargs
+        assert "extra_body" not in kwargs
 
     def test_summary_prompt_avoids_filter_sensitive_handoff_framing(self):
         mock_response = MagicMock()

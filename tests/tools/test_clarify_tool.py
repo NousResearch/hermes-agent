@@ -257,3 +257,30 @@ class TestClarifySchema:
     def test_max_choices_is_four(self):
         """MAX_CHOICES constant should be 4."""
         assert MAX_CHOICES == 4
+
+
+def test_structured_choices_preserve_label_description_and_value():
+    """Structured choices should pass label/description/value to callbacks."""
+    seen = {}
+
+    def mock_callback(question, choices):
+        seen["question"] = question
+        seen["choices"] = choices
+        return choices[0]["value"]
+
+    result = json.loads(clarify_tool(
+        "Pick one",
+        choices=[
+            {"label": "Fast", "description": "Shortest path", "value": "fast"},
+            {"label": "Careful", "subtext": "More verification", "value": "careful"},
+        ],
+        callback=mock_callback,
+    ))
+
+    assert result["user_response"] == "fast"
+    assert seen["choices"][0] == {
+        "label": "Fast",
+        "description": "Shortest path",
+        "value": "fast",
+    }
+    assert seen["choices"][1]["description"] == "More verification"

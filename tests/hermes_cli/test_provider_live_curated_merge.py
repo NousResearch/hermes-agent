@@ -196,4 +196,3 @@ class TestValidateRequestedModelCuratedFallback:
             "A model only present in another provider's catalog must not be "
             "accepted on this provider via the curated fallback."
         )
-

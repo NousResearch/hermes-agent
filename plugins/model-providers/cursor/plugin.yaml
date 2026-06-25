@@ -1,0 +1,5 @@
+name: cursor-provider
+kind: model-provider
+version: 1.0.0
+description: Cursor (100+ models, subscription)
+author: hermes_cursor fork

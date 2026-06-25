@@ -290,6 +290,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
     "grok-2": 131072,           # grok-2, grok-2-1212, grok-2-latest
     "grok": 131072,             # catch-all (grok-beta, unknown grok-*)
+    # Cursor Composer via cursor-agent. Cursor caps Composer at 200K even when
+    # the underlying model advertises a larger window.
+    "composer-2.5-fast": 200000,
+    "composer-2.5": 200000,
+    "composer-2-fast": 200000,
+    "composer-2": 200000,
+    "composer": 200000,
     # Kimi
     "kimi": 262144,
     # Tencent — Hy3 Preview (Hunyuan) with 256K context window.

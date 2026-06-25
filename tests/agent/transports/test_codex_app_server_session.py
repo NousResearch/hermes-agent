@@ -485,6 +485,42 @@ class TestServerRequestRouting:
         s.run_turn("hi", turn_timeout=1.0)
         assert ("req-1", {"decision": "decline"}) in client.responses
 
+    def test_exec_approval_no_callback_uses_gateway_queue(self, monkeypatch):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval", request_id="req-1",
+            command="psql postgresql://example", cwd="/tmp",
+            reason="needs network access",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        captured: dict = {}
+
+        monkeypatch.setattr(
+            "tools.approval._is_gateway_approval_context",
+            lambda: True,
+        )
+
+        def fake_gateway_approval(data, timeout=None):
+            captured.update(data)
+            return "once"
+
+        monkeypatch.setattr(
+            "tools.approval.request_gateway_approval_blocking",
+            fake_gateway_approval,
+        )
+
+        s = make_session(client)
+        s.run_turn("hi", turn_timeout=1.0)
+
+        assert captured["command"] == "psql postgresql://example"
+        assert captured["pattern_key"] == "codex_app_server"
+        assert "needs network access" in captured["description"]
+        assert ("req-1", {"decision": "accept"}) in client.responses
+
     def test_apply_patch_approval_session_maps_to_session_decision(self):
         client = FakeClient()
         client.queue_server_request(
@@ -505,6 +541,44 @@ class TestServerRequestRouting:
 
         s = make_session(client, approval_callback=cb)
         s.run_turn("hi", turn_timeout=1.0)
+        assert ("req-2", {"decision": "acceptForSession"}) in client.responses
+
+    def test_apply_patch_approval_no_callback_uses_gateway_queue(self, monkeypatch):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/fileChange/requestApproval", request_id="req-2",
+            itemId="fc-1",
+            turnId="t1",
+            threadId="th",
+            startedAtMs=1234567890,
+            reason="edit file",
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+
+        captured: dict = {}
+
+        monkeypatch.setattr(
+            "tools.approval._is_gateway_approval_context",
+            lambda: True,
+        )
+
+        def fake_gateway_approval(data, timeout=None):
+            captured.update(data)
+            return "session"
+
+        monkeypatch.setattr(
+            "tools.approval.request_gateway_approval_blocking",
+            fake_gateway_approval,
+        )
+
+        s = make_session(client)
+        s.run_turn("hi", turn_timeout=1.0)
+
+        assert captured["command"] == "apply_patch: edit file"
+        assert captured["pattern_key"] == "codex_app_server"
         assert ("req-2", {"decision": "acceptForSession"}) in client.responses
 
     def test_unknown_server_request_replied_with_error(self):

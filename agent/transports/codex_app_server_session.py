@@ -706,57 +706,97 @@ class CodexAppServerSession:
         description = f"Codex requests exec in {cwd}"
         if reason:
             description += f" — {reason}"
-        if self._approval_callback is not None:
-            try:
-                choice = self._approval_callback(
-                    command, description, allow_permanent=False
-                )
-                return _approval_choice_to_codex_decision(choice)
-            except Exception:
-                logger.exception("approval_callback raised on exec request")
-                return "decline"
+        choice = self._request_approval_choice(
+            command,
+            description,
+            allow_permanent=False,
+        )
+        if choice is not None:
+            return _approval_choice_to_codex_decision(choice)
         return "decline"  # fail-closed when no callback wired
 
     def _decide_apply_patch_approval(self, params: dict) -> str:
         if self._routing.auto_approve_apply_patch:
             return "accept"
-        if self._approval_callback is not None:
-            # FileChangeRequestApprovalParams gives us reason + grantRoot.
-            # The actual changeset lives on the corresponding fileChange
-            # item which the projector has already cached for us — look it
-            # up by item_id so the user sees what's actually changing.
-            reason = params.get("reason")
-            grant_root = params.get("grantRoot")
-            item_id = params.get("itemId") or ""
-            change_summary = self._lookup_pending_file_change(item_id)
-            description_parts = []
-            if reason:
-                description_parts.append(reason)
-            if change_summary:
-                description_parts.append(change_summary)
-            if grant_root:
-                description_parts.append(f"grants write to {grant_root}")
-            description = (
-                "; ".join(description_parts)
-                if description_parts
-                else "Codex requests to apply a patch"
-            )
-            command_label = (
-                f"apply_patch: {change_summary}" if change_summary
-                else f"apply_patch: {reason}" if reason
-                else "apply_patch"
-            )
-            try:
-                choice = self._approval_callback(
-                    command_label,
-                    description,
-                    allow_permanent=False,
-                )
-                return _approval_choice_to_codex_decision(choice)
-            except Exception:
-                logger.exception("approval_callback raised on apply_patch")
-                return "decline"
+        # FileChangeRequestApprovalParams gives us reason + grantRoot.
+        # The actual changeset lives on the corresponding fileChange
+        # item which the projector has already cached for us — look it
+        # up by item_id so the user sees what's actually changing.
+        reason = params.get("reason")
+        grant_root = params.get("grantRoot")
+        item_id = params.get("itemId") or ""
+        change_summary = self._lookup_pending_file_change(item_id)
+        description_parts = []
+        if reason:
+            description_parts.append(reason)
+        if change_summary:
+            description_parts.append(change_summary)
+        if grant_root:
+            description_parts.append(f"grants write to {grant_root}")
+        description = (
+            "; ".join(description_parts)
+            if description_parts
+            else "Codex requests to apply a patch"
+        )
+        command_label = (
+            f"apply_patch: {change_summary}" if change_summary
+            else f"apply_patch: {reason}" if reason
+            else "apply_patch"
+        )
+        choice = self._request_approval_choice(
+            command_label,
+            description,
+            allow_permanent=False,
+        )
+        if choice is not None:
+            return _approval_choice_to_codex_decision(choice)
         return "decline"
+
+    def _request_approval_choice(
+        self,
+        command: str,
+        description: str,
+        *,
+        allow_permanent: bool,
+    ) -> Optional[str]:
+        """Ask the active Hermes surface to resolve a Codex approval.
+
+        CLI sessions install a thread-local terminal callback. Gateway/TUI
+        server sessions do not, so route those through the shared blocking
+        gateway approval queue instead of fail-closing immediately.
+        """
+        if self._approval_callback is not None:
+            try:
+                return self._approval_callback(
+                    command,
+                    description,
+                    allow_permanent=allow_permanent,
+                )
+            except Exception:
+                logger.exception("approval_callback raised on codex app-server request")
+                return "deny"
+
+        try:
+            from tools.approval import (
+                _is_gateway_approval_context,
+                request_gateway_approval_blocking,
+            )
+
+            if _is_gateway_approval_context():
+                choice = request_gateway_approval_blocking(
+                    {
+                        "command": command,
+                        "description": description,
+                        "pattern_key": "codex_app_server",
+                        "pattern_keys": ["codex_app_server"],
+                    }
+                )
+                return "deny" if choice == "timeout" else choice
+        except Exception:
+            logger.exception("gateway approval routing failed for codex app-server request")
+            return "deny"
+
+        return None
 
     def _track_pending_file_change(self, note: dict) -> None:
         """Maintain self._pending_file_changes from item/started + item/completed

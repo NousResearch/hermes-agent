@@ -1,0 +1,13 @@
+{
+  "name": "hermes-cursor-agent-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Hermes bridge for the official Cursor SDK agent runtime.",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@cursor/sdk": "^1.0.13"
+  }
+}

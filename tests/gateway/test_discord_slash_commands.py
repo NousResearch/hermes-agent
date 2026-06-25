@@ -75,6 +75,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+from plugins.platforms.discord import adapter as discord_adapter  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -156,6 +157,51 @@ async def test_registers_native_restart_slash_command(adapter):
         "/restart",
         "Restart requested~",
     )
+
+
+def test_native_voice_slash_choices_include_stop_and_realtime(adapter, monkeypatch):
+    captured_choices = {}
+    original_choices = discord_adapter.discord.app_commands.choices
+
+    def recording_choices(**kwargs):
+        captured_choices.update(kwargs)
+        return original_choices(**kwargs)
+
+    monkeypatch.setattr(
+        discord_adapter.discord.app_commands,
+        "choices",
+        recording_choices,
+    )
+
+    adapter._register_slash_commands()
+
+    values = [choice.value for choice in captured_choices["mode"]]
+    assert "stop" in values
+    assert "realtime status" in values
+    assert "realtime join" in values
+    assert "realtime leave" in values
+
+
+@pytest.mark.asyncio
+async def test_native_voice_stop_dispatches_to_voice_stop(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands["voice"](interaction, mode="stop")
+
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/voice stop")
+
+
+@pytest.mark.asyncio
+async def test_native_voice_realtime_dispatches_full_mode(adapter):
+    adapter._run_simple_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    interaction = SimpleNamespace()
+    await adapter._client.tree.commands["voice"](interaction, mode="realtime status")
+
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/voice realtime status")
 
 
 # ------------------------------------------------------------------

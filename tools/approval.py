@@ -761,6 +761,47 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def request_gateway_approval_blocking(approval_data: dict, timeout: int | None = None) -> str:
+    """Submit a generic gateway approval and block for the user's choice.
+
+    Used by non-terminal tools such as computer_use that need the same queue,
+    buttons, and /approve flow as dangerous shell commands.
+    Returns one of ``once``, ``session``, ``always``, ``deny``, or ``timeout``.
+    """
+    session_key = get_current_session_key()
+    with _lock:
+        notify_cb = _gateway_notify_cbs.get(session_key)
+    if notify_cb is None:
+        return "deny"
+
+    entry = _ApprovalEntry(dict(approval_data or {}))
+    with _lock:
+        _gateway_queues.setdefault(session_key, []).append(entry)
+    try:
+        notify_cb(entry.data)
+    except Exception:
+        with _lock:
+            queue = _gateway_queues.get(session_key, [])
+            if entry in queue:
+                queue.remove(entry)
+            if not queue:
+                _gateway_queues.pop(session_key, None)
+        return "deny"
+
+    if timeout is None:
+        timeout = int(_get_approval_config().get("gateway_timeout", 300) or 300)
+    resolved = entry.event.wait(timeout=max(0, int(timeout)))
+    with _lock:
+        queue = _gateway_queues.get(session_key, [])
+        if entry in queue:
+            queue.remove(entry)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+    if not resolved:
+        return "timeout"
+    return entry.result or "timeout"
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:

@@ -1048,6 +1048,18 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 error_message=getattr(_guardrail_block_decision, "message", None) or "Tool blocked by guardrail policy",
                 middleware_trace=list(middleware_trace),
             )
+        elif function_name in getattr(agent, "_local_tool_handlers", {}):
+            function_result = agent._invoke_tool(
+                function_name,
+                function_args,
+                effective_task_id,
+                tool_call.id,
+                messages=messages,
+                pre_tool_block_checked=True,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)}")
         elif function_name == "todo":
             def _execute(next_args: dict) -> Any:
                 from tools.todo_tool import todo_tool as _todo_tool

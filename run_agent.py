@@ -426,6 +426,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        local_tools: List[Dict[str, Any]] | None = None,
     ):
         """Forwarder — see ``agent.agent_init.init_agent``."""
         from agent.agent_init import init_agent
@@ -501,6 +502,7 @@ class AIAgent:
             checkpoint_max_total_size_mb=checkpoint_max_total_size_mb,
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
+            local_tools=local_tools,
         )
 
     def _get_session_db_for_recall(self):
@@ -4651,10 +4653,10 @@ class AIAgent:
             return content
 
         summary = _multimodal_text_summary(result)
-        if tool_name == "computer_use":
+        if tool_name.startswith("computer_use_"):
             return json.dumps({
                 "error": (
-                    "computer_use returned screenshot/image content, but the active "
+                    "Computer Use returned screenshot/image content, but the active "
                     "model/provider does not support image input. Switch to a "
                     "vision-capable model for desktop computer use, or use browser "
                     "tools for browser tasks."
@@ -5237,6 +5239,8 @@ class AIAgent:
             context=function_args.get("context"),
             toolsets=function_args.get("toolsets"),
             tasks=function_args.get("tasks"),
+            model=function_args.get("model"),
+            provider=function_args.get("provider"),
             max_iterations=function_args.get("max_iterations"),
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),

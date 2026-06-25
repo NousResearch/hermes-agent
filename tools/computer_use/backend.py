@@ -132,6 +132,7 @@ class ComputerUseBackend(ABC):
         *,
         direction: str,                 # up | down | left | right
         amount: int = 3,                # wheel ticks
+        pages: Optional[float] = None,   # Codex-compatible alias; converted by backend
         element: Optional[int] = None,
         x: Optional[int] = None,
         y: Optional[int] = None,
@@ -147,21 +148,43 @@ class ComputerUseBackend(ABC):
         """Send a key combo, e.g. 'cmd+s', 'ctrl+alt+t', 'return'."""
 
     # ── Introspection ───────────────────────────────────────────────
+
+    # ── Accessibility value/action helpers ─────────────────────────
+    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+        return ActionResult(ok=False, action="set_value", message="backend does not support set_value")
+
+    def perform_secondary_action(self, element: Optional[int] = None, secondary_action: str = "AXShowMenu") -> ActionResult:
+        return ActionResult(ok=False, action="perform_secondary_action", message="backend does not support secondary actions")
+
+    def select_text(
+        self,
+        element: Optional[int] = None,
+        text: str = "",
+        selection: str = "all",
+        prefix: str = "",
+        suffix: str = "",
+        cursor: Optional[str] = None,
+    ) -> ActionResult:
+        return ActionResult(ok=False, action="select_text", message="backend does not support select_text")
+
     @abstractmethod
     def list_apps(self) -> List[Dict[str, Any]]:
         """Return running apps with bundle IDs, PIDs, window counts."""
 
+    def launch_app(self, app: str = "", bundle_id: str = "", background: bool = True) -> ActionResult:
+        return ActionResult(ok=False, action="launch_app", message="backend does not support launch_app")
+
+    def daemon_status(self) -> Dict[str, Any]:
+        """Return a structured snapshot of the underlying driver/daemon state."""
+        return {"binary_installed": False, "running": False, "permissions": "unknown", "version": ""}
+
+    def apply_runtime_config(self) -> None:
+        """Apply Hermes config (cursor visibility, etc.) to the live backend."""
+        return None
+
     @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Route input to `app` (by name or bundle ID). Default: focus without raise."""
-
-    # ── Native-value mutation ────────────────────────────────────────
-    @abstractmethod
-    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
-        """Set a native value on an element (e.g. AXPopUpButton selection).
-
-        `element` is the 1-based SOM index returned by a prior capture call.
-        """
 
     # ── Timing ──────────────────────────────────────────────────────
     def wait(self, seconds: float) -> ActionResult:

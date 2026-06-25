@@ -743,6 +743,55 @@ class TestLoadGatewayConfig:
             "456": "Therapist mode",
         }
 
+    def test_bridges_discord_voice_backend_and_timeout_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  voice_backend: realtime\n"
+            "  voice_timeout_seconds: 0\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        discord_extra = config.platforms[Platform.DISCORD].extra
+        assert discord_extra["voice_backend"] == "realtime"
+        assert discord_extra["voice_timeout_seconds"] == 0
+
+    def test_realtime_voice_config_roundtrip_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "realtime_voice:\n"
+            "  provider: xai\n"
+            "  model: grok-voice-latest\n"
+            "  voice: alloy\n"
+            "  max_session_minutes: 7\n"
+            "  max_background_tasks: 2\n"
+            "  transcript_to_text_channel: false\n"
+            "  allow_tools:\n"
+            "    - ask_agent\n"
+            "    - get_agent_task_status\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.realtime_voice.provider == "xai"
+        assert config.realtime_voice.model == "grok-voice-latest"
+        assert config.realtime_voice.voice == "alloy"
+        assert config.realtime_voice.max_session_minutes == 7
+        assert config.realtime_voice.max_background_tasks == 2
+        assert config.realtime_voice.transcript_to_text_channel is False
+        assert config.realtime_voice.allow_tools == ("ask_agent", "get_agent_task_status")
+
     def test_bridges_discord_history_backfill_settings_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

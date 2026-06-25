@@ -62,8 +62,8 @@ fi
 if [[ "$(uname)" == "Darwin" ]]; then
   if open -Ra "Google Chrome" 2>/dev/null; then
     ok "Google Chrome found"
-  elif open -Ra "Safari" 2>/dev/null; then
-    ok "Safari found"
+  elif open -Ra "Helium" 2>/dev/null; then
+    ok "Helium found"
   else
     warn "No browser detected"
   fi
@@ -71,7 +71,7 @@ fi
 
 echo ""
 echo "=== Core Requirements ==="
-echo "  A modern browser (Chrome/Firefox/Safari/Edge)"
+echo "  A modern browser (Helium first on this machine; Chrome fallback only if Helium is unavailable)"
 echo "  p5.js loaded via CDN — no local install needed"
 echo ""
 echo "=== Optional (for export) ==="

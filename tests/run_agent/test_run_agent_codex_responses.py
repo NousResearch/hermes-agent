@@ -752,6 +752,38 @@ def test_run_conversation_codex_empty_output_no_output_text_retries(monkeypatch)
     assert result["final_response"] == "Recovered"
 
 
+def test_run_conversation_codex_none_output_property_error_retries(monkeypatch):
+    """SDK output_text property can raise when response.output is None."""
+    agent = _build_agent(monkeypatch)
+    calls = {"api": 0}
+
+    class _CodexResponseWithNoneOutput:
+        output = None
+        usage = SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8)
+        status = "completed"
+        model = "gpt-5.5"
+
+        @property
+        def output_text(self):
+            for output in self.output:
+                return output
+            return ""
+
+    def _fake_api_call(api_kwargs):
+        calls["api"] += 1
+        if calls["api"] == 1:
+            return _CodexResponseWithNoneOutput()
+        return _codex_message_response("Recovered")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("Say hello")
+
+    assert calls["api"] >= 2
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered"
+
+
 def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
     agent = _build_agent(monkeypatch)
     calls = {"api": 0, "refresh": 0}

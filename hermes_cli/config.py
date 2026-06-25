@@ -1032,6 +1032,22 @@ DEFAULT_CONFIG = {
         "image_input_mode": "auto",
         "disabled_toolsets": [],
     },
+
+    "update": {
+        # Maintainer mode is for Kamell's patched-main fork fleet. Consumers
+        # leave this false and only pull origin/patched-main.
+        "fork_maintainer": False,
+        # Optional maintainer-only safety valve: when merging upstream/main into
+        # patched-main conflicts, replay the merge in a temp worktree and spawn
+        # a bounded Hermes resolver agent. Defaults off for normal users.
+        "auto_resolve_conflicts": False,
+        "auto_resolve_timeout": 1800,
+        "auto_resolve_model": "",
+        "auto_resolve_provider": "",
+        "auto_resolve_reasoning_effort": "high",
+        "auto_resolve_push": True,
+        "auto_resolve_max_turns": 1000,
+    },
     
     "terminal": {
         "backend": "local",

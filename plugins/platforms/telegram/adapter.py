@@ -3676,6 +3676,34 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    def _normalize_clarify_choice(self, choice: Any, index: int) -> Dict[str, str]:
+        """Normalize clarify choices into Telegram label/description/value parts."""
+        if isinstance(choice, dict):
+            label = str(
+                choice.get("label")
+                or choice.get("title")
+                or choice.get("value")
+                or f"Option {index + 1}"
+            ).strip()
+            description = str(
+                choice.get("description")
+                or choice.get("subtext")
+                or choice.get("details")
+                or ""
+            ).strip()
+            value = str(choice.get("value") or label).strip()
+        else:
+            raw = str(choice).strip()
+            label, description = raw, ""
+            for sep in (" — ", " - ", ": "):
+                if sep in raw:
+                    left, right = raw.split(sep, 1)
+                    if left.strip() and right.strip():
+                        label, description = left.strip(), right.strip()
+                        break
+            value = raw
+        return {"label": label, "description": description, "value": value or label}
+
     async def send_clarify(
         self,
         chat_id: str,
@@ -3700,32 +3728,36 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
-            text = f"❓ {_html.escape(question)}"
             thread_id = self._metadata_thread_id(metadata)
+            normalized = [
+                self._normalize_clarify_choice(choice, idx)
+                for idx, choice in enumerate(choices or [])
+            ]
 
-            if choices:
-                # Render full option text in the message body so mobile
-                # users can read long choices that would be truncated in
-                # inline button labels.  Buttons keep short numeric labels
-                # (1, 2, …, Other) to avoid Telegram truncation.
-                option_lines = "\n".join(
-                    f"{i + 1}. {_html.escape(str(c))}"
-                    for i, c in enumerate(choices)
-                )
-                text += f"\n\n{option_lines}"
+            lines = [f"❓ <b>{_html.escape(question)}</b>"]
+            if normalized:
+                lines.append("")
+                for idx, item in enumerate(normalized, start=1):
+                    lines.append(f"<b>{idx}. {_html.escape(item['label'])}</b>")
+                    if item.get("description"):
+                        lines.append(f"   <i>{_html.escape(item['description'])}</i>")
+            else:
+                lines.append("")
+                lines.append("Reply with your answer.")
 
             kwargs: Dict[str, Any] = {
                 "chat_id": int(chat_id),
-                "text": text,
+                "text": "\n".join(lines),
                 "parse_mode": ParseMode.HTML,
                 **self._link_preview_kwargs(),
             }
 
-            if choices:
+            if normalized:
                 # Telegram caps callback_data at 64 bytes; keep "cl:<id>:<idx>"
-                # short.
+                # short. Full option text is rendered in the message body;
+                # buttons stay numeric so long labels don't get truncated.
                 rows = []
-                for idx in range(len(choices)):
+                for idx in range(len(normalized)):
                     rows.append([
                         InlineKeyboardButton(
                             str(idx + 1),
@@ -4484,14 +4516,19 @@ class TelegramAdapter(BasePlatformAdapter):
                     return
 
                 # Look up the choice text from the entry registered in the
-                # clarify primitive.  Fall back to the index if the entry
-                # has been cleaned up (race with timeout / session reset).
+                # clarify primitive.  Structured choices resolve to their
+                # machine value while Telegram displays the human label.
+                # Fall back to the index if the entry has been cleaned up
+                # (race with timeout / session reset).
                 resolved_text: Optional[str] = None
+                resolved_label: Optional[str] = None
                 try:
                     from tools.clarify_gateway import _entries as _clarify_entries  # type: ignore
                     entry = _clarify_entries.get(clarify_id)
                     if entry and entry.choices and 0 <= idx < len(entry.choices):
-                        resolved_text = entry.choices[idx]
+                        normalized = self._normalize_clarify_choice(entry.choices[idx], idx)
+                        resolved_text = normalized.get("value") or normalized.get("label")
+                        resolved_label = normalized.get("label") or resolved_text
                 except Exception:
                     resolved_text = None
 
@@ -4500,6 +4537,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     # the agent at least sees an intentional response
                     # rather than nothing.
                     resolved_text = f"choice {idx + 1}"
+                display_text = resolved_label or resolved_text
 
                 # Pop state and resolve
                 self._clarify_state.pop(clarify_id, None)
@@ -4510,10 +4548,10 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.error("[%s] resolve_gateway_clarify failed: %s", self.name, exc)
                     resolved = False
 
-                await query.answer(text=f"✓ {resolved_text[:60]}")
+                await query.answer(text=f"✓ {display_text[:60]}")
                 try:
                     await query.edit_message_text(
-                        text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}",
+                        text=f"❓ {_html.escape(query.message.text or '')}\n\n<b>{_html.escape(user_display)}:</b> {_html.escape(display_text)}",
                         parse_mode=ParseMode.HTML,
                         reply_markup=None,
                     )

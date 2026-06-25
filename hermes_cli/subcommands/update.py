@@ -51,6 +51,14 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         help="Assume yes for interactive prompts (config migration, stash restore). API-key entry is skipped; run 'hermes config migrate' separately for those.",
     )
     update_parser.add_argument(
+        "--maintainer",
+        "--sync-upstream",
+        dest="maintainer",
+        action="store_true",
+        default=False,
+        help="For this run only, sync upstream/main into the fork and patched-main before updating. Intended for temporarily promoting a consumer machine.",
+    )
+    update_parser.add_argument(
         "--branch",
         default=None,
         metavar="NAME",

@@ -425,8 +425,13 @@ def test_run_agent_dispatch_forces_background():
 
         sub = _FakeAgent()
         sub._delegate_depth = 1
-        run_agent.AIAgent._dispatch_delegate_task(sub, {"goal": "x"})
+        run_agent.AIAgent._dispatch_delegate_task(
+            sub,
+            {"goal": "x", "model": "cheap/model", "provider": "openrouter"},
+        )
         assert captured["background"] is False
+        assert captured["model"] == "cheap/model"
+        assert captured["provider"] == "openrouter"
 
 
 def test_delegate_task_background_detaches_child_from_parent(monkeypatch):
@@ -594,5 +599,3 @@ def test_gateway_cli_origin_event_left_unrouted():
     evt = _make_async_evt(session_key="")
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
-
-

@@ -68,6 +68,50 @@ All three run concurrently. Each subagent searches the web independently and ret
 
 ---
 
+## Pattern: Route a Subtask to a Specific Model
+
+Use `model` and `provider` when one task should run on a cheaper, faster, or
+more specialized model than the parent session:
+
+```python
+delegate_task(
+    goal="Do a quick regression-risk pass over this diff",
+    context="""Project at /home/user/app. Inspect `git diff --stat` and the
+    changed files. Return only concrete risk notes; do not edit files.""",
+    toolsets=["terminal", "file"],
+    model="openai/gpt-5-nano",
+    provider="openrouter",
+)
+```
+
+For a batch, either put `model`/`provider` at the top level to apply to every
+child, or set them on individual task objects:
+
+```python
+delegate_task(tasks=[
+    {
+        "goal": "Fast dependency/API scan",
+        "context": "Look for obvious changed-callsite breakage only.",
+        "toolsets": ["terminal", "file"],
+        "model": "openai/gpt-5-nano",
+        "provider": "openrouter",
+    },
+    {
+        "goal": "Deep architecture critique",
+        "context": "Evaluate whether the design will still hold after scale-up.",
+        "toolsets": ["file"],
+        "model": "anthropic/claude-sonnet-4",
+        "provider": "openrouter",
+    },
+])
+```
+
+Omit the fields, or pass `"self"`, to inherit the parent/configured delegation
+runtime. Pass `provider` whenever the target model is not served by the same
+provider as the parent.
+
+---
+
 ## Pattern: Code Review
 
 Delegate a security review to a fresh-context subagent that approaches the code without preconceptions:

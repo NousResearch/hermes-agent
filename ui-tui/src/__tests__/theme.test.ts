@@ -17,7 +17,8 @@ const RELEVANT_ENV = [
   'HERMES_TUI_BACKGROUND',
   'COLORFGBG',
   'COLORTERM',
-  'TERM_PROGRAM'
+  'TERM_PROGRAM',
+  'HERMES_TUI_INITIAL_SKIN'
 ] as const
 
 async function importThemeWithEnv(env: Partial<Record<(typeof RELEVANT_ENV)[number], string>> = {}) {
@@ -299,6 +300,31 @@ describe('fromSkin', () => {
 
     expect(fromSkin({}, {}, 'LOGO', 'HERO').bannerLogo).toBe('LOGO')
     expect(fromSkin({}, {}, 'LOGO', 'HERO').bannerHero).toBe('HERO')
+  })
+
+  it('hydrates the initial theme from a bootstrap skin env payload', async () => {
+    const { initialThemeFromEnv } = await importThemeWithCleanEnv()
+    const theme = initialThemeFromEnv({
+      HERMES_TUI_INITIAL_SKIN: JSON.stringify({
+        banner_logo: 'LOGO',
+        branding: { agent_name: 'Mono Hermes', prompt_symbol: '>' },
+        colors: { banner_title: '#111111', completion_menu_current_bg: '#222222' },
+        tool_prefix: '·'
+      })
+    } as NodeJS.ProcessEnv)
+
+    expect(theme?.brand.name).toBe('Mono Hermes')
+    expect(theme?.brand.prompt).toBe('>')
+    expect(theme?.brand.tool).toBe('·')
+    expect(theme?.bannerLogo).toBe('LOGO')
+    expect(theme?.color.primary).toBe('#111111')
+    expect(theme?.color.selectionBg).toBe('#222222')
+  })
+
+  it('ignores invalid initial skin env payloads', async () => {
+    const { initialThemeFromEnv } = await importThemeWithCleanEnv()
+
+    expect(initialThemeFromEnv({ HERMES_TUI_INITIAL_SKIN: '{nope' } as NodeJS.ProcessEnv)).toBeNull()
   })
 
   it('maps ui_ color keys + cascades to status', async () => {

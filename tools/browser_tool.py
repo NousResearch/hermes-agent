@@ -2175,96 +2175,33 @@ def _run_browser_command(
                     "--no-sandbox,--disable-dev-shm-usage"
                 )
 
-        # Use temp files for stdout/stderr instead of pipes.
-        # agent-browser starts a background daemon that inherits file
-        # descriptors.  With capture_output=True (pipes), the daemon keeps
-        # the pipe fds open after the CLI exits, so communicate() never
-        # sees EOF and blocks until the timeout fires.
-        stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
-        stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
-        stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        try:
-            # See matching comment at the other Popen site above — on
-            # Windows we put agent-browser in its own process group, force
-            # STARTF_USESTDHANDLES so CreateProcess hands the child ONLY our
-            # three explicit handles (no leaked parent-console handles to
-            # confuse the Rust binary's daemon-spawn), and close_fds=True to
-            # block inheritance of everything else.
-            _popen_extra: dict = {}
-            if os.name == "nt":
-                # See matching block at the other Popen site — CREATE_NO_WINDOW
-                # only, NO CREATE_NEW_PROCESS_GROUP (cancels asyncio loop task
-                # on Python 3.11 Windows → KeyboardInterrupt in CLI MainThread).
-                _CREATE_NO_WINDOW = 0x08000000
-                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
-                _popen_extra["close_fds"] = True
-                _si = subprocess.STARTUPINFO()
-                _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
-                _popen_extra["startupinfo"] = _si
-            proc = subprocess.Popen(
-                cmd_parts,
-                stdout=stdout_fd,
-                stderr=stderr_fd,
-                stdin=subprocess.DEVNULL,
-                env=browser_env,
-                **_popen_extra,
-            )
-        finally:
-            os.close(stdout_fd)
-            os.close(stderr_fd)
-
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
-            logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
-                           command, timeout, task_id, task_socket_dir)
-            result = {"success": False, "error": f"Command timed out after {timeout} seconds"}
-            # Fall through to fallback check below
-        else:
-            with open(stdout_path, "r", encoding="utf-8") as f:
-                stdout = f.read()
-            with open(stderr_path, "r", encoding="utf-8") as f:
-                stderr = f.read()
-            returncode = proc.returncode
-
-            # Clean up temp files (best-effort)
-            for p in (stdout_path, stderr_path):
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
-
-            # Log stderr for diagnostics — use warning level on failure so it's visible
+        # Helper to parse agent-browser JSON output into `result`.
+        def _parse_browser_output(stdout: str, stderr: str, rc: int) -> dict:
+            """Parse agent-browser stdout into a result dict.  Shared by Linux and Windows paths."""
+            r: dict
             if stderr and stderr.strip():
-                level = logging.WARNING if returncode != 0 else logging.DEBUG
+                level = logging.WARNING if rc != 0 else logging.DEBUG
                 logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
 
             stdout_text = stdout.strip()
 
-            # Empty output with rc=0 is a broken state — treat as failure rather
-            # than silently returning {"success": True, "data": {}}.
-            # Some commands (close, record) legitimately return no output.
-            if not stdout_text and returncode == 0 and command not in _EMPTY_OK_COMMANDS:
+            if not stdout_text and rc == 0 and command not in _EMPTY_OK_COMMANDS:
                 logger.warning("browser '%s' returned empty output (rc=0)", command)
-                result = {"success": False, "error": f"Browser command '{command}' returned no output"}
+                r = {"success": False, "error": f"Browser command '{command}' returned no output"}
             elif stdout_text:
                 try:
                     parsed = json.loads(stdout_text)
-                    # Warn if snapshot came back empty (common sign of daemon/CDP issues)
                     if command == "snapshot" and parsed.get("success"):
                         snap_data = parsed.get("data", {})
                         if not snap_data.get("snapshot") and not snap_data.get("refs"):
                             logger.warning("snapshot returned empty content. "
                                            "Possible stale daemon or CDP connection issue. "
-                                           "returncode=%s", returncode)
-                    result = parsed
+                                           "returncode=%s", rc)
+                    r = parsed
                 except json.JSONDecodeError:
                     raw = stdout_text[:2000]
                     logger.warning("browser '%s' returned non-JSON output (rc=%s): %s",
-                                   command, returncode, raw[:500])
+                                   command, rc, raw[:500])
 
                     if command == "screenshot":
                         stderr_text = (stderr or "").strip()
@@ -2278,30 +2215,112 @@ def _run_browser_command(
                                 "browser 'screenshot' recovered file from non-JSON output: %s",
                                 recovered_path,
                             )
-                            result = {
+                            r = {
                                 "success": True,
                                 "data": {
                                     "path": recovered_path,
-                                    "raw": raw,
+                                    "screenshot_path": recovered_path,
                                 },
                             }
                         else:
-                            result = {
+                            r = {
                                 "success": False,
-                                "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
+                                "error": f"Command '{command}' returned non-JSON output"
                             }
                     else:
-                        result = {
+                        r = {
                             "success": False,
-                            "error": f"Non-JSON output from agent-browser for '{command}': {raw}"
+                            "error": f"Command '{command}' returned non-JSON output"
                         }
-            elif returncode != 0:
-                # Check for errors
-                error_msg = stderr.strip() if stderr else f"Command failed with code {returncode}"
-                logger.warning("browser '%s' failed (rc=%s): %s", command, returncode, error_msg[:300])
-                result = {"success": False, "error": error_msg}
+            elif rc != 0:
+                error_msg = stderr.strip() if stderr else f"Command failed with code {rc}"
+                logger.warning("browser '%s' failed (rc=%s): %s", command, rc, error_msg[:300])
+                r = {"success": False, "error": error_msg}
             else:
-                result = {"success": True, "data": {}}
+                r = {"success": True, "data": {}}
+            return r
+
+        # Linux: use pipes (capture_output=True) for stdout/stderr.
+        # Python 3.2+ defaults close_fds=True on POSIX, so the
+        # agent-browser daemon does NOT inherit the pipe fds — no
+        # EOF-blocking risk.  Temp files don't work because
+        # agent-browser's CLI sends commands to the daemon via socket
+        # and exits immediately when stdout is a regular file, losing
+        # the output.
+        # Windows: keep temp files (close_fds is False by default, and
+        # Windows handle inheritance is more complex).
+        result = None
+        if os.name != "nt":
+            try:
+                pipe_result = subprocess.run(
+                    cmd_parts,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                    env=browser_env,
+                )
+                returncode = pipe_result.returncode
+                stdout = pipe_result.stdout
+                stderr = pipe_result.stderr
+                result = _parse_browser_output(stdout, stderr, returncode)
+            except subprocess.TimeoutExpired:
+                logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
+                               command, timeout, task_id, task_socket_dir)
+                returncode = None
+                result = {"success": False, "error": f"Command timed out after {timeout} seconds"}
+            except Exception as exc:
+                logger.warning("browser '%s' subprocess exception: %s", command, exc)
+                returncode = None
+                result = {"success": False, "error": str(exc)}
+        else:
+            # Windows path: temp files for stdout/stderr (original approach)
+            stdout_path = os.path.join(task_socket_dir, f"_stdout_{command}")
+            stderr_path = os.path.join(task_socket_dir, f"_stderr_{command}")
+            stdout_fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            stderr_fd = os.open(stderr_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            try:
+                _popen_extra: dict = {}
+                if os.name == "nt":
+                    _CREATE_NO_WINDOW = 0x08000000
+                    _popen_extra["creationflags"] = _CREATE_NO_WINDOW
+                    _popen_extra["close_fds"] = True
+                    _si = subprocess.STARTUPINFO()
+                    _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
+                    _popen_extra["startupinfo"] = _si
+                proc = subprocess.Popen(
+                    cmd_parts,
+                    stdout=stdout_fd,
+                    stderr=stderr_fd,
+                    stdin=subprocess.DEVNULL,
+                    env=browser_env,
+                    **_popen_extra,
+                )
+            finally:
+                os.close(stdout_fd)
+                os.close(stderr_fd)
+
+            try:
+                proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+                logger.warning("browser '%s' timed out after %ds (task=%s, socket_dir=%s)",
+                               command, timeout, task_id, task_socket_dir)
+                result = {"success": False, "error": f"Command timed out after {timeout} seconds"}
+            else:
+                with open(stdout_path, "r", encoding="utf-8") as f:
+                    stdout_read = f.read()
+                with open(stderr_path, "r", encoding="utf-8") as f:
+                    stderr_read = f.read()
+                returncode = proc.returncode
+
+                for p in (stdout_path, stderr_path):
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+
+                result = _parse_browser_output(stdout_read, stderr_read, returncode)
 
     except Exception as e:
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)

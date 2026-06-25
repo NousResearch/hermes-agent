@@ -95,9 +95,17 @@ You should see an `Apple Development: ...` identity.
 
 ## Configure the Hermes gateway
 
-A standalone phone build needs a reachable Hermes Desktop/gateway URL and session token at build time.
+A standalone phone build needs a reachable Hermes Desktop/gateway URL and dashboard session token.
 
-Set these environment variables before building:
+For upstream/public builds, these values are **not prefilled**. A fresh install should open a first-run **Connect to gateway** screen where the user enters:
+
+- Gateway URL, for example `https://your-hermes-gateway.example.com`
+- Dashboard session token
+- Profile, usually `default`
+
+The app stores those details locally on the phone after setup. If the user needs to change them later, use the mobile reset/reconnect path in the app, or clear/reinstall the app during development.
+
+For developer convenience, you can optionally pre-seed the first-run form at build time with environment variables:
 
 ```bash
 export EXPO_PUBLIC_HERMES_GATEWAY_URL="https://your-hermes-gateway.example.com"
@@ -109,7 +117,7 @@ Notes:
 - Do not commit tokens.
 - Do not paste tokens into PRs, screenshots, or logs.
 - The gateway URL must be reachable from the iPhone, not just from the Mac.
-- The app stores connection details locally after setup, but the clean Release build path is easiest when the defaults are injected at build time.
+- Do not hardcode private/company gateway URLs in source; use env vars or first-run setup.
 
 ## Build and install to the phone
 

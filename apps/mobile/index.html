@@ -154,7 +154,7 @@
         const ok = async function () { return {}; };
         const falseStatus = async function () { return { available: false }; };
         const readyProgress = { stage: 'ready', message: 'Ready', progress: 1, percent: 100, at: Date.now() };
-        const DEFAULT_DASHBOARD_URL = window.__HERMES_DASHBOARD_URL__ || 'https://hermes-desktop.pmxt.dev';
+        const DEFAULT_DASHBOARD_URL = window.__HERMES_DASHBOARD_URL__ || '';
 
         function cleanBaseUrl(value) {
           const trimmed = String(value || '').trim().replace(/\/+$/, '');
@@ -182,7 +182,9 @@
         }
 
         function toWsUrl(baseUrl, token) {
-          const url = new URL('/api/ws', cleanBaseUrl(baseUrl));
+          const cleanUrl = cleanBaseUrl(baseUrl);
+          if (!cleanUrl) return '';
+          const url = new URL('/api/ws', cleanUrl);
           url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
           if (token) url.searchParams.set('token', token);
           return url.toString();

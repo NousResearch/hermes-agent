@@ -4,7 +4,7 @@ import { WebView, type WebViewMessageEvent } from 'react-native-webview';
 
 import { bundledRendererHtml } from './src/bundled-renderer-html';
 
-const defaultGatewayUrl = process.env.EXPO_PUBLIC_HERMES_GATEWAY_URL || 'https://hermes-desktop.pmxt.dev';
+const defaultGatewayUrl = process.env.EXPO_PUBLIC_HERMES_GATEWAY_URL || '';
 const defaultGatewayToken = process.env.EXPO_PUBLIC_HERMES_GATEWAY_TOKEN || '';
 
 const mobileBridgeScript = `
@@ -39,7 +39,9 @@ const mobileBridgeScript = `
     return trimmed || defaultGatewayUrl;
   }
   function toWsUrl(baseUrl, token) {
-    var url = new URL('/api/ws', cleanBaseUrl(baseUrl));
+    var cleanUrl = cleanBaseUrl(baseUrl);
+    if (!cleanUrl) return '';
+    var url = new URL('/api/ws', cleanUrl);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     if (token) url.searchParams.set('token', token);
     return url.toString();
@@ -207,7 +209,7 @@ type BridgeMessage = {
 };
 
 function cleanBaseUrl(value: unknown) {
-  return String(value || defaultGatewayUrl).trim().replace(/\/+$/, '') || defaultGatewayUrl;
+  return String(value || defaultGatewayUrl).trim().replace(/\/+$/, '');
 }
 
 function postResultScript(id: string, payload: { data?: unknown; error?: string; ok: boolean }) {

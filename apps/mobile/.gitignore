@@ -2,6 +2,9 @@
 
 # dependencies
 node_modules/
+# This app is part of the root npm workspace; the root package-lock.json is the
+# source of truth. `npm install` inside apps/mobile may create a local lockfile.
+/package-lock.json
 
 # Expo
 .expo/

@@ -1422,8 +1422,8 @@ def test_create_with_parents_stays_todo_until_parents_done(kanban_home):
         assert kb.get_task(conn, child).status == "ready"
 
 
-def test_unblock_with_pending_parents_goes_to_todo(kanban_home):
-    """unblock_task must re-gate on parent completion (Fix 3).
+def test_block_then_unblock_with_pending_parents_goes_to_todo(kanban_home):
+    """Manual block/unblock must preserve parent gating.
 
     A task blocked while parents are still in progress must return to
     'todo' (not 'ready') on unblock. Otherwise the dispatcher will claim
@@ -1434,12 +1434,8 @@ def test_unblock_with_pending_parents_goes_to_todo(kanban_home):
         child = kb.create_task(
             conn, title="child", assignee="a", parents=[parent],
         )
-        # Force child into 'blocked' regardless of parent progress
-        # (simulates a worker that self-blocked, or an operator block).
-        conn.execute(
-            "UPDATE tasks SET status='blocked' WHERE id=?", (child,),
-        )
-        conn.commit()
+        assert kb.block_task(conn, child, reason="need input")
+        assert kb.get_task(conn, child).status == "blocked"
         assert kb.unblock_task(conn, child)
         assert kb.get_task(conn, child).status == "todo"
         # After parent completes + recompute, the child is ready.
@@ -3256,6 +3252,7 @@ def test_resolve_hermes_argv_prefers_path_shim(monkeypatch):
     import hermes_cli.kanban_db as kb
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
     monkeypatch.setattr(shutil, "which", lambda name: "/usr/local/bin/hermes")
     argv = kb._resolve_hermes_argv()
     assert argv == ["/usr/local/bin/hermes"]
@@ -3317,6 +3314,7 @@ def test_resolve_hermes_argv_hermes_bin_bare_name_uses_path(monkeypatch, tmp_pat
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("PATH", str(path_hermes.parent))
     monkeypatch.setenv("HERMES_BIN", "hermes")
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
 
     assert kb._resolve_hermes_argv() == [str(path_hermes)]
 
@@ -3375,6 +3373,7 @@ def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
     import hermes_cli.kanban_db as kb
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
     monkeypatch.setattr(shutil, "which", lambda name: None)
     argv = kb._resolve_hermes_argv()
     assert argv == [sys.executable, "-m", "hermes_cli.main"]

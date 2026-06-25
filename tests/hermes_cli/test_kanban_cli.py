@@ -159,6 +159,23 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_can_block_todo_child(kanban_home):
+    import re
+
+    parent_out = kc.run_slash("create 'parent' --assignee alice")
+    parent = re.search(r"(t_[a-f0-9]+)", parent_out).group(1)
+    child_out = kc.run_slash(f"create 'child' --assignee bob --parent {parent}")
+    child = re.search(r"(t_[a-f0-9]+)", child_out).group(1)
+
+    assert "Blocked" in kc.run_slash(f"block {child} 'need input'")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, child).status == "blocked"
+
+    assert "Unblocked" in kc.run_slash(f"unblock {child}")
+    with kb.connect() as conn:
+        assert kb.get_task(conn, child).status == "todo"
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

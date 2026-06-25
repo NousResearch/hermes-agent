@@ -1,0 +1,6 @@
+name: freellmapi-provider
+kind: model-provider
+version: 1.0.0
+description: FreeLLMAPI — self-hosted OpenAI proxy stacking 16 free LLM tiers with 429 failover
+author: zapabob
+homepage: https://github.com/tashfeenahmed/freellmapi

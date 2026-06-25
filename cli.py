@@ -2467,6 +2467,111 @@ def _cprint(text: str):
             pass
 
 
+def _cprint_raw_terminal(text: str):
+    """Print raw terminal output that may contain OSC escapes.
+
+    prompt_toolkit's ``ANSI`` formatter handles CSI/SGR color escapes, but it
+    does not understand OSC sequences such as OSC-8 hyperlinks. Feeding OSC
+    through it strips the ESC byte and leaks the OSC payload as visible text.
+    For those rare lines, write directly to the terminal, using
+    ``run_in_terminal`` when an interactive prompt is active so the input area
+    is safely paused and redrawn.
+    """
+    history_text = _OSC_ESCAPE_RE.sub("", text)
+    _record_output_history(history_text)
+
+    def _write_raw():
+        payload = (text + "\n").encode("utf-8", errors="replace")
+        fd = None
+        try:
+            # Bypass prompt_toolkit's patched stdout entirely. Its ANSI parser
+            # does not understand OSC and can turn ESC bytes into visible
+            # replacement glyphs. Writing to the controlling tty preserves the
+            # exact OSC-8 byte stream for terminals such as Ghostty.
+            fd = os.open("/dev/tty", os.O_WRONLY | os.O_NOCTTY)
+            os.write(fd, payload)
+            return
+        except Exception:
+            pass
+        finally:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except Exception:
+                    pass
+
+        for stream in (getattr(sys, "__stdout__", None), sys.stdout):
+            try:
+                if stream is not None and getattr(stream, "isatty", lambda: False)():
+                    stream.write(text + "\n")
+                    stream.flush()
+                    return
+            except Exception:
+                pass
+
+        try:
+            _cprint(history_text)
+        except Exception:
+            pass
+
+    try:
+        from prompt_toolkit.application import get_app_or_none, run_in_terminal
+    except Exception:
+        _write_raw()
+        return
+
+    try:
+        app = get_app_or_none()
+    except Exception:
+        app = None
+
+    if app is None or not getattr(app, "_is_running", False):
+        _write_raw()
+        return
+
+    try:
+        loop = app.loop  # type: ignore[attr-defined]
+    except Exception:
+        loop = None
+    if loop is None:
+        _write_raw()
+        return
+
+    import asyncio as _asyncio
+    try:
+        current_loop = _asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+    except Exception:
+        current_loop = None
+
+    if current_loop is loop and loop.is_running():
+        try:
+            result = run_in_terminal(_write_raw)
+            if result is not None:
+                import inspect as _inspect
+                if _inspect.isawaitable(result) or _inspect.iscoroutine(result):
+                    _asyncio.ensure_future(result)
+        except Exception:
+            _write_raw()
+        return
+
+    def _schedule():
+        try:
+            import asyncio as _aio
+            import inspect as _inspect
+            result = run_in_terminal(_write_raw)
+            if result is not None and (_inspect.isawaitable(result) or _inspect.iscoroutine(result)):
+                _aio.ensure_future(result)
+        except Exception:
+            pass
+
+    try:
+        loop.call_soon_threadsafe(_schedule)
+    except Exception:
+        _write_raw()
+
+
 def _prepend_note_to_message(message, note: str):
     """Prepend a one-shot system-style note to a user message.
 
@@ -3080,6 +3185,22 @@ def _collect_query_images(query: str | None, image_arg: str | None = None) -> tu
 # ANSI parser can't handle — it strips \x1b but passes the payload through
 # as literal text, garbling the TUI output.
 _OSC_ESCAPE_RE = re.compile(r"\x1b\][\s\S]*?(?:\x07|\x1b\\)")
+_MARKDOWN_HTTP_LINK_RE = re.compile(r"\[([^\]\n]+)\]\((https?://[^)\s]+)\)")
+
+
+def _markdown_links_to_osc8(text: str) -> str:
+    """Convert simple Markdown HTTP links to OSC-8 terminal hyperlinks."""
+    if not text or "](" not in text:
+        return text or ""
+
+    esc = "\x1b"
+
+    def _replace(match: re.Match) -> str:
+        label = match.group(1)
+        url = match.group(2)
+        return f"{esc}]8;;{url}{esc}\\{label}{esc}]8;;{esc}\\"
+
+    return _MARKDOWN_HTTP_LINK_RE.sub(_replace, text)
 
 
 class ChatConsole:
@@ -3108,12 +3229,17 @@ class ChatConsole:
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
         output = self._buffer.getvalue()
-        # Strip OSC escape sequences (e.g. OSC-8 hyperlinks) before
-        # routing through prompt_toolkit's ANSI parser, which only
-        # handles CSI/SGR and passes OSC payload through as literal text.
-        output = _OSC_ESCAPE_RE.sub("", output)
-        for line in output.rstrip("\n").split("\n"):
-            _cprint(line)
+        has_osc = bool(_OSC_ESCAPE_RE.search(output))
+        # prompt_toolkit's ANSI parser only handles CSI/SGR. If Rich emitted
+        # OSC-8 hyperlinks (for Markdown links), preserve them by bypassing the
+        # prompt_toolkit ANSI parser for those lines; otherwise keep the
+        # existing prompt_toolkit rendering path.
+        if has_osc:
+            for line in output.rstrip("\n").split("\n"):
+                _cprint_raw_terminal(line)
+        else:
+            for line in output.rstrip("\n").split("\n"):
+                _cprint(line)
 
     @contextmanager
     def status(self, *_args, **_kwargs):
@@ -5458,7 +5584,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         _tc = getattr(self, "_stream_text_ansi", "")
 
         def _emit_one(printed_line: str) -> None:
-            _cprint(f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}")
+            if self.final_response_markdown == "render":
+                printed_line = _markdown_links_to_osc8(printed_line)
+            payload = f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}"
+            if _OSC_ESCAPE_RE.search(payload):
+                _cprint_raw_terminal(payload)
+            else:
+                _cprint(payload)
 
         def _flush_table_buf() -> None:
             buf = self._stream_table_buf
@@ -5517,6 +5649,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         _tc = getattr(self, "_stream_text_ansi", "")
 
+        def _emit_line(printed_line: str) -> None:
+            if self.final_response_markdown == "render":
+                printed_line = _markdown_links_to_osc8(printed_line)
+            payload = f"{_STREAM_PAD}{_tc}{printed_line}{_RST}" if _tc else f"{_STREAM_PAD}{printed_line}"
+            if _OSC_ESCAPE_RE.search(payload):
+                _cprint_raw_terminal(payload)
+            else:
+                _cprint(payload)
+
         # If the stream buffer has a trailing partial line that looks like
         # a table row, fold it into the table buffer so the whole block
         # gets re-aligned together.  Otherwise the final row prints raw
@@ -5540,11 +5681,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 joined = _strip_markdown_syntax(joined)
             block = realign_markdown_tables(joined, _terminal_width_for_streaming())
             for ln in block.split("\n"):
-                _cprint(f"{_STREAM_PAD}{_tc}{ln}{_RST}" if _tc else f"{_STREAM_PAD}{ln}")
+                _emit_line(ln)
 
         if self._stream_buf:
             line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
-            _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
+            _emit_line(line)
             self._stream_buf = ""
 
         # Close the response box

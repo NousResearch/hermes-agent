@@ -795,10 +795,31 @@ def normalize_usage(
             )
         input_tokens = max(0, prompt_total - cache_read_tokens - cache_write_tokens)
 
-    reasoning_tokens = 0
+    # Reasoning tokens surface under different keys depending on the API shape:
+    # the Responses / Codex path exposes ``output_tokens_details.reasoning_tokens``,
+    # while OpenAI Chat Completions (and OpenAI-compatible gateways/proxies that
+    # front reasoning models through the Responses API but hand back
+    # chat-completion-shaped usage) expose ``completion_tokens_details.reasoning_tokens``.
+    # Read BOTH so reasoning is captured regardless of wire shape — without the
+    # completion_tokens_details fallback, OpenAI-compatible custom providers that
+    # return chat-completion usage recorded reasoning_tokens=0. Handles dict- and
+    # object-shaped usage payloads.
+    def _reasoning_from(details):
+        if details is None:
+            return 0
+        if isinstance(details, dict):
+            return _to_int(details.get("reasoning_tokens", 0))
+        return _to_int(getattr(details, "reasoning_tokens", 0))
+
     output_details = getattr(response_usage, "output_tokens_details", None)
-    if output_details:
-        reasoning_tokens = _to_int(getattr(output_details, "reasoning_tokens", 0))
+    if output_details is None and isinstance(response_usage, dict):
+        output_details = response_usage.get("output_tokens_details")
+    reasoning_tokens = _reasoning_from(output_details)
+    if not reasoning_tokens:
+        completion_details = getattr(response_usage, "completion_tokens_details", None)
+        if completion_details is None and isinstance(response_usage, dict):
+            completion_details = response_usage.get("completion_tokens_details")
+        reasoning_tokens = _reasoning_from(completion_details)
 
     return CanonicalUsage(
         input_tokens=input_tokens,

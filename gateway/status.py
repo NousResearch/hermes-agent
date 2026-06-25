@@ -304,6 +304,88 @@ def _record_looks_like_gateway(record: dict[str, Any]) -> bool:
     return looks_like_gateway_runtime_command_line(cmdline)
 
 
+def _profile_name_for_home(profile_home: Path) -> Optional[str]:
+    """Return the profile id a HERMES_HOME directory represents, or None.
+
+    A named profile's home is ``<root>/profiles/<name>`` (immediate parent is
+    ``profiles``).  The root/default home (``~/.hermes`` or ``$HERMES_HOME``)
+    has no such parent, so it maps to the default profile (``None`` here, which
+    callers treat as "the bare, flag-less gateway").
+    """
+    if profile_home.parent.name == "profiles":
+        return profile_home.name
+    return None
+
+
+def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
+    """Return True when a gateway command line belongs to ``profile_home``.
+
+    Mirrors ``hermes_cli.gateway._matches_current_profile`` so the dashboard's
+    cross-profile liveness fallback scopes a live PID to the *right* profile.
+    In a per-profile container, one profile's stale ``gateway_state.json`` can
+    record a PID that the OS has since recycled onto a DIFFERENT profile's live
+    gateway.  That recycled PID's command line still ``looks_like_gateway`` —
+    so without a profile check the dead profile is reported running.  A named
+    profile gateway carries ``-p <name>``/``--profile <name>`` (or, rarely, an
+    explicit ``HERMES_HOME=<path>``) on its argv; the default/root gateway runs
+    bare with no profile flag.
+    """
+    command_lc = command.lower()
+    profile_name = _profile_name_for_home(profile_home)
+    home_lc = str(profile_home).lower()
+
+    if profile_name is not None and profile_name != "default":
+        profile_lc = profile_name.lower()
+        return (
+            f"--profile {profile_lc}" in command_lc
+            or f"-p {profile_lc}" in command_lc
+            or f"hermes_home={home_lc}" in command_lc
+        )
+
+    # Default/root profile: the gateway runs with no profile flag. Accept unless
+    # the command advertises *some other* profile (an explicit -p/--profile) or
+    # a non-matching explicit HERMES_HOME= on the argv. HERMES_HOME is usually
+    # passed via the environment (not visible on the command line), so its mere
+    # absence is not disqualifying — only a conflicting explicit value is.
+    if "--profile " in command_lc or " -p " in command_lc:
+        return False
+    if "hermes_home=" in command_lc and f"hermes_home={home_lc}" not in command_lc:
+        return False
+    return True
+
+
+def _record_matches_live_gateway_pid(
+    record: dict[str, Any],
+    pid: int,
+    *,
+    expected_home: Optional[Path] = None,
+) -> bool:
+    """Return True when a live PID still identifies as this gateway record.
+
+    Prefer the live command line whenever it is readable. Runtime status files
+    can outlive the gateway process they describe; if PID reuse leaves the same
+    PID occupied by an s6 supervisor/log process, the stale record's argv should
+    not make that unrelated process count as a running gateway.
+
+    When ``expected_home`` is provided (the dashboard enumerating a specific
+    profile's state file), the readable live command line must additionally
+    belong to *that* profile — otherwise a PID recycled onto a different
+    profile's live gateway would make the dead profile look alive.  When the
+    live command line cannot be read (Windows/permission), fall back to the
+    persisted record so cross-platform behavior is preserved.
+    """
+    live_cmdline = _read_process_cmdline(pid)
+    if live_cmdline:
+        if not looks_like_gateway_runtime_command_line(live_cmdline):
+            return False
+        if expected_home is not None and not _command_line_belongs_to_profile(
+            live_cmdline, expected_home
+        ):
+            return False
+        return True
+    return _record_looks_like_gateway(record)
+
+
 def _build_pid_record() -> dict:
     return {
         "pid": os.getpid(),
@@ -757,6 +839,8 @@ def derive_gateway_drainable(*, gateway_running: bool, gateway_state: Any) -> bo
 
 def get_runtime_status_running_pid(
     runtime: Optional[dict[str, Any]] = None,
+    *,
+    expected_home: Optional[Path] = None,
 ) -> Optional[int]:
     """Return a live gateway PID from the runtime status record, if valid.
 
@@ -765,6 +849,13 @@ def get_runtime_status_running_pid(
     a live process and a fresh ``gateway_state.json`` but no ``gateway.pid``; use
     this as a conservative fallback by checking both the persisted state and the
     OS process identity.
+
+    ``expected_home`` scopes the OS-identity check to a specific profile's
+    HERMES_HOME.  Pass it when validating *another* profile's state file (the
+    dashboard enumerating every profile): a stale record whose PID the OS has
+    recycled onto a different profile's live gateway must not be reported
+    running for the dead profile.  Omit it (the default) for the active
+    profile, where any live gateway command line is acceptable.
     """
     payload = runtime if runtime is not None else read_runtime_status()
     if not isinstance(payload, dict):
@@ -785,7 +876,7 @@ def get_runtime_status_running_pid(
     ):
         return None
 
-    if _looks_like_gateway_process(pid) or _record_looks_like_gateway(payload):
+    if _record_matches_live_gateway_pid(payload, pid, expected_home=expected_home):
         return pid
     return None
 
@@ -1287,7 +1378,7 @@ def get_running_pid(
         if recorded_start is not None and current_start is not None and current_start != recorded_start:
             continue
 
-        if _looks_like_gateway_process(pid) or _record_looks_like_gateway(record):
+        if _record_matches_live_gateway_pid(record, pid):
             return pid
 
     _cleanup_invalid_pid_path(resolved_pid_path, cleanup_stale=cleanup_stale)

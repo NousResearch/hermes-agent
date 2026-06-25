@@ -119,7 +119,20 @@ class SessionSource:
     # None => the gateway's active/default profile. Drives both session-key
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
-    
+
+    # Internal, wire-INVISIBLE trust signal: True when this event was delivered
+    # to the gateway over the per-instance-authenticated relay WebSocket (the
+    # Team Gateway connector). The connector authenticates the gateway's socket
+    # with a per-instance secret and resolves owner-only author bindings BEFORE
+    # delivering, so a relay-delivered event is already authorized as this
+    # instance's bound user. ``platform`` carries the UNDERLYING platform
+    # (e.g. ``discord``) for session-keying/egress, NOT ``relay`` — so authz
+    # must key the upstream-trust decision off THIS flag, not off ``platform``.
+    # Set locally by the relay transport (``ws_transport._event_from_wire``);
+    # deliberately excluded from ``to_dict``/``from_dict`` so a peer can never
+    # forge it across the wire or have it restored from persistence.
+    delivered_via_upstream_relay: bool = False
+
     @property
     def description(self) -> str:
         """Human-readable description of the source."""
@@ -587,7 +600,7 @@ class SessionEntry:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionEntry":
         origin = None
-        if "origin" in data and data["origin"]:
+        if "origin" in data and isinstance(data["origin"], dict):
             origin = SessionSource.from_dict(data["origin"])
         
         platform = None
@@ -824,9 +837,21 @@ class SessionStore:
                     # entries. Skip them so they never reach SessionEntry.from_dict.
                     if key.startswith("_"):
                         continue
+                    # Skip non-dict entries (corrupted sessions.json, e.g. a
+                    # bare bool or string where a dict is expected). Without
+                    # this, from_dict raises TypeError on `"origin" in data`
+                    # which escapes the inner except (ValueError, KeyError) and
+                    # aborts loading ALL remaining sessions (#46994).
+                    if not isinstance(entry_data, dict):
+                        logger.warning(
+                            "Skipping invalid session entry %r: "
+                            "expected dict, got %s",
+                            key, type(entry_data).__name__,
+                        )
+                        continue
                     try:
                         self._entries[key] = SessionEntry.from_dict(entry_data)
-                    except (ValueError, KeyError) as e:
+                    except (ValueError, KeyError, TypeError) as e:
                         logger.warning("Skipping invalid session entry %r: %s", key, e)
             except Exception as e:
                 print(f"[gateway] Warning: Failed to load sessions: {e}")

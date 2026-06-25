@@ -20,6 +20,9 @@ export interface PetInfo {
   displayName?: string
   mime?: string
   spritesheetBase64?: string
+  // Stable sheet revision (`mtime_ns:size`) from the gateway; lets the desktop
+  // skip full sprite payload refreshes when the active pet hasn't changed.
+  spritesheetRevision?: string
   frameW?: number
   frameH?: number
   framesPerState?: number
@@ -27,6 +30,9 @@ export interface PetInfo {
   // canvas step only frames that exist instead of a fixed framesPerState, which
   // would animate into the transparent padding of ragged sheets (blank flash).
   framesByState?: Record<string, number>
+  // Concrete Codex row counts (e.g. running-right may have 8 frames even though
+  // the Hermes "run" activity state uses the in-place running row).
+  framesByRow?: Record<string, number>
   loopMs?: number
   scale?: number
   stateRows?: string[]

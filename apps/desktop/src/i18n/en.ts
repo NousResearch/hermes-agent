@@ -57,6 +57,7 @@ export const en: Translations = {
       backgroundExitedDuringStartup: 'Hermes background process exited during startup.',
       backendStopped: 'Backend stopped',
       desktopBootFailed: 'Desktop boot failed',
+      gatewayConnectionLost: 'Lost connection to the gateway',
       gatewaySignInRequired: 'Gateway sign-in required',
       ipcBridgeUnavailable: 'Desktop IPC bridge is unavailable.'
     },
@@ -211,6 +212,7 @@ export const en: Translations = {
       'session.togglePin': 'Pin / unpin current session',
       'composer.focus': 'Focus composer',
       'composer.modelPicker': 'Open model picker',
+      'composer.voice': 'Start / stop voice conversation',
       'view.toggleSidebar': 'Toggle sessions sidebar',
       'view.toggleRightSidebar': 'Toggle file browser',
       'view.showFiles': 'Show file browser',
@@ -389,11 +391,23 @@ export const en: Translations = {
         unreachable: "Couldn't reach the petdex gallery. Check your connection and reopen this page.",
         noMatch: query => `No pets match "${query}".`,
         installedTag: 'installed',
+        generatedTag: 'Generated',
         countCapped: (cap, total) => `Showing ${cap} of ${total} — type to narrow it down.`,
         count: n => `${n} pet${n === 1 ? '' : 's'}.`,
         uninstall: name => `Uninstall ${name}`,
+        delete: name => `Delete ${name}`,
+        deleteTitle: name => `Delete ${name}?`,
+        deleteBody: "This permanently deletes the pet — it can't be reinstalled.",
+        deleteConfirm: 'Delete',
+        rename: name => `Rename ${name}`,
+        renameTitle: 'Rename pet',
+        renamePlaceholder: 'Name your pet',
+        renameSave: 'Save',
+        exportPet: name => `Export ${name}`,
         adoptFailed: slug => `Could not adopt ${slug}`,
         uninstallFailed: slug => `Could not uninstall ${slug}`,
+        renameFailed: slug => `Could not rename ${slug}`,
+        exportFailed: slug => `Could not export ${slug}`,
         noneAvailable: 'No pets available to turn on right now.',
         turnOnFailed: 'Could not turn the pet on.',
         turnOffFailed: 'Could not turn the pet off.'
@@ -760,9 +774,36 @@ export const en: Translations = {
       turnOff: 'Turn off',
       turnOn: 'Turn on',
       installed: 'Installed',
+      generatedTag: 'Generated',
       adoptFailed: 'Could not adopt that pet.',
       toggleFailed: 'Could not toggle the pet.',
       noneAvailable: 'No pets available — pick one below to install.'
+    },
+    generatePet: {
+      title: 'Generate a pet',
+      placeholder: 'Describe a pet to generate…',
+      promptHint: 'Type a description, then press Enter to draft four looks.',
+      readyHint: 'Press Enter to draft four looks from your description.',
+      generate: 'Generate',
+      generating: 'Generating…',
+      retry: 'Retry',
+      hatch: 'Hatch',
+      spawning: 'Spawning…',
+      hatching: 'Hatching your pet…',
+      hatchingSub: 'Bringing it to life…',
+      hatched: 'It hatched!',
+      hatchRow: (_state, done, total) => `Sketching frame ${done} of ${total}…`,
+      hatchComposing: 'Piecing it together…',
+      hatchSaving: 'Almost there…',
+      namePlaceholder: 'Name your pet',
+      staleBackend: 'Update Hermes to generate pets.',
+      backgroundHint: 'You can close this — Hermes will notify you when it’s done.',
+      slowProviderHint: 'This can take several minutes',
+      genericError: 'Generation failed — try again or pick a suggestion.',
+      referenceImageTooLarge: 'Reference image is too large. Use one under 16 MB.',
+      referenceImageInvalid: 'Could not read that reference image. Try a PNG, JPG, WebP, or GIF.',
+      adopt: 'Adopt',
+      startOver: 'Start over'
     },
     installTheme: {
       title: 'Install theme...',
@@ -1805,7 +1846,8 @@ export const en: Translations = {
       restoreCheckpoint: 'Restore checkpoint',
       restoreFromHere: 'Restore checkpoint — rerun from this prompt',
       restoreTitle: 'Restore to this checkpoint?',
-      restoreBody: 'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
+      restoreBody:
+        'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
       restoreConfirm: 'Restore & rerun',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
@@ -1861,7 +1903,67 @@ export const en: Translations = {
       statusRunning: 'Running',
       statusError: 'Error',
       statusRecovered: 'Recovered',
-      statusDone: 'Done'
+      statusDone: 'Done',
+      actions: {
+        read: 'Read',
+        reading: 'Reading',
+        opened: 'Opened',
+        opening: 'Opening',
+        searched: 'Searched',
+        searching: 'Searching',
+        ran: 'Ran',
+        running: 'Running',
+        ranCode: 'Ran code',
+        runningCode: 'Scripting'
+      },
+      prefixes: {
+        browser: 'Browser',
+        web: 'Web'
+      },
+      titleTemplates: {
+        actionCommand: (action, command) => `${action} ${command}`,
+        actionQuoted: (action, value) => `${action} “${value}”`,
+        actionTarget: (action, target) => `${action} ${target}`,
+        prefixedDone: (prefix, action) => `${prefix} ${action}`,
+        runningPrefixedTool: (prefix, action) => `Running ${prefix.toLowerCase()} ${action.toLowerCase()}`,
+        runningTool: action => `Running ${action.toLowerCase()}`
+      },
+      titles: {
+        browser_click: { done: 'Clicked page element', pending: 'Clicking page element', pendingAction: 'Clicking' },
+        browser_fill: { done: 'Filled form field', pending: 'Filling form field', pendingAction: 'Filling' },
+        browser_navigate: { done: 'Opened page', pending: 'Opening page', pendingAction: 'Opening' },
+        browser_snapshot: {
+          done: 'Captured page snapshot',
+          pending: 'Capturing page snapshot',
+          pendingAction: 'Capturing'
+        },
+        browser_take_screenshot: {
+          done: 'Captured screenshot',
+          pending: 'Capturing screenshot',
+          pendingAction: 'Capturing'
+        },
+        browser_type: { done: 'Typed on page', pending: 'Typing on page', pendingAction: 'Typing' },
+        clarify: { done: 'Asked a question', pending: 'Asking a question', pendingAction: 'Asking' },
+        cronjob: { done: 'Cron job', pending: 'Scheduling cron job', pendingAction: 'Scheduling' },
+        edit_file: { done: 'Edited file', pending: 'Editing file', pendingAction: 'Editing' },
+        execute_code: { done: 'Ran code', pending: 'Scripting', pendingAction: 'Scripting' },
+        image_generate: { done: 'Generated image', pending: 'Generating image', pendingAction: 'Generating' },
+        list_files: { done: 'Listed files', pending: 'Listing files', pendingAction: 'Listing' },
+        patch: { done: 'Patched file', pending: 'Patching file', pendingAction: 'Patching' },
+        read_file: { done: 'Read file', pending: 'Reading file', pendingAction: 'Reading' },
+        search_files: { done: 'Searched files', pending: 'Searching files', pendingAction: 'Searching' },
+        session_search_recall: {
+          done: 'Searched session history',
+          pending: 'Searching session history',
+          pendingAction: 'Searching'
+        },
+        terminal: { done: 'Ran command', pending: 'Running command', pendingAction: 'Running' },
+        todo: { done: 'Updated todos', pending: 'Updating todos', pendingAction: 'Updating' },
+        vision_analyze: { done: 'Analyzed image', pending: 'Analyzing image', pendingAction: 'Analyzing' },
+        web_extract: { done: 'Read webpage', pending: 'Reading webpage', pendingAction: 'Reading' },
+        web_search: { done: 'Searched web', pending: 'Searching web', pendingAction: 'Searching' },
+        write_file: { done: 'Edited file', pending: 'Editing file', pendingAction: 'Editing' }
+      }
     }
   },
 
@@ -1904,7 +2006,8 @@ export const en: Translations = {
     editFailed: 'Edit failed',
     resumeFailed: 'Resume failed',
     resumeStrandedTitle: "Couldn't load this session",
-    resumeStrandedBody: 'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
+    resumeStrandedBody:
+      'The connection to this session failed and automatic retries gave up. Check that the gateway is running, then try again.',
     resumeRetry: 'Retry',
     nothingToBranch: 'Nothing to branch',
     branchNeedsChat: 'Start or resume a chat before branching.',

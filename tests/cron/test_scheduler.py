@@ -3527,3 +3527,386 @@ class TestHomeTargetEnvVarRegistry:
         from cron.scheduler import _HOME_TARGET_ENV_VARS
 
         assert _HOME_TARGET_ENV_VARS.get("whatsapp") == "WHATSAPP_HOME_CHANNEL"
+
+
+class TestCronDeliveryMirror:
+    """cron.mirror_delivery / per-job attach_to_session: opt-in append of a
+    cron delivery into the target chat's gateway session transcript.
+
+    Default OFF preserves the historical isolation guarantee byte-for-byte.
+    When enabled, delivery rides the existing gateway.mirror.mirror_to_session
+    so cron uses exactly the same path interactive send_message mirroring uses.
+    """
+
+    def test_gate_default_off(self):
+        from cron.scheduler import _cron_mirror_delivery_enabled
+
+        # No per-job flag, no config -> off (historical behaviour).
+        assert _cron_mirror_delivery_enabled({}, {}) is False
+        assert _cron_mirror_delivery_enabled({"id": "x"}, {"cron": {}}) is False
+
+    def test_gate_global_config_on(self):
+        from cron.scheduler import _cron_mirror_delivery_enabled
+
+        assert _cron_mirror_delivery_enabled({}, {"cron": {"mirror_delivery": True}}) is True
+
+    def test_gate_per_job_overrides_global(self):
+        from cron.scheduler import _cron_mirror_delivery_enabled
+
+        # Per-job False wins even if global is on.
+        assert _cron_mirror_delivery_enabled(
+            {"attach_to_session": False}, {"cron": {"mirror_delivery": True}}
+        ) is False
+        # Per-job True wins even if global is off/absent.
+        assert _cron_mirror_delivery_enabled(
+            {"attach_to_session": True}, {"cron": {"mirror_delivery": False}}
+        ) is True
+
+    def test_mirror_calls_mirror_to_session_when_enabled(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1", "name": "Daily Brief"}, "telegram", "123",
+                "Daily brief Task #2", thread_id=None, enabled=True,
+            )
+        m.assert_called_once()
+        args, kwargs = m.call_args
+        assert args[0] == "telegram"
+        assert args[1] == "123"
+        assert "Task #2" in args[2]
+        assert kwargs.get("source_label") == "cron"
+
+    def test_mirror_writes_user_role_with_label_not_assistant(self):
+        """Regression for #2221 / #2313: the cron brief must mirror as a USER
+        turn (with a [Cron delivery: ...] label), NOT assistant — an
+        assistant-role mirror lands as assistant->assistant after the agent's
+        last turn and breaks strict alternation on non-Anthropic providers."""
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1", "name": "Morning Brief"}, "telegram", "123",
+                "Market movers today", thread_id=None, enabled=True,
+            )
+        m.assert_called_once()
+        args, kwargs = m.call_args
+        assert kwargs.get("role") == "user", "cron mirror must be a user turn, not assistant"
+        # The brief text is prefixed with a human-readable cron-delivery label
+        # so replay (where the mirror metadata is dropped at the SQLite
+        # boundary) still distinguishes it from a genuine user message.
+        assert args[2].startswith("[Cron delivery: Morning Brief]")
+        assert "Market movers today" in args[2]
+
+    def test_mirror_noop_when_disabled(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "should not mirror",
+                enabled=False,
+            )
+        m.assert_not_called()
+
+    def test_mirror_noop_on_empty_text(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery({"id": "j1"}, "telegram", "123", "   ", enabled=True)
+        m.assert_not_called()
+
+    def test_mirror_swallows_cold_start_miss(self):
+        """A missing target session (cold start) must NOT raise — delivery
+        already succeeded; the mirror is best-effort."""
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=False) as m:
+            # Should not raise.
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "brief", enabled=True
+            )
+        m.assert_called_once()
+
+    def test_mirror_swallows_exceptions(self):
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", side_effect=RuntimeError("boom")):
+            # Must not propagate — a delivery that succeeded is never failed by
+            # a mirror error.
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "brief", enabled=True
+            )
+
+    def test_delivery_mirrors_clean_content_not_wrapped(self):
+        """When enabled, the mirror receives the CLEAN agent output, not the
+        cron header/footer-wrapped delivery text."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        mirror_mock.assert_called_once()
+        mirrored_text = mirror_mock.call_args[0][2]
+        # Clean content, no cron wrapper.
+        assert "Here is today's summary." in mirrored_text
+        assert "Cronjob Response:" not in mirrored_text
+        assert "To stop or manage this job" not in mirrored_text
+
+    def test_delivery_does_not_mirror_when_gate_off(self):
+        """Default path: a job with no opt-in must never touch the mirror."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        mirror_mock.assert_not_called()
+
+    # --- origin-scoping (mirror only into the conversation that created the job) ---
+
+    def test_target_matches_origin_exact(self):
+        from cron.scheduler import _target_matches_origin
+
+        origin = {"platform": "telegram", "chat_id": "123"}
+        assert _target_matches_origin(origin, "telegram", "123", None) is True
+        # Case-insensitive platform match.
+        assert _target_matches_origin(origin, "Telegram", "123", None) is True
+
+    def test_target_matches_origin_rejects_other_chat(self):
+        from cron.scheduler import _target_matches_origin
+
+        origin = {"platform": "telegram", "chat_id": "123"}
+        # Different chat (fan-out / explicit other target) -> not the origin.
+        assert _target_matches_origin(origin, "telegram", "999", None) is False
+        # Different platform (deliver=all broadcast) -> not the origin.
+        assert _target_matches_origin(origin, "discord", "123", None) is False
+        # No origin at all (API/script job, home-channel fallback) -> never.
+        assert _target_matches_origin({}, "telegram", "123", None) is False
+
+    def test_target_matches_origin_thread_scoped(self):
+        from cron.scheduler import _target_matches_origin
+
+        origin = {"platform": "telegram", "chat_id": "123", "thread_id": "17"}
+        assert _target_matches_origin(origin, "telegram", "123", "17") is True
+        # Same chat, wrong/lost thread lane -> not the same conversation.
+        assert _target_matches_origin(origin, "telegram", "123", None) is False
+        assert _target_matches_origin(origin, "telegram", "123", "99") is False
+
+    def test_delivery_does_not_mirror_fanout_non_origin_target(self):
+        """Even with the gate ON, a delivery to a chat that is NOT the job's
+        origin (explicit fan-out target) must not be mirrored — the mirror is
+        scoped to the origin conversation, and the fan-out chat may have no
+        session at all."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                # Explicit delivery to a DIFFERENT chat than the origin.
+                "deliver": "telegram:999",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        # Delivered to 999, but origin is 123 -> no mirror.
+        mirror_mock.assert_not_called()
+
+    def test_delivery_mirrors_only_origin_target_in_fanout(self):
+        """deliver to BOTH origin and another chat: only the origin target is
+        mirrored."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                # Fan out to the origin chat (123) AND another chat (999).
+                "deliver": "telegram:123,telegram:999",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        # Exactly one mirror, and it is the origin chat (123) — not 999.
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args[0][1] == "123"
+
+    # --- multi-participant parity with send_message (user_id passthrough) ---
+
+    def test_mirror_passes_user_id_through(self):
+        """The helper forwards user_id to mirror_to_session so a per-user-
+        isolated group resolves to the exact member who scheduled the job —
+        parity with interactive send_message."""
+        from cron.scheduler import _maybe_mirror_cron_delivery
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
+            _maybe_mirror_cron_delivery(
+                {"id": "j1"}, "telegram", "123", "brief",
+                thread_id=None, user_id="U999", enabled=True,
+            )
+        m.assert_called_once()
+        assert m.call_args.kwargs.get("user_id") == "U999"
+
+    def test_delivery_forwards_origin_user_id(self):
+        """End-to-end: a job whose origin carries user_id mirrors with that
+        user_id, so multi-participant resolution matches send_message."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            job = {
+                "id": "test-job",
+                "name": "daily-report",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123", "user_id": "U42"},
+                "attach_to_session": True,
+            }
+            _deliver_result(job, "Here is today's summary.")
+
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("user_id") == "U42"
+
+    # --- continuable cron: thread-preferred (Teknium's interface) ---
+
+    def test_open_thread_returns_id_on_thread_platform(self):
+        """On a thread-capable adapter, _open_continuable_cron_thread returns
+        the new thread id from create_handoff_thread."""
+        from cron.scheduler import _open_continuable_cron_thread
+
+        adapter = MagicMock()
+        adapter.create_handoff_thread = AsyncMock(return_value="9001")
+
+        # safe_schedule_threadsafe hands the coro to the gateway loop and
+        # returns a future. Patch it to close the coro and return a ready
+        # future carrying the adapter's thread id.
+        def _run_now(coro, _loop):
+            coro.close()
+            fut = MagicMock()
+            fut.result.return_value = "9001"
+            return fut
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_run_now):
+            tid = _open_continuable_cron_thread(
+                {"id": "j1", "name": "Brief"}, adapter, "123", loop=MagicMock(),
+            )
+        assert tid == "9001"
+
+    def test_open_thread_returns_none_on_dm_platform(self):
+        """A DM-only adapter (WhatsApp) inherits the base create_handoff_thread
+        that returns None → _open_continuable_cron_thread returns None so the
+        caller falls back to DM-session mirroring."""
+        from cron.scheduler import _open_continuable_cron_thread
+
+        adapter = MagicMock()
+        adapter.create_handoff_thread = AsyncMock(return_value=None)
+
+        def _run_now(coro, _loop):
+            fut = MagicMock()
+            fut.result.return_value = None
+            coro.close()
+            return fut
+
+        with patch("agent.async_utils.safe_schedule_threadsafe", side_effect=_run_now):
+            tid = _open_continuable_cron_thread(
+                {"id": "j1", "name": "Brief"}, adapter, "123", loop=MagicMock(),
+            )
+        assert tid is None
+
+    def test_open_thread_none_without_capability_or_loop(self):
+        """No create_handoff_thread attr, or no loop → None (no crash)."""
+        from cron.scheduler import _open_continuable_cron_thread
+
+        adapter_no_cap = MagicMock(spec=[])  # no create_handoff_thread
+        assert _open_continuable_cron_thread(
+            {"id": "j1"}, adapter_no_cap, "123", loop=MagicMock(),
+        ) is None
+
+        adapter = MagicMock()
+        adapter.create_handoff_thread = AsyncMock(return_value="9001")
+        assert _open_continuable_cron_thread(
+            {"id": "j1"}, adapter, "123", loop=None,
+        ) is None
+
+    def test_seed_thread_session_creates_session_and_mirrors(self):
+        """Seeding a freshly-opened thread creates the thread-keyed session via
+        the adapter's live store and appends the brief via mirror_to_session."""
+        from cron.scheduler import _seed_cron_thread_session
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+
+        with patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            _seed_cron_thread_session(
+                {"id": "j1"}, adapter, "telegram", "123", "9001",
+                "Daily brief Task #2", chat_name="Ops",
+            )
+
+        # Session row created for the thread, then brief mirrored into it.
+        store.get_or_create_session.assert_called_once()
+        seeded_source = store.get_or_create_session.call_args[0][0]
+        assert seeded_source.chat_type == "thread"
+        assert seeded_source.thread_id == "9001"
+        mirror_mock.assert_called_once()
+        assert mirror_mock.call_args.kwargs.get("thread_id") == "9001"
+
+    def test_seed_thread_session_noop_on_empty_text(self):
+        from cron.scheduler import _seed_cron_thread_session
+
+        store = MagicMock()
+        adapter = MagicMock()
+        adapter._session_store = store
+        with patch("gateway.mirror.mirror_to_session") as mirror_mock:
+            _seed_cron_thread_session(
+                {"id": "j1"}, adapter, "telegram", "123", "9001", "   ",
+            )
+        store.get_or_create_session.assert_not_called()
+        mirror_mock.assert_not_called()

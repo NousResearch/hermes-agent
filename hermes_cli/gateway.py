@@ -3891,6 +3891,16 @@ def launchd_restart():
             print("✓ Service restart requested")
             return
         if pid is not None:
+            # Announce the drain BEFORE waiting on it. This wait can run for
+            # the full drain budget (180s by default) while the old gateway
+            # finishes in-flight agent runs, and it streams into surfaces with
+            # no other feedback — the desktop updater's live output most of
+            # all, where a silent stop here reads as "update stuck" (#44515).
+            # Mirrors the systemd branch's "draining (up to Ns)..." line.
+            print(
+                f"→ Stopping gateway (PID {pid}) — draining in-flight runs "
+                f"(up to {drain_timeout:.0f}s)..."
+            )
             try:
                 terminate_pid(pid, force=False)
             except (ProcessLookupError, PermissionError, OSError):

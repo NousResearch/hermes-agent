@@ -21,6 +21,7 @@ Read-only and unauthenticated; no credentials involved.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from dataclasses import dataclass
 
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 MANIFEST_URL = "https://petdex.dev/api/manifest"
 
-_DEFAULT_TIMEOUT = 20.0
+_DEFAULT_TIMEOUT = 10.0
 
 # In-process cache for the (large, slow, identical-per-call) manifest. The list
 # is a static CDN object that barely changes, yet a single session can ask for
@@ -38,11 +39,47 @@ _DEFAULT_TIMEOUT = 20.0
 _MANIFEST_TTL = 300.0
 _cache: tuple[float, list[ManifestEntry]] | None = None
 
+_prefetch_lock = threading.Lock()
+_prefetching = False
+
 
 def clear_cache() -> None:
     """Drop the cached manifest (forces the next fetch to hit the network)."""
     global _cache
     _cache = None
+
+
+def _cache_is_warm() -> bool:
+    return _cache is not None and time.monotonic() - _cache[0] < _MANIFEST_TTL
+
+
+def prefetch(*, timeout: float = _DEFAULT_TIMEOUT) -> None:
+    """Warm the manifest cache in a daemon thread — idempotent, never blocks.
+
+    The desktop picker calls this when it loads the (instant) local-only gallery
+    so the full petdex catalog is usually cached by the time it's requested,
+    without ever holding up the user's own pets on a network round-trip.
+    """
+    global _prefetching
+
+    if _cache_is_warm():
+        return
+
+    with _prefetch_lock:
+        if _prefetching:
+            return
+        _prefetching = True
+
+    def _run() -> None:
+        global _prefetching
+        try:
+            fetch_manifest(timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - best-effort warm
+            logger.debug("petdex manifest prefetch failed: %s", exc)
+        finally:
+            _prefetching = False
+
+    threading.Thread(target=_run, name="petdex-prefetch", daemon=True).start()
 
 
 @dataclass(frozen=True)

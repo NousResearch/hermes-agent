@@ -20130,6 +20130,14 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             # marker first, land in the `planned_stop` branch above, and
             # leave this flag False so they DO persist "stopped".
             runner._signal_initiated_shutdown = True
+            # systemd SIGTERM: when INVOCATION_ID is set the signal came
+            # from the service manager (Restart=always or systemctl restart),
+            # not an external kill. Treat it as a planned service restart so
+            # the gateway writes .restart_pending.json and exits 0 instead
+            # of triggering an additional restart cycle.
+            if os.environ.get("INVOCATION_ID"):
+                runner._restart_requested = True
+                runner._restart_via_service = True
             logger.info(
                 "Received %s — initiating shutdown",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",

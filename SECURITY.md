@@ -137,7 +137,9 @@ in-process component is operator review before install (§2.4,
 ### 2.4 In-Process Heuristics
 
 The following components screen or warn about LLM behavior. They
-are useful. They are not boundaries.
+are useful. They are not boundaries. The operational contract for
+sandbox and approval settings is documented in
+[`docs/security/sandbox-approval-policy.md`](docs/security/sandbox-approval-policy.md).
 
 - The **approval gate** detects common destructive shell patterns
   and prompts the operator before execution. Shell is Turing-
@@ -310,6 +312,8 @@ that:
 - Do not expose the gateway or API to the public internet without
   VPN, Tailscale, or firewall protection. Under OpenShell, use the
   network policy layer to restrict egress.
+  See `docs/security/network-egress-isolation.md` for the Docker
+  network egress isolation pattern (internal/egress networks + proxy).
 - Configure a caller allowlist for every network-exposed adapter
   you enable (§2.6).
 - Review third-party skills and plugins before install (§2.4,

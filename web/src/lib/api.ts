@@ -1541,6 +1541,7 @@ export interface SystemStats {
   python_version: string;
   python_impl: string;
   hermes_version: string;
+  web_build?: string;
   cpu_count: number | null;
   psutil: boolean;
   cpu_percent?: number;

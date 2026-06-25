@@ -713,6 +713,12 @@ export default function SystemPage() {
                     ) : null)}
                 </div>
               </div>
+              {stats?.web_build && (
+                <div>
+                  <div className="text-xs uppercase tracking-wider text-muted-foreground">Web Build</div>
+                  <div className="font-mono text-xs">{stats.web_build}</div>
+                </div>
+              )}
               <div>
                 <div className="text-xs uppercase tracking-wider text-muted-foreground flex items-center gap-1">
                   <Cpu className="h-3 w-3" /> CPU

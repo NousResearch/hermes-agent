@@ -11,6 +11,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
+import { applyCompletion } from '../domain/slash.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
@@ -593,12 +594,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       const row = cState.completions[cState.compIdx]
 
       if (row?.text) {
-        const text =
-          cState.input.startsWith('/') && row.text.startsWith('/') && cState.compReplace > 0
-            ? row.text.slice(1)
-            : row.text
-
-        cActions.setInput(cState.input.slice(0, cState.compReplace) + text)
+        // Fix #52110: use the shared applyCompletion helper from domain/slash
+        // instead of an inline copy of the slash-strip logic, so the Tab path
+        // and the Enter path (completionToApplyOnSubmit → applyCompletion in
+        // useSubmission) stay in sync.
+        cActions.setInput(applyCompletion(cState.input, row.text, cState.compReplace))
       }
 
       return

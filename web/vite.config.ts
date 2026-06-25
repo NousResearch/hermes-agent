@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { writeFileSync } from "fs";
 
 const BACKEND = process.env.HERMES_DASHBOARD_URL ?? "http://127.0.0.1:9119";
 
@@ -57,8 +58,29 @@ function hermesDevToken(): Plugin {
   };
 }
 
+/**
+ * Writes a build-info.json into web_dist/ at the end of every production
+ * build. The Python web_server picks it up and exposes it via
+ * /api/system/stats so the System page can show which web build is active.
+ */
+function hermesBuildInfo(): Plugin {
+  return {
+    name: "hermes:build-info",
+    apply: "build",
+    closeBundle() {
+      const now = new Date().toISOString();
+      const branch = process.env.GIT_BRANCH ?? "";
+      const info = { built_at: now, git_branch: branch };
+      writeFileSync(
+        path.resolve(__dirname, "../hermes_cli/web_dist/build-info.json"),
+        JSON.stringify(info, null, 2),
+      );
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), hermesDevToken()],
+  plugins: [react(), tailwindcss(), hermesDevToken(), hermesBuildInfo()],
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

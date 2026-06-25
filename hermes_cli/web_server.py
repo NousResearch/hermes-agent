@@ -2180,6 +2180,37 @@ async def get_system_stats():
         "cpu_count": os.cpu_count(),
     }
 
+    # Web build info: written by the Vite hermesBuildInfo plugin into
+    # web_dist/build-info.json at build time.  Absent on dev servers or when
+    # the dist was built without the plugin (graceful degradation).
+    try:
+        import json as _json
+        _build_info_path = os.path.join(
+            os.path.dirname(__file__), "web_dist", "build-info.json"
+        )
+        with open(_build_info_path) as _f:
+            _bi = _json.load(_f)
+        # Also extract the JS bundle hash from the asset filename
+        # e.g. web_dist/assets/index-CREsBjWL.js → CREsBjWL
+        import glob as _glob
+        _js_files = _glob.glob(os.path.join(
+            os.path.dirname(__file__), "web_dist", "assets", "index-*.js"
+        ))
+        _bundle_hash = ""
+        if _js_files:
+            import re as _re
+            _m = _re.search(r'index-([^.]+)\.js', os.path.basename(_js_files[0]))
+            if _m:
+                _bundle_hash = _m.group(1)
+        _built_at = _bi.get("built_at", "")[:10]  # nur Datum YYYY-MM-DD
+        _branch = _bi.get("git_branch", "")
+        _label = f"{_bundle_hash}  {_built_at}"
+        if _branch:
+            _label += f"  ({_branch})"
+        info["web_build"] = _label
+    except Exception:
+        pass
+
     # psutil enriches the picture when present; everything below is optional.
     try:
         import psutil  # type: ignore

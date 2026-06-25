@@ -9569,6 +9569,11 @@ class BulkDeleteSessions(BaseModel):
     profile: Optional[str] = None
 
 
+class SessionImport(BaseModel):
+    sessions: List[Dict[str, Any]]
+    profile: Optional[str] = None
+
+
 @app.post("/api/sessions/bulk-delete")
 async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     """Delete every session in ``body.ids`` in a single DB transaction.
@@ -9617,6 +9622,27 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
         return {"ok": True, "deleted": deleted}
     finally:
         db.close()
+
+
+@app.post("/api/sessions/import")
+async def import_sessions_endpoint(body: SessionImport):
+    """Import one or more sessions exported from the dashboard or CLI.
+
+    This is intentionally separate from ``/api/ops/import``: that endpoint
+    restores a whole Hermes backup archive, while this endpoint is scoped to
+    session rows/messages and is safe to use from the Sessions page.
+    """
+    db = _open_session_db_for_profile(body.profile)
+    try:
+        result = db.import_sessions(body.sessions)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        db.close()
+
+    if not result.get("ok", False):
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 
 @app.get("/api/sessions/empty/count")

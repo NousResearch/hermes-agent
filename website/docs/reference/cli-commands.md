@@ -1131,6 +1131,7 @@ Manage the fallback provider chain. Fallback providers are tried in order when t
 |------------|-------------|
 | `list` (alias: `ls`) | Show the current fallback chain (default when no subcommand) |
 | `add` | Pick a provider + model (same picker as `hermes model`) and append to the chain |
+| `move FROM TO` | Reorder entries using the 1-based positions shown by `hermes fallback list` |
 | `remove` (alias: `rm`) | Pick an entry to delete from the chain |
 | `clear` | Remove all fallback entries |
 

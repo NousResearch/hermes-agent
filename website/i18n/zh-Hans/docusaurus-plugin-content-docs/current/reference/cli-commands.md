@@ -914,6 +914,7 @@ hermes fallback <subcommand>
 |------------|-------------|
 | `list`（别名：`ls`） | 显示当前 fallback 链（不带子命令时的默认行为） |
 | `add` | 选择 provider + 模型（与 `hermes model` 相同的选择器）并追加到链末尾 |
+| `move FROM TO` | 使用 `hermes fallback list` 显示的 1-based 位置重新排序条目 |
 | `remove`（别名：`rm`） | 选择要从链中删除的条目 |
 | `clear` | 删除所有 fallback 条目 |
 

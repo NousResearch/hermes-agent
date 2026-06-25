@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import types
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -591,8 +593,6 @@ class TestArgparseWiring:
     """
 
     def test_fallback_help_lists_subcommands(self):
-        import subprocess
-        import sys
         result = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", "fallback", "--help"],
             capture_output=True,
@@ -608,3 +608,28 @@ class TestArgparseWiring:
         assert "move" in out
         assert "remove" in out
         assert "clear" in out
+
+    def test_fallback_move_cli_reorders_temp_config(self, isolated_home):
+        _write_config(isolated_home, {
+            "fallback_providers": [
+                {"provider": "a", "model": "a-model"},
+                {"provider": "b", "model": "b-model", "base_url": "http://localhost:11434/v1"},
+                {"provider": "c", "model": "c-model"},
+            ],
+        })
+
+        result = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", "fallback", "move", "2", "1"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+
+        assert result.returncode == 0, f"stdout: {result.stdout}\nstderr: {result.stderr}"
+        assert "Moved fallback from position 2 to 1" in result.stdout
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback_providers"] == [
+            {"provider": "b", "model": "b-model", "base_url": "http://localhost:11434/v1"},
+            {"provider": "a", "model": "a-model"},
+            {"provider": "c", "model": "c-model"},
+        ]

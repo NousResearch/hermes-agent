@@ -28,7 +28,6 @@ Registry format (inline_tools.yaml)::
 
 from __future__ import annotations
 
-import asyncio
 import importlib.util
 import logging
 import os
@@ -40,7 +39,8 @@ logger = logging.getLogger(__name__)
 
 # Hard deadline for answerInlineQuery — Telegram drops responses after ~10 s
 # empirically. Executors that need longer should return a stub result immediately
-# and manage their own background state. Enforced in TelegramInlineRouter.dispatch().
+# and manage their own background state. Enforced by the adapter around dispatch()
+# (so it survives executors that replace dispatch, e.g. a classifier layer).
 RESPONSE_DEADLINE = 6.5
 
 
@@ -230,12 +230,4 @@ class TelegramInlineRouter:
             return []
 
         executor = factory(tool, self._bot)
-        try:
-            return await asyncio.wait_for(
-                executor.execute(user_id, query), timeout=RESPONSE_DEADLINE
-            )
-        except asyncio.TimeoutError:
-            logger.debug(
-                "[inline_router] executor %r exceeded %.1fs deadline", executor_name, RESPONSE_DEADLINE
-            )
-            return []
+        return await executor.execute(user_id, query)

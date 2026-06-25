@@ -69,3 +69,53 @@ async def test_inline_enabled_by_default_when_unconfigured():
     await adapter._handle_inline_query(update, None)
 
     router.dispatch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_inline_end_to_end_with_stub_executor(tmp_path):
+    """Full path with a stand-in executor (real executors are user-space): a matching
+    query routes through a real router to a registered executor and its results reach
+    answer()."""
+    import yaml
+    from gateway.platforms.telegram_inline_router import InlineExecutor, TelegramInlineRouter
+
+    registry = tmp_path / "inline_tools.yaml"
+    registry.write_text(yaml.safe_dump({"version": 1, "tools": [
+        {"id": "echo", "executor": "echo", "enabled": True, "match": [{"type": "search"}]},
+    ]}))
+
+    class _EchoExecutor(InlineExecutor):
+        async def execute(self, user_id, query):
+            return [{"type": "article", "id": "echo", "title": query}]
+
+    router = TelegramInlineRouter(bot=None, registry_path=str(registry))
+    router.register_executor("echo", lambda cfg, bot: _EchoExecutor())
+    adapter = _make_adapter(inline_cfg={"enabled": True}, router=router)
+    update, iq = _update("hello world")
+
+    await adapter._handle_inline_query(update, None)
+
+    iq.answer.assert_awaited_once()
+    assert iq.answer.await_args.args[0] == [{"type": "article", "id": "echo", "title": "hello world"}]
+
+
+@pytest.mark.asyncio
+async def test_inline_dispatch_deadline_answers_empty(monkeypatch):
+    """A dispatch exceeding RESPONSE_DEADLINE is cancelled and answered with [] — and
+    because the deadline is applied around dispatch(), it holds even when an executor
+    layer replaces dispatch."""
+    import asyncio
+    monkeypatch.setattr("gateway.platforms.telegram_inline_router.RESPONSE_DEADLINE", 0.05)
+
+    async def _slow_dispatch(user_id, query):
+        await asyncio.sleep(1.0)
+        return ["late"]
+
+    router = SimpleNamespace(dispatch=_slow_dispatch)
+    adapter = _make_adapter(inline_cfg={"enabled": True}, router=router)
+    update, iq = _update("x")
+
+    await adapter._handle_inline_query(update, None)
+
+    iq.answer.assert_awaited_once()
+    assert iq.answer.await_args.args[0] == []

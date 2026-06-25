@@ -5654,9 +5654,19 @@ class TelegramAdapter(BasePlatformAdapter):
         if not query or not self._inline_router:
             await iq.answer([], cache_time=0)
             return
+        import asyncio as _asyncio
+        from gateway.platforms.telegram_inline_router import RESPONSE_DEADLINE
         try:
-            results = await self._inline_router.dispatch(iq.from_user.id, query)
+            # Deadline is enforced here, around dispatch(), so it holds even when an
+            # executor layer replaces the router's dispatch (e.g. a classifier).
+            results = await _asyncio.wait_for(
+                self._inline_router.dispatch(iq.from_user.id, query),
+                timeout=RESPONSE_DEADLINE,
+            )
             await iq.answer(results or [], cache_time=0)
+        except _asyncio.TimeoutError:
+            logger.debug("[%s] inline dispatch exceeded deadline", self.name)
+            await iq.answer([], cache_time=0)
         except Exception as exc:
             logger.warning("[%s] inline dispatch error: %s", self.name, exc)
             await iq.answer([], cache_time=0)

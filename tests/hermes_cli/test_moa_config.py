@@ -1,6 +1,7 @@
 from hermes_cli.moa_config import (
     DEFAULT_MOA_AGGREGATOR,
     DEFAULT_MOA_PRESET_NAME,
+    DEFAULT_MOA_REFERENCE_CONTEXT,
     DEFAULT_MOA_REFERENCE_MODELS,
     build_moa_turn_prompt,
     decode_moa_turn,
@@ -18,6 +19,80 @@ def test_normalize_moa_config_uses_default_named_preset():
     assert list(cfg["presets"]) == [DEFAULT_MOA_PRESET_NAME]
     assert cfg["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
     assert cfg["aggregator"] == DEFAULT_MOA_AGGREGATOR
+    assert cfg["reference_context"] == DEFAULT_MOA_REFERENCE_CONTEXT
+
+
+def test_normalize_moa_config_preserves_reference_context_per_preset():
+    cfg = normalize_moa_config(
+        {
+            "default_preset": "persona",
+            "presets": {
+                "persona": {
+                    "reference_models": [{"provider": "openai-codex", "model": "gpt-5.5"}],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                    "reference_context": {
+                        "system": "full",
+                        "files": {
+                            "enabled": True,
+                            "names": ["SOUL.md", "AGENTS.md", "SOUL.md", "../outside"],
+                        },
+                    },
+                }
+            },
+        }
+    )
+
+    assert cfg["reference_context"] == {
+        "system": "full",
+        "files": {"enabled": True, "names": ["SOUL.md", "AGENTS.md"]},
+    }
+    assert cfg["presets"]["persona"]["reference_context"] == cfg["reference_context"]
+
+
+
+
+def test_reference_context_dict_can_disable_preselected_files():
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "review": {
+                    "reference_context": {
+                        "system": "none",
+                        "files": {"enabled": False, "names": ["SOUL.md"]},
+                    },
+                }
+            }
+        }
+    )
+
+    assert cfg["presets"]["review"]["reference_context"] == {
+        "system": "none",
+        "files": {"enabled": False, "names": ["SOUL.md"]},
+    }
+
+
+def test_hidden_moa_turn_does_not_trust_reference_context_from_payload():
+    marker = build_moa_turn_prompt(
+        "review this",
+        {
+            "default_preset": "rich",
+            "presets": {
+                "rich": {
+                    "reference_context": {
+                        "system": "full",
+                        "files": {"enabled": True, "names": ["SOUL.md", "AGENTS.md"]},
+                    }
+                }
+            },
+        },
+        preset="rich",
+    )
+
+    decoded_prompt, cfg = decode_moa_turn(marker)
+
+    assert decoded_prompt == "review this"
+    assert cfg is not None
+    assert cfg["reference_context"] == DEFAULT_MOA_REFERENCE_CONTEXT
 
 
 def test_normalize_moa_config_preserves_named_presets():

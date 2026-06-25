@@ -2074,6 +2074,14 @@ export interface MoaModelSlot {
   model: string;
 }
 
+export interface MoaReferenceContext {
+  system: "none" | "full";
+  files: {
+    enabled: boolean;
+    names: string[];
+  };
+}
+
 export interface MoaConfigResponse {
   default_preset: string;
   active_preset: string;
@@ -2084,6 +2092,7 @@ export interface MoaConfigResponse {
     aggregator_temperature: number;
     max_tokens: number;
     enabled: boolean;
+    reference_context: MoaReferenceContext;
   }>;
   reference_models: MoaModelSlot[];
   aggregator: MoaModelSlot;
@@ -2091,6 +2100,7 @@ export interface MoaConfigResponse {
   aggregator_temperature: number;
   max_tokens: number;
   enabled: boolean;
+  reference_context: MoaReferenceContext;
 }
 
 export interface ModelAssignmentRequest {

@@ -845,6 +845,7 @@ class MoaPresetPayload(BaseModel):
     aggregator_temperature: float = 0.4
     max_tokens: int = 4096
     enabled: bool = True
+    reference_context: dict[str, Any] = {}
 
 
 class MoaConfigPayload(BaseModel):
@@ -859,6 +860,7 @@ class MoaConfigPayload(BaseModel):
     aggregator_temperature: float = 0.4
     max_tokens: int = 4096
     enabled: bool = True
+    reference_context: dict[str, Any] = {}
     profile: Optional[str] = None
 
 
@@ -3867,6 +3869,7 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                             "aggregator_temperature": preset.aggregator_temperature,
                             "max_tokens": preset.max_tokens,
                             "enabled": preset.enabled,
+                            "reference_context": preset.reference_context,
                         }
                         for name, preset in body.presets.items()
                     },
@@ -3879,6 +3882,7 @@ def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
                     "aggregator_temperature": body.aggregator_temperature,
                     "max_tokens": body.max_tokens,
                     "enabled": body.enabled,
+                    "reference_context": body.reference_context,
                 }
             normalized = normalize_moa_config(raw)
             cfg["moa"] = normalized

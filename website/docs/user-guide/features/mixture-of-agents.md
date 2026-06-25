@@ -52,7 +52,7 @@ Preset matching is exact on purpose. Hermes does not fuzzy-match preset names, s
 For each main model call when provider `moa` is selected, Hermes:
 
 1. resolves the selected preset by name;
-2. runs the configured reference models without tool schemas (they receive only the conversation's user/assistant text — not the Hermes system prompt or tool-call transcript — so reference calls stay cheap and avoid strict-provider rejections);
+2. runs the configured reference models without tool schemas (by default they receive only the conversation's user/assistant text — not the Hermes system prompt or tool-call transcript — so reference calls stay cheap and avoid strict-provider rejections; presets can opt into selected `reference_context`);
 3. appends the reference outputs as private context for the aggregator;
 4. calls the configured aggregator with the normal Hermes tool schema;
 5. treats the aggregator response as the real model response;
@@ -89,6 +89,12 @@ moa:
       aggregator_temperature: 0.4
       max_tokens: 4096
       enabled: true
+      # Optional. Defaults keep reference calls cheap: no system prompt and no files.
+      reference_context:
+        system: none  # none | full
+        files:
+          enabled: false
+          names: []   # e.g. ["SOUL.md", "AGENTS.md", "CLAUDE.md", ".cursorrules"]
 ```
 
 Default preset:
@@ -110,6 +116,8 @@ hermes moa delete review
 
 - MoA is no longer listed under `hermes tools`; there is no `moa` toolset to enable.
 - Setting `enabled: false` on a preset disables the reference fan-out for that preset: the aggregator acts alone, exactly as if you selected it as a plain model. This is the per-preset off switch surfaced in the dashboard and desktop settings.
+- `reference_context` is per-preset and opt-in. Defaults preserve the cheap advisory path (`system: none`, files disabled). Use `system: full` only when reference models need the same system prompt as the acting model. Enable selected files when persona or project context materially affects advice; supported names are `SOUL.md`, `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, `.hermes.md`, and `HERMES.md`. Selecting `.cursorrules` loads that exact file only; `.cursor/rules/*.mdc` files are not included.
+- One-shot `/moa <prompt>` payload markers do not carry `reference_context`, because they are text markers that can be spoofed by pasted content. Select a MoA preset as the active model when you need reference models to receive opted-in system or file context.
 - A preset's aggregator cannot be another MoA preset. Recursive MoA trees are intentionally blocked.
 - Credential failures on one reference model do not abort the turn. Hermes includes the failure in the reference context and continues with whatever models returned.
 - MoA increases model-call count. A single model iteration can involve multiple reference calls plus the aggregator call.

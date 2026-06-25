@@ -414,6 +414,10 @@ class TestWebServerEndpoints:
             "aggregator_temperature": 0.4,
             "max_tokens": 4096,
             "enabled": True,
+            "reference_context": {
+                "system": "full",
+                "files": {"enabled": True, "names": ["SOUL.md", "AGENTS.md"]},
+            },
         }
 
         resp = self.client.put("/api/model/moa", json=payload)
@@ -422,6 +426,7 @@ class TestWebServerEndpoints:
         cfg = load_config()
         assert cfg["moa"]["reference_models"] == payload["reference_models"]
         assert cfg["moa"]["aggregator"] == payload["aggregator"]
+        assert cfg["moa"]["reference_context"] == payload["reference_context"]
 
     # ── GET /api/media (remote image display) ───────────────────────────
 

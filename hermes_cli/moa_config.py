@@ -20,6 +20,22 @@ DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
     "model": "anthropic/claude-opus-4.8",
 }
 
+DEFAULT_MOA_REFERENCE_CONTEXT: dict[str, Any] = {
+    "system": "none",
+    "files": {"enabled": False, "names": []},
+}
+
+_ALLOWED_REFERENCE_CONTEXT_FILES = {
+    ".cursorrules",
+    ".hermes.md",
+    "AGENTS.md",
+    "CLAUDE.md",
+    "HERMES.md",
+    "SOUL.md",
+    "agents.md",
+    "claude.md",
+}
+
 
 def _clean_slot(slot: Any) -> dict[str, str] | None:
     if not isinstance(slot, dict):
@@ -31,6 +47,49 @@ def _clean_slot(slot: Any) -> dict[str, str] | None:
     return {"provider": provider, "model": model}
 
 
+def _clean_reference_context(raw: Any) -> dict[str, Any]:
+    """Return a safe, bounded reference-context strategy for one MoA preset."""
+    if not isinstance(raw, dict):
+        raw = {}
+
+    system = str(raw.get("system") or DEFAULT_MOA_REFERENCE_CONTEXT["system"]).strip().lower()
+    if system not in {"none", "full"}:
+        system = DEFAULT_MOA_REFERENCE_CONTEXT["system"]
+
+    files_raw = raw.get("files") if "files" in raw else raw.get("context_files")
+    enabled = False
+    auto_enable_from_names = False
+    raw_names: Any = []
+    if isinstance(files_raw, list):
+        enabled = True
+        auto_enable_from_names = True
+        raw_names = files_raw
+    elif isinstance(files_raw, dict):
+        enabled = bool(files_raw.get("enabled", False))
+        raw_names = files_raw.get("names") or files_raw.get("file_names") or []
+
+    names: list[str] = []
+    if isinstance(raw_names, (list, tuple)):
+        seen: set[str] = set()
+        for item in raw_names:
+            name = str(item or "").strip()
+            if (
+                not name
+                or "/" in name
+                or "\\" in name
+                or ".." in name
+                or name not in _ALLOWED_REFERENCE_CONTEXT_FILES
+                or name in seen
+            ):
+                continue
+            seen.add(name)
+            names.append(name)
+
+    if names and auto_enable_from_names:
+        enabled = True
+    return {"system": system, "files": {"enabled": enabled, "names": names}}
+
+
 def _default_preset() -> dict[str, Any]:
     return {
         "reference_models": deepcopy(DEFAULT_MOA_REFERENCE_MODELS),
@@ -39,6 +98,7 @@ def _default_preset() -> dict[str, Any]:
         "aggregator_temperature": 0.4,
         "max_tokens": 4096,
         "enabled": True,
+        "reference_context": deepcopy(DEFAULT_MOA_REFERENCE_CONTEXT),
     }
 
 
@@ -60,6 +120,7 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "reference_temperature": float(raw.get("reference_temperature", 0.6) or 0.6),
         "aggregator_temperature": float(raw.get("aggregator_temperature", 0.4) or 0.4),
         "max_tokens": int(raw.get("max_tokens", 4096) or 4096),
+        "reference_context": _clean_reference_context(raw.get("reference_context")),
     }
 
 
@@ -106,6 +167,7 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "aggregator_temperature": active["aggregator_temperature"],
         "max_tokens": active["max_tokens"],
         "enabled": active["enabled"],
+        "reference_context": deepcopy(active["reference_context"]),
     }
 
 
@@ -162,7 +224,13 @@ def decode_moa_turn(message: Any) -> tuple[str, dict[str, Any] | None]:
     except Exception:
         return message, None
     prompt = str(payload.get("prompt") or "")
-    return prompt, _normalize_preset(payload.get("config") or {})
+    preset = _normalize_preset(payload.get("config") or {})
+    # Hidden /moa markers are text payloads and can be spoofed by pasted or
+    # untrusted content. Do not let them elevate reference calls into sharing
+    # system prompts or local context files; config-selected MoA provider mode
+    # still supports reference_context through the normal trusted config path.
+    preset["reference_context"] = deepcopy(DEFAULT_MOA_REFERENCE_CONTEXT)
+    return prompt, preset
 
 
 def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | None = None) -> str:

@@ -9,7 +9,9 @@ iteration.
 from __future__ import annotations
 
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 from agent.auxiliary_client import call_llm
@@ -106,22 +108,116 @@ def _run_references_parallel(
     return [r for r in results if r is not None]
 
 
-def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _selected_context_file_sections(
+    reference_context: dict[str, Any],
+    *,
+    cwd: str | None = None,
+    context_length: int | None = None,
+) -> str:
+    """Load opt-in context files for MoA reference calls.
+
+    This is deliberately selected-only: the default reference path stays cheap
+    and advisory-safe, while power-user presets can provide persona/project
+    context such as SOUL.md or AGENTS.md to reference models.
+    """
+    files_cfg = reference_context.get("files") if isinstance(reference_context, dict) else {}
+    if not isinstance(files_cfg, dict) or not files_cfg.get("enabled"):
+        return ""
+    names = files_cfg.get("names") or []
+    if not isinstance(names, list) or not names:
+        return ""
+
+    try:
+        from agent import prompt_builder
+    except Exception as exc:
+        logger.debug("Could not import prompt_builder for MoA reference context: %s", exc)
+        return ""
+
+    if cwd is None:
+        try:
+            from agent.runtime_cwd import resolve_context_cwd
+
+            resolved = resolve_context_cwd()
+        except Exception as exc:
+            logger.debug("Could not resolve MoA reference context cwd: %s", exc)
+            resolved = None
+        cwd_path = (resolved or Path(os.getcwd())).resolve()
+    else:
+        cwd_path = Path(cwd).expanduser().resolve()
+    sections: list[str] = []
+    for name in names:
+        try:
+            if name == "SOUL.md":
+                content = prompt_builder.load_soul_md(context_length=context_length)
+                if content:
+                    sections.append(f"## SOUL.md\n\n{content}")
+            elif name in {"AGENTS.md", "agents.md"}:
+                content = prompt_builder._load_agents_md(cwd_path, context_length)  # noqa: SLF001
+                if content:
+                    sections.append(content)
+            elif name in {"CLAUDE.md", "claude.md"}:
+                content = prompt_builder._load_claude_md(cwd_path, context_length)  # noqa: SLF001
+                if content:
+                    sections.append(content)
+            elif name == ".cursorrules":
+                candidate = cwd_path / ".cursorrules"
+                if candidate.exists():
+                    content = candidate.read_text(encoding="utf-8").strip()
+                    if content:
+                        content = prompt_builder._scan_context_content(content, ".cursorrules")  # noqa: SLF001
+                        result = f"## .cursorrules\n\n{content}"
+                        sections.append(
+                            prompt_builder._truncate_content(  # noqa: SLF001
+                                result,
+                                ".cursorrules",
+                                context_length=context_length,
+                                read_path=str(candidate),
+                            )
+                        )
+            elif name in {".hermes.md", "HERMES.md"}:
+                content = prompt_builder._load_hermes_md(cwd_path, context_length)  # noqa: SLF001
+                if content:
+                    sections.append(content)
+        except Exception as exc:
+            logger.debug("Could not load MoA reference context file %s: %s", name, exc)
+
+    if not sections:
+        return ""
+    return (
+        "[Mixture of Agents selected reference context files]\n"
+        "These files were explicitly enabled by the MoA preset for advisory reference models.\n\n"
+        + "\n\n".join(sections)
+    )
+
+
+def _reference_messages(
+    messages: list[dict[str, Any]],
+    *,
+    reference_context: dict[str, Any] | None = None,
+    cwd: str | None = None,
+    context_length: int | None = None,
+) -> list[dict[str, Any]]:
     """Build an advisory-safe view of the conversation for reference models.
 
     Reference calls are advisory: they never call tools and never emit the
-    ``tool_calls`` the main model did. Replaying the full transcript verbatim
-    (a) re-bills the ~8K-token Hermes system prompt per reference per
-    iteration and (b) risks 400s from strict providers (Mistral, Fireworks)
-    that reject orphan ``tool`` messages or ``tool_calls`` the reference never
-    produced. We keep only the user/assistant *text* turns, dropping the
-    system prompt, any ``tool``-role messages, and any ``tool_calls`` payloads.
+    ``tool_calls`` the main model did. By default we keep only user/assistant
+    text, dropping the system prompt, any ``tool``-role messages, and any
+    ``tool_calls`` payloads. Presets may opt into selected system/context-file
+    guidance for persona/project-heavy agents.
     """
-    trimmed: list[dict[str, Any]] = []
+    reference_context = reference_context or {}
+    include_system = reference_context.get("system") == "full"
+    system_parts: list[str] = []
+    text_messages: list[dict[str, Any]] = []
+
     for msg in messages:
         role = msg.get("role")
+        if role == "system":
+            if include_system and isinstance(msg.get("content"), str) and msg["content"].strip():
+                system_parts.append(msg["content"])
+            continue
         if role not in ("user", "assistant"):
-            # Drop system prompt and tool-result messages.
+            # Drop tool-result messages and other non-advisory roles.
             continue
         content = msg.get("content")
         if not isinstance(content, str):
@@ -132,13 +228,28 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if role == "assistant" and not text.strip():
             # Assistant turn that was purely tool calls — nothing advisory.
             continue
-        trimmed.append({"role": role, "content": text})
-    if not trimmed:
+        text_messages.append({"role": role, "content": text})
+
+    context_block = _selected_context_file_sections(
+        reference_context,
+        cwd=cwd,
+        context_length=context_length,
+    )
+    if context_block:
+        system_parts.append(context_block)
+
+    system_messages = (
+        [{"role": "system", "content": "\n\n".join(system_parts)}]
+        if system_parts
+        else []
+    )
+    trimmed = system_messages + text_messages
+    if not text_messages:
         # Degenerate case (e.g. first turn was stripped): fall back to a
         # minimal user turn so the reference still has something to answer.
         for msg in reversed(messages):
             if msg.get("role") == "user" and isinstance(msg.get("content"), str):
-                return [{"role": "user", "content": msg["content"]}]
+                return system_messages + [{"role": "user", "content": msg["content"]}]
     return trimmed
 
 
@@ -170,14 +281,21 @@ def aggregate_moa_context(
     temperature: float = 0.6,
     aggregator_temperature: float = 0.4,
     max_tokens: int = 4096,
+    reference_context: dict[str, Any] | None = None,
 ) -> str:
     """Run configured reference models and synthesize their advice.
 
     Failures are returned as model-specific notes instead of aborting the normal
     agent loop; the main model can still act with partial context.
     """
+    if not reference_models:
+        return ""
+
     reference_outputs: list[tuple[str, str]] = []
-    ref_messages = _reference_messages(api_messages)
+    ref_messages = _reference_messages(
+        api_messages,
+        reference_context=reference_context,
+    )
     reference_outputs = _run_references_parallel(
         reference_models,
         ref_messages,
@@ -252,13 +370,17 @@ class MoAChatCompletions:
             reference_models = []
 
         reference_outputs: list[tuple[str, str]] = []
-        ref_messages = _reference_messages(messages)
-        reference_outputs = _run_references_parallel(
-            reference_models,
-            ref_messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        if reference_models:
+            ref_messages = _reference_messages(
+                messages,
+                reference_context=preset.get("reference_context"),
+            )
+            reference_outputs = _run_references_parallel(
+                reference_models,
+                ref_messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
 
         agg_messages = [dict(m) for m in messages]
         if reference_outputs:

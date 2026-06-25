@@ -730,6 +730,14 @@ export interface MoaModelSlot {
   model: string
 }
 
+export interface MoaReferenceContext {
+  system: 'none' | 'full'
+  files: {
+    enabled: boolean
+    names: string[]
+  }
+}
+
 export interface MoaConfigResponse {
   default_preset: string
   active_preset: string
@@ -738,6 +746,7 @@ export interface MoaConfigResponse {
     aggregator_temperature: number
     enabled: boolean
     max_tokens: number
+    reference_context: MoaReferenceContext
     reference_models: MoaModelSlot[]
     reference_temperature: number
   }>
@@ -745,6 +754,7 @@ export interface MoaConfigResponse {
   aggregator_temperature: number
   enabled: boolean
   max_tokens: number
+  reference_context: MoaReferenceContext
   reference_models: MoaModelSlot[]
   reference_temperature: number
 }

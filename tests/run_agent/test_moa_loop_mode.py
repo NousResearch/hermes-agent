@@ -87,6 +87,101 @@ def test_reference_messages_strips_system_and_tool_history():
     ]
 
 
+def test_reference_messages_can_include_full_system_context():
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "system", "content": "system instructions for references"},
+        {"role": "user", "content": "do the thing"},
+    ]
+
+    ref_messages = _reference_messages(
+        messages,
+        reference_context={"system": "full", "files": {"enabled": False, "names": []}},
+    )
+
+    assert ref_messages == [
+        {"role": "system", "content": "system instructions for references"},
+        {"role": "user", "content": "do the thing"},
+    ]
+
+
+def test_reference_messages_can_include_selected_context_files(monkeypatch, tmp_path):
+    from agent.moa_loop import _reference_messages
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "SOUL.md").write_text("Persona rules", encoding="utf-8")
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "AGENTS.md").write_text("Project workflow rules", encoding="utf-8")
+    (project / "CLAUDE.md").write_text("Not selected", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    ref_messages = _reference_messages(
+        [{"role": "user", "content": "review this"}],
+        reference_context={
+            "system": "none",
+            "files": {"enabled": True, "names": ["SOUL.md", "AGENTS.md"]},
+        },
+        cwd=str(project),
+    )
+
+    assert ref_messages[0]["role"] == "system"
+    assert "[Mixture of Agents selected reference context files]" in ref_messages[0]["content"]
+    assert "## SOUL.md" in ref_messages[0]["content"]
+    assert "Persona rules" in ref_messages[0]["content"]
+    assert "## AGENTS.md" in ref_messages[0]["content"]
+    assert "Project workflow rules" in ref_messages[0]["content"]
+    assert "Not selected" not in ref_messages[0]["content"]
+    assert ref_messages[-1] == {"role": "user", "content": "review this"}
+
+
+
+
+def test_reference_messages_use_runtime_context_cwd(monkeypatch, tmp_path):
+    from agent.moa_loop import _reference_messages
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "AGENTS.md").write_text("Runtime project workflow rules", encoding="utf-8")
+    monkeypatch.setenv("TERMINAL_CWD", str(project))
+
+    ref_messages = _reference_messages(
+        [{"role": "user", "content": "review this"}],
+        reference_context={
+            "system": "none",
+            "files": {"enabled": True, "names": ["AGENTS.md"]},
+        },
+    )
+
+    assert ref_messages[0]["role"] == "system"
+    assert "Runtime project workflow rules" in ref_messages[0]["content"]
+
+
+def test_reference_messages_cursorrules_is_exact_file_only(tmp_path):
+    from agent.moa_loop import _reference_messages
+
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / ".cursorrules").write_text("Exact cursor rules", encoding="utf-8")
+    extra = project / ".cursor" / "rules"
+    extra.mkdir(parents=True)
+    (extra / "extra.mdc").write_text("Extra cursor rule should not leak", encoding="utf-8")
+
+    ref_messages = _reference_messages(
+        [{"role": "user", "content": "review this"}],
+        reference_context={
+            "system": "none",
+            "files": {"enabled": True, "names": [".cursorrules"]},
+        },
+        cwd=str(project),
+    )
+
+    assert "Exact cursor rules" in ref_messages[0]["content"]
+    assert "Extra cursor rule should not leak" not in ref_messages[0]["content"]
+
+
 def test_moa_facade_references_get_trimmed_messages(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

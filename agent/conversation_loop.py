@@ -828,6 +828,7 @@ def run_conversation(
                     temperature=float(moa_config.get("reference_temperature", 0.6) or 0.6),
                     aggregator_temperature=float(moa_config.get("aggregator_temperature", 0.4) or 0.4),
                     max_tokens=int(moa_config.get("max_tokens", 4096) or 4096),
+                    reference_context=moa_config.get("reference_context"),
                 )
                 if _moa_context:
                     for _msg in reversed(api_messages):

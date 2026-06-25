@@ -363,8 +363,10 @@ const effortLabel = (effort?: string) => {
     .trim()
     .toLowerCase()
 
-  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
+  return value || 'medium'
 }
+
+const speedLabel = (fast?: boolean) => (fast ? 'fast' : 'normal')
 
 const shortModelLabel = (model: string) =>
   model
@@ -377,7 +379,7 @@ const shortModelLabel = (model: string) =>
     .trim()
 
 const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+  [shortModelLabel(model), effortLabel(effort), speedLabel(fast)].filter(Boolean).join(' ')
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -405,6 +407,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 }
 
 export function StatusRule({
+  accountLimitStatus,
   cwdLabel,
   cols,
   busy,
@@ -512,6 +515,7 @@ export function StatusRule({
   const showIdle = segs.duration && !busy && lastTurnEndedAt != null && fits(SEP + stringWidth('✓ ') + MAX_DURATION_WIDTH)
   const showCompressions = segs.compressions && compressions > 0 && fits(SEP + stringWidth(`cmp ${compressions}`))
   const showVoice = segs.voice && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
+  const showAccountLimit = !!accountLimitStatus && fits(SEP + stringWidth(accountLimitStatus))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
   const showBg = segs.bg && bgCount > 0 && fits(SEP + stringWidth(`${bgCount} bg`))
   const subagentCount = typeof usage.active_subagents === 'number' ? usage.active_subagents : 0
@@ -614,6 +618,12 @@ export function StatusRule({
           >
             {' │ '}
             {voiceLabel}
+          </Text>
+        ) : null}
+        {showAccountLimit ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {accountLimitStatus}
           </Text>
         ) : null}
         {showSessionCount ? sessionCountNode : null}
@@ -760,6 +770,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
+  accountLimitStatus?: string
   bgCount: number
   lastTurnEndedAt?: null | number
   liveSessionCount: number

@@ -148,6 +148,7 @@ export interface McpServerStatus {
 }
 
 export interface SessionInfo {
+  account_limit_status?: string
   cwd?: string
   fast?: boolean
   lazy?: boolean

@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from cli import HermesCLI, _build_compact_banner, _rich_text_from_ansi
 from hermes_cli.skin_engine import get_active_skin, set_active_skin
 
@@ -40,7 +41,13 @@ class TestCliSkinPromptIntegration:
         cli = _make_cli_stub()
 
         set_active_skin("ares")
-        assert cli._get_tui_prompt_fragments() == [("class:prompt", "⚔ ")]
+        assert cli._get_tui_prompt_fragments() == [("class:prompt", "Ares ⚔ ")]
+
+    def test_branded_skin_prompt_uses_skin_name_for_default_profile(self):
+        cli = _make_cli_stub()
+
+        set_active_skin("ares")
+        assert cli._get_tui_prompt_symbols() == ("Ares ⚔ ", "⚔ ")
 
     def test_secret_prompt_fragments_preserve_secret_state(self):
         cli = _make_cli_stub()
@@ -53,6 +60,7 @@ class TestCliSkinPromptIntegration:
         cli = _make_cli_stub()
         cli._secret_state = {"response_queue": object()}
 
+        set_active_skin("default")
         with patch("hermes_cli.skin_engine.get_active_prompt_symbol", return_value="⚔ "):
             assert cli._get_tui_prompt_fragments() == [("class:sudo-prompt", "🔑 ⚔ ")]
 
@@ -89,6 +97,53 @@ class TestCliSkinPromptIntegration:
         assert "Skin set to: ares (saved)" in output
         assert "Prompt + TUI colors updated." in output
         assert cli._app.style is not None
+
+    def test_account_limit_status_compacts_codex_session_and_weekly(self):
+        import datetime
+
+        snapshot = AccountUsageSnapshot(
+            provider="openai-codex",
+            source="test",
+            fetched_at=datetime.datetime.now(datetime.timezone.utc),
+            windows=(
+                AccountUsageWindow(
+                    label="Session",
+                    used_percent=19,
+                    reset_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=2, minutes=14),
+                ),
+                AccountUsageWindow(
+                    label="Weekly",
+                    used_percent=41,
+                    reset_at=datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=4),
+                ),
+            ),
+        )
+
+        assert HermesCLI._format_account_limit_status(snapshot) == ("Codex 5h 81% · 2h14m | W 59% · 4d", 59)
+
+    def test_status_bar_fragments_include_account_limit_cache(self):
+        cli = _make_cli_stub()
+        cli._status_bar_visible = True
+        cli._model_picker_state = None
+        cli._get_tui_terminal_width = lambda default=(80, 24): 120
+        cli._is_session_yolo_active = lambda: False
+        cli._get_status_bar_snapshot = lambda: {
+            "model_short": "gpt-5.5",
+            "duration": "2m",
+            "context_percent": 19,
+            "context_length": 272000,
+            "context_tokens": 52000,
+            "compressions": 0,
+            "active_background_tasks": 0,
+            "active_background_processes": 0,
+            "prompt_elapsed": "⏲ 1s",
+            "idle_since": "",
+            "account_limit_status": "Codex 5h 81% · 2h14m | W 59% · 4d",
+            "account_limit_remaining": 59,
+        }
+
+        plain = "".join(text for _, text in cli._get_status_bar_fragments())
+        assert "Codex 5h 81% · 2h14m | W 59% · 4d" in plain
 
 
 class TestCompactBannerSkinIntegration:

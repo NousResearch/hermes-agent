@@ -92,6 +92,37 @@ def _format_reset(dt: Optional[datetime]) -> str:
     return f"{rel} ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
 
 
+def format_reset_remaining_compact(dt: Optional[datetime], *, now: Optional[datetime] = None) -> str:
+    """Return a terse reset countdown for status bars.
+
+    The detailed `/usage` view keeps the absolute timestamp; live status bars
+    need only the remaining duration, e.g. ``2h14m`` or ``4d``.
+    """
+    if not dt:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    if now is None:
+        now = _utc_now()
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+
+    total_seconds = int((dt.astimezone(timezone.utc) - now.astimezone(timezone.utc)).total_seconds())
+    if total_seconds <= 0:
+        return "now"
+
+    minutes = max(1, math.ceil(total_seconds / 60))
+    if minutes < 60:
+        return f"{minutes}m"
+
+    hours, rem_minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h{rem_minutes}m" if rem_minutes else f"{hours}h"
+
+    days = hours // 24
+    return f"{days}d"
+
+
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:
     if not snapshot:
         return []

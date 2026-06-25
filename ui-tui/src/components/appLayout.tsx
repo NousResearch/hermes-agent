@@ -196,7 +196,14 @@ const ComposerPane = memo(function ComposerPane({
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
-  const promptText = composerPromptText(ui.theme.brand.prompt, ui.info?.profile_name, sh, TERMUX_TUI_MODE, composer.cols)
+  const promptText = composerPromptText(
+    ui.theme.brand.prompt,
+    ui.info?.profile_name,
+    sh,
+    TERMUX_TUI_MODE,
+    composer.cols,
+    ui.theme.brand.name
+  )
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
@@ -382,6 +389,7 @@ const StatusRulePane = memo(function StatusRulePane({
     <Box marginTop={at === 'top' ? 1 : 0}>
       <StatusRule
         bgCount={ui.bgTasks.size}
+        accountLimitStatus={ui.info?.account_limit_status}
         busy={ui.busy}
         cols={composer.cols}
         cwdLabel={status.cwdLabel}

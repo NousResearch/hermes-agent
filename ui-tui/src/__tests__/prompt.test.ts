@@ -11,7 +11,15 @@ describe('composerPromptText', () => {
     expect(composerPromptText('❯', 'coder')).toBe('coder ❯')
   })
 
-  it('does not prefix default or custom profiles', () => {
+  it('prefixes default profile with the skin brand name when available', () => {
+    expect(composerPromptText('❯', 'default', false, false, undefined, 'Hermes Agent')).toBe('Hermes ❯')
+  })
+
+  it('uses the skin brand name when profile info is not hydrated yet', () => {
+    expect(composerPromptText('›', undefined, false, false, undefined, 'Hermes')).toBe('Hermes ›')
+  })
+
+  it('does not prefix default without a brand name or custom profiles', () => {
     expect(composerPromptText('❯', 'default')).toBe('❯')
     expect(composerPromptText('❯', 'custom')).toBe('❯')
     expect(composerPromptText('❯')).toBe('❯')

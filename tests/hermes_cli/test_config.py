@@ -354,6 +354,55 @@ class TestSaveEnvValueSecure:
         env_mode = env_path.stat().st_mode & 0o777
         assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
 
+    def test_save_env_value_quotes_values_containing_hash(self, tmp_path):
+        """Regression test for #30355."""
+        from dotenv import dotenv_values
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("ANTHROPIC_TOKEN", None)
+            token = "sk-ant-oat01-abc#xyz#more"
+            save_env_value("ANTHROPIC_TOKEN", token)
+
+            content = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert f'ANTHROPIC_TOKEN="{token}"' in content
+
+            parsed = dotenv_values(str(tmp_path / ".env"))
+            assert parsed["ANTHROPIC_TOKEN"] == token
+            assert load_env()["ANTHROPIC_TOKEN"] == token
+
+    def test_save_env_value_hash_value_round_trips_quotes_and_backslashes(self, tmp_path):
+        from dotenv import dotenv_values
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("ANTHROPIC_TOKEN", None)
+            token = 'abc"def\\ghi#jkl'
+            save_env_value("ANTHROPIC_TOKEN", token)
+
+            content = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert 'ANTHROPIC_TOKEN="abc\\"def\\\\ghi#jkl"' in content
+
+            parsed = dotenv_values(str(tmp_path / ".env"))
+            assert parsed["ANTHROPIC_TOKEN"] == token
+            assert load_env()["ANTHROPIC_TOKEN"] == token
+
+    def test_save_env_value_updates_hash_value_with_quotes(self, tmp_path):
+        from dotenv import dotenv_values
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("ANTHROPIC_TOKEN", None)
+            save_env_value("ANTHROPIC_TOKEN", "old-token")
+
+            token = 'abc"def\\ghi#jkl'
+            save_env_value("ANTHROPIC_TOKEN", token)
+
+            content = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert content.count("ANTHROPIC_TOKEN=") == 1
+            assert 'ANTHROPIC_TOKEN="abc\\"def\\\\ghi#jkl"' in content
+
+            parsed = dotenv_values(str(tmp_path / ".env"))
+            assert parsed["ANTHROPIC_TOKEN"] == token
+            assert load_env()["ANTHROPIC_TOKEN"] == token
+
 
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):

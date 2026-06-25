@@ -48,12 +48,64 @@ FORK_REPO="${FORK_REPO#*github.com}"
 FORK_REPO="${FORK_REPO#[:/]}"
 FORK_REPO="${FORK_REPO%.git}"
 
+# Fork invariants: local deltas a clean upstream merge could SILENTLY undo.
+# Each entry is a symbol that must NOT reappear in the listed files; if it does,
+# the merge re-landed an upstream change we deliberately reverted, and
+# auto-merging would regress the live fleet. A conflict gets caught by git; a
+# clean re-introduction on adjacent lines does not — this is the net for that.
+# Add an entry whenever you revert an upstream commit a future sync could re-land.
+#
+#   forbidden_symbol | files | why
+# get_default_hermes_root | cron/jobs.py cron/suggestions.py cron/scheduler.py |
+#   cron storage must stay PER-PROFILE (revert of a5c09fd17 / #32091). This fleet
+#   runs one `--profile <name>` gateway per agent, each ticking its own
+#   ~/.hermes/profiles/<name>/cron; root-anchoring collapses all agents onto one
+#   shared store and orphans their profile-local jobs (e.g. property-ops'
+#   revital-email-sweep). Cron must resolve from get_hermes_home(). Drop this
+#   entry only once upstream lands per-job profile-execution scoping (#48649).
+FORK_INVARIANTS=(
+  "get_default_hermes_root|cron/jobs.py cron/suggestions.py cron/scheduler.py|cron storage must stay per-profile (revert of a5c09fd17/#32091)"
+)
+
+# Returns non-zero (and reports) if any invariant is violated in the working tree.
+check_fork_invariants() {
+  local violated=0 entry symbol files why
+  for entry in "${FORK_INVARIANTS[@]}"; do
+    IFS='|' read -r symbol files why <<<"$entry"
+    # shellcheck disable=SC2086 — $files is an intentional space-separated list.
+    if grep -nF "$symbol" $files 2>/dev/null; then
+      echo "  ^ FORK INVARIANT VIOLATED: '$symbol' reappeared — $why" >&2
+      violated=1
+    fi
+  done
+  return "$violated"
+}
+
 ORIGINAL_BRANCH="$(git branch --show-current)"
 SYNC_BRANCH="sync-upstream-$(date +%Y%m%d-%H%M%S)"
 
 git checkout -b "$SYNC_BRANCH" origin/main
 
 if git merge --no-edit upstream/main; then
+  # The merge was conflict-free, but a clean merge can still re-land an upstream
+  # change we deliberately reverted (re-introduced on lines git didn't flag as a
+  # conflict). Gate the auto-merge on the fork invariants; on violation, hand off
+  # to a PR for manual re-revert instead of silently regressing the live fleet.
+  if ! check_fork_invariants; then
+    echo "error: clean merge re-introduced a reverted fork delta; NOT auto-merging." >&2
+    git push -u origin "$SYNC_BRANCH"
+    PR_URL="$(gh pr create \
+      --repo "$FORK_REPO" \
+      --base main \
+      --head "$SYNC_BRANCH" \
+      --title "Sync upstream/main - REVERTED DELTA REINTRODUCED, needs manual re-revert ($(date +%Y-%m-%d))" \
+      --body "Automated sync merged cleanly but tripped a fork invariant (see check_fork_invariants in scripts/sync-upstream.sh): an upstream change this fork deliberately reverted has come back. **Do NOT merge as-is** — it would regress the live fleet. Check out $SYNC_BRANCH, re-apply the revert, push, then merge this PR yourself.")"
+    git checkout "$ORIGINAL_BRANCH"
+    git branch -D "$SYNC_BRANCH"
+    echo "error: opened PR for manual re-revert: $PR_URL" >&2
+    exit 1
+  fi
+
   # Push and open the PR before deleting the local branch, so a gh failure
   # leaves the branch recoverable locally rather than stranded only on origin.
   git push -u origin "$SYNC_BRANCH"

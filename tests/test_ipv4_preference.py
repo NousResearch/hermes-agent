@@ -16,8 +16,17 @@ class TestApplyIPv4Preference:
     """Tests for apply_ipv4_preference()."""
 
     def setup_method(self):
-        """Save the original getaddrinfo + reset the IPv6 probe cache."""
+        """Start each test from a pristine getaddrinfo + reset the probe cache.
+
+        Importing an entrypoint (e.g. hermes_cli.main) auto-applies IPv4
+        preference at import time on a host whose IPv6 route is dead, which can
+        leave socket.getaddrinfo patched before these tests run. Unwrap it so
+        each test sees a clean global regardless of import/test ordering.
+        """
         import hermes_constants
+        current = socket.getaddrinfo
+        if getattr(current, "_hermes_ipv4_patched", False):
+            socket.getaddrinfo = getattr(current, "_hermes_original", current)
         self._original = socket.getaddrinfo
         hermes_constants._IPV6_ROUTE_ALIVE = None
 

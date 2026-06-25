@@ -1023,6 +1023,9 @@ def apply_ipv4_preference(force: bool = False) -> None:
         return _original_getaddrinfo(host, port, family, type, proto, flags)
 
     _ipv4_getaddrinfo._hermes_ipv4_patched = True  # type: ignore[attr-defined]
+    # Keep a handle to the pristine resolver so the patch is reversible (used by
+    # tests to restore a clean global after an import-time auto-apply).
+    _ipv4_getaddrinfo._hermes_original = _original_getaddrinfo  # type: ignore[attr-defined]
     socket.getaddrinfo = _ipv4_getaddrinfo  # type: ignore[assignment]
 
 

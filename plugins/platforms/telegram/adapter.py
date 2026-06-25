@@ -263,6 +263,10 @@ def _strip_mdv2(text: str) -> str:
     cleaned = re.sub(r'~([^~]+)~', r'\1', cleaned)
     # Remove MarkdownV2 spoiler markers (||text|| → text)
     cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)
+    # Remove any remaining double-or-more asterisks — always truncation artifacts.
+    # Balanced **bold** pairs were stripped above; a leftover ** is an unclosed
+    # marker from a stream cut mid-token (e.g. "- **2") and must not show as text.
+    cleaned = re.sub(r'\*{2,}', '', cleaned)
     return cleaned
 
 
@@ -2621,7 +2625,11 @@ class TelegramAdapter(BasePlatformAdapter):
             # Bot API 10.0 guest reply: buffer content and return immediately.
             # Must run before the rich/legacy send paths — both use sendMessage
             # which Telegram rejects with Forbidden when the bot is not a member.
-            if self._pending_guest_queries.get(chat_id) is not None or chat_id in self._guest_only_chats:
+            # Normalize to string: all guest dicts use str keys (the guest update
+            # handler stores str(msg.chat.id)).  chat_id may arrive as int from the
+            # event source, which would silently miss every dict lookup below.
+            _cid_str = str(chat_id)
+            if self._pending_guest_queries.get(_cid_str) is not None or _cid_str in self._guest_only_chats:
                 # Tool-use progress blocks (💻 terminal etc.) come through
                 # send() from send_progress_messages().  The stream consumer
                 # always sets expect_edits=True on the first frame and
@@ -2640,7 +2648,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # consumer by returning that id.  The consumer will then drive
                 # progressive edits via edit_message(), which we intercept below
                 # to route to editMessageText(inline_message_id=...).
-                _imi = self._guest_inline_message_ids.get(chat_id)
+                _imi = self._guest_inline_message_ids.get(_cid_str)
                 if _imi is not None:
                     return SendResult(success=True, message_id=_imi)
 
@@ -2652,23 +2660,29 @@ class TelegramAdapter(BasePlatformAdapter):
                     _clean = _clean[:-len(_cursor)]
                 elif _clean.endswith("▉"):
                     _clean = _clean[:-1]
+                # Strip MEDIA: residuals.  The stream consumer only removes a MEDIA:
+                # tag once the full path (with extension) has streamed; intermediate
+                # chunks like "MEDIA:" or "MEDIA:/path" slip past its extension-anchored
+                # cleanup and would otherwise land in the buffer as visible text.
+                if "MEDIA:" in _clean:
+                    _clean = re.sub(r"MEDIA:\S*", "", _clean).strip()
 
-                _existing = self._guest_reply_buffer.get(chat_id, "")
+                _existing = self._guest_reply_buffer.get(_cid_str, "")
                 if metadata and metadata.get("guest_segment_start"):
                     # Stream consumer had a tool-call segment break on a __no_edit__
                     # platform: inter-tool commentary was cleared in the consumer and
                     # this is the start of the final-answer delivery.  Replace the
                     # buffer so preamble text ("searching...", failed-tool narration)
                     # from earlier segments does not appear in the answerGuestQuery.
-                    self._guest_reply_buffer[chat_id] = _clean
+                    self._guest_reply_buffer[_cid_str] = _clean
                 elif _existing and _clean.startswith(_existing):
                     # Cumulative streaming update: new content contains all
                     # prior content as a prefix → replace so the last call wins.
-                    self._guest_reply_buffer[chat_id] = _clean
+                    self._guest_reply_buffer[_cid_str] = _clean
                 else:
                     # Continuation or overflow chunk: content does NOT start
                     # with what we already have → append.
-                    self._guest_reply_buffer[chat_id] = _existing + _clean
+                    self._guest_reply_buffer[_cid_str] = _existing + _clean
                 return SendResult(success=True, message_id=None)
 
             # Bot API 10.1 rich fast-path: send the raw agent markdown via
@@ -3038,6 +3052,11 @@ class TelegramAdapter(BasePlatformAdapter):
             if "MEDIA:" in _text:
                 _text = re.sub(r"MEDIA:\S+", "", _text).strip()
                 _text = re.sub(r"\n{3,}", "\n\n", _text)
+            # Keep the buffer current with the latest raw (pre-format) text so that
+            # on_processing_complete can re-render it through _strip_mdv2 if the stream
+            # consumer's own finalize edit left a truncation artifact (e.g. "- **2").
+            if _text.strip():
+                self._guest_reply_buffer[str(chat_id)] = _text
             _text = (_strip_mdv2(self.format_message(_text)) if finalize else _text)[:4096]
             if not _text.strip():
                 return SendResult(success=True, message_id=message_id)
@@ -7462,10 +7481,19 @@ class TelegramAdapter(BasePlatformAdapter):
                             )
                             logger.info("[%s] answerGuestQuery fallback flushed (chat=%s)", self.name, _gc_id)
                     except Exception as _flush_err:
-                        logger.warning(
-                            "[%s] guest reply flush failed (chat=%s): %s",
-                            self.name, _gc_id, _flush_err,
-                        )
+                        if "not modified" in str(_flush_err).lower():
+                            # The stream consumer already finalized with identical text;
+                            # this idempotent re-render is the truncation safety net, so
+                            # a no-op edit here is expected, not an error.
+                            logger.debug(
+                                "[%s] guest final re-render idempotent (chat=%s)",
+                                self.name, _gc_id,
+                            )
+                        else:
+                            logger.warning(
+                                "[%s] guest reply flush failed (chat=%s): %s",
+                                self.name, _gc_id, _flush_err,
+                            )
 
         if not self._reactions_enabled():
             return

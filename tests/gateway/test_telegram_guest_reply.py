@@ -226,3 +226,77 @@ async def test_on_processing_complete_clears_guest_state(TelegramAdapter):
     assert CHAT_ID not in a._guest_inline_message_ids
     assert CHAT_ID not in a._guest_reply_buffer
     assert CHAT_ID not in a._guest_only_chats
+
+
+# ---------------------------------------------------------------------------
+# 4. Streaming-finalize robustness (text-mode hardening)
+# ---------------------------------------------------------------------------
+
+def _adapter_module(TelegramAdapter):
+    return sys.modules[TelegramAdapter.__module__]
+
+
+def test_strip_mdv2_strips_incomplete_bold(TelegramAdapter):
+    """An unclosed ** from a stream cut mid-token must not survive as visible text."""
+    _strip_mdv2 = _adapter_module(TelegramAdapter)._strip_mdv2
+    # The exact reported truncation: "- **2" (bold opened, never closed).
+    assert _strip_mdv2("- **2") == "- 2"
+    # Balanced bold still collapses, and a trailing unclosed marker is removed.
+    assert _strip_mdv2("**bold** then **trunc") == "bold then trunc"
+    # Plain text is untouched.
+    assert _strip_mdv2("just plain text") == "just plain text"
+
+
+@pytest.mark.asyncio
+async def test_send_normalizes_int_chat_id(TelegramAdapter):
+    """send() routes an int chat_id to the (str-keyed) guest buffer — no silent miss."""
+    a = _make_adapter(TelegramAdapter)
+    a._guest_inline_message_ids[CHAT_ID] = None  # stub failed → buffer mode
+
+    result = await a.send(int(CHAT_ID), "Answer text", metadata={"expect_edits": True})
+
+    assert result.success is True
+    assert result.message_id is None
+    assert "Answer text" in a._guest_reply_buffer[CHAT_ID]
+
+
+@pytest.mark.asyncio
+async def test_send_strips_media_residual_from_buffer(TelegramAdapter):
+    """A MEDIA: tag that slips past the stream consumer must not buffer as text."""
+    a = _make_adapter(TelegramAdapter)
+    a._guest_inline_message_ids[CHAT_ID] = None
+
+    await a.send(CHAT_ID, "Here you go MEDIA:/workspace/out.png", metadata={"expect_edits": True})
+
+    assert "MEDIA:" not in a._guest_reply_buffer[CHAT_ID]
+    assert "Here you go" in a._guest_reply_buffer[CHAT_ID]
+
+
+@pytest.mark.asyncio
+async def test_edit_message_populates_buffer_for_finalize_fallback(TelegramAdapter):
+    """Each streaming edit keeps the buffer current so a final re-render can recover."""
+    a = _make_adapter(TelegramAdapter)
+    a._guest_inline_message_ids[CHAT_ID] = INLINE_MESSAGE_ID
+    a._bot.do_api_request = AsyncMock(return_value=None)
+
+    await a.edit_message(CHAT_ID, INLINE_MESSAGE_ID, "partial answer")
+
+    assert a._guest_reply_buffer[CHAT_ID] == "partial answer"
+
+
+@pytest.mark.asyncio
+async def test_on_processing_complete_re_renders_truncated_buffer(TelegramAdapter):
+    """If the stream left a truncation artifact, the final edit re-renders it clean."""
+    a = _make_adapter(TelegramAdapter)
+    a._guest_inline_message_ids[CHAT_ID] = INLINE_MESSAGE_ID
+    a._guest_reply_buffer[CHAT_ID] = "Result:\n- **2"  # unclosed bold from a stream cut
+    a._bot.do_api_request = AsyncMock(return_value=None)
+
+    await a.on_processing_complete(_make_event(), ProcessingOutcome.SUCCESS)
+
+    a._bot.do_api_request.assert_awaited_once()
+    method, = a._bot.do_api_request.await_args.args
+    text = a._bot.do_api_request.await_args.kwargs["api_kwargs"]["text"]
+    assert method == "editMessageText"
+    assert "**" not in text          # artifact stripped
+    assert "2" in text               # content preserved

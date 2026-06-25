@@ -1276,7 +1276,7 @@ def _cross_process_init_lock(path: Path):
                     fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                     acquired = True
                     break
-                except (BlockingIOError, OSError):
+                except OSError:
                     if time.monotonic() >= deadline:
                         break
                     time.sleep(_INIT_LOCK_POLL_SECONDS)

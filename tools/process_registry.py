@@ -1179,7 +1179,7 @@ class ProcessRegistry:
                     chunk = stdout.read()
                     if chunk:
                         drained = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
-                except (BlockingIOError, OSError, ValueError):
+                except (OSError, ValueError):
                     pass
                 finally:
                     try:

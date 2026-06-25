@@ -397,7 +397,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             return _connect()
-        except (socket.timeout, TimeoutError, ConnectionError, OSError) as exc:
+        except (socket.timeout, OSError) as exc:
             if isinstance(exc, ssl.SSLError):
                 raise
             # Connection-level failure (may be unreachable IPv6).

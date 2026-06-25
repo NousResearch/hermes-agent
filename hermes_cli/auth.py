@@ -993,7 +993,7 @@ def _file_lock(
                     lock_file.seek(0)
                     msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
                 break
-            except (BlockingIOError, OSError, PermissionError):
+            except OSError:
                 if time.monotonic() >= deadline:
                     raise TimeoutError(timeout_message)
                 time.sleep(0.05)

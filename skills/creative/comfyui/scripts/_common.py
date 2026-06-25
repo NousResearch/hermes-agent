@@ -476,7 +476,7 @@ def http_request(
                 _sleep_backoff(attempt)
                 continue
             return resp
-        except (TimeoutError, ConnectionError, OSError) as e:
+        except OSError as e:
             last_exc = e
             if attempt + 1 < retries:
                 _sleep_backoff(attempt)

@@ -1621,7 +1621,7 @@ if _config_path.exists():
         # initialized at module-import time (logger is defined further
         # down this module).
         print(
-            f"  Warning: config.yaml → env bridge failed: "
+            "  Warning: config.yaml → env bridge failed: "
             f"{type(_bridge_err).__name__}: {_bridge_err}",
             file=sys.stderr,
         )
@@ -1887,15 +1887,15 @@ def _build_document_context_note(display_name: str, agent_path: str, mtype: str)
     if mtype.startswith("text/"):
         return (
             f"[The user sent a text document: '{display_name}'. "
-            f"Its content has been included below. "
+            "Its content has been included below. "
             f"The file is also saved at: {agent_path}]"
         )
     return (
         f"[The user sent a document: '{display_name}'. It is saved at: {agent_path}. "
-        f"Its text is not inlined here (it's a binary format such as PDF or DOCX). "
-        f"To read it, extract the document's text yourself — for example with the "
-        f"terminal tool or the ocr-and-documents skill — before answering, instead "
-        f"of asking the user to paste the contents.]"
+        "Its text is not inlined here (it's a binary format such as PDF or DOCX). "
+        "To read it, extract the document's text yourself — for example with the "
+        "terminal tool or the ocr-and-documents skill — before answering, instead "
+        "of asking the user to paste the contents.]"
     )
 
 
@@ -1940,7 +1940,7 @@ async def _probe_audio_duration(path: str) -> Optional[str]:
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffprobe", "-v", "error", "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1", path,
+            "-o", "default=noprint_wrappers=1:nokey=1", path,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
@@ -2075,7 +2075,7 @@ def _check_unavailable_skill(command_name: str) -> str | None:
                 if slug == normalized and declared_name in disabled:
                     return (
                         f"The **{command_name}** skill is installed but disabled.\n"
-                        f"Enable it with: `hermes skills config`"
+                        "Enable it with: `hermes skills config`"
                     )
 
         # Check optional skills (shipped with repo but not installed)
@@ -2269,7 +2269,7 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
         _sup = evt.get("suppressed", 0)
         text = (
             f"[IMPORTANT: Background process {_sid} matched "
-            f"watch pattern \"{_pat}\".\n"
+            "watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
         )
@@ -2773,7 +2773,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         from gateway.hooks import HookRegistry
         self.hooks = HookRegistry()
 
-        # Per-chat voice reply mode: "off" | "voice_only" | "all"
+        # Per-chat voice reply mode: "of" | "voice_only" | "all"
         self._voice_mode: Dict[str, str] = self._load_voice_modes()
         # Recent voice transcripts per (guild,user) for duplicate suppression.
         # Protects against the same utterance being emitted twice by the voice
@@ -2902,7 +2902,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not isinstance(data, dict):
             return {}
 
-        valid_modes = {"off", "voice_only", "all"}
+        valid_modes = {"of", "voice_only", "all"}
         result = {}
         for chat_id, mode in data.items():
             if mode not in valid_modes:
@@ -4110,7 +4110,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         raw = str(cfg_get(cfg, "agent", "service_tier", default="") or "").strip()
 
         value = raw.lower()
-        if not value or value in {"normal", "default", "standard", "off", "none"}:
+        if not value or value in {"normal", "default", "standard", "of", "none"}:
             return None
         if value in {"fast", "priority", "on"}:
             return "priority"
@@ -4591,7 +4591,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if is_steer_mode:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
+                "Your message arrives after the next tool call."
             )
         elif is_queue_mode and demoted_for_subagents:
             # #30170 — explain the demotion so the user knows their
@@ -4599,17 +4599,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # discovers `/stop` as the explicit escape hatch.
             message = (
                 f"⏳ Subagent working{status_detail} — your message is queued for "
-                f"when it finishes (use /stop to cancel everything)."
+                "when it finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode:
             message = (
                 f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
+                "I'll respond once the current task finishes."
             )
         else:
             message = (
                 f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
+                "I'll respond to your message shortly."
             )
 
         # First-touch onboarding: the very first time a user sends a message
@@ -6214,7 +6214,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if not home or not home.chat_id:
             raise RuntimeError(
                 f"no home channel configured for {platform_name}; "
-                f"run /sethome on the desired chat first"
+                "run /sethome on the desired chat first"
             )
 
         cli_title = row.get("title") or cli_session_id[:8]
@@ -6305,10 +6305,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._release_running_agent_state(session_key)
 
         synthetic_text = (
-            f"[Session was just handed off from CLI (\"{cli_title}\") to this "
-            f"channel. The full prior conversation history is loaded above. "
-            f"Briefly confirm you're working here and summarize what we were "
-            f"working on, so the user can continue from this device.]"
+            "[Session was just handed off from CLI (\"{cli_title}\") to this "
+            "channel. The full prior conversation history is loaded above. "
+            "Briefly confirm you're working here and summarize what we were "
+            "working on, so the user can continue from this device.]"
         )
 
         synthetic_event = MessageEvent(
@@ -7231,12 +7231,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 raise MultiplexConfigError(
                     f"Profile '{profile_name}' enables the port-binding platform "
                     f"'{platform.value}', but gateway.multiplex_profiles is on. The "
-                    f"default profile owns the single shared HTTP listener and "
+                    "default profile owns the single shared HTTP listener and "
                     f"serves every profile through the /p/{profile_name}/ URL "
-                    f"prefix — a secondary profile cannot bind its own port. "
+                    "prefix — a secondary profile cannot bind its own port. "
                     f"Remove platforms.{platform.value} from profile "
                     f"'{profile_name}'s config.yaml (configure it only on the "
-                    f"default profile)."
+                    "default profile)."
                 )
             with _profile_runtime_scope(profile_home):
                 adapter = self._create_adapter(platform, platform_config)
@@ -7577,9 +7577,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if adapter:
                         await adapter.send(
                             source.chat_id,
-                            f"Hi~ I don't recognize you yet!\n\n"
+                            "Hi~ I don't recognize you yet!\n\n"
                             f"Here's your pairing code: `{code}`\n\n"
-                            f"Ask the bot owner to run:\n"
+                            "Ask the bot owner to run:\n"
                             f"`hermes pairing approve {platform_name} {code}`"
                         )
                 else:
@@ -8052,7 +8052,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _cmd_def_inner:
                 return (
                     f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
-                    f"mid-turn. Wait for the current response or `/stop` first."
+                    "mid-turn. Wait for the current response or `/stop` first."
                 )
 
             if event.message_type == MessageType.PHOTO:
@@ -8639,7 +8639,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         if _skill_name in _get_plat_disabled(platform=_plat):
                             return (
                                 f"The **{_skill_name}** skill is disabled for {_plat}.\n"
-                                f"Enable it with: `hermes skills config`"
+                                "Enable it with: `hermes skills config`"
                             )
                     user_instruction = event.get_command_args().strip()
                     msg = build_skill_invocation_message(
@@ -8671,9 +8671,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         )
                         return (
                             f"Unknown command `/{command}`. "
-                            f"Type /commands to see what's available, "
-                            f"or resend without the leading slash to send "
-                            f"as a regular message."
+                            "Type /commands to see what's available, "
+                            "or resend without the leading slash to send "
+                            "as a regular message."
                         )
             except Exception as e:
                 logger.debug("Skill command check failed (non-fatal): %s", e)
@@ -8915,11 +8915,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _note = (
                     f"[The user sent an audio file attachment: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
-                    f"Its content is not inlined here. If the user's request involves "
-                    f"what the audio contains, transcribe or process it yourself — for "
-                    f"example by passing the path to a transcription or media tool — "
-                    f"instead of asking the user to describe it. Only ask what to do "
-                    f"with it if their intent is genuinely unclear.]"
+                    "Its content is not inlined here. If the user's request involves "
+                    "what the audio contains, transcribe or process it yourself — for "
+                    "example by passing the path to a transcription or media tool — "
+                    "instead of asking the user to describe it. Only ask what to do "
+                    "with it if their intent is genuinely unclear.]"
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
@@ -8934,11 +8934,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _note = (
                     f"[The user sent a video attachment: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
-                    f"Its content is not inlined here. If the user's request involves "
-                    f"what the video contains, inspect or process it yourself — for "
-                    f"example by passing the path to a video analysis or media tool — "
-                    f"instead of asking the user to describe it. Only ask what to do "
-                    f"with it if their intent is genuinely unclear.]"
+                    "Its content is not inlined here. If the user's request involves "
+                    "what the video contains, inspect or process it yourself — for "
+                    "example by passing the path to a video analysis or media tool — "
+                    "instead of asking the user to describe it. Only ask what to do "
+                    "with it if their intent is genuinely unclear.]"
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
@@ -9261,9 +9261,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             reason_text = f"inactive for {duration}"
                         notice = (
                             f"◐ Session automatically reset ({reason_text}). "
-                            f"Conversation history cleared.\n"
-                            f"Use /resume to browse and restore a previous session.\n"
-                            f"Adjust reset timing in config.yaml under session_reset."
+                            "Conversation history cleared.\n"
+                            "Use /resume to browse and restore a previous session.\n"
+                            "Adjust reset timing in config.yaml under session_reset."
                         )
                         try:
                             session_info = self._format_session_info()
@@ -9299,7 +9299,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _loaded_skill, _skill_dir, _display_name = _loaded
                         _note = (
                             f'[IMPORTANT: The "{_display_name}" skill is auto-loaded. '
-                            f"Follow its instructions for this session.]"
+                            "Follow its instructions for this session.]"
                         )
                         _part = _build_skill_message(_loaded_skill, _skill_dir, _note)
                         if _part:
@@ -9732,10 +9732,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 notice = (
                     f"📬 No home channel is set for {platform_name.title()}. "
-                    f"A home channel is where Hermes delivers cron job results "
-                    f"and cross-platform messages.\n\n"
+                    "A home channel is where Hermes delivers cron job results "
+                    "and cross-platform messages.\n\n"
                     f"Type {sethome_cmd} to make this chat your home channel, "
-                    f"or ignore to skip."
+                    "or ignore to skip."
                 )
                 await self._deliver_platform_notice(source, notice)
         
@@ -11031,7 +11031,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._set_adapter_auto_tts_enabled(adapter, event.source.chat_id, enabled=True)
             return (
                 f"Joined voice channel **{voice_channel.name}**.\n"
-                f"I'll speak my replies and listen to you. Use /voice leave to disconnect."
+                "I'll speak my replies and listen to you. Use /voice leave to disconnect."
             )
         # Join failed — clear callback
         adapter._voice_input_callback = None
@@ -11584,7 +11584,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 from gateway.platforms.base import (
                     should_send_media_as_audio as _should_send_media_as_audio,
                 )
-                _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
+                _IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gi", ".webp"}
                 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}
                 for media_path, _is_voice in (media_files or []):
                     _ext = os.path.splitext(media_path)[1].lower()
@@ -12678,10 +12678,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _p = getattr(adapter, "typed_command_prefix", "/")
                             await adapter.send(
                                 chat_id,
-                                f"⚕ **Update needs your input:**\n\n"
+                                "⚕ **Update needs your input:**\n\n"
                                 f"{prompt_text}{default_hint}\n\n"
                                 f"Reply `{_p}approve` (yes) or `{_p}deny` (no), "
-                                f"or type your answer directly.",
+                                "or type your answer directly.",
                                 metadata=_non_conversational_metadata(metadata, platform=platform),
                             )
                         # Keep the prompt marker on disk until the user
@@ -13096,7 +13096,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     description = sanitize_context(description)
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
+                        "[If you need a closer look, use vision_analyze with "
                         f"image_url: {path} ~]"
                     )
                 else:
@@ -13108,8 +13108,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
-                    f"tried to look at it~ You can try examining it yourself "
+                    "[The user sent an image but something went wrong when I "
+                    "tried to look at it~ You can try examining it yourself "
                     f"with vision_analyze using image_url: {path}]"
                 )
 
@@ -13176,8 +13176,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     transcript = result["transcript"]
                     successful_transcripts.append(transcript)
                     enriched_parts.append(
-                        f'[The user sent a voice message~ '
-                        f'Here\'s what they said: "{transcript}"]'
+                        '[The user sent a voice message~ '
+                        'Here\'s what they said: "{transcript}"]'
                     )
                 else:
                     error = result.get("error", "unknown error")
@@ -16101,7 +16101,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
                 msg = (
-                    f"⚠️ **Dangerous command requires approval:**\n"
+                    "⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
                     f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
@@ -16205,12 +16205,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "successfully and ask what they would like to do next."
                     )
                 message = (
-                    f"[System note: The previous turn was interrupted by "
+                    "[System note: The previous turn was interrupted by "
                     f"{_reason_phrase}; the gateway is now back online. "
-                    f"Any restart/shutdown command in the history has already "
+                    "Any restart/shutdown command in the history has already "
                     f"run — do NOT re-execute or verify it. {_resume_guidance} "
-                    f"Do NOT re-execute old tool calls — skip any unfinished "
-                    f"work from the conversation history.]"
+                    "Do NOT re-execute old tool calls — skip any unfinished "
+                    "work from the conversation history.]"
                     + (f"\n\n{message}" if message else "")
                 )
             elif _has_fresh_tool_tail:
@@ -16842,9 +16842,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 await _warn_adapter.send(
                                     source.chat_id,
                                     f"⚠️ No activity for {_elapsed_warn} min. "
-                                    f"If the agent does not respond soon, it will "
+                                    "If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
+                                    "You can continue waiting or use /reset.",
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
@@ -16904,7 +16904,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Construct a user-facing message with diagnostic context.
                 _diag_lines = [
                     f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls "
-                    f"or API responses."
+                    "or API responses."
                 ]
                 if _cur_tool:
                     _diag_lines.append(
@@ -17723,9 +17723,9 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
             print(
                 f"\n❌ Gateway already running (PID {existing_pid}).\n"
-                f"   Use 'hermes gateway restart' to replace it,\n"
-                f"   or 'hermes gateway stop' to kill it first.\n"
-                f"   Or use 'hermes gateway run --replace' to auto-replace.\n"
+                "   Use 'hermes gateway restart' to replace it,\n"
+                "   or 'hermes gateway stop' to kill it first.\n"
+                "   Or use 'hermes gateway run --replace' to auto-replace.\n"
             )
             return False
 

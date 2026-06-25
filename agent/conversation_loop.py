@@ -958,7 +958,7 @@ def run_conversation(
                     _nous_remaining = nous_rate_limit_remaining()
                     if _nous_remaining is not None and _nous_remaining > 0:
                         _nous_msg = (
-                            f"Nous Portal rate limit active — "
+                            "Nous Portal rate limit active — "
                             f"resets in {_fmt_nous_remaining(_nous_remaining)}."
                         )
                         agent._buffer_vprint(
@@ -1341,7 +1341,7 @@ def run_conversation(
                     elif _resp_error_code == 504:
                         _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
                     elif _resp_error_code == 429:
-                        _failure_hint = f"rate limited by upstream provider (429)"
+                        _failure_hint = "rate limited by upstream provider (429)"
                     elif _resp_error_code in {500, 502}:
                         _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
                     elif _resp_error_code in {503, 529}:
@@ -1559,13 +1559,13 @@ def run_conversation(
                     if getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID:
                         agent._vprint(
                             f"{agent.log_prefix}⚠️  Stream interrupted by network error "
-                            f"(finish_reason='length' on partial-stream-stub)",
+                            "(finish_reason='length' on partial-stream-stub)",
                             force=True,
                         )
                     else:
                         agent._vprint(
                             f"{agent.log_prefix}⚠️  Response truncated "
-                            f"(finish_reason='length') - model hit max output tokens",
+                            "(finish_reason='length') - model hit max output tokens",
                             force=True,
                         )
 
@@ -1625,7 +1625,7 @@ def run_conversation(
                         )
                         agent._vprint(
                             f"{agent.log_prefix}💭 Reasoning exhausted the output token budget — "
-                            f"no visible response was produced.",
+                            "no visible response was produced.",
                             force=True,
                         )
                         # Return a user-friendly message as the response so
@@ -1672,13 +1672,13 @@ def run_conversation(
                                     agent._vprint(
                                         f"{agent.log_prefix}↻ Stream interrupted mid "
                                         f"tool-call ({_tool_list}) — requesting "
-                                        f"chunked retry "
+                                        "chunked retry "
                                         f"({length_continue_retries}/3)..."
                                     )
                                 elif _is_partial_stream_stub:
                                     agent._vprint(
                                         f"{agent.log_prefix}↻ Stream interrupted — "
-                                        f"requesting continuation "
+                                        "requesting continuation "
                                         f"({length_continue_retries}/3)..."
                                     )
                                 else:
@@ -1724,13 +1724,13 @@ def run_conversation(
                                     # peer-closed connection), not a real output
                                     # cap — say so instead of "max output tokens".
                                     agent._buffer_vprint(
-                                        f"⚠️  Stream interrupted mid tool-call — "
+                                        "⚠️  Stream interrupted mid tool-call — "
                                         f"retrying ({truncated_tool_call_retries}/3)..."
                                     )
                                 else:
                                     agent._buffer_vprint(
-                                        f"⚠️  Truncated tool call detected — "
-                                        f"retrying API call "
+                                        "⚠️  Truncated tool call detected — "
+                                        "retrying API call "
                                         f"({truncated_tool_call_retries}/3)..."
                                     )
                                 # Boost max_tokens on each retry so the model has
@@ -2036,11 +2036,11 @@ def run_conversation(
                         agent._unicode_sanitization_passes += 1
                         if _surrogates_found:
                             agent._buffer_vprint(
-                                f"⚠️  Stripped invalid surrogate characters from messages. Retrying..."
+                                "⚠️  Stripped invalid surrogate characters from messages. Retrying..."
                             )
                         else:
                             agent._buffer_vprint(
-                                f"⚠️  Surrogate encoding error — retrying after full-payload sanitization..."
+                                "⚠️  Surrogate encoding error — retrying after full-payload sanitization..."
                             )
                         continue
                     if _is_ascii_codec:
@@ -2117,8 +2117,8 @@ def run_conversation(
                                 _credential_sanitized = True
                                 agent._vprint(
                                     f"{agent.log_prefix}⚠️  API key contained non-ASCII characters "
-                                    f"(bad copy-paste?) — stripped them. If auth fails, "
-                                    f"re-copy the key from your provider's dashboard.",
+                                    "(bad copy-paste?) — stripped them. If auth fails, "
+                                    "re-copy the key from your provider's dashboard.",
                                     force=True,
                                 )
 
@@ -2227,7 +2227,7 @@ def run_conversation(
                         _strip_images_from_messages(api_messages)
                     agent._vprint(
                         f"{agent.log_prefix}⚠️  Server rejected image content — "
-                        f"switching to text-only mode for this session"
+                        "switching to text-only mode for this session"
                         + (". Stripped images from history and retrying." if _imgs_removed else "."),
                         force=True,
                     )
@@ -2313,7 +2313,7 @@ def run_conversation(
                     ):
                         agent._vprint(
                             f"{agent.log_prefix}📐 Image(s) exceeded provider size limit — "
-                            f"shrank and retrying...",
+                            "shrank and retrying...",
                             force=True,
                         )
                         continue
@@ -2338,7 +2338,7 @@ def run_conversation(
                     if agent._try_strip_image_parts_from_tool_messages(api_messages):
                         agent._vprint(
                             f"{agent.log_prefix}📐 Provider rejected list-type tool content — "
-                            f"downgraded screenshots to text and retrying...",
+                            "downgraded screenshots to text and retrying...",
                             force=True,
                         )
                         continue
@@ -2373,7 +2373,7 @@ def run_conversation(
                         agent._rebuild_anthropic_client()
                         agent._vprint(
                             f"{agent.log_prefix}🔕 OAuth subscription doesn't support "
-                            f"the 1M-context beta — disabled for this session and retrying...",
+                            "the 1M-context beta — disabled for this session and retrying...",
                             force=True,
                         )
                         continue
@@ -2428,7 +2428,7 @@ def run_conversation(
                 ):
                     _retry.copilot_auth_retry_attempted = True
                     if agent._try_refresh_copilot_client_credentials():
-                        agent._buffer_vprint(f"🔐 Copilot credentials refreshed after 401. Retrying request...")
+                        agent._buffer_vprint("🔐 Copilot credentials refreshed after 401. Retrying request...")
                         continue
                 if (
                     agent.api_mode == "anthropic_messages"
@@ -2508,7 +2508,7 @@ def run_conversation(
                             _api_stripped += 1
                     agent._vprint(
                         f"{agent.log_prefix}⚠️  Thinking block signature invalid, "
-                        f"stripped reasoning_details from api_messages for retry...",
+                        "stripped reasoning_details from api_messages for retry...",
                         force=True,
                     )
                     logger.warning(
@@ -2651,10 +2651,10 @@ def run_conversation(
                     )
                     if agent.providers_allowed:
                         agent._buffer_vprint(
-                            f"      Your provider_routing.only restriction is filtering out tool-capable providers."
+                            "      Your provider_routing.only restriction is filtering out tool-capable providers."
                         )
                         agent._buffer_vprint(
-                            f"      Try removing the restriction or adding providers that support tools for this model."
+                            "      Try removing the restriction or adding providers that support tools for this model."
                         )
                     agent._buffer_vprint(
                         f"      Check which providers support tools: https://openrouter.ai/models/{_model}"
@@ -2706,17 +2706,17 @@ def run_conversation(
                     agent._flush_status_buffer()
                     agent._vprint(
                         f"{agent.log_prefix}❌ Context overflow, but auto-compaction is disabled "
-                        f"(compression.enabled: false).",
+                        "(compression.enabled: false).",
                         force=True,
                     )
                     agent._vprint(
                         f"{agent.log_prefix}   💡 Run /compress to compact manually, /new to start fresh, "
-                        f"switch to a larger-context model, or reduce attachments.",
+                        "switch to a larger-context model, or reduce attachments.",
                         force=True,
                     )
                     logger.error(
                         f"{agent.log_prefix}Context overflow ({classified.reason.value}) with "
-                        f"auto-compaction disabled — not compressing."
+                        "auto-compaction disabled — not compressing."
                     )
                     agent._persist_session(messages, conversation_history)
                     return {
@@ -2763,8 +2763,8 @@ def run_conversation(
                             # should come back automatically.
                             compressor._context_probe_persistable = False
                         agent._buffer_vprint(
-                            f"⚠️  Anthropic long-context tier "
-                            f"requires extra usage — reducing context: "
+                            "⚠️  Anthropic long-context tier "
+                            "requires extra usage — reducing context: "
                             f"{old_ctx:,} → {_reduced_ctx:,} tokens"
                         )
 
@@ -3056,7 +3056,7 @@ def run_conversation(
                         safe_out = max(1, available_out - 64)  # small safety margin
                         agent._ephemeral_max_output_tokens = safe_out
                         agent._buffer_vprint(
-                            f"⚠️  Output cap too large for current prompt — "
+                            "⚠️  Output cap too large for current prompt — "
                             f"retrying with max_tokens={safe_out:,} "
                             f"(available_tokens={available_out:,}; context_length unchanged at {old_ctx:,})"
                         )
@@ -3122,12 +3122,12 @@ def run_conversation(
                         agent._buffer_vprint(f"⚠️  Context length exceeded — using provider limit: {old_ctx:,} → {new_ctx:,} tokens")
                     elif minimax_delta_only_overflow:
                         agent._buffer_vprint(
-                            f"Provider reported overflow amount only; "
+                            "Provider reported overflow amount only; "
                             f"keeping context_length at {old_ctx:,} tokens and compressing."
                         )
                     else:
                         agent._buffer_vprint(
-                            f"⚠️  Context length exceeded, but provider did not report a max context length; "
+                            "⚠️  Context length exceeded, but provider did not report a max context length; "
                             f"keeping context_length at {old_ctx:,} tokens and compressing."
                         )
 
@@ -3298,7 +3298,7 @@ def run_conversation(
                     _nonretryable_summary = agent._summarize_api_error(api_error)
                     if classified.reason == FailoverReason.content_policy_blocked:
                         agent._emit_status(
-                            f"❌ Provider safety filter blocked this request: "
+                            "❌ Provider safety filter blocked this request: "
                             f"{_nonretryable_summary}"
                         )
                     else:
@@ -3383,7 +3383,7 @@ def run_conversation(
                     if status_code == 400 and (approx_tokens > 50000 or len(api_messages) > 80):
                         agent._vprint(
                             f"{agent.log_prefix}⚠️  Skipping session persistence "
-                            f"for large failed session to prevent growth loop.",
+                            "for large failed session to prevent growth loop.",
                             force=True,
                         )
                     else:
@@ -3472,16 +3472,16 @@ def run_conversation(
                     if _is_stream_drop:
                         agent._vprint(
                             f"{agent.log_prefix}   💡 The provider's stream "
-                            f"connection keeps dropping. This often happens "
-                            f"when the model tries to write a very large "
-                            f"file in a single tool call.",
+                            "connection keeps dropping. This often happens "
+                            "when the model tries to write a very large "
+                            "file in a single tool call.",
                             force=True,
                         )
                         agent._vprint(
                             f"{agent.log_prefix}      Try asking the model "
-                            f"to use execute_code with Python's open() for "
-                            f"large files, or to write the file in smaller "
-                            f"sections.",
+                            "to use execute_code with Python's open() for "
+                            "large files, or to write the file in smaller "
+                            "sections.",
                             force=True,
                         )
 
@@ -3721,7 +3721,7 @@ def run_conversation(
             if has_incomplete_scratchpad(assistant_message.content or ""):
                 agent._incomplete_scratchpad_retries += 1
                 
-                agent._buffer_vprint(f"⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
+                agent._buffer_vprint("⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
                 
                 if agent._incomplete_scratchpad_retries <= 2:
                     agent._buffer_vprint(f"🔄 Retrying API call ({agent._incomplete_scratchpad_retries}/2)...")
@@ -3955,7 +3955,7 @@ def run_conversation(
                     else:
                         # Instead of returning partial, inject tool error results so the model can recover.
                         # Using tool results (not user messages) preserves role alternation.
-                        agent._buffer_vprint(f"⚠️  Injecting recovery tool results for invalid JSON...")
+                        agent._buffer_vprint("⚠️  Injecting recovery tool results for invalid JSON...")
                         agent._invalid_json_retries = 0  # Reset for next attempt
                         
                         # Append the assistant message with its (broken) tool_calls
@@ -3970,7 +3970,7 @@ def run_conversation(
                                 tool_result = (
                                     f"Error: Invalid JSON arguments. {err}. "
                                     f"For tools with no required parameters, use an empty object: {{}}. "
-                                    f"Please retry with valid JSON."
+                                    "Please retry with valid JSON."
                                 )
                             else:
                                 tool_result = "Skipped: other tool call in this response had invalid JSON."
@@ -4328,7 +4328,7 @@ def run_conversation(
                             agent._thinking_prefill_retries,
                         )
                         agent._buffer_status(
-                            f"↻ Thinking-only response — prefilling to continue "
+                            "↻ Thinking-only response — prefilling to continue "
                             f"({agent._thinking_prefill_retries}/2)"
                         )
                         interim_msg = agent._build_assistant_message(
@@ -4363,7 +4363,7 @@ def run_conversation(
                             agent._empty_content_retries, agent.model,
                         )
                         agent._buffer_status(
-                            f"⚠️ Empty response from model — retrying "
+                            "⚠️ Empty response from model — retrying "
                             f"({agent._empty_content_retries}/3)"
                         )
                         continue

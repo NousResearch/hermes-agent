@@ -312,8 +312,8 @@ def _require_tty(command_name: str) -> None:
     if not sys.stdin.isatty():
         print(
             f"Error: 'hermes {command_name}' requires an interactive terminal.\n"
-            f"It cannot be run through a pipe or non-interactive subprocess.\n"
-            f"Run it directly in your terminal instead.",
+            "It cannot be run through a pipe or non-interactive subprocess.\n"
+            "Run it directly in your terminal instead.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1211,19 +1211,19 @@ def _exec_in_container(container_info: dict, cli_args: list):
             if probe2.returncode != 0:
                 print(
                     f"Error: container '{container_name}' not found via {backend}.\n"
-                    f"\n"
-                    f"The container is likely running as root. Your user cannot see it\n"
+                    "\n"
+                    "The container is likely running as root. Your user cannot see it\n"
                     f"because {backend} uses per-user namespaces. Grant passwordless\n"
                     f"sudo for {backend} — the -n (non-interactive) flag is required\n"
-                    f"because a password prompt would hang or break piped commands.\n"
-                    f"\n"
-                    f"On NixOS:\n"
-                    f"\n"
+                    "because a password prompt would hang or break piped commands.\n"
+                    "\n"
+                    "On NixOS:\n"
+                    "\n"
                     f"  security.sudo.extraRules = [{{\n"
                     f'    users = [ "{os.getenv("USER", "your-user")}" ];\n'
                     f'    commands = [{{ command = "{runtime}"; options = [ "NOPASSWD" ]; }}];\n'
-                    f"  }}];\n"
-                    f"\n"
+                    "  }}];\n"
+                    "\n"
                     f"Or run: sudo hermes {' '.join(cli_args)}",
                     file=sys.stderr,
                 )
@@ -1734,8 +1734,8 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     if tui_dev and ext_dir:
         print(
             f"Error: --dev is incompatible with HERMES_TUI_DIR={ext_dir}\n"
-            f"The prebuilt TUI has no source code to hot-reload.\n"
-            f"Unset HERMES_TUI_DIR (e.g. `unset HERMES_TUI_DIR`) to use --dev from a checkout.",
+            "The prebuilt TUI has no source code to hot-reload.\n"
+            "Unset HERMES_TUI_DIR (e.g. `unset HERMES_TUI_DIR`) to use --dev from a checkout.",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -3693,7 +3693,7 @@ def _auto_provider_name(base_url: str) -> str:
 
 def _custom_provider_api_key_config_value(provider_info, resolved_api_key=""):
     """Return the value that should be persisted for a custom provider key."""
-    api_key_ref = str(provider_info.get("api_key_ref", "") or "").strip()
+    api_key_ref = str(provider_info.get("api_key_re", "") or "").strip()
     if api_key_ref:
         return api_key_ref
 
@@ -3706,7 +3706,7 @@ def _custom_provider_api_key_config_value(provider_info, resolved_api_key=""):
 
 def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
     """Return the value that should be persisted for a custom provider URL."""
-    base_url_ref = str(provider_info.get("base_url_ref", "") or "").strip()
+    base_url_ref = str(provider_info.get("base_url_re", "") or "").strip()
     if base_url_ref:
         return base_url_ref
     return str(resolved_base_url or "").strip()
@@ -5767,9 +5767,9 @@ def _print_curator_first_run_notice() -> None:
     print()
     print("ℹ Skill curator")
     print(
-        f"  Background skill maintenance is enabled. First pass is deferred "
+        "  Background skill maintenance is enabled. First pass is deferred "
         f"~{days}d after installation; only agent-created skills are in "
-        f"scope and nothing is ever auto-deleted (archive is recoverable)."
+        "scope and nothing is ever auto-deleted (archive is recoverable)."
     )
     print("  Preview now:  hermes curator run --dry-run")
     print("  Pause it:     hermes curator pause")
@@ -6337,7 +6337,7 @@ def _restore_stashed_changes(
 
     # Check for unmerged (conflicted) files — can happen even when returncode is 0
     unmerged = subprocess.run(
-        git_cmd + ["diff", "--name-only", "--diff-filter=U"],
+        git_cmd + ["dif", "--name-only", "--diff-filter=U"],
         cwd=cwd,
         capture_output=True,
         text=True,
@@ -7206,7 +7206,7 @@ def _quarantine_running_hermes_exe(
         if scheduled:
             print(
                 f"  ⚠ {shim.name} is locked by another process; scheduled "
-                f"replacement on next reboot."
+                "replacement on next reboot."
             )
             print(
                 "    The new shim was written at the same path, but a "
@@ -7220,7 +7220,7 @@ def _quarantine_running_hermes_exe(
         # uv try its luck — sometimes uv's own retry handling pulls through.
         print(
             f"  ⚠ Could not quarantine {shim.name} ({last_exc.__class__.__name__}: "
-            f"another process is holding it open)."
+            "another process is holding it open)."
         )
         print(
             "    Close Hermes Desktop, exit other `hermes` REPLs, stop the "
@@ -7951,7 +7951,7 @@ def _install_hangup_protection(gateway_mode: bool = False):
         import datetime as _dt
 
         log_file.write(
-            f"\n=== hermes update started "
+            "\n=== hermes update started "
             f"{_dt.datetime.now().isoformat(timespec='seconds')} ===\n"
         )
 
@@ -8354,8 +8354,8 @@ def _run_pre_update_backup(args) -> None:
 
     print(f"  Saved:    {display_path} ({size_str}, {elapsed:.1f}s)")
     print(f"  Restore:  hermes import {out_path}")
-    print(f"  Disable:  omit --backup (backups are off by default)")
-    print(f"            set updates.pre_update_backup: false in config.yaml")
+    print("  Disable:  omit --backup (backups are off by default)")
+    print("            set updates.pre_update_backup: false in config.yaml")
     print()
 
 
@@ -8667,7 +8667,7 @@ def _discard_lockfile_churn(git_cmd, repo_root):
     """
     try:
         diff = subprocess.run(
-            git_cmd + ["diff", "--name-only"],
+            git_cmd + ["dif", "--name-only"],
             cwd=repo_root,
             capture_output=True,
             text=True,
@@ -8971,14 +8971,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     "✗ Authentication failed — check your git credentials or SSH key."
                 )
             else:
-                print(f"✗ Failed to fetch updates from origin.")
+                print("✗ Failed to fetch updates from origin.")
                 if stderr:
                     print(f"  {stderr.splitlines()[0]}")
             sys.exit(1)
 
         # Get current branch (returns literal "HEAD" when detached)
         result = subprocess.run(
-            git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+            git_cmd + ["rev-parse", "--abbrev-re", "HEAD"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -9185,7 +9185,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(
                         f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
                     )
-                    print(f"  Restore manually with: git stash apply")
+                    print("  Restore manually with: git stash apply")
                 elif discard_local_changes:
                     # Non-interactive update + user opted into discarding local
                     # source edits (updates.non_interactive_local_changes:
@@ -10030,10 +10030,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             if _manage_cmd is None:
                                 print(
                                     f"  ⚠ {svc_name} is a system service and restarting it needs root.\n"
-                                    f"    Restart it manually to load the new version:\n"
+                                    "    Restart it manually to load the new version:\n"
                                     f"      sudo systemctl restart {svc_name}\n"
-                                    f"    To let `hermes update` restart it automatically, allow\n"
-                                    f"    passwordless sudo for systemctl, or run updates with sudo."
+                                    "    To let `hermes update` restart it automatically, allow\n"
+                                    "    passwordless sudo for systemctl, or run updates with sudo."
                                 )
                                 continue
 
@@ -10110,7 +10110,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         print(
                                             f"  ✗ {svc_name} failed to stay running after restart.\n"
                                             f"    Check logs: {_sudo_hint}journalctl {_scope_flag}-u {svc_name} --since '2 min ago'\n"
-                                            f"    Recover manually:\n"
+                                            "    Recover manually:\n"
                                             f"      {_sudo_hint}systemctl {_scope_flag}reset-failed {svc_name}\n"
                                             f"      {_sudo_hint}systemctl {_scope_flag}restart {svc_name}"
                                         )
@@ -10127,7 +10127,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print(
                             f"  ⚠ systemctl timed out during the {scope}-scope "
                             f"gateway restart ({exc.cmd if exc.cmd else 'unknown command'}). "
-                            f"Check the gateway with: hermes gateway status"
+                            "Check the gateway with: hermes gateway status"
                         )
 
             # --- Launchd services (macOS) ---
@@ -10506,7 +10506,7 @@ def cmd_profile(args):
         try:
             set_active_profile(name)
             if name == "default":
-                print(f"Switched to: default (~/.hermes)")
+                print("Switched to: default (~/.hermes)")
             else:
                 print(f"Switched to: {name}")
         except (ValueError, FileNotFoundError) as e:
@@ -10595,9 +10595,9 @@ def cmd_profile(args):
                         if not _is_wrapper_dir_in_path():
                             print(f"\n⚠ {_get_wrapper_dir()} is not in your PATH.")
                             print(
-                                f"  Add to your shell config (~/.bashrc or ~/.zshrc):"
+                                "  Add to your shell config (~/.bashrc or ~/.zshrc):"
                             )
-                            print(f'    export PATH="$HOME/.local/bin:$PATH"')
+                            print('    export PATH="$HOME/.local/bin:$PATH"')
 
             # Profile dir for display
             try:
@@ -10606,7 +10606,7 @@ def cmd_profile(args):
                 profile_dir_display = str(profile_dir)
 
             # Next steps
-            print(f"\nNext steps:")
+            print("\nNext steps:")
             print(f"  {name} setup              Configure API keys and model")
             print(f"  {name} chat               Start chatting")
             print(f"  {name} gateway start      Start the messaging gateway")
@@ -10617,7 +10617,7 @@ def cmd_profile(args):
                 print(
                     f"\n  ⚠ This profile has no API keys yet. Run '{name} setup' first,"
                 )
-                print(f"    or it will inherit keys from your shell environment.")
+                print("    or it will inherit keys from your shell environment.")
                 print(f"  Edit {profile_dir_display}/SOUL.md to customize personality")
             print()
 
@@ -10895,7 +10895,7 @@ def cmd_profile(args):
             print(f"  Profile path: {plan.target_dir}")
             if plan.manifest.env_requires:
                 print(
-                    f"  Next: copy .env.EXAMPLE to .env and fill in required keys:\n"
+                    "  Next: copy .env.EXAMPLE to .env and fill in required keys:\n"
                     f"    {plan.target_dir}/.env.EXAMPLE"
                 )
             if plan.has_cron:
@@ -11152,7 +11152,7 @@ def _maybe_setup_dashboard_auth_interactively(args) -> None:
     print()
     print(
         f"⚠ The dashboard is binding to a non-loopback address ({host}) and "
-        f"needs an auth provider."
+        "needs an auth provider."
     )
     print(
         "  Non-loopback binds always require authentication "
@@ -11312,7 +11312,7 @@ def cmd_dashboard(args):
 
         print(
             f"Routing to the machine dashboard (profile '{_launch_profile}' "
-            f"preselected). Use --isolated for a dedicated per-profile server."
+            "preselected). Use --isolated for a dedicated per-profile server."
         )
         reexec_argv = [
             sys.executable, "-m", "hermes_cli.main",
@@ -11372,7 +11372,7 @@ def cmd_dashboard(args):
     except ImportError as e:
         print("Web UI dependencies not installed (need fastapi + uvicorn).")
         print(
-            f"Re-install the package into this interpreter so metadata updates apply:\n"
+            "Re-install the package into this interpreter so metadata updates apply:\n"
             f"  cd {PROJECT_ROOT}\n"
             f"  {sys.executable} -m pip install -e .\n"
             "If `pip` is missing in this venv, use:  uv pip install -e ."
@@ -11900,7 +11900,7 @@ def cmd_memory(args):
             )
             return
 
-        print(f"\n  This will permanently erase the following memory files:")
+        print("\n  This will permanently erase the following memory files:")
         for f, desc in existing:
             path = mem_dir / f
             size = path.stat().st_size
@@ -11921,7 +11921,7 @@ def cmd_memory(args):
             print(f"  ✓ Deleted {f} ({desc})")
 
         print(
-            f"\n  Memory reset complete. New sessions will start with a blank slate."
+            "\n  Memory reset complete. New sessions will start with a blank slate."
         )
         print(f"  Files were in: {display_hermes_home()}/memories/\n")
     else:

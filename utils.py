@@ -177,6 +177,22 @@ def atomic_json_write(
         raise
 
 
+class IndentDumper(yaml.SafeDumper):
+    """PyYAML dumper that indents list items under mapping keys (2-space).
+
+    Default PyYAML emits "indentless" sequences — list items start at the
+    same column as their parent mapping key.  ``ruamel.yaml`` (used by
+    :func:`atomic_roundtrip_yaml_update`) emits 2-space-indented sequences.
+    Mixing both styles in the same ``config.yaml`` produces a file that
+    stricter parsers like ``js-yaml`` reject with ``bad indentation of a
+    mapping entry``.  Forcing ``indentless=False`` aligns the two
+    serializers so all write paths emit byte-identical layouts (#31999).
+    """
+
+    def increase_indent(self, flow=False, indentless=False):  # noqa: ARG002
+        return super().increase_indent(flow, False)
+
+
 def atomic_yaml_write(
     path: Union[str, Path],
     data: Any,
@@ -221,6 +237,7 @@ def atomic_yaml_write(
             yaml.dump(
                 data,
                 f,
+                Dumper=IndentDumper,
                 default_flow_style=default_flow_style,
                 sort_keys=sort_keys,
                 allow_unicode=True,

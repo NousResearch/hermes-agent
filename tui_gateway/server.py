@@ -1541,11 +1541,11 @@ def _apply_managed(cfg: dict) -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_mtime, _cfg_path
-    import yaml
+
+    from utils import atomic_yaml_write
 
     path = _hermes_home / "config.yaml"
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(cfg, f, allow_unicode=True)
+    atomic_yaml_write(path, cfg)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
         _cfg_path = path

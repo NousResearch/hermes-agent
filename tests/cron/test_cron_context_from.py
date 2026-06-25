@@ -1,12 +1,9 @@
 """Tests for cron job context_from feature (issue #5439 Option C)."""
 
 import logging
-import sys
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
 @pytest.fixture

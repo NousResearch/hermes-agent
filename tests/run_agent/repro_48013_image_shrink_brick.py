@@ -27,15 +27,9 @@ from __future__ import annotations
 
 import base64
 import io
-import sys
-from pathlib import Path
 
 import pytest
 
-# Make the repo root importable when run as a plain script.
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 PIL = pytest.importorskip("PIL", reason="Pillow required for the real-resize proof")
 from PIL import Image, ImageDraw  # noqa: E402

@@ -18,9 +18,6 @@ from pathlib import Path
 import pytest
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
-
 def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[str, str]:
     """Import gateway.run in a clean subprocess and return the post-import env.
 
@@ -32,7 +29,6 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
     script = textwrap.dedent(
         f"""
         import os, sys
-        sys.path.insert(0, {str(PROJECT_ROOT)!r})
 
         try:
             from gateway import run  # noqa: F401  — module import triggers bridge

@@ -8,16 +8,7 @@ guard that would have caught that specific failure mode.
 from __future__ import annotations
 
 import json
-import os
-import sys
-from typing import List, Dict, Any
-
-import pytest
-
-
-_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
+from typing import Dict, Any
 
 
 def _td(name: str, description: str = "", properties: Dict[str, Any] | None = None) -> Dict[str, Any]:

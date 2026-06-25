@@ -30,7 +30,6 @@ from pathlib import Path
 
 # Resolve the worktree path robustly.
 _THIS = Path(__file__).resolve()
-WT = _THIS.parents[2] if _THIS.parent.name == "stress" else Path.cwd()
 
 FAILURES: list[str] = []
 SKIPS: list[str] = []
@@ -51,7 +50,6 @@ def scenario(name):
             for m in list(sys.modules.keys()):
                 if m.startswith(("hermes_cli", "plugins", "gateway")):
                     del sys.modules[m]
-            sys.path.insert(0, str(WT))
             from hermes_cli import kanban_db as kb  # noqa: F401
             print(f"\n═══ {name} ═══")
             try:
@@ -226,7 +224,7 @@ def _(home, kb):
     finally:
         conn.close()
 
-    env = {**os.environ, "PYTHONPATH": str(WT), "HERMES_HOME": home, "HOME": home}
+    env = {**os.environ, "HERMES_HOME": home, "HOME": home}
     bad_metas = [
         "not-json",
         "[1, 2, 3]",  # array not dict
@@ -690,7 +688,6 @@ def _idempotency_race_worker(hermes_home: str, key: str, result_file: str,
     """Subprocess body for the idempotency race test."""
     os.environ["HERMES_HOME"] = hermes_home
     os.environ["HOME"] = hermes_home
-    sys.path.insert(0, str(WT))
     from hermes_cli import kanban_db as kb
 
     # Spin until the barrier file exists (crude sync across processes)

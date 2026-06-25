@@ -23,11 +23,6 @@ from pathlib import Path
 
 import pytest
 
-# Ensure the worktree (not the stale global clone) is first on sys.path.
-_WORKTREE = Path(__file__).resolve().parents[2]
-if str(_WORKTREE) not in sys.path:
-    sys.path.insert(0, str(_WORKTREE))
-
 from hermes_cli import kanban_db as kb
 
 
@@ -470,15 +465,12 @@ class TestWorkerSpawnEnv:
 def _cli(args: list[str], env_extra: dict | None = None) -> subprocess.CompletedProcess:
     """Run ``hermes kanban …`` with PYTHONPATH pinned to the worktree."""
     env = dict(os.environ)
-    env["PYTHONPATH"] = str(_WORKTREE)
     if env_extra:
         env.update(env_extra)
     return subprocess.run(
         [sys.executable, "-m", "hermes_cli.main", "kanban"] + args,
-        env=env,
         capture_output=True,
         text=True,
-        cwd=str(_WORKTREE),
         timeout=30,
     )
 

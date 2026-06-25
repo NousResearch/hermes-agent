@@ -1,15 +1,14 @@
 """Tests for skills/media/youtube-content/scripts/fetch_transcript.py (issue #22243)."""
-
-import sys
 from pathlib import Path
+from typing import Final
 from unittest import mock
 
 import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "skills" / "media" / "youtube-content" / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+from tests import load_module_from_file
 
-import fetch_transcript
+module_file: Final = Path("skills", "media", "youtube-content", "scripts", "fetch_transcript.py")
+fetch_transcript: Final = load_module_from_file(module_file)
 
 
 class TestExtractVideoId:

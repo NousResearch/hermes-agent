@@ -12,12 +12,9 @@ prompt + cron hint + skill content) through the same scanner and raises
 surfaces a clean "job blocked" delivery instead of running the agent.
 """
 
-import sys
 from pathlib import Path
 
 import pytest
-
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
 @pytest.fixture

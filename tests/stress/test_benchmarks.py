@@ -18,9 +18,6 @@ import random
 import sys
 import tempfile
 import time
-from pathlib import Path
-
-WT = str(Path(__file__).resolve().parents[2])
 
 
 def bench(label, fn, iterations=5):
@@ -57,7 +54,6 @@ def main():
     home = tempfile.mkdtemp(prefix="hermes_bench_")
     os.environ["HERMES_HOME"] = home
     os.environ["HOME"] = home
-    sys.path.insert(0, WT)
     from hermes_cli import kanban_db as kb
 
     kb.init_db()

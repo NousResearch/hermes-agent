@@ -1,4 +1,5 @@
 """Tests for optional-skills/web-development/cloudflare-temporary-deploy/scripts/parse_deploy_output.py"""
+from tests import load_module_from_file
 
 import json
 import sys
@@ -7,16 +8,14 @@ from unittest import mock
 
 import pytest
 
-SCRIPTS_DIR = (
-    Path(__file__).resolve().parents[2]
-    / "optional-skills"
-    / "web-development"
-    / "cloudflare-temporary-deploy"
-    / "scripts"
+module_file = Path(
+    "optional-skills",
+    "web-development",
+    "cloudflare-temporary-deploy",
+    "scripts",
+    "parse_deploy_output.py",
 )
-sys.path.insert(0, str(SCRIPTS_DIR))
-
-import parse_deploy_output as pdo
+pdo = load_module_from_file(module_file)
 
 
 CREATED = """\

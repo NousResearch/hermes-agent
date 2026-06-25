@@ -6,8 +6,6 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-
 
 def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     """Create a HermesCLI instance with minimal mocking."""

@@ -2169,12 +2169,11 @@ def run_doctor(args):
     _section("Tool Availability")
     try:
         # Add project root to path for imports
-        sys.path.insert(0, str(PROJECT_ROOT))
         from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
-        
+
         available, unavailable = check_tool_availability()
         available, unavailable = _apply_doctor_tool_availability_overrides(available, unavailable)
-        
+
         for tid in available:
             info = TOOLSET_REQUIREMENTS.get(tid, {})
             check_ok(info.get("name", tid), _doctor_tool_availability_detail(tid))

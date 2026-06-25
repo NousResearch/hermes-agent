@@ -24,10 +24,6 @@ import sys
 import tempfile
 import threading
 import time
-from pathlib import Path
-
-WT = str(Path(__file__).resolve().parents[2])
-sys.path.insert(0, WT)
 
 NUM_CREATE_ROUNDS = 200
 WORKERS_RUN_DURATION_S = 8

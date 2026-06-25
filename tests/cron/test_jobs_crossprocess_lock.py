@@ -24,10 +24,6 @@ import pytest
 from cron import jobs
 
 
-# Repo root (parent of the ``cron`` package) so the child process can import it.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(jobs.__file__)))
-
-
 @pytest.mark.skipif(jobs.fcntl is None, reason="POSIX fcntl/flock required")
 def test_jobs_lock_excludes_another_process(tmp_path, monkeypatch):
     cron_dir = tmp_path / "cron"
@@ -45,7 +41,6 @@ def test_jobs_lock_excludes_another_process(tmp_path, monkeypatch):
         textwrap.dedent(
             f"""
             import sys, time, pathlib
-            sys.path.insert(0, {_REPO_ROOT!r})
             from cron import jobs
 
             jobs.CRON_DIR = pathlib.Path({str(cron_dir)!r})
@@ -69,7 +64,6 @@ def test_jobs_lock_excludes_another_process(tmp_path, monkeypatch):
         textwrap.dedent(
             f"""
             import sys, pathlib
-            sys.path.insert(0, {_REPO_ROOT!r})
             from cron import jobs
 
             jobs.CRON_DIR = pathlib.Path({str(cron_dir)!r})

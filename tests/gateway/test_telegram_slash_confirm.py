@@ -1,15 +1,10 @@
 """Regression guard: send_slash_confirm must use format_message + MARKDOWN_V2."""
 
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-_repo = str(Path(__file__).resolve().parents[2])
-if _repo not in sys.path:
-    sys.path.insert(0, _repo)
 
 
 def _ensure_telegram_mock():

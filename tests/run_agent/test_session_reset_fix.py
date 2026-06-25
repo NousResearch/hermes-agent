@@ -8,11 +8,7 @@ therefore never cleared:
 """
 import sys
 import types
-from pathlib import Path
 
-
-# Ensure repo root is importable
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 # Stub out optional heavy dependencies not installed in the test environment
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))

@@ -1,11 +1,8 @@
 """Test that HERMES_SESSION_ID is exposed as an env var and ContextVar."""
 
 import os
-import sys
 
 import pytest
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../.."))
 
 from run_agent import AIAgent
 

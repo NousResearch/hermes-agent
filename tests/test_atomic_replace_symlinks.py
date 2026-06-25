@@ -15,16 +15,11 @@ from __future__ import annotations
 import errno
 import json
 import os
-import sys
 from pathlib import Path
 
 import pytest
 import yaml
 
-# Ensure the repo root is importable when running via `pytest tests/...`.
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-if str(_REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(_REPO_ROOT))
 
 from utils import (
     atomic_json_write,

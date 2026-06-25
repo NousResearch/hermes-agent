@@ -5,12 +5,6 @@ forces MCP reinit on the next message, creating a CPU-burning restart loop.
 Eviction should only happen on successful runs where fallback activated.
 """
 
-import sys
-from pathlib import Path
-
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
-
 
 class TestFallbackEvictionGating:
     """The fallback-eviction code path should skip eviction on failed runs."""

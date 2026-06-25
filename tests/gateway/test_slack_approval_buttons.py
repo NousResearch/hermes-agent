@@ -1,19 +1,10 @@
 """Tests for Slack Block Kit approval buttons and thread context fetching."""
 
-import asyncio
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-# ---------------------------------------------------------------------------
-# Ensure the repo root is importable
-# ---------------------------------------------------------------------------
-_repo = str(Path(__file__).resolve().parents[2])
-if _repo not in sys.path:
-    sys.path.insert(0, _repo)
-
 
 # ---------------------------------------------------------------------------
 # Minimal Slack SDK mock so SlackAdapter can be imported

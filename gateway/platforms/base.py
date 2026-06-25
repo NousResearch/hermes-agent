@@ -487,9 +487,6 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple, Union
 from enum import Enum
 
-from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home

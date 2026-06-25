@@ -116,6 +116,60 @@ class TestForegroundTimeoutCap:
         assert call_kwargs[1]["timeout"] == 300
         assert "error" not in result or result["error"] is None
 
+    def test_context_timeout_cap_clamps_default_timeout(self):
+        """Delegate-scoped timeout caps should shorten the default foreground timeout."""
+        from tools.terminal_tool import (
+            reset_foreground_timeout_cap,
+            set_foreground_timeout_cap,
+            terminal_tool,
+        )
+
+        with patch("tools.terminal_tool._get_env_config",
+                    return_value=_make_env_config(timeout=180)), \
+             patch("tools.terminal_tool._start_cleanup_thread"):
+
+            mock_env = MagicMock()
+            mock_env.execute.return_value = {"output": "done", "returncode": 0}
+            token = set_foreground_timeout_cap(25)
+            try:
+                with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
+                     patch("tools.terminal_tool._last_activity", {"default": 0}), \
+                     patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+                    result = json.loads(terminal_tool(command="sleep 60"))
+            finally:
+                reset_foreground_timeout_cap(token)
+
+        call_kwargs = mock_env.execute.call_args
+        assert call_kwargs[1]["timeout"] == 25
+        assert "error" not in result or result["error"] is None
+
+    def test_context_timeout_cap_clamps_explicit_timeout(self):
+        """Delegate-scoped timeout caps should also shorten explicit foreground timeouts."""
+        from tools.terminal_tool import (
+            reset_foreground_timeout_cap,
+            set_foreground_timeout_cap,
+            terminal_tool,
+        )
+
+        with patch("tools.terminal_tool._get_env_config",
+                    return_value=_make_env_config(timeout=180)), \
+             patch("tools.terminal_tool._start_cleanup_thread"):
+
+            mock_env = MagicMock()
+            mock_env.execute.return_value = {"output": "done", "returncode": 0}
+            token = set_foreground_timeout_cap(25)
+            try:
+                with patch("tools.terminal_tool._active_environments", {"default": mock_env}), \
+                     patch("tools.terminal_tool._last_activity", {"default": 0}), \
+                     patch("tools.terminal_tool._check_all_guards", return_value={"approved": True}):
+                    result = json.loads(terminal_tool(command="sleep 60", timeout=90))
+            finally:
+                reset_foreground_timeout_cap(token)
+
+        call_kwargs = mock_env.execute.call_args
+        assert call_kwargs[1]["timeout"] == 25
+        assert "error" not in result or result["error"] is None
+
     def test_config_default_above_cap_not_rejected(self):
         """When config default timeout > cap but model passes no timeout, execute normally.
 

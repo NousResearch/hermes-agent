@@ -42,6 +42,7 @@ import threading
 import atexit
 import shutil
 import subprocess
+import contextvars
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -171,6 +172,10 @@ _sudo_password_cache_lock = threading.Lock()
 # the per-session queue in tools.approval, not through these callbacks,
 # so it's unaffected.
 _callback_tls = threading.local()
+_foreground_timeout_cap_var: contextvars.ContextVar[Optional[int]] = contextvars.ContextVar(
+    "terminal_tool_foreground_timeout_cap",
+    default=None,
+)
 
 
 def _get_sudo_password_callback():
@@ -198,6 +203,32 @@ def set_approval_callback(cb):
     GHSA-qg5c-hvr5-hjgr.
     """
     _callback_tls.approval = cb
+
+
+def set_foreground_timeout_cap(timeout_seconds: Optional[int]):
+    """Bind a per-context foreground timeout cap for terminal() calls."""
+    if timeout_seconds is None:
+        return _foreground_timeout_cap_var.set(None)
+    try:
+        value = int(timeout_seconds)
+    except (TypeError, ValueError):
+        value = None
+    if value is not None and value <= 0:
+        value = None
+    return _foreground_timeout_cap_var.set(value)
+
+
+def reset_foreground_timeout_cap(token) -> None:
+    """Restore the previous per-context foreground timeout cap."""
+    _foreground_timeout_cap_var.reset(token)
+
+
+def _get_foreground_timeout_cap() -> Optional[int]:
+    """Return the active per-context foreground timeout cap, if any."""
+    value = _foreground_timeout_cap_var.get()
+    if isinstance(value, int) and value > 0:
+        return value
+    return None
 
 
 def _get_sudo_password_cache_scope() -> str:
@@ -1927,10 +1958,18 @@ def terminal_tool(
         cwd = overrides.get("cwd") or config["cwd"]
         default_timeout = config["timeout"]
         effective_timeout = timeout or default_timeout
+        delegated_timeout_cap = _get_foreground_timeout_cap()
+        if not background and delegated_timeout_cap is not None:
+            effective_timeout = min(effective_timeout, delegated_timeout_cap)
 
         # Reject foreground commands where the model explicitly requests
         # a timeout above FOREGROUND_MAX_TIMEOUT — nudge it toward background.
-        if not background and timeout and timeout > FOREGROUND_MAX_TIMEOUT:
+        if (
+            not background
+            and timeout
+            and timeout > FOREGROUND_MAX_TIMEOUT
+            and delegated_timeout_cap is None
+        ):
             return json.dumps({
                 "error": (
                     f"Foreground timeout {timeout}s exceeds the maximum of "

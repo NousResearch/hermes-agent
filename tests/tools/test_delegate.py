@@ -545,6 +545,37 @@ class TestToolNamePreservation(unittest.TestCase):
 class TestDelegateObservability(unittest.TestCase):
     """Tests for enriched metadata returned by _run_single_child."""
 
+    def test_child_terminal_timeout_cap_is_bound_inside_delegate_thread(self):
+        """Delegated children should inherit a per-thread terminal timeout cap."""
+        from tools.terminal_tool import _get_foreground_timeout_cap
+
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._get_child_timeout", return_value=30), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+
+            def _run_conversation(**kwargs):
+                cap = _get_foreground_timeout_cap()
+                return {
+                    "final_response": f"cap={cap}",
+                    "completed": True,
+                    "interrupted": False,
+                    "api_calls": 0,
+                    "messages": [],
+                }
+
+            mock_child.run_conversation.side_effect = _run_conversation
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="Test timeout cap", parent_agent=parent))
+
+        self.assertIsNone(_get_foreground_timeout_cap())
+        self.assertEqual(result["results"][0]["summary"], "cap=25")
+
     def test_observability_fields_present(self):
         """Completed child should return tool_trace, tokens, model, exit_reason."""
         parent = _make_mock_parent(depth=0)

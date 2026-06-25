@@ -607,6 +607,7 @@ DEFAULT_MAX_ITERATIONS = 50
 # detection lives in the heartbeat staleness monitor below. Users can opt back
 # in via delegation.child_timeout_seconds.
 DEFAULT_CHILD_TIMEOUT: Optional[float] = None
+_CHILD_TERMINAL_TIMEOUT_GRACE_SECONDS = 5
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds. A child with no API-call progress is either:
 #   - idle between turns (no current_tool) — probably stuck on a slow API call
@@ -619,6 +620,17 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
+
+
+def _get_child_terminal_timeout_cap(timeout_seconds: float) -> int | None:
+    """Return a per-child terminal timeout cap slightly under the child cap."""
+    try:
+        timeout_value = int(float(timeout_seconds))
+    except (TypeError, ValueError):
+        return None
+    if timeout_value <= 0:
+        return None
+    return max(1, timeout_value - _CHILD_TERMINAL_TIMEOUT_GRACE_SECONDS)
 
 
 # ---------------------------------------------------------------------------
@@ -1667,11 +1679,24 @@ def _run_single_child(
 
         def _run_with_thread_capture():
             _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-                stream_callback=_relay_child_text,
+            from tools.terminal_tool import (
+                reset_foreground_timeout_cap,
+                set_foreground_timeout_cap,
             )
+
+            timeout_token = None
+            timeout_cap = _get_child_terminal_timeout_cap(child_timeout)
+            if timeout_cap is not None:
+                timeout_token = set_foreground_timeout_cap(timeout_cap)
+            try:
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                    stream_callback=_relay_child_text,
+                )
+            finally:
+                if timeout_token is not None:
+                    reset_foreground_timeout_cap(timeout_token)
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:

@@ -3198,11 +3198,19 @@ class SessionDB:
                 if row is not None:
                     best = current
 
-                # Walk to the most-recently-started child.
+                # Walk to the most-recently-started child — but skip explicit
+                # branch (`_branched_from`), delegate/subagent (`_delegate_from`),
+                # and tool children. They also carry a ``parent_session_id`` yet
+                # are NOT compression continuations; following them would hijack
+                # the resume target to an unrelated session (e.g. a subagent
+                # run). This mirrors the child-exclusion in ``get_compression_tip``.
                 try:
                     child_row = self._conn.execute(
                         "SELECT id FROM sessions "
                         "WHERE parent_session_id = ? "
+                        "  AND json_extract(COALESCE(model_config, '{}'), '$._branched_from') IS NULL "
+                        "  AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
+                        "  AND COALESCE(source, '') != 'tool' "
                         "ORDER BY started_at DESC, id DESC LIMIT 1",
                         (current,),
                     ).fetchone()

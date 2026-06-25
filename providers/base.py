@@ -165,6 +165,7 @@ class ProviderProfile:
         api_key: str | None = None,
         base_url: str | None = None,
         timeout: float = 8.0,
+        headers: dict[str, str] | None = None,
     ) -> list[str] | None:
         """Fetch the live model list from the provider's models endpoint.
 
@@ -204,7 +205,8 @@ class ProviderProfile:
         # the default ``Python-urllib/<ver>`` User-Agent.  Set a generic
         # hermes-cli UA so the catalog endpoint is reachable.
         req.add_header("User-Agent", _profile_user_agent())
-        for k, v in self.default_headers.items():
+        effective_headers = headers if headers is not None else self.default_headers
+        for k, v in effective_headers.items():
             req.add_header(k, v)
 
         try:

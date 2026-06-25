@@ -275,6 +275,39 @@ def test_no_user_default_headers_leaves_provider_defaults_untouched(mock_openai)
 
 
 @patch("run_agent.OpenAI")
+def test_provider_scoped_headers_apply_to_matching_main_client_only(mock_openai):
+    """Provider-scoped headers should not leak between OpenAI-compatible providers."""
+    mock_openai.return_value = MagicMock()
+    agent = AIAgent(
+        api_key="test-key",
+        base_url="https://api.gmi-serving.com/v1",
+        model="gmi-test-model",
+        provider="gmi",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    setattr(agent, "_client_kwargs", {})
+
+    with patch("hermes_cli.config.load_config", return_value={
+        "model": {"provider_headers": {"gmi": {"X-Provider": "gmi"}}},
+    }):
+        agent._apply_user_default_headers()
+
+    assert getattr(agent, "_client_kwargs")["default_headers"]["X-Provider"] == "gmi"
+
+    setattr(agent, "_client_kwargs", {})
+    setattr(agent, "provider", "openrouter")
+    agent.base_url = "https://openrouter.ai/api/v1"
+    with patch("hermes_cli.config.load_config", return_value={
+        "model": {"provider_headers": {"gmi": {"X-Provider": "gmi"}}},
+    }):
+        agent._apply_user_default_headers()
+
+    assert "default_headers" not in getattr(agent, "_client_kwargs")
+
+
+@patch("run_agent.OpenAI")
 def test_user_default_headers_skipped_for_anthropic_mode(mock_openai):
     """Anthropic/Bedrock modes don't use the OpenAI client — never touched."""
     mock_openai.return_value = MagicMock()

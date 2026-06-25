@@ -7,6 +7,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import urllib.parse
@@ -2325,7 +2326,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             api_key = str(creds.get("api_key") or "").strip()
             base_url = str(creds.get("base_url") or "").strip()
             if api_key and base_url:
-                live = fetch_api_models(api_key, base_url)
+                live = _fetch_api_models_with_headers(
+                    api_key,
+                    base_url,
+                    headers=_configured_model_headers(provider="stepfun", base_url=base_url),
+                )
                 if live:
                     return live
         except Exception:
@@ -2381,7 +2386,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 "https://api.openai.com",
             )
             try:
-                live = fetch_api_models(api_key, base)
+                live = _fetch_api_models_with_headers(
+                    api_key,
+                    base,
+                    headers=_configured_model_headers(provider=normalized, base_url=base),
+                )
                 if live:
                     if is_default_openai:
                         live_lower = {m.lower() for m in live}
@@ -2406,7 +2415,11 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             api_key = str(creds.get("api_key") or "").strip()
             base_url = str(creds.get("base_url") or "").strip()
             if api_key and base_url:
-                live = fetch_api_models(api_key, base_url)
+                live = _fetch_api_models_with_headers(
+                    api_key,
+                    base_url,
+                    headers=_configured_model_headers(provider="gmi", base_url=base_url),
+                )
                 if live:
                     return live
         except Exception:
@@ -2423,7 +2436,12 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                 or os.getenv("OPENROUTER_API_KEY", "")
             )
             api_mode = "anthropic_messages" if _base_url_looks_like_anthropic_messages(base_url) else None
-            live = fetch_api_models(api_key, base_url, api_mode=api_mode)
+            live = _fetch_api_models_with_headers(
+                api_key,
+                base_url,
+                api_mode=api_mode,
+                headers=_configured_model_headers(provider="custom", base_url=base_url),
+            )
             if live:
                 return live
     # Bedrock uses live discovery keyed by the resolved AWS region so that
@@ -2457,7 +2475,17 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if not base_url:
                 base_url = _p.base_url
             if api_key:
-                live = _p.fetch_models(api_key=api_key, base_url=base_url or None)
+                headers = _configured_model_headers(
+                    dict(_p.default_headers),
+                    provider=normalized,
+                    base_url=base_url or _p.base_url,
+                )
+                live = _fetch_profile_models(
+                    _p,
+                    api_key=api_key,
+                    base_url=base_url or "",
+                    headers=headers,
+                )
                 if live:
                     # Merge static curated list with live API results so
                     # models that the live endpoint omits (stale cache,
@@ -2506,9 +2534,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 #
 # Cache strategy:
 #   - One JSON file at $HERMES_HOME/provider_models_cache.json
-#   - Per-provider entries keyed by (provider, credential fingerprint)
-#   - Credential fingerprint = sha256 of env-var values that the provider
-#     normally reads. Swap your OPENAI_API_KEY and the entry invalidates.
+#   - Per-provider entries keyed by (provider, credential/header fingerprint)
+#   - Credential/header fingerprint = hash of env-var values that the provider
+#     normally reads plus configured model request headers. Swap your
+#     OPENAI_API_KEY or a provider-scoped tenant header and the entry invalidates.
 #   - 1h TTL by default. `force_refresh=True` skips the cache entirely
 #     and overwrites it on success.
 #   - Only NON-EMPTY results are cached. An empty/None response from a
@@ -2525,17 +2554,17 @@ def _provider_models_cache_path() -> Path:
 
 
 def _credential_fingerprint(provider: str) -> str:
-    """Return a short hash representing the credentials that
+    """Return a short hash representing the request context that
     ``provider_model_ids(provider)`` would see right now.
 
-    Rotating any of the relevant env vars invalidates the cached entry
-    for that provider. We hash AT LEAST the api-key + base-url env vars
-    declared in ``PROVIDER_REGISTRY``. For OAuth-backed providers
-    (codex, copilot, anthropic-via-claude-code, nous portal), the
-    relevant tokens live in ``$HERMES_HOME/auth.json`` and external
-    credential files. Rather than parse every shape, we additionally
-    fold the mtime of those files into the fingerprint so refreshes
-    after re-auth bust the cache.
+    Rotating any of the relevant env vars or configured request headers
+    invalidates the cached entry for that provider. We hash AT LEAST the
+    api-key + base-url env vars declared in ``PROVIDER_REGISTRY``. For
+    OAuth-backed providers (codex, copilot, anthropic-via-claude-code,
+    nous portal), the relevant tokens live in ``$HERMES_HOME/auth.json``
+    and external credential files. Rather than parse every shape, we
+    additionally fold the mtime of those files into the fingerprint so
+    refreshes after re-auth bust the cache.
     """
     import hashlib
     import os as _os
@@ -2552,6 +2581,28 @@ def _credential_fingerprint(provider: str) -> str:
             bev = getattr(pcfg, "base_url_env_var", "") or ""
             if bev:
                 parts.append(f"{bev}={_os.environ.get(bev, '')}")
+    except Exception:
+        pass
+
+    # User-configured request headers can affect provider model listings
+    # (project/tenant attribution, billing routes, proxy routing headers).
+    # They are hashed into the cache key, never persisted in cache entries.
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
+        if isinstance(model_cfg, dict):
+            header_cfg: dict[str, Any] = {}
+            for key in ("default_headers", "extra_headers", "provider_headers"):
+                value = model_cfg.get(key)
+                if isinstance(value, dict) and value:
+                    header_cfg[key] = value
+            if header_cfg:
+                parts.append(
+                    "model_headers="
+                    + json.dumps(header_cfg, sort_keys=True, default=str)
+                )
     except Exception:
         pass
 
@@ -3555,6 +3606,10 @@ def probe_api_models(
 
     tried: list[str] = []
     headers: dict[str, str] = {"User-Agent": _HERMES_USER_AGENT}
+    if request_headers:
+        for key, value in request_headers.items():
+            if value is not None:
+                headers[str(key)] = str(value)
     if api_key and api_mode == "anthropic_messages":
         headers["x-api-key"] = api_key
         headers["anthropic-version"] = "2023-06-01"
@@ -3616,6 +3671,85 @@ def fetch_api_models(
     ).get("models")
 
 
+def _configured_model_headers(
+    headers: Optional[dict[str, str]] = None,
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Optional[dict[str, str]]:
+    try:
+        providers_mod = __import__(
+            "hermes_cli.providers",
+            fromlist=["merge_configured_provider_headers"],
+        )
+        merge_configured_provider_headers = getattr(
+            providers_mod,
+            "merge_configured_provider_headers",
+        )
+        return merge_configured_provider_headers(
+            headers,
+            provider=provider,
+            base_url=base_url,
+        )
+    except Exception:
+        return headers
+
+
+def _fetch_api_models_with_headers(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    *,
+    timeout: Optional[float] = None,
+    api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
+) -> Optional[list[str]]:
+    kwargs: dict[str, Any] = {}
+    optional_kwargs: dict[str, Any] = {
+        "timeout": timeout,
+        "api_mode": api_mode,
+        "headers": headers,
+    }
+    try:
+        signature = inspect.signature(fetch_api_models)
+        parameters = signature.parameters.values()
+        accepts_var_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
+        for key, value in optional_kwargs.items():
+            if value is not None and (key in signature.parameters or accepts_var_kwargs):
+                kwargs[key] = value
+    except (TypeError, ValueError):
+        # Built-in fetch_api_models accepts these keywords. If a replacement
+        # callable does not expose a signature, keep the historical two-arg
+        # call rather than risking an unexpected-keyword failure.
+        pass
+    return fetch_api_models(api_key, base_url, **kwargs)
+
+
+def _fetch_profile_models(
+    profile: Any,
+    *,
+    api_key: str,
+    base_url: str,
+    headers: Optional[dict[str, str]],
+) -> Optional[list[str]]:
+    kwargs: dict[str, Any] = {
+        "api_key": api_key,
+        "base_url": base_url or None,
+    }
+    try:
+        signature = inspect.signature(profile.fetch_models)
+        parameters = signature.parameters.values()
+        if "headers" in signature.parameters or any(
+            p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters
+        ):
+            kwargs["headers"] = headers
+    except (TypeError, ValueError):
+        # Some callables do not expose signatures. Preserve the historical
+        # ProviderProfile.fetch_models(api_key=..., base_url=...) ABI rather
+        # than risking an unexpected-keyword failure in out-of-tree plugins.
+        pass
+    return profile.fetch_models(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # Ollama Cloud — merged model discovery with disk cache
 # ---------------------------------------------------------------------------
@@ -3644,11 +3778,17 @@ def _ollama_cloud_cache_path() -> Path:
     return get_hermes_home() / "ollama_cloud_models_cache.json"
 
 
-def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
+def _load_ollama_cloud_cache(
+    *,
+    ignore_ttl: bool = False,
+    fingerprint: Optional[str] = None,
+) -> Optional[dict]:
     """Load cached Ollama Cloud models from disk.
 
     Args:
         ignore_ttl: If True, return data even if the TTL has expired (stale fallback).
+        fingerprint: Optional request-context fingerprint that must match the
+            cached entry.
     """
     try:
         cache_path = _ollama_cloud_cache_path()
@@ -3661,6 +3801,8 @@ def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
         models = data.get("models")
         if not (isinstance(models, list) and models):
             return None
+        if fingerprint is not None and data.get("fp") != fingerprint:
+            return None
         if not ignore_ttl:
             cached_at = data.get("cached_at", 0)
             if (time.time() - cached_at) > _OLLAMA_CLOUD_CACHE_TTL:
@@ -3671,13 +3813,20 @@ def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
     return None
 
 
-def _save_ollama_cloud_cache(models: list[str]) -> None:
+def _save_ollama_cloud_cache(
+    models: list[str],
+    *,
+    fingerprint: Optional[str] = None,
+) -> None:
     """Persist the merged Ollama Cloud model list to disk."""
     try:
         from utils import atomic_json_write
         cache_path = _ollama_cloud_cache_path()
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json_write(cache_path, {"models": models, "cached_at": time.time()}, indent=None)
+        if fingerprint is None:
+            fingerprint = _credential_fingerprint("ollama-cloud")
+        payload = {"models": models, "cached_at": time.time(), "fp": fingerprint}
+        atomic_json_write(cache_path, payload, indent=None)
     except Exception:
         pass
 
@@ -3698,9 +3847,11 @@ def fetch_ollama_cloud_models(
 
     Returns a list of model IDs (never None — empty list on total failure).
     """
+    cache_fp = _credential_fingerprint("ollama-cloud")
+
     # 1. Check disk cache
     if not force_refresh:
-        cached = _load_ollama_cloud_cache()
+        cached = _load_ollama_cloud_cache(fingerprint=cache_fp)
         if cached is not None:
             return cached["models"]
 
@@ -3712,7 +3863,12 @@ def fetch_ollama_cloud_models(
 
     live_models: list[str] = []
     if api_key:
-        result = fetch_api_models(api_key, base_url, timeout=8.0)
+        result = _fetch_api_models_with_headers(
+            api_key,
+            base_url,
+            timeout=8.0,
+            headers=_configured_model_headers(provider="ollama-cloud", base_url=base_url),
+        )
         if result:
             live_models = result
 
@@ -3738,11 +3894,11 @@ def fetch_ollama_cloud_models(
                 seen.add(normalized)
                 merged.append(normalized)
         if merged:
-            _save_ollama_cloud_cache(merged)
+            _save_ollama_cloud_cache(merged, fingerprint=cache_fp)
             return merged
 
     # Total failure — return stale cache if available (ignore TTL)
-    stale = _load_ollama_cloud_cache(ignore_ttl=True)
+    stale = _load_ollama_cloud_cache(ignore_ttl=True, fingerprint=cache_fp)
     if stale is not None:
         return stale["models"]
 
@@ -3850,10 +4006,16 @@ def validate_requested_model(
 
     if normalized == "custom" or normalized.startswith("custom:"):
         # Try probing with correct auth for the api_mode.
+        request_headers = _configured_model_headers(provider=normalized, base_url=base_url)
         if api_mode == "anthropic_messages":
-            probe = probe_api_models(api_key, base_url, api_mode=api_mode)
+            probe = probe_api_models(
+                api_key,
+                base_url,
+                api_mode=api_mode,
+                request_headers=request_headers,
+            )
         else:
-            probe = probe_api_models(api_key, base_url)
+            probe = probe_api_models(api_key, base_url, request_headers=request_headers)
         api_models = probe.get("models")
         if api_models is not None:
             if requested_for_lookup in set(api_models):
@@ -4084,7 +4246,12 @@ def validate_requested_model(
     # Anthropic Messages API: many proxies don't implement /v1/models.
     # Try probing with correct auth; if it fails, accept with a warning.
     if api_mode == "anthropic_messages":
-        api_models = fetch_api_models(api_key, base_url, api_mode=api_mode)
+        api_models = _fetch_api_models_with_headers(
+            api_key,
+            base_url,
+            api_mode=api_mode,
+            headers=_configured_model_headers(provider=normalized, base_url=base_url),
+        )
         if api_models is not None:
             if requested_for_lookup in set(api_models):
                 return {
@@ -4117,7 +4284,11 @@ def validate_requested_model(
         }
 
     # Probe the live API to check if the model actually exists
-    api_models = fetch_api_models(api_key, base_url)
+    api_models = _fetch_api_models_with_headers(
+        api_key,
+        base_url,
+        headers=_configured_model_headers(provider=normalized, base_url=base_url),
+    )
 
     if api_models is not None:
         # Gemini's OpenAI-compat /v1beta/openai/models endpoint returns IDs

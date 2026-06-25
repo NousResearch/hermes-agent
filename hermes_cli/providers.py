@@ -22,6 +22,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlparse
 
 from utils import base_url_host_matches, base_url_hostname
 
@@ -396,6 +397,118 @@ def normalize_provider(name: str) -> str:
     """
     key = name.strip().lower()
     return ALIASES.get(key, key)
+
+
+def _url_path_segments(value: str) -> tuple[str, ...]:
+    path = urlparse((value or "").strip()).path.rstrip("/")
+    return tuple(segment for segment in path.split("/") if segment)
+
+
+def _profile_base_url_match_length(base_url: str, profile_base_url: str) -> int:
+    """Return a path-specific match score for base_url against profile_base_url."""
+    if not base_url or not profile_base_url:
+        return -1
+    if base_url_hostname(base_url) != base_url_hostname(profile_base_url):
+        return -1
+    actual_segments = _url_path_segments(base_url)
+    profile_segments = _url_path_segments(profile_base_url)
+    if not profile_segments:
+        return 0
+    if len(actual_segments) < len(profile_segments):
+        return -1
+    if actual_segments[: len(profile_segments)] != profile_segments:
+        return -1
+    return len(profile_segments)
+
+
+def infer_provider_from_base_url(base_url: Optional[str]) -> Optional[str]:
+    """Infer the best ProviderProfile provider id from an OpenAI-compatible base URL."""
+    if not base_url:
+        return None
+    try:
+        import providers as provider_registry
+
+        list_profiles = getattr(provider_registry, "list_providers", None)
+        if list_profiles:
+            best_name = ""
+            best_score = -1
+            for profile in list_profiles():
+                profile_base = str(getattr(profile, "base_url", "") or "")
+                score = _profile_base_url_match_length(str(base_url), profile_base)
+                if score > best_score:
+                    best_name = str(getattr(profile, "name", "") or "")
+                    best_score = score
+            if best_score >= 0 and best_name:
+                return best_name
+    except Exception:
+        pass
+    return None
+
+
+def merge_configured_provider_headers(
+    headers: Optional[Dict[str, str]] = None,
+    *,
+    provider: Optional[str] = None,
+    base_url: Optional[str] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, str]]:
+    """Merge global and provider-scoped ``model`` headers from config.yaml.
+
+    ``model.default_headers`` remains the backward-compatible global override;
+    ``model.extra_headers`` is accepted as an alias and wins over
+    ``default_headers`` when both are set.
+    ``model.provider_headers.<provider>`` adds scoped headers for one provider
+    without leaking them to unrelated OpenAI-compatible providers.
+    """
+    try:
+        config_mod = __import__("hermes_cli.config", fromlist=["cfg_get", "load_config"])
+        cfg_get = getattr(config_mod, "cfg_get")
+        load_config = getattr(config_mod, "load_config")
+
+        cfg = config if isinstance(config, dict) else load_config()
+        global_headers = cfg_get(cfg, "model", "default_headers")
+        alias_headers = cfg_get(cfg, "model", "extra_headers")
+        provider_headers = cfg_get(cfg, "model", "provider_headers")
+    except Exception:
+        return headers
+
+    layers: List[Dict[str, Any]] = []
+    if isinstance(global_headers, dict) and global_headers:
+        layers.append(global_headers)
+    if isinstance(alias_headers, dict) and alias_headers:
+        layers.append(alias_headers)
+
+    if isinstance(provider_headers, dict) and provider_headers:
+        candidates: List[str] = []
+        raw_provider = str(provider or "").strip().lower()
+        if raw_provider and raw_provider != "auto":
+            candidates.append(raw_provider)
+        try:
+            normalized = normalize_provider(raw_provider)
+            if normalized and normalized != "auto" and normalized not in candidates:
+                candidates.append(normalized)
+        except Exception:
+            pass
+        if base_url:
+            inferred = infer_provider_from_base_url(base_url)
+            if inferred and inferred not in candidates:
+                candidates.append(inferred)
+        for candidate in candidates:
+            scoped_headers = provider_headers.get(candidate)
+            if isinstance(scoped_headers, dict) and scoped_headers:
+                layers.append(scoped_headers)
+                break
+
+    if not layers:
+        return headers
+
+    merged = dict(headers or {})
+    for layer in layers:
+        for key, value in layer.items():
+            if value is None:
+                continue
+            merged[str(key)] = str(value)
+    return merged or headers
 
 
 def get_provider(name: str) -> Optional[ProviderDef]:

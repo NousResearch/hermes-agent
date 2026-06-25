@@ -4454,8 +4454,9 @@ class AIAgent:
     def _apply_user_default_headers(self) -> None:
         """Merge user-configured request headers onto the OpenAI client.
 
-        Reads ``model.default_headers`` from config.yaml and merges it onto
-        ``self._client_kwargs["default_headers"]``, with user values taking
+        Reads ``model.default_headers`` plus provider-scoped
+        ``model.provider_headers.<provider>`` from config.yaml and merges them
+        onto ``self._client_kwargs["default_headers"]``, with user values taking
         precedence over provider- and SDK-supplied defaults.
 
         This exists for ``custom`` OpenAI-compatible endpoints sitting behind
@@ -4477,9 +4478,15 @@ class AIAgent:
         from agent.auxiliary_client import (
             _apply_user_default_headers as _merge_user_headers,
         )
-        merged = _merge_user_headers(self._client_kwargs.get("default_headers"))
+        client_kwargs = getattr(self, "_client_kwargs", {})
+        merged = _merge_user_headers(
+            client_kwargs.get("default_headers"),
+            provider=getattr(self, "provider", None),
+            base_url=str(getattr(self, "base_url", "") or ""),
+        )
         if merged:
-            self._client_kwargs["default_headers"] = merged
+            client_kwargs["default_headers"] = merged
+            setattr(self, "_client_kwargs", client_kwargs)
 
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")

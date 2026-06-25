@@ -1120,6 +1120,16 @@ def init_agent(
         )
     except Exception as _tlg_err:
         _ra().logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
+    # Load skip_context_files / load_soul_identity from config so they actually work
+    try:
+        _cfg_skip = _agent_cfg.get("skip_context_files")
+        if _cfg_skip is not None:
+            agent.skip_context_files = bool(_cfg_skip)
+        _cfg_soul = _agent_cfg.get("load_soul_identity")
+        if _cfg_soul is not None:
+            agent.load_soul_identity = bool(_cfg_soul)
+    except Exception:
+        pass
     # Cache only the derived auxiliary compression context override that is
     # needed later by the startup feasibility check.  Avoid exposing a
     # broad pseudo-public config object on the agent instance.

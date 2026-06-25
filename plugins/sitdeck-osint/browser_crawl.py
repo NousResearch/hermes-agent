@@ -7,6 +7,7 @@ import re
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,9 @@ BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+# SPAs like SitDeck rarely reach networkidle; domcontentloaded + selector waits are enough.
+DEFAULT_GOTO_WAIT = "domcontentloaded"
+POST_LOGIN_LOAD_STATE = "domcontentloaded"
 STATE_DIR = get_hermes_home() / "sitdeck-osint"
 LAST_CRAWL_PATH = STATE_DIR / "last_crawl.json"
 STORAGE_STATE_PATH = STATE_DIR / "storage_state.json"
@@ -173,6 +177,33 @@ def _looks_like_dashboard(body_text: str) -> bool:
     return any(h in lower for h in hints) or len(body_text or "") > 400
 
 
+def _goto_page(page, url: str, *, timeout_ms: int, wait_until: str = DEFAULT_GOTO_WAIT) -> None:
+    """Navigate without networkidle — SitDeck keeps long-polling connections open."""
+    page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+
+
+def _wait_after_login(page, *, timeout_ms: int) -> None:
+    """Post-auth settle: DOM ready + optional dashboard chrome (not networkidle)."""
+    from playwright.sync_api import TimeoutError as PlaywrightTimeout
+
+    try:
+        page.wait_for_load_state(POST_LOGIN_LOAD_STATE, timeout=min(timeout_ms, 30_000))
+    except PlaywrightTimeout:
+        pass
+    for selector in (
+        "text=Command Center",
+        "text=Ops Center",
+        "text=SITUATION",
+        "[data-testid='dashboard']",
+    ):
+        try:
+            page.wait_for_selector(selector, timeout=8_000)
+            return
+        except PlaywrightTimeout:
+            continue
+    page.wait_for_timeout(2_000)
+
+
 def crawl_dashboard(
     *,
     headless: bool = True,
@@ -242,8 +273,13 @@ def crawl_dashboard(
 
         page.on("response", on_response)
 
+        pulse_future = None
+        executor = ThreadPoolExecutor(max_workers=1) if include_public_pulse else None
+        if executor is not None:
+            pulse_future = executor.submit(fetch_public_global_pulse)
+
         try:
-            page.goto(DEFAULT_LOGIN_URL, wait_until="networkidle", timeout=timeout_ms)
+            _goto_page(page, DEFAULT_LOGIN_URL, timeout_ms=timeout_ms)
             page.wait_for_timeout(2000)
 
             logged_in = not _is_login_form_visible(page)
@@ -257,11 +293,10 @@ def crawl_dashboard(
                     )
                 except PlaywrightTimeout:
                     pass
-                page.wait_for_load_state("networkidle", timeout=timeout_ms)
-                page.wait_for_timeout(3000)
+                _wait_after_login(page, timeout_ms=timeout_ms)
 
             if _is_login_form_visible(page):
-                page.goto(DEFAULT_APP_URL, wait_until="networkidle", timeout=timeout_ms)
+                _goto_page(page, DEFAULT_APP_URL, timeout_ms=timeout_ms)
                 page.wait_for_timeout(2000)
 
             body_text = redact_secrets(page.inner_text("body"), creds)
@@ -305,8 +340,19 @@ def crawl_dashboard(
         finally:
             context.close()
             browser.close()
+            if pulse_future is not None:
+                try:
+                    result["public_global_pulse"] = pulse_future.result(timeout=45.0)
+                except Exception as exc:
+                    result["public_global_pulse"] = {
+                        "success": False,
+                        "error": type(exc).__name__,
+                        "detail": str(exc)[:200],
+                    }
+            if executor is not None:
+                executor.shutdown(wait=False)
 
-    if include_public_pulse:
+    if include_public_pulse and "public_global_pulse" not in result:
         result["public_global_pulse"] = fetch_public_global_pulse()
 
     if result.get("success"):

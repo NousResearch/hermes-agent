@@ -67,6 +67,44 @@ def test_build_digest_failure():
     assert "missing_credentials" in text
 
 
+def test_default_goto_wait_is_domcontentloaded():
+    crawl = _load_module("browser_crawl")
+    assert crawl.DEFAULT_GOTO_WAIT == "domcontentloaded"
+    assert crawl.POST_LOGIN_LOAD_STATE == "domcontentloaded"
+
+
+def test_goto_page_uses_domcontentloaded():
+    crawl = _load_module("browser_crawl")
+    page = MagicMock()
+    crawl._goto_page(page, "https://app.sitdeck.example/dashboard", timeout_ms=45_000)
+    page.goto.assert_called_once_with(
+        "https://app.sitdeck.example/dashboard",
+        wait_until="domcontentloaded",
+        timeout=45_000,
+    )
+
+
+def test_goto_page_default_wait_until():
+    crawl = _load_module("browser_crawl")
+    page = MagicMock()
+    crawl._goto_page(page, "https://example.com/login", timeout_ms=10_000)
+    _, kwargs = page.goto.call_args
+    assert kwargs["wait_until"] == crawl.DEFAULT_GOTO_WAIT
+
+
+def test_wait_after_login_uses_domcontentloaded_not_networkidle():
+    crawl = _load_module("browser_crawl")
+    page = MagicMock()
+    page.wait_for_selector.return_value = MagicMock()
+    crawl._wait_after_login(page, timeout_ms=60_000)
+    page.wait_for_load_state.assert_called_once_with(
+        "domcontentloaded",
+        timeout=30_000,
+    )
+    for call in page.mock_calls:
+        assert "networkidle" not in str(call)
+
+
 @patch("hermes_cli.config.load_config", return_value={})
 @patch("hermes_cli.tools_config._get_platform_tools", return_value=[])
 @patch("hermes_cli.tools_config._save_platform_tools")

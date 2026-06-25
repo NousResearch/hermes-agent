@@ -164,7 +164,7 @@ def generate_situation_report(
     llm_summary: bool = False,
     save: bool = True,
     window_hours: int = 24,
-    primary_backfill: bool = True,
+    use_primary_backfill: bool = True,
     fetch_egov: bool = True,
     fetch_github: bool = True,
     fetch_gov_feeds: bool = True,
@@ -183,7 +183,7 @@ def generate_situation_report(
     threats = extract_high_threats(wm)
 
     enrichment: dict[str, Any] = {}
-    if primary_backfill:
+    if use_primary_backfill:
         enrichment = primary_backfill.enrich_primary_sources(
             threats,
             topic=topic,

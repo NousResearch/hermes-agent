@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -160,7 +161,7 @@ def _pdb_section(
         wm_tier=wm_tier,
         llm_summary=llm_summary,
         save=False,
-        primary_backfill=True,
+        use_primary_backfill=True,
         fetch_egov=True,
         fetch_github=True,
         fetch_gov_feeds=False,
@@ -222,26 +223,35 @@ def generate_integrated_brief(
     cron_mode: bool = False,
 ) -> dict[str, Any]:
     """Run all OSINT layers and return unified markdown + JSON payload."""
-    pdb = _pdb_section(
-        slot=slot,
-        topic=topic,
-        source_mode=source_mode,
-        wm_tier=wm_tier,
-        llm_summary=llm_summary,
-        max_scenarios=max_scenarios,
-    )
-
     sitdeck: dict[str, Any] = {"skipped": True}
-    if include_sitdeck:
-        sitdeck = _sitdeck_section(headless=sitdeck_headless)
-
     gov_md, gov_raw = ("", {"skipped": True})
-    if include_gov_feeds:
-        gov_md, gov_raw = _gov_feeds_markdown(hours=24)
-
     mhlw: dict[str, Any] = {"skipped": True}
-    if include_mhlw:
-        mhlw = _mhlw_section(cron_mode=cron_mode)
+
+    futures: dict[str, Any] = {}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures["pdb"] = pool.submit(
+            _pdb_section,
+            slot=slot,
+            topic=topic,
+            source_mode=source_mode,
+            wm_tier=wm_tier,
+            llm_summary=llm_summary,
+            max_scenarios=max_scenarios,
+        )
+        if include_sitdeck:
+            futures["sitdeck"] = pool.submit(_sitdeck_section, headless=sitdeck_headless)
+        if include_gov_feeds:
+            futures["gov"] = pool.submit(_gov_feeds_markdown, hours=24)
+        if include_mhlw:
+            futures["mhlw"] = pool.submit(_mhlw_section, cron_mode=cron_mode)
+
+        pdb = futures["pdb"].result()
+        if "sitdeck" in futures:
+            sitdeck = futures["sitdeck"].result()
+        if "gov" in futures:
+            gov_md, gov_raw = futures["gov"].result()
+        if "mhlw" in futures:
+            mhlw = futures["mhlw"].result()
 
     markdown = build_integrated_markdown(
         slot=slot,

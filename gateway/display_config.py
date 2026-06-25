@@ -4,10 +4,24 @@ Provides ``resolve_display_setting()`` — the single entry-point for reading
 display settings with platform-specific overrides and sensible defaults.
 
 Resolution order (first non-None wins):
+    0. ``display.platforms.<platform>.channels.<channel_id>.<key>``  — explicit
+       per-channel override (only when a ``channel_id`` is passed)
     1. ``display.platforms.<platform>.<key>``  — explicit per-platform user override
     2. ``display.<key>``                       — global user setting
     3. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — built-in sensible default
     4. ``_GLOBAL_DEFAULTS[<key>]``              — built-in global default
+
+Per-channel overrides let a single noisy channel opt out of a setting (e.g.
+``interim_assistant_messages``) without changing the rest of the platform's
+channels. They sit one level deeper than the per-platform block:
+
+    display:
+      platforms:
+        slack:
+          interim_assistant_messages: true        # platform-wide
+          channels:
+            C0123456789:
+              interim_assistant_messages: false   # this channel only
 
 Exception: ``display.streaming`` is CLI-only.  Gateway streaming follows the
 top-level ``streaming`` config unless ``display.platforms.<platform>.streaming``
@@ -162,8 +176,9 @@ def resolve_display_setting(
     platform_key: str,
     setting: str,
     fallback: Any = None,
+    channel_id: str | None = None,
 ) -> Any:
-    """Resolve a display setting with per-platform override support.
+    """Resolve a display setting with per-platform (and per-channel) override support.
 
     Parameters
     ----------
@@ -176,16 +191,31 @@ def resolve_display_setting(
         Display setting name (e.g. ``"tool_progress"``, ``"show_reasoning"``).
     fallback : Any
         Fallback value when the setting isn't found anywhere.
+    channel_id : str | None
+        When given, a ``display.platforms.<platform>.channels.<channel_id>.<key>``
+        override takes priority over the per-platform value — letting a single
+        channel opt out of (or into) a setting. Ignored when ``None``.
 
     Returns
     -------
     The resolved value, or *fallback* if nothing is configured.
     """
     display_cfg = user_config.get("display") or {}
-
-    # 1. Explicit per-platform override (display.platforms.<platform>.<key>)
     platforms = display_cfg.get("platforms") or {}
     plat_overrides = platforms.get(platform_key)
+
+    # 0. Explicit per-channel override
+    #    (display.platforms.<platform>.channels.<channel_id>.<key>)
+    if channel_id and isinstance(plat_overrides, dict):
+        channels = plat_overrides.get("channels")
+        if isinstance(channels, dict):
+            chan_overrides = channels.get(channel_id)
+            if isinstance(chan_overrides, dict):
+                val = chan_overrides.get(setting)
+                if val is not None:
+                    return _normalise(setting, val)
+
+    # 1. Explicit per-platform override (display.platforms.<platform>.<key>)
     if isinstance(plat_overrides, dict):
         val = plat_overrides.get(setting)
         if val is not None:

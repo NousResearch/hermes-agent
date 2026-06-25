@@ -80,6 +80,78 @@ class TestResolveDisplaySetting:
 
 
 # ---------------------------------------------------------------------------
+# Per-channel overrides: display.platforms.<platform>.channels.<channel>.<key>
+# ---------------------------------------------------------------------------
+
+class TestPerChannelOverride:
+    """resolve_display_setting() honours per-channel overrides when channel_id is given."""
+
+    def _config(self):
+        return {
+            "display": {
+                "platforms": {
+                    "slack": {
+                        "interim_assistant_messages": True,   # platform-wide ON
+                        "channels": {
+                            "C_QUIET": {"interim_assistant_messages": False},
+                        },
+                    },
+                },
+            }
+        }
+
+    def test_channel_override_wins_over_platform(self):
+        """display.platforms.<plat>.channels.<chan>.<key> beats the per-platform value."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting(
+            self._config(), "slack", "interim_assistant_messages",
+            channel_id="C_QUIET",
+        ) is False
+
+    def test_other_channel_falls_through_to_platform(self):
+        """A channel without an override keeps the per-platform value."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting(
+            self._config(), "slack", "interim_assistant_messages",
+            channel_id="C_OTHER",
+        ) is True
+
+    def test_no_channel_id_ignores_channel_block(self):
+        """Without channel_id the per-channel block is ignored (back-compat)."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting(
+            self._config(), "slack", "interim_assistant_messages",
+        ) is True
+
+    def test_channel_override_does_not_leak_to_other_platform(self):
+        """A slack channel override never affects another platform."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting(
+            self._config(), "telegram", "interim_assistant_messages",
+            channel_id="C_QUIET",
+        ) is True
+
+    def test_channel_override_normalises_yaml_off(self):
+        """Bare YAML ``off``/``on`` strings normalise to bool for the channel layer."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "slack": {"channels": {"C1": {"show_reasoning": "on"}}},
+                },
+            }
+        }
+        assert resolve_display_setting(
+            config, "slack", "show_reasoning", channel_id="C1",
+        ) is True
+
+
+# ---------------------------------------------------------------------------
 # Backward compatibility: tool_progress_overrides
 # ---------------------------------------------------------------------------
 

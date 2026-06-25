@@ -442,8 +442,15 @@ def _resolve_progress_thread_id(platform: Any, source_thread_id: Any, event_mess
     return None
 
 
-def _has_platform_display_override(user_config: dict, platform_key: str, setting: str) -> bool:
-    """Return True when display.platforms.<platform> explicitly sets setting."""
+def _has_platform_display_override(
+    user_config: dict, platform_key: str, setting: str, channel_id: str | None = None
+) -> bool:
+    """Return True when display.platforms.<platform> explicitly sets setting.
+
+    When ``channel_id`` is given, a per-channel override
+    (display.platforms.<platform>.channels.<channel_id>.<setting>) also counts —
+    so a channel-level opt-in satisfies the platform-only gate below.
+    """
     display = user_config.get("display") if isinstance(user_config, dict) else None
     if not isinstance(display, dict):
         return False
@@ -451,7 +458,16 @@ def _has_platform_display_override(user_config: dict, platform_key: str, setting
     if not isinstance(platforms, dict):
         return False
     platform_cfg = platforms.get(platform_key)
-    return isinstance(platform_cfg, dict) and setting in platform_cfg
+    if not isinstance(platform_cfg, dict):
+        return False
+    if setting in platform_cfg:
+        return True
+    if channel_id:
+        channels = platform_cfg.get("channels")
+        chan_cfg = channels.get(channel_id) if isinstance(channels, dict) else None
+        if isinstance(chan_cfg, dict) and setting in chan_cfg:
+            return True
+    return False
 
 
 def _resolve_gateway_display_bool(
@@ -462,13 +478,18 @@ def _resolve_gateway_display_bool(
     default: bool = False,
     platform: Any = None,
     require_platform_override_for: set[Any] | None = None,
+    channel_id: str | None = None,
 ) -> bool:
     """Resolve a boolean display setting with optional platform-only opt-in.
 
     Some display features expose assistant scratch text rather than deliberate
     user-facing output.  For high-noise threaded chat surfaces such as
     Mattermost, a global opt-in is too broad: they must be enabled with an
-    explicit display.platforms.<platform>.<setting> override.
+    explicit display.platforms.<platform>.<setting> override (a per-channel
+    override under that platform also satisfies the gate).
+
+    ``channel_id`` lets a single channel override the platform value via
+    display.platforms.<platform>.channels.<channel_id>.<setting>.
     """
     current_platform = _gateway_platform_value(platform or platform_key)
     platform_only = {
@@ -477,13 +498,15 @@ def _resolve_gateway_display_bool(
     }
     if (
         current_platform in platform_only
-        and not _has_platform_display_override(user_config, platform_key, setting)
+        and not _has_platform_display_override(user_config, platform_key, setting, channel_id)
     ):
         return False
 
     from gateway.display_config import resolve_display_setting
 
-    value = resolve_display_setting(user_config, platform_key, setting, default)
+    value = resolve_display_setting(
+        user_config, platform_key, setting, default, channel_id=channel_id
+    )
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
@@ -14626,6 +14649,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 default=True,
                 platform=source.platform,
                 require_platform_override_for={Platform.MATTERMOST},
+                channel_id=str(source.chat_id) if getattr(source, "chat_id", None) else None,
             )
         )
         # thinking_progress is independent — if enabled, we need the progress

@@ -1469,6 +1469,30 @@ Platforms without an override fall back to the global `tool_progress` value. Val
 
 Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
+#### Per-channel overrides
+
+Need one noisy channel quieter (or louder) than the rest of a platform? Nest a
+`channels` map under the platform and key it by the channel/chat ID. A
+per-channel value beats the per-platform value; channels without an entry keep
+the platform setting.
+
+```yaml
+display:
+  platforms:
+    slack:
+      interim_assistant_messages: true     # platform-wide: mid-turn updates on
+      tool_progress: 'off'
+      channels:
+        C0123456789:                       # one specific channel
+          interim_assistant_messages: false  # …but stay quiet here
+```
+
+Resolution order is: per-channel → per-platform → global `display.<key>` →
+built-in default. The channel ID is the platform's native conversation ID (e.g.
+a Slack `C…`/`G…` channel ID). Per-channel overrides apply to the same keys as
+per-platform overrides (`tool_progress`, `interim_assistant_messages`,
+`show_reasoning`, `tool_preview_length`, `cleanup_progress`, …).
+
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 
 ## Privacy

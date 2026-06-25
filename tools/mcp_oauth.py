@@ -210,6 +210,59 @@ def _write_json(path: Path, data: dict) -> None:
         raise
 
 
+def _client_info_with_default_auth_method(data: dict) -> dict:
+    """Return client-info payload with a usable token auth method.
+
+    Some dynamic-client-registration implementations return a
+    ``client_secret`` but omit ``token_endpoint_auth_method``. The MCP SDK then
+    builds the token request without the secret because it only sends the
+    secret when the auth method is explicitly ``client_secret_post`` or
+    ``client_secret_basic``. Supabase MCP currently behaves this way and its
+    token endpoint rejects the exchange with ``Required parameter:
+    client_secret``.
+
+    Hermes treats a returned ``client_secret`` with no declared method as a
+    confidential client that expects ``client_secret_post``. This preserves
+    public clients (no secret) and explicit server choices.
+    """
+    payload = dict(data)
+    if payload.get("client_secret") and not payload.get("token_endpoint_auth_method"):
+        payload["token_endpoint_auth_method"] = "client_secret_post"
+    return payload
+
+
+def ensure_client_info_auth_method(client_info: Any, server_name: str | None = None) -> bool:
+    """Mutate an OAuth client-info object to include a secret auth method.
+
+    Returns True when the object was changed. This is used by the Hermes MCP
+    OAuth provider before same-process token exchange/refresh, because the SDK
+    uses the in-memory client-info object immediately after registration and
+    does not re-read the normalized JSON written by :class:`HermesTokenStorage`.
+    """
+    if client_info is None:
+        return False
+    if not getattr(client_info, "client_secret", None):
+        return False
+    if getattr(client_info, "token_endpoint_auth_method", None):
+        return False
+    try:
+        client_info.token_endpoint_auth_method = "client_secret_post"
+    except Exception:
+        logger.debug(
+            "OAuth client info for %s has a secret but no token auth method; "
+            "could not default to client_secret_post",
+            server_name or "<unknown>",
+            exc_info=True,
+        )
+        return False
+    logger.debug(
+        "OAuth client info for %s has a secret but no token auth method; "
+        "defaulting to client_secret_post",
+        server_name or "<unknown>",
+    )
+    return True
+
+
 # ---------------------------------------------------------------------------
 # HermesTokenStorage -- persistent token/client-info on disk
 # ---------------------------------------------------------------------------
@@ -304,6 +357,7 @@ class HermesTokenStorage:
         data = _read_json(self._client_info_path())
         if data is None:
             return None
+        data = _client_info_with_default_auth_method(data)
         try:
             return OAuthClientInformationFull.model_validate(data)
         except (ValueError, TypeError, KeyError) as exc:
@@ -311,7 +365,9 @@ class HermesTokenStorage:
             return None
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
-        _write_json(self._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
+        payload = client_info.model_dump(mode="json", exclude_none=True)
+        payload = _client_info_with_default_auth_method(payload)
+        _write_json(self._client_info_path(), payload)
         logger.debug("OAuth client info saved for %s", self._server_name)
 
     # -- oauth server metadata --------------------------------------------

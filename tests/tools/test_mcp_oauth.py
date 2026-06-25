@@ -109,6 +109,48 @@ class TestHermesTokenStorage:
         client_path = tmp_path / "mcp-tokens" / "test-server.client.json"
         assert client_path.exists()
 
+    def test_client_info_secret_defaults_to_post_auth_method(self, tmp_path, monkeypatch):
+        """DCR responses with client_secret but no auth method must still send it.
+
+        Supabase MCP returns this shape and rejects token exchange unless
+        ``client_secret`` is included in the form body.
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("supabase")
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir(parents=True)
+        (token_dir / "supabase.client.json").write_text(json.dumps({
+            "client_id": "client-123",
+            "client_secret": "secret-456",
+            "redirect_uris": ["http://127.0.0.1:58007/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        }))
+
+        import asyncio
+        info = asyncio.run(storage.get_client_info())
+
+        assert info is not None
+        assert info.token_endpoint_auth_method == "client_secret_post"
+
+    def test_set_client_info_persists_default_post_auth_method(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("supabase")
+        mock_client = MagicMock()
+        mock_client.model_dump.return_value = {
+            "client_id": "client-123",
+            "client_secret": "secret-456",
+            "redirect_uris": ["http://127.0.0.1:58007/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        }
+
+        import asyncio
+        asyncio.run(storage.set_client_info(mock_client))
+
+        data = json.loads((tmp_path / "mcp-tokens" / "supabase.client.json").read_text())
+        assert data["token_endpoint_auth_method"] == "client_secret_post"
+
     def test_remove_cleans_up(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         storage = HermesTokenStorage("test-server")

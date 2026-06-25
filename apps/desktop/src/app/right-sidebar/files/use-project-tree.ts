@@ -1,8 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
-import { useCallback, useEffect, useMemo } from 'react'
+import { useCallback, useEffect, useMemo, useRef } from 'react'
 
-import { $connection } from '@/store/session'
+import { $activeSessionId, $connection, $sessions } from '@/store/session'
 
 import { clearProjectDirCache, readProjectDir } from './ipc'
 
@@ -360,6 +360,58 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       window.clearInterval(timer)
     }
   }, [cwd, usingFallback])
+
+  // When the active session changes (session switch), proactively compare
+  // the target session's cached cwd to the current tree's cwd. If they
+  // differ, immediately clear the tree and show loading — this prevents the
+  // old project's file tree from lingering while the resume is in flight
+  // (before $currentCwd updates). If cwd is the same (same project,
+  // directory unchanged), keep the current tree intact.
+  const activeSessionId = useStore($activeSessionId)
+  const prevSessionIdRef = useRef(activeSessionId)
+
+  useEffect(() => {
+    if (activeSessionId === prevSessionIdRef.current) {
+      return
+    }
+
+    const prevId = prevSessionIdRef.current
+    prevSessionIdRef.current = activeSessionId
+
+    // Skip initial mount (both null → null, or null → first session).
+    if (!prevId && !activeSessionId) {
+      return
+    }
+
+    // Look up the target session's cwd from the in-memory session list
+    // cache so we don't wait for the resume response.
+    const targetCwd = activeSessionId
+      ? ($sessions.get().find(
+          s => s.id === activeSessionId || s._lineage_root_id === activeSessionId
+        )?.cwd ?? '')
+      : ''
+
+    // Same cwd → same project/directory → keep the current tree.
+    if (targetCwd && targetCwd === cwd) {
+      return
+    }
+
+    // Different cwd → immediately clear the tree so the user sees a loading
+    // state instead of stale files from the previous project.
+    clearProjectDirCache()
+    setProjectTree(current => ({
+      collapseNonce: current.collapseNonce,
+      cwd,
+      data: [],
+      loaded: false,
+      openState: {},
+      requestId: nextRootRequestId + 1,
+      resolvedCwd: '',
+      rootError: null,
+      rootLoading: Boolean(cwd)
+    }))
+    nextRootRequestId += 1
+  }, [activeSessionId, cwd])
 
   return useMemo(
     () => ({

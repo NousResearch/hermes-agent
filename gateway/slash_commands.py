@@ -3516,36 +3516,47 @@ class GatewaySlashCommandsMixin:
         return "\n".join(lines)
 
     async def _handle_tokens_command(self, event: MessageEvent) -> str:
-        """Handle /tokens [on|off|status] — toggle the per-message token footer.
+        """Handle /tokens [on|off|always|status] — per-message token footer.
 
-        When enabled, every reply in this chat gets a compact decoded
-        breakdown appended, e.g. ``📊 in:1520 out:234 reason:128 cache:890``.
-        The toggle is persisted per-chat (gateway_tokens_display.json), so it
-        survives restarts and need not be re-enabled each turn.
+        When enabled, each reply gets a compact decoded breakdown appended,
+        e.g. ``📊 in:1520 out:234 reason:128 cache:890``. Three states:
+          * ``on``     — enable for THIS session only (per-session override).
+          * ``off``    — disable for this session AND clear the global setting.
+          * ``always`` — enable GLOBALLY for every conversation.
+        Per-session overrides win over the global setting. All state is
+        persisted (gateway_tokens_display.json) and survives restarts.
         """
         args = event.get_command_args().strip().lower()
         key = self._tokens_key(event.source.platform, event.source.chat_id)
-        current = bool(self._tokens_display.get(key))
 
+        if args == "always":
+            self._tokens_display_global = True
+            self._save_tokens_display()
+            return ("📊 Per-message token display enabled GLOBALLY — every "
+                    "conversation now shows in/out/reason/cache. Use /tokens "
+                    "off here to mute just this session.")
         if args in {"on", "enable"}:
-            new_state = True
-        elif args in {"off", "disable"}:
-            new_state = False
-        elif args == "status":
-            return (
-                "📊 Per-message token display is ON for this chat."
-                if current
-                else "📊 Per-message token display is OFF. Use /tokens on to enable."
-            )
-        else:
-            # Bare /tokens toggles.
-            new_state = not current
+            self._tokens_display[key] = True
+            self._save_tokens_display()
+            return "📊 Per-message token display enabled for this session."
+        if args in {"off", "disable"}:
+            self._tokens_display[key] = False
+            # 'off' also clears the global 'always' so it turns the feature off
+            # rather than leaving it on for other conversations.
+            self._tokens_display_global = False
+            self._save_tokens_display()
+            return "📊 Per-message token display turned off (this session; global 'always' cleared)."
+        if args == "status":
+            eff = self._tokens_enabled_for(event.source.platform, event.source.chat_id)
+            glob = bool(getattr(self, "_tokens_display_global", False))
+            return (f"📊 Token display — this session: {'ON' if eff else 'OFF'} · "
+                    f"global always: {'ON' if glob else 'OFF'}. "
+                    "Options: /tokens on | off | always")
 
-        self._tokens_display[key] = new_state
-        self._save_tokens_display()
-        if new_state:
-            return "📊 Per-message token display enabled — each reply now shows in/out/reason/cache."
-        return "📊 Per-message token display disabled."
+        # Bare /tokens (or unknown arg) → show status + usage hint.
+        eff = self._tokens_enabled_for(event.source.platform, event.source.chat_id)
+        return (f"📊 Token display is {'ON' if eff else 'OFF'} for this session. "
+                "Use /tokens on | off | always.")
 
     async def _handle_usage_command(self, event: MessageEvent) -> str:
         """Handle /usage command -- show token usage for the current session.

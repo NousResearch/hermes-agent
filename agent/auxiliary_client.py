@@ -3898,6 +3898,10 @@ def resolve_provider_client(
                     raw_base_for_wrap = custom_base
                 _clean_base2, _dq2 = _extract_url_query_params(openai_base)
                 _extra2 = {"default_query": _dq2} if _dq2 else {}
+                # Merge provider-level default_headers from config entry
+                _entry_headers = custom_entry.get("default_headers")
+                if isinstance(_entry_headers, dict) and _entry_headers:
+                    _extra2["default_headers"] = dict(_entry_headers)
                 _headers2 = _apply_user_default_headers(_extra2.get("default_headers"))
                 if _headers2:
                     _extra2["default_headers"] = _headers2
@@ -3923,6 +3927,10 @@ def resolve_provider_client(
                         _fallback_base = _to_openai_base_url(custom_base)
                         _fb_clean, _fb_dq = _extract_url_query_params(_fallback_base)
                         _fb_extra = {"default_query": _fb_dq} if _fb_dq else {}
+                        # Merge provider-level default_headers from config entry
+                        _fb_entry_headers = custom_entry.get("default_headers")
+                        if isinstance(_fb_entry_headers, dict) and _fb_entry_headers:
+                            _fb_extra["default_headers"] = dict(_fb_entry_headers)
                         _fb_headers = _apply_user_default_headers(_fb_extra.get("default_headers"))
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers

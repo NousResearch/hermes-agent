@@ -337,6 +337,7 @@ def _run_agent(
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
+        provider_default_headers=runtime.get("default_headers"),
         model=effective_model,
         enabled_toolsets=toolsets_list,
         quiet_mode=True,

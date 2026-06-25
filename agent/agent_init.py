@@ -157,6 +157,7 @@ def init_agent(
     api_key: str = None,
     provider: str = None,
     api_mode: str = None,
+    provider_default_headers: Optional[Dict[str, str]] = None,
     acp_command: str = None,
     acp_args: list[str] | None = None,
     command: str = None,
@@ -781,16 +782,28 @@ def init_agent(
                 from agent.auxiliary_client import _codex_cloudflare_headers
                 client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
             elif "default_headers" not in client_kwargs:
-                # Fall back to profile.default_headers for providers that
-                # declare custom headers (e.g. Kimi User-Agent on non-kimi.com
-                # endpoints).
-                try:
-                    from providers import get_provider_profile as _gpf
-                    _ph = _gpf(agent.provider)
-                    if _ph and _ph.default_headers:
-                        client_kwargs["default_headers"] = dict(_ph.default_headers)
-                except Exception:
-                    pass
+                # Precedence when no URL-specific override matched:
+                #   1. Caller-provided headers (e.g. from a named custom
+                #      provider's ``providers.<name>.default_headers`` config
+                #      block, threaded through ``runtime["default_headers"]``
+                #      by the caller).  These are user-authored and should
+                #      win over built-in profile defaults.
+                #   2. Profile defaults from ``providers/`` for providers
+                #      that declare baseline custom headers (e.g. Kimi
+                #      User-Agent on non-kimi.com endpoints).
+                if (
+                    isinstance(provider_default_headers, dict)
+                    and provider_default_headers
+                ):
+                    client_kwargs["default_headers"] = dict(provider_default_headers)
+                else:
+                    try:
+                        from providers import get_provider_profile as _gpf
+                        _ph = _gpf(agent.provider)
+                        if _ph and _ph.default_headers:
+                            client_kwargs["default_headers"] = dict(_ph.default_headers)
+                    except Exception:
+                        pass
         else:
             # No explicit creds — use the centralized provider router
             from agent.auxiliary_client import resolve_provider_client

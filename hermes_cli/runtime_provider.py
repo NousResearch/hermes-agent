@@ -580,6 +580,11 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                     if api_mode:
                         result["api_mode"] = api_mode
+                    # Lift provider-level default_headers so they reach the
+                    # OpenAI client via resolve_provider_client.
+                    dh = entry.get("default_headers")
+                    if isinstance(dh, dict) and dh:
+                        result["default_headers"] = dict(dh)
                     _lift_max_output_tokens(entry, result)
                     return result
             # Also check the 'name' field if present
@@ -602,6 +607,10 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
+                        # Lift provider-level default_headers (display name match)
+                        dh = entry.get("default_headers")
+                        if isinstance(dh, dict) and dh:
+                            result["default_headers"] = dict(dh)
                         _lift_max_output_tokens(entry, result)
                         return result
 
@@ -652,6 +661,10 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         model_name = str(entry.get("model", "") or "").strip()
         if model_name:
             result["model"] = model_name
+        # Lift provider-level default_headers (legacy custom_providers list)
+        dh = entry.get("default_headers")
+        if isinstance(dh, dict) and dh:
+            result["default_headers"] = dict(dh)
         _lift_max_output_tokens(entry, result)
         return result
 
@@ -875,6 +888,13 @@ def _resolve_named_custom_runtime(
             pool_result["model"] = model_name
         if isinstance(custom_provider.get("max_output_tokens"), int):
             pool_result["max_output_tokens"] = custom_provider["max_output_tokens"]
+        # Propagate provider-level default_headers so AIAgent / init_agent can
+        # attach them to the OpenAI client kwargs.  Required for endpoints
+        # that use header-based routing (e.g. W&B Inference's OpenAI-Project
+        # header for project / billing pool selection).
+        _ncp_headers = custom_provider.get("default_headers")
+        if isinstance(_ncp_headers, dict) and _ncp_headers:
+            pool_result["default_headers"] = dict(_ncp_headers)
         request_overrides = _custom_provider_request_overrides(custom_provider)
         if request_overrides:
             pool_result["request_overrides"] = {
@@ -914,6 +934,13 @@ def _resolve_named_custom_runtime(
         result["model"] = custom_provider["model"]
     if isinstance(custom_provider.get("max_output_tokens"), int):
         result["max_output_tokens"] = custom_provider["max_output_tokens"]
+    # Propagate provider-level default_headers so AIAgent / init_agent can
+    # attach them to the OpenAI client kwargs.  Required for endpoints that
+    # use header-based routing (e.g. W&B Inference's OpenAI-Project header
+    # for project / billing pool selection).
+    _ncp_headers = custom_provider.get("default_headers")
+    if isinstance(_ncp_headers, dict) and _ncp_headers:
+        result["default_headers"] = dict(_ncp_headers)
     request_overrides = _custom_provider_request_overrides(custom_provider)
     if request_overrides:
         result["request_overrides"] = request_overrides

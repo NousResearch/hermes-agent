@@ -610,6 +610,26 @@ Board resolution order (highest precedence first): `--board <slug>` flag → `HE
 
 All actions are also available as a slash command in the gateway (`/kanban …`), with the same argument surface — including `boards` subcommands and the `--board` flag.
 
+#### Direct Claude Code worker lane
+
+A card assigned to the sentinel assignee `claude-code` is dispatched straight to a non-interactive Claude Code run instead of a Hermes profile worker:
+
+```bash
+hermes kanban create "Fix bug" --assignee claude-code --workspace dir:/path/to/repo \
+  --body $'## Acceptance criteria\n- [ ] ...\n\n## Verification\npython -m pytest -q'
+```
+
+When the dispatcher claims such a card it spawns `claude -p '<prompt>' --output-format json --max-turns N --permission-mode acceptEdits` (print mode only — **never** `--dangerously-skip-permissions`, and **no** interactive `/ecc:*` slash workflows). The worker prompt carries the task id/title/body, the workspace path, and hard constraints (no commit/push/deploy/secret edits, keep the diff scoped). It explicitly tells Claude **not** to run verification itself or use Bash to verify — Claude implements the change and stops; the runner owns verification.
+
+After Claude exits, the runner — not Claude — runs the card's `## Verification` command against the real git diff and decides the transition (Claude's self-report is never trusted):
+
+- **Claude exited cleanly:** non-empty diff + verification passes → complete; verification fails → retryable failure (auto-blocking at `kanban.failure_limit`); empty diff, or no verification command → blocked for manual review.
+- **Claude exited abnormally** (non-zero / error / `error_max_turns`): the runner inspects the diff anyway. No diff, or a diff whose verification fails → retryable failure. A real diff whose verification **passes** → blocked for manual review (an abnormal run is never auto-completed and never retried forever — a human reviews). A real diff with no verification command → blocked for manual review.
+
+Behavioural knobs live under `kanban.claude_code_worker` in `config.yaml` (`max_turns`, `permission_mode`, `output_format`, `model`).
+
+This is the fully-automatic lane. For supervised, interactive ECC work (`/ecc:plan`, `/ecc:feature-dev`, …) use a profile worker such as `coder`, or run ECC in a tmux session via `ecc-supervise --repo /path/to/repo --task-id <id> --ecc /ecc:plan`.
+
 For the full design — comparison with Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise, eight collaboration patterns, four user stories, concurrency correctness proof — see `docs/hermes-kanban-v1-spec.pdf` in the repository or the [Kanban user guide](/user-guide/features/kanban).
 
 ## `hermes webhook`

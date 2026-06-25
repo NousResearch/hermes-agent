@@ -6822,7 +6822,18 @@ def _dispatch_once_locked(
             from hermes_cli.profiles import profile_exists  # local import: avoids cycle
         except Exception:
             profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row_assignee):
+        # The direct Claude Code lane (#claude-code-direct-kanban-worker) uses
+        # a sentinel assignee that is deliberately NOT a Hermes profile. It is
+        # spawnable — ``_default_spawn`` routes it to the kanban_claude_worker
+        # runner instead of ``hermes -p`` — so it must bypass the profile-
+        # existence guard that exists to skip human-pulled terminal lanes.
+        from hermes_cli.kanban_claude_worker import is_external_claude_worker
+        _is_external_claude = is_external_claude_worker(row_assignee)
+        if (
+            profile_exists is not None
+            and not _is_external_claude
+            and not profile_exists(row_assignee)
+        ):
             # Bucket separately from skipped_unassigned: the operator
             # cannot fix this by assigning a profile (the assignee IS the
             # intended owner — a terminal lane). Health telemetry uses
@@ -7283,6 +7294,81 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _spawn_claude_code_worker(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[int]:
+    """Fire-and-forget ``python -m hermes_cli.kanban_claude_worker`` subprocess.
+
+    The direct Claude Code lane. Mirrors :func:`_default_spawn`'s detached,
+    log-redirected, board-pinned subprocess model, but instead of activating
+    a Hermes profile it launches the runner that invokes ``claude -p``
+    non-interactively and updates the card from the verified result.
+
+    Returns the runner's PID so the dispatcher's crash safety net applies
+    identically to profile workers. The runner itself writes the
+    complete/block/failure transition once Claude exits and verification runs.
+    """
+    import subprocess
+    if not task.assignee:
+        raise ValueError(f"task {task.id} has no assignee")
+
+    env = dict(os.environ)
+    env["HERMES_KANBAN_TASK"] = task.id
+    env["HERMES_KANBAN_WORKSPACE"] = workspace
+    # Pin TERMINAL_CWD to the workspace (only when it's a real absolute dir,
+    # mirroring _default_spawn) so the runner's git/verification anchors there.
+    if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
+        env["TERMINAL_CWD"] = workspace
+    if task.tenant:
+        env["HERMES_TENANT"] = task.tenant
+    if task.branch_name:
+        env["HERMES_KANBAN_BRANCH"] = task.branch_name
+    if task.current_run_id is not None:
+        env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
+    if task.claim_lock:
+        env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    # Board pins — identical to _default_spawn so the runner's kanban context
+    # resolves to the same board the dispatcher claimed the task from.
+    env["HERMES_KANBAN_DB"] = str(kanban_db_path(board=board))
+    env["HERMES_KANBAN_WORKSPACES_ROOT"] = str(workspaces_root(board=board))
+    resolved_board = _normalize_board_slug(board) or get_current_board()
+    env["HERMES_KANBAN_BOARD"] = resolved_board
+
+    cmd = [sys.executable, "-m", "hermes_cli.kanban_claude_worker"]
+
+    log_dir = worker_logs_dir(board=board)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"{task.id}.log"
+    rotate_bytes, backup_count = worker_log_rotation_config()
+    _rotate_worker_log(log_path, rotate_bytes, backup_count)
+
+    # Use 'a' so a re-run on unblock/requeue appends rather than overwrites.
+    log_f = open(log_path, "ab")
+    try:
+        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
+            cmd,
+            cwd=workspace if os.path.isdir(workspace) else None,
+            stdin=subprocess.DEVNULL,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            env=env,
+            start_new_session=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+        )
+    except FileNotFoundError:
+        log_f.close()
+        raise RuntimeError(
+            "Python executable not found for the direct Claude Code worker. "
+            "This should not happen; sys.executable was unavailable."
+        )
+    # Intentionally leave log_f open: the child inherits the FD and keeps
+    # writing after this function returns (same pattern as _default_spawn).
+    return proc.pid
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -7304,6 +7390,15 @@ def _default_spawn(
     import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
+
+    # Direct Claude Code lane: a card assigned to the sentinel
+    # ``claude-code`` assignee is not a Hermes profile. Route it to the
+    # kanban_claude_worker runner (non-interactive ``claude -p``) instead of
+    # activating a profile. The fallback ``coder``-profile path below is
+    # untouched for every real profile assignee.
+    from hermes_cli.kanban_claude_worker import is_external_claude_worker
+    if is_external_claude_worker(task.assignee):
+        return _spawn_claude_code_worker(task, workspace, board=board)
 
     from hermes_cli.profiles import normalize_profile_name
 

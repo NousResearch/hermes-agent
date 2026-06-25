@@ -996,7 +996,8 @@ class TestConvertMessages:
         ])
 
         _, result = convert_messages_to_anthropic(messages)
-        assistant_blocks = result[0]["content"]
+        assistant_msg = next(m for m in result if m["role"] == "assistant")
+        assistant_blocks = assistant_msg["content"]
 
         assert assistant_blocks[0]["type"] == "text"
         assert assistant_blocks[0]["text"] == "Hello from assistant"
@@ -1016,7 +1017,12 @@ class TestConvertMessages:
         ], native_anthropic=True)
 
         _, result = convert_messages_to_anthropic(messages)
-        user_msg = [m for m in result if m["role"] == "user"][0]
+        user_msg = next(
+            m for m in result
+            if m["role"] == "user"
+            and isinstance(m["content"], list)
+            and any(b.get("type") == "tool_result" for b in m["content"])
+        )
         tool_block = user_msg["content"][0]
 
         assert tool_block["type"] == "tool_result"
@@ -1164,6 +1170,69 @@ class TestConvertMessages:
         assert result[0]["role"] == "user"
         assert isinstance(result[0]["content"], list)
         assert result[0]["content"] == [{"type": "text", "text": "(empty message)"}]
+
+    def test_leading_assistant_after_compaction_gets_user_turn_prepended(self):
+        """The adapter backstops compactors that emit a leading assistant summary."""
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "assistant", "content": "[Context compaction summary] earlier work…"},
+            {"role": "user", "content": "continue"},
+        ]
+
+        system, result = convert_messages_to_anthropic(messages)
+
+        assert system == "You are helpful."
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == [{"type": "text", "text": " "}]
+        assert result[1]["role"] == "assistant"
+        assert any(
+            m["role"] == "assistant" and "Context compaction summary" in str(m["content"])
+            for m in result
+        )
+
+    def test_leading_user_message_is_not_modified(self):
+        """A normal transcript that already starts with user must be untouched."""
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        assert len(result) == 2
+        assert result[0]["role"] == "user"
+        assert result[0]["content"] == "hello"
+
+    def test_leading_assistant_with_tool_use_after_compaction_is_repaired(self):
+        """Repair the leading role without disturbing adjacent tool pairs."""
+        messages = [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "assistant",
+                "content": "running it",
+                "tool_calls": [
+                    {"id": "toolu_1", "function": {"name": "terminal", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "ok"},
+            {"role": "user", "content": "next"},
+        ]
+
+        _, result = convert_messages_to_anthropic(messages)
+
+        assert result[0]["role"] == "user"
+        asst_idx = next(
+            i for i, m in enumerate(result)
+            if m["role"] == "assistant"
+            and any(b.get("type") == "tool_use" for b in m["content"] if isinstance(b, dict))
+        )
+        nxt = result[asst_idx + 1]
+        assert nxt["role"] == "user"
+        assert any(
+            isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id") == "toolu_1"
+            for b in nxt["content"]
+        )
 
 
 # ---------------------------------------------------------------------------

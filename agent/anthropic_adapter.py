@@ -569,6 +569,34 @@ def _is_minimax_anthropic_endpoint(base_url: str | None) -> bool:
     )
 
 
+def _is_zai_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for Z.AI (Zhipu GLM) Anthropic-compatible endpoints.
+
+    Z.AI serves GLM models (glm-5.2, etc.) behind an Anthropic wire relay at
+    ``api.z.ai/api/anthropic`` (global) and ``open.bigmodel.cn/api/anthropic``
+    (China). The relay deterministically rejects Claude-specific
+    ``anthropic-beta`` headers with HTTP 429 ``rate_limit_error`` code 1302:
+    an A/B test of 5 alternating calls (same key, payload, time window) got
+    5/5 success without the betas and 0/5 with them, all rejections returning
+    in <0.5s. ``_common_betas_for_base_url`` uses this to strip ALL betas for
+    Z.AI so traffic matches the bare SDK calls that native clients send.
+
+    The relay also rejects system prompts larger than ~2 KB with
+    ``overloaded_error`` code 1305 (5/5 success at <1 KB, 0/5 at 104 KB);
+    ``build_anthropic_kwargs`` folds large system prompts into the first user
+    message for Z.AI to work around this (message content has no such limit).
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    normalized = normalized.rstrip("/").lower()
+    return (
+        "api.z.ai/api/anthropic" in normalized
+        or "bigmodel.cn/api/anthropic" in normalized
+        or "z.ai/api/anthropic" in normalized
+    )
+
+
 def _is_azure_anthropic_endpoint(base_url: str | None) -> bool:
     """Return True for Azure-hosted Anthropic Messages endpoints.
 
@@ -619,6 +647,16 @@ def _common_betas_for_base_url(
     if _is_minimax_anthropic_endpoint(base_url):
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
         return [b for b in betas if b not in _stripped]
+    if _is_zai_anthropic_endpoint(base_url):
+        # Z.AI (Zhipu GLM) serves GLM models behind an Anthropic-compatible
+        # relay. The relay rejects requests carrying Claude-specific betas
+        # (``interleaved-thinking``, ``fine-grained-tool-streaming``) with
+        # HTTP 429 ``rate_limit_error`` code 1302 — empirically verified
+        # against api.z.ai/api/anthropic: identical payloads succeed without
+        # the betas (200, ~2s) and fail with them (429, <1s). Strip ALL
+        # Claude-specific betas so Z.AI traffic matches the bare SDK calls
+        # that native clients (ZCode) send successfully.
+        return []
     if drop_context_1m_beta:
         return [b for b in betas if b != _CONTEXT_1M_BETA]
     return betas
@@ -2469,7 +2507,39 @@ def build_anthropic_kwargs(
     }
 
     if system:
-        kwargs["system"] = system
+        # Z.AI's Anthropic-compatible relay rejects system prompts larger
+        # than ~2-4 KB with ``overloaded_error`` code 1305 (verified
+        # empirically: 0/5 success at 104 KB, 5/5 at <1 KB). Message
+        # content has no such limit (420 K tokens of user content works),
+        # so for Z.AI we fold the system prompt into the first user message
+        # as a leading content block. Native Anthropic and other relays
+        # keep the system field (correct for caching/identity).
+        _system_str = system if isinstance(system, str) else str(system)
+        if (
+            _is_zai_anthropic_endpoint(base_url)
+            and len(_system_str) > 2000
+        ):
+            _system_block = (
+                f"<system>\n{_system_str}\n</system>\n\n"
+                if isinstance(system, str)
+                else f"<system>\n{json.dumps(system)}\n</system>\n\n"
+            )
+            if anthropic_messages and anthropic_messages[0].get("role") == "user":
+                _first = anthropic_messages[0]
+                _first_content = _first.get("content")
+                if isinstance(_first_content, str):
+                    _first["content"] = _system_block + _first_content
+                elif isinstance(_first_content, list):
+                    _first["content"] = [{"type": "text", "text": _system_block}] + _first_content
+                else:
+                    _first["content"] = _system_block + str(_first_content or "")
+            else:
+                anthropic_messages.insert(0, {"role": "user", "content": _system_block.rstrip()})
+                if not anthropic_messages or anthropic_messages[-1].get("role") != "assistant":
+                    anthropic_messages.append({"role": "assistant", "content": "Understood."})
+            # system is now in the messages — do not send the system field
+        else:
+            kwargs["system"] = system
 
     if anthropic_tools:
         kwargs["tools"] = anthropic_tools

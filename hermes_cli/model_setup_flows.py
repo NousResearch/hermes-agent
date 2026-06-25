@@ -2275,7 +2275,7 @@ def _select_zai_endpoint(current_base: str) -> str:
             return current_base
         return override.rstrip("/")
 
-    return options[selected][1]
+    return options[selected][1].rstrip("/")
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):
@@ -2400,7 +2400,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         chosen_base = _select_zai_endpoint(effective_base)
         if chosen_base and chosen_base != effective_base and base_url_env:
             save_env_value(base_url_env, chosen_base)
-        effective_base = chosen_base or effective_base
+        effective_base = chosen_base
     else:
         try:
             override = input(f"Base URL [{effective_base}]: ").strip()

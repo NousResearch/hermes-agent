@@ -2282,3 +2282,67 @@ class TestParallelSearchSourcesTimeout:
         assert source_counts.get("a") == 1
         assert source_counts.get("b") == 1
         assert len(all_results) == 2
+
+
+class TestGitHubSourceGetRepoTree:
+    """_get_repo_tree now delegates to _github_get (with 3x retry) instead of
+    bare httpx.get.  Verify the three exit paths: success, transport failure,
+    and non-200 status."""
+
+    def _make_source(self) -> GitHubSource:
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {"Authorization": "token test"}
+        src = GitHubSource(auth=auth)
+        return src
+
+    def test_transport_failure_returns_none(self):
+        """When _github_get returns None (all retries exhausted), _get_repo_tree
+        must return None instead of hanging or raising."""
+        src = self._make_source()
+        src._github_get = MagicMock(return_value=None)
+
+        result = src._get_repo_tree("owner/repo")
+        assert result is None
+        src._github_get.assert_called()
+
+    def test_non_200_returns_none(self):
+        """A 404 or other non-200 response must not be treated as success; the
+        method returns None so the caller falls through."""
+        resp_404 = MagicMock(spec=httpx.Response)
+        resp_404.status_code = 404
+
+        src = self._make_source()
+        src._github_get = MagicMock(return_value=resp_404)
+
+        result = src._get_repo_tree("owner/repo")
+        assert result is None
+
+    def test_ok_response_returns_tree(self):
+        """Happy path: valid repo info + tree data returns (default_branch, entries)."""
+
+        def _github_get_side_effect(url, **kw):
+            if "git/trees" in url:
+                resp = MagicMock(spec=httpx.Response)
+                resp.status_code = 200
+                resp.json.return_value = {
+                    "tree": [
+                        {"path": "skills/find-skills/SKILL.md", "type": "blob"},
+                    ],
+                    "truncated": False,
+                }
+                return resp
+            # Repo info call
+            resp = MagicMock(spec=httpx.Response)
+            resp.status_code = 200
+            resp.json.return_value = {"default_branch": "main"}
+            return resp
+
+        src = self._make_source()
+        src._github_get = MagicMock(side_effect=_github_get_side_effect)
+
+        result = src._get_repo_tree("owner/repo")
+        assert result is not None
+        branch, entries = result
+        assert branch == "main"
+        assert len(entries) == 1
+        assert entries[0]["path"] == "skills/find-skills/SKILL.md"

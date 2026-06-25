@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -599,36 +600,34 @@ class GitHubSource(SkillSource):
         if repo in self._tree_cache:
             return self._tree_cache[repo]
 
-        headers = self.auth.get_headers()
+        label = f"Fetching {repo} tree"
 
         # Resolve default branch
-        try:
-            resp = httpx.get(
-                f"https://api.github.com/repos/{repo}",
-                headers=headers, timeout=15, follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                self._check_rate_limit_response(resp)
-                return None
-            default_branch = resp.json().get("default_branch", "main")
-        except (httpx.HTTPError, ValueError):
+        resp = self._github_get(
+            f"https://api.github.com/repos/{repo}",
+            timeout=15, max_retries=0, retry_label=label,
+        )
+        if resp is None:
             return None
+        if resp.status_code != 200:
+            self._check_rate_limit_response(resp)
+            return None
+        default_branch = resp.json().get("default_branch", "main")
 
         # Fetch recursive tree
-        try:
-            resp = httpx.get(
-                f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
-                params={"recursive": "1"},
-                headers=headers, timeout=30, follow_redirects=True,
-            )
-            if resp.status_code != 200:
-                self._check_rate_limit_response(resp)
-                return None
-            tree_data = resp.json()
-            if tree_data.get("truncated"):
-                logger.debug("Git tree truncated for %s, cannot cache", repo)
-                return None
-        except (httpx.HTTPError, ValueError):
+        resp = self._github_get(
+            f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
+            params={"recursive": "1"},
+            timeout=30, max_retries=0, retry_label=label,
+        )
+        if resp is None:
+            return None
+        if resp.status_code != 200:
+            self._check_rate_limit_response(resp)
+            return None
+        tree_data = resp.json()
+        if tree_data.get("truncated"):
+            logger.debug("Git tree truncated for %s, cannot cache", repo)
             return None
 
         entries = tree_data.get("tree", [])
@@ -654,11 +653,20 @@ class GitHubSource(SkillSource):
         headers: Optional[Dict] = None,
         timeout: float = 15.0,
         max_retries: int = 3,
+        retry_label: str = "",
     ) -> Optional["httpx.Response"]:
         """GET against the GitHub API with retry/backoff on transient failures.
 
         Returns the final ``httpx.Response`` (caller inspects status) or
         ``None`` when every attempt raised a transport error.
+
+        When ``max_retries=0``, retries forever until the request succeeds or
+        the caller is interrupted (KeyboardInterrupt / Ctrl+C).  Each retry
+        prints a status line to stderr so the user sees progress and knows
+        they can cancel.
+
+        ``retry_label`` is a short human-readable label (e.g. ``"Fetching
+        skill from GitHub"``) shown in the status line when present.
 
         Retries on:
           - 403/429 with ``X-RateLimit-Remaining: 0`` — waits until the
@@ -675,20 +683,35 @@ class GitHubSource(SkillSource):
         hdrs = headers if headers is not None else self.auth.get_headers()
         backoff = 1.0
         last_resp: Optional["httpx.Response"] = None
-        for attempt in range(max_retries):
+        attempt = 0
+        start = time.monotonic() if retry_label else 0
+        if retry_label:
+            print(
+                f"  {retry_label}... (Ctrl+C to cancel)",
+                file=sys.stderr, flush=True,
+            )
+        while True:
+            attempt += 1
             try:
                 resp = httpx.get(
                     url, params=params, headers=hdrs,
                     timeout=timeout, follow_redirects=True,
                 )
             except httpx.HTTPError as e:
-                logger.debug("GitHub GET %s failed (attempt %d/%d): %s",
-                             url, attempt + 1, max_retries, e)
-                if attempt < max_retries - 1:
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, 30.0)
-                    continue
-                return None
+                elapsed = time.monotonic() - start
+                logger.debug("GitHub GET %s failed (attempt %d): %s",
+                             url, attempt, e)
+                if retry_label:
+                    print(
+                        f"  {retry_label}... ({elapsed:.0f}s elapsed, "
+                        f"retry {attempt}, Ctrl+C to cancel)",
+                        file=sys.stderr, flush=True,
+                    )
+                if max_retries > 0 and attempt >= max_retries:
+                    return None
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 30.0)
+                continue
 
             last_resp = resp
             if resp.status_code == 200:
@@ -698,7 +721,7 @@ class GitHubSource(SkillSource):
             if resp.status_code in (403, 429):
                 remaining = resp.headers.get("X-RateLimit-Remaining", "")
                 is_rl = remaining == "0" or resp.status_code == 429
-                if is_rl and attempt < max_retries - 1:
+                if is_rl and (max_retries == 0 or attempt < max_retries):
                     wait = backoff
                     reset = resp.headers.get("X-RateLimit-Reset", "")
                     retry_after = resp.headers.get("Retry-After", "")
@@ -709,9 +732,17 @@ class GitHubSource(SkillSource):
                         if 0 < delta <= 60.0:
                             wait = delta
                     logger.debug(
-                        "GitHub rate limited on %s, waiting %.1fs (attempt %d/%d)",
-                        url, wait, attempt + 1, max_retries,
+                        "GitHub rate limited on %s, waiting %.1fs (attempt %d)",
+                        url, wait, attempt,
                     )
+                    if retry_label:
+                        print(
+                            f"  {retry_label}... rate limited, "
+                            f"retry {attempt} in {wait:.0f}s "
+                            f"({time.monotonic() - start:.0f}s elapsed, "
+                            f"Ctrl+C to cancel)",
+                            file=sys.stderr, flush=True,
+                        )
                     time.sleep(wait)
                     backoff = min(backoff * 2, 30.0)
                     continue
@@ -720,7 +751,15 @@ class GitHubSource(SkillSource):
                 return resp
 
             # 5xx — retry; 4xx (other than rate limit) — return immediately.
-            if 500 <= resp.status_code < 600 and attempt < max_retries - 1:
+            if 500 <= resp.status_code < 600 and (max_retries == 0 or attempt < max_retries):
+                if retry_label:
+                    print(
+                        f"  {retry_label}... GitHub {resp.status_code}, "
+                        f"retry {attempt} "
+                        f"({time.monotonic() - start:.0f}s elapsed, "
+                        f"Ctrl+C to cancel)",
+                        file=sys.stderr, flush=True,
+                    )
                 time.sleep(backoff)
                 backoff = min(backoff * 2, 30.0)
                 continue

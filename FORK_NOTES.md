@@ -117,7 +117,9 @@ These are fork maintenance changes, not runtime behavior patches:
 
 **Root cause**: Upstream `e7c3cd772` (commit "Add dashboard attachment upload endpoint") added this endpoint, then it was reverted in a later commit. The endpoint itself is small and self-contained — we just bring it back.
 
-**What the patch does**: Adds a single FastAPI handler that takes a multipart `file` + `session_id`, writes it under `~/.hermes/sessions/<id>/attachments/`, and returns `{ok, filename, path, size, mime_type}`. Reuses upstream's `_next_unique_path` helper for naming collisions.
+**What the patch does**: Adds a single FastAPI handler that takes a multipart `file` + `session_id`, writes it under `~/.hermes/uploads/<session_id>/`, and returns `{ok, filename, path, size, mime_type}`. Uses `_unique_upload_path` for naming collisions and the in-house `_parse_multipart_form` parser (so `python-multipart` is not required at import time).
+
+**Regression — dropped by the v0.17.0 upstream sync (restored, see issue #306)**: a sync silently removed the `@app.post("/api/upload")` handler while leaving its helpers (`_parse_multipart_form` / `_safe_upload_filename` / `_unique_upload_path`) behind as dead code. With the route gone, the SPA catch-all matched the path on GET only, so the desktop composer's POST returned **HTTP 405 Method Not Allowed** and pasting/dropping an image failed (CLI `/paste` was unaffected — it never hits this route). Guarded now by `tests/hermes_cli/test_web_server_upload.py`, which fails if the route disappears again.
 
 **Side effects**: Adds an attachment-upload attack surface. Mitigated by:
 - Gated by the same session token as all other `/api/` routes

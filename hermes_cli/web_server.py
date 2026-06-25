@@ -1565,6 +1565,71 @@ def _decode_data_url(data_url: str) -> tuple[bytes, str]:
     return data, mime_type
 
 
+@app.post("/api/upload")
+async def upload_attachment(request: Request):
+    """Store a browser-selected attachment for the local dashboard UI.
+
+    Files are written under ``~/.hermes/uploads/<session_id>/`` and the
+    absolute path is returned so the TUI gateway can attach images or reference
+    files in a follow-up prompt.
+
+    [CN-fork] P-002 — downstream-only; upstream added it once (``e7c3cd772``)
+    then reverted. The desktop composer's paste/drop image flow depends on this
+    route (Desktop ``web/src/lib/transport.ts`` POSTs multipart here, and
+    ``src/commands/api_proxy.rs``'s ``upload_file`` proxies to it). Without it
+    the SPA catch-all answers the path on GET only, so the POST returns HTTP 405
+    and pasting an image fails. Keep this handler beside its helpers and the
+    regression test in ``tests/hermes_cli/test_web_server_upload.py`` so an
+    upstream sync can't silently drop it again. See FORK_NOTES.md P-002.
+    """
+    length_raw = request.headers.get("content-length")
+    try:
+        if length_raw and int(length_raw) > _UPLOAD_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="File too large")
+    except ValueError:
+        pass
+
+    body = await request.body()
+    if len(body) > _UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    try:
+        fields, files = _parse_multipart_form(request.headers.get("content-type", ""), body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    session_id = (fields.get("session_id") or "default").strip()
+    if not _UPLOAD_SESSION_RE.match(session_id):
+        raise HTTPException(status_code=400, detail="Invalid session id")
+
+    upload = files.get("file")
+    if not upload:
+        raise HTTPException(status_code=400, detail="Missing file")
+
+    content = upload["content"]
+    if not content:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    upload_dir = get_hermes_home() / "uploads" / session_id
+    upload_dir.mkdir(parents=True, exist_ok=True)
+
+    filename = _safe_upload_filename(str(upload.get("filename") or "attachment"))
+    target = _unique_upload_path(upload_dir, filename)
+    target.write_bytes(content)
+
+    content_type = str(upload.get("content_type") or "")
+    if not content_type or content_type == "application/octet-stream":
+        content_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+
+    return {
+        "ok": True,
+        "filename": target.name,
+        "path": str(target),
+        "size": len(content),
+        "mime_type": content_type,
+    }
+
+
 @app.get("/api/files")
 async def list_managed_files(request: Request, path: Optional[str] = None):
     policy, target, display_path = _resolve_managed_path(path, request)

@@ -444,6 +444,17 @@ DANGEROUS_PATTERNS = [
     # to regex at detection time. Catch the structural pattern instead.
     (r'\bkill\b.*\$\(\s*pgrep\b', "kill process via pgrep expansion (self-termination)"),
     (r'\bkill\b.*`\s*pgrep\b', "kill process via backtick pgrep expansion (self-termination)"),
+    # Windows self-termination protection: taskkill, Stop-Process, tskill, wmic
+    # These are the Windows equivalents of pkill/killall and can kill the
+    # gateway's own process (hermes.exe) just as easily.
+    (r'\btaskkill\b.*\/f\b.*\/im\s+hermes', "Windows taskkill /f targeting hermes.exe (self-termination)"),
+    (r'\btaskkill\b.*\/f\b.*\/im\s+python.*hermes', "Windows taskkill /f targeting hermes python process (self-termination)"),
+    (r'\bStop-Process\b.*-?Name\s+["\x27]?\s*hermes', "PowerShell Stop-Process targeting hermes (self-termination)"),
+    (r'\bStop-Process\b.*-?Id\s+.*hermes', "PowerShell Stop-Process via hermes PID (self-termination)"),
+    (r'\btskill\b\s+hermes', "Windows tskill targeting hermes (self-termination)"),
+    (r'\bwmic\s+process\b.*where\s+.*name\s*=\s*["\x27]?hermes', "WMIC delete hermes process (self-termination)"),
+    (r'\bGet-Process\b.*hermes.*\|\s*Stop-Process\b', "PowerShell Get-Process hermes piped to Stop-Process (self-termination)"),
+    (r'\bsc\s+stop\b\s+hermes', "Windows sc stop hermes service (self-termination)"),
     # File copy/move/edit into sensitive system paths (/etc/ and macOS
     # /private/etc/ mirror).
     (rf'\b(cp|mv|install)\b.*\s{_SYSTEM_CONFIG_PATH}', "copy/move file into system config path"),

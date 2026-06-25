@@ -40,6 +40,14 @@ fi
 echo "Using: $AUTH"
 ```
 
+For read-only PR inventory, prefer the shared authenticated helper before writing custom `gh pr list` / REST probes:
+
+```bash
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/github-readonly-inventory.py" owner/repo
+```
+
+When `gh auth status` succeeds, keep using `gh` for private repositories. Do not fall back to anonymous REST or report "not authenticated" merely because `GITHUB_TOKEN` is not set. If `gh pr list` succeeds with an empty array, report "open PR 0" instead of treating the empty output as a failure.
+
 ### Extracting Owner/Repo from the Git Remote
 
 Many `curl` commands need `owner/repo`. Extract it from the git remote:

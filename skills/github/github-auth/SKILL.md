@@ -37,6 +37,30 @@ git config --global credential.helper 2>/dev/null || echo "no git credential hel
 2. If `gh` is installed but not authenticated → use "gh auth" method below
 3. If `gh` is not installed → use "git-only" method below (no sudo needed)
 
+### Read-Only Repository / Issue / PR Inventory
+
+For investigation tasks that ask "what is in this GitHub repo?", "what issues exist?", or "what PRs are open?", use the bundled inventory helper instead of hand-rolling mixed `gh`, `jq`, and anonymous REST probes:
+
+```bash
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/github-readonly-inventory.py" owner/repo
+```
+
+For multiple repositories:
+
+```bash
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/github-readonly-inventory.py" owner/repo other-owner/other-repo
+```
+
+This helper:
+
+- prefers an authenticated `gh` session when `gh auth status` succeeds;
+- does not treat a missing `GITHUB_TOKEN` environment variable as an auth failure when `gh` is already logged in;
+- handles private repositories through `gh` before considering REST fallbacks;
+- keeps issue-disabled repositories as readable repos with an `issuesError`, not as repo-auth failures;
+- emits JSON with `auth.method`, per-repo `status`, `summary`, `openIssues`, and `openPullRequests`.
+
+Only report "GitHub auth is missing" when the helper shows no authenticated method and the repo itself cannot be read. If a `gh --jq` expression, JSON field, or parsing command fails while `gh auth status` succeeds, classify that as a command/parsing error and rerun with the helper or with a smaller `--json` field set.
+
 ---
 
 ## Method 1: Git-Only Authentication (No gh, No sudo)

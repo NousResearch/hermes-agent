@@ -46,6 +46,14 @@ REPO=$(echo "$OWNER_REPO" | cut -d/ -f2)
 
 ## 1. Viewing Issues
 
+For read-only checks that only need to report open issues and open PRs for one or more repositories, use the authenticated inventory helper first:
+
+```bash
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/github-readonly-inventory.py" owner/repo
+```
+
+If the helper reports `issuesError` but the repo `status` is `ok`, do not treat the repository as unreadable; the repository may simply have Issues disabled. Only block for authentication when the helper cannot read the repository and no authenticated method is available.
+
 **With gh:**
 
 ```bash

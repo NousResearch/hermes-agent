@@ -198,10 +198,18 @@ gh repo sync $GH_USER/repo-name
 
 ## 4. Repository Information
 
+For read-only repository inventories, especially when the repo may be private or when the task also asks for open Issues / PRs, prefer the authenticated helper from `github-auth`:
+
+```bash
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/github/github-auth/scripts/github-readonly-inventory.py" owner/repo
+```
+
+Use this before falling back to anonymous REST. If `gh auth status` succeeds, do not conclude that auth is missing only because `GITHUB_TOKEN` is unset. If a `--jq` expression fails, rerun with the helper or with the minimal fields below; treat it as a command/parsing failure, not an auth failure.
+
 **With gh:**
 
 ```bash
-gh repo view owner/repo-name
+gh repo view owner/repo-name --json nameWithOwner,description,defaultBranchRef,isPrivate,pushedAt,updatedAt,url
 gh repo list --limit 20
 gh search repos "machine learning" --language python --sort stars
 ```

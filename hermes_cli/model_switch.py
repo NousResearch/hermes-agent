@@ -962,21 +962,40 @@ def switch_model(
                         ),
                     )
             else:
-                # --- Step c: On aggregator, convert vendor:model to vendor/model ---
+                # --- Step c: Parse provider:model syntax ---
                 # Only convert when there's no slash — a slash means the name
                 # is already in vendor/model format and the colon is a variant
                 # tag (:free, :extended, :fast) that must be preserved.
                 colon_pos = raw_input.find(":")
-                if colon_pos > 0 and "/" not in raw_input and is_aggregator(current_provider):
+                if colon_pos > 0 and "/" not in raw_input:
                     left = raw_input[:colon_pos].strip().lower()
                     right = raw_input[colon_pos + 1:].strip()
                     if left and right:
-                        # Colons become slashes for aggregator slugs
-                        new_model = f"{left}/{right}"
-                        logger.debug(
-                            "Converted vendor:model '%s' to aggregator slug '%s'",
-                            raw_input, new_model,
-                        )
+                        if is_aggregator(current_provider):
+                            # On aggregators, colons become slashes for
+                            # vendor:model aggregator slugs (e.g.
+                            # openai:gpt-4 → openai/gpt-4 on OpenRouter).
+                            new_model = f"{left}/{right}"
+                            logger.debug(
+                                "Converted vendor:model '%s' to aggregator slug '%s'",
+                                raw_input, new_model,
+                            )
+                        else:
+                            # On non-aggregators, check if the left part is a
+                            # known provider slug.  This handles
+                            # /model xai-oauth:grok-4.3 when the current
+                            # provider is DeepSeek (#40852).
+                            _pdef = resolve_provider_full(
+                                left, user_providers, custom_providers,
+                            )
+                            if _pdef is not None:
+                                explicit_provider = _pdef.id
+                                new_model = right
+                                target_provider = _pdef.id
+                                logger.debug(
+                                    "Parsed provider:model '%s' → provider=%s, model=%s",
+                                    raw_input, target_provider, new_model,
+                                )
 
         # --- Step d: Aggregator catalog search ---
         # Track whether the live catalog of the CURRENT provider resolved the

@@ -70,6 +70,50 @@ class TestNormalizeWorkdir:
             _normalize_workdir(str(f))
 
 
+class TestResolveProfileHome:
+    def test_default_profile_resolves_to_hermes_root(self, tmp_path, monkeypatch):
+        from cron.jobs import resolve_profile_home
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        assert resolve_profile_home("default") == root.resolve()
+        assert resolve_profile_home(None) == root.resolve()
+
+    def test_named_profile_resolves_under_profiles_root(self, tmp_path, monkeypatch):
+        from cron.jobs import resolve_profile_home
+
+        root = tmp_path / ".hermes"
+        profile = root / "profiles" / "code"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        assert resolve_profile_home("Code") == profile.resolve()
+
+    def test_named_profile_resolves_from_inside_active_profile(self, tmp_path, monkeypatch):
+        from cron.jobs import resolve_profile_home
+
+        root = tmp_path / ".hermes"
+        active = root / "profiles" / "ops"
+        target = root / "profiles" / "seo"
+        active.mkdir(parents=True)
+        target.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(active))
+
+        assert resolve_profile_home("seo") == target.resolve()
+
+    def test_missing_or_invalid_profile_returns_none(self, tmp_path, monkeypatch):
+        from cron.jobs import resolve_profile_home
+
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(root))
+
+        assert resolve_profile_home("missing") is None
+        assert resolve_profile_home("../ops") is None
+
+
 # ---------------------------------------------------------------------------
 # jobs.create_job and update_job
 # ---------------------------------------------------------------------------

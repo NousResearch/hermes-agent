@@ -31,7 +31,7 @@ except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
 from pathlib import Path
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root, get_hermes_home
 from typing import Optional, Dict, List, Any, Union
 
 logger = logging.getLogger(__name__)
@@ -74,6 +74,39 @@ _jobs_file_lock = threading.RLock()
 _jobs_lock_state = threading.local()
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+
+
+def resolve_profile_home(profile_name: str | None) -> Optional[Path]:
+    """Resolve a cron job's owning profile to its Hermes home directory.
+
+    Cron jobs are stored in a shared root file but execute against the profile
+    that created them.  ``cron.scheduler`` imports this helper at runtime while
+    applying per-job profile scope; keep it in ``cron.jobs`` so legacy scripts
+    and the scheduler have one import-safe resolver.
+
+    Returns ``None`` for missing/invalid named profiles so callers can fall
+    back to the ticker's current profile without crashing the whole cron tick.
+    The built-in ``default`` profile always resolves to the Hermes root.
+    """
+    raw = str(profile_name or "default").strip() or "default"
+    try:
+        if raw.casefold() == "default":
+            return get_default_hermes_root().resolve()
+
+        profile_id = raw.lower()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", profile_id):
+            return None
+
+        profiles_root = (get_default_hermes_root() / "profiles").resolve()
+        candidate = (profiles_root / profile_id).resolve()
+        try:
+            candidate.relative_to(profiles_root)
+        except ValueError:
+            return None
+        return candidate if candidate.is_dir() else None
+    except Exception as exc:  # pragma: no cover - defensive guard for cron ticks
+        logger.warning("Could not resolve cron profile %r: %s", raw, exc)
+        return None
 
 
 def _jobs_lock_file() -> Path:
@@ -718,7 +751,12 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     raw = str(workdir).strip()
     if not raw:
         return None
-    expanded = Path(raw).expanduser()
+    if raw == "~" or raw.startswith("~/") or raw.startswith("~\\"):
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        suffix = raw[2:] if len(raw) > 1 else ""
+        expanded = Path(home) / suffix if suffix else Path(home)
+    else:
+        expanded = Path(raw).expanduser()
     if not expanded.is_absolute():
         raise ValueError(
             f"Cron workdir must be an absolute path (got {raw!r}). "

@@ -329,6 +329,9 @@ export interface SessionInfo {
    *  continuation tip. Stable across compressions — used as the durable id for
    *  pins so a pinned conversation survives auto-compression. */
   _lineage_root_id?: null | string
+  /** Compression continuation chain ids, root -> tip, when the backend
+   *  returned lineage-inclusive transcript rows. */
+  _lineage_session_ids?: string[]
   input_tokens: number
   is_active: boolean
   last_active: number
@@ -373,6 +376,8 @@ export interface SessionMessage {
 }
 
 export interface SessionMessagesResponse {
+  lineage_root_id?: string
+  lineage_session_ids?: string[]
   messages: SessionMessage[]
   session_id: string
 }

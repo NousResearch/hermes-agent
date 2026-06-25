@@ -7419,15 +7419,28 @@ async def get_session_latest_descendant(session_id: str):
     }
 
 @app.get("/api/sessions/{session_id}/messages")
-async def get_session_messages(session_id: str, profile: Optional[str] = None):
+async def get_session_messages(
+    session_id: str,
+    profile: Optional[str] = None,
+    include_lineage: bool = False,
+):
     db = _open_session_db_for_profile(profile)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
         sid = db.resolve_resume_session_id(sid)
-        messages = db.get_messages(sid)
-        return {"session_id": sid, "messages": messages}
+        if include_lineage:
+            lineage, messages = db.get_lineage_messages(sid)
+        else:
+            lineage = [sid]
+            messages = db.get_messages(sid)
+        return {
+            "session_id": sid,
+            "messages": messages,
+            "lineage_session_ids": lineage,
+            "lineage_root_id": lineage[0] if lineage else sid,
+        }
     finally:
         db.close()
 

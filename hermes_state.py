@@ -2102,6 +2102,96 @@ class SessionDB:
             current = row["id"]
         return current
 
+    def get_compression_lineage(self, session_id: str) -> List[str]:
+        """Return the compression-continuation chain containing ``session_id``.
+
+        The chain is ordered root -> tip.  Only validated compression edges are
+        followed, using the same predicate as ``get_compression_tip``: the
+        parent ended for ``compression`` and the child started at/after that end
+        time.  Branches and delegate/subagent children are deliberately not
+        included even though they also use ``parent_session_id``.
+        """
+        if not session_id:
+            return []
+
+        def _row(sid: str) -> Optional[Dict[str, Any]]:
+            cursor = self._conn.execute(
+                "SELECT id, parent_session_id, started_at, ended_at, end_reason "
+                "FROM sessions WHERE id = ?",
+                (sid,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+
+        def _is_compression_edge(child: Dict[str, Any], parent: Dict[str, Any]) -> bool:
+            try:
+                return (
+                    parent.get("end_reason") == "compression"
+                    and parent.get("ended_at") is not None
+                    and child.get("started_at") is not None
+                    and float(child.get("started_at")) >= float(parent.get("ended_at"))
+                )
+            except (TypeError, ValueError):
+                return False
+
+        with self._lock:
+            current = _row(session_id)
+            if not current:
+                return []
+
+            seen = {current["id"]}
+            while current.get("parent_session_id"):
+                parent = _row(current["parent_session_id"])
+                if not parent or parent["id"] in seen:
+                    break
+                if not _is_compression_edge(current, parent):
+                    break
+                current = parent
+                seen.add(current["id"])
+
+            lineage = [current["id"]]
+            seen = {current["id"]}
+            for _ in range(100):
+                cursor = self._conn.execute(
+                    "SELECT child.id, child.parent_session_id, child.started_at, "
+                    "       child.ended_at, child.end_reason "
+                    "FROM sessions child "
+                    "JOIN sessions parent ON parent.id = child.parent_session_id "
+                    "WHERE child.parent_session_id = ? "
+                    "  AND parent.end_reason = 'compression' "
+                    "  AND parent.ended_at IS NOT NULL "
+                    "  AND child.started_at >= parent.ended_at "
+                    "ORDER BY child.started_at DESC LIMIT 1",
+                    (lineage[-1],),
+                )
+                child = cursor.fetchone()
+                if child is None:
+                    break
+                child_id = child["id"]
+                if child_id in seen:
+                    break
+                lineage.append(child_id)
+                seen.add(child_id)
+            return lineage
+
+    def get_lineage_messages(
+        self, session_id: str, include_inactive: bool = False
+    ) -> Tuple[List[str], List[Dict[str, Any]]]:
+        """Load human-facing display messages for a compression lineage.
+
+        This intentionally returns raw transcript rows from every compression
+        segment so Desktop/dashboard history views do not appear to "eat" the
+        user messages that were compacted out of the model-facing child session.
+        Model resume paths should keep using compressed conversation history.
+        """
+        lineage = self.get_compression_lineage(session_id)
+        if not lineage:
+            return [], []
+        messages: List[Dict[str, Any]] = []
+        for sid in lineage:
+            messages.extend(self.get_messages(sid, include_inactive=include_inactive))
+        return lineage, messages
+
     def list_sessions_rich(
         self,
         source: str = None,
@@ -2325,7 +2415,12 @@ class SessionDB:
                     projected.append(s)
                     continue
                 # Preserve the root's started_at for stable sort order, but
-                # surface the tip's identity and activity data.
+                # surface the tip's identity and activity data.  Immediately
+                # after compression the new tip can legitimately have zero
+                # direct message rows, so fall back to lineage-wide display
+                # fields rather than making the chat look empty.
+                lineage = self.get_compression_lineage(s["id"])
+                lineage_display = self._get_lineage_display_fields(lineage)
                 merged = dict(s)
                 for key in (
                     "id", "ended_at", "end_reason", "message_count",
@@ -2334,7 +2429,16 @@ class SessionDB:
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]
+                if not merged.get("message_count"):
+                    merged["message_count"] = lineage_display.get("message_count", 0)
+                if not merged.get("tool_call_count"):
+                    merged["tool_call_count"] = lineage_display.get("tool_call_count", 0)
+                if not merged.get("preview"):
+                    merged["preview"] = lineage_display.get("preview", "")
+                if merged.get("last_active") is None and lineage_display.get("last_active") is not None:
+                    merged["last_active"] = lineage_display["last_active"]
                 merged["_lineage_root_id"] = s["id"]
+                merged["_lineage_session_ids"] = lineage
                 projected.append(merged)
             sessions = projected
 
@@ -2405,6 +2509,55 @@ class SessionDB:
                 s["preview"] = ""
             runs.append(s)
         return runs
+
+    def _get_lineage_display_fields(self, lineage: List[str]) -> Dict[str, Any]:
+        """Return sidebar display fields aggregated across a compression chain."""
+        if not lineage:
+            return {}
+        placeholders = ",".join("?" for _ in lineage)
+        order_case = " ".join(
+            f"WHEN ? THEN {idx}" for idx, _sid in enumerate(lineage)
+        )
+        params = [*lineage, *lineage]
+        with self._lock:
+            counts = self._conn.execute(
+                f"""
+                SELECT
+                    COUNT(*) AS message_count,
+                    COALESCE(SUM(CASE WHEN tool_name IS NOT NULL THEN 1 ELSE 0 END), 0)
+                        AS tool_call_count,
+                    MAX(timestamp) AS last_message_at
+                FROM messages
+                WHERE active = 1 AND session_id IN ({placeholders})
+                """,
+                lineage,
+            ).fetchone()
+            preview_row = self._conn.execute(
+                f"""
+                SELECT SUBSTR(REPLACE(REPLACE(content, X'0A', ' '), X'0D', ' '), 1, 63)
+                    AS preview
+                FROM messages
+                WHERE active = 1
+                  AND session_id IN ({placeholders})
+                  AND role = 'user'
+                  AND content IS NOT NULL
+                  AND length(content) > 0
+                ORDER BY CASE session_id {order_case} END, timestamp, id
+                LIMIT 1
+                """,
+                params,
+            ).fetchone()
+
+        fields: Dict[str, Any] = {}
+        if counts:
+            fields["message_count"] = counts["message_count"] or 0
+            fields["tool_call_count"] = counts["tool_call_count"] or 0
+            if counts["last_message_at"] is not None:
+                fields["last_active"] = counts["last_message_at"]
+        raw = (preview_row["preview"] if preview_row else "") or ""
+        raw = raw.strip()
+        fields["preview"] = raw[:60] + ("..." if len(raw) > 60 else "") if raw else ""
+        return fields
 
     def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
         """Fetch a single session with the same enriched columns as

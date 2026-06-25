@@ -4974,13 +4974,15 @@ def _(rid, params: dict) -> dict:
     )
     try:
         db.reopen_session(target)
-        history = db.get_messages_as_conversation(target)
-        display_history = db.get_messages_as_conversation(
-            target, include_ancestors=True
-        )
-        display_history_prefix = display_history[
-            : max(0, len(display_history) - len(history))
-        ]
+        # Hydrate the live agent from the same compression-lineage history that
+        # the UI displays.  Previously only ``display_history`` included
+        # ancestors, while ``history`` (passed to _init_session and then to the
+        # next model call) was child-only.  Resuming a compression tip could
+        # therefore *look* continuous in Desktop/TUI but start the next turn
+        # with an empty or partial transcript.
+        history = db.get_messages_as_conversation(target, include_ancestors=True)
+        display_history = history
+        display_history_prefix = []
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:

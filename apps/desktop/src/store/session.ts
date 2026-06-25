@@ -155,14 +155,24 @@ export function mergeSessionPage(
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
   // rows survive as separate sidebar entries (fixes #43483).
-  const incomingLineageKeys = new Set(
-    incoming.map(session => session._lineage_root_id ?? session.id)
-  )
+  const incomingLineageIds = new Set<string>()
+
+  for (const session of incoming) {
+    incomingLineageIds.add(session.id)
+
+    if (session._lineage_root_id) {
+      incomingLineageIds.add(session._lineage_root_id)
+    }
+
+    for (const lineageId of session._lineage_session_ids ?? []) {
+      incomingLineageIds.add(lineageId)
+    }
+  }
 
   const survivors = previous.filter(
     session =>
       !incomingIds.has(session.id) &&
-      !incomingLineageKeys.has(session._lineage_root_id ?? session.id) &&
+      !incomingLineageIds.has(session.id) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 

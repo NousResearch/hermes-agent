@@ -235,8 +235,23 @@ export function getSession(id: string, profile?: string | null): Promise<Session
 // this GET to the remote backend (which serves its own state.db); for a local
 // profile the primary opens that profile's state.db via ?profile=. Omit for
 // the current/default profile.
-export function getSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
-  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+export function getSessionMessages(
+  id: string,
+  profile?: string | null,
+  includeLineage = true
+): Promise<SessionMessagesResponse> {
+  const params = new URLSearchParams()
+
+  if (profile) {
+    params.set('profile', profile)
+  }
+
+  if (includeLineage) {
+    params.set('include_lineage', 'true')
+  }
+
+  const query = params.toString()
+  const suffix = query ? `?${query}` : ''
 
   return window.hermesDesktop.api<SessionMessagesResponse>({
     ...(profile ? { profile } : {}),

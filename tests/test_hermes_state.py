@@ -3324,9 +3324,36 @@ class TestCompressionChainProjection:
         # The row surfaces the tip's identity but preserves the root's start
         # timestamp for stable ordering and lineage tracking.
         assert tip_row["_lineage_root_id"] == "root1"
+        assert tip_row["_lineage_session_ids"] == ["root1", "mid1", "tip1"]
         assert tip_row["preview"].startswith("latest message")
         assert tip_row["ended_at"] is None  # tip is still live
         assert tip_row["end_reason"] is None
+
+    def test_get_compression_lineage_walks_from_any_segment(self, db):
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+
+        expected = ["root1", "mid1", "tip1"]
+        assert db.get_compression_lineage("root1") == expected
+        assert db.get_compression_lineage("mid1") == expected
+        assert db.get_compression_lineage("tip1") == expected
+        # Delegate child is not part of the compression edge chain.
+        assert db.get_compression_lineage("delegate1") == ["delegate1"]
+
+    def test_get_lineage_messages_returns_all_compression_segments(self, db):
+        import time as _time
+
+        self._build_compression_chain(db, _time.time() - 3600)
+
+        lineage, messages = db.get_lineage_messages("tip1")
+
+        assert lineage == ["root1", "mid1", "tip1"]
+        assert [m["content"] for m in messages] == [
+            "help me refactor auth",
+            "continuing",
+            "latest message",
+        ]
 
     def test_list_projection_uses_tip_cwd(self, db):
         """Projected lineage rows should carry cwd from the live tip row.

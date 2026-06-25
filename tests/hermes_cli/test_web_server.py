@@ -795,6 +795,44 @@ class TestWebServerEndpoints:
         # ...carrying the durable lineage root so the desktop can match pins.
         tip = next(r for r in rows if r["id"] == "tip-new")
         assert tip.get("_lineage_root_id") == "root-old"
+        assert tip.get("_lineage_session_ids") == ["root-old", "tip-new"]
+
+    def test_get_session_messages_can_include_compression_lineage(self):
+        """Desktop transcript hydration needs display history across compression
+        segments, while the default API response stays child-only for backward
+        compatibility and model-resume callers.
+        """
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            now = _time.time()
+            db.create_session(session_id="msg-root", source="cli")
+            db.append_message(session_id="msg-root", role="user", content="before compression")
+            db.end_session("msg-root", "compression")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 100, now - 90, "msg-root"),
+            )
+            db.create_session(session_id="msg-tip", source="cli", parent_session_id="msg-root")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 90, "msg-tip"))
+            db.append_message(session_id="msg-tip", role="user", content="after compression")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        child_only = self.client.get("/api/sessions/msg-tip/messages")
+        assert child_only.status_code == 200
+        assert [m["content"] for m in child_only.json()["messages"]] == ["after compression"]
+
+        with_lineage = self.client.get("/api/sessions/msg-tip/messages?include_lineage=true")
+        assert with_lineage.status_code == 200
+        data = with_lineage.json()
+        assert data["lineage_root_id"] == "msg-root"
+        assert data["lineage_session_ids"] == ["msg-root", "msg-tip"]
+        assert [m["content"] for m in data["messages"]] == ["before compression", "after compression"]
 
     def test_search_dedupes_compression_lineage_to_tip(self):
         """A conversation that auto-compresses leaves the matched term in both

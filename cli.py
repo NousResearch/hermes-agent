@@ -15222,6 +15222,12 @@ def main(
         # the flush against any rare blocking-I/O case (the reporter measured
         # flush in <1ms; the alarm is a failsafe, not the common path).
         if os.environ.get("HERMES_KANBAN_TASK"):
+            # Kanban lifecycle hardening: on SIGTERM/SIGHUP we are killing the
+            # worker from outside.  Mark the running task as ``terminated``
+            # before exiting so the dispatcher does not classify the subsequent
+            # rc=0 as a protocol violation.  Guard the entire branch with a
+            # short SIGALRM deadman so a pathological DB lock cannot prevent
+            # the signal from completing.
             try:
                 import signal as _sig_mod
                 if hasattr(_sig_mod, "SIGALRM"):
@@ -15231,6 +15237,34 @@ def main(
                     _sig_mod.alarm(2)
             except Exception:
                 pass
+            try:
+                _tid = os.environ.get("HERMES_KANBAN_TASK")
+                _rid_raw = os.environ.get("HERMES_KANBAN_RUN_ID")
+                _rid = int(_rid_raw) if _rid_raw else None
+                from hermes_cli import kanban_db as _kb
+                from hermes_cli.kanban_db import write_txn as _kb_write_txn
+                _conn = _kb.connect()
+                try:
+                    with _kb_write_txn(_conn):
+                        _kb.release_running_task_on_external_termination(
+                            _conn,
+                            _tid,
+                            run_id=_rid,
+                            pid=os.getpid(),
+                            signal=signum,
+                            reason=(
+                                f"worker process received signal {signum} "
+                                "and exited without finishing its lifecycle "
+                                "call — releasing back to ready"
+                            ),
+                        )
+                finally:
+                    try:
+                        _conn.close()
+                    except Exception:
+                        pass
+            except Exception:
+                pass  # fail-safe: proceed to os._exit anyway
             try:
                 import logging as _lg
                 _lg.shutdown()

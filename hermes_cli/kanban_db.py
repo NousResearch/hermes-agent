@@ -2910,6 +2910,71 @@ def _append_event(
     )
 
 
+
+
+def release_running_task_on_external_termination(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    run_id: Optional[int] = None,
+    pid: Optional[int] = None,
+    signal: Optional[int] = None,
+    reason: str = "worker terminated by external signal",
+) -> bool:
+    """Release a running task when its worker process is killed externally.
+
+    This is the lifecycle mirror of ``block_task``/``complete_task`` for the
+    case where a dispatcher-spawned worker receives SIGTERM/SIGHUP (for
+    example during a gateway restart) and therefore cannot call
+    ``kanban_complete`` or ``kanban_block``.  Instead of letting the worker's
+    clean rc=0 exit be classified as a protocol violation, the signal handler
+    calls this helper *before* exiting so the task is released back to
+    ``ready`` without counting a failure.
+
+    Returns ``True`` when the task row was still ``running`` and was released.
+    Caller must already hold a write transaction.
+    """
+    if run_id is not None:
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+            (task_id, int(run_id)),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'ready', "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            "WHERE id = ? AND status = 'running'",
+            (task_id,),
+        )
+    if cur.rowcount != 1:
+        return False
+
+    payload: dict[str, Any] = {"reason": reason}
+    if pid is not None:
+        payload["pid"] = pid
+    if signal is not None:
+        payload["signal"] = signal
+
+    closed_run_id = _end_run(
+        conn, task_id,
+        outcome="terminated", status="terminated",
+        summary=reason,
+        metadata=payload,
+    )
+    if closed_run_id is None and run_id is not None:
+        # Closing the active run failed unexpectedly; at least synthesize a
+        # terminated run so the release is visible in attempt history.
+        closed_run_id = _synthesize_ended_run(
+            conn, task_id,
+            outcome="terminated",
+            summary=reason,
+            metadata=payload,
+        )
+    _append_event(conn, task_id, "terminated", payload, run_id=closed_run_id)
+    return True
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5267,6 +5332,370 @@ DEFAULT_FAILURE_LIMIT = 2
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 
+# Per-profile protocol-violation circuit breaker. When N DISTINCT tasks
+# belonging to the same profile emit a ``protocol_violation`` event within
+# the window below, the profile's circuit opens. This stops cascading
+# re-spawns when a profile (model/config/bug) starts producing workers that
+# exit rc=0 without calling kanban_complete/block.
+DEFAULT_PROFILE_PROTOCOL_VIOLATION_THRESHOLD = 3
+PROFILE_PROTOCOL_VIOLATION_WINDOW_SECONDS = 600  # 10 minutes
+
+# Anti-false-positive guard for the per-profile circuit breaker. A profile
+# with very few recent tasks can look broken just by bad luck; require a
+# minimum denominator (done/blocked/protocol_violation tasks in the window)
+# and/or a minimum violation rate before the circuit opens. Operators can
+# raise ``min_rate_pct`` to avoid blocking a profile that only had a handful
+# of tasks overall.
+DEFAULT_PROFILE_PROTOCOL_VIOLATION_MIN_DENOMINATOR = 1
+DEFAULT_PROFILE_PROTOCOL_VIOLATION_MIN_RATE_PCT = 0  # 0 = rate check disabled
+
+
+# ---------------------------------------------------------------------------
+# Profile-level protocol-violation circuit breaker
+# ---------------------------------------------------------------------------
+
+def _resolve_profile_protocol_violation_threshold(
+    profile: Optional[str] = None,
+) -> int:
+    """Return the protocol-violation circuit-breaker threshold for a profile.
+
+    A profile's circuit opens when this many DISTINCT tasks for that
+    assignee are auto-blocked with a ``protocol_violation``-flavored
+    ``gave_up`` event within the monitoring window. ``None``/``0`` disables
+    the per-profile breaker; per-task ``max_retries`` still applies.
+
+    Resolution order:
+      1. ``HERMES_KANBAN_PROFILE_PROTOCOL_VIOLATION_THRESHOLD_<UPPERPROFILE>``
+      2. ``kanban.profile_protocol_violation_threshold`` in config.yaml
+      3. ``HERMES_KANBAN_PROFILE_PROTOCOL_VIOLATION_THRESHOLD`` env var
+      4. ``DEFAULT_PROFILE_PROTOCOL_VIOLATION_THRESHOLD``
+    """
+    env_key = "HERMES_KANBAN_PROFILE_PROTOCOL_VIOLATION_THRESHOLD"
+    raw_default = os.environ.get(env_key, "").strip()
+    try:
+        default_threshold = int(raw_default) if raw_default else DEFAULT_PROFILE_PROTOCOL_VIOLATION_THRESHOLD
+    except ValueError:
+        default_threshold = DEFAULT_PROFILE_PROTOCOL_VIOLATION_THRESHOLD
+
+    if profile:
+        profile_env_key = f"{env_key}_{profile.upper()}"
+        raw = os.environ.get(profile_env_key, "").strip()
+        if raw:
+            try:
+                parsed = int(raw)
+            except ValueError:
+                parsed = -1
+            return parsed if parsed > 0 else 0
+
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        cfg = load_config()
+        configured = cfg_get(cfg, "kanban", "profile_protocol_violation_threshold", default=None)
+        if configured is not None:
+            try:
+                configured_int = int(configured)
+            except ValueError:
+                configured_int = -1
+            if configured_int > 0:
+                return configured_int
+    except Exception:
+        pass
+
+    return default_threshold
+
+
+def _resolve_profile_protocol_violation_min_denominator() -> int:
+    """Return the minimum task denominator for the anti-false-positive guard."""
+    raw = os.environ.get(
+        "HERMES_KANBAN_PROFILE_PROTOCOL_VIOLATION_MIN_DENOMINATOR", ""
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_PROFILE_PROTOCOL_VIOLATION_MIN_DENOMINATOR
+
+
+def _resolve_profile_protocol_violation_min_rate_pct() -> int:
+    """Return the minimum violation rate (0-100) for opening the circuit."""
+    raw = os.environ.get(
+        "HERMES_KANBAN_PROFILE_PROTOCOL_VIOLATION_MIN_RATE_PCT", ""
+    ).strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if 0 <= parsed <= 100:
+            return parsed
+    return DEFAULT_PROFILE_PROTOCOL_VIOLATION_MIN_RATE_PCT
+
+
+def profile_protocol_violation_telemetry(
+    conn: sqlite3.Connection,
+    profile: str,
+) -> dict[str, Any]:
+    """Return per-profile protocol-violation telemetry inside the window.
+
+    Returns a dict with:
+      * ``violations``: number of distinct tasks with a ``protocol_violation``
+        event in the window.
+      * ``denominator``: number of distinct tasks for the profile that
+        terminated (status in done/blocked or emitted protocol_violation)
+        in the window.
+      * ``rate_pct``: integer percentage ``violations / denominator * 100``.
+      * ``threshold``: current configured threshold for the profile.
+      * ``circuit_open``: whether the circuit would open given the current
+        telemetry and anti-false-positive guards.
+      * ``window_seconds``: length of the monitoring window.
+    """
+    threshold = _resolve_profile_protocol_violation_threshold(profile) if profile else 0
+    cutoff = int(time.time()) - PROFILE_PROTOCOL_VIOLATION_WINDOW_SECONDS
+
+    violations = {
+        r["task_id"]
+        for r in conn.execute(
+            """
+            SELECT DISTINCT e.task_id
+            FROM task_events e
+            JOIN tasks t ON t.id = e.task_id
+            WHERE e.kind = 'protocol_violation'
+              AND t.assignee = ?
+              AND e.created_at >= ?
+            """,
+            (profile, cutoff),
+        )
+    }
+
+    # Denominator: tasks that completed or were blocked in the window.
+    # We approximate by tasks whose latest terminal transition happened
+    # within the window, plus any tasks with a protocol_violation event.
+    done_or_blocked = {
+        r["id"]
+        for r in conn.execute(
+            """
+            SELECT DISTINCT t.id
+            FROM tasks t
+            LEFT JOIN task_events e ON e.task_id = t.id
+                AND e.kind IN ('gave_up', 'completed')
+            WHERE t.assignee = ?
+              AND t.status IN ('done', 'blocked')
+              AND e.created_at >= ?
+            """,
+            (profile, cutoff),
+        )
+    }
+    denominator = len(violations | done_or_blocked)
+    rate_pct = int((len(violations) / denominator * 100)) if denominator else 0
+
+    circuit_open = False
+    if threshold > 0 and len(violations) >= threshold:
+        min_denominator = _resolve_profile_protocol_violation_min_denominator()
+        min_rate_pct = _resolve_profile_protocol_violation_min_rate_pct()
+        if denominator >= min_denominator:
+            circuit_open = min_rate_pct == 0 or rate_pct >= min_rate_pct
+
+    return {
+        "profile": profile,
+        "violations": len(violations),
+        "denominator": denominator,
+        "rate_pct": rate_pct,
+        "threshold": threshold,
+        "circuit_open": circuit_open,
+        "window_seconds": PROFILE_PROTOCOL_VIOLATION_WINDOW_SECONDS,
+    }
+
+
+def _check_profile_protocol_violation_circuit(
+    conn: sqlite3.Connection,
+    profile: str,
+) -> tuple[bool, int, list[str]]:
+    """Check whether a profile's protocol-violation circuit should open.
+
+    Counts distinct tasks for ``profile`` that were auto-blocked via a
+    ``protocol_violation`` event within the last
+    ``PROFILE_PROTOCOL_VIOLATION_WINDOW_SECONDS``. Returns ``(open,
+    threshold, task_ids)``.
+
+    To reduce false positives from brand-new or rarely-used profiles, the
+    circuit only opens when the violation count reaches the threshold AND
+    the denominator of recently-terminated tasks is at least
+    ``_resolve_profile_protocol_violation_min_denominator()`` AND the
+    violation rate (%%) is at least
+    ``_resolve_profile_protocol_violation_min_rate_pct()``. Both guards
+    default to permissive values for backward compatibility.
+    """
+    threshold = _resolve_profile_protocol_violation_threshold(profile) if profile else 0
+    if threshold <= 0:
+        return False, 0, []
+
+    cutoff = int(time.time()) - PROFILE_PROTOCOL_VIOLATION_WINDOW_SECONDS
+    rows = conn.execute(
+        """
+        SELECT DISTINCT e.task_id, MAX(e.created_at) AS latest
+        FROM task_events e
+        JOIN tasks t ON t.id = e.task_id
+        WHERE e.kind = 'protocol_violation'
+          AND t.assignee = ?
+          AND e.created_at >= ?
+        GROUP BY e.task_id
+        ORDER BY latest DESC
+        LIMIT ?
+        """,
+        (profile, cutoff, threshold),
+    ).fetchall()
+    task_ids = [r["task_id"] for r in rows]
+    if len(task_ids) < threshold:
+        return False, threshold, task_ids
+
+    # Compute telemetry for false-positive guards inline to avoid recursion
+    # with profile_protocol_violation_telemetry.
+    cutoff = int(time.time()) - PROFILE_PROTOCOL_VIOLATION_WINDOW_SECONDS
+    violations_all = {
+        r["task_id"]
+        for r in conn.execute(
+            """
+            SELECT DISTINCT e.task_id
+            FROM task_events e
+            JOIN tasks t ON t.id = e.task_id
+            WHERE e.kind = 'protocol_violation'
+              AND t.assignee = ?
+              AND e.created_at >= ?
+            """,
+            (profile, cutoff),
+        )
+    }
+    done_or_blocked = {
+        r["id"]
+        for r in conn.execute(
+            """
+            SELECT DISTINCT t.id
+            FROM tasks t
+            LEFT JOIN task_events e ON e.task_id = t.id
+                AND e.kind IN ('gave_up', 'completed')
+            WHERE t.assignee = ?
+              AND t.status IN ('done', 'blocked')
+              AND e.created_at >= ?
+            """,
+            (profile, cutoff),
+        )
+    }
+    denominator = len(violations_all | done_or_blocked)
+    rate_pct = int(len(violations_all) / denominator * 100) if denominator else 0
+
+    min_denominator = _resolve_profile_protocol_violation_min_denominator()
+    min_rate_pct = _resolve_profile_protocol_violation_min_rate_pct()
+
+    if denominator < min_denominator:
+        return False, threshold, task_ids
+    if min_rate_pct > 0 and rate_pct < min_rate_pct:
+        return False, threshold, task_ids
+
+    return True, threshold, task_ids
+
+
+def _record_profile_protocol_violation_open(
+    conn: sqlite3.Connection,
+    profile: str,
+    threshold: int,
+    task_ids: list[str],
+    telemetry: Optional[dict[str, Any]] = None,
+) -> None:
+    """Emit and fire an event when a profile's circuit opens.
+
+    Writes a synthetic ``profile_circuit_open`` event to every affected
+    task's event log and fires the plugin hook so observers (Ágora,
+    dashboard) can alert operators. Includes telemetry so the incident
+    report carries failure rate and denominator context.
+    """
+    now = int(time.time())
+    payload: dict[str, Any] = {
+        "profile": profile,
+        "threshold": threshold,
+        "task_ids": task_ids,
+        "opened_at": now,
+    }
+    if telemetry:
+        payload["telemetry"] = telemetry
+    with write_txn(conn):
+        for tid in task_ids:
+            _append_event(conn, tid, "profile_circuit_open", payload)
+
+    _fire_kanban_lifecycle_hook(
+        "kanban_profile_circuit_open",
+        task_ids[0] if task_ids else "",
+        profile=profile,
+        task_ids=task_ids,
+        threshold=threshold,
+        opened_at=now,
+        telemetry=telemetry,
+    )
+
+
+def _list_open_profile_protocol_violation_circuits(
+    conn: sqlite3.Connection,
+    *,
+    emit_on_open: bool = True,
+) -> list[dict[str, Any]]:
+    """Return currently-open per-profile protocol-violation circuits.
+
+    A circuit is considered "open" when at least one profile has hit its
+    threshold within the monitoring window. The result is a list of
+    ``{"profile": str, "threshold": int, "task_ids": list[str]}`` dicts.
+
+    When ``emit_on_open`` is True and a circuit is newly open (no
+    ``profile_circuit_open`` event for this profile within the monitoring
+    window), the event is recorded and the plugin hook is fired so
+    observers (Ágora, dashboard, #incidentes) can alert operators.
+    """
+    now = int(time.time())
+    cutoff = now - PROFILE_PROTOCOL_VIOLATION_WINDOW_SECONDS
+    profiles = {
+        r["assignee"] for r in conn.execute(
+            "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL"
+        )
+    }
+    open_circuits: list[dict[str, Any]] = []
+    for profile in profiles:
+        is_open, threshold, task_ids = _check_profile_protocol_violation_circuit(
+            conn, profile,
+        )
+        if not is_open:
+            continue
+        telemetry = profile_protocol_violation_telemetry(conn, profile)
+        open_circuits.append(
+            {
+                "profile": profile,
+                "threshold": threshold,
+                "task_ids": task_ids,
+                "telemetry": telemetry,
+            }
+        )
+        if not emit_on_open:
+            continue
+        # Only emit once per window per profile to avoid spam.
+        already_emitted = conn.execute(
+            """
+            SELECT 1 FROM task_events
+            WHERE kind = 'profile_circuit_open'
+              AND task_id IN (
+                  SELECT id FROM tasks WHERE assignee = ?
+              )
+              AND created_at >= ?
+            LIMIT 1
+            """,
+            (profile, cutoff),
+        ).fetchone() is not None
+        if not already_emitted:
+            _record_profile_protocol_violation_open(
+                conn, profile, threshold, task_ids, telemetry=telemetry
+            )
+    return open_circuits
+
+
 # Max bytes to keep in a single worker log file. The dispatcher truncates
 # and rotates on spawn if the file is larger than this at spawn time.
 DEFAULT_LOG_ROTATE_BYTES = 2 * 1024 * 1024   # 2 MiB
@@ -5362,8 +5791,11 @@ class DispatchResult:
     rate_limited: list[str] = field(default_factory=list)
     """Task ids whose workers bailed on a provider rate-limit / quota wall
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
-    counting a failure. These never trip the circuit breaker — a long quota
+    counting a failure. These never trip the circuit breaker -- a long quota
     window just makes the task bounce cheaply until the window clears."""
+    profile_circuits_open: list[dict[str, Any]] = field(default_factory=list)
+    """Per-profile protocol-violation circuits that opened this tick.
+    Each entry is ``{"profile": str, "threshold": int, "task_ids": list[str]}``."""
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
@@ -6692,6 +7124,18 @@ def _dispatch_once_locked(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
+    # Per-profile protocol-violation circuit breaker: after we have
+    # reaped crashes/timeouts, check whether any profile crossed its
+    # threshold. Open circuits are recorded as events and exposed so the
+    # dispatcher can refuse to spawn more workers for that profile this
+    # tick.
+    result.profile_circuits_open = _list_open_profile_protocol_violation_circuits(conn)
+    # After recording opens, mark affected profiles so we skip spawning
+    # them below this tick. A profile circuit is a hard guard against
+    # burning more workers on a broken configuration.
+    _open_profile_circuits: dict[str, dict[str, Any]] = {
+        c["profile"]: c for c in result.profile_circuits_open
+    }
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
     # rationale; the short version is that a 60-second tick interval with a
@@ -6833,6 +7277,24 @@ def _dispatch_once_locked(
             # of human-pulled work.
             result.skipped_nonspawnable.append(row["id"])
             continue
+        # Protocol-violation circuit breaker: if this profile already
+        # opened its circuit on this tick, do not spawn more workers for
+        # it. The profile needs operator attention before it is trusted
+        # again.
+        if row_assignee in _open_profile_circuits:
+            result.respawn_guarded.append(
+                (row["id"], "profile_protocol_violation_circuit_open")
+            )
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "respawn_guarded",
+                        {
+                            "reason": "profile_protocol_violation_circuit_open",
+                            "profile": row_assignee,
+                        },
+                    )
+            continue
         # Per-profile concurrency cap (#21582): even if there's global
         # headroom, refuse to spawn for an assignee that's already at
         # its in-flight cap. Prevents one profile's local model / API
@@ -6966,6 +7428,21 @@ def _dispatch_once_locked(
             profile_exists = None  # type: ignore[assignment]
         if profile_exists is not None and not profile_exists(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
+            continue
+        # Protocol-violation circuit breaker applies to review spawns too.
+        if row["assignee"] in _open_profile_circuits:
+            result.respawn_guarded.append(
+                (row["id"], "profile_protocol_violation_circuit_open")
+            )
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "respawn_guarded",
+                        {
+                            "reason": "profile_protocol_violation_circuit_open",
+                            "profile": row["assignee"],
+                        },
+                    )
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))

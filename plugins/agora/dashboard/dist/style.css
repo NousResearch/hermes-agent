@@ -552,6 +552,25 @@
 .agora-agent-card {
   border: 1px solid var(--color-border);
   background: color-mix(in srgb, var(--color-card) 80%, transparent);
+  transition: border-color 180ms ease, box-shadow 180ms ease, background 180ms ease;
+}
+
+.agora-agent-card--transition {
+  border-color: var(--color-primary) !important;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-primary) 40%, transparent) !important;
+  animation: agora-pulse-border 1.2s ease-in-out 1;
+}
+
+.agora-agent-card--stale {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--color-muted-foreground) 55%, var(--color-border));
+  background: color-mix(in srgb, var(--color-muted-foreground) 4%, transparent);
+}
+
+@keyframes agora-pulse-border {
+  0% { border-color: var(--color-primary); }
+  50% { border-color: color-mix(in srgb, var(--color-primary) 50%, transparent); }
+  100% { border-color: var(--color-border); }
 }
 
 .agora-agent-card-content {
@@ -586,6 +605,27 @@
   gap: 0.35rem;
   font-size: 0.7rem;
   color: var(--color-muted-foreground);
+  transition: color 180ms ease;
+}
+
+.agora-agent-state-row--transition {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.agora-agent-state-row--stale {
+  color: var(--color-muted-foreground);
+  font-style: italic;
+}
+
+.agora-agent-stale-badge {
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0 0.2rem;
+  border: 1px solid color-mix(in srgb, var(--color-muted-foreground) 40%, transparent);
+  color: var(--color-muted-foreground);
+  background: color-mix(in srgb, var(--color-muted-foreground) 8%, transparent);
 }
 
 .agora-agent-state {
@@ -596,6 +636,12 @@
   font-size: 0.75rem;
   line-height: 1.35;
   color: var(--color-foreground);
+  transition: color 180ms ease, opacity 180ms ease;
+}
+
+.agora-agent-status-text--stale {
+  color: var(--color-muted-foreground);
+  opacity: 0.85;
 }
 
 .agora-agent-step {
@@ -660,6 +706,11 @@
   font-size: 0.65rem;
   color: var(--color-muted-foreground);
   font-variant-numeric: tabular-nums;
+  transition: color 180ms ease;
+}
+
+.agora-agent-heartbeat--stale {
+  color: var(--color-destructive, #f85149);
 }
 
 /* ---- Avatar + status dot -------------------------------------------- */
@@ -831,6 +882,19 @@
   opacity: 0.6;
 }
 
+.agora-notification--recent {
+  animation: agora-notification-pop 1.2s ease-in-out 1;
+}
+
+.agora-notification--unread {
+  border-color: color-mix(in srgb, var(--color-primary) 45%, transparent);
+}
+
+@keyframes agora-notification-pop {
+  0% { background: color-mix(in srgb, var(--color-primary) 18%, transparent); }
+  100% { background: color-mix(in srgb, var(--color-ring) 8%, transparent); }
+}
+
 .agora-notification:hover {
   border-color: color-mix(in srgb, var(--color-border) 80%, transparent);
 }
@@ -956,8 +1020,12 @@
     padding: 0.5rem;
   }
 
-  .agora-admin-panel__body {
+  .agora-admin-screen__body {
     flex-direction: column;
+  }
+
+  .agora-admin-screen {
+    border: none;
   }
 
   .agora-header {
@@ -1144,50 +1212,69 @@
   font-size: 0.75rem !important;
 }
 
-/* ---- Admin panel (channel management) -------------------------------- */
+/* ---- Admin screen (channel management) ------------------------------- */
 
-.agora {
-  position: relative;
-}
-
-.agora-admin-panel {
-  position: static;
-  inset: auto;
-  z-index: auto;
+.agora-admin-screen {
+  flex: 1;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  box-shadow: none;
-  overflow: visible;
+  background: var(--color-card);
+  border: 1px solid var(--color-border);
+  overflow: hidden;
 }
 
-.agora-admin-panel__header {
+.agora-admin-screen__header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
-  padding: 1rem 1rem 0.75rem;
+  padding: 1rem 1.25rem;
   border-bottom: 1px solid var(--color-border);
   background: var(--color-card);
   flex-shrink: 0;
 }
 
-.agora-admin-panel__title {
-  font-size: 1rem;
-  font-weight: 700;
+.agora-admin-screen__heading {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+}
+
+.agora-admin-screen__eyebrow {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--color-muted-foreground);
   margin: 0;
 }
 
-.agora-admin-panel__body {
+.agora-admin-screen__title {
+  font-size: 1rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--color-foreground);
+  line-height: 1.2;
+}
+
+.agora-admin-screen__subtitle {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  margin: 0;
+  line-height: 1.4;
+}
+
+.agora-admin-screen__body {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 1rem 0 0;
+  padding: 1.25rem;
   display: flex;
   flex-direction: row;
-  gap: 1.25rem;
+  gap: 1.5rem;
+  background: var(--color-card);
 }
 
 .agora-admin-section {
@@ -1281,11 +1368,7 @@
 }
 
 @media (max-width: 768px) {
-  .agora-admin-panel {
-    inset: 0.5rem;
-  }
-
-  .agora-admin-panel__body {
+  .agora-admin-screen__body {
     padding: 0.75rem;
   }
 }

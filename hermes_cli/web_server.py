@@ -1983,6 +1983,21 @@ async def get_status(profile: Optional[str] = None):
                 "gateway_health_url": _GATEWAY_HEALTH_URL,
             })
 
+        # Per-profile kanban protocol-violation circuit breaker state.
+        # Kept inside the public status shape so the dashboard can render
+        # an indicator without an extra round trip.
+        try:
+            from hermes_cli import kanban_db as _kb
+            kconn = _kb.connect()
+            try:
+                status["kanban_profile_circuits_open"] = (
+                    _kb._list_open_profile_protocol_violation_circuits(kconn)
+                )
+            finally:
+                kconn.close()
+        except Exception:
+            status["kanban_profile_circuits_open"] = []
+
         return status
     finally:
         if status_scope is not None:

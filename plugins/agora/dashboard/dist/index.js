@@ -96,6 +96,16 @@
     });
   }
 
+  const STATE_LABELS = {
+    idle: "ocioso",
+    working: "trabalhando",
+    deliberating: "deliberando",
+    reviewing: "revisando",
+    "waiting-human": "aguardando humano",
+    blocked: "bloqueado",
+    error: "erro",
+  };
+
   function stateColor(state) {
     switch (state) {
       case "idle": return "#7dd3c0";          // teal
@@ -111,7 +121,45 @@
 
   function stateLabel(state) {
     if (!state) return "—";
-    return state.replace(/-/g, " ");
+    return STATE_LABELS[state] || state.replace(/-/g, " ");
+  }
+
+  // Canonical status message: no hybrid strings, always derived from the
+  // authoritative state + worker flag.
+  function stateMessage({ state, active, statusText, currentStep, heartbeat, stale }) {
+    if (active) {
+      const action = statusText || "trabalhando";
+      const where = currentStep ? " · " + currentStep : "";
+      const age = stale ? " (stale)" : "";
+      return action + where + age;
+    }
+    switch (state) {
+      case "idle":
+        return heartbeat
+          ? "disponível"
+          : "desligado; clique em Invocar";
+      case "working":
+        return statusText || "trabalhando";
+      case "deliberating":
+        return statusText || "deliberando";
+      case "reviewing":
+        return statusText || "revisando";
+      case "waiting-human":
+        return statusText || "aguardando intervenção humana";
+      case "blocked":
+        return statusText || "bloqueado";
+      case "error":
+        return statusText || "erro";
+      default:
+        return statusText || "desconhecido";
+    }
+  }
+
+  function heartbeatIsStale(heartbeat) {
+    if (!heartbeat) return true;
+    const seconds = epochSeconds(heartbeat);
+    if (!seconds) return true;
+    return (Date.now() / 1000 - seconds) > 90;
   }
 
   function epochSeconds(ts) {
@@ -323,9 +371,9 @@
     );
   }
 
-  function NotificationItem({ notification, onMarkRead, disabled }) {
+  function NotificationItem({ notification, onMarkRead, disabled, recent }) {
     const read = !!notification.read_at;
-    return h("div", { className: cn("agora-notification", read && "agora-notification--read") },
+    return h("div", { className: cn("agora-notification", read && "agora-notification--read", recent && "agora-notification--recent", !read && !recent && "agora-notification--unread"), "aria-live": recent ? "polite" : undefined },
       h("div", { className: "agora-notification-body" },
         h("div", { className: "agora-notification-meta" },
           h("span", { className: "agora-notification-author" }, notification.author_profile || "sistema"),
@@ -347,24 +395,50 @@
     );
   }
 
-  function AgentCard({ agent, worker, unreadCount, notifications, notificationsOpen, loadingNotifications, hasMoreNotifications, loadingOlderNotifications, openingTerminal, onOpenTerminal, onToggleNotifications, onMarkRead, onMarkAllRead, onScrollNotifications }) {
-    // When a Kanban worker is active, its real-time telemetry wins over the
-    // semantic /agents/status snapshot, which can be stale (pid, current_step,
-    // status_text from a previous task).
-    const active = !!worker;
-    const taskId = active ? (worker.task_id || agent.current_task_id) : agent.current_task_id;
-    const runId = active ? (worker.run_id || agent.run_id) : agent.run_id;
-    const pid = active ? worker.worker_pid : agent.pid;
-    const heartbeat = active ? worker.last_heartbeat_at : agent.last_heartbeat_at;
-    const statusText = active ? (worker.task_title || agent.status_text) : agent.status_text;
+  function AgentCard({ agent, worker, unreadCount, notifications, notificationsOpen, loadingNotifications, hasMoreNotifications, loadingOlderNotifications, openingTerminal, onOpenTerminal, onSummon, onToggleNotifications, onMarkRead, onMarkAllRead, onScrollNotifications }) {
+    // Authoritative state derivation — no hybrid state leaks:
+    // 1) an active Kanban worker always renders as 'working' with live telemetry;
+    // 2) otherwise use the semantic agent.state;
+    // 3) stale heartbeats are flagged visually but do not mutate the state.
+    const active = !!(worker && worker.worker_pid);
+    const taskId = active ? (worker.task_id || null) : (agent.current_task_id || null);
+    const runId = active ? (worker.run_id || null) : (agent.run_id || null);
+    const pid = active ? worker.worker_pid : (agent.pid || null);
+    const heartbeat = active
+      ? (worker.last_heartbeat_at || agent.last_heartbeat_at || null)
+      : (agent.last_heartbeat_at || null);
+    const statusText = active
+      ? (worker.task_title || null)
+      : (agent.status_text || null);
     const currentStep = active
-      ? (runId ? `run ${runId}` : (worker.task_id ? `task ${worker.task_id}` : agent.current_step))
-      : agent.current_step;
-    const effectiveState = active ? "working" : agent.state;
+      ? (runId ? `run ${runId}` : (taskId ? `task ${taskId}` : null))
+      : (agent.current_step || null);
+    const effectiveState = active ? "working" : (agent.state || "idle");
+    const stale = active ? heartbeatIsStale(worker.last_heartbeat_at) : heartbeatIsStale(heartbeat);
+    const message = stateMessage({
+      state: effectiveState,
+      active: active,
+      statusText: statusText,
+      currentStep: currentStep,
+      heartbeat: heartbeat,
+      stale: stale,
+    });
     const hasUnread = (unreadCount || 0) > 0;
     const notifList = notifications || [];
     const listRef = useRef(null);
     const scrollTopRef = useRef(0);
+    const prevStateRef = useRef(effectiveState);
+    const [transition, setTransition] = useState(false);
+
+    // Highlight transition when the canonical state changes.
+    useEffect(function () {
+      if (prevStateRef.current !== effectiveState) {
+        setTransition(true);
+        prevStateRef.current = effectiveState;
+        const id = setTimeout(function () { setTransition(false); }, 1200);
+        return function () { clearTimeout(id); };
+      }
+    }, [effectiveState]);
 
     // Ao abrir o painel, focar na lista de notificações e restaurar scroll.
     useEffect(function () {
@@ -376,15 +450,16 @@
 
     const cardLabel = `${agent.profile}, ${stateLabel(effectiveState)}`;
     return h("div", { className: "agora-agent-card-wrapper", role: "listitem", "aria-label": cardLabel },
-      h(Card, { className: "agora-agent-card" },
+      h(Card, { className: cn("agora-agent-card", transition && "agora-agent-card--transition", stale && "agora-agent-card--stale") },
         h(CardContent, { className: "agora-agent-card-content" },
         h("div", { className: "agora-agent-head" },
           h(Avatar, { name: agent.profile, type: "agent" }),
           h("div", { className: "agora-agent-title" },
             h("div", { className: "agora-agent-name" }, agent.profile),
-            h("div", { className: "agora-agent-state-row" },
+            h("div", { className: cn("agora-agent-state-row", transition && "agora-agent-state-row--transition", stale && "agora-agent-state-row--stale"), "aria-live": "polite", "aria-atomic": "true" },
               h(StatusDot, { state: effectiveState }),
               h("span", { className: "agora-agent-state" }, stateLabel(effectiveState)),
+              stale && h("span", { className: "agora-agent-stale-badge", title: "heartbeat ausente há mais de 90s" }, "stale"),
             ),
           ),
           h("button", {
@@ -400,7 +475,7 @@
             hasUnread && h(Badge, { className: "agora-agent-badge", "aria-hidden": true }, String(unreadCount)),
           ),
         ),
-        statusText && h("div", { className: "agora-agent-status-text" }, statusText),
+        message && h("div", { className: cn("agora-agent-status-text", stale && "agora-agent-status-text--stale") }, message),
         currentStep && h("div", { className: "agora-agent-step" },
           h("span", { className: "agora-agent-step-label" }, "etapa:"),
           " ",
@@ -426,9 +501,24 @@
             },
           }, h("code", null, pid))),
         ),
-        heartbeat && h("div", { className: "agora-agent-heartbeat" },
-          "heartbeat", " ", formatTime(heartbeat),
+        !pid && h("div", { className: "agora-agent-meta" },
+          h(Button, {
+            size: "sm",
+            variant: "outline",
+            className: "agora-agent-summon-btn",
+            title: `Invocar ${agent.profile} e abrir tmux visível`,
+            "aria-label": `Invocar ${agent.profile}`,
+            disabled: openingTerminal,
+            onClick: function (e) {
+              e.preventDefault();
+              e.stopPropagation();
+              onSummon(agent.profile);
+            },
+          }, "Invocar"),
         ),
+        (heartbeat ? h("div", { className: cn("agora-agent-heartbeat", stale && "agora-agent-heartbeat--stale") },
+          "heartbeat", " ", formatTime(heartbeat),
+        ) : null),
         notificationsOpen && h("div", { className: "agora-agent-notifications" },
           h("div", { className: "agora-notifications-header" },
             h("div", { className: "agora-notifications-title-wrap" },
@@ -457,10 +547,12 @@
                   onScrollNotifications(e);
                 },
               },
-                notifList.map(function (n) {
+                notifList.map(function (n, idx) {
+                  const recent = !n.read_at && idx < 3;
                   return h(NotificationItem, {
                     key: n.id,
                     notification: n,
+                    recent: recent,
                     onMarkRead: onMarkRead,
                     disabled: loadingNotifications,
                   });
@@ -516,10 +608,10 @@
   }
 
   // -------------------------------------------------------------------------
-  // Admin panel: channel management
+  // Admin screen: channel management
   // -------------------------------------------------------------------------
 
-  function AdminPanel({ channels, loading, onClose, onChannelCreated }) {
+  function AdminScreen({ channels, loading, onClose, onChannelCreated }) {
     const { t } = useI18n();
     const [slug, setSlug] = useState("");
     const [name, setName] = useState("");
@@ -596,16 +688,16 @@
         .finally(function () { setBusy(false); });
     }
 
-    return h("div", { className: "agora-admin-panel" },
-      h("div", { className: "agora-admin-panel__header" },
-        h("div", { className: "agora-admin-panel__heading" },
-          h("p", { className: "agora-admin-panel__eyebrow" }, tx(t, "admin.eyebrow", "Settings / Admin")),
-          h("h2", { className: "agora-admin-panel__title" }, tx(t, "admin.title", "Admin — Canais")),
-          h("p", { className: "agora-admin-panel__subtitle" }, tx(t, "admin.subtitle", "Tela inteira. Feche para voltar à Ágora.")),
+    return h("div", { className: "agora-admin-screen" },
+      h("div", { className: "agora-admin-screen__header" },
+        h("div", { className: "agora-admin-screen__heading" },
+          h("p", { className: "agora-admin-screen__eyebrow" }, tx(t, "admin.eyebrow", "Settings / Admin")),
+          h("h2", { className: "agora-admin-screen__title" }, tx(t, "admin.title", "Admin — Canais")),
+          h("p", { className: "agora-admin-screen__subtitle" }, tx(t, "admin.subtitle", "Tela inteira. Feche para voltar à Ágora.")),
         ),
         h(Button, { size: "sm", variant: "outline", onClick: onClose }, tx(t, "admin.back", "← Voltar à Ágora")),
       ),
-      h("div", { className: "agora-admin-panel__body" },
+      h("div", { className: "agora-admin-screen__body" },
         h("section", { className: "agora-admin-section" },
           h("h3", { className: "agora-admin-section__title" }, tx(t, "admin.createChannel", "Criar canal")),
           formError && h("div", { className: "agora-admin-form-error", role: "alert" }, formError),
@@ -616,8 +708,8 @@
             ),
             h("label", { className: "agora-admin-field" },
               h("span", { className: "agora-admin-label" }, tx(t, "admin.channelSlug", "Slug")),
-              h(Input, { value: slug, onChange: handleSlugChange, placeholder: tx(t, "admin.channelSlugPlaceholder", "nome-do-canal"), pattern: "[a-z0-9-]+", required: true, disabled: busy }),
-              h("span", { className: "agora-admin-hint" }, tx(t, "admin.channelSlugHint", "Apenas letras minúsculas, números e hífens.")),
+              h(Input, { value: slug, onChange: handleSlugChange, placeholder: tx(t, "admin.channelSlugPlaceholder", "nome-do-canal"), pattern: "[a-z0-9_-]+", required: true, disabled: busy }),
+              h("span", { className: "agora-admin-hint" }, tx(t, "admin.channelSlugHint", "Apenas letras minúsculas, números, hífen ou underscore.")),
             ),
             h("label", { className: "agora-admin-field" },
               h("span", { className: "agora-admin-label" }, tx(t, "admin.channelDescription", "Descrição")),
@@ -1016,13 +1108,15 @@
       const out = agents.map(function (a) {
         const w = workerMap[a.profile];
         const enriched = Object.assign({}, a, { worker: w || undefined });
-        if (w) {
+        if (w && w.worker_pid) {
           // Active Kanban worker wins over a stale semantic state from
           // /agents/status (e.g. Idle/Reviewing while the worker is running).
+          // Override all worker-derivable fields so stale current_step/pid do
+          // not leak into the sidebar card.
           enriched.state = "working";
           enriched.current_task_id = w.task_id || null;
           enriched.current_step = `run ${w.run_id}`;
-          enriched.status_text = w.task_title || null;
+          enriched.status_text = w.task_title || "trabalhando";
           enriched.run_id = w.run_id ?? null;
           enriched.pid = w.worker_pid ?? null;
           enriched.last_heartbeat_at = w.last_heartbeat_at || enriched.last_heartbeat_at;
@@ -1030,7 +1124,7 @@
         return enriched;
       });
       for (const w of workers) {
-        if (w.profile && !out.find(function (a) { return a.profile === w.profile; })) {
+        if (w.profile && w.worker_pid && !out.find(function (a) { return a.profile === w.profile; })) {
           out.push({
             profile: w.profile,
             state: "working",
@@ -1048,14 +1142,14 @@
       return out;
     }, [agents, workers]);
 
-    // Only show agents that are actually runnable/observable: either they
-    // reported a PID (tmux visible or recoverable) or Kanban sees an active
-    // worker with a real PID. Stale semantic rows with no PID are hidden from
-    // the column until they come back online with a clickable terminal button.
+    // Show observable agents (worker/pid) plus manifest-declared profiles so
+    // humans can summon them from the UI even before first heartbeat.
     const visibleAgents = useMemo(function () {
       return enrichedAgents.filter(function (a) {
         const pid = a.worker ? a.worker.worker_pid : a.pid;
-        return !!pid;
+        if (pid) return true;
+        if (a.worker) return true;
+        return !!(a.metadata && a.metadata.source === "manifest");
       });
     }, [enrichedAgents]);
 
@@ -1685,7 +1779,7 @@
     const handleOpenTerminal = useCallback(function (profile) {
       if (openingTerminal) return;
       setOpeningTerminal(profile);
-      SDK.fetchJSON(`${API_AGORA}/agents/${encodeURIComponent(profile)}/open-terminal`, {
+      SDK.fetchJSON(`${API_AGORA}/agents/${encodeURIComponent(profile)}/open-terminal?target=profile-session`, {
         method: "POST",
       })
         .then(function (data) {
@@ -1695,6 +1789,28 @@
         })
         .catch(function (err) {
           setError(tx(t, "openTerminalError", "Erro ao abrir terminal de ") + profile + ": " + parseApiError(err));
+        })
+        .finally(function () {
+          setOpeningTerminal(null);
+        });
+    }, [openingTerminal, t]);
+
+    const handleSummonAgent = useCallback(function (profile) {
+      if (openingTerminal) return;
+      setOpeningTerminal(profile);
+      SDK.fetchJSON(`${API_AGORA}/agents/${encodeURIComponent(profile)}/summon`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ open_terminal: true, state: "working" }),
+      })
+        .then(function (data) {
+          if (!data || !data.ok) {
+            throw new Error((data && data.reason) || "unknown");
+          }
+          setTick(function (n) { return n + 1; });
+        })
+        .catch(function (err) {
+          setError(tx(t, "summonError", "Erro ao invocar agente ") + profile + ": " + parseApiError(err));
         })
         .finally(function () {
           setOpeningTerminal(null);
@@ -1902,7 +2018,7 @@
 
       showAdmin
         ? h("main", { className: "agora-screen agora-screen--admin", role: "region", "aria-label": tx(t, "admin.title", "Admin — Canais") },
-            h(AdminPanel, {
+            h(AdminScreen, {
               channels: channels,
               loading: loadingChannels,
               onClose: toggleAdmin,
@@ -2067,6 +2183,7 @@
                               loadingOlderNotifications: !!loadingOlderNotifications[profile],
                               openingTerminal: openingTerminal,
                               onOpenTerminal: handleOpenTerminal,
+                              onSummon: handleSummonAgent,
                               onToggleNotifications: function () { toggleNotifications(profile); },
                               onMarkRead: function (id) { markNotificationRead(profile, id); },
                               onMarkAllRead: function () { markAllNotificationsRead(profile); },

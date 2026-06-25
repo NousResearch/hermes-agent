@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -27,6 +28,11 @@ import unicodedata
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Generator, Optional
+
+try:
+    import yaml  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover - optional in test shims
+    yaml = None
 
 from fastapi import (
     APIRouter,
@@ -850,6 +856,116 @@ _PROFILE_SKILLS = {
     "agent-qa": "dogfood,chrome-dom-automation,systematic-debugging,multi-agent-telemetry,hermes-agent",
 }
 
+
+_DEFAULT_AGENTS_MANIFEST_DIR = get_default_hermes_root() / "agents.d"
+
+
+def _agent_manifest_path(profile: str) -> Path:
+    """Return manifest path for a profile under ~/.hermes/agents.d/."""
+    safe = profile.strip()
+    return _DEFAULT_AGENTS_MANIFEST_DIR / f"{safe}.yaml"
+
+
+def _configured_profile_names() -> set[str]:
+    """Return profile names declared in ~/.hermes/agents.d/*.yaml manifests."""
+    out: set[str] = set()
+    try:
+        d = _DEFAULT_AGENTS_MANIFEST_DIR
+        if not d.exists() or not d.is_dir():
+            return out
+        for p in d.glob("*.yaml"):
+            if p.name.startswith("_"):
+                continue
+            stem = p.stem.strip()
+            if stem:
+                out.add(stem)
+    except Exception as exc:
+        log.debug("Could not enumerate agent manifests: %s", exc)
+    return out
+
+
+def _load_agent_manifest(profile: str) -> Optional[dict[str, Any]]:
+    """Load optional per-agent summon config.
+
+    Manifest format is intentionally permissive; unknown keys are ignored.
+    The summon path uses only a small, safe subset:
+      - profile (str)
+      - workdir (str)
+      - skills (list[str])
+      - env (dict[str,str])
+
+    Model/provider are *not* hardcoded here. Hermes will use whatever the
+    target profile config selects (or explicit overrides inside env, if present).
+    """
+    path = _agent_manifest_path(profile)
+    if not path.exists() or not path.is_file():
+        return None
+    if yaml is None:
+        log.warning("PyYAML unavailable; cannot parse %s", path)
+        return None
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            return None
+        return raw
+    except Exception as exc:
+        log.warning("Failed to parse agent manifest %s: %s", path, exc)
+        return None
+
+
+def _manifest_skills(profile: str, manifest: Optional[dict[str, Any]]) -> str:
+    """Resolve skills for spawned profile.
+
+    Priority:
+      1. manifest.skills (if present and non-empty)
+      2. built-in _PROFILE_SKILLS mapping
+      3. fallback "hermes-agent"
+    """
+    if isinstance(manifest, dict):
+        skills = manifest.get("skills")
+        if isinstance(skills, list):
+            cleaned = [str(s).strip() for s in skills if str(s).strip()]
+            if cleaned:
+                return ",".join(cleaned)
+    mapped = _PROFILE_SKILLS.get(profile)
+    if mapped:
+        return mapped
+    return "hermes-agent"
+
+
+def _manifest_workdir(manifest: Optional[dict[str, Any]]) -> Path:
+    """Resolve spawn working directory with safe fallback."""
+    default = Path("/home/felipi/.hermes/hermes-agent")
+    if not isinstance(manifest, dict):
+        return default
+    raw = manifest.get("workdir")
+    if not isinstance(raw, str) or not raw.strip():
+        return default
+    candidate = Path(raw).expanduser()
+    if candidate.exists() and candidate.is_dir():
+        return candidate
+    return default
+
+
+def _manifest_env_exports(manifest: Optional[dict[str, Any]]) -> str:
+    """Return shell exports from manifest.env (safe quoted), if any."""
+    if not isinstance(manifest, dict):
+        return ""
+    env = manifest.get("env")
+    if not isinstance(env, dict):
+        return ""
+    parts: list[str] = []
+    for k, v in env.items():
+        key = str(k).strip()
+        if not key:
+            continue
+        # Avoid exporting obviously dangerous shell variable names.
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
+            continue
+        val = str(v)
+        parts.append(f"export {key}={shlex.quote(val)}")
+    return "; ".join(parts)
+
 # Channel where kanban task completion reports are posted.  The message
 # always @-mentions ``agent-techlead`` and creates a mailbox notification,
 # so the channel choice is mainly about where the public record lives.
@@ -1041,6 +1157,23 @@ def _on_kanban_task_blocked(
             task_id=task_id,
             event_origin="kanban_task_blocked",
         )
+
+        # Sync: a blocked task is no longer actively worked by its assignee.
+        # Clear stale run/task fields from agora_agent_status unless the profile
+        # already picked up a different task in the meantime.
+        try:
+            profile = assignee or kwargs.get("profile_name")
+            if profile:
+                _sync_profile_status_on_task_done(
+                    task_id=task_id,
+                    profile=profile,
+                    state="blocked",
+                    status_text="tarefa bloqueada; aguardando desbloqueio",
+                )
+        except Exception:
+            log.exception(
+                "Failed to sync agora_agent_status after blocked task %s", task_id
+            )
     except Exception:
         log.exception("Failed to notify Ágora of blocked task %s", task_id)
 
@@ -1240,8 +1373,84 @@ def _on_kanban_task_completed(
                 author_profile="kanban",
             )
             conn.commit()
+
+        # Sync: a completed task is conceptually idle for its assignee. Clear
+        # stale run/task fields from agora_agent_status so the dashboard doesn't
+        # keep showing the profile as "working" on a task that is already done.
+        # This runs best-effort after the delivery report so notification
+        # failures don't block the state cleanup.
+        try:
+            profile = assignee or kwargs.get("profile_name")
+            if profile:
+                _sync_profile_status_on_task_done(
+                    task_id=task_id,
+                    profile=profile,
+                )
+        except Exception:
+            log.exception(
+                "Failed to sync agora_agent_status after completed task %s", task_id
+            )
     except Exception:
         log.exception("Failed to notify Ágora of completed task %s", task_id)
+
+
+def _sync_profile_status_on_task_done(
+    *,
+    task_id: str,
+    profile: str,
+    state: str = "idle",
+    status_text: str = "tarefa concluída",
+) -> None:
+    """Clear the semantic state row for a profile whose task just finished.
+
+    If the profile is still in agora_agent_status pointing at this task, set
+    state to idle and wipe the worker snapshot fields. If another active worker
+    already started for the same profile in the meantime, leave that one alone
+    (checked by current_task_id mismatch).
+
+    ``state`` and ``status_text`` are configurable so blocked tasks can be
+    marked similarly without duplicating logic.
+    """
+    with _connect() as conn:
+        row = conn.execute(
+            "SELECT state, current_task_id FROM agora_agent_status WHERE profile = ?",
+            (profile,),
+        ).fetchone()
+        if row is None:
+            return
+        # Only touch our own completed/blocked task; if the profile picked up a
+        # new task, the current_task_id will differ.
+        if row["current_task_id"] != task_id:
+            return
+        conn.execute(
+            """
+            UPDATE agora_agent_status
+               SET state = ?,
+                   current_task_id = NULL,
+                   current_step = NULL,
+                   status_text = ?,
+                   run_id = NULL,
+                   pid = NULL,
+                   last_heartbeat_at = ?,
+                   metadata_json = ?
+             WHERE profile = ?
+            """,
+            (
+                state,
+                status_text,
+                int(time.time()),
+                json.dumps({"source": "kanban-task-sync", "task_id": task_id}),
+                profile,
+            ),
+        )
+        _emit_event(
+            conn,
+            "agent_status",
+            profile,
+            "updated",
+            {"state": state, "reason": "task_closed", "task_id": task_id},
+        )
+        conn.commit()
 
 
 def _tmux_wake_enabled() -> bool:
@@ -1271,10 +1480,12 @@ def _ensure_visible_agent_terminal(profile: str, *, allow_known: bool = True) ->
 
     Existing sessions are always reused. New sessions are auto-created for any
     profile passed from the dashboard's agent list when ``allow_known`` is True,
-    using the skills map if available, otherwise falling back to the generic
-    hermes-agent skill set. Arbitrary @handles in chat still receive mailbox
-    entries without spawning new agents via the mention path (which also uses
-    ``allow_known=True`` but only after permission checks).
+    using per-profile manifest settings when available (skills/workdir/env),
+    otherwise falling back to built-in skill defaults.
+
+    Crucially, model/provider are NOT hardcoded in the spawn command here.
+    The child process runs ``hermes -p <profile>`` and therefore uses whatever
+    model/provider that profile has configured in its own config file.
     """
     if shutil.which("tmux") is None:
         return {"ok": False, "profile": profile, "reason": "tmux-not-found"}
@@ -1282,13 +1493,18 @@ def _ensure_visible_agent_terminal(profile: str, *, allow_known: bool = True) ->
     session = profile
     created = False
     if not _tmux_has_session(session):
-        skills = _PROFILE_SKILLS.get(profile) if allow_known else None
-        if not skills:
-            skills = "hermes-agent"
-        cmd = (
-            "cd /home/felipi/.hermes/hermes-agent; "
-            f"exec hermes -p {profile} chat --cli --skills {skills}"
-        )
+        manifest = _load_agent_manifest(profile)
+        skills = _manifest_skills(profile, manifest) if allow_known else "hermes-agent"
+        workdir = _manifest_workdir(manifest)
+        env_exports = _manifest_env_exports(manifest)
+        cmd_parts = [
+            f"cd {shlex.quote(str(workdir))}",
+            env_exports,
+            # Keep profile-scoped config authoritative; avoid hardcoded model flags.
+            f"exec hermes -p {shlex.quote(profile)} chat --cli --skills {skills}",
+        ]
+        cmd = "; ".join(p for p in cmd_parts if p)
+
         proc = subprocess.run(
             ["tmux", "new-session", "-d", "-s", session, "-x", "160", "-y", "50", cmd],
             stdout=subprocess.PIPE,
@@ -1326,19 +1542,40 @@ def _tmux_session_has_clients(session: str) -> bool:
         return False
 
 
-def _open_agent_tmux_terminal(profile: str) -> dict[str, Any]:
-    """Open or focus a human-visible terminal attached to an agent tmux session."""
-    ensure = _ensure_visible_agent_terminal(profile)
-    if not ensure.get("ok"):
-        return ensure
-    session = ensure["session"]
+def _open_agent_tmux_terminal(profile: str, *, session: Optional[str] = None) -> dict[str, Any]:
+    """Open or focus a human-visible terminal attached to a tmux session.
+
+    Default behavior opens the agent's canonical session (named after profile).
+    When ``session`` is provided, it is opened directly (used for telemetry
+    views of active Kanban workers).
+    """
+    if session:
+        if not _tmux_has_session(session):
+            return {
+                "ok": False,
+                "profile": profile,
+                "session": session,
+                "reason": "tmux-session-not-found",
+            }
+        ensure: dict[str, Any] = {
+            "ok": True,
+            "profile": profile,
+            "session": session,
+            "created": False,
+        }
+    else:
+        ensure = _ensure_visible_agent_terminal(profile)
+        if not ensure.get("ok"):
+            return ensure
+
+    session_name = ensure["session"]
 
     # If the session already has a client, treat the click as "focus" and do
     # not spawn another window that would duplicate the agent view.
-    if _tmux_session_has_clients(session):
+    if _tmux_session_has_clients(session_name):
         return {**ensure, "opened": False, "focused": True, "command": None}
 
-    attach_cmd = f"tmux attach -t {session}"
+    attach_cmd = f"tmux attach -t {session_name}"
     candidates: list[list[str]] = []
     if sys.platform.startswith("win"):
         return {**ensure, "opened": False, "reason": "unsupported-platform"}
@@ -1370,6 +1607,47 @@ def _open_agent_tmux_terminal(profile: str) -> dict[str, Any]:
         except Exception as exc:
             last_error = f"{type(exc).__name__}: {exc}"
     return {**ensure, "opened": False, "reason": "no-terminal", "error": locals().get("last_error")}
+
+
+def _worker_telemetry_session_name(profile: str, run_id: Any) -> str:
+    """Stable tmux session name for a worker telemetry view."""
+    safe_profile = re.sub(r"[^a-zA-Z0-9_-]", "-", (profile or "agent")).strip("-") or "agent"
+    safe_run = str(run_id or "x")
+    name = f"agora-{safe_profile}-run-{safe_run}"
+    return name[:80]
+
+
+def _ensure_worker_telemetry_session(profile: str, worker: dict[str, Any]) -> dict[str, Any]:
+    """Ensure a dedicated tmux session tailing the active Kanban worker log."""
+    session = _worker_telemetry_session_name(profile, worker.get("run_id"))
+    if _tmux_has_session(session):
+        return {"ok": True, "session": session, "created": False}
+
+    task_id = str(worker.get("task_id") or "").strip()
+    if not task_id:
+        return {"ok": False, "reason": "missing-task-id", "session": session}
+
+    cmd = (
+        "export HERMES_KANBAN_BOARD=agora; "
+        "cd /home/felipi/.hermes/hermes-agent; "
+        f"exec hermes kanban tail {shlex.quote(task_id)}"
+    )
+    proc = subprocess.run(
+        ["tmux", "new-session", "-d", "-s", session, "-x", "180", "-y", "50", cmd],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return {
+            "ok": False,
+            "reason": "tmux-new-session-failed",
+            "session": session,
+            "stderr": proc.stderr.strip()[:300],
+        }
+    return {"ok": True, "session": session, "created": True}
 
 
 def _tmux_send_message(profile: str, message: str) -> dict[str, Any]:
@@ -1494,6 +1772,17 @@ def _resolve_profile_pid(profile: str) -> Optional[int]:
     return None
 
 
+def _pid_is_alive(pid: Optional[int]) -> bool:
+    """Best-effort local liveness check for stored PID values."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except Exception:
+        return False
+
+
 def _agent_state(
     conn: sqlite3.Connection,
     profile: str,
@@ -1543,6 +1832,87 @@ def _kanban_active_profiles() -> set[str]:
     except Exception as exc:
         log.warning("Ágora could not read Kanban active workers: %s", exc)
         return set()
+
+
+def _kanban_active_worker(profile: str) -> Optional[dict[str, Any]]:
+    """Return the newest active Kanban worker row for a profile, if any."""
+    if _kanban_db is None:
+        return None
+    try:
+        _kanban_db.init_db()
+        with _kanban_db.connect() as kb_conn:
+            row = kb_conn.execute(
+                """
+                SELECT r.task_id, r.id AS run_id, r.worker_pid, r.started_at, r.last_heartbeat_at,
+                       t.title AS task_title
+                FROM task_runs r
+                JOIN tasks t ON t.id = r.task_id
+                WHERE r.ended_at IS NULL
+                  AND r.worker_pid IS NOT NULL
+                  AND t.status = 'running'
+                  AND r.profile = ?
+                ORDER BY r.started_at DESC
+                LIMIT 1
+                """,
+                (profile,),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "task_id": row["task_id"],
+                "run_id": row["run_id"],
+                "worker_pid": row["worker_pid"],
+                "started_at": row["started_at"],
+                "last_heartbeat_at": row["last_heartbeat_at"],
+                "task_title": row["task_title"],
+            }
+    except Exception as exc:
+        log.warning("Ágora could not read active worker for %s: %s", profile, exc)
+        return None
+
+
+def _upsert_worker_status(conn: sqlite3.Connection, profile: str, worker: dict[str, Any]) -> None:
+    """Persist active Kanban worker telemetry into agora_agent_status.
+
+    This keeps the semantic status table truthful when an agent's Kanban run is
+    alive but the agent itself has not heartbeated recently (or last heartbeat
+    carried stale current_step/pid/status_text from a previous run).
+    """
+    now = int(time.time())
+    task_id = worker.get("task_id")
+    run_id = worker.get("run_id")
+    worker_pid = worker.get("worker_pid")
+    task_title = worker.get("task_title")
+    heartbeat = worker.get("last_heartbeat_at") or now
+    current_step = f"run {run_id}" if run_id else None
+    metadata = {"source": "kanban-worker", "run_id": run_id, "task_id": task_id}
+    conn.execute(
+        """
+        INSERT INTO agora_agent_status
+        (profile, state, current_task_id, current_step, status_text, last_heartbeat_at, pid, run_id, metadata_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(profile) DO UPDATE SET
+            state = excluded.state,
+            current_task_id = excluded.current_task_id,
+            current_step = excluded.current_step,
+            status_text = excluded.status_text,
+            last_heartbeat_at = excluded.last_heartbeat_at,
+            pid = excluded.pid,
+            run_id = excluded.run_id,
+            metadata_json = excluded.metadata_json
+        """,
+        (
+            profile,
+            "working",
+            task_id,
+            current_step,
+            task_title,
+            heartbeat,
+            worker_pid,
+            run_id,
+            json.dumps(metadata),
+        ),
+    )
 
 
 def _wrap_tmux_delivery_for_agent_state(state: Optional[str], message: str) -> tuple[str, str]:
@@ -2205,11 +2575,11 @@ def update_thread(thread_id: int, payload: UpdateThreadBody):
 
 @router.get("/agents/status")
 def list_agent_status():
-    """Return current semantic status for every known agent profile.
+    """Return semantic status for known agents, including configured profiles.
 
-    This is Ágora's own presence store. It can be enriched read-only with
-    Kanban active workers on the frontend, but the backend keeps only the
-    semantic state submitted by agents or humans.
+    Besides rows already present in ``agora_agent_status``, this endpoint also
+    surfaces profiles declared in ``~/.hermes/agents.d/*.yaml`` so the dashboard
+    can render stable agent cards even before the first heartbeat.
     """
     with _connect() as conn:
         if RESERVED_AGENT_PROFILES:
@@ -2226,7 +2596,102 @@ def list_agent_status():
             rows = conn.execute(
                 "SELECT * FROM agora_agent_status ORDER BY last_heartbeat_at DESC"
             ).fetchall()
-        return {"agents": [_agent_status_dict(r) for r in rows]}
+
+        by_profile: dict[str, dict[str, Any]] = {
+            r["profile"]: _agent_status_dict(r)
+            for r in rows
+            if r["profile"] and not _is_reserved_agent_profile(str(r["profile"]))
+        }
+
+        # Never trust stale PIDs from old runs; keep cards opt-in and truthful.
+        # Configured agents remain visible as "off" (pid=None + summon button).
+        for profile, data in list(by_profile.items()):
+            pid = data.get("pid")
+            if pid and not _pid_is_alive(pid):
+                data["pid"] = None
+                if data.get("state") == "working":
+                    data["state"] = "idle"
+                # Stale worker snapshots (run/task metadata) should not survive
+                # after liveness cleanup, otherwise the card can show "Invocar"
+                # and old run/task details at the same time.
+                data["current_task_id"] = None
+                data["current_step"] = None
+                data["run_id"] = None
+                if not data.get("status_text"):
+                    data["status_text"] = "desligado; clique em Invocar"
+
+        configured_profiles = _configured_profile_names()
+
+        # Active Kanban workers must win over stale semantic snapshots stored by
+        # agents themselves. Update agora_agent_status in-place so the table and
+        # the dashboard both see the live worker truth.
+        active_profiles = _kanban_active_profiles()
+        for profile in active_profiles:
+            worker = _kanban_active_worker(profile)
+            if worker:
+                _upsert_worker_status(conn, profile, worker)
+                by_profile[profile] = {
+                    "profile": profile,
+                    "state": "working",
+                    "current_task_id": worker.get("task_id"),
+                    "current_step": f"run {worker['run_id']}" if worker.get("run_id") else None,
+                    "status_text": worker.get("task_title"),
+                    "last_heartbeat_at": worker.get("last_heartbeat_at") or int(time.time()),
+                    "pid": worker.get("worker_pid"),
+                    "run_id": worker.get("run_id"),
+                    "metadata": {"source": "kanban-worker"},
+                }
+        if active_profiles:
+            conn.commit()
+
+        for profile in sorted(configured_profiles):
+            if _is_reserved_agent_profile(profile):
+                continue
+            current = by_profile.get(profile)
+            if current is None:
+                by_profile[profile] = {
+                    "profile": profile,
+                    "state": "idle",
+                    "current_task_id": None,
+                    "current_step": None,
+                    "status_text": "desligado; clique em Invocar",
+                    "last_heartbeat_at": None,
+                    "pid": None,
+                    "run_id": None,
+                    "metadata": {"source": "manifest"},
+                }
+            else:
+                meta = current.get("metadata")
+                if not isinstance(meta, dict):
+                    meta = {}
+                # Keep cards visible for configured agents even when offline.
+                # Force manifest source for configured profiles so stale metadata
+                # from prior worker runs (e.g. source=kanban-worker with pid=None)
+                # does not hide the card in the sidebar.
+                meta["source"] = "manifest"
+                current["metadata"] = meta
+
+                # Re-resolve live profile session pid when stale snapshots were
+                # cleaned (e.g. a finished worker wrote an old pid/run). This
+                # keeps the PID button available for an already-open tmux agent
+                # session and avoids showing only "Invocar".
+                if not current.get("pid"):
+                    live_pid = _resolve_profile_pid(profile)
+                    if live_pid:
+                        current["pid"] = live_pid
+
+                if not current.get("pid") and not current.get("status_text"):
+                    current["status_text"] = "desligado; clique em Invocar"
+
+        agents = list(by_profile.values())
+        agents.sort(
+            key=lambda a: (
+                0 if a.get("pid") else 1,
+                -(a.get("last_heartbeat_at") or 0),
+                str(a.get("profile") or ""),
+            )
+        )
+        return {"agents": agents}
 
 
 class AgentStatusBody(BaseModel):
@@ -2335,18 +2800,153 @@ def get_agent_status(profile: str):
         return {"agent": _agent_status_dict(row)}
 
 
-@router.post("/agents/{profile}/open-terminal")
-def open_agent_terminal(profile: str):
-    """Open a human-visible terminal attached to the agent tmux session."""
+class SummonAgentBody(BaseModel):
+    open_terminal: bool = True
+    state: str = "working"
+    status_text: Optional[str] = "summoned; aguardando instruções"
+
+
+@router.post("/agents/{profile}/summon")
+def summon_agent(profile: str, payload: SummonAgentBody):
+    """Ensure agent session exists, optionally open terminal, and upsert status.
+
+    This is the function-call/helper path used by the Ágora UI to summon agents
+    consistently without hardcoding model/provider in backend code.
+    """
     profile = profile.strip()
     if not profile:
         raise HTTPException(status_code=400, detail="profile is required")
+    if _is_reserved_agent_profile(profile):
+        raise HTTPException(status_code=400, detail=f"profile '{profile}' is reserved")
+
+    ensure = _ensure_visible_agent_terminal(profile)
+    if not ensure.get("ok"):
+        raise HTTPException(status_code=400, detail=ensure)
+
+    terminal: dict[str, Any] = {"ok": True, "opened": False, "focused": False}
+    if payload.open_terminal:
+        terminal = _open_agent_tmux_terminal(profile)
+        if not terminal.get("ok"):
+            raise HTTPException(status_code=400, detail=terminal)
+
+    pid = _resolve_profile_pid(profile)
+
+    # Persist/refresh status row so the agent card appears immediately.
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO agora_agent_status
+            (profile, state, current_task_id, current_step, status_text, last_heartbeat_at, pid, run_id, metadata_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(profile) DO UPDATE SET
+                state = excluded.state,
+                status_text = excluded.status_text,
+                last_heartbeat_at = excluded.last_heartbeat_at,
+                pid = excluded.pid,
+                metadata_json = excluded.metadata_json
+            """,
+            (
+                profile,
+                (payload.state or "working").strip().lower() or "working",
+                None,
+                None,
+                payload.status_text,
+                int(time.time()),
+                pid,
+                None,
+                json.dumps({
+                    "summoned": True,
+                    "created_session": bool(ensure.get("created")),
+                    "opened_terminal": bool(terminal.get("opened")),
+                    "focused_terminal": bool(terminal.get("focused")),
+                }),
+            ),
+        )
+        _emit_event(
+            conn,
+            "agent_status",
+            profile,
+            "updated",
+            {
+                "state": (payload.state or "working").strip().lower() or "working",
+                "summoned": True,
+                "pid": pid,
+            },
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM agora_agent_status WHERE profile = ?", (profile,)
+        ).fetchone()
+
+    return {
+        "ok": True,
+        "agent": _agent_status_dict(row),
+        "summon": ensure,
+        "terminal": terminal,
+    }
+
+
+@router.post("/agents/{profile}/open-terminal")
+def open_agent_terminal(
+    profile: str,
+    target: str = Query(
+        "profile-session",
+        description="terminal target: profile-session (default), kanban-tail, or auto",
+    ),
+):
+    """Open a human-visible tmux terminal for an agent.
+
+    Defaults to the profile's interactive session so clicking PID opens the
+    actual agent terminal (not a tail/log session).
+
+    Targets:
+    - profile-session: open/focus canonical profile tmux session
+    - kanban-tail: open/focus telemetry tail session for active worker
+    - auto: keep legacy behavior (prefer kanban-tail when worker is active)
+    """
+    profile = profile.strip()
+    if not profile:
+        raise HTTPException(status_code=400, detail="profile is required")
+
+    target_norm = (target or "profile-session").strip().lower()
+    if target_norm not in {"profile-session", "kanban-tail", "auto"}:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "ok": False,
+                "reason": "invalid-target",
+                "allowed": ["profile-session", "kanban-tail", "auto"],
+            },
+        )
+
+    prefer_worker_tail = target_norm in {"kanban-tail", "auto"}
+    worker = _kanban_active_worker(profile) if prefer_worker_tail else None
+    if prefer_worker_tail and worker:
+        telem = _ensure_worker_telemetry_session(profile, worker)
+        if not telem.get("ok"):
+            raise HTTPException(status_code=400, detail=telem)
+        result = _open_agent_tmux_terminal(profile, session=telem["session"])
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result)
+        if not (result.get("opened") or result.get("focused")):
+            raise HTTPException(status_code=503, detail=result)
+        return {
+            "ok": True,
+            "terminal": result,
+            "telemetry": {
+                "mode": "kanban-tail",
+                "task_id": worker.get("task_id"),
+                "run_id": worker.get("run_id"),
+                "worker_pid": worker.get("worker_pid"),
+            },
+        }
+
     result = _open_agent_tmux_terminal(profile)
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result)
     if not (result.get("opened") or result.get("focused")):
         raise HTTPException(status_code=503, detail=result)
-    return {"ok": True, "terminal": result}
+    return {"ok": True, "terminal": result, "telemetry": {"mode": "profile-session"}}
 
 
 # ---------------------------------------------------------------------------
@@ -2609,7 +3209,72 @@ def mark_all_notifications_read(recipient: str):
         conn.commit()
         return {"recipient": recipient, "ok": True}
 
+def _format_profile_circuit_open_report(
+    *,
+    profile: str,
+    threshold: int,
+    task_ids: list[str],
+    opened_at: int,
+    telemetry: Optional[dict[str, Any]] = None,
+) -> str:
+    """Build the human-readable incident report posted to #incidentes."""
+    tel = telemetry or {}
+    rate = tel.get("rate_pct", 0)
+    denom = tel.get("denominator", 0)
+    violations = tel.get("violations", len(task_ids))
+    lines = [
+        f"@agent-techlead circuit breaker aberto para profile `{profile}`:",
+        "",
+        f"**{violations}** protocol violations em **{denom}** tarefas "
+        f"terminadas na janela ({rate}%). Limiar: {threshold}.",
+        "",
+        "Tasks impactadas:",
+    ]
+    lines.extend(f"- {tid}" for tid in task_ids)
+    lines.extend([
+        "",
+        "Ações sugeridas: verificar modelo/config do profile antes de reativar.",
+        f"Aberto em: {opened_at}",
+    ])
+    return "\n".join(lines)
+
+
+def _on_kanban_profile_circuit_open(
+    *,
+    profile: str,
+    task_ids: list[str],
+    threshold: int,
+    opened_at: int,
+    telemetry: Optional[dict[str, Any]] = None,
+    **kwargs: Any,
+) -> None:
+    """Post a profile circuit-open alert to #incidentes.
+
+    Registered as a ``kanban_db`` lifecycle hook when a per-profile
+    protocol-violation circuit breaker trips.
+    """
+    try:
+        body = _format_profile_circuit_open_report(
+            profile=profile,
+            threshold=threshold,
+            task_ids=task_ids,
+            opened_at=opened_at,
+            telemetry=telemetry,
+        )
+        _post_system_message_to_channel(
+            channel_slug="incidentes",
+            body=body,
+            task_id=task_ids[0] if task_ids else "",
+            event_origin="kanban_profile_circuit_open",
+        )
+    except Exception:
+        log.exception(
+            "Failed to notify Ágora of profile circuit open for %s", profile
+        )
+
+
 def register(ctx: PluginContext) -> None:
     """Plugin registration entry point for Ágora Dashboard."""
     ctx.register_hook("kanban_task_completed", _on_kanban_task_completed)
     ctx.register_hook("kanban_task_blocked", _on_kanban_task_blocked)
+    ctx.register_hook("kanban_profile_circuit_open", _on_kanban_profile_circuit_open)

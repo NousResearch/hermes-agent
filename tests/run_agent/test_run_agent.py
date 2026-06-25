@@ -1734,7 +1734,7 @@ class TestBuildApiKwargs:
             supports_reasoning=True,
             provider_profile=profile,
         )
-        assert kwargs["extra_body"]["reasoning"] == {"effort": "medium"}
+        assert kwargs["extra_body"]["reasoning"] == {"effort": "medium", "summary": "auto"}
 
     def test_reasoning_xhigh_normalized_for_copilot(self, agent):
         """xhigh effort should normalize to high for Copilot GitHub Models."""

@@ -4395,6 +4395,95 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
         conn.close()
 
 
+def test_detect_crashed_workers_protocol_violation_via_real_subprocess(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """End-to-end regression test for t_6f694485 / t_50435e02.
+
+    A real (cheap, no-LLM) worker subprocess exits with rc=0 without
+    ever calling ``kanban_complete`` / ``kanban_block``. The dispatcher
+    must eventually notice, mark the run as a protocol violation, and
+    block the card instead of silently leaving it as ``running`` or
+    giving up without a visible event.
+
+    The worker is spawned as a normal child (no ``start_new_session``)
+    so the dispatcher's reap loop can collect its exit status and
+    classify the clean exit. In production workers are detached, so the
+    classification may fall back to ``crashed``; the invariant this test
+    protects is that the lifecycle does not silently abandon the task.
+    """
+    import sys as _sys
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="quiet-subprocess", assignee="worker")
+        quiet_worker = (
+            Path(__file__).resolve().parents[2] / "tests" / "stress" / "_quiet_worker.py"
+        )
+        assert quiet_worker.exists(), f"missing fake worker {quiet_worker}"
+
+        def _spawn_quiet(task, workspace):
+            env = {
+                **os.environ,
+                "HERMES_HOME": os.environ["HERMES_HOME"],
+                "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+                "HERMES_KANBAN_TASK": task.id,
+                "HERMES_KANBAN_WORKSPACE": workspace,
+            }
+            proc = subprocess.Popen(
+                [_sys.executable, str(quiet_worker)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+            )
+            return proc.pid
+
+        # Tick 1: claim + spawn the quiet worker.
+        res1 = kb.dispatch_once(conn, spawn_fn=_spawn_quiet)
+        assert tid in [s[0] for s in res1.spawned]
+        task = kb.get_task(conn, tid)
+        assert task.status == "running"
+
+        # Wait for the child to finish, then tick the dispatcher until the
+        # task is no longer running. The first tick reaps/classifies the
+        # clean exit; the second tick may respawn because
+        # ``recompute_ready`` sees one failure below the default limit. Once
+        # the protocol-violation counter reaches the breaker threshold the
+        # task ends up blocked.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            time.sleep(0.2)
+            res = kb.dispatch_once(conn, spawn_fn=_spawn_quiet)
+            task = kb.get_task(conn, tid)
+            if task.status != "running":
+                break
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked", (
+            f"task should end blocked after clean-exit protocol violation, "
+            f"got status={task.status}"
+        )
+        assert task.consecutive_failures >= 1, (
+            f"expected failure counter to increment, got {task.consecutive_failures}"
+        )
+        assert "kanban_complete" in (task.last_failure_error or "") or \
+               "kanban_block" in (task.last_failure_error or ""), (
+            f"expected protocol-violation hint in last_failure_error, got {task.last_failure_error!r}"
+        )
+
+        events = kb.list_events(conn, tid)
+        kinds = [e.kind for e in events]
+        assert "protocol_violation" in kinds, (
+            f"expected 'protocol_violation' event, got {kinds}"
+        )
+        assert "gave_up" in kinds, (
+            f"expected circuit-breaker 'gave_up' event, got {kinds}"
+        )
+    finally:
+        conn.close()
+
+
 def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
     """A worker that exited non-zero (real error / crash) uses the
     normal counter path — one failure doesn't trip the breaker.

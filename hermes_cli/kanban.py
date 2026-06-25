@@ -675,6 +675,24 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_stats.add_argument("--json", action="store_true")
 
+    # --- profile-incidents ---
+    p_profile_incidents = sub.add_parser(
+        "profile-incidents",
+        aliases=["profile-incident"],
+        help="Per-profile protocol-violation telemetry and open circuits",
+    )
+    p_profile_incidents.add_argument(
+        "--profile",
+        default=None,
+        help="Filter to a single profile (default: all profiles with assignments)",
+    )
+    p_profile_incidents.add_argument(
+        "--open-only",
+        action="store_true",
+        help="Only show profiles whose circuit is currently open",
+    )
+    p_profile_incidents.add_argument("--json", action="store_true")
+
     # --- notify subscribe / list / remove ---
     p_nsub = sub.add_parser(
         "notify-subscribe",
@@ -948,6 +966,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "daemon":   _cmd_daemon,
             "watch":    _cmd_watch,
             "stats":    _cmd_stats,
+            "profile-incidents":  _cmd_profile_incidents,
+            "profile-incident":   _cmd_profile_incidents,
             "log":      _cmd_log,
             "runs":     _cmd_runs,
             "heartbeat": _cmd_heartbeat,
@@ -2138,6 +2158,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "timed_out": res.timed_out,
             "stale": res.stale,
             "auto_blocked": res.auto_blocked,
+            "profile_circuits_open": res.profile_circuits_open,
             "promoted": res.promoted,
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws}
@@ -2165,6 +2186,13 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     print(f"Auto-blocked: {len(res.auto_blocked)}")
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
+    if res.profile_circuits_open:
+        print("Profile circuits open (protocol violation):")
+        for c in res.profile_circuits_open:
+            print(
+                f"  - {c['profile']}: threshold={c['threshold']} "
+                f"tasks={', '.join(c['task_ids'])}"
+            )
     print(f"Promoted:     {res.promoted}")
     print(f"Spawned:      {len(res.spawned)}")
     for tid, who, ws in res.spawned:
@@ -2397,6 +2425,44 @@ def _cmd_stats(args: argparse.Namespace) -> int:
     age = stats["oldest_ready_age_seconds"]
     if age is not None:
         print(f"\nOldest ready task age: {int(age)}s")
+    return 0
+
+
+def _cmd_profile_incidents(args: argparse.Namespace) -> int:
+    """Show per-profile protocol-violation telemetry and open circuits."""
+    with kb.connect_closing() as conn:
+        if args.profile:
+            profiles = [args.profile]
+        else:
+            rows = conn.execute(
+                "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL"
+            ).fetchall()
+            profiles = sorted({r["assignee"] for r in rows})
+        results = [
+            kb.profile_protocol_violation_telemetry(conn, p)
+            for p in profiles
+        ]
+        if args.open_only:
+            results = [r for r in results if r["circuit_open"]]
+
+    if getattr(args, "json", False):
+        print(json.dumps(results, indent=2, ensure_ascii=False))
+        return 0
+
+    if not results:
+        print("(no profile incident data)")
+        return 0
+
+    print(f"{'PROFILE':20s} {'VIOL':>5s} {'DENOM':>6s} {'RATE':>5s} {'THRESH':>7s} {'OPEN':>5s}")
+    for r in results:
+        print(
+            f"{r['profile']:20s} "
+            f"{r['violations']:5d} "
+            f"{r['denominator']:6d} "
+            f"{r['rate_pct']:4d}% "
+            f"{r['threshold']:7d} "
+            f"{'yes' if r['circuit_open'] else 'no':>5s}"
+        )
     return 0
 
 

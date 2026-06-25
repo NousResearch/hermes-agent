@@ -8,6 +8,7 @@ REST surface without spinning up the whole dashboard.
 from __future__ import annotations
 
 import importlib.util
+import json
 import sqlite3
 import subprocess
 import sys
@@ -600,6 +601,115 @@ def test_list_agent_status(client):
     assert profiles == {"a", "b"}
 
 
+def test_list_agent_status_includes_manifest_profiles(client, agora_home, monkeypatch):
+    """Manifest-declared profiles appear even before the first heartbeat."""
+    router_mod = sys.modules["hermes_dashboard_plugin_agora_test"]
+    agents_dir = agora_home / "agents.d"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    (agents_dir / "agent-frontend.yaml").write_text("profile: agent-frontend\n", encoding="utf-8")
+
+    monkeypatch.setattr(router_mod, "_resolve_profile_pid", lambda profile: None)
+
+    r = client.get("/api/plugins/agora/agents/status")
+    assert r.status_code == 200
+    agents = {a["profile"]: a for a in r.json()["agents"]}
+    assert "agent-frontend" in agents
+    assert agents["agent-frontend"]["state"] == "idle"
+    assert agents["agent-frontend"]["metadata"]["source"] == "manifest"
+
+
+def test_list_agent_status_forces_manifest_source_for_configured_profiles(
+    client, monkeypatch
+):
+    """Configured profiles keep source=manifest even if stale row metadata says otherwise."""
+    router_mod = sys.modules["hermes_dashboard_plugin_agora_test"]
+    monkeypatch.setattr(router_mod, "_configured_profile_names", lambda: {"agent-frontend"})
+    monkeypatch.setattr(router_mod, "_kanban_active_profiles", lambda: set())
+
+    # Seed stale metadata through the public API (source=kanban-worker).
+    seeded = client.post(
+        "/api/plugins/agora/agents/status/agent-frontend",
+        json={
+            "state": "idle",
+            "status_text": "offline",
+            "metadata": {"source": "kanban-worker"},
+        },
+    )
+    assert seeded.status_code == 200
+
+    r = client.get("/api/plugins/agora/agents/status")
+    assert r.status_code == 200
+    agents = {a["profile"]: a for a in r.json()["agents"]}
+    assert agents["agent-frontend"]["metadata"]["source"] == "manifest"
+
+
+def test_list_agent_status_re_resolves_pid_for_configured_profile_without_pid(
+    client, monkeypatch
+):
+    """Configured profile rows without pid should regain a live resolved pid."""
+    router_mod = sys.modules["hermes_dashboard_plugin_agora_test"]
+    monkeypatch.setattr(router_mod, "_configured_profile_names", lambda: {"agent-qa"})
+    monkeypatch.setattr(router_mod, "_kanban_active_profiles", lambda: set())
+    monkeypatch.setattr(router_mod, "_resolve_profile_pid", lambda profile: 42424 if profile == "agent-qa" else None)
+
+    seeded = client.post(
+        "/api/plugins/agora/agents/status/agent-qa",
+        json={
+            "state": "idle",
+            "status_text": "offline",
+            "metadata": {"source": "kanban-worker"},
+            "pid": None,
+        },
+    )
+    assert seeded.status_code == 200
+
+    r = client.get("/api/plugins/agora/agents/status")
+    assert r.status_code == 200
+    agents = {a["profile"]: a for a in r.json()["agents"]}
+    assert agents["agent-qa"]["metadata"]["source"] == "manifest"
+    assert agents["agent-qa"]["pid"] == 42424
+
+
+def test_summon_agent_endpoint_upserts_status_and_opens_terminal(client, monkeypatch):
+    """/agents/{profile}/summon creates/opens terminal and refreshes status row."""
+    router_mod = sys.modules["hermes_dashboard_plugin_agora_test"]
+
+    monkeypatch.setattr(
+        router_mod,
+        "_ensure_visible_agent_terminal",
+        lambda profile, allow_known=True: {
+            "ok": True,
+            "profile": profile,
+            "session": profile,
+            "created": True,
+        },
+    )
+    monkeypatch.setattr(
+        router_mod,
+        "_open_agent_tmux_terminal",
+        lambda profile: {
+            "ok": True,
+            "profile": profile,
+            "session": profile,
+            "opened": True,
+            "focused": False,
+        },
+    )
+    monkeypatch.setattr(router_mod, "_resolve_profile_pid", lambda profile: 4242)
+
+    r = client.post(
+        "/api/plugins/agora/agents/agent-frontend/summon",
+        json={"open_terminal": True, "state": "working"},
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["ok"] is True
+    assert data["summon"]["created"] is True
+    assert data["terminal"]["opened"] is True
+    assert data["agent"]["profile"] == "agent-frontend"
+    assert data["agent"]["pid"] == 4242
+
+
 def test_get_agent_status_404(client):
     r = client.get("/api/plugins/agora/agents/status/nobody")
     assert r.status_code == 404
@@ -690,6 +800,110 @@ def test_list_agent_status_excludes_reserved_profile(client, agora_home):
     profiles = {a["profile"] for a in r.json()["agents"]}
     assert "real-agent" in profiles
     assert "human" not in profiles
+
+
+def test_list_agent_status_clears_stale_dead_pid(client, monkeypatch):
+    """Dead stored PIDs are nulled so non-invoked agents don't look active."""
+    router_mod = sys.modules["hermes_dashboard_plugin_agora_test"]
+    monkeypatch.setattr(router_mod, "_pid_is_alive", lambda pid: False)
+
+    client.post(
+        "/api/plugins/agora/agents/status/agent-backend",
+        json={"state": "working", "pid": 99999},
+    )
+
+    r = client.get("/api/plugins/agora/agents/status")
+    assert r.status_code == 200
+    row = next(a for a in r.json()["agents"] if a["profile"] == "agent-backend")
+    assert row["pid"] is None
+    assert row["state"] == "idle"
+
+
+def test_list_agent_status_clears_stale_worker_snapshot_when_pid_dead(client, monkeypatch):
+    """Dead PID cleanup must also clear stale run/task fields from old worker snapshots."""
+    router_mod = sys.modules["hermes_dashboard_plugin_agora_test"]
+    monkeypatch.setattr(router_mod, "_pid_is_alive", lambda pid: False)
+
+    client.post(
+        "/api/plugins/agora/agents/status/agent-qa",
+        json={
+            "state": "working",
+            "pid": 99999,
+            "run_id": 171,
+            "current_task_id": "t_275c6f16",
+            "current_step": "run 171",
+            "status_text": "stale worker snapshot",
+            "metadata": {"source": "kanban-worker", "run_id": 171, "task_id": "t_275c6f16"},
+        },
+    )
+
+    r = client.get("/api/plugins/agora/agents/status")
+    assert r.status_code == 200
+    row = next(a for a in r.json()["agents"] if a["profile"] == "agent-qa")
+    assert row["pid"] is None
+    assert row["state"] == "idle"
+    assert row["run_id"] is None
+    assert row["current_task_id"] is None
+    assert row["current_step"] is None
+
+
+def test_list_agent_status_worker_active_overrides_stale_status(client, monkeypatch):
+    """A Kanban active worker must overwrite stale agora_agent_status state/pid/step."""
+    pa = sys.modules["hermes_dashboard_plugin_agora_test"]
+
+    # Seed a stale snapshot: idle agent with old pid/step/status from a previous run.
+    client.post(
+        "/api/plugins/agora/agents/status/agent-frontend",
+        json={
+            "state": "idle",
+            "current_task_id": "t_old",
+            "current_step": "run 42",
+            "status_text": "old task done",
+            "pid": 11111,
+            "run_id": 42,
+        },
+    )
+
+    # Live worker telemetry comes from Kanban.
+    monkeypatch.setattr(pa, "_kanban_active_profiles", lambda: {"agent-frontend"})
+    monkeypatch.setattr(
+        pa,
+        "_kanban_active_worker",
+        lambda profile: {
+            "task_id": "t_b572c33d",
+            "run_id": 162,
+            "worker_pid": 5423,
+            "started_at": 1782386201,
+            "last_heartbeat_at": 1782386237,
+            "task_title": "Estabilidade: worker ativo deve vencer agora_agent_status stale",
+        },
+    )
+
+    r = client.get("/api/plugins/agora/agents/status")
+    assert r.status_code == 200
+    agent = next(a for a in r.json()["agents"] if a["profile"] == "agent-frontend")
+    assert agent["state"] == "working"
+    assert agent["current_task_id"] == "t_b572c33d"
+    assert agent["current_step"] == "run 162"
+    assert agent["status_text"] == "Estabilidade: worker ativo deve vencer agora_agent_status stale"
+    assert agent["pid"] == 5423
+    assert agent["run_id"] == 162
+
+    # agora_agent_status itself must have been upserted with the worker truth.
+    with pa._connect() as conn:
+        row = conn.execute(
+            "SELECT state, pid, run_id, current_step, current_task_id, status_text, metadata_json "
+            "FROM agora_agent_status WHERE profile = ?",
+            ("agent-frontend",),
+        ).fetchone()
+        assert row["state"] == "working"
+        assert row["pid"] == 5423
+        assert row["run_id"] == 162
+        assert row["current_step"] == "run 162"
+        assert row["current_task_id"] == "t_b572c33d"
+        assert "stale" in row["status_text"]
+        meta = json.loads(row["metadata_json"])
+        assert meta.get("source") == "kanban-worker"
 
 
 # ---------------------------------------------------------------------------
@@ -2166,4 +2380,95 @@ def test_open_terminal_empty_profile_rejected(client):
     r = client.post("/api/plugins/agora/agents/%20/open-terminal")
     assert r.status_code == 400
     assert "profile is required" in r.json()["detail"]
+
+
+def test_open_terminal_defaults_to_profile_session_even_with_active_worker(client, monkeypatch):
+    pa = sys.modules["hermes_dashboard_plugin_agora_test"]
+
+    monkeypatch.setattr(
+        pa,
+        "_kanban_active_worker",
+        lambda profile: {
+            "task_id": "t_active",
+            "run_id": 123,
+            "worker_pid": 9999,
+        },
+    )
+
+    opened = []
+
+    def _fake_open(profile, session=None):
+        opened.append(session)
+        return {
+            "ok": True,
+            "profile": profile,
+            "session": session or profile,
+            "opened": True,
+            "focused": False,
+            "command": "ptyxis",
+        }
+
+    monkeypatch.setattr(pa, "_open_agent_tmux_terminal", _fake_open)
+
+    r = client.post("/api/plugins/agora/agents/agent-frontend/open-terminal")
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload["ok"] is True
+    assert payload["telemetry"]["mode"] == "profile-session"
+    assert opened == [None]
+
+
+def test_open_terminal_kanban_tail_target_prefers_worker_session(client, monkeypatch):
+    pa = sys.modules["hermes_dashboard_plugin_agora_test"]
+
+    monkeypatch.setattr(
+        pa,
+        "_kanban_active_worker",
+        lambda profile: {
+            "task_id": "t_active",
+            "run_id": 777,
+            "worker_pid": 4321,
+        },
+    )
+    monkeypatch.setattr(
+        pa,
+        "_ensure_worker_telemetry_session",
+        lambda profile, worker: {
+            "ok": True,
+            "session": "agent-frontend--w-t_active",
+            "task_id": worker["task_id"],
+            "run_id": worker["run_id"],
+        },
+    )
+
+    opened = []
+
+    def _fake_open(profile, session=None):
+        opened.append(session)
+        return {
+            "ok": True,
+            "profile": profile,
+            "session": session,
+            "opened": True,
+            "focused": False,
+            "command": "ptyxis",
+        }
+
+    monkeypatch.setattr(pa, "_open_agent_tmux_terminal", _fake_open)
+
+    r = client.post("/api/plugins/agora/agents/agent-frontend/open-terminal?target=kanban-tail")
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload["ok"] is True
+    assert payload["telemetry"]["mode"] == "kanban-tail"
+    assert payload["telemetry"]["task_id"] == "t_active"
+    assert opened == ["agent-frontend--w-t_active"]
+
+
+def test_open_terminal_invalid_target_rejected(client):
+    r = client.post("/api/plugins/agora/agents/agent-frontend/open-terminal?target=bogus")
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["reason"] == "invalid-target"
+    assert set(detail["allowed"]) == {"profile-session", "kanban-tail", "auto"}
 

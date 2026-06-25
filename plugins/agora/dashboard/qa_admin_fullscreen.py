@@ -137,10 +137,10 @@ async def run():
             ((slug) => {{
                 const nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
                 const inputs = Array.from(document.querySelectorAll('.agora-admin-form input, .agora-screen--admin input'));
-                const byLabel = (regex) => inputs.find(i => regex.test(i.placeholder || i.name || (i.labels[0] && i.labels[0].textContent) || ''));
-                const nameInput = byLabel(/Nome/i);
-                const slugInput = byLabel(/slug/i);
-                const descInput = byLabel(/descrição|description/i);
+                const byPH = (re) => inputs.find(i => re.test(i.placeholder || ''));
+                const nameInput = byPH(/nome do canal/i);
+                const slugInput = byPH(/nome-do-canal/i);
+                const descInput = byPH(/descrição opcional|optional/i);
                 if (nameInput) {{ nativeSet.call(nameInput, 'Fullscreen QA {ts}'); nameInput.dispatchEvent(new Event('input', {{bubbles:true}})); }}
                 if (slugInput) {{ nativeSet.call(slugInput, slug); slugInput.dispatchEvent(new Event('input', {{bubbles:true}})); }}
                 if (descInput) {{ nativeSet.call(descInput, 'Canal criado pela validação full-screen'); descInput.dispatchEvent(new Event('input', {{bubbles:true}})); }}
@@ -182,7 +182,7 @@ async def run():
             f"""
             (() => {{
                 const items = Array.from(document.querySelectorAll('.agora-channel-list .agora-channel'));
-                const found = items.some(el => el.textContent.includes({json.dumps(slug)}));
+                const found = items.some(el => el.textContent.includes('Fullscreen QA {ts}') || el.textContent.includes({json.dumps(slug)}));
                 const active = document.querySelector('.agora-channel--active .agora-channel-name');
                 return {{found: found, selected: active ? active.textContent.trim() : null, total: items.length}};
             }})()

@@ -429,6 +429,16 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
+                    # Check main-command collision against core commands *before*
+                    # aliases so we don't waste time processing aliases for a
+                    # skill whose primary identity is already invalid.
+                    core_names = _get_core_command_names()
+                    if cmd_name in core_names:
+                        logger.warning(
+                            "Skill '%s' command '/%s' collides with a core Hermes command. Skipping.",
+                            name, cmd_name,
+                        )
+                        continue
                     _skill_commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
@@ -439,7 +449,6 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     # ── Register aliases ──
                     aliases = frontmatter.get('aliases', [])
                     if isinstance(aliases, list):
-                        core_names = _get_core_command_names()
                         for alias in aliases:
                             if not isinstance(alias, str) or not alias.strip():
                                 continue

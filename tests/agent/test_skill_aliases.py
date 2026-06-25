@@ -82,6 +82,28 @@ class TestSkillAliases:
             "my-skill", bad_alias,
         )
 
+    def test_main_command_collision_with_core_skips_entire_skill(self, tmp_path):
+        """A skill whose main name normalizes to a core command is skipped entirely."""
+        core_names = _get_core_command_names()
+        assert "new" in core_names, "Expected 'new' to be a core command"
+
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            # Skill named "new" — main command collides with core
+            _make_skill(tmp_path, "new",
+                        extra_frontmatter="aliases: [new-skill]\\n")
+            with patch("agent.skill_commands.logger") as mock_logger:
+                result = scan_skill_commands()
+
+        # Neither the main command nor aliases should be registered
+        assert "/new" not in result
+        assert "/new-skill" not in result
+        assert len(result) == 0
+        # Warning should be about the main command collision, not alias
+        mock_logger.warning.assert_any_call(
+            "Skill '%s' command '/%s' collides with a core Hermes command. Skipping.",
+            "new", "new",
+        )
+
     def test_alias_collision_with_other_skill_skipped(self, tmp_path):
         """Two skills claiming the same alias: second is skipped with warning."""
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

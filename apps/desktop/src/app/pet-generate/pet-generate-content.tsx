@@ -145,15 +145,13 @@ export function PetGenerateContent() {
     void generateDrafts(requestGateway, { prompt: example })
   }
 
-  // Branch a fresh draft round off an existing look by feeding it back in as the
-  // reference image. Keeps the user on step 2 with the same prompt, just grounded
-  // on the chosen draft.
+  // A remix re-runs generation grounded on an existing draft — same prompt, stay
+  // on step 2 — so the user explores variations without starting over.
   const runRemix = (draft: { dataUri: string }) => {
     void generateDrafts(requestGateway, { prompt: prompt.trim(), referenceImage: draft.dataUri })
   }
 
-  // "Remix" affordance: regenerating is slow and replaces the current drafts, so
-  // warn once (then remember the acknowledgement) before kicking off the round.
+  // Slow, and it replaces the current drafts — so confirm once, then remember it.
   const remixDraft = (draft: { dataUri: string }) => {
     if (busy) {
       return
@@ -324,11 +322,10 @@ export function PetGenerateContent() {
         description={copy.remixConfirmBody}
         onClose={() => setRemixPending(null)}
         onConfirm={() => {
-          const draft = remixPending
           markRemixConfirmed()
 
-          if (draft) {
-            runRemix(draft)
+          if (remixPending) {
+            runRemix(remixPending)
           }
         }}
         open={remixPending !== null}

@@ -82,9 +82,7 @@ export function DraftGrid({
                 )}
               </button>
 
-              {/* Branch off this look — reuses the draft as the next reference so
-                  the user can explore variations without leaving the grid. Hidden
-                  until hover/focus to keep the grid clean. */}
+              {/* Remix: branch a new round off this look. Revealed on hover/focus. */}
               {draft != null && !generating && (
                 <Tip label={copy.remix}>
                   <Button

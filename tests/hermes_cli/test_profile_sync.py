@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from hermes_cli import profile_sync
@@ -150,3 +154,84 @@ def test_profile_sync_skills_apply_copies_missing_and_changed_keeps_extra_and_ba
     assert (target / "skills" / "cat" / "extra" / "SKILL.md").exists()
     assert report["post_apply_skills"]["missing_in_target"] == []
     assert report["post_apply_skills"]["changed"] == []
+
+
+def _hash_tree(root: Path) -> dict[str, str]:
+    return {
+        path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def test_profile_sync_memories_apply_exits_nonzero_through_cli_entrypoint(tmp_path):
+    hermes_home = tmp_path / "hermes-home"
+    (hermes_home / "profiles" / "engineer" / "skills").mkdir(parents=True)
+    env = os.environ.copy()
+    env["HERMES_HOME"] = str(hermes_home)
+    env["PYTHONPATH"] = os.getcwd()
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "hermes_cli.main",
+            "profile-sync",
+            "memories",
+            "--source",
+            "engineer",
+            "--target",
+            "default",
+            "--apply",
+        ],
+        cwd=os.getcwd(),
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "memory apply is disabled until merge rules exist" in result.stderr
+
+
+def test_profile_sync_skills_apply_leaves_non_skill_profile_state_untouched(tmp_path, monkeypatch):
+    source = tmp_path / "source"
+    target = tmp_path / "target"
+    source.mkdir()
+    target.mkdir()
+    _write_skill(source, "cat/alpha", "---\nname: alpha\n---\nsource\n")
+    _write_skill(target, "cat/alpha", "---\nname: alpha\n---\ntarget\n")
+
+    sentinel_files = {
+        ".env": "ENV_SENTINEL=value\n",
+        "auth.json": '{"auth":"keep"}\n',
+        "config.yaml": "model:\n  default: keep\n",
+        "state.db": "sqlite-ish sentinel\n",
+        "memories/MEMORY.md": "target memory\n§\nkeep\n",
+        "memories/USER.md": "target user\n§\nkeep\n",
+        "sessions/session.jsonl": "session sentinel\n",
+        "cron/jobs.json": "cron sentinel\n",
+    }
+    for rel, content in sentinel_files.items():
+        path = target / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    before_hashes = _hash_tree(target)
+    _patch_profile_dirs(monkeypatch, source, target)
+
+    class Args(_BaseArgs):
+        profile_sync_action = "skills"
+        apply = True
+        with_backup = True
+
+    report = profile_sync._build_report(Args())
+
+    assert report["apply"]["copied"] == ["cat/alpha"]
+    after_hashes = _hash_tree(target)
+    for rel in sentinel_files:
+        assert rel in after_hashes
+        assert after_hashes[rel] == before_hashes[rel]
+    assert (target / "sessions").is_dir()
+    assert (target / "cron").is_dir()

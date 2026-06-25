@@ -5367,6 +5367,51 @@ def _stop_desktop_processes_locking_build(desktop_dir: Path) -> list[int]:
     return stopped
 
 
+def _stale_installed_macos_desktop_app(
+    packaged_executable: Optional[Path],
+    search_bases: Optional[list[Path]] = None,
+) -> Optional[Path]:
+    """Return an installed /Applications Hermes.app bundle that is older than the
+    freshly built one, or ``None`` when there's nothing to warn about.
+
+    A terminal-driven rebuild (``hermes update`` -> ``hermes desktop
+    --build-only``) writes to the repo-local ``apps/desktop/release/...`` tree
+    but never touches an app the user installed under ``/Applications`` (or
+    ``~/Applications``). That leaves a split-brain state where ``hermes desktop``
+    launches the new build while Finder/Dock launches the stale installed bundle
+    (#52339). This pure helper detects that case so the caller can print an
+    actionable hint. macOS-only; best-effort (never raises).
+    """
+    if sys.platform != "darwin" or packaged_executable is None:
+        return None
+    try:
+        # exe = .../Hermes.app/Contents/MacOS/Hermes -> bundle = .../Hermes.app
+        built_app = packaged_executable.parents[2]
+        if not str(built_app).endswith(".app"):
+            return None
+        built_mtime = packaged_executable.stat().st_mtime
+        bases = search_bases if search_bases is not None else [
+            Path("/Applications"),
+            Path.home() / "Applications",
+        ]
+        for base in bases:
+            installed = base / "Hermes.app"
+            installed_exe = installed / "Contents" / "MacOS" / "Hermes"
+            if not installed_exe.exists():
+                continue
+            # Same bundle (e.g. installed via symlink/in place) -> not stale.
+            try:
+                if installed.resolve() == built_app.resolve():
+                    return None
+            except OSError:
+                pass
+            if installed_exe.stat().st_mtime < built_mtime:
+                return installed
+    except (OSError, IndexError):  # pragma: no cover - defensive
+        return None
+    return None
+
+
 def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     """Make a locally-built (unsigned) macOS desktop app survive in-place self-update.
 
@@ -5610,6 +5655,16 @@ def cmd_gui(args: argparse.Namespace):
             sys.exit(1)
         else:
             print(f"✓ Desktop packaged app ready: {packaged_executable} (not launching; --build-only)")
+            stale_app = _stale_installed_macos_desktop_app(packaged_executable)
+            if stale_app is not None:
+                print(
+                    f"  ⚠ Your installed {stale_app} is older than this build and was "
+                    "NOT replaced."
+                )
+                print(
+                    f"    Launching it from Finder/Dock will run the stale app. To update it:  "
+                    f"cp -R '{packaged_executable.parents[2]}' '{stale_app.parent}/'"
+                )
         return
 
     if source_mode:

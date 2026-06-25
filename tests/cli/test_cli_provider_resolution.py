@@ -882,3 +882,40 @@ def test_save_custom_provider_uses_provided_name(monkeypatch, tmp_path):
     entries = saved.get("custom_providers", [])
     assert len(entries) == 1
     assert entries[0]["name"] == "Ollama"
+
+
+def test_model_flow_bedrock_api_key_uses_openai_v1_endpoint(monkeypatch, capsys):
+    """Bedrock API Key flow must use /openai/v1 (not legacy /v1) for full
+    OpenAI-compatible schema support including tool calling (#52316)."""
+    saved_cfg = {}
+    saved_env = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda key: "" if key == "AWS_BEARER_TOKEN_BEDROCK" else "",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.save_env_value", lambda key, value: saved_env.__setitem__(key, value)
+    )
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
+    monkeypatch.setattr("hermes_cli.auth._prompt_model_selection", lambda *a, **kw: "test-model")
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.models._PROVIDER_MODELS",
+        {"bedrock": ["anthropic.claude-sonnet-4-20250514-v1:0"]},
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_cfg.update(cfg))
+    monkeypatch.setattr(
+        "hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": "test-key"
+    )
+
+    from hermes_cli.main import _model_flow_bedrock_api_key
+
+    _model_flow_bedrock_api_key({}, "us-east-1")
+
+    # Must use /openai/v1, not legacy /v1
+    assert "/openai/v1" in saved_cfg.get("model", {}).get("base_url", "")
+    assert saved_cfg["model"]["base_url"] == "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
+    # OPENAI_BASE_URL env must also use the new endpoint
+    assert "/openai/v1" in saved_env.get("OPENAI_BASE_URL", "")

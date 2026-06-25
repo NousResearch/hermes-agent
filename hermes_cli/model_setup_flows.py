@@ -1955,7 +1955,7 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     )
     from hermes_cli.models import _PROVIDER_MODELS
 
-    mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
+    mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/openai/v1"
 
     # Prompt for API key
     existing_key = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or ""

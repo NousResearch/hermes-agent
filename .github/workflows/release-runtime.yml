@@ -19,9 +19,12 @@
 #     (firecrawl-py, etc.). Add them to hidden-imports as the ecosystem
 #     grows. The agent's `tools/lazy_deps.py` install flow won't work inside
 #     a frozen binary anyway — only the providers we pre-bake are usable.
-#   - Antivirus on Windows occasionally flags PyInstaller output. Sign
-#     the .exe (Authenticode) once you've registered a code-signing cert.
-#     Until then, document the false-positive in the release notes.
+#   - Antivirus on Windows flags unsigned PyInstaller output. Free mitigations
+#     applied here: --onedir (no self-extracting stub), --noupx (UPX-packed
+#     binaries are heavily flagged), and a stamped version-info resource
+#     (CompanyName/ProductName/FileVersion). The real fix is Authenticode
+#     signing + submitting to 360/火绒 vendor whitelists — see
+#     docs/windows-antivirus.md.
 
 name: release-runtime
 
@@ -178,6 +181,20 @@ jobs:
           print("\nAll CN desktop platform backends importable in the build env")
           PY
 
+      - name: Generate Windows version-info resource
+        if: matrix.platform == 'win32'
+        shell: bash
+        run: |
+          # Stamp CompanyName / ProductName / FileVersion onto the .exe. An
+          # unsigned PyInstaller binary with no version resource trips antivirus
+          # heuristics more readily; this is a free, signing-independent
+          # mitigation. See docs/windows-antivirus.md.
+          python scripts/gen_win_version_info.py \
+            --kernel-version "${{ steps.meta.outputs.kernel_version }}" \
+            --runtime-version "${{ steps.meta.outputs.runtime_version }}" \
+            --output runtime_version_info.txt
+          echo "VERSION_FILE_ARG=--version-file runtime_version_info.txt" >> "$GITHUB_ENV"
+
       - name: Build self-contained executable
         shell: bash
         run: |
@@ -193,6 +210,8 @@ jobs:
             --name "$NAME" \
             --onedir \
             --console \
+            --noupx \
+            ${VERSION_FILE_ARG:-} \
             --collect-submodules hermes_cli \
             --collect-submodules tui_gateway \
             --collect-submodules fastapi \

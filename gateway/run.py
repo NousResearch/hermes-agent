@@ -204,16 +204,62 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+def _strip_discord_gateway_chrome_emoji(text: str) -> str:
+    """Remove only known Gateway-generated chrome emoji for Discord.
+
+    Discord should not get Hermes/Gateway UI emoji, but we must not strip
+    arbitrary emoji from user text, code blocks, or model-authored content. Keep
+    the boundary narrow: only Gateway-generated status/final-response prefixes
+    are rewritten here.
+    """
+    gateway_prefixes = (
+        ("⚠️ ", "Gateway"),
+        ("⏳ ", "Gateway"),
+        ("♻️ ", "Gateway"),
+        ("♻ ", "Gateway"),
+        ("⏩ ", "実行中の作業へ追加入力しました"),
+        ("⏳ ", "次の返答に回しました"),
+        ("⚡ ", "現在の作業を中断しています"),
+        ("⏳ ", "作業を継続中です"),
+        ("⚡ ", "Force-stopped."),
+        ("⏩ ", "Steer queued"),
+        ("⏳ ", "Agent is running"),
+        ("⚠️ ", "会話量が多く"),
+        ("⚠️ ", "処理が途中で止まりました"),
+        ("⚠️ ", "処理は終わりましたが"),
+        ("⚠️ ", "The model returned no response"),
+        ("⚠️ ", "Provider authentication failed"),
+        ("⚠️ ", "Proxy mode requires"),
+        ("⚠️ ", "Proxy URL not configured"),
+        ("⚠️ ", "Proxy error"),
+        ("⚠️ ", "Proxy connection error"),
+        ("⚠️ ", "No activity for"),
+    )
+    for emoji, body_prefix in gateway_prefixes:
+        full_prefix = f"{emoji}{body_prefix}"
+        if text.startswith(full_prefix):
+            return f"{body_prefix}{text[len(full_prefix):]}"
+    return text
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
     Telegram is Bob's mobile inbox, so it should receive concise, safe provider
     failure categories instead of raw HTTP bodies, request IDs, or policy text.
+    Discord keeps model-authored text intact, but removes known leading emoji
+    chrome added by Gateway-generated fallback/error messages.
     Other platforms keep the existing behaviour for now.
     """
     if not text:
         return text
-    if _gateway_platform_value(platform) != "telegram":
+
+    platform_value = _gateway_platform_value(platform)
+    if platform_value == "discord":
+        redacted = _redact_gateway_user_facing_secrets(str(text))
+        return _strip_discord_gateway_chrome_emoji(redacted)
+
+    if platform_value != "telegram":
         return text
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
@@ -227,7 +273,13 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
-    if _gateway_platform_value(platform) != "telegram":
+
+    platform_value = _gateway_platform_value(platform)
+    if platform_value == "discord":
+        redacted = _redact_gateway_user_facing_secrets(text)
+        return _strip_discord_gateway_chrome_emoji(redacted)
+
+    if platform_value != "telegram":
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
@@ -2905,6 +2957,8 @@ class GatewayRunner:
                 message = self._draining_busy_message(queued=True)
             else:
                 message = self._draining_busy_message(queued=False)
+            if event.source.platform == Platform.DISCORD:
+                message = _strip_discord_gateway_chrome_emoji(message)
 
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -3186,7 +3240,8 @@ class GatewayRunner:
                 # correct forum topic / thread.
                 metadata = {"thread_id": thread_id} if thread_id else None
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                send_msg = _strip_discord_gateway_chrome_emoji(msg) if platform == Platform.DISCORD else msg
+                result = await adapter.send(chat_id, send_msg, metadata=metadata)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
@@ -3231,10 +3286,11 @@ class GatewayRunner:
 
             try:
                 metadata = {"thread_id": home.thread_id} if home.thread_id else None
+                send_msg = _strip_discord_gateway_chrome_emoji(msg) if platform == Platform.DISCORD else msg
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
+                    result = await adapter.send(str(home.chat_id), send_msg, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), msg)
+                    result = await adapter.send(str(home.chat_id), send_msg)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to home channel %s:%s: %s",
@@ -7092,9 +7148,12 @@ class GatewayRunner:
             if self._draining:
                 if self._queue_during_drain_enabled():
                     self._queue_or_replace_pending_event(_quick_key, event)
-                return self._draining_busy_message(
+                message = self._draining_busy_message(
                     queued=self._queue_during_drain_enabled()
                 )
+                if source.platform == Platform.DISCORD:
+                    message = _strip_discord_gateway_chrome_emoji(message)
+                return message
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
@@ -7386,7 +7445,10 @@ class GatewayRunner:
             return await self._handle_voice_command(event)
 
         if self._draining:
-            return self._draining_busy_message(queued=False, scope="new_work")
+            message = self._draining_busy_message(queued=False, scope="new_work")
+            if source.platform == Platform.DISCORD:
+                message = _strip_discord_gateway_chrome_emoji(message)
+            return message
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -14315,7 +14377,9 @@ class GatewayRunner:
             metadata = {"thread_id": thread_id} if thread_id else None
             result = await adapter.send(
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                _strip_discord_gateway_chrome_emoji("♻ Gateway restarted successfully. Your session continues.")
+                if platform == Platform.DISCORD
+                else "♻ Gateway restarted successfully. Your session continues.",
                 metadata=metadata,
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")
@@ -14377,10 +14441,11 @@ class GatewayRunner:
 
             try:
                 metadata = {"thread_id": home.thread_id} if home.thread_id else None
+                send_message = _strip_discord_gateway_chrome_emoji(message) if platform == Platform.DISCORD else message
                 if metadata:
-                    result = await adapter.send(str(home.chat_id), message, metadata=metadata)
+                    result = await adapter.send(str(home.chat_id), send_message, metadata=metadata)
                 else:
-                    result = await adapter.send(str(home.chat_id), message)
+                    result = await adapter.send(str(home.chat_id), send_message)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.warning(
                         "Home-channel startup notification failed for %s:%s: %s",
@@ -15922,7 +15987,8 @@ class GatewayRunner:
             
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
-            emoji = get_tool_emoji(tool_name, default="⚙️")
+            emoji = "" if source.platform == Platform.DISCORD else get_tool_emoji(tool_name, default="⚙️")
+            prefix = f"{emoji} " if emoji else ""
             
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
@@ -15936,13 +16002,13 @@ class GatewayRunner:
                     if _pl > 0 and len(args_str) > _pl:
                         args_str = args_str[:_pl - 3] + "..."
                     label, clean_preview = _japanese_tool_progress(tool_name, preview)
-                    msg = f"{emoji} {label}: {clean_preview or '実行中'}"
+                    msg = f"{prefix}{label}: {clean_preview or '実行中'}"
                 elif preview:
                     label, clean_preview = _japanese_tool_progress(tool_name, preview)
-                    msg = f"{emoji} {label}: \"{clean_preview}\""
+                    msg = f"{prefix}{label}: \"{clean_preview}\""
                 else:
                     label, clean_preview = _japanese_tool_progress(tool_name, preview)
-                    msg = f"{emoji} {label}: {clean_preview or '実行中'}"
+                    msg = f"{prefix}{label}: {clean_preview or '実行中'}"
                 progress_queue.put(msg)
                 return
             
@@ -15956,10 +16022,10 @@ class GatewayRunner:
                 label, clean_preview = _japanese_tool_progress(tool_name, preview)
                 if clean_preview and len(clean_preview) > _cap:
                     clean_preview = clean_preview[:_cap - 3] + "..."
-                msg = f"{emoji} {label}: \"{clean_preview or '実行中'}\""
+                msg = f"{prefix}{label}: \"{clean_preview or '実行中'}\""
             else:
                 label, clean_preview = _japanese_tool_progress(tool_name, preview)
-                msg = f"{emoji} {label}: {clean_preview or '実行中'}"
+                msg = f"{prefix}{label}: {clean_preview or '実行中'}"
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
@@ -17571,12 +17637,17 @@ class GatewayRunner:
                             _elapsed_warn = int(_agent_warning // 60) or 1
                             _remaining_mins = int((_agent_timeout - _agent_warning) // 60) or 1
                             try:
-                                await _warn_adapter.send(
-                                    source.chat_id,
+                                warning_message = (
                                     f"⚠️ No activity for {_elapsed_warn} min. "
                                     f"If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
+                                    f"You can continue waiting or use /reset."
+                                )
+                                if source.platform == Platform.DISCORD:
+                                    warning_message = _strip_discord_gateway_chrome_emoji(warning_message)
+                                await _warn_adapter.send(
+                                    source.chat_id,
+                                    warning_message,
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:

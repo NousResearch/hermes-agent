@@ -1,5 +1,7 @@
 """Telegram-specific gateway filtering for noisy status/error output."""
 
+from pathlib import Path
+
 from gateway.config import Platform
 from gateway.run import (
     _prepare_gateway_status_message,
@@ -80,3 +82,43 @@ def test_telegram_final_response_keeps_normal_answers():
     answer = "Here is the clean summary you asked for."
 
     assert _sanitize_gateway_final_response(Platform.TELEGRAM, answer) == answer
+
+
+def test_discord_status_strips_only_known_gateway_chrome_prefixes():
+    gateway = "⏳ Gateway再起動中です。復旧後の次の返答に回しました。"
+    restart = "♻ Gateway restarted successfully. Your session continues."
+    normal = "ユーザー本文の絵文字は残す 😄"
+    code = "```python\nprint('⚠️ hello')\n```"
+
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", gateway) == (
+        "Gateway再起動中です。復旧後の次の返答に回しました。"
+    )
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", restart) == (
+        "Gateway restarted successfully. Your session continues."
+    )
+    assert _prepare_gateway_status_message(Platform.DISCORD, "lifecycle", normal) == normal
+    assert _sanitize_gateway_final_response(Platform.DISCORD, code) == code
+
+
+def test_discord_final_response_strips_gateway_fallback_prefix_but_keeps_model_emoji():
+    fallback = "⚠️ 処理が途中で止まりました: timeout。もう一度送ってください。"
+    model_answer = "⚠️ 注意: これはモデルが本文として書いた注意です。"
+
+    assert _sanitize_gateway_final_response(Platform.DISCORD, fallback) == (
+        "処理が途中で止まりました: timeout。もう一度送ってください。"
+    )
+    assert _sanitize_gateway_final_response(Platform.DISCORD, model_answer) == model_answer
+
+
+def test_telegram_existing_status_display_is_preserved():
+    message = "⏳ Gateway再起動中です。復旧後の次の返答に回しました。"
+
+    assert _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", message) == message
+
+
+def test_discord_gateway_chrome_static_paths_are_covered():
+    source = Path(__import__("gateway.run").run.__file__).read_text()
+
+    assert "send_msg = _strip_discord_gateway_chrome_emoji(msg) if platform == Platform.DISCORD else msg" in source
+    assert "warning_message = _strip_discord_gateway_chrome_emoji(warning_message)" in source
+    assert 'emoji = "" if source.platform == Platform.DISCORD else get_tool_emoji' in source

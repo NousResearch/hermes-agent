@@ -292,3 +292,10 @@ def test_config_bridges_discord_reactions_only_when_explicit(monkeypatch, tmp_pa
     load_gateway_config()
 
     assert os.getenv("DISCORD_REACTIONS") == "true"
+
+
+def test_config_reactions_take_precedence_over_legacy_env(monkeypatch):
+    monkeypatch.setenv("DISCORD_REACTIONS", "true")
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***", extra={"reactions": False}))
+
+    assert adapter._reactions_enabled() is False

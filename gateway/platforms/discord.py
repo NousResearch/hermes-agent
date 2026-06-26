@@ -1407,8 +1407,21 @@ class DiscordAdapter(BasePlatformAdapter):
             return False
 
     def _reactions_enabled(self) -> bool:
-        """Check if message reactions are explicitly enabled via config/env."""
-        return os.getenv("DISCORD_REACTIONS", "").strip().lower() in {"true", "1", "yes", "on"}
+        """Check if message reactions are enabled via config/env.
+
+        Default to off: reactions are visible user-facing emoji chrome in
+        Discord and should only be added when an installation explicitly opts in.
+        Prefer non-secret ``discord.reactions`` in config.yaml; keep the legacy
+        ``DISCORD_REACTIONS`` env var as a compatibility fallback. Existing
+        installs that relied on the old implicit default-on behavior now need an
+        explicit opt-in, and the env fallback can be removed after configs have
+        a stable migration path.
+        """
+        raw_config = self.config.extra.get("reactions")
+        raw = raw_config if raw_config is not None else os.getenv("DISCORD_REACTIONS")
+        if raw is None:
+            return False
+        return str(raw).strip().lower() in {"true", "1", "yes", "on"}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction for normal Discord message events."""

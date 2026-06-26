@@ -1863,21 +1863,18 @@ class TestRunPreUpdateBackup:
         backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
         assert len(backups) == 1
 
-    def test_default_enabled_creates_backup(self, hermes_home, capsys):
-        """With the new safe default (``pre_update_backup: true``), every
-        ``hermes update`` creates a backup before any destructive step
-        runs — the cost is a few minutes of zip time vs. the alternative
-        of silent total data loss of ``~/.hermes/`` observed in #48200
-        when an update step computes a wrong path and the user had no
-        safety net.
+    def test_default_disabled_is_silent(self, hermes_home, capsys):
+        """With the default (``pre_update_backup: false``), ``hermes update``
+        does NOT create a backup and stays silent — zipping a large
+        HERMES_HOME can add minutes to every update. Users who want the
+        #48200 safety net opt in via the config knob or ``--backup``.
         """
         from hermes_cli.main import _run_pre_update_backup
         _run_pre_update_backup(Namespace(no_backup=False, backup=False))
         out = capsys.readouterr().out
-        assert "Creating pre-update backup" in out
-        assert "Saved:" in out
-        backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
-        assert len(backups) == 1
+        assert out == ""
+        assert not list((hermes_home / "backups").glob("pre-update-*.zip")) \
+            if (hermes_home / "backups").exists() else True
 
     def test_no_backup_flag_skips(self, hermes_home, capsys):
         from hermes_cli.main import _run_pre_update_backup
@@ -2100,6 +2097,32 @@ class TestRestoreCronJobsIfEmptied:
         # Healthy path: file unchanged after update.
         result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
         assert result is None
+
+    def test_restores_when_partial_job_loss(self, tmp_path):
+        """Desktop scheduler overwrites jobs.json with its own small set,
+        losing tool-created crons while keeping desktop-tracked ones."""
+        from hermes_cli.backup import restore_cron_jobs_if_emptied
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        # Pre-update: 19 jobs (18 tool-created + 1 desktop watchdog).
+        self._seed_jobs(
+            jobs_path,
+            [{"id": f"job-{i}"} for i in range(19)],
+        )
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # Desktop scheduler overwrites with only its own 1 job.
+        jobs_path.write_text(json.dumps({"jobs": [{"id": "desktop-watchdog"}]}))
+
+        result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
+        assert result is not None
+        assert result["restored"] is True
+        assert result["job_count"] == 19
+
+        # The live file now has all 19 jobs back.
+        restored = json.loads(jobs_path.read_text())
+        assert len(restored["jobs"]) == 19
 
     def test_noop_when_snapshot_had_no_jobs(self, tmp_path):
         from hermes_cli.backup import restore_cron_jobs_if_emptied

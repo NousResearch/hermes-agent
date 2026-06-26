@@ -26,8 +26,12 @@ class StubAdapter(BasePlatformAdapter):
         self._succeed = succeed
         self._fatal_error = fatal_error
         self._fatal_retryable = fatal_retryable
+        # Records the is_reconnect value of every connect() call so tests can
+        # assert that the watcher distinguishes reconnect from cold boot (#46621).
+        self.connect_calls: list[bool] = []
 
-    async def connect(self):
+    async def connect(self, *, is_reconnect: bool = False):
+        self.connect_calls.append(is_reconnect)
         if self._fatal_error:
             self._set_fatal_error("test_error", self._fatal_error, retryable=self._fatal_retryable)
             return False
@@ -140,7 +144,7 @@ class TestStartupPlatformIsolation:
         runner = _make_runner()
         adapter = StubAdapter()
 
-        async def hang():
+        async def hang(*, is_reconnect: bool = False):
             await asyncio.sleep(60)
             return True
 
@@ -216,6 +220,59 @@ class TestPlatformReconnectWatcher:
 
         assert Platform.TELEGRAM not in runner._failed_platforms
         assert Platform.TELEGRAM in runner.adapters
+
+    @pytest.mark.asyncio
+    async def test_reconnect_passes_is_reconnect_true(self):
+        """The watcher must connect with is_reconnect=True so adapters preserve
+        their server-side update queue across an outage (#46621). Without this,
+        bootstrap start_polling(drop_pending_updates=True) silently dropped every
+        message queued while the bot was offline."""
+        runner = _make_runner()
+        runner._sync_voice_mode_state_to_adapter = MagicMock()
+
+        runner._failed_platforms[Platform.TELEGRAM] = {
+            "config": PlatformConfig(enabled=True, token="test"),
+            "attempts": 1,
+            "next_retry": time.monotonic() - 1,
+        }
+
+        succeed_adapter = StubAdapter(succeed=True)
+        real_sleep = asyncio.sleep
+
+        with patch.object(runner, "_create_adapter", return_value=succeed_adapter):
+            with patch("gateway.run.build_channel_directory", create=True):
+                runner._running = True
+                call_count = 0
+
+                async def fake_sleep(n):
+                    nonlocal call_count
+                    call_count += 1
+                    if call_count > 1:
+                        runner._running = False
+                    await real_sleep(0)
+
+                with patch("asyncio.sleep", side_effect=fake_sleep):
+                    await runner._platform_reconnect_watcher()
+
+        assert succeed_adapter.connect_calls == [True], (
+            f"watcher must pass is_reconnect=True; got {succeed_adapter.connect_calls!r}"
+        )
+        assert Platform.TELEGRAM in runner.adapters
+
+    @pytest.mark.asyncio
+    async def test_cold_connect_defaults_to_is_reconnect_false(self):
+        """The cold-start connect path (_connect_adapter_with_timeout with no
+        is_reconnect arg) must default to False so a first boot still drops any
+        stale queue (#46621)."""
+        runner = _make_runner()
+        adapter = StubAdapter(succeed=True)
+
+        success = await runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM)
+
+        assert success is True
+        assert adapter.connect_calls == [False], (
+            f"cold-start must default to is_reconnect=False; got {adapter.connect_calls!r}"
+        )
 
     @pytest.mark.asyncio
     async def test_reconnect_retries_resume_pending_for_platform(self):
@@ -545,6 +602,24 @@ class TestRuntimeDisconnectQueuing:
         assert runner._failed_platforms[Platform.TELEGRAM]["attempts"] == 0
 
     @pytest.mark.asyncio
+    async def test_retryable_runtime_error_reconnects_immediately(self):
+        """Runtime failures should not wait for the startup retry delay."""
+        runner = _make_runner()
+        runner.stop = AsyncMock()
+
+        adapter = StubAdapter(succeed=True)
+        adapter._set_fatal_error("sidecar_crashed", "bridge exited", retryable=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        before = time.monotonic()
+        await runner._handle_adapter_fatal_error(adapter)
+        after = time.monotonic()
+
+        info = runner._failed_platforms[Platform.TELEGRAM]
+        assert info["attempts"] == 0
+        assert before <= info["next_retry"] <= after
+
+    @pytest.mark.asyncio
     async def test_nonretryable_runtime_error_not_queued(self):
         """Non-retryable runtime errors should not be queued for reconnection."""
         runner = _make_runner()
@@ -765,4 +840,3 @@ class TestPlatformSlashCommand:
         runner = _make_runner()
         out = await runner._handle_platform_command(self._make_event("/platform"))
         assert "Gateway platforms" in out
-

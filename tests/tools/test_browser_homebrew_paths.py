@@ -101,7 +101,8 @@ class TestFindAgentBrowser:
 
     def test_finds_in_current_path(self):
         """Should return result from shutil.which if available on current PATH."""
-        with patch("shutil.which", return_value="/usr/local/bin/agent-browser"):
+        with patch("shutil.which", return_value="/usr/local/bin/agent-browser"), \
+             patch("tools.browser_tool.agent_browser_runnable", return_value=True):
             assert _find_agent_browser() == "/usr/local/bin/agent-browser"
 
     def test_finds_in_homebrew_bin(self):
@@ -112,6 +113,7 @@ class TestFindAgentBrowser:
             return None
 
         with patch("shutil.which", side_effect=mock_which), \
+             patch("tools.browser_tool.agent_browser_runnable", return_value=True), \
              patch("os.path.isdir", return_value=True), \
              patch(
                  "tools.browser_tool._discover_homebrew_node_dirs",

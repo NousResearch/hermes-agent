@@ -408,3 +408,35 @@ def test_explicit_max_tokens_is_respected():
 
     req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
     assert req["generationConfig"]["maxOutputTokens"] == 4096
+
+
+def test_extract_multimodal_parts_accepts_string_form_image_url():
+    """OpenAI-style multimodal content may carry image_url as a bare string
+    (e.g. {"type": "image_url", "image_url": "data:image/png;base64,..."})
+    rather than the nested {"url": ...} object. The native Gemini adapter
+    must not crash on that shape (regression for AttributeError on str.get)."""
+    import base64 as _b64
+
+    from agent.gemini_native_adapter import _extract_multimodal_parts
+
+    raw = b"\x89PNG\r\n\x1a\n"
+    data_uri = "data:image/png;base64," + _b64.b64encode(raw).decode("ascii")
+
+    # String form must not raise and must produce an inlineData part.
+    parts_str = _extract_multimodal_parts(
+        [{"type": "image_url", "image_url": data_uri}]
+    )
+    assert len(parts_str) == 1
+    assert parts_str[0]["inlineData"]["mimeType"] == "image/png"
+    assert _b64.b64decode(parts_str[0]["inlineData"]["data"]) == raw
+
+    # Object form continues to work identically.
+    parts_obj = _extract_multimodal_parts(
+        [{"type": "image_url", "image_url": {"url": data_uri}}]
+    )
+    assert parts_obj == parts_str
+
+    # Non-str/dict image_url is skipped, not fatal.
+    assert _extract_multimodal_parts(
+        [{"type": "image_url", "image_url": 123}]
+    ) == []

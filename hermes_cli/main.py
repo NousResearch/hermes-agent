@@ -5241,6 +5241,69 @@ def _electron_dist_binary(project_root: Path) -> Path:
     return dist / "electron"
 
 
+def _esbuild_binary_staged(desktop_dir: Path) -> bool:
+    """True when esbuild's platform-specific binary is present and executable.
+
+    esbuild uses optionalDependencies + a postinstall script (install.js) to
+    stage the native binary for the current platform.  When ``ignore-scripts=true``
+    is set in ``~/.npmrc``, the postinstall never runs and the binary is absent,
+    causing the desktop build to fail with "could not be found" (#53082).
+    """
+    esbuild_dir = desktop_dir / "node_modules" / "esbuild"
+    bin_path = esbuild_dir / "bin" / "esbuild"
+    if not bin_path.is_file():
+        # Also check the workspace root (npm workspace hoisting)
+        esbuild_dir_root = desktop_dir.parent.parent / "node_modules" / "esbuild"
+        bin_path = esbuild_dir_root / "bin" / "esbuild"
+    return bin_path.is_file()
+
+
+def _ensure_esbuild_binary_staged(desktop_dir: Path, env: dict, *, force: bool = False) -> None:
+    """Ensure esbuild's platform binary is staged before the desktop build.
+
+    When ``ignore-scripts=true`` prevents esbuild's postinstall from running,
+    run ``node node_modules/esbuild/install.js`` explicitly to download and
+    verify the platform binary.  The install.js script has its own SHA-256
+    integrity check, so this is safe to call unconditionally.
+    """
+    if not force and _esbuild_binary_staged(desktop_dir):
+        return
+
+    esbuild_dir = desktop_dir / "node_modules" / "esbuild"
+    installer = esbuild_dir / "install.js"
+    if not installer.is_file():
+        # Check workspace root
+        esbuild_dir = desktop_dir.parent.parent / "node_modules" / "esbuild"
+        installer = esbuild_dir / "install.js"
+    if not installer.is_file():
+        print("  ⚠ esbuild not found in node_modules; skipping binary staging")
+        return
+
+    from hermes_constants import find_node_executable, with_hermes_node_path
+
+    node = find_node_executable("node")
+    if not node:
+        print("  ⚠ node not found; cannot stage esbuild binary")
+        return
+
+    dl_env = with_hermes_node_path(env)
+    try:
+        result = subprocess.run(
+            [node, str(installer)],
+            cwd=str(esbuild_dir),
+            env=dl_env,
+            capture_output=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            stderr = (result.stderr or b"").decode("utf-8", errors="replace")
+            print(f"  ⚠ esbuild binary staging failed: {stderr.strip()}")
+        elif not _esbuild_binary_staged(desktop_dir):
+            print("  ⚠ esbuild install.js ran but binary still not found")
+    except OSError as exc:
+        print(f"  ⚠ esbuild binary staging error: {exc}")
+
+
 def _electron_dist_ok(project_root: Path) -> bool:
     """True when ``node_modules/electron/dist`` holds a usable Electron binary.
 
@@ -5680,50 +5743,81 @@ def cmd_gui(args: argparse.Namespace):
                 stopped = _stop_desktop_processes_locking_build(desktop_dir)
                 if stopped:
                     print(f"  ⚠ Stopped running desktop app to free the build output (pid {', '.join(map(str, stopped))})")
+            # Ensure esbuild's platform binary is staged before the build.
+            # When ~/.npmrc has ignore-scripts=true, esbuild's postinstall
+            # (install.js) never runs, so the @esbuild/*-* binary is absent
+            # and the build fails with "could not be found".  Run install.js
+            # explicitly if the binary is missing.
+            _ensure_esbuild_binary_staged(desktop_dir, env)
             build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
-            if (
-                build_result.returncode != 0
-                and not source_mode
-                and _desktop_packaged_executable(desktop_dir) is None
-            ):
-                # Corrupt cached Electron zip → partial unpack → ENOENT on rename.
-                # stdlib zipfile won't catch the common concat-junk case, so purge
-                # and retry once; @electron/get SHASUM is the real gate.
-                #
-                # Gate on a MISSING packaged executable: that is the signature of
-                # the corrupt-download class this recovery exists for. A late
-                # failure such as macOS code signing leaves the executable in
-                # place — redownloading Electron can't repair it, so the purge +
-                # retry would only add another slow, identical failure (#40187).
-                purged: list[Path] = []
-                restored = False
-                if not _electron_dist_ok(PROJECT_ROOT):
-                    purged = _purge_electron_build_cache(desktop_dir)
-                    restored = _redownload_electron_dist(PROJECT_ROOT, env)
-                if restored:
-                    print("  ⚠ Desktop build failed; refreshed the Electron download and retrying once...")
-                    for p in purged:
-                        print(f"    - {p}")
-                    # The purge can't remove a win-unpacked tree whose Hermes.exe
-                    # is still locked by a running instance; stop it before retry.
+            if build_result.returncode != 0 and not source_mode:
+                # Check if the failure is esbuild-related before assuming
+                # it's an Electron download issue (see #53082).
+                stderr_text = (build_result.stderr or "").lower()
+                stdout_text = (build_result.stdout or "").lower()
+                esbuild_failure = (
+                    "esbuild" in stderr_text
+                    or "could not be found" in stderr_text
+                    or "@esbuild" in stderr_text
+                    or "esbuild" in stdout_text
+                )
+                if esbuild_failure:
+                    # Retry once by re-staging the esbuild binary explicitly.
+                    print("  ⚠ Desktop build failed; esbuild binary may be missing "
+                          "(ignore-scripts=true?). Re-staging esbuild and retrying...")
+                    _ensure_esbuild_binary_staged(desktop_dir, env, force=True)
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+                elif _desktop_packaged_executable(desktop_dir) is None:
+                    # Corrupt cached Electron zip → partial unpack → ENOENT on rename.
+                    # stdlib zipfile won't catch the common concat-junk case, so purge
+                    # and retry once; @electron/get SHASUM is the real gate.
+                    #
+                    # Gate on a MISSING packaged executable: that is the signature of
+                    # the corrupt-download class this recovery exists for. A late
+                    # failure such as macOS code signing leaves the executable in
+                    # place — redownloading Electron can't repair it, so the purge +
+                    # retry would only add another slow, identical failure (#40187).
+                    purged: list[Path] = []
+                    restored = False
+                    if not _electron_dist_ok(PROJECT_ROOT):
+                        purged = _purge_electron_build_cache(desktop_dir)
+                        restored = _redownload_electron_dist(PROJECT_ROOT, env)
+                    if restored:
+                        print("  ⚠ Desktop build failed; refreshed the Electron download and retrying once...")
+                        for p in purged:
+                            print(f"    - {p}")
+                        # The purge can't remove a win-unpacked tree whose Hermes.exe
+                        # is still locked by a running instance; stop it before retry.
+                        _stop_desktop_processes_locking_build(desktop_dir)
+                        build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
             if (
                 build_result.returncode != 0
                 and not source_mode
                 and not env.get("ELECTRON_MIRROR")
                 and _desktop_packaged_executable(desktop_dir) is None
             ):
-                print("  ⚠ Desktop build still failing; the Electron download from "
-                      "GitHub looks blocked. Re-downloading via a public mirror "
-                      "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
-                mirror = _ELECTRON_FALLBACK_MIRROR
-                mirror_env = dict(env)
-                mirror_env["ELECTRON_MIRROR"] = mirror
-                if not _electron_dist_ok(PROJECT_ROOT):
-                    _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
-                _stop_desktop_processes_locking_build(desktop_dir)
-                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
+                # Only attempt the Electron mirror fallback if the failure
+                # looks Electron-related, not esbuild-related (#53082).
+                stderr_text = (build_result.stderr or "").lower()
+                stdout_text = (build_result.stdout or "").lower()
+                esbuild_failure = (
+                    "esbuild" in stderr_text
+                    or "could not be found" in stderr_text
+                    or "@esbuild" in stderr_text
+                    or "esbuild" in stdout_text
+                )
+                if not esbuild_failure:
+                    print("  ⚠ Desktop build still failing; the Electron download from "
+                          "GitHub looks blocked. Re-downloading via a public mirror "
+                          "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
+                    mirror = _ELECTRON_FALLBACK_MIRROR
+                    mirror_env = dict(env)
+                    mirror_env["ELECTRON_MIRROR"] = mirror
+                    if not _electron_dist_ok(PROJECT_ROOT):
+                        _redownload_electron_dist(PROJECT_ROOT, env, mirror=mirror)
+                    _stop_desktop_processes_locking_build(desktop_dir)
+                    build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")

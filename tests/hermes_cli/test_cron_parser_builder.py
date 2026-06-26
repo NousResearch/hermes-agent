@@ -51,6 +51,8 @@ def test_cron_create_options():
         "--name", "daily", "--deliver", "origin", "--repeat", "3",
         "--skill", "a", "--skill", "b", "--no-agent",
         "--workdir", "/tmp/x",
+        "--model", "claude-sonnet-4-5", "--provider", "anthropic",
+        "--base-url", "https://api.example.com",
     ])
     assert ns.schedule == "0 9 * * *"
     assert ns.prompt == "daily task prompt"
@@ -60,6 +62,21 @@ def test_cron_create_options():
     assert ns.skills == ["a", "b"]
     assert ns.no_agent is True
     assert ns.workdir == "/tmp/x"
+    # Model-pinning flags forwarded to the cronjob backend (#6758).
+    assert ns.model == "claude-sonnet-4-5"
+    assert ns.provider == "anthropic"
+    assert ns.base_url == "https://api.example.com"
+
+
+def test_cron_create_model_flags_default_none():
+    """Omitting the pinning flags must leave them None so the job falls back to
+    the global default model at run time, not an empty-string pin (#6758).
+    """
+    parser = _build()
+    ns = parser.parse_args(["cron", "create", "30m", "do a thing"])
+    assert ns.model is None
+    assert ns.provider is None
+    assert ns.base_url is None
 
 
 def test_cron_edit_no_agent_tristate():

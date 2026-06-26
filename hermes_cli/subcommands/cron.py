@@ -38,6 +38,21 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--deliver",
         help="Delivery target: origin, local, telegram, discord, signal, or platform:chat_id",
     )
+    cron_create.add_argument(
+        "--model",
+        help="Pin the job to a specific model (e.g. 'claude-sonnet-4-5'). "
+        "Omit to use the global default at run time.",
+    )
+    cron_create.add_argument(
+        "--provider",
+        help="Pin the job to a specific provider (e.g. 'anthropic', 'openrouter'). "
+        "Use with --model.",
+    )
+    cron_create.add_argument(
+        "--base-url",
+        dest="base_url",
+        help="Optional custom API base URL for the pinned model/provider.",
+    )
     cron_create.add_argument("--repeat", type=int, help="Optional repeat count")
     cron_create.add_argument(
         "--skill",

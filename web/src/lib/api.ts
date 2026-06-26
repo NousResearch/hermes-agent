@@ -467,6 +467,10 @@ export const api = {
     fetchJSON<ModelsAnalyticsResponse>(
       appendProfileParam(`/api/analytics/models?days=${days}`, profile),
     ),
+  getSystemComponentsAnalytics: () =>
+    fetchJSON<SystemComponentsResponse>("/api/analytics/system-components"),
+  getSecureScoreAnalytics: () =>
+    fetchJSON<SecureScoreResponse>("/api/analytics/securescore"),
   getConfig: () => fetchJSON<Record<string, unknown>>("/api/config"),
   getDefaults: () => fetchJSON<Record<string, unknown>>("/api/config/defaults"),
   getSchema: () => fetchJSON<{ fields: Record<string, unknown>; category_order: string[] }>("/api/config/schema"),
@@ -1893,6 +1897,98 @@ export interface ModelsAnalyticsResponse {
     total_api_calls: number;
   };
   period_days: number;
+}
+
+// ── System components (local AI stack health snapshot) ──────────────────
+// Read-only; populated out-of-band by
+// scripts/publish_system_components_status.py and served (with staleness
+// annotation) by GET /api/analytics/system-components.
+export type SystemComponentStatus = "up" | "degraded" | "down" | "absent";
+
+export interface SystemComponent {
+  name: string;
+  endpoint: string;
+  status: SystemComponentStatus;
+  http_status: number | null;
+  latency_ms: number | null;
+  error: string | null;
+  admin_url?: string;
+}
+
+export interface SystemComponentsSummary {
+  total: number;
+  up: number;
+  degraded: number;
+  down: number;
+  absent: number;
+}
+
+export interface AuxiliaryTaskRoute {
+  provider: string | null;
+  model: string | null;
+}
+
+export interface AuxiliaryRoutes {
+  compression_provider: string | null;
+  compression_model: string | null;
+  vision?: AuxiliaryTaskRoute;
+  web_extract?: AuxiliaryTaskRoute;
+}
+
+export interface SystemComponentsResponse {
+  timestamp: number | null;
+  source: string;
+  generated_at?: string;
+  summary?: SystemComponentsSummary;
+  components: SystemComponent[];
+  auxiliary_routes: AuxiliaryRoutes | null;
+  stale: boolean;
+  missing: boolean;
+  age_seconds: number | null;
+  message?: string;
+}
+
+// ── SecureScore (scheduled local security score snapshot) ────────────────
+// Read-only; populated out-of-band by ~/.hermes/scripts/securescore-report.sh
+// and served (with staleness annotation) by GET /api/analytics/securescore.
+export interface SecureScoreDomainScore {
+  domain: string;
+  score: number;
+  max_score: number;
+  percentage: number;
+}
+
+export interface SecureScoreRecommendation {
+  control_id?: string;
+  title: string;
+  domain?: string;
+  severity?: string;
+  effort?: string;
+  score_gain?: number;
+  remediation?: string;
+  priority?: number;
+}
+
+export interface SecureScoreResponse {
+  timestamp: number | null;
+  source: string;
+  report_path: string | null;
+  schema_version?: string | null;
+  engine_version?: string | null;
+  deployment_id?: string | null;
+  deployment_name: string | null;
+  profile: string | null;
+  generated_at: string | null;
+  overall_score: number | null;
+  risk_band: string | null;
+  maturity_level: string | null;
+  domain_scores: SecureScoreDomainScore[];
+  recommendations: SecureScoreRecommendation[];
+  finding_counts: Record<string, number>;
+  stale: boolean;
+  missing: boolean;
+  age_seconds: number | null;
+  message?: string;
 }
 
 export interface CronJob {

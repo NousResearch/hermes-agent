@@ -1,0 +1,231 @@
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import {
+  AlertTriangle,
+  CheckCircle2,
+  RefreshCw,
+  XCircle,
+} from "lucide-react";
+import { api } from "@/lib/api";
+import type { ProvidersAnalyticsResponse } from "@/lib/api";
+import { timeAgo } from "@/lib/utils";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
+import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { useI18n } from "@/i18n";
+
+function StatusIcon({ status }: { status: string }) {
+  switch (status) {
+    case "ok":
+      return <CheckCircle2 className="h-5 w-5 text-green-500" />;
+    case "error":
+      return <XCircle className="h-5 w-5 text-red-500" />;
+    case "warning":
+      return <AlertTriangle className="h-5 w-5 text-yellow-500" />;
+    default:
+      return <XCircle className="h-5 w-5 text-muted-foreground" />;
+  }
+}
+
+function formatUsd(n: number | undefined): string {
+  if (n === undefined || n === null) return "—";
+  if (n < 0.01) return `$${n.toFixed(6)}`;
+  return `$${n.toFixed(4)}`;
+}
+
+function CreditBar({ remaining, limit }: { remaining?: number; limit?: number }) {
+  if (remaining === undefined || limit === undefined || limit === 0) {
+    return <span className="text-xs text-muted-foreground">—</span>;
+  }
+  const pct = Math.max(0, Math.min(100, (remaining / limit) * 100));
+  const color =
+    pct > 20 ? "bg-green-500" : pct > 5 ? "bg-yellow-500" : "bg-red-500";
+  return (
+    <div className="flex items-center gap-2">
+      <div className="h-2 w-20 rounded-full bg-muted overflow-hidden">
+        <div className={`h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-xs text-muted-foreground">
+        ${remaining.toFixed(2)} / ${limit.toFixed(2)}
+      </span>
+    </div>
+  );
+}
+
+export default function ProvidersPage() {
+  const [data, setData] = useState<ProvidersAnalyticsResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const { t } = useI18n();
+  const { setAfterTitle, setEnd } = usePageHeader();
+
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    api
+      .getProvidersAnalytics()
+      .then(setData)
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useLayoutEffect(() => {
+    setAfterTitle(
+      <Button
+        type="button"
+        ghost
+        size="icon"
+        className="text-muted-foreground hover:text-foreground"
+        onClick={load}
+        disabled={loading}
+        aria-label={t.providers.refresh}
+      >
+        {loading ? <Spinner /> : <RefreshCw />}
+      </Button>,
+    );
+    setEnd(null);
+    return () => {
+      setAfterTitle(null);
+      setEnd(null);
+    };
+  }, [loading, load, setAfterTitle, setEnd, t.providers.refresh]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  if (error) {
+    return (
+      <div className="flex flex-col gap-6">
+        <Card>
+          <CardContent className="py-12">
+            <div className="mx-auto flex max-w-2xl flex-col gap-3 text-sm text-muted-foreground">
+              <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">
+                {t.providers.title}
+              </h2>
+              <p>{error}</p>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (!data) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Spinner />
+      </div>
+    );
+  }
+
+  const { providers, summary } = data;
+
+  return (
+    <div className="flex flex-col gap-6">
+      {/* Summary cards */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <Card>
+          <CardContent className="py-4">
+            <div className="text-xs text-muted-foreground mb-1">Providers OK</div>
+            <div className="text-2xl font-mondwest">
+              {summary.ok}/{summary.total}
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="py-4">
+            <div className="text-xs text-muted-foreground mb-1">Spend (30d)</div>
+            <div className="text-2xl font-mondwest">{formatUsd(summary.total_spend_30d)}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="py-4">
+            <div className="text-xs text-muted-foreground mb-1">Sessions (30d)</div>
+            <div className="text-2xl font-mondwest">{summary.total_sessions_30d}</div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="py-4">
+            <div className="text-xs text-muted-foreground mb-1">Last checked</div>
+            <div className="text-sm font-mondwest">
+              {data.age_seconds !== undefined && data.age_seconds >= 0
+                ? timeAgo(Date.now() - data.age_seconds * 1000)
+                : "—"}
+            </div>
+            {data.stale && (
+              <div className="text-xs text-yellow-500 mt-1">{t.providers.stale}</div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Provider cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {providers.map((p) => (
+          <Card key={p.name}>
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <StatusIcon status={p.status} />
+                  <CardTitle className="text-base">{p.name}</CardTitle>
+                </div>
+                <span className="text-xs font-mono text-muted-foreground uppercase">
+                  {p.status}
+                </span>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-2 gap-3 text-sm">
+                {p.credit_remaining !== undefined && (
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">
+                      {t.providers.creditRemaining}
+                    </div>
+                    <CreditBar remaining={p.credit_remaining} limit={p.credit_limit} />
+                  </div>
+                )}
+                {p.usage_monthly !== undefined && (
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">
+                      {t.providers.usage}
+                    </div>
+                    <span className="font-mono">{formatUsd(p.usage_monthly)}</span>
+                  </div>
+                )}
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">
+                    {t.providers.spend30d}
+                  </div>
+                  <span className="font-mono">{formatUsd(p.spend_30d)}</span>
+                </div>
+                <div>
+                  <div className="text-xs text-muted-foreground mb-1">
+                    {t.providers.sessions30d}
+                  </div>
+                  <span className="font-mono">{p.sessions_30d}</span>
+                </div>
+                {p.models_available !== undefined && (
+                  <div>
+                    <div className="text-xs text-muted-foreground mb-1">
+                      {t.providers.modelsAvailable}
+                    </div>
+                    <span className="font-mono">{p.models_available}</span>
+                  </div>
+                )}
+              </div>
+              {p.error && (
+                <div className="mt-3 text-xs text-red-400 bg-red-950/30 rounded px-2 py-1.5">
+                  {p.error}
+                </div>
+              )}
+              {p.note && !p.error && (
+                <div className="mt-3 text-xs text-muted-foreground">{p.note}</div>
+              )}
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}

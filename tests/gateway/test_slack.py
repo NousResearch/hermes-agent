@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import os
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
@@ -799,6 +800,85 @@ class TestSlackSocketWatchdog:
                 assert (
                     new_handlers <= 2
                 ), f"reconnect lock failed: {new_handlers} new handlers"
+            finally:
+                await adapter.disconnect()
+
+    # -- ping/pong staleness: heals the wedged transport that is_connected() misses --
+
+    def _adapter_with_fake_client(self, **client_attrs):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        client = MagicMock()
+        for key, value in client_attrs.items():
+            setattr(client, key, value)
+        adapter._handler = MagicMock(client=client)
+        return adapter
+
+    def test_ping_pong_stale_when_last_ping_old(self):
+        adapter = self._adapter_with_fake_client(
+            ping_interval=30, last_ping_pong_time=time.time() - 1000
+        )
+        assert adapter._socket_ping_pong_stale() is True
+
+    def test_ping_pong_fresh_when_last_ping_recent(self):
+        adapter = self._adapter_with_fake_client(
+            ping_interval=30, last_ping_pong_time=time.time() - 5
+        )
+        assert adapter._socket_ping_pong_stale() is False
+
+    def test_ping_pong_none_within_grace_not_stale(self):
+        adapter = self._adapter_with_fake_client(
+            ping_interval=30, last_ping_pong_time=None
+        )
+        adapter._socket_handler_started_monotonic = time.monotonic()
+        assert adapter._socket_ping_pong_stale() is False
+
+    def test_ping_pong_none_beyond_grace_is_stale(self):
+        adapter = self._adapter_with_fake_client(
+            ping_interval=30, last_ping_pong_time=None
+        )
+        adapter._socket_first_ping_grace_s = 0.0
+        adapter._socket_handler_started_monotonic = time.monotonic() - 200
+        assert adapter._socket_ping_pong_stale() is True
+
+    def test_ping_pong_no_handler_not_stale(self):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._handler = None
+        assert adapter._socket_ping_pong_stale() is False
+
+    def test_ping_pong_nonnumeric_attrs_not_stale(self):
+        # A mocked/partial client (MagicMock attrs) must never trigger reconnect.
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._handler = MagicMock()
+        assert adapter._socket_ping_pong_stale() is False
+
+    @pytest.mark.asyncio
+    async def test_watchdog_reconnects_when_ping_pong_stale_despite_is_connected_true(self):
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        adapter._socket_watchdog_interval_s = 0.01
+        factory, instances = self._make_fake_handler_factory()
+
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_stack(factory):
+                stack.enter_context(p)
+
+            try:
+                assert await adapter.connect() is True
+                assert len(instances) == 1
+
+                # Transport lies: is_connected() stays True while ping/pong has
+                # gone stale (the wedged "Session is closed" zombie).
+                instances[0].client.is_connected = lambda: True
+                instances[0].client.ping_interval = 30
+                instances[0].client.last_ping_pong_time = time.time() - 1000
+
+                for _ in range(40):
+                    if len(instances) >= 2:
+                        break
+                    await asyncio.sleep(0.01)
+
+                assert len(instances) >= 2, "watchdog did not heal wedged (lying) transport"
+                assert instances[0].closed is True
+                assert adapter._handler is instances[-1]
             finally:
                 await adapter.disconnect()
 

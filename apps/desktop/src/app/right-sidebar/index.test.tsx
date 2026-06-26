@@ -31,10 +31,10 @@ describe('RightSidebarPane', () => {
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
 
-  it('renders the tree whenever the session has a working dir (repo or not) — no picker', async () => {
+  it('renders the tree and an "Open folder" button when the session has a working dir', async () => {
     setCurrentCwd('/repo')
 
-    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} onChangeCwd={vi.fn()} />)
 
     const refresh = await screen.findByRole('button', { name: 'Refresh tree' })
 
@@ -42,16 +42,19 @@ describe('RightSidebarPane', () => {
     fireEvent.click(refresh)
     await waitFor(() => expect(readDir).toHaveBeenCalledWith('/repo'))
 
-    // The freeform folder picker is retired.
-    expect(screen.queryByRole('button', { name: 'Open folder' })).toBeNull()
+    // The folder picker is available so the user can change the working dir.
+    expect(screen.getByRole('button', { name: 'Open folder' })).toBeDefined()
   })
 
-  it('shows no tree for a detached chat (no working dir)', async () => {
+  it('shows the folder picker (not a dead "No project open") for a detached chat', async () => {
     setCurrentCwd('')
 
-    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} />)
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} onChangeCwd={vi.fn()} />)
 
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull())
+    // No tree to refresh (no cwd yet), but the "Open folder" button is present
+    // so the user can pick a folder to start working in.
+    expect(screen.queryByRole('button', { name: 'Refresh tree' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Open folder' })).toBeDefined()
     expect(readDir).not.toHaveBeenCalled()
   })
 })

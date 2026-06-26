@@ -343,13 +343,14 @@ export const workspaceCwdForNewSession = (): string => {
     return getRememberedWorkspaceCwd()
   }
 
-  // A bare new chat starts DETACHED — no inherited cwd, so the composer's coding
-  // rail (which keys off $currentCwd) shows no branch and the first message runs
-  // in the gateway's default rather than silently in the last repo you touched.
-  // Only an explicit default-project-dir setting pre-attaches. Entering a
-  // project/worktree attaches its cwd directly (startSessionInWorkspace), so the
-  // "remember where I was when I'm in a project" case is unaffected.
-  return getConfiguredDefaultProjectDir()
+  // Restore the pre-#49037 fallback chain: configured default → remembered
+  // workspace cwd → current $currentCwd. A bare new chat inherits the last
+  // folder the user worked in, so the right sidebar tree and coding rail
+  // have a root instead of showing "No project open". Entering a project or
+  // worktree still attaches its cwd directly (startSessionInWorkspace),
+  // so the projects paradigm is unaffected — this only fills the gap for
+  // global/detached sessions that had no cwd. See issue #53004.
+  return getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
 }
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)

@@ -7942,6 +7942,30 @@ def _call_cron_for_profile(profile: Optional[str], func_name: str, *args, **kwar
     return result
 
 
+def _call_cron_scheduler_for_profile(profile: Optional[str], func_name: str, *args, **kwargs):
+    """Run cron.scheduler helpers against the selected profile home."""
+    profile_name, home = _cron_profile_home(profile)
+    with _CRON_PROFILE_LOCK:
+        from cron import jobs as cron_jobs
+        from cron import scheduler as cron_scheduler
+
+        old_cron_dir = cron_jobs.CRON_DIR
+        old_jobs_file = cron_jobs.JOBS_FILE
+        old_output_dir = cron_jobs.OUTPUT_DIR
+        old_scheduler_home = cron_scheduler._hermes_home
+        cron_jobs.CRON_DIR = home / "cron"
+        cron_jobs.JOBS_FILE = cron_jobs.CRON_DIR / "jobs.json"
+        cron_jobs.OUTPUT_DIR = cron_jobs.CRON_DIR / "output"
+        cron_scheduler._hermes_home = home
+        try:
+            return getattr(cron_scheduler, func_name)(*args, **kwargs)
+        finally:
+            cron_scheduler._hermes_home = old_scheduler_home
+            cron_jobs.CRON_DIR = old_cron_dir
+            cron_jobs.JOBS_FILE = old_jobs_file
+            cron_jobs.OUTPUT_DIR = old_output_dir
+
+
 def _find_cron_job_profile(job_id: str) -> Optional[str]:
     for profile in _cron_profile_dicts():
         name = str(profile.get("name") or "")
@@ -8117,7 +8141,9 @@ async def trigger_cron_job(job_id: str, profile: Optional[str] = None):
     job = _call_cron_for_profile(selected, "trigger_job", job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    return job
+    _call_cron_scheduler_for_profile(selected, "tick")
+    refreshed = _call_cron_for_profile(selected, "get_job", job_id)
+    return refreshed or job
 
 
 @app.delete("/api/cron/jobs/{job_id}")

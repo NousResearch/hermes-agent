@@ -534,30 +534,51 @@ class HermesACPAgent(acp.Agent):
         model picker was visible. Claude/Codex expose policy-like controls as ACP
         modes, which coexist with the model picker, so Hermes maps edit approval
         policy onto modes instead of advertising config options.
-        """
 
+        Plugin-contributed modes (registered via ``ctx.register_acp_mode()``)
+        are appended after the built-in modes so they appear in the editor's
+        mode picker without any core changes.
+        """
         current = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
+        # Validate current mode against both built-ins and plugin modes.
         if current not in self._MODE_TO_EDIT_APPROVAL_POLICY:
-            current = self._MODE_DEFAULT
+            try:
+                from hermes_cli.plugins import get_plugin_acp_modes
+                plugin_mode_ids = {m["id"] for m in get_plugin_acp_modes()}
+            except Exception:
+                plugin_mode_ids = set()
+            if current not in plugin_mode_ids:
+                current = self._MODE_DEFAULT
+        available_modes = [
+            SessionMode(
+                id=self._MODE_DEFAULT,
+                name="Default",
+                description="Ask before edits.",
+            ),
+            SessionMode(
+                id=self._MODE_ACCEPT_EDITS,
+                name="Accept Edits",
+                description="Auto-allow workspace and /tmp edits; still asks for sensitive paths.",
+            ),
+            SessionMode(
+                id=self._MODE_DONT_ASK,
+                name="Don't Ask",
+                description="Auto-allow file edits for this session except sensitive paths.",
+            ),
+        ]
+        try:
+            from hermes_cli.plugins import get_plugin_acp_modes
+            for m in get_plugin_acp_modes():
+                available_modes.append(SessionMode(
+                    id=m["id"],
+                    name=m["name"],
+                    description=m.get("description", ""),
+                ))
+        except Exception:
+            logger.debug("Could not load plugin ACP modes", exc_info=True)
         return SessionModeState(
             current_mode_id=current,
-            available_modes=[
-                SessionMode(
-                    id=self._MODE_DEFAULT,
-                    name="Default",
-                    description="Ask before edits.",
-                ),
-                SessionMode(
-                    id=self._MODE_ACCEPT_EDITS,
-                    name="Accept Edits",
-                    description="Auto-allow workspace and /tmp edits; still asks for sensitive paths.",
-                ),
-                SessionMode(
-                    id=self._MODE_DONT_ASK,
-                    name="Don't Ask",
-                    description="Auto-allow file edits for this session except sensitive paths.",
-                ),
-            ],
+            available_modes=available_modes,
         )
 
     def _edit_approval_policy_for_state(self, state: SessionState) -> tuple[str, str | None]:
@@ -2028,12 +2049,31 @@ class HermesACPAgent(acp.Agent):
         if state is None:
             logger.warning("Session %s: mode switch requested for missing session", session_id)
             return None
+        previous_mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
         normalized_mode = str(mode_id or "").strip()
-        if normalized_mode not in self._MODE_TO_EDIT_APPROVAL_POLICY:
+        # Accept built-in modes and plugin-contributed modes; fall back to
+        # default only when the id is completely unrecognised.
+        known_builtin = normalized_mode in self._MODE_TO_EDIT_APPROVAL_POLICY
+        try:
+            from hermes_cli.plugins import get_plugin_acp_modes
+            plugin_mode_ids = {m["id"] for m in get_plugin_acp_modes()}
+        except Exception:
+            plugin_mode_ids = set()
+        if not known_builtin and normalized_mode not in plugin_mode_ids:
             normalized_mode = self._MODE_DEFAULT
         setattr(state, "mode", normalized_mode)
         self.session_manager.save_session(session_id)
         logger.info("Session %s: mode switched to %s", session_id, normalized_mode)
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook(
+                "on_session_mode_change",
+                session_id=session_id,
+                mode_id=normalized_mode,
+                previous_mode_id=previous_mode,
+            )
+        except Exception:
+            logger.debug("on_session_mode_change hook error", exc_info=True)
         return SetSessionModeResponse()
 
     async def set_config_option(

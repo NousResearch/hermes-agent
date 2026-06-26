@@ -1622,6 +1622,7 @@ export interface Translations {
       loadingSession: string
       showEarlier: string
       loadingResponse: string
+      resumeWhenBackgroundDone: (count: number) => string
       thinking: string
       today: (time: string) => string
       yesterday: (time: string) => string

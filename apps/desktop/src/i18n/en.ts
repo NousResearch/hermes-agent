@@ -1965,6 +1965,10 @@ export const en: Translations = {
       loadingSession: 'Loading session',
       showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
+      resumeWhenBackgroundDone: count =>
+        count === 1
+          ? 'Will resume when the background task finishes'
+          : `Will resume when ${count} background tasks finish`,
       thinking: 'Thinking',
       today: time => `Today, ${time}`,
       yesterday: time => `Yesterday, ${time}`,

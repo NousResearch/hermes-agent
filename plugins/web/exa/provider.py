@@ -71,6 +71,12 @@ def _get_exa_client() -> Any:
 
     client = Exa(api_key=api_key)
     client.headers["x-exa-integration"] = "hermes-agent"
+    # Set a standard User-Agent so Cloudflare doesn't 403 (error code 1010)
+    # the SDK's default header. Without this, Exa API requests behind
+    # Cloudflare are rejected outright.
+    client.headers["User-Agent"] = (
+        "Hermes-Agent/1.0 (+https://github.com/NousResearch/hermes-agent)"
+    )
     _wt._exa_client = client
     return client
 

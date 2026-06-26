@@ -1229,14 +1229,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if data.get("isGroup"):
                 body = self._clean_bot_mention_text(body, data)
 
-            # If this is a reply, include the quoted message text so the agent
-            # knows exactly what the user is responding to (fixes "approve" context issue)
+            # If this is a reply, preserve the quoted text on MessageEvent so
+            # gateway/run.py can inject a standard, platform-agnostic
+            # "[Replying to: ...]" disambiguation prefix.  Do not splice it
+            # into body here: doing that bypasses reply_to_is_own_message and
+            # can duplicate the core injection path.
             quoted_text = str(data.get("quotedText") or "").strip()
-            if quoted_text and data.get("hasQuotedMessage"):
-                # Truncate long quoted text to keep prompts reasonable
-                if len(quoted_text) > 300:
-                    quoted_text = quoted_text[:297] + "..."
-                body = f"[Replying to: \"{quoted_text}\"]\n{body}"
+            quoted_message_id = str(data.get("quotedMessageId") or "").strip() or None
+            quoted_is_own = self._message_is_reply_to_bot(data)
             MAX_TEXT_INJECT_BYTES = 100 * 1024
             if msg_type == MessageType.DOCUMENT and cached_urls:
                 for doc_path in cached_urls:
@@ -1270,6 +1270,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 source=source,
                 raw_message=data,
                 message_id=data.get("messageId"),
+                reply_to_message_id=quoted_message_id,
+                reply_to_text=quoted_text or None,
+                reply_to_is_own_message=quoted_is_own,
                 media_urls=cached_urls,
                 media_types=media_types,
             )

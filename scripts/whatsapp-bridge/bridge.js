@@ -166,6 +166,22 @@ function getContextInfo(messageContent) {
   return {};
 }
 
+function extractTextFromMessageContent(messageContent) {
+  const content = getMessageContent({ message: messageContent });
+  if (!content || typeof content !== 'object') return '';
+
+  if (content.conversation) return String(content.conversation);
+  if (content.extendedTextMessage?.text) return String(content.extendedTextMessage.text);
+  if (content.imageMessage?.caption) return String(content.imageMessage.caption);
+  if (content.videoMessage?.caption) return String(content.videoMessage.caption);
+  if (content.documentMessage?.caption) return String(content.documentMessage.caption);
+  if (content.buttonsResponseMessage?.selectedDisplayText) return String(content.buttonsResponseMessage.selectedDisplayText);
+  if (content.listResponseMessage?.title) return String(content.listResponseMessage.title);
+  if (content.templateButtonReplyMessage?.selectedDisplayText) return String(content.templateButtonReplyMessage.selectedDisplayText);
+
+  return '';
+}
+
 mkdirSync(SESSION_DIR, { recursive: true });
 
 // Build LID → phone reverse map from session files (lid-mapping-{phone}.json)
@@ -341,6 +357,7 @@ async function startSocket() {
       const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
       const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
       const hasQuotedMessage = !!contextInfo?.quotedMessage;
+      const quotedText = extractTextFromMessageContent(contextInfo?.quotedMessage || null);
 
       // Extract message body
       let body = '';
@@ -456,6 +473,7 @@ async function startSocket() {
         quotedParticipant,
         quotedRemoteJid,
         hasQuotedMessage,
+        quotedText,
         botIds,
         timestamp: msg.messageTimestamp,
       };

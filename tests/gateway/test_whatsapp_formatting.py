@@ -322,15 +322,47 @@ class TestBridgeEventMetadata:
             "quotedParticipant": "99999999999@s.whatsapp.net",
             "quotedRemoteJid": "15551234567@s.whatsapp.net",
             "hasQuotedMessage": True,
+            "quotedText": "please approve invoice 123",
+            "botIds": ["99999999999@s.whatsapp.net"],
         }
 
         event = await adapter._build_message_event(data)
 
         assert event is not None
+        assert event.text == "approved"
+        assert event.reply_to_message_id == "outbound-msg"
+        assert event.reply_to_text == "please approve invoice 123"
+        assert event.reply_to_is_own_message is True
         assert event.raw_message["quotedMessageId"] == "outbound-msg"
         assert event.raw_message["quotedParticipant"] == "99999999999@s.whatsapp.net"
         assert event.raw_message["quotedRemoteJid"] == "15551234567@s.whatsapp.net"
         assert event.raw_message["hasQuotedMessage"] is True
+
+    @pytest.mark.asyncio
+    async def test_quoted_reply_without_text_preserves_id_only(self):
+        adapter = _make_adapter()
+        data = {
+            "messageId": "incoming-msg",
+            "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net",
+            "senderName": "Tester",
+            "chatName": "Tester",
+            "isGroup": False,
+            "body": "what about this?",
+            "hasMedia": False,
+            "mediaUrls": [],
+            "quotedMessageId": "old-msg",
+            "quotedParticipant": "15551234567@s.whatsapp.net",
+            "hasQuotedMessage": True,
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert event.text == "what about this?"
+        assert event.reply_to_message_id == "old-msg"
+        assert event.reply_to_text is None
+        assert event.reply_to_is_own_message is False
 
 
 # ---------------------------------------------------------------------------

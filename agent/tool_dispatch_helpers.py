@@ -24,18 +24,73 @@ working unchanged.
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import json
 import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Iterator, Optional
 
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
 )
 
 logger = logging.getLogger(__name__)
+
+# Set for the duration of a *concurrent* tool batch (the ThreadPoolExecutor
+# path in ``tool_executor.execute_tool_calls_concurrent``).  A batch only
+# reaches that path when ``_should_parallelize_tool_batch`` cleared it, which
+# means every ``terminal`` call in it is allowlisted via
+# ``parallel_safe_prefixes`` — i.e. a declared stateless read-only lookup.
+#
+# Why this exists: concurrent terminal calls share one persistent-shell
+# environment (resolved by task_id) whose ``execute()`` persists session state
+# by read-modify-write of per-session snapshot/cwd files.  Two such calls would
+# race that read-modify-write and corrupt the session PATH (upstream #38249).
+# The terminal tool reads this flag and runs allowlisted parallel-batch calls
+# on the *stateless* ``execute(persist_session=False)`` path, which neither
+# sources nor rewrites the snapshot/cwd files — removing the race by
+# construction.  Off by default; only True inside a concurrent batch.
+_PARALLEL_BATCH_ACTIVE: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "_PARALLEL_BATCH_ACTIVE", default=False
+)
+
+
+def parallel_batch_active() -> bool:
+    """Return True while the current thread runs inside a concurrent tool batch.
+
+    Why: lets the terminal tool select the stateless (non-snapshot-persisting)
+    execution path for calls dispatched concurrently, avoiding the shared
+    session-snapshot read-modify-write race (#38249).
+    What: reads the ``_PARALLEL_BATCH_ACTIVE`` ContextVar (propagated into
+    worker threads via ``contextvars.copy_context``); defaults to False.
+    Test: False outside any batch; True inside ``parallel_batch_scope()``,
+    including in a child thread that copied the context after the scope opened.
+    """
+    return _PARALLEL_BATCH_ACTIVE.get()
+
+
+@contextlib.contextmanager
+def parallel_batch_scope() -> Iterator[None]:
+    """Mark the dynamic extent of a concurrent tool batch.
+
+    Why: the concurrent dispatcher must signal worker threads that terminal
+    calls in this batch are allowlisted stateless lookups eligible for the
+    snapshot-free execution path.  The flag is set on the dispatching thread
+    *before* it copies its context onto workers, so each worker inherits it.
+    What: sets ``_PARALLEL_BATCH_ACTIVE`` True for the ``with`` body and resets
+    it on exit (even on error).
+    Test: ``parallel_batch_active()`` is True inside the ``with`` block and
+    False after it returns or raises.
+    """
+    token = _PARALLEL_BATCH_ACTIVE.set(True)
+    try:
+        yield
+    finally:
+        _PARALLEL_BATCH_ACTIVE.reset(token)
+
 
 # Tools that must never run concurrently (interactive / user-facing).
 # When any of these appear in a batch, we fall back to sequential execution.
@@ -101,6 +156,88 @@ def _is_mcp_tool_parallel_safe(tool_name: str) -> bool:
         return False
 
 
+# Config key (under the ``terminal`` toolset) bridged to this env var as a
+# JSON-encoded list by the CLI config loader, mirroring the other
+# ``terminal.* -> TERMINAL_*`` mappings.
+_TERMINAL_PARALLEL_SAFE_PREFIXES_ENV = "TERMINAL_PARALLEL_SAFE_PREFIXES"
+
+
+def _terminal_parallel_safe_prefixes() -> tuple[str, ...]:
+    """Return the operator-configured read-only ``terminal`` command prefixes.
+
+    Why: lets operators opt specific stateless terminal commands into parallel
+    batch execution without baking any command names into the engine (mirrors
+    the per-server ``supports_parallel_tool_calls`` MCP opt-in).
+    What: parses the ``TERMINAL_PARALLEL_SAFE_PREFIXES`` env var (a JSON list of
+    string prefixes, bridged from ``terminal.parallel_safe_prefixes`` config);
+    returns an empty tuple when unset, empty, or malformed.
+    Test: set the env var to ``'["foo"]'`` -> returns ``("foo",)``; unset or
+    ``'[]'`` or invalid JSON -> returns ``()``.
+    """
+    raw = os.environ.get(_TERMINAL_PARALLEL_SAFE_PREFIXES_ENV)
+    if not raw:
+        return ()
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        return ()
+    if not isinstance(parsed, list):
+        return ()
+    return tuple(p for p in parsed if isinstance(p, str) and p)
+
+
+# Shell metacharacters that indicate command chaining, redirection, command
+# substitution, or backgrounding.  Any of these in a candidate command means
+# the allowlisted prefix no longer bounds what actually runs (e.g.
+# ``mytool x && rm -rf /``), so the call is rejected from the parallel-safe
+# path and runs serially — the safer default.
+_TERMINAL_PARALLEL_UNSAFE_METACHARS = ("&", ";", "|", "`", "$(", ">", "<", "\n")
+
+
+def _is_terminal_call_parallel_safe(function_args: dict) -> bool:
+    """Decide whether a single ``terminal`` call is safe to run in a batch.
+
+    Why: ``terminal`` is never unconditionally parallel-safe, so a batch
+    containing one is forced serial; this gates the exception on an explicit
+    operator allowlist of read-only command prefixes.  A bare ``startswith``
+    is too lax (``ls`` would match ``lsof``; ``git`` would match the mutating
+    ``git push``), so the prefix must land on a word boundary and the command
+    must be free of shell metacharacters that could smuggle in a second,
+    unvetted command.
+    What: returns True iff an allowlist is configured AND the call's
+    ``command`` is metacharacter-free AND it equals a configured prefix or
+    begins with ``prefix`` followed by whitespace (a word boundary); returns
+    False otherwise (empty/unset allowlist, no command, metacharacters, or a
+    mere substring match like ``lsof`` against prefix ``ls``).
+    Test: with prefixes ``("ls",)`` -> ``{"command": "ls -l"}`` True,
+    ``{"command": "lsof"}`` False; with ``("mytool",)`` ->
+    ``{"command": "mytool sub arg"}`` True,
+    ``{"command": "mytool x && rm -rf /"}`` False (metachar);
+    with no prefixes configured -> always False.
+    """
+    prefixes = _terminal_parallel_safe_prefixes()
+    if not prefixes:
+        return False
+    command = function_args.get("command")
+    if not isinstance(command, str) or not command:
+        return False
+    stripped = command.strip()
+    if not stripped:
+        return False
+    # Reject chaining/redirection/substitution outright — the prefix can only
+    # vouch for the first token, not for anything a metacharacter appends.
+    if any(metachar in stripped for metachar in _TERMINAL_PARALLEL_UNSAFE_METACHARS):
+        return False
+    for prefix in prefixes:
+        if stripped == prefix:
+            return True
+        # Word boundary: the prefix must be followed by whitespace, not an
+        # arbitrary character (so ``ls`` does not match ``lsof``).
+        if stripped.startswith(prefix) and stripped[len(prefix) :][:1].isspace():
+            return True
+    return False
+
+
 def _should_parallelize_tool_batch(tool_calls) -> bool:
     """Return True when a tool-call batch is safe to run concurrently."""
     if len(tool_calls) <= 1:
@@ -137,6 +274,30 @@ def _should_parallelize_tool_batch(tool_calls) -> bool:
             if any(_paths_overlap(scoped_path, existing) for existing in reserved_paths):
                 return False
             reserved_paths.append(scoped_path)
+            continue
+
+        if tool_name == "terminal":
+            # ``terminal`` is gated on the operator allowlist of read-only
+            # command prefixes (see ``_is_terminal_call_parallel_safe``).  A
+            # non-matching command keeps the whole batch sequential.
+            #
+            # Design note (accepted tradeoff): terminal calls are NOT
+            # path-scoped — they reserve no entry in ``reserved_paths`` — so an
+            # allowlisted read-only command that happens to read a file a
+            # batched ``write_file`` is concurrently writing could observe a
+            # torn read.  We accept this by design: terminal commands have no
+            # declarable path footprint, and the operator opts only read-only
+            # lookups into the allowlist.  Operators who need read-after-write
+            # ordering should not allowlist commands that read mutated paths.
+            # (The simpler alternative — forcing any batch with both a terminal
+            # call and a write_file serial — would defeat the feature's main
+            # use case of read-only lookups running alongside file edits.)
+            if not _is_terminal_call_parallel_safe(function_args):
+                logger.debug(
+                    "[parallel-gate] SEQUENTIAL — terminal command not in "
+                    "parallel_safe_prefixes allowlist"
+                )
+                return False
             continue
 
         if tool_name not in _PARALLEL_SAFE_TOOLS:
@@ -434,6 +595,10 @@ __all__ = [
     "_DESTRUCTIVE_PATTERNS",
     "_REDIRECT_OVERWRITE",
     "_is_destructive_command",
+    "_terminal_parallel_safe_prefixes",
+    "_is_terminal_call_parallel_safe",
+    "parallel_batch_active",
+    "parallel_batch_scope",
     "_should_parallelize_tool_batch",
     "_extract_parallel_scope_path",
     "_paths_overlap",

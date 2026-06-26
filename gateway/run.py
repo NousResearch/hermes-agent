@@ -1508,6 +1508,7 @@ if _config_path.exists():
                 "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
                 "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
                 "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+                "parallel_safe_prefixes": "TERMINAL_PARALLEL_SAFE_PREFIXES",
                 "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
             }
             for _cfg_key, _env_var in _terminal_env_map.items():

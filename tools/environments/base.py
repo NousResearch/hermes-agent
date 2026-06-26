@@ -416,9 +416,26 @@ class BaseEnvironment(ABC):
             return f"$HOME/{shlex.quote(cwd[2:])}"
         return shlex.quote(cwd)
 
-    def _wrap_command(self, command: str, cwd: str) -> str:
+    def _wrap_command(
+        self, command: str, cwd: str, persist_session: bool = True
+    ) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
-        re-dumps env vars, and emits CWD markers."""
+        re-dumps env vars, and emits CWD markers.
+
+        Why: when ``persist_session`` is False the call is a stateless,
+        read-only lookup (e.g. an allowlisted command admitted to a concurrent
+        parallel batch).  Such calls must NOT touch the per-session snapshot or
+        cwd files: two concurrent calls sharing this environment would race the
+        snapshot read-modify-write and corrupt the session PATH (#38249).  The
+        stateless script still ``cd``'s into the configured cwd (a read of
+        ``self.cwd``) but neither sources nor rewrites the snapshot, nor writes
+        the cwd file — removing the shared-state race by construction.
+        What: returns the wrapped bash script; ``persist_session=False`` omits
+        the snapshot source, the ``export -p`` re-dump, and the cwd-file write.
+        Test: ``_wrap_command(cmd, cwd, persist_session=False)`` contains no
+        reference to ``self._snapshot_path`` or ``self._cwd_file``; the default
+        (True) still references both.
+        """
         escaped = command.replace("'", "'\\''")
 
         # Quote the snapshot / cwd-file paths so Git Bash on Windows handles
@@ -436,7 +453,7 @@ class BaseEnvironment(ABC):
         # can emit the declarations to stdout, leaking ~60 lines of env
         # vars into every tool response (issue #15459).  Linux bash is
         # silent here, but the redirect is harmless.
-        if self._snapshot_ready:
+        if self._snapshot_ready and persist_session:
             parts.append(
                 f"source {_quoted_snap} >/dev/null 2>&1 || true"
             )
@@ -451,12 +468,19 @@ class BaseEnvironment(ABC):
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
 
-        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
-        if self._snapshot_ready:
+        # Re-dump env vars to snapshot.  Skipped on the stateless path: a
+        # parallel-batch read-only call must not rewrite the shared snapshot
+        # (that write is the corrupting half of the #38249 race).
+        if self._snapshot_ready and persist_session:
             parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
 
-        # Write CWD to file (local reads this) and stdout marker (remote parses this)
-        parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
+        # Write CWD to file (local reads this) and stdout marker (remote parses
+        # this).  The cwd-file write is shared session state, so it is skipped
+        # on the stateless path; the stdout marker stays (it is per-call output,
+        # not shared state, and ``execute`` skips _update_cwd when not
+        # persisting).
+        if persist_session:
+            parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
         # Use a distinct line for the marker. The leading \n ensures
         # the marker starts on its own line even if the command doesn't
         # end with a newline (e.g. printf 'exact'). We'll strip this
@@ -836,8 +860,26 @@ class BaseEnvironment(ABC):
         timeout: int | None = None,
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
+        persist_session: bool = True,
     ) -> dict:
-        """Execute a command, return {"output": str, "returncode": int}."""
+        """Execute a command, return {"output": str, "returncode": int}.
+
+        Why ``persist_session``: this environment persists session state
+        (env-var snapshot + cwd) by read-modify-write of per-session files
+        shared across all calls bound to the same task_id.  Concurrent calls
+        therefore race those files and can corrupt the session PATH (#38249).
+        Callers that admit a command to a concurrent parallel batch (an
+        allowlisted, declared-stateless read-only lookup) pass
+        ``persist_session=False`` to run on a snapshot-free path that neither
+        sources nor rewrites the snapshot/cwd files — making concurrent calls
+        safe by construction.
+        What: when False, the wrapped script skips snapshot source/rewrite and
+        the cwd-file write, and the result's cwd is NOT propagated back to
+        ``self.cwd`` (no shared-state mutation).
+        Test: two threads calling ``execute(persist_session=False)`` on one
+        environment leave ``self.cwd`` and the snapshot/cwd files unchanged;
+        the default path still updates them.
+        """
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
@@ -863,7 +905,9 @@ class BaseEnvironment(ABC):
             exec_command = self._embed_stdin_heredoc(exec_command, effective_stdin)
             effective_stdin = None
 
-        wrapped = self._wrap_command(exec_command, effective_cwd)
+        wrapped = self._wrap_command(
+            exec_command, effective_cwd, persist_session=persist_session
+        )
 
         # Use login shell if snapshot failed (so user's profile still loads)
         login = not self._snapshot_ready
@@ -872,7 +916,21 @@ class BaseEnvironment(ABC):
             wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
         )
         result = self._wait_for_process(proc, timeout=effective_timeout)
-        self._update_cwd(result)
+        # Stateless calls must not mutate the shared session cwd; skip the
+        # read-back so concurrent parallel-batch calls cannot clobber self.cwd.
+        if persist_session:
+            self._update_cwd(result)
+        else:
+            # Strip the cwd marker from output for parity with the persisted
+            # path, but restore self.cwd afterwards so this stateless call
+            # leaves no shared-state side effect.  (_extract_cwd_from_output
+            # both strips the marker and assigns self.cwd; we keep the strip,
+            # discard the assignment.)
+            _prev_cwd = self.cwd
+            try:
+                self._extract_cwd_from_output(result)
+            finally:
+                self.cwd = _prev_cwd
 
         return result
 

@@ -36,6 +36,7 @@ from agent.tool_dispatch_helpers import (
     _multimodal_text_summary,
     _append_subdir_hint_to_multimodal,
     make_tool_result_message,
+    parallel_batch_scope,
 )
 from tools.terminal_tool import (
     get_active_env,
@@ -612,7 +613,18 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         futures = []
         if runnable_calls:
             max_workers = min(len(runnable_calls), _MAX_TOOL_WORKERS)
-            with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            # Mark the batch as concurrent BEFORE submitting: each worker copies
+            # this thread's context at submit time (propagate_context_to_thread),
+            # so the flag must already be set when copy_context() runs.  This
+            # routes any allowlisted terminal call onto the stateless,
+            # snapshot-free execute() path, avoiding the shared session-snapshot
+            # read-modify-write race (#38249).
+            with (
+                parallel_batch_scope(),
+                concurrent.futures.ThreadPoolExecutor(
+                    max_workers=max_workers
+                ) as executor,
+            ):
                 for submit_index, (i, tc, name, args) in enumerate(runnable_calls):
                     # Propagate the agent turn's ContextVars (e.g.
                     # _approval_session_key) AND thread-local approval/sudo

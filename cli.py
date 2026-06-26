@@ -403,6 +403,7 @@ def load_cli_config() -> Dict[str, Any]:
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
             "docker_volumes": [],  # host:container volume mounts for Docker backend
             "docker_mount_cwd_to_workspace": False,  # explicit opt-in only; default off for sandbox isolation
+            "parallel_safe_prefixes": [],  # read-only command prefixes the agent may run in parallel batches; empty = all terminal calls serial
         },
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
@@ -627,6 +628,9 @@ def load_cli_config() -> Dict[str, Any]:
         "docker_persist_across_processes": "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES",
         "docker_orphan_reaper": "TERMINAL_DOCKER_ORPHAN_REAPER",
         "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+        # Parallel batch execution opt-in (list of read-only command prefixes;
+        # bridged JSON-encoded, parsed by agent.tool_dispatch_helpers).
+        "parallel_safe_prefixes": "TERMINAL_PARALLEL_SAFE_PREFIXES",
         # Persistent shell (non-local backends)
         "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
         # Sudo support (works with all backends)

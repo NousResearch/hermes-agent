@@ -80,11 +80,15 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
         timeout: int | None = None,
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
+        persist_session: bool = True,
     ) -> dict:
         # Managed/remote modal transports execute commands via explicit transport
-        # and do not rely on shell background rewriters. Keep parameter for
-        # compatibility with BaseEnvironment callers.
+        # and do not rely on shell background rewriters or the local per-session
+        # snapshot/cwd files. Accept ``persist_session`` for signature parity with
+        # BaseEnvironment callers (the snapshot race it guards against does not
+        # apply to per-call modal transports), but otherwise ignore it.
         _ = rewrite_compound_background
+        _ = persist_session
         self._before_execute()
         prepared = self._prepare_modal_exec(
             command,

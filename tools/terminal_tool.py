@@ -2567,6 +2567,19 @@ def terminal_tool(
                         "timeout": effective_timeout,
                         "cwd": command_cwd,
                     }
+                    # Inside a concurrent tool batch every terminal call is an
+                    # allowlisted, declared-stateless read-only lookup (the
+                    # parallel gate forces the batch serial otherwise). Run it on
+                    # the snapshot-free path so concurrent calls sharing this
+                    # task's environment cannot race the session snapshot/cwd
+                    # read-modify-write (#38249).
+                    try:
+                        from agent.tool_dispatch_helpers import parallel_batch_active
+
+                        if parallel_batch_active():
+                            execute_kwargs["persist_session"] = False
+                    except Exception:
+                        pass
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
                     error_str = str(e).lower()

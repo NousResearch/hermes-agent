@@ -185,6 +185,98 @@ class TestInitSessionFailure:
         assert calls[0]["login"] is True
 
 
+class TestStatelessExecute:
+    """Finding 1 (#38249): allowlisted concurrent terminal calls must run on a
+    snapshot-free path so two calls sharing one environment cannot race the
+    per-session snapshot/cwd read-modify-write.
+
+    Why: ``BaseEnvironment.execute`` persists session state by read-modify-write
+    of shared snapshot/cwd files; the parallel-prefix feature introduces
+    concurrency, so allowlisted calls must opt out of that shared state.
+    What: ``persist_session=False`` makes ``_wrap_command`` omit the snapshot
+    source/rewrite and the cwd-file write, and makes ``execute`` skip the
+    cwd read-back so ``self.cwd`` is not mutated.
+    Test: assert the wrapped script and the post-execute ``self.cwd`` for both
+    the persisted (default) and stateless paths.
+    """
+
+    def test_wrap_command_stateless_omits_snapshot_and_cwd_file(self):
+        env = _TestableEnv()
+        env._snapshot_ready = True
+
+        persisted = env._wrap_command("echo hi", "/tmp")
+        assert "source" in persisted
+        assert "export -p >" in persisted
+        assert env._snapshot_path in persisted
+        assert env._cwd_file in persisted
+
+        stateless = env._wrap_command("echo hi", "/tmp", persist_session=False)
+        # No snapshot source, no snapshot rewrite, no cwd-file write.
+        assert "source" not in stateless
+        assert "export -p >" not in stateless
+        assert env._snapshot_path not in stateless
+        assert env._cwd_file not in stateless
+        # The command still runs and still cd's into the configured cwd.
+        assert "eval 'echo hi'" in stateless
+        assert "cd -- /tmp" in stateless or "cd -- '/tmp'" in stateless
+
+    def _run_execute(self, env, *, persist_session, new_cwd):
+        """Drive execute() with mocked shell I/O; the fake shell 'reports' a new
+        cwd via the stdout marker the wrapper would emit."""
+        marker = env._cwd_marker
+        output = f"done\n{marker}{new_cwd}{marker}\n"
+
+        env._run_bash = lambda *a, **k: MagicMock()
+        env._wait_for_process = lambda proc, timeout=120: {
+            "output": output,
+            "returncode": 0,
+        }
+        return env.execute("echo hi", persist_session=persist_session)
+
+    def test_execute_persisted_updates_cwd(self):
+        """Sanity: the default (persisted) path DOES propagate cwd from output."""
+        env = _TestableEnv(cwd="/start")
+        env._snapshot_ready = True
+        self._run_execute(env, persist_session=True, new_cwd="/moved")
+        assert env.cwd == "/moved"
+
+    def test_execute_stateless_does_not_mutate_cwd(self):
+        """Stateless path leaves self.cwd untouched — no shared-state write that
+        a concurrent call could race."""
+        env = _TestableEnv(cwd="/start")
+        env._snapshot_ready = True
+        result = self._run_execute(env, persist_session=False, new_cwd="/moved")
+        assert env.cwd == "/start"
+        # The marker is still stripped from user-visible output (parity).
+        assert env._cwd_marker not in result["output"]
+
+    def test_execute_stateless_concurrent_calls_keep_cwd_stable(self):
+        """Two concurrent stateless calls reporting different cwds must not
+        corrupt the shared self.cwd — it stays at its initial value."""
+        import threading
+
+        env = _TestableEnv(cwd="/start")
+        env._snapshot_ready = True
+
+        def worker(target_cwd):
+            marker = env._cwd_marker
+            local = _TestableEnv  # noqa: F841  # readability only
+            env._run_bash = lambda *a, **k: MagicMock()
+            env._wait_for_process = lambda proc, timeout=120, _c=target_cwd: {
+                "output": f"x\n{marker}{_c}{marker}\n",
+                "returncode": 0,
+            }
+            env.execute("echo hi", persist_session=False)
+
+        threads = [threading.Thread(target=worker, args=(f"/c{i}",)) for i in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert env.cwd == "/start"
+
+
 class TestCwdMarker:
     def test_marker_contains_session_id(self):
         env = _TestableEnv()

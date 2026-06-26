@@ -163,7 +163,9 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                         aria-hidden="true"
                         className="pointer-events-none absolute right-1.5 top-1/2 grid size-4 -translate-y-1/2 place-items-center opacity-100 transition-opacity group-hover/tab:opacity-0 group-focus-within/tab:opacity-0"
                       >
-                        <span className="size-2 rounded-full bg-current" />
+                        {/* Amber (our warn color); a tab-bg ring + soft drop keeps it
+                            legible where it overlaps the filename. */}
+                        <span className="size-2 rounded-full bg-amber-500 shadow-[0_0_0_2px_var(--tab-bg),0_1px_2px_rgba(0,0,0,0.45)] dark:bg-amber-400" />
                       </span>
                     )}
                     <button

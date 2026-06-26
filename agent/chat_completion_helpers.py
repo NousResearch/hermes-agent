@@ -52,6 +52,13 @@ _OPENROUTER_PROVIDER_SORT_VALUES = {"throughput", "latency", "price"}
 # narrower non-rate-limit case.  See issue #24996.
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
 
+# Base URLs known to reject ``stream_options: {"include_usage": True}``
+# (e.g. Azure AI Foundry MaaS endpoints with strict Pydantic validation).
+# Populated at runtime when a 422 ``extra_forbidden`` error targets
+# ``stream_options``.  Keyed by the host portion of the base URL so that
+# different deployments on the same host share the cache entry.
+_STREAM_OPTIONS_INCOMPATIBLE: set = set()
+
 
 def _ra():
     """Lazy ``run_agent`` reference.
@@ -2283,13 +2290,21 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 pool=_conn_cap,
             ),
         }
-        # OpenAI's `stream_options={"include_usage": True}` drives usage
+# OpenAI's `stream_options={"include_usage": True}` drives usage
         # accounting on OpenAI-compatible endpoints (incl. the Gemini OpenAI
         # compat shim and aggregators like OpenRouter).  Google's *native*
         # Gemini REST endpoint rejects the keyword outright
         # (`Completions.create() got an unexpected keyword argument
-        # 'stream_options'`), so omit it only for that endpoint.
-        if not is_native_gemini_base_url(agent.base_url):
+        # 'stream_options'`), so omit it only for that endpoint.  Endpoints
+        # that have previously rejected ``stream_options`` with a 400/422
+        # (e.g. Azure AI Foundry MaaS) are tracked in
+        # ``_STREAM_OPTIONS_INCOMPATIBLE`` so we skip the field on the
+        # first attempt instead of paying for a failed round-trip.
+        _host = base_url_hostname(agent.base_url or "")
+        if (
+            not is_native_gemini_base_url(agent.base_url)
+            and _host not in _STREAM_OPTIONS_INCOMPATIBLE
+        ):
             stream_kwargs["stream_options"] = {"include_usage": True}
         request_client = _set_request_client(
             agent._create_request_openai_client(
@@ -3061,6 +3076,36 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         agent._buffer_status(_exhausted_msg)
                     else:
                         _err_lower = str(e).lower()
+                        # Azure AI Foundry MaaS (and similar strict
+                        # Pydantic-validated endpoints) reject
+                        # ``stream_options: {"include_usage": True}``
+                        # with HTTP 400/422.  Cache the incompatibility
+                        # and retry once without it.
+                        _is_stream_options_rejected = False
+                        _status = getattr(e, "status_code", None)
+                        if _status in (400, 422):
+                            _err_body = str(getattr(e, "body", "") or "").lower()
+                            if "stream_options" in _err_body and (
+                                "extra" in _err_body
+                                or "not supported" in _err_body
+                                or "unrecognized" in _err_body
+                                or "unexpected" in _err_body
+                            ):
+                                _is_stream_options_rejected = True
+                        if _is_stream_options_rejected:
+                            _host = base_url_hostname(agent.base_url or "")
+                            if _host and _host not in _STREAM_OPTIONS_INCOMPATIBLE:
+                                _STREAM_OPTIONS_INCOMPATIBLE.add(_host)
+                                logger.info(
+                                    "Endpoint %s rejected stream_options "
+                                    "(HTTP %s) — caching incompatibility "
+                                    "and retrying without it.",
+                                    _host, _status,
+                                )
+                                _close_request_client_once(
+                                    "stream_options_422_retry_cleanup"
+                                )
+                                continue
                         _is_stream_unsupported = (
                             "stream" in _err_lower
                             and "not supported" in _err_lower

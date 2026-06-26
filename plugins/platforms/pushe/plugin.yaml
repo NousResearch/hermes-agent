@@ -1,0 +1,10 @@
+name: pushe
+label: Pushe (پوشه)
+kind: platform
+version: 1.0.0
+description: Pushe (پوشه) adapter.
+author: Hermes Core Team
+requires_env:
+  - name: PUSHE_API_TOKEN\n    description: "PUSHE_API_TOKEN"\n    prompt: "PUSHE_API_TOKEN"\n    password: true\n
+optional_env:
+

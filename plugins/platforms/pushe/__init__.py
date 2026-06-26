@@ -1,0 +1,1 @@
+from .adapter import register\n\n__all__ = ["register"]\n

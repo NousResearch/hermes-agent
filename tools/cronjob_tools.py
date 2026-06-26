@@ -711,6 +711,23 @@ def cronjob(
         # Resolve to canonical ID (supports name-based lookup)
         job_id = job["id"]
 
+        if normalized == "get":
+            full = _format_job(job)
+            full.pop("prompt_preview", None)
+            full["prompt"] = str(job.get("prompt") or "")
+            return json.dumps(
+                {
+                    "success": True,
+                    "job": full,
+                    "edit_hint": (
+                        "To change this job, call cronjob(action='update', "
+                        "job_id='%s', prompt=<full new prompt text>). "
+                        "Do NOT edit jobs.json with file/patch tools." % job_id
+                    ),
+                },
+                indent=2,
+            )
+
         if normalized == "remove":
             removed = remove_job(job_id)
             if not removed:
@@ -857,7 +874,9 @@ CRONJOB_SCHEMA = {
     "description": """Manage scheduled cron jobs with a single compressed tool.
 
 Use action='create' to schedule a new job from a prompt or one or more skills.
-Use action='list' to inspect jobs.
+Use action='list' to inspect jobs (shows only a 100-char prompt preview).
+Use action='get' with a job_id to read a job's FULL prompt and config.
+To EDIT a job's prompt: action='get' to read the full prompt, modify that text, then action='update' with the complete new prompt. Always 'get' first; never reconstruct a prompt from the preview or by editing jobs.json directly.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
 To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
@@ -876,11 +895,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, get, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run"
+                "description": "Required for get/update/pause/resume/remove/run"
             },
             "prompt": {
                 "type": "string",

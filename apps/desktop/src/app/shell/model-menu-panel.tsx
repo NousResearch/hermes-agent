@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Skeleton } from '@/components/ui/skeleton'
 import type { HermesGateway } from '@/hermes'
-import { getGlobalModelOptions } from '@/hermes'
+import { getGlobalModelOptions, getMoaModels } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { currentPickerSelection, displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
@@ -37,7 +37,7 @@ import {
   $currentProvider,
   $currentReasoningEffort
 } from '@/store/session'
-import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
+import type { MoaConfigResponse, ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
 
 import { ModelEditSubmenu, resolveFastControl } from './model-edit-submenu'
 
@@ -64,6 +64,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
   const [search, setSearch] = useState('')
   const [refreshing, setRefreshing] = useState(false)
   const queryClient = useQueryClient()
+  const [activeMoaPreset, setActiveMoaPreset] = useState('')
   // Reactive session state is read from the stores here (not drilled in), so
   // toggling effort/fast/model re-renders this panel in place without forcing
   // the parent to rebuild the menu content (which would close the dropdown).
@@ -84,6 +85,11 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
       return getGlobalModelOptions()
     }
+  })
+
+  const moaOptions = useQuery({
+    queryKey: ['moa-presets'],
+    queryFn: (): Promise<MoaConfigResponse> => getMoaModels()
   })
 
   const { model: optionsModel, provider: optionsProvider } = currentPickerSelection(
@@ -167,6 +173,15 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
       },
       { failMessage: t.shell.modelOptions.updateFailed, request: requestGateway, sessionId: activeSessionId }
     )
+  }
+
+  const toggleMoaPreset = async (preset: string) => {
+    if (!activeSessionId) {
+      return
+    }
+
+    await requestGateway('command.dispatch', { name: 'moa', arg: preset, session_id: activeSessionId })
+    setActiveMoaPreset(current => (current === preset ? '' : preset))
   }
 
   const groups = useMemo(
@@ -301,6 +316,27 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
       )}
 
       <DropdownMenuSeparator className="mx-0" />
+
+      {moaOptions.data && Object.keys(moaOptions.data.presets ?? {}).length > 0 ? (
+        <>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>MoA presets</DropdownMenuLabel>
+          {Object.keys(moaOptions.data.presets).map(preset => (
+            <DropdownMenuItem
+              className={dropdownMenuRow}
+              disabled={!activeSessionId}
+              key={`moa:${preset}`}
+              onSelect={event => {
+                event.preventDefault()
+                void toggleMoaPreset(preset)
+              }}
+            >
+              <span className="min-w-0 flex-1 truncate">MoA: {preset}</span>
+              {activeMoaPreset === preset ? <Codicon className="ml-auto text-foreground" name="check" size="0.75rem" /> : null}
+            </DropdownMenuItem>
+          ))}
+          <DropdownMenuSeparator className="mx-0" />
+        </>
+      ) : null}
 
       <DropdownMenuItem
         className={cn(dropdownMenuRow, 'text-(--ui-text-tertiary)')}

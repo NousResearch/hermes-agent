@@ -106,7 +106,12 @@ def _custom_provider_extra_body_for_agent(
     base_url: str,
     custom_providers: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    if (provider or "").strip().lower() != "custom":
+    provider_norm = (provider or "").strip().lower()
+    if provider_norm == "custom":
+        provider_key_filter = ""
+    elif provider_norm.startswith("custom:"):
+        provider_key_filter = provider_norm.split(":", 1)[1].strip()
+    else:
         return None
 
     target_url = _normalized_custom_base_url(base_url)
@@ -117,6 +122,13 @@ def _custom_provider_extra_body_for_agent(
     for entry in custom_providers or []:
         if not isinstance(entry, dict):
             continue
+        if provider_key_filter:
+            entry_keys = {
+                str(entry.get("provider_key", "") or "").strip().lower(),
+                str(entry.get("name", "") or "").strip().lower(),
+            }
+            if provider_key_filter not in entry_keys:
+                continue
         if _normalized_custom_base_url(entry.get("base_url")) != target_url:
             continue
         extra_body = entry.get("extra_body")
@@ -707,6 +719,15 @@ def init_agent(
                     print("🔑 Using credentials: Microsoft Entra ID")
                 elif isinstance(effective_key, str) and len(effective_key) > 12:
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
+    elif agent.provider == "moa":
+        from agent.moa_loop import MoAClient
+        agent.api_mode = "chat_completions"
+        agent.client = MoAClient(agent.model or "default")
+        agent._client_kwargs = {}
+        agent.api_key = api_key or "moa-virtual-provider"
+        agent.base_url = base_url or "moa://local"
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with MoA preset: {agent.model}")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
         # Region is extracted from the base_url or defaults to us-east-1.

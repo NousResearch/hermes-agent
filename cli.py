@@ -7488,8 +7488,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if mi:
             if mi.max_output:
                 _cprint(f"    Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                _cprint(f"    Cost: {mi.format_cost()}")
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
 
         cache_enabled = (
@@ -7796,8 +7794,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if mi:
             if mi.max_output:
                 _cprint(f"    Max output: {mi.max_output:,} tokens")
-            if mi.has_cost_data():
-                _cprint(f"    Cost: {mi.format_cost()}")
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
 
         # Cache notice
@@ -8422,6 +8418,51 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "moa":
+            from hermes_cli.moa_config import (
+                exact_moa_preset_name,
+                moa_usage,
+                normalize_moa_config,
+                resolve_moa_preset,
+            )
+
+            parts = cmd_original.split(None, 1)
+            payload = parts[1].strip() if len(parts) > 1 else ""
+            moa_cfg = self.config.get("moa") if isinstance(self.config, dict) else {}
+            normalized = normalize_moa_config(moa_cfg)
+            matched_preset = exact_moa_preset_name(normalized, payload) if payload else normalized["default_preset"]
+            if matched_preset:
+                self.requested_provider = "moa"
+                self.provider = "moa"
+                self.model = matched_preset
+                self.api_key = "moa-virtual-provider"
+                self.base_url = "moa://local"
+                self.api_mode = "chat_completions"
+                self.agent = None
+                _cprint(f"  Model switched to MoA preset: {matched_preset}.")
+            else:
+                if not payload:
+                    _cprint(f"  {moa_usage()}")
+                    return True
+                preset = normalized["default_preset"]
+                self._pending_moa_restore_model = {
+                    "requested_provider": getattr(self, "requested_provider", None),
+                    "provider": getattr(self, "provider", None),
+                    "model": getattr(self, "model", None),
+                    "api_key": getattr(self, "api_key", None),
+                    "base_url": getattr(self, "base_url", None),
+                    "api_mode": getattr(self, "api_mode", None),
+                }
+                self.requested_provider = "moa"
+                self.provider = "moa"
+                self.model = preset
+                self.api_key = "moa-virtual-provider"
+                self.base_url = "moa://local"
+                self.api_mode = "chat_completions"
+                self.agent = None
+                self._pending_moa_disable_after_turn = True
+                self._pending_agent_seed = payload
+                _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":
@@ -9068,8 +9109,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # ── Session token usage ─────────────────────────────────────
         input_tokens = getattr(agent, "session_input_tokens", 0) or 0
         output_tokens = getattr(agent, "session_output_tokens", 0) or 0
-        cache_read_tokens = getattr(agent, "session_cache_read_tokens", 0) or 0
-        cache_write_tokens = getattr(agent, "session_cache_write_tokens", 0) or 0
         reasoning_tokens = getattr(agent, "session_reasoning_tokens", 0) or 0
         prompt = agent.session_prompt_tokens
         completion = agent.session_completion_tokens
@@ -9082,25 +9121,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         compressions = compressor.compression_count
 
         msg_count = len(self.conversation_history)
-        cost_result = estimate_usage_cost(
-            agent.model,
-            CanonicalUsage(
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                cache_read_tokens=cache_read_tokens,
-                cache_write_tokens=cache_write_tokens,
-            ),
-            provider=getattr(agent, "provider", None),
-            base_url=getattr(agent, "base_url", None),
-        )
         elapsed = format_duration_compact((datetime.now() - self.session_start).total_seconds())
 
         print("  📊 Session Token Usage")
         print(f"  {'─' * 40}")
         print(f"  Model:                     {agent.model}")
         print(f"  Input tokens:              {input_tokens:>10,}")
-        print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
-        print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
         print(f"  Output tokens:             {output_tokens:>10,}")
         if reasoning_tokens:
             print(f"  ↳ Reasoning (subset):      {reasoning_tokens:>10,}")
@@ -9109,21 +9135,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  Total tokens:              {total:>10,}")
         print(f"  API calls:                 {calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
-        print(f"  Cost status:              {cost_result.status:>10}")
-        print(f"  Cost source:              {cost_result.source:>10}")
-        if cost_result.amount_usd is not None:
-            prefix = "~" if cost_result.status == "estimated" else ""
-            print(f"  Total cost:              {prefix}${float(cost_result.amount_usd):>10.4f}")
-        elif cost_result.status == "included":
-            print(f"  Total cost:              {'included':>10}")
-        else:
-            print(f"  Total cost:              {'n/a':>10}")
         print(f"  {'─' * 40}")
         print(f"  Current context:  {last_prompt:,} / {ctx_len:,} ({pct:.0f}%)")
         print(f"  Messages:         {msg_count}")
         print(f"  Compressions:     {compressions}")
-        if cost_result.status == "unknown":
-            print(f"  Note:             Pricing unknown for {agent.model}")
 
         # Account limits -- fetched off-thread with a hard timeout so slow
         # provider APIs don't hang the prompt.
@@ -10484,6 +10499,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _on_tool_complete(self, tool_call_id: str, function_name: str, function_args: dict, function_result: str):
         """Render file edits with inline diff after write-capable tools complete."""
+        # A top-level delegate_task dispatches in the background and re-enters as
+        # a fresh turn when done. Say so once — no spinner, nothing to poll — so
+        # the idle prompt doesn't read as "nothing happened" (⛓ tracks the work).
+        if function_name == "delegate_task":
+            try:
+                parsed = json.loads(function_result) if isinstance(function_result, str) else (function_result or {})
+            except Exception:
+                parsed = {}
+            if isinstance(parsed, dict) and parsed.get("status") == "dispatched" and parsed.get("mode") == "background":
+                n = parsed.get("count") or 1
+                noun, tail = ("task", "it finishes") if n == 1 else (f"{n} tasks", "they finish")
+                try:
+                    _cprint(f"\033[2m\u21a9 Background {noun} running — I'll resume when {tail}. Keep chatting.\033[0m")
+                except Exception:
+                    pass
         snapshot = self._pending_edit_snapshots.pop(tool_call_id, None)
         try:
             from agent.display import render_edit_diff_with_delta
@@ -11672,6 +11702,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 if _srn:
                     agent_message = _prepend_note_to_message(agent_message, _srn)
                     self._pending_skills_reload_note = None
+                _moa_cfg = getattr(self, "_pending_moa_config", None)
+                self._pending_moa_config = None
+                if _moa_cfg is None:
+                    _moa_cfg = None
                 try:
                     result = self.agent.run_conversation(
                         user_message=agent_message,
@@ -11679,7 +11713,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         stream_callback=stream_callback,
                         task_id=self.session_id,
                         persist_user_message=message if _voice_prefix else None,
+                        moa_config=_moa_cfg,
                     )
+                    if getattr(self, "_pending_moa_disable_after_turn", False):
+                        _restore = getattr(self, "_pending_moa_restore_model", None) or {}
+                        for _key, _value in _restore.items():
+                            if _value is not None:
+                                setattr(self, _key, _value)
+                        self.agent = None
+                        self._pending_moa_restore_model = None
+                        self._pending_moa_disable_after_turn = False
                 except Exception as exc:
                     logging.error("run_conversation raised: %s", exc, exc_info=True)
                     _summary = getattr(self.agent, '_summarize_api_error', lambda e: str(e)[:300])(exc)

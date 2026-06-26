@@ -68,6 +68,7 @@ from agent.auxiliary_client import call_llm
 from hermes_constants import agent_browser_runnable, get_hermes_home
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 try:
     from tools.website_policy import check_website_access
@@ -915,8 +916,7 @@ def _run_chrome_fallback_command(
                 # the CLI mid-turn. The agent thread's subprocess spawn
                 # unwound MainThread's prompt_toolkit loop that way — see
                 # diag log: "asyncio.CancelledError → KeyboardInterrupt".
-                _CREATE_NO_WINDOW = 0x08000000
-                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
+                _popen_extra["creationflags"] = windows_hide_flags()
                 _popen_extra["close_fds"] = True
                 _si = subprocess.STARTUPINFO()
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES
@@ -2196,8 +2196,7 @@ def _run_browser_command(
                 # See matching block at the other Popen site — CREATE_NO_WINDOW
                 # only, NO CREATE_NEW_PROCESS_GROUP (cancels asyncio loop task
                 # on Python 3.11 Windows → KeyboardInterrupt in CLI MainThread).
-                _CREATE_NO_WINDOW = 0x08000000
-                _popen_extra["creationflags"] = _CREATE_NO_WINDOW
+                _popen_extra["creationflags"] = windows_hide_flags()
                 _popen_extra["close_fds"] = True
                 _si = subprocess.STARTUPINFO()
                 _si.dwFlags |= subprocess.STARTF_USESTDHANDLES

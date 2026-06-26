@@ -119,7 +119,20 @@ class SessionSource:
     # None => the gateway's active/default profile. Drives both session-key
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
-    
+
+    # Internal, wire-INVISIBLE trust signal: True when this event was delivered
+    # to the gateway over the per-instance-authenticated relay WebSocket (the
+    # Team Gateway connector). The connector authenticates the gateway's socket
+    # with a per-instance secret and resolves owner-only author bindings BEFORE
+    # delivering, so a relay-delivered event is already authorized as this
+    # instance's bound user. ``platform`` carries the UNDERLYING platform
+    # (e.g. ``discord``) for session-keying/egress, NOT ``relay`` — so authz
+    # must key the upstream-trust decision off THIS flag, not off ``platform``.
+    # Set locally by the relay transport (``ws_transport._event_from_wire``);
+    # deliberately excluded from ``to_dict``/``from_dict`` so a peer can never
+    # forge it across the wire or have it restored from persistence.
+    delivered_via_upstream_relay: bool = False
+
     @property
     def description(self) -> str:
         """Human-readable description of the source."""
@@ -1447,6 +1460,25 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
     
+    def has_platform_message_id(
+        self, session_id: str, platform_message_id: str
+    ) -> bool:
+        """Check if a message with the given platform_message_id is persisted.
+
+        Thin wrapper over SessionDB.has_platform_message_id(). Returns False
+        when no DB is available (in-memory sessions). Used by the gateway's
+        transient-failure dedupe guard (#47237).
+        """
+        if not self._db:
+            return False
+        try:
+            return self._db.has_platform_message_id(
+                session_id, platform_message_id
+            )
+        except Exception:
+            logger.debug("has_platform_message_id lookup failed", exc_info=True)
+            return False
+
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
 

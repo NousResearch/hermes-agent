@@ -703,6 +703,19 @@ def test_load_enabled_toolsets_accepts_plugin_env_after_discovery(monkeypatch):
     assert server._load_enabled_toolsets() == ["plugin_demo"]
 
 
+def test_load_enabled_toolsets_folds_project_into_focus_posture(monkeypatch):
+    # Focus-mode coding posture returns before the config fallback, but it's
+    # still a GUI-only resolver — `project` must come along so the desktop keeps
+    # the project tools while sitting in a repo.
+    monkeypatch.delenv("HERMES_TUI_TOOLSETS", raising=False)
+
+    import agent.coding_context as cc
+
+    monkeypatch.setattr(cc, "coding_selection", lambda **_: ["coding", "figma"])
+
+    assert server._load_enabled_toolsets() == ["coding", "figma", "project"]
+
+
 def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "mcp-off")
     monkeypatch.setitem(
@@ -722,10 +735,10 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    # Sorted: ["kanban", "memory"]. `kanban` is auto-recovered by
-    # _get_platform_tools because it's a non-configurable platform toolset
-    # whose tools live in hermes-cli's universe (see toolsets.py).
-    assert server._load_enabled_toolsets() == ["kanban", "memory"]
+    # Sorted: ["kanban", "memory", "project"]. `kanban` is auto-recovered by
+    # _get_platform_tools (a non-configurable platform toolset in hermes-cli's
+    # universe); `project` is GUI-only, folded in by _load_enabled_toolsets.
+    assert server._load_enabled_toolsets() == ["kanban", "memory", "project"]
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -746,7 +759,7 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    assert server._load_enabled_toolsets() == ["kanban", "memory"]
+    assert server._load_enabled_toolsets() == ["kanban", "memory", "project"]
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
@@ -1001,8 +1014,11 @@ def test_session_resume_follows_compression_tip(monkeypatch, tmp_path):
     )
 
     try:
+        # eager_build: this asserts the synchronously-built agent binds to the
+        # resolved tip (captured["agent_session_id"]); the compression-tip
+        # resolution itself runs before the build and is mode-agnostic.
         resp = server.handle_request(
-            {"id": "1", "method": "session.resume", "params": {"session_id": "parent_root"}}
+            {"id": "1", "method": "session.resume", "params": {"session_id": "parent_root", "eager_build": True}}
         )
     finally:
         db.close()
@@ -1049,8 +1065,11 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
 
     monkeypatch.setattr(server, "_init_session", fake_init_session)
 
+    # eager_build: this asserts the synchronous build contract (stored runtime
+    # overrides reach _make_agent, info comes from _session_info). The deferred
+    # default restores the same overrides via _start_agent_build off-thread.
     resp = server.handle_request(
-        {"id": "1", "method": "session.resume", "params": {"session_id": "stored-session"}}
+        {"id": "1", "method": "session.resume", "params": {"session_id": "stored-session", "eager_build": True}}
     )
 
     assert resp["result"]["info"] == {"model": "gpt-5.4", "provider": "openai-codex"}
@@ -1137,11 +1156,13 @@ def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
     monkeypatch.setattr(approval, "load_permanent_allowlist", lambda: None)
 
     try:
+        # eager_build: asserts the synchronous build receives the profile's db
+        # (the deferred default builds with the same db via _start_agent_build).
         resp = server.handle_request(
             {
                 "id": "1",
                 "method": "session.resume",
-                "params": {"session_id": target, "profile": "worker"},
+                "params": {"session_id": target, "profile": "worker", "eager_build": True},
             }
         )
 
@@ -1164,7 +1185,7 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
     captured = {}
 
     class ProfileDB:
-        def update_session_cwd(self, session_id, cwd):
+        def update_session_cwd(self, session_id, cwd, git_branch=None, git_repo_root=None):
             captured["profile_update"] = (session_id, cwd)
 
         def close(self):
@@ -2001,7 +2022,7 @@ def test_ensure_session_db_row_persists_explicit_cwd(monkeypatch, tmp_path):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append(
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -2020,7 +2041,7 @@ def test_ensure_session_db_row_persists_session_source(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append(
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -2041,7 +2062,7 @@ def test_ensure_session_db_row_defaults_to_no_workspace(monkeypatch, tmp_path):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append(
                 {"key": key, "source": source, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -2068,7 +2089,7 @@ def test_ensure_session_db_row_persists_session_model_override(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append(
                 {"key": key, "model": model, "model_config": model_config, "cwd": cwd}
             )
@@ -2100,7 +2121,7 @@ def test_ensure_session_db_row_no_override_uses_global(monkeypatch):
     created = []
 
     class _FakeDB:
-        def create_session(self, key, source=None, model=None, model_config=None, cwd=None):
+        def create_session(self, key, source=None, model=None, model_config=None, parent_session_id=None, cwd=None):
             created.append({"model": model, "model_config": model_config})
 
     monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
@@ -6079,7 +6100,7 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
     """Drops `tool` rows like session.list does, returns the first hit."""
 
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200):
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
             return [
                 {"id": "tool-1", "source": "tool", "title": "noise", "started_at": 100},
                 {"id": "tui-1", "source": "tui", "title": "real", "started_at": 99},
@@ -6098,7 +6119,7 @@ def test_session_most_recent_returns_first_non_denied(monkeypatch):
 
 def test_session_most_recent_returns_null_when_only_tool_rows(monkeypatch):
     class _DB:
-        def list_sessions_rich(self, *, source=None, limit=200):
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
             return [{"id": "tool-1", "source": "tool", "started_at": 1}]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
@@ -6116,7 +6137,7 @@ def test_session_most_recent_folds_db_exception_into_null_result(monkeypatch):
     'no answer' (Copilot review on #17130)."""
 
     class _BrokenDB:
-        def list_sessions_rich(self, *, source=None, limit=200):
+        def list_sessions_rich(self, *, source=None, limit=200, order_by_last_active=False):
             raise RuntimeError("db locked")
 
     monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
@@ -6137,6 +6158,65 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
     )
 
     assert resp["result"]["session_id"] is None
+
+
+# ── verification.status ──────────────────────────────────────────────
+
+
+def test_verification_status_returns_recorded_evidence(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "package.json").write_text(
+        json.dumps({"scripts": {"test": "vitest"}}),
+        encoding="utf-8",
+    )
+    (project / "pnpm-lock.yaml").write_text("", encoding="utf-8")
+    try:
+        from agent.verification_evidence import record_terminal_result
+
+        record_terminal_result(
+            command="pnpm run test",
+            cwd=project,
+            session_id="sid",
+            exit_code=0,
+            output="green",
+        )
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "verification.status",
+                "params": {"cwd": str(project), "session_id": "sid"},
+            }
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    verification = resp["result"]["verification"]
+    assert verification["status"] == "passed"
+    assert verification["evidence"]["canonical_command"] == "pnpm run test"
+    assert verification["evidence"]["scope"] == "full"
+
+
+def test_verification_status_outside_workspace_is_not_applicable(tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "verification.status",
+                "params": {"cwd": str(tmp_path), "session_id": "sid"},
+            }
+        )
+    finally:
+        reset_hermes_home_override(token)
+
+    assert resp["result"]["verification"]["status"] == "not_applicable"
 
 
 # ── browser.manage ───────────────────────────────────────────────────

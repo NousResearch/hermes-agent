@@ -788,6 +788,7 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    attach_to_session: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -866,6 +867,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -966,6 +968,11 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
     }
+    # Only persist attach_to_session when explicitly set, so existing jobs and
+    # the common case stay byte-identical (absent key => fall back to the
+    # global cron.mirror_delivery config, default off).
+    if normalized_attach is not None:
+        job["attach_to_session"] = normalized_attach
 
     with _jobs_lock():
         jobs = load_jobs()
@@ -1490,16 +1497,64 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     return due
 
 
+# Per-run cron output (`cron/output/<job>/<timestamp>.md`) is written once per
+# execution. Unlike the quick-snapshot store (`hermes_cli.backup`, capped at 20)
+# it had no retention, so a frequently-scheduled job on a long-running deploy
+# accumulated one file per run forever and could fill the disk (#52383). Keep the
+# most recent N files per job; a non-positive value disables pruning (opt-out).
+_CRON_OUTPUT_DEFAULT_KEEP = 50
+
+
+def _cron_output_keep() -> int:
+    """Resolve the per-job output-file retention cap from config (``cron.output_retention``)."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        return int(cron_cfg.get("output_retention", _CRON_OUTPUT_DEFAULT_KEEP))
+    except Exception:
+        return _CRON_OUTPUT_DEFAULT_KEEP
+
+
+def _prune_job_output(job_output_dir: Path, keep: int) -> int:
+    """Remove the oldest ``*.md`` run-output files beyond *keep*. Returns count deleted.
+
+    Mirrors the quick-snapshot retention in ``hermes_cli.backup._prune_quick_snapshots``:
+    output filenames are timestamp-based (``%Y-%m-%d_%H-%M-%S.md``) so a reverse
+    lexical sort orders newest-first, and everything past *keep* is the tail to
+    drop. A non-positive *keep* disables pruning. Pruning failures are swallowed
+    so they can never break output saving.
+    """
+    if keep <= 0:
+        return 0
+    try:
+        files = sorted(
+            (f for f in job_output_dir.glob("*.md") if f.is_file()),
+            key=lambda f: f.name,
+            reverse=True,
+        )
+    except OSError:
+        return 0
+    deleted = 0
+    for stale in files[keep:]:
+        try:
+            stale.unlink()
+            deleted += 1
+        except OSError as exc:
+            logger.debug("Failed to prune cron output %s: %s", stale.name, exc)
+    return deleted
+
+
 def save_job_output(job_id: str, output: str):
     """Save job output to file."""
     ensure_dirs()
     job_output_dir = _job_output_dir(job_id)
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
-    
+
     timestamp = _hermes_now().strftime("%Y-%m-%d_%H-%M-%S")
     output_file = job_output_dir / f"{timestamp}.md"
-    
+
     fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
     try:
         with os.fdopen(fd, 'w', encoding='utf-8') as f:
@@ -1514,7 +1569,10 @@ def save_job_output(job_id: str, output: str):
         except OSError:
             pass
         raise
-    
+
+    # Bound per-job output growth so long-running deploys don't fill the disk (#52383).
+    _prune_job_output(job_output_dir, _cron_output_keep())
+
     return output_file
 
 

@@ -13,7 +13,6 @@ import inspect
 import json
 import logging
 import os
-import tempfile
 import html as _html
 import re
 from datetime import datetime, timezone
@@ -538,6 +537,7 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        self._polling_heartbeat_task: Optional[asyncio.Task] = None
         # After sustained reconnect storms the PTB httpx pool can return
         # SendResult(success=True) for sends that never actually transmit.
         # _handle_polling_network_error sets this; _verify_polling_after_reconnect
@@ -1156,6 +1156,34 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         return False
 
+    def _content_is_pipe_table_primary(self, content: str) -> bool:
+        """True when pipe tables are the only rich construct in *content*.
+
+        Tables are auto-routed to ``sendRichMessage`` even when the full
+        ``rich_messages`` opt-in is off — MarkdownV2 has no table syntax and
+        the legacy path rewrites them into bullet lists, which reads like a
+        regression when users enable Telegram Topics and expect native tables.
+        Task lists, ``<details>``, and block math still require the full opt-in.
+        """
+        if not content or not any(
+            _TABLE_SEPARATOR_RE.match(line) for line in content.splitlines()
+        ):
+            return False
+        if re.search(r"(?m)^\s*[-*]\s+\[[ xX]\]\s+", content):
+            return False
+        if re.search(r"(?m)^<details\b|^</details>|^<summary\b|^</summary>", content):
+            return False
+        if "$$" in content:
+            return False
+        return True
+
+    def _rich_delivery_enabled(self, content: str) -> bool:
+        """Whether rich delivery is allowed for this payload."""
+        return bool(
+            getattr(self, "_rich_messages_enabled", True)
+            or self._content_is_pipe_table_primary(content)
+        )
+
     def _rich_eligible(self, content: str) -> bool:
         """Capability/content eligibility for rich, ignoring ``expect_edits``.
 
@@ -1166,7 +1194,7 @@ class TelegramAdapter(BasePlatformAdapter):
         FINAL edit should still upgrade to rich when the content warrants it.
         """
         return bool(
-            getattr(self, "_rich_messages_enabled", True)
+            self._rich_delivery_enabled(content)
             and not getattr(self, "_rich_send_disabled", False)
             and content
             and content.strip()
@@ -1303,10 +1331,6 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             should_thread = self._should_thread_reply(reply_to_source, 0)
         reply_to_id = int(reply_to_source) if should_thread and reply_to_source else None
-        if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
-            # Refusing to send outside the requested DM topic — defer to the
-            # legacy path, which returns the canonical fail-loud SendResult.
-            return None
         thread_kwargs = self._thread_kwargs_for_send(
             chat_id,
             thread_id,
@@ -1314,6 +1338,13 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_message_id=reply_to_id,
             reply_to_mode=self._reply_to_mode,
         )
+        if private_dm_topic_send and reply_to_id is None and not dm_topic_reply_to_off:
+            # Refusing to send outside the requested DM topic — defer to the
+            # legacy path, which returns the canonical fail-loud SendResult.
+            # Exception: synthetic/resumed topic sends that route via
+            # ``direct_messages_topic_id`` do not need a reply anchor.
+            if not thread_kwargs.get("direct_messages_topic_id"):
+                return None
         return reply_to_id, thread_kwargs
 
     async def _try_send_rich(
@@ -1427,6 +1458,7 @@ class TelegramAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[SendResult]:
         """Edit an existing message in place as a rich message (Bot API 10.1).
 
@@ -1446,6 +1478,15 @@ class TelegramAdapter(BasePlatformAdapter):
             "message_id": int(message_id),
             "rich_message": self._rich_message_payload(content),
         }
+        thread_id = self._metadata_thread_id(metadata)
+        thread_kwargs = self._thread_kwargs_for_send(
+            chat_id,
+            thread_id,
+            metadata,
+            reply_to_message_id=None,
+            reply_to_mode=self._reply_to_mode,
+        )
+        payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         if getattr(self, "_disable_link_previews", False):
             payload["link_preview_options"] = {"is_disabled": True}
         try:
@@ -1673,6 +1714,63 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
+
+    async def _polling_heartbeat_loop(self) -> None:
+        """Detect dead Telegram TCP sockets (CLOSE-WAIT) by periodic probing.
+
+        PTB's long-poll task blocks on epoll waiting for Telegram to push an
+        update.  When the underlying TCP connection enters CLOSE-WAIT (the remote
+        sent a FIN but the httpx pool has not yet noticed), epoll still reports
+        the socket as readable and no exception is raised — so PTB's
+        ``error_callback`` never fires and the gateway silently stops receiving
+        messages.
+
+        This loop probes ``get_me()`` every ``HEARTBEAT_INTERVAL`` seconds on the
+        *general* request path (not the getUpdates pool), so a healthy long-poll
+        waiting for the 30-second Telegram window is never interrupted.  On any
+        connect-level failure the loop hands off to
+        ``_handle_polling_network_error`` — the same path triggered by PTB's own
+        ``error_callback`` — which drains the dead pool and restarts polling.
+
+        Unlike ``_verify_polling_after_reconnect`` (a one-shot probe scheduled
+        only after an explicit reconnect), this loop runs for the full lifetime
+        of the polling connection, so it catches a socket that wedges during
+        steady-state operation without any prior error event.
+        """
+        HEARTBEAT_INTERVAL = 90   # seconds between probes
+        PROBE_TIMEOUT = 15        # seconds before declaring the path dead
+
+        while True:
+            try:
+                await asyncio.sleep(HEARTBEAT_INTERVAL)
+                if self.has_fatal_error:
+                    return
+                bot = self._app.bot if self._app else None
+                if bot is None:
+                    continue
+                # A real PTB Bot always exposes get_me(); if it's absent the
+                # app isn't a live polling client (e.g. torn down or a test
+                # double), so there is nothing to probe — exit rather than spin.
+                if not callable(getattr(bot, "get_me", None)):
+                    return
+                await asyncio.wait_for(bot.get_me(), PROBE_TIMEOUT)
+            except asyncio.CancelledError:
+                return
+            except (asyncio.TimeoutError, OSError) as probe_err:
+                logger.warning(
+                    "[%s] Polling heartbeat probe failed (%s); triggering reconnect",
+                    self.name, probe_err,
+                )
+                if self._polling_error_task and not self._polling_error_task.done():
+                    continue   # reconnect already in progress
+                loop = asyncio.get_running_loop()
+                self._polling_error_task = loop.create_task(
+                    self._handle_polling_network_error(probe_err)
+                )
+            except Exception:
+                # Non-connectivity errors (e.g. TelegramError 401) are not
+                # CLOSE-WAIT symptoms — let PTB's own handlers surface them.
+                pass
 
     async def _verify_polling_after_reconnect(self) -> None:
         """Heartbeat probe scheduled after a successful reconnect.
@@ -2035,29 +2133,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 changed = True
 
             if changed:
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=str(config_path.parent),
-                    suffix=".tmp",
-                    prefix=".config_",
+                from utils import atomic_yaml_write
+
+                atomic_yaml_write(
+                    config_path,
+                    config,
+                    default_flow_style=False,
+                    sort_keys=False,
                 )
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        _yaml.dump(
-                            config,
-                            f,
-                            default_flow_style=False,
-                            sort_keys=False,
-                            allow_unicode=True,
-                        )
-                        f.flush()
-                        os.fsync(f.fileno())
-                    atomic_replace(tmp_path, config_path)
-                except BaseException:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
                 logger.info(
                     "[%s] Persisted thread_id=%s for topic '%s' in config.yaml",
                     self.name, thread_id, topic_name,
@@ -2480,6 +2563,16 @@ class TelegramAdapter(BasePlatformAdapter):
             mode = "webhook" if self._webhook_mode else "polling"
             logger.info("[%s] Connected to Telegram (%s mode)", self.name, mode)
 
+            # Start the persistent heartbeat loop in polling mode. Webhook mode
+            # receives updates via incoming pushes — there is no long-poll
+            # socket to wedge in CLOSE-WAIT, so the loop is not needed there.
+            if not self._webhook_mode:
+                if self._polling_heartbeat_task and not self._polling_heartbeat_task.done():
+                    self._polling_heartbeat_task.cancel()
+                self._polling_heartbeat_task = asyncio.ensure_future(
+                    self._polling_heartbeat_loop()
+                )
+
             # Surface the gateway as "Online" in the bot's short description
             # (opt-in via extra.status_indicator). Non-fatal.
             try:
@@ -2538,6 +2631,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Stop polling/webhook, cancel pending album flushes, and disconnect."""
+        # Cancel the heartbeat before tearing down the app so the probe task
+        # cannot fire get_me() into a half-shutdown bot client.
+        if self._polling_heartbeat_task and not self._polling_heartbeat_task.done():
+            self._polling_heartbeat_task.cancel()
+            try:
+                await self._polling_heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        self._polling_heartbeat_task = None
+
         # Mark the bot "Offline" in its short description while the bot's HTTP
         # client is still alive (before app shutdown closes it). Opt-in via
         # extra.status_indicator. Non-fatal. This is the clean-shutdown path;
@@ -2985,7 +3088,9 @@ class TelegramAdapter(BasePlatformAdapter):
         # chunks.  Falls back to the legacy edit path (overflow split included)
         # on capability/permanent rejection.
         if finalize and self._rich_eligible(content):
-            rich_result = await self._try_edit_rich(chat_id, message_id, content)
+            rich_result = await self._try_edit_rich(
+                chat_id, message_id, content, metadata=metadata,
+            )
             if rich_result is not None:
                 return rich_result
 

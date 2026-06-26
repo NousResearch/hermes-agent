@@ -723,6 +723,10 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
         import subprocess
         import sys
         import time
+        from hermes_cli._subprocess_compat import (
+            windows_detach_flags,
+            windows_detach_flags_without_breakaway,
+        )
 
         pid = int(sys.argv[1])
         cmd = sys.argv[2:]
@@ -747,18 +751,8 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
             "stderr": subprocess.DEVNULL,
         }
         if sys.platform == "win32":
-            _CREATE_NEW_PROCESS_GROUP = 0x00000200
-            _DETACHED_PROCESS = 0x00000008
-            _CREATE_NO_WINDOW = 0x08000000
-            _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-            _flags = (
-                _CREATE_NEW_PROCESS_GROUP
-                | _DETACHED_PROCESS
-                | _CREATE_NO_WINDOW
-                | _CREATE_BREAKAWAY_FROM_JOB
-            )
             try:
-                _popen_kwargs["creationflags"] = _flags
+                _popen_kwargs["creationflags"] = windows_detach_flags()
                 subprocess.Popen(cmd, **_popen_kwargs)
             except OSError:
                 # CREATE_BREAKAWAY_FROM_JOB can be rejected with
@@ -766,7 +760,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
                 # breakaway. Retry without it — DETACHED_PROCESS et al.
                 # alone are enough in most setups. Mirrors the canonical
                 # fallback in gateway_windows._spawn_detached.
-                _popen_kwargs["creationflags"] = _flags & ~_CREATE_BREAKAWAY_FROM_JOB
+                _popen_kwargs["creationflags"] = windows_detach_flags_without_breakaway()
                 subprocess.Popen(cmd, **_popen_kwargs)
         else:
             _popen_kwargs["start_new_session"] = True

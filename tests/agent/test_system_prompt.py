@@ -67,11 +67,18 @@ def _stable_prompt(agent):
         return build_system_prompt_parts(agent)["stable"]
 
 
+def _init_code_repo(path):
+    """A git repo that actually holds code — the coding posture requires a source
+    file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""
+    import subprocess
+
+    subprocess.run(["git", "-C", str(path), "init", "-q"], check=True)
+    (path / "main.py").write_text("print('hi')\n")
+
+
 class TestCodingContextBlock:
     def test_injected_when_active(self, monkeypatch, tmp_path):
-        import subprocess
-
-        subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+        _init_code_repo(tmp_path)
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
         stable = _stable_prompt(agent)
@@ -79,9 +86,7 @@ class TestCodingContextBlock:
         assert "Workspace" in stable
 
     def test_absent_when_off(self, monkeypatch, tmp_path):
-        import subprocess
-
-        subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+        _init_code_repo(tmp_path)
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
         # Drive the real path: force the resolved mode to "off" via config.
@@ -90,9 +95,7 @@ class TestCodingContextBlock:
         assert "coding agent" not in stable
 
     def test_absent_without_tools(self, monkeypatch, tmp_path):
-        import subprocess
-
-        subprocess.run(["git", "-C", str(tmp_path), "init", "-q"], check=True)
+        _init_code_repo(tmp_path)
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=[], platform="cli")
         assert "coding agent" not in _stable_prompt(agent)

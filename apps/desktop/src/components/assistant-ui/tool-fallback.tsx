@@ -46,7 +46,8 @@ import {
   toolCopyPayload,
   type ToolPart,
   toolPartDisclosureId,
-  type ToolStatus
+  type ToolStatus,
+  type ToolTitleAction
 } from './tool-fallback-model'
 
 // `true` when a ToolEntry is rendered inside an embedding wrapper that owns
@@ -70,7 +71,7 @@ const TOOL_HEADER_GLYPH_WRAP_CLASS = 'grid size-3.5 shrink-0 place-items-center 
 
 // Glass-style section label that sits above any pre/JSON/output block.
 // Lowercase tracking + tiny size so it reads as a quiet field label rather
-// than a chrome heading. Used for "COMMAND OUTPUT", "INPUT", "OUTPUT", etc.
+// than a chrome heading. Used for "stdout", "stderr", "Search results", etc.
 const TOOL_SECTION_LABEL_CLASS = 'mb-1 text-[0.65rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)'
 
 // Inset scroll surface for any detail body. The expanded tool row owns the
@@ -201,6 +202,39 @@ function SearchResultsList({ hits }: { hits: SearchResultRow[] }) {
 
 function LinkifiedText({ className, text }: { className?: string; text: string }) {
   return <SharedLinkifiedText className={className} pretty text={cleanVisibleText(text)} />
+}
+
+function ToolTitle({
+  isPending,
+  status,
+  title,
+  titleAction
+}: {
+  isPending: boolean
+  status: ToolStatus
+  title: string
+  titleAction?: ToolTitleAction
+}) {
+  return (
+    <FadeText
+      className={cn(
+        TOOL_HEADER_TITLE_CLASS,
+        isPending && 'text-(--ui-text-tertiary)',
+        status === 'error' && 'text-destructive',
+        status === 'warning' && 'text-amber-700 dark:text-amber-300'
+      )}
+    >
+      {isPending && titleAction ? (
+        <>
+          {titleAction.prefix}
+          <span className="shimmer">{titleAction.text}</span>
+          {titleAction.suffix}
+        </>
+      ) : (
+        title
+      )}
+    </FadeText>
+  )
 }
 
 interface ToolEntryProps {
@@ -389,7 +423,7 @@ function ToolEntry({ part }: ToolEntryProps) {
   return (
     <div
       className={cn(
-        'min-w-0 max-w-full overflow-hidden text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)',
+        'group/tool-block min-w-0 max-w-full overflow-hidden text-[length:var(--conversation-tool-font-size)] text-(--ui-text-tertiary)',
         open && TOOL_EXPANDED_SHELL_CLASS
       )}
       data-file-edit={isFileEdit && open ? '' : undefined}
@@ -414,16 +448,7 @@ function ToolEntry({ part }: ToolEntryProps) {
               icon={view.icon}
               status={leadingStatus(isPending, view.status)}
             />
-            <FadeText
-              className={cn(
-                TOOL_HEADER_TITLE_CLASS,
-                isPending && 'shimmer text-(--ui-text-tertiary)',
-                view.status === 'error' && 'text-destructive',
-                view.status === 'warning' && 'text-amber-700 dark:text-amber-300'
-              )}
-            >
-              {view.title}
-            </FadeText>
+            <ToolTitle isPending={isPending} status={view.status} title={view.title} titleAction={view.titleAction} />
             {!isPending && view.countLabel && <span className={TOOL_HEADER_DURATION_CLASS}>{view.countLabel}</span>}
             {showDiffStats && diffStats && (
               <span className="flex shrink-0 items-center gap-1 font-mono text-[0.625rem] tabular-nums">
@@ -447,7 +472,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           {copyAction.text && (
             <CopyButton
               appearance="inline"
-              className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/80 px-1 opacity-100 backdrop-blur-sm transition-opacity hover:opacity-100 focus-visible:opacity-100"
+              className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md px-1 opacity-5 transition-opacity group-hover/tool-block:opacity-100 hover:opacity-100 focus-visible:opacity-100"
               iconClassName="size-3"
               label={copyAction.label}
               showLabel={false}
@@ -466,7 +491,9 @@ function ToolEntry({ part }: ToolEntryProps) {
               <SearchResultsList hits={view.searchHits} />
             </div>
           )}
-          {view.inlineDiff && <FileDiffPanel diff={view.inlineDiff} path={isFileEdit ? view.subtitle : undefined} />}
+          {view.inlineDiff && (
+            <FileDiffPanel className="-mt-1.5" diff={view.inlineDiff} path={isFileEdit ? view.subtitle : undefined} />
+          )}
           {showDetail &&
             toolViewMode !== 'technical' &&
             (view.status === 'error' ? (

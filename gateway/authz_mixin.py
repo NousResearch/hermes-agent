@@ -223,11 +223,28 @@ class GatewayAuthorizationMixin:
         # connector observed, never gateway-asserted). There is no local
         # RELAY_ALLOWED_USERS env allowlist to consult, and default-denying for
         # its absence is the bug this branch fixes. This is delegation to a
-        # trusted upstream, NOT a fail-open: it fires only for an adapter that
-        # explicitly sets authorization_is_upstream=True; every direct
-        # network-exposed adapter leaves it False and the env-allowlist
-        # default-deny below still applies unchanged.
-        if self._adapter_authorization_is_upstream(source.platform):
+        # trusted upstream, NOT a fail-open: it fires only for an event that was
+        # actually delivered over the authenticated relay WS (the transport
+        # stamps ``delivered_via_upstream_relay``), or whose platform's adapter
+        # explicitly declares ``authorization_is_upstream=True``; every direct
+        # network-exposed adapter leaves the flag False and its events unmarked,
+        # so the env-allowlist default-deny below still applies unchanged.
+        #
+        # The delivery marker is the PRIMARY signal: a relay *message* inbound
+        # carries the UNDERLYING platform (``source.platform`` == discord/…),
+        # NOT ``Platform.RELAY``, because that's what session-keying and egress
+        # need — so keying authz off ``source.platform`` would miss (the relay
+        # adapter is registered under ``Platform.RELAY``) and default-deny the
+        # user ("Unauthorized user <id> on discord"). The adapter-flag check is
+        # retained for events whose ``source.platform`` IS ``Platform.RELAY``
+        # (e.g. the interaction-passthrough path).
+        # ``is True`` (not just truthiness): the marker is a real bool on a
+        # SessionSource, and an explicit identity check refuses to authorize a
+        # non-bool stand-in (e.g. a MagicMock attribute auto-vivifies truthy in
+        # tests) — defensive against accidental fail-open.
+        if source.delivered_via_upstream_relay is True or self._adapter_authorization_is_upstream(
+            source.platform
+        ):
             return True
 
         user_id = source.user_id

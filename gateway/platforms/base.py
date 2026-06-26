@@ -1948,8 +1948,23 @@ def merge_pending_message_event(
             and getattr(existing, "message_type", None) == MessageType.TEXT
             and event.message_type == MessageType.TEXT
         ):
-            if event.text:
-                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            incoming = event.text or ""
+            if incoming:
+                existing_text = existing.text or ""
+                if not existing_text:
+                    existing.text = incoming
+                else:
+                    # Drop exact rapid-fire duplicates (a user mashing the same
+                    # message while a turn is busy): skip when the incoming
+                    # fragment is identical to the whole pending text or to its
+                    # trailing fragment.  Only EXACT matches are dropped, so
+                    # genuine new or near-duplicate content is never lost.
+                    incoming_stripped = incoming.strip()
+                    existing_stripped = existing_text.strip()
+                    last_fragment = existing_stripped.rsplit("\n", 1)[-1].strip()
+                    if incoming_stripped and incoming_stripped in (existing_stripped, last_fragment):
+                        return
+                    existing.text = f"{existing_text}\n{incoming}"
             return
 
     pending_messages[session_key] = event

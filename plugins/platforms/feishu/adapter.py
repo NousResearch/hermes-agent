@@ -157,6 +157,43 @@ _MARKDOWN_HINT_RE = re.compile(
 # Detect markdown tables: a line starting with | followed by a separator line.
 # Feishu post-type 'md' elements do not render tables, so we force text mode.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+
+
+def _parse_md_table_content(content: str) -> Optional[Dict[str, Any]]:
+    """Parse a markdown table from *content* and split surrounding text."""
+    match = _MARKDOWN_TABLE_RE.search(content)
+    if not match:
+        return None
+    remaining = content[match.start():]
+    table_lines: list[str] = []
+    for line in remaining.split("\n"):
+        s = line.strip()
+        if s.startswith("|") and s.endswith("|"):
+            table_lines.append(s)
+        elif table_lines:
+            break
+    if len(table_lines) < 3:
+        return None
+    header = [c.strip() for c in table_lines[0].split("|")[1:-1]]
+    if not header:
+        return None
+    rows: list[Dict[str, str]] = []
+    for line in table_lines[2:]:
+        cells = [c.strip() for c in line.split("|")[1:-1]]
+        while len(cells) < len(header):
+            cells.append("")
+        rows.append({f"col_{i}": cells[i] for i in range(len(header))})
+    if not rows:
+        return None
+    columns = [
+        {"name": f"col_{i}", "display_name": h, "data_type": "text", "width": "auto"}
+        for i, h in enumerate(header)
+    ]
+    table_text = "\n".join(table_lines)
+    end_pos = match.start() + len(table_text)
+    before = content[: match.start()].strip()
+    after = content[end_pos:].strip()
+    return {"columns": columns, "rows": rows, "before": before, "after": after}
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -1798,9 +1835,9 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type not in ("post", "interactive") or not _POST_CONTENT_INVALID_RE.search(str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    logger.warning("[Feishu] Invalid %s payload rejected by API; falling back to plain text", msg_type)
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1809,11 +1846,11 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 if (
-                    msg_type == "post"
+                    msg_type in ("post", "interactive")
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    logger.warning("[Feishu] %s payload rejected by API response; falling back to plain text", msg_type)
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -4373,13 +4410,36 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
+    @staticmethod
+    def _build_table_card_payload(parsed: Dict[str, Any]) -> str:
+        """Build a Feishu card JSON containing a table element."""
+        elements: list[Dict[str, Any]] = []
+        if parsed["before"]:
+            elements.append({"tag": "markdown", "content": parsed["before"]})
+        elements.append({
+            "tag": "table",
+            "page_size": min(len(parsed["rows"]), 20),
+            "row_height": "low",
+            "header_style": {
+                "text_align": "left",
+                "background_style": "grey",
+                "bold": True,
+            },
+            "columns": parsed["columns"],
+            "rows": parsed["rows"],
+        })
+        if parsed["after"]:
+            elements.append({"tag": "markdown", "content": parsed["after"]})
+        card: Dict[str, Any] = {
+            "schema": "2.0",
+            "body": {"elements": elements},
+        }
+        return json.dumps(card, ensure_ascii=False)
+
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
-        if _MARKDOWN_TABLE_RE.search(content):
-            text_payload = {"text": content}
-            return "text", json.dumps(text_payload, ensure_ascii=False)
+        table = _parse_md_table_content(content)
+        if table:
+            return "interactive", self._build_table_card_payload(table)
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}

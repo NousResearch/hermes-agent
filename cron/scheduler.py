@@ -2681,12 +2681,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # no explicit provider is requested. Passing the env var here short-
             # circuits that precedence and can resurrect old providers (for
             # example DeepSeek) for cron jobs that do not pin provider/model.
-            _cron_provider = ""
+            _cron_model_provider = ""
             _cron_cfg = _cfg.get("cron") or {}
             if isinstance(_cron_cfg, dict):
-                _cron_provider = str(_cron_cfg.get("provider") or "").strip() or ""
+                _cron_model_provider = str(_cron_cfg.get("model_provider") or "").strip() or ""
             runtime_kwargs = {
-                "requested": job.get("provider") or _cron_provider or None,
+                "requested": job.get("provider") or _cron_model_provider or None,
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")

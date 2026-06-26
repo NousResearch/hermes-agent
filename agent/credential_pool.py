@@ -126,10 +126,29 @@ CUSTOM_POOL_PREFIX = "custom:"
 # ones (short cooldown) and skips Weekly-exhausted ones (long cooldown).
 # Snapshots are cached per credential to keep selection off the network hot
 # path; refresh runs outside the pool lock with a bounded budget.
-USAGE_CACHE_TTL_SECONDS = 90.0
-USAGE_FETCH_TIMEOUT_SECONDS = 6.0
-USAGE_FETCH_BUDGET_PER_SELECT = 2
-USAGE_EXHAUSTED_PCT = 99.0
+def _usage_env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    try:
+        return float(raw) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _usage_env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    try:
+        return int(raw) if raw not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+# Tunable via env (sensible defaults). Usage is re-probed proactively on every
+# 429/402, so the TTL governs background freshness rather than how fast the pool
+# reacts to exhaustion.
+USAGE_CACHE_TTL_SECONDS = _usage_env_float("HERMES_CODEX_USAGE_CACHE_TTL", 180.0)
+USAGE_FETCH_TIMEOUT_SECONDS = _usage_env_float("HERMES_CODEX_USAGE_FETCH_TIMEOUT", 5.0)
+USAGE_FETCH_BUDGET_PER_SELECT = _usage_env_int("HERMES_CODEX_USAGE_FETCH_BUDGET", 2)
+USAGE_EXHAUSTED_PCT = _usage_env_float("HERMES_CODEX_USAGE_EXHAUSTED_PCT", 98.0)
 _usage_cache: Dict[str, Tuple[Any, float]] = {}
 _usage_cache_lock = threading.Lock()
 
@@ -1379,6 +1398,37 @@ class CredentialPool:
                 with _usage_cache_lock:
                     _usage_cache[entry.id] = (snapshot, time.monotonic())
 
+    def _refresh_codex_usage_after_failure(self, api_key_hint: Optional[str]) -> None:
+        """Re-probe the just-failed credential's usage after a 429/402, OUTSIDE
+        the pool lock, and refresh its cached snapshot so the next selection's
+        usage filter immediately sees whether its Session and/or Weekly window
+        is spent (instead of waiting on the reactive cooldown / TTL).
+        """
+        if self.provider != "openai-codex":
+            return
+        try:
+            from agent.account_usage import fetch_codex_usage_for_token
+        except Exception:
+            return
+        with self._lock:
+            entries = list(self._entries)
+            current_id = self._current_id
+        entry = None
+        if api_key_hint:
+            entry = next(
+                (e for e in entries if e.runtime_api_key == api_key_hint), None
+            )
+        if entry is None and current_id:
+            entry = next((e for e in entries if e.id == current_id), None)
+        if entry is None or not (entry.access_token or ""):
+            return
+        snapshot = fetch_codex_usage_for_token(
+            entry.access_token, entry.runtime_base_url, timeout=USAGE_FETCH_TIMEOUT_SECONDS
+        )
+        if snapshot is not None and getattr(snapshot, "available", False):
+            with _usage_cache_lock:
+                _usage_cache[entry.id] = (snapshot, time.monotonic())
+
     def _usage_prioritized(
         self, available: List[PooledCredential]
     ) -> List[PooledCredential]:
@@ -1585,6 +1635,12 @@ class CredentialPool:
         error_context: Optional[Dict[str, Any]] = None,
         api_key_hint: Optional[str] = None,
     ) -> Optional[PooledCredential]:
+        # Proactively re-probe the just-failed credential's usage on a real
+        # quota error so the next selection sees its exhausted Session/Weekly
+        # state right away. Done before the lock — network I/O must not block
+        # other pool consumers.
+        if self.provider == "openai-codex" and status_code in (429, 402):
+            self._refresh_codex_usage_after_failure(api_key_hint)
         with self._lock:
             entry = None
             if api_key_hint:

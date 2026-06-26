@@ -103,3 +103,41 @@ def test_known_room_preferred_over_unknown():
     # a_unknown is priority 0 but b_room has *known* room → both are candidates;
     # fill_first keeps priority, so a_unknown (unknown, still a candidate) wins.
     assert chosen.label in {"a_unknown", "b_room"}
+
+
+def test_proactive_refresh_on_429_updates_failed_credential_cache():
+    cp._usage_cache.clear()
+    pool = _pool(["a_failed", "b_room"])
+    pool._persist = lambda: None
+    failed = pool.entries()[0]
+    pool._current_id = failed.id
+    import agent.account_usage as au
+    with patch.object(au, "fetch_codex_usage_for_token", return_value=_snap(100.0, 10.0)) as m:
+        pool.mark_exhausted_and_rotate(status_code=429, api_key_hint=failed.runtime_api_key)
+    assert m.called  # usage was re-probed on the 429
+    assert cp._cached_codex_usage(failed.id) is not None  # cache refreshed for failed cred
+
+
+def test_no_proactive_refresh_on_auth_401():
+    cp._usage_cache.clear()
+    pool = _pool(["a", "b"])
+    pool._persist = lambda: None
+    pool._current_id = pool.entries()[0].id
+    import agent.account_usage as au
+    with patch.object(au, "fetch_codex_usage_for_token", return_value=_snap(1.0, 1.0)) as m:
+        pool.mark_exhausted_and_rotate(status_code=401, api_key_hint=pool.entries()[0].runtime_api_key)
+    assert not m.called  # 401 is auth, not a quota error → no usage re-probe
+
+
+def test_usage_env_helpers():
+    import os as _os
+    from agent.credential_pool import _usage_env_float, _usage_env_int
+    _os.environ["X_TTL_TEST"] = "300"
+    try:
+        assert _usage_env_float("X_TTL_TEST", 180.0) == 300.0
+        assert _usage_env_int("X_MISSING_TEST", 2) == 2
+        _os.environ["X_BAD_TEST"] = "notanumber"
+        assert _usage_env_float("X_BAD_TEST", 9.0) == 9.0
+    finally:
+        _os.environ.pop("X_TTL_TEST", None)
+        _os.environ.pop("X_BAD_TEST", None)

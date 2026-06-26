@@ -527,6 +527,72 @@ async def _token_auth_seam(request: Request, call_next):
 
 
 # ---------------------------------------------------------------------------
+# Access log — one INFO line per HTTP request to the ``gui`` log surface.
+#
+# The messaging gateway logs every inbound message to ``gateway.log``; this is
+# the dashboard/TUI twin for ``gui.log``. Registered LAST so FastAPI runs it
+# OUTERMOST (middleware is LIFO): it observes the final status code, including
+# 400/401 rejections produced by the host-header and auth middlewares above.
+#
+# Metadata only — method, path (never query string: tokens ride in query on
+# some routes), status, latency, a short request id, and peer. Request/response
+# bodies are deliberately never captured here (see the opt-in body-capture
+# surface). The request id is read from an inbound ``X-Request-ID`` when a
+# reverse proxy or the SPA supplies one, else minted, and echoed back on the
+# response so a client can correlate its call with this log line and with the
+# WebSocket session it subsequently opens.
+# ---------------------------------------------------------------------------
+
+
+def _new_request_id() -> str:
+    """Short, log-friendly correlation id (not security-sensitive)."""
+    import secrets
+
+    return secrets.token_hex(4)
+
+
+@app.middleware("http")
+async def access_log_middleware(request: Request, call_next):
+    import time as _time
+
+    rid = request.headers.get("x-request-id") or _new_request_id()
+    request.state.rid = rid
+    peer = request.client.host if request.client else "?"
+    start = _time.monotonic()
+    status = 500
+    response = None
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    finally:
+        dur_ms = int((_time.monotonic() - start) * 1000)
+        # INFO: the always-on shape/timing line (matches gateway.log granularity).
+        _log.info(
+            "http method=%s path=%s status=%s dur_ms=%d rid=%s peer=%s",
+            request.method,
+            request.url.path,
+            status,
+            dur_ms,
+            rid,
+            peer,
+        )
+        # DEBUG (-v only): noisier fields kept off the default line.
+        if _log.isEnabledFor(logging.DEBUG):
+            _log.debug(
+                "http detail rid=%s ua=%r referer=%r",
+                rid,
+                request.headers.get("user-agent", ""),
+                request.headers.get("referer", ""),
+            )
+        if response is not None:
+            try:
+                response.headers["X-Request-ID"] = rid
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------------------
 # Config schema — auto-generated from DEFAULT_CONFIG
 # ---------------------------------------------------------------------------
 
@@ -11917,19 +11983,27 @@ async def pty_ws(ws: WebSocket) -> None:
     loop = asyncio.get_running_loop()
 
     # --- reader task: PTY master → WebSocket ----------------------------
+    # Counters/reason live in a dict so the nested pump can mutate them
+    # (a closure can't rebind outer ints). Reported in the close line below.
+    _stats = {"bytes_in": 0, "bytes_out": 0, "reason": "client_disconnect"}
+    _pty_start = time.monotonic()
+
     async def pump_pty_to_ws() -> None:
         while True:
             chunk = await loop.run_in_executor(
                 None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
             )
-            if chunk is None:  # EOF
+            if chunk is None:  # EOF — PTY child exited (backend gone)
+                _stats["reason"] = "pty_eof"
                 return
             if not chunk:  # no data this tick; yield control and retry
                 await asyncio.sleep(0)
                 continue
             try:
                 await ws.send_bytes(chunk)
+                _stats["bytes_out"] += len(chunk)
             except Exception:
+                _stats["reason"] = "send_failed"
                 return
 
     reader_task = asyncio.create_task(pump_pty_to_ws())
@@ -11957,8 +12031,14 @@ async def pty_ws(ws: WebSocket) -> None:
                 continue
 
             bridge.write(raw)
+            _stats["bytes_in"] += len(raw)
     except WebSocketDisconnect:
         pass
+    except Exception:
+        # Unexpected server-side failure in the writer loop — record it so the
+        # close line distinguishes a crash from a clean client disconnect.
+        _stats["reason"] = "error"
+        _log.exception("pty writer loop failed peer=%s", peer)
     finally:
         reader_task.cancel()
         try:
@@ -11966,6 +12046,17 @@ async def pty_ws(ws: WebSocket) -> None:
         except (asyncio.CancelledError, Exception):
             pass
         bridge.close()
+        # Close line — the dashboard/TUI twin of handle_ws's "ws closed".
+        # Silent before: a PTY-EOF (backend crash) or send failure left no
+        # trace, so user-reported "chat dropped" was unreproducible.
+        _log.info(
+            "pty closed peer=%s reason=%s dur_s=%.1f bytes_in=%d bytes_out=%d",
+            peer,
+            _stats["reason"],
+            time.monotonic() - _pty_start,
+            _stats["bytes_in"],
+            _stats["bytes_out"],
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -11981,21 +12072,29 @@ async def pty_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
+    peer = ws.client.host if ws.client else "?"
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        _log.info("ws refused: embedded chat disabled peer=%s", peer)
         await ws.close(code=4403)
         return
 
     if not _ws_auth_ok(ws):
+        _log.warning("ws auth rejected peer=%s", peer)
         await ws.close(code=4401)
         return
 
     if not _ws_request_is_allowed(ws):
+        _log.warning("ws refused: host/origin/peer not allowed peer=%s", peer)
         await ws.close(code=4403)
         return
 
     from tui_gateway.ws import handle_ws
 
-    await handle_ws(ws)
+    # Correlate this WS session with the HTTP upgrade request that opened it
+    # (the SPA/proxy may carry X-Request-ID); handle_ws stamps it on its
+    # accepted/closed lines so the chain reconstructs across surfaces.
+    rid = ws.headers.get("x-request-id")
+    await handle_ws(ws, rid=rid)
 
 
 # ---------------------------------------------------------------------------
@@ -12012,52 +12111,77 @@ async def gateway_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/pub")
 async def pub_ws(ws: WebSocket) -> None:
+    peer = ws.client.host if ws.client else "?"
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        _log.info("pub refused: embedded chat disabled peer=%s", peer)
         await ws.close(code=4403)
         return
 
     if not _ws_auth_ok(ws):
+        _log.warning("pub auth rejected peer=%s", peer)
         await ws.close(code=4401)
         return
 
     if not _ws_request_is_allowed(ws):
+        _log.warning("pub refused: host/origin/peer not allowed peer=%s", peer)
         await ws.close(code=4403)
         return
 
     channel = _channel_or_close_code(ws)
     if not channel:
+        _log.warning("pub refused: missing/invalid channel peer=%s", peer)
         await ws.close(code=4400)
         return
 
     await ws.accept()
-
+    _log.info("pub accepted peer=%s channel=%s", peer, channel)
+    started = time.monotonic()
+    reason = "client_disconnect"
+    frames = 0
     try:
         while True:
             await _broadcast_event(ws.app, channel, await ws.receive_text())
+            frames += 1
     except WebSocketDisconnect:
         pass
+    except Exception:
+        reason = "error"
+        _log.exception("pub loop failed peer=%s channel=%s", peer, channel)
+    finally:
+        _log.info(
+            "pub closed peer=%s channel=%s reason=%s dur_s=%.1f frames=%d",
+            peer, channel, reason, time.monotonic() - started, frames,
+        )
 
 
 @app.websocket("/api/events")
 async def events_ws(ws: WebSocket) -> None:
+    peer = ws.client.host if ws.client else "?"
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        _log.info("events refused: embedded chat disabled peer=%s", peer)
         await ws.close(code=4403)
         return
 
     if not _ws_auth_ok(ws):
+        _log.warning("events auth rejected peer=%s", peer)
         await ws.close(code=4401)
         return
 
     if not _ws_request_is_allowed(ws):
+        _log.warning("events refused: host/origin/peer not allowed peer=%s", peer)
         await ws.close(code=4403)
         return
 
     channel = _channel_or_close_code(ws)
     if not channel:
+        _log.warning("events refused: missing/invalid channel peer=%s", peer)
         await ws.close(code=4400)
         return
 
     await ws.accept()
+    _log.info("events accepted peer=%s channel=%s", peer, channel)
+    started = time.monotonic()
+    reason = "client_disconnect"
 
     event_channels, event_lock = _get_event_state(ws.app)
     async with event_lock:
@@ -12071,6 +12195,9 @@ async def events_ws(ws: WebSocket) -> None:
             await ws.receive_text()
     except WebSocketDisconnect:
         pass
+    except Exception:
+        reason = "error"
+        _log.exception("events loop failed peer=%s channel=%s", peer, channel)
     finally:
         async with event_lock:
             subs = event_channels.get(channel)
@@ -12080,6 +12207,10 @@ async def events_ws(ws: WebSocket) -> None:
 
                 if not subs:
                     event_channels.pop(channel, None)
+        _log.info(
+            "events closed peer=%s channel=%s reason=%s dur_s=%.1f",
+            peer, channel, reason, time.monotonic() - started,
+        )
 
 
 def _normalise_prefix(raw: Optional[str]) -> str:

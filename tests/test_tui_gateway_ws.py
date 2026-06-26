@@ -126,3 +126,34 @@ def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
         loop.call_soon_threadsafe(loop.stop)
         thread.join(timeout=2)
         loop.close()
+
+
+def test_handle_ws_stamps_rid_on_accept_and_close(monkeypatch, caplog):
+    """rid from the HTTP upgrade is stamped on the accepted/closed lines so the
+    WS session correlates with the dashboard HTTP access-log line.
+
+    Backward compat: the stdio entry-point calls handle_ws(ws) with no rid;
+    the default rid=None must keep working (asserted by the existing tests
+    above, which all call handle_ws(FakeWS())).
+    """
+    import logging
+
+    class FakeWS:
+        async def accept(self):
+            pass
+
+        async def send_text(self, line):
+            pass
+
+        async def receive_text(self):
+            raise ws_mod._WebSocketDisconnect()
+
+        async def close(self):
+            pass
+
+    with caplog.at_level(logging.INFO, logger="tui_gateway.ws"):
+        asyncio.run(ws_mod.handle_ws(FakeWS(), rid="cafe1234"))
+
+    msgs = [r.getMessage() for r in caplog.records]
+    assert any(m.startswith("ws accepted ") and "rid=cafe1234" in m for m in msgs)
+    assert any(m.startswith("ws closed ") and "rid=cafe1234" in m for m in msgs)

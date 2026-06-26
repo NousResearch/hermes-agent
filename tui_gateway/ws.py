@@ -170,8 +170,15 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-async def handle_ws(ws: Any) -> None:
-    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
+async def handle_ws(ws: Any, rid: str | None = None) -> None:
+    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``.
+
+    ``rid`` is an optional correlation id propagated from the HTTP upgrade
+    request (``X-Request-ID``) by the dashboard's ``/api/ws`` route. It is
+    stamped on the accepted/closed lines so a WS session ties back to the
+    HTTP access-log line that opened it. ``None`` when launched over stdio
+    (``tui_gateway.entry``), where there is no HTTP request.
+    """
     peer = _ws_peer_label(ws)
     transport: WSTransport | None = None
     messages = 0
@@ -186,7 +193,7 @@ async def handle_ws(ws: Any) -> None:
         # Push small streamed frames out immediately instead of letting Nagle
         # batch them — keeps the live token cadence intact for GUI clients.
         _disable_nagle(ws)
-        _log.info("ws accepted peer=%s", peer)
+        _log.info("ws accepted peer=%s rid=%s", peer, rid)
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
 
@@ -327,9 +334,10 @@ async def handle_ws(ws: Any) -> None:
         except Exception as exc:
             _log.debug("ws close failed peer=%s error=%s", peer, exc)
         _log.info(
-            "ws closed peer=%s reason=%s messages=%d parse_errors=%d "
+            "ws closed peer=%s rid=%s reason=%s messages=%d parse_errors=%d "
             "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d",
             peer,
+            rid,
             disconnect_reason,
             messages,
             parse_errors,

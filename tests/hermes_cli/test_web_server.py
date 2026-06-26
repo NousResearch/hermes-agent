@@ -6149,3 +6149,137 @@ class TestDesktopCronTicker:
 
         with self._client():
             assert not called.wait(0.5), "ticker must not run outside the desktop app"
+
+
+# ---------------------------------------------------------------------------
+# Dashboard/TUI observability: HTTP access log + WS lifecycle logging.
+#
+# The gateway logs every inbound message to gateway.log; these assert the
+# dashboard/TUI twin emits the same INFO-granularity shape/timing lines to the
+# gui surface (hermes_cli.web_server logger). Metadata only — never bodies.
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardObservability:
+    """HTTP access-log middleware + WS lifecycle lines on the gui surface."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_http_access_log_line_and_request_id_roundtrip(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="hermes_cli.web_server"):
+            resp = self.client.get("/api/status")
+
+        # Response echoes a correlation id the client/proxy can log against.
+        assert resp.headers.get("X-Request-ID")
+
+        access = [r.getMessage() for r in caplog.records if r.getMessage().startswith("http ")]
+        assert access, "expected an 'http ...' access-log line"
+        line = access[-1]
+        # Behavior contract: the line carries method/path/status/dur/rid/peer,
+        # not a frozen string (no change-detector test).
+        for field in ("method=GET", "path=/api/status", "status=200", "dur_ms=", "rid=", "peer="):
+            assert field in line, f"missing {field!r} in {line!r}"
+
+    def test_http_access_log_never_contains_query_string(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="hermes_cli.web_server"):
+            # Query carries tokens on some routes; the access line must log
+            # path only, never the query string.
+            self.client.get("/api/status?secret=topsecrettoken")
+
+        access = [r.getMessage() for r in caplog.records if r.getMessage().startswith("http ")]
+        assert access
+        assert "topsecrettoken" not in access[-1]
+        assert "?" not in access[-1].split("path=", 1)[1].split(" ", 1)[0]
+
+    def test_inbound_request_id_is_propagated(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="hermes_cli.web_server"):
+            resp = self.client.get("/api/status", headers={"X-Request-ID": "deadbeef"})
+
+        assert resp.headers.get("X-Request-ID") == "deadbeef"
+        access = [r.getMessage() for r in caplog.records if r.getMessage().startswith("http ")]
+        assert any("rid=deadbeef" in m for m in access)
+
+    def test_unauthorized_request_is_still_logged_with_status(self, caplog):
+        import logging
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth = TestClient(app)
+        with caplog.at_level(logging.INFO, logger="hermes_cli.web_server"):
+            resp = unauth.get("/api/env")
+
+        assert resp.status_code == 401
+        # The access log is outermost, so it records the rejection too.
+        access = [r.getMessage() for r in caplog.records if r.getMessage().startswith("http ")]
+        assert any("path=/api/env" in m and "status=401" in m for m in access)
+
+    def test_events_ws_logs_accept_and_close(self, caplog):
+        import logging
+        from hermes_cli.web_server import _SESSION_TOKEN
+
+        with caplog.at_level(logging.INFO, logger="hermes_cli.web_server"):
+            with self.client.websocket_connect(
+                f"/api/events?channel=obs_test&token={_SESSION_TOKEN}"
+            ) as conn:
+                conn.close()
+
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(m.startswith("events accepted ") and "channel=obs_test" in m for m in msgs)
+        close = [m for m in msgs if m.startswith("events closed ")]
+        assert close, "expected an 'events closed' line"
+        for field in ("channel=obs_test", "reason=", "dur_s="):
+            assert field in close[-1], f"missing {field!r} in {close[-1]!r}"
+
+    def test_pub_ws_logs_accept_and_close(self, caplog):
+        import logging
+        from hermes_cli.web_server import _SESSION_TOKEN
+
+        with caplog.at_level(logging.INFO, logger="hermes_cli.web_server"):
+            with self.client.websocket_connect(
+                f"/api/pub?channel=obs_pub&token={_SESSION_TOKEN}"
+            ) as conn:
+                conn.close()
+
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(m.startswith("pub accepted ") and "channel=obs_pub" in m for m in msgs)
+        close = [m for m in msgs if m.startswith("pub closed ")]
+        assert close
+        for field in ("channel=obs_pub", "reason=", "dur_s=", "frames="):
+            assert field in close[-1]
+
+    def test_ws_reject_is_logged(self, caplog):
+        import logging
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+        from hermes_cli.web_server import app
+
+        unauth = TestClient(app)  # no session header/token
+        with caplog.at_level(logging.INFO, logger="hermes_cli.web_server"):
+            try:
+                with unauth.websocket_connect("/api/events?channel=x"):
+                    pass
+            except WebSocketDisconnect:
+                pass
+            except Exception:
+                pass
+
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any(m.startswith("events ") and ("auth rejected" in m or "refused" in m) for m in msgs)

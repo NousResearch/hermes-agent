@@ -866,7 +866,7 @@ View, tail, and filter Hermes log files. All logs are stored in `~/.hermes/logs/
 | `agent` (default) | `agent.log` | All agent activity — API calls, tool dispatch, session lifecycle (INFO and above) |
 | `errors` | `errors.log` | Warnings and errors only — a filtered subset of agent.log |
 | `gateway` | `gateway.log` | Messaging gateway activity — platform connections, message dispatch, webhook events |
-| `gui` | `gui.log` | Dashboard / TUI-gateway / PTY-bridge / websocket events |
+| `gui` | `gui.log` | Dashboard / TUI-gateway / PTY-bridge / websocket events — HTTP access log (method, path, status, latency, request id) and WebSocket lifecycle (accept, reject reason, close reason, duration, byte/message counters) |
 | `desktop` | `desktop.log` | Electron desktop app — boot, backend spawn output, and recent Python tracebacks |
 
 ### Options

@@ -473,6 +473,7 @@ async function startSocket() {
       let body = '';
       let hasMedia = false;
       let mediaType = '';
+      let mediaFileName = '';
       const mediaUrls = [];
 
       if (messageContent.conversation) {
@@ -530,6 +531,7 @@ async function startSocket() {
         hasMedia = true;
         mediaType = 'document';
         const fileName = messageContent.documentMessage.fileName || 'document';
+        mediaFileName = fileName;
         try {
           const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
           mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
@@ -544,7 +546,7 @@ async function startSocket() {
 
       // For media without caption, use a placeholder so the API message is never empty
       if (hasMedia && !body) {
-        body = `[${mediaType} received]`;
+        body = mediaFileName ? `[${mediaType} received: ${mediaFileName}]` : `[${mediaType} received]`;
       }
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
@@ -577,6 +579,8 @@ async function startSocket() {
         body,
         hasMedia,
         mediaType,
+        mediaFileName,
+        mediaFileNames: mediaFileName ? [mediaFileName] : [],
         mediaUrls,
         mentionedIds,
         quotedMessageId,

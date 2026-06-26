@@ -34,6 +34,7 @@ from urllib.parse import quote
 from hermes_constants import (
     find_node_executable,
     get_hermes_dir,
+    get_hermes_home,
     with_hermes_node_path,
 )
 
@@ -471,6 +472,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return False
         if not getattr(event, "message_id", None):
             return False
+        raw_message = getattr(event, "raw_message", None) or {}
+        if self._looks_like_payment_intake_message(raw_message):
+            # Keep the event-level reaction path in lockstep with the raw
+            # bridge-data path. Some callers may already have a MessageEvent
+            # and would otherwise bypass the payment-intake guard below.
+            return False
         sender_id = self._normalize_whatsapp_id(getattr(event.source, "user_id", None))
         if self._reaction_allow_from and "*" not in self._reaction_allow_from and sender_id not in self._reaction_allow_from:
             return False
@@ -499,13 +506,63 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return False
         if not data.get("messageId"):
             return False
+        if self._looks_like_payment_intake_message(data):
+            # Payment proofs/details are not ack-only chat. A thumbs-up can be
+            # misread as "recorded/reconciled" while the payment SOP still
+            # requires extracting the proof, duplicate-guarding, recording or
+            # correcting the ledger entry, attaching the proof, and verifying
+            # the balance. Leave these unreacted so they surface as open-loop
+            # context instead of getting a false closure signal.
+            return False
         sender_id = self._normalize_whatsapp_id(data.get("senderId") or data.get("from"))
         if self._reaction_allow_from and "*" not in self._reaction_allow_from and sender_id not in self._reaction_allow_from:
             return False
         return True
 
+    @staticmethod
+    def _looks_like_payment_intake_message(data: Dict[str, Any]) -> bool:
+        """Detect WhatsApp payment-proof/payment-info messages before reactions.
+
+        The bridge may receive PDFs/images with no caption. In that case the
+        filename/path is often the only signal, e.g. ``pago 25k ger..pdf``.
+        Treat these as workflow intake, not simple confirmations eligible for a
+        👍/✅ reaction.
+        """
+        parts: list[str] = [str(data.get("body") or "")]
+        for key in ("fileName", "filename", "documentFileName", "mediaFileName"):
+            value = data.get(key)
+            if value:
+                parts.append(str(value))
+        for key in ("fileNames", "filenames", "mediaFileNames", "mediaUrls"):
+            value = data.get(key) or []
+            if isinstance(value, (list, tuple, set)):
+                parts.extend(str(v) for v in value if v)
+            elif value:
+                parts.append(str(value))
+
+        haystack = " ".join(parts).lower()
+        if not haystack:
+            return False
+        return bool(
+            re.search(
+                r"\b(payment|paid|receipt|proof|transfer|transaction|comprobante|pago|pagos|pagado|transferencia|recibo|spei|cep|toro\s*pagos)\b",
+                haystack,
+            )
+        )
+
     def _reaction_batch_key(self, chat_id: str, sender_id: Optional[str]) -> str:
         return f"{chat_id}:{self._normalize_whatsapp_id(sender_id) or 'unknown'}"
+
+    def _cancel_pending_reaction_for_message_data(self, data: Dict[str, Any]) -> None:
+        """Cancel any debounced ack for this chat/sender when a payment proof arrives."""
+        chat_id = str(data.get("chatId") or "")
+        if not chat_id:
+            return
+        key = self._reaction_batch_key(chat_id, data.get("senderId") or data.get("from"))
+        self._pending_reactions.pop(key, None)
+        task = self._pending_reaction_tasks.pop(key, None)
+        if task and not task.done():
+            task.cancel()
 
     def _reaction_emoji_for_message_data(self, data: Dict[str, Any]) -> str:
         configured = (self._reaction_emoji or "auto").strip()
@@ -796,9 +853,70 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
     def _message_is_reply_to_bot(self, data: Dict[str, Any]) -> bool:
         quoted_participant = self._normalize_whatsapp_id(data.get("quotedParticipant"))
-        if not quoted_participant:
+        if quoted_participant and quoted_participant in self._bot_ids_from_message(data):
+            return True
+        return self._quoted_message_was_sent_by_hermes(data)
+
+    @staticmethod
+    def _quoted_message_id_from_message(data: Dict[str, Any]) -> str:
+        """Return the quoted/replied-to WhatsApp message id, if present."""
+        for key in (
+            "quotedMessageId",
+            "quotedId",
+            "replyToMessageId",
+            "replyToId",
+            "quotedStanzaId",
+        ):
+            value = str(data.get(key) or "").strip()
+            if value:
+                return value
+        quoted = data.get("quotedMessage")
+        if isinstance(quoted, dict):
+            nested = quoted.get("id")
+            if isinstance(nested, dict):
+                for key in ("id", "_serialized"):
+                    value = str(nested.get(key) or "").strip()
+                    if value:
+                        return value
+            value = str(nested or quoted.get("messageId") or "").strip()
+            if value:
+                return value
+        return ""
+
+    def _quoted_message_was_sent_by_hermes(self, data: Dict[str, Any]) -> bool:
+        """Fallback reply-to-bot detection using Hermes' outbound WhatsApp ledger.
+
+        WhatsApp bridge events sometimes include ``quotedMessageId`` but omit
+        ``quotedParticipant``. In mention-only groups, replies to a Jack message
+        are still addressed to Jack. Without this fallback the adapter observes
+        the group message, queues a native reaction, and never dispatches the
+        actual action request to the agent.
+        """
+        quoted_message_id = self._quoted_message_id_from_message(data)
+        if not quoted_message_id:
             return False
-        return quoted_participant in self._bot_ids_from_message(data)
+        chat_id = str(data.get("chatId") or "").strip()
+        if not chat_id:
+            return False
+        sent_path = get_hermes_home() / "whatsapp" / "sent-messages.jsonl"
+        try:
+            lines = sent_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return False
+        for line in reversed(lines[-2000:]):
+            if quoted_message_id not in line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                str(entry.get("messageId") or "").strip() == quoted_message_id
+                and str(entry.get("chatId") or "").strip() == chat_id
+                and bool(entry.get("fromMe"))
+            ):
+                return True
+        return False
 
     def _message_mentions_bot(self, data: Dict[str, Any]) -> bool:
         bot_ids = self._bot_ids_from_message(data)
@@ -1398,8 +1516,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # _text_ is already WhatsApp italic — leave as-is
 
         # --- 4. Convert markdown headers to bold text ---
-        # # Header → *Header*
-        result = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", result, flags=re.MULTILINE)
+        # # Header → *Header*. If the header content was already bold in
+        # Markdown (e.g. "# **Title**"), step 3 has converted it to
+        # "# *Title*"; strip that wrapper before adding the header wrapper so
+        # WhatsApp does not receive literal doubled asterisks.
+        def _convert_header(m: re.Match) -> str:
+            header = m.group(1).strip()
+            if len(header) >= 2 and header[0] == header[-1] and header[0] in {"*", "_"}:
+                header = header[1:-1].strip()
+            return f"*{header}*"
+
+        result = re.sub(r"^#{1,6}\s+(.+)$", _convert_header, result, flags=re.MULTILINE)
 
         # --- 5. Convert markdown links: [text](url) → text (url) ---
         result = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", result)
@@ -1482,7 +1609,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 "[Whatsapp] Suppressing non-visible/silent send (%d chars) to %s",
                 len(str(content or "")), chat_id,
             )
-            return SendResult(success=True, message_id=None)
+            return SendResult(
+                success=False,
+                error="message has no visible content",
+                raw_response={"suppressed": True},
+            )
 
         chat_id = to_whatsapp_jid(chat_id)
 
@@ -1496,7 +1627,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     "[Whatsapp] Suppressing non-visible/silent formatted send (%d chars) to %s",
                     len(str(formatted or "")), chat_id,
                 )
-                return SendResult(success=True, message_id=None)
+                return SendResult(
+                    success=False,
+                    error="message has no visible content after formatting",
+                    raw_response={"suppressed": True},
+                )
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
 
             raw_mentions = metadata.get("mentions") if isinstance(metadata, dict) else None
@@ -1504,6 +1639,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             mentions = await self._resolve_visible_mentions(chat_id, formatted, mentions)
 
             last_message_id = None
+            suppressed_chunks = 0
             for chunk_index, chunk in enumerate(chunks):
                 payload: Dict[str, Any] = {
                     "chatId": chat_id,
@@ -1522,6 +1658,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ) as resp:
                     if resp.status == 204:
                         # Bridge-level no-visible-content guard suppressed the send.
+                        suppressed_chunks += 1
                         continue
                     if resp.status == 200:
                         data = await resp.json()
@@ -1533,6 +1670,13 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 # Small delay between chunks to avoid rate limiting
                 if len(chunks) > 1:
                     await asyncio.sleep(0.3)
+
+            if last_message_id is None and suppressed_chunks:
+                return SendResult(
+                    success=False,
+                    error="message has no visible content after bridge sanitization",
+                    raw_response={"suppressed": True, "suppressed_chunks": suppressed_chunks},
+                )
 
             return SendResult(
                 success=True,
@@ -1837,10 +1981,31 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
 
+    def _ingest_whatsapp_context_event(self, data: Dict[str, Any]) -> None:
+        """Persist every inbound WhatsApp event to the per-chat context log.
+
+        This runs before mention-gating returns.  It must be best-effort: a
+        context-log write failure should never break message delivery or make
+        the bridge disconnect.
+        """
+        try:
+            from hermes_constants import get_hermes_home
+            from gateway.whatsapp_context import WhatsAppContextStore
+
+            store = WhatsAppContextStore(get_hermes_home() / "whatsapp_context")
+            store.ingest_bridge_message(data)
+        except Exception as exc:
+            logger.debug("[whatsapp] context ingest failed: %s", exc, exc_info=True)
+
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
-            if self._should_react_to_message_data(data):
+            if self._looks_like_payment_intake_message(data):
+                # If a normal message was queued for a delayed reaction and a
+                # payment proof follows in the same burst, cancel the pending
+                # ack. A delayed 👍 near the proof still reads as false closure.
+                self._cancel_pending_reaction_for_message_data(data)
+            elif self._should_react_to_message_data(data):
                 self._queue_reaction_message_data(
                     chat_id=str(data.get("chatId") or ""),
                     message_id=str(data.get("messageId") or ""),
@@ -1848,13 +2013,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     raw_message=data,
                 )
 
-            should_process = self._should_process_message(data)
-            should_observe = False if should_process else self._should_observe_unmentioned_group_message(data)
-            if not should_process and not should_observe:
-                return None
-            direct_group_trigger_reason = self._whatsapp_direct_group_trigger_reason(data) if should_process else None
-            if direct_group_trigger_reason:
-                data["_hermes_direct_group_trigger_reason"] = direct_group_trigger_reason
+            # Determine message type and media state before mention-gating.  In
+            # mention-only WhatsApp groups Hermes must stay silent unless
+            # addressed, but still ingest every same-chat event/media so a later
+            # mention can build the correct context bundle.
 
             # Determine message type
             msg_type = MessageType.TEXT
@@ -1975,15 +2137,35 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            log_data = dict(data)
+            log_data["body"] = body
+            log_data["mediaUrls"] = cached_urls
+            if media_types:
+                log_data["mediaMimeType"] = media_types[0]
+            if msg_type == MessageType.DOCUMENT and cached_urls and body:
+                # Text-readable documents may have been injected into body above;
+                # preserve that extraction for the deterministic context bundle.
+                log_data.setdefault("extractedText", body)
+            self._ingest_whatsapp_context_event(log_data)
+
+            should_process = self._should_process_message(data)
+            should_observe = False if should_process else self._should_observe_unmentioned_group_message(data)
+            direct_group_trigger_reason = self._whatsapp_direct_group_trigger_reason(data) if should_process else None
+            if direct_group_trigger_reason:
+                data["_hermes_direct_group_trigger_reason"] = direct_group_trigger_reason
+                log_data["_hermes_direct_group_trigger_reason"] = direct_group_trigger_reason
+
             event = MessageEvent(
                 text=body,
                 message_type=msg_type,
                 source=source,
-                raw_message=data,
+                raw_message=log_data,
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
             )
+            if not should_process and not should_observe:
+                return None
             if should_observe:
                 self._observe_unmentioned_group_message(event)
                 return None

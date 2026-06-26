@@ -9779,6 +9779,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+
+        whatsapp_context_bundle = None
+        whatsapp_context_preview = None
+        if source.platform == Platform.WHATSAPP and getattr(event, "message_id", None):
+            try:
+                from gateway.whatsapp_context import WhatsAppContextStore
+
+                _wa_context_store = WhatsAppContextStore(get_hermes_home() / "whatsapp_context")
+                whatsapp_context_bundle = _wa_context_store.build_context_bundle(
+                    str(source.chat_id),
+                    str(event.message_id),
+                    limit=50,
+                )
+                whatsapp_context_preview = whatsapp_context_bundle.render_for_prompt()
+                if whatsapp_context_preview:
+                    event.text = f"{whatsapp_context_preview}\n\n[Current addressed WhatsApp message]\n{event.text}"
+                _wa_context_store.record_reply_observability(
+                    chat_id=str(source.chat_id),
+                    trigger_message_id=str(event.message_id),
+                    context_bundle=whatsapp_context_bundle,
+                    final_prompt_preview=event.text or "",
+                )
+                logger.info(
+                    "whatsapp context bundle: trigger=%s context_ids=%s media=%s state=%s unreadable=%s",
+                    event.message_id,
+                    whatsapp_context_bundle.context_message_ids,
+                    whatsapp_context_bundle.media_paths,
+                    whatsapp_context_bundle.task_state,
+                    [ev.message_id for ev in whatsapp_context_bundle.unreadable_media],
+                )
+            except Exception as exc:
+                logger.warning(
+                    "whatsapp context bundle failed for chat=%s message=%s: %s",
+                    source.chat_id,
+                    getattr(event, "message_id", None),
+                    exc,
+                )
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).

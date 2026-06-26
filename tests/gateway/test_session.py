@@ -684,10 +684,13 @@ class TestWhatsAppSessionKeyConsistency:
         assert build_session_key(lid_source) == "agent:main:whatsapp:dm:15551234567"
         assert build_session_key(phone_source) == "agent:main:whatsapp:dm:15551234567"
 
-    def test_whatsapp_group_participant_aliases_share_session_key(self, tmp_path, monkeypatch):
-        """With group_sessions_per_user, the same human flipping between
-        phone-JID and LID inside a group must not produce two isolated
-        per-user sessions."""
+    def test_whatsapp_group_participants_share_chat_session_key(self, tmp_path, monkeypatch):
+        """WhatsApp groups are one shared transcript, not one session per sender.
+
+        This prevents Jacob/staff/vendor messages in the same group from being
+        routed into separate Hermes sessions where the assistant cannot see the
+        immediately preceding group context or its own prior response.
+        """
         tmp_home = tmp_path / "hermes-home"
         mapping_dir = tmp_home / "whatsapp" / "session"
         mapping_dir.mkdir(parents=True, exist_ok=True)
@@ -704,7 +707,22 @@ class TestWhatsAppSessionKeyConsistency:
             user_id="999999999999999@lid",
             user_name="Group Member",
         )
-        phone_source = SessionSource(
+        other_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="16667778888@s.whatsapp.net",
+            user_name="Other Member",
+        )
+
+        expected = "agent:main:whatsapp:group:120363000000000000@g.us"
+        assert build_session_key(lid_source, group_sessions_per_user=True) == expected
+        assert build_session_key(other_source, group_sessions_per_user=True) == expected
+
+    def test_whatsapp_group_is_marked_shared_even_when_generic_group_isolation_enabled(self):
+        from gateway.session import is_shared_multi_user_session
+
+        source = SessionSource(
             platform=Platform.WHATSAPP,
             chat_id="120363000000000000@g.us",
             chat_type="group",
@@ -712,9 +730,7 @@ class TestWhatsAppSessionKeyConsistency:
             user_name="Group Member",
         )
 
-        expected = "agent:main:whatsapp:group:120363000000000000@g.us:15551234567"
-        assert build_session_key(lid_source, group_sessions_per_user=True) == expected
-        assert build_session_key(phone_source, group_sessions_per_user=True) == expected
+        assert is_shared_multi_user_session(source, group_sessions_per_user=True) is True
 
     def test_whatsapp_group_shared_sessions_untouched_by_canonicalisation(self):
         """When group_sessions_per_user is False, participant_id is not in the

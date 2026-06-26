@@ -657,12 +657,17 @@ def is_shared_multi_user_session(
 
     Mirrors the isolation rules in :func:`build_session_key`:
       - DMs are never shared.
+      - WhatsApp groups/channels are always shared per chat. WhatsApp group
+        messages are a single conversation; splitting them by sender makes the
+        bot lose the message it just sent and the reply it just received.
       - Threads are shared unless ``thread_sessions_per_user`` is True.
       - Non-thread group/channel sessions are shared unless
         ``group_sessions_per_user`` is True (default: True = isolated).
     """
     if source.chat_type == "dm":
         return False
+    if source.platform == Platform.WHATSAPP:
+        return True
     if source.thread_id:
         return not thread_sessions_per_user
     return not group_sessions_per_user
@@ -711,6 +716,11 @@ def build_session_key(
 
     Group/channel rules:
       - chat_id identifies the parent group/channel.
+      - WhatsApp group/channel chats always use one shared per-chat session.
+        The participant id is never appended, even when the generic
+        ``group_sessions_per_user`` flag is enabled. WhatsApp groups behave as
+        a shared operational transcript, and splitting by sender causes the
+        assistant to lose context across adjacent messages in the same chat.
       - user_id/user_id_alt isolates participants within that parent chat when available when
         ``group_sessions_per_user`` is enabled.
       - thread_id differentiates threads within that parent chat.  When
@@ -766,10 +776,16 @@ def build_session_key(
     if source.thread_id:
         key_parts.append(source.thread_id)
 
+    # WhatsApp groups are always one shared per-chat transcript. The public
+    # reply policy still decides whether Jack speaks; session sharing only
+    # ensures same-chat context is coherent across Jacob, staff, and vendors.
+    if source.platform == Platform.WHATSAPP:
+        isolate_user = False
     # In threads, default to shared sessions (all participants see the same
     # conversation).  Per-user isolation only applies when explicitly enabled
     # via thread_sessions_per_user, or when there is no thread (regular group).
-    isolate_user = group_sessions_per_user
+    else:
+        isolate_user = group_sessions_per_user
     if source.thread_id and not thread_sessions_per_user:
         isolate_user = False
 

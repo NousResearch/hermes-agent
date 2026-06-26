@@ -117,6 +117,65 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter._should_process_message(_group_message("/status")) is True
 
 
+def test_group_reply_to_prior_hermes_message_triggers_without_quoted_participant(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    sent_dir = hermes_home / "whatsapp"
+    sent_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (sent_dir / "sent-messages.jsonl").write_text(
+        json.dumps(
+            {
+                "chatId": "120363001234567890@g.us",
+                "messageId": "3EB09F4212DD2B5A488601",
+                "fromMe": True,
+                "kind": "text",
+                "textPreview": "Public Safety Committee follow-up...",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    adapter = _make_adapter(require_mention=True)
+
+    data = _group_message(
+        "good but you should put the PDF you mention here",
+        quotedMessageId="3EB09F4212DD2B5A488601",
+        quotedParticipant="",
+        hasQuotedMessage=True,
+    )
+
+    assert adapter._should_process_message(data) is True
+    assert adapter._whatsapp_direct_group_trigger_reason(data) == "reply_to_hermes_message"
+
+
+def test_group_reply_to_message_from_other_chat_does_not_trigger(monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    sent_dir = hermes_home / "whatsapp"
+    sent_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    (sent_dir / "sent-messages.jsonl").write_text(
+        json.dumps(
+            {
+                "chatId": "120363999999999999@g.us",
+                "messageId": "3EB09F4212DD2B5A488601",
+                "fromMe": True,
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    adapter = _make_adapter(require_mention=True)
+
+    assert adapter._should_process_message(
+        _group_message(
+            "good but you should put the PDF you mention here",
+            quotedMessageId="3EB09F4212DD2B5A488601",
+            quotedParticipant="",
+            hasQuotedMessage=True,
+        )
+    ) is False
+
+
 def test_linked_device_bot_id_normalizes_for_native_mention():
     adapter = _make_adapter(require_mention=True)
 
@@ -445,6 +504,104 @@ def test_whatsapp_observed_group_context_is_wrapped_for_later_trigger():
     assert api_message.endswith("[Jacob|762]\nDid you check the newest licence?")
 
 
+@pytest.mark.asyncio
+async def test_whatsapp_context_log_ingests_unmentioned_payment_before_mention_gate(monkeypatch, tmp_path):
+    """Mention-only groups still persist payment/media context before dropping the event."""
+    from gateway.whatsapp_context import WhatsAppContextStore
+
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    proof_path = tmp_path / "pago 25k ger.pdf"
+    proof_path.write_bytes(b"not-a-real-pdf-but-a-bridge-local-file")
+
+    adapter = _make_adapter(
+        require_mention=True,
+        observe_unmentioned_group_messages=False,
+    )
+
+    unmentioned = await adapter._build_message_event(
+        _group_message(
+            "[document received: pago 25k ger.pdf]",
+            messageId="PAY1",
+            senderId="5215551234567@s.whatsapp.net",
+            senderName="Gestión Inmobiliaria Y Legal",
+            hasMedia=True,
+            mediaType="document",
+            mediaFileName="pago 25k ger.pdf",
+            mediaUrls=[str(proof_path)],
+        )
+    )
+
+    assert unmentioned is None
+    store = WhatsAppContextStore(hermes_home / "whatsapp_context")
+    events = store.load_chat_events("120363001234567890@g.us")
+    assert [ev.message_id for ev in events] == ["PAY1"]
+    assert events[0].media_filename == "pago 25k ger.pdf"
+    assert events[0].local_media_path == str(proof_path)
+
+    trigger = await adapter._build_message_event(
+        _group_message(
+            "@Jack siguiente paso?",
+            messageId="ASK1",
+            senderId="209066827718687@lid",
+            senderName="Jacob",
+            mentionedIds=["15551230000@s.whatsapp.net"],
+        )
+    )
+
+    assert trigger is not None
+    bundle = store.build_context_bundle("120363001234567890@g.us", "ASK1")
+    assert {"PAY1", "ASK1"}.issubset(set(bundle.context_message_ids))
+    assert bundle.task_state["payment_proof_sent"] is True
+    assert bundle.guardrails["block_payment_recommendation"] is True
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_context_log_marks_unreadable_media_from_adapter_payload(monkeypatch, tmp_path):
+    """Failed bridge downloads stay explicit in later Context Bundles."""
+    from gateway.whatsapp_context import WhatsAppContextStore
+
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    adapter = _make_adapter(
+        require_mention=True,
+        observe_unmentioned_group_messages=False,
+    )
+
+    dropped = await adapter._build_message_event(
+        _group_message(
+            "[document received: contrato.pdf]",
+            messageId="DOC1",
+            senderId="5215551234567@s.whatsapp.net",
+            senderName="Legal",
+            hasMedia=True,
+            mediaType="document",
+            mediaFileName="contrato.pdf",
+            mediaUrls=[],
+            mediaDownloadStatus="failed",
+        )
+    )
+    assert dropped is None
+
+    trigger = await adapter._build_message_event(
+        _group_message(
+            "@Jack resumelo",
+            messageId="ASK1",
+            senderId="209066827718687@lid",
+            senderName="Jacob",
+            mentionedIds=["15551230000@s.whatsapp.net"],
+        )
+    )
+
+    assert trigger is not None
+    store = WhatsAppContextStore(hermes_home / "whatsapp_context")
+    bundle = store.build_context_bundle("120363001234567890@g.us", "ASK1")
+    rendered = bundle.render_for_prompt()
+    assert [ev.message_id for ev in bundle.unreadable_media] == ["DOC1"]
+    assert "no pude descargarlo o leerlo" in rendered
+    assert "Do not pretend the unreadable media was read." in rendered
+
+
 # --- Config bridging tests ---
 
 def test_config_bridges_whatsapp_dm_and_group_policy(monkeypatch, tmp_path):
@@ -605,7 +762,12 @@ def test_is_broadcast_chat_helper_recognizes_common_jids():
     assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]
 
 
-def _reaction_event(chat_type="group", sender_id="5215551234567@s.whatsapp.net", message_id: Optional[str] = "ABC123"):
+def _reaction_event(
+    chat_type="group",
+    sender_id="5215551234567@s.whatsapp.net",
+    message_id: Optional[str] = "ABC123",
+    raw_message=None,
+):
     from gateway.platforms.base import MessageEvent, MessageType
     from gateway.session import SessionSource
 
@@ -619,7 +781,7 @@ def _reaction_event(chat_type="group", sender_id="5215551234567@s.whatsapp.net",
         text="hello",
         message_type=MessageType.TEXT,
         source=source,
-        raw_message={"senderId": sender_id},
+        raw_message=raw_message or {"senderId": sender_id},
         message_id=message_id,
     )
 
@@ -670,6 +832,99 @@ def test_whatsapp_group_reactions_happen_before_mention_gating_drop():
     assert adapter._should_process_message(msg) is False
     assert adapter._should_observe_unmentioned_group_message(msg) is False
     assert adapter._should_react_to_message_data(msg) is True
+
+
+def test_whatsapp_group_payment_documents_do_not_get_ack_reactions():
+    adapter = _make_adapter(
+        require_mention=True,
+        reactions=True,
+        reaction_allow_from=["5215551234567@s.whatsapp.net"],
+        observe_unmentioned_group_messages=True,
+        reply_consider_reaction_senders=False,
+    )
+    msg = _group_message(
+        "[document received: pago 25k ger..pdf]",
+        messageId="MSG1",
+        senderId="5215551234567@s.whatsapp.net",
+        from_="5215551234567@s.whatsapp.net",
+        hasMedia=True,
+        mediaType="document",
+        mediaFileName="pago 25k ger..pdf",
+        mediaUrls=["/Users/den/.hermes/document_cache/doc_abc_pago_25k_ger..pdf"],
+    )
+    msg["from"] = msg.pop("from_")
+
+    assert adapter._looks_like_payment_intake_message(msg) is True
+    assert adapter._should_process_message(msg) is False
+    assert adapter._should_observe_unmentioned_group_message(msg) is True
+    assert adapter._should_react_to_message_data(msg) is False
+
+
+def test_whatsapp_group_payment_documents_do_not_get_event_ack_reactions():
+    adapter = _make_adapter(
+        reactions=True,
+        reaction_allow_from=["5215551234567@s.whatsapp.net"],
+    )
+    raw = _group_message(
+        "[document received: pago 25k ger..pdf]",
+        messageId="MSG1",
+        senderId="5215551234567@s.whatsapp.net",
+        mediaFileName="pago 25k ger..pdf",
+    )
+
+    assert adapter._should_react_to_event(_reaction_event(raw_message=raw)) is False
+
+
+@pytest.mark.asyncio
+async def test_whatsapp_payment_proof_cancels_prior_pending_burst_reaction():
+    adapter = _make_adapter(
+        require_mention=True,
+        reactions=True,
+        reaction_allow_from=["5215551234567@s.whatsapp.net"],
+        observe_unmentioned_group_messages=True,
+        reaction_batch_delay_seconds=999,
+    )
+    normal_msg = _group_message(
+        "ordinary update before the next file",
+        messageId="MSG1",
+        senderId="5215551234567@s.whatsapp.net",
+        from_="5215551234567@s.whatsapp.net",
+    )
+    proof_msg = _group_message(
+        "[document received: pago 25k ger..pdf]",
+        messageId="MSG2",
+        senderId="5215551234567@s.whatsapp.net",
+        from_="5215551234567@s.whatsapp.net",
+        hasMedia=True,
+        mediaType="document",
+        mediaFileName="pago 25k ger..pdf",
+        mediaUrls=["/Users/den/.hermes/document_cache/doc_abc_pago_25k_ger..pdf"],
+    )
+    normal_msg["from"] = normal_msg.pop("from_")
+    proof_msg["from"] = proof_msg.pop("from_")
+
+    await adapter._build_message_event(normal_msg)
+    assert adapter._pending_reactions
+
+    await adapter._build_message_event(proof_msg)
+
+    assert adapter._pending_reactions == {}
+    assert adapter._pending_reaction_tasks == {}
+
+
+def test_whatsapp_group_payment_captions_do_not_get_ack_reactions():
+    adapter = _make_adapter(reactions=True, reaction_allow_from=["*"])
+    msg = _group_message(
+        "comprobante de transferencia",
+        messageId="MSG1",
+        senderId="5215551234567@s.whatsapp.net",
+        from_="5215551234567@s.whatsapp.net",
+        hasMedia=True,
+        mediaType="image",
+    )
+    msg["from"] = msg.pop("from_")
+
+    assert adapter._should_react_to_message_data(msg) is False
 
 
 def test_approved_reaction_sender_group_messages_are_considered_for_reply():

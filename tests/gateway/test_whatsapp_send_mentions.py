@@ -146,6 +146,8 @@ async def test_whatsapp_send_suppresses_non_visible_content(blankish):
 
     result = await adapter.send("120363406770604689@g.us", blankish)
 
-    assert result.success is True
+    assert result.success is False
     assert result.message_id is None
+    assert result.error == "message has no visible content"
+    assert result.raw_response == {"suppressed": True}
     assert fake_session.posts == []

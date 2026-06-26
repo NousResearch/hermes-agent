@@ -228,15 +228,35 @@ class TestSendChunking:
     async def test_empty_message_no_send(self):
         adapter = _make_adapter()
         result = await adapter.send("chat1", "")
-        assert result.success
+        assert not result.success
+        assert result.error == "message has no visible content"
+        assert result.raw_response == {"suppressed": True}
         assert adapter._http_session.post.call_count == 0
 
     @pytest.mark.asyncio
     async def test_whitespace_only_no_send(self):
         adapter = _make_adapter()
         result = await adapter.send("chat1", "   \n  ")
-        assert result.success
+        assert not result.success
+        assert result.error == "message has no visible content"
+        assert result.raw_response == {"suppressed": True}
         assert adapter._http_session.post.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_bridge_204_suppression_is_not_success(self):
+        """Bridge 204 means no visible WhatsApp message was sent."""
+        adapter = _make_adapter()
+        resp = MagicMock(status=204)
+        session = adapter._http_session
+        assert session is not None
+        session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("chat1", "visible before bridge sanitizer")
+
+        assert not result.success
+        assert result.message_id is None
+        assert result.error == "message has no visible content after bridge sanitization"
+        assert result.raw_response == {"suppressed": True, "suppressed_chunks": 1}
 
     @pytest.mark.asyncio
     async def test_format_applied_before_send(self):

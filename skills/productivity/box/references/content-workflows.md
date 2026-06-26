@@ -33,7 +33,7 @@ Paginate fully for bulk operations — do not assume one page covers all items.
 ## Download a file
 
 ```bash
-box files:download <FILE_ID> ./local-copy.pdf
+box files:download <FILE_ID> --destination . --save-as local-copy.pdf
 ```
 
 Fetch metadata first to confirm the correct file ID:
@@ -73,7 +73,7 @@ List or roll back versions:
 
 ```bash
 box files:versions:list <FILE_ID> --json
-box files:versions:download <FILE_ID> <VERSION_ID> ./older.pdf
+box files:versions:download <FILE_ID> <VERSION_ID> --destination . --save-as older.pdf
 ```
 
 Docs: https://developer.box.com/guides/uploads/direct/file-version/
@@ -82,7 +82,7 @@ Docs: https://developer.box.com/guides/uploads/direct/file-version/
 
 For text, code, PDFs, images, and other binary files:
 
-1. `box files:download <FILE_ID> ./local-copy`
+1. `box files:download <FILE_ID> --destination . --save-as local-copy`
 2. Edit locally (`patch`, scripts, or user-directed tools)
 3. `box files:versions:upload <FILE_ID> ./local-copy --json`
 4. Verify with `box files:get <FILE_ID> --json --fields id,name,sha1`
@@ -103,7 +103,7 @@ box shared-links:create <FOLDER_ID> folder --access open --json  # widest — co
 ## Collaborations
 
 ```bash
-box collaborations:create <FOLDER_ID> collaborator@example.com editor --json
+box collaborations:create <FOLDER_ID> folder --role editor --login collaborator@example.com --json
 ```
 
 Prefer folder-level collaboration when multiple files share access. Use the narrowest role that satisfies the request.
@@ -112,7 +112,7 @@ Prefer folder-level collaboration when multiple files share access. Use the narr
 
 ```bash
 box files:move <FILE_ID> <NEW_PARENT_ID> --json
-box folders:update <FOLDER_ID> --parent-id <NEW_PARENT_ID> --json
+box folders:move <FOLDER_ID> <NEW_PARENT_ID> --json
 ```
 
 Moving a folder moves all contents. Target folder name conflicts return `409`. For bulk moves see `references/bulk-operations.md`.
@@ -120,8 +120,8 @@ Moving a folder moves all contents. Target folder name conflicts return `409`. F
 ## Metadata
 
 ```bash
-box files:metadata:get <FILE_ID> enterprise properties --json
-box files:metadata:create <FILE_ID> enterprise properties --json -d '{"invoice_id":"INV-001"}'
+box files:metadata:get <FILE_ID> --scope enterprise --template-key properties --json
+box files:metadata:create <FILE_ID> --scope enterprise --template-key properties --data invoice_id=INV-001 --json
 ```
 
 Read template definitions before writing. Keep template keys in config, not scattered through code.

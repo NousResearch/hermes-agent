@@ -7,22 +7,23 @@ Use only when Box CLI is **not installed** or user **declines** CLI setup. When 
 Via `terminal` — do not print secrets in output:
 
 ```bash
-curl -sS -X POST https://api.box.com/oauth2/token \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=client_credentials" \
-  -d "client_id=${BOX_CLIENT_ID}" \
-  -d "client_secret=${BOX_CLIENT_SECRET}" \
-  -d "box_subject_type=enterprise" \
-  -d "box_subject_id=${BOX_ENTERPRISE_ID}"
+TOKEN="$(
+  curl -sS -X POST https://api.box.com/oauth2/token \
+    -H "Content-Type: application/x-www-form-urlencoded" \
+    -d "grant_type=client_credentials" \
+    -d "client_id=${BOX_CLIENT_ID}" \
+    -d "client_secret=${BOX_CLIENT_SECRET}" \
+    -d "box_subject_type=enterprise" \
+    -d "box_subject_id=${BOX_ENTERPRISE_ID}" \
+  | python3 -c 'import json, sys; sys.stdout.write(json.load(sys.stdin)["access_token"])'
+)"
 ```
 
-Parse `access_token` from JSON. Tokens are short-lived; prefer CLI environment for long agent sessions.
+Keep shell tracing disabled while doing this. Tokens are short-lived; prefer CLI environment for long agent sessions.
 
 ## Common requests
 
 ```bash
-TOKEN="<access_token>"
-
 # Current user
 curl -sS -H "Authorization: Bearer $TOKEN" -H "Accept: application/json" \
   "https://api.box.com/2.0/users/me?fields=id,name,login"

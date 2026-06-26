@@ -3538,6 +3538,30 @@ OPTIONAL_ENV_VARS = {
     # env blocklist in tools/environments/local.py does NOT rewrite them —
     # skills legitimately need these passed through to curl via
     # tools/env_passthrough.py when the user's skill calls out.
+    "BOX_CLIENT_ID": {
+        "description": "Box Client ID (used by the `box` skill)",
+        "prompt": "Box Client ID",
+        "url": "https://app.box.com/developers/console",
+        "password": False,
+        "category": "skill",
+        "advanced": True,
+    },
+    "BOX_CLIENT_SECRET": {
+        "description": "Box Client Secret (used by the `box` skill)",
+        "prompt": "Box Client Secret",
+        "url": "https://app.box.com/developers/console",
+        "password": True,
+        "category": "skill",
+        "advanced": True,
+    },
+    "BOX_ENTERPRISE_ID": {
+        "description": "Box Enterprise ID (used by the `box` skill)",
+        "prompt": "Box Enterprise ID",
+        "url": "https://app.box.com/developers/console",
+        "password": False,
+        "category": "skill",
+        "advanced": True,
+    },
     "NOTION_API_KEY": {
         "description": "Notion integration token (used by the `notion` skill)",
         "prompt": "Notion API key",

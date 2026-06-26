@@ -2,7 +2,7 @@
 name: box
 description: Box CLI and API for content, search, and SDK apps.
 version: 1.0.0
-author: Community
+author: community
 license: MIT
 platforms: [linux, macos, windows]
 prerequisites:
@@ -30,7 +30,7 @@ Hermes operates Box as a **service account** via Client Credentials Grant (CCG).
 
 1. **Box CLI** — Node.js 18+ and `npm install -g @box/cli`.
 2. **CCG Platform App** — Developer Console → Platform App → Client Credentials Grant (auth method is locked at creation). See `references/auth-and-setup.md`.
-3. **Secrets in `~/.hermes/.env`** — `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, `BOX_ENTERPRISE_ID`.
+3. **Credentials in `~/.hermes/.env`** — `BOX_CLIENT_ID`, `BOX_CLIENT_SECRET`, `BOX_ENTERPRISE_ID`.
 4. **CLI environment** — copy `templates/ccg-config.json.example`, fill values, then:
    ```bash
    box configure:environments:add /path/to/ccg-config.json --ccg-auth --name hermes --set-as-current
@@ -74,7 +74,7 @@ The CCG service account is a separate Box user. It **cannot** see files in your 
 Alternatively, an Editor on the folder can add the collaborator via CLI:
 
 ```bash
-box collaborations:create <FOLDER_ID> <SERVICE_ACCOUNT_EMAIL> editor --json
+box collaborations:create <FOLDER_ID> folder --role editor --login <SERVICE_ACCOUNT_EMAIL> --json
 ```
 
 **Before any search, move, or download on user-owned content:** confirm the target folder is shared with the service account. If operations return 404 or empty search, ask the user to complete the invite step first.
@@ -122,7 +122,7 @@ box files:versions:upload <FILE_ID> ./updated.pdf --json
 box files:upload ./updated.pdf --parent-id <FOLDER_ID> --overwrite --json
 box folders:create <PARENT_ID> "Hermes-Inbox" --json
 box shared-links:create <FILE_ID> file --access company --json
-box request GET /files/<ID> --json
+box request /files/<ID> --json
 ```
 
 ## Procedure

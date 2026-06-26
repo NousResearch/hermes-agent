@@ -64,7 +64,7 @@ In the Box web app: open the folder → **Invite People** → paste the service 
 Via CLI (when you already have access to the folder):
 
 ```bash
-box collaborations:create <FOLDER_ID> AutomationUser_...@boxdevedition.com editor --json
+box collaborations:create <FOLDER_ID> folder --role editor --login AutomationUser_...@boxdevedition.com --json
 ```
 
 ### Access patterns

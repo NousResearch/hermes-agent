@@ -64,7 +64,7 @@ def test_frontmatter(frontmatter: dict):
     assert isinstance(desc, str) and len(desc) > 0
     assert len(desc) <= 60, f"description is {len(desc)} chars: {desc!r}"
     assert desc.endswith(".")
-    assert frontmatter.get("author") == "Community"
+    assert frontmatter.get("author") == "community"
     assert frontmatter.get("license") == "MIT"
     platforms = frontmatter.get("platforms")
     assert isinstance(platforms, list)
@@ -78,6 +78,17 @@ def test_prerequisites_env_vars(frontmatter: dict):
     assert "BOX_CLIENT_SECRET" in env_vars
     assert "BOX_ENTERPRISE_ID" in env_vars
     assert "box" in (prereqs.get("commands") or [])
+
+
+def test_box_env_vars_registered_for_setup():
+    from hermes_cli.config import OPTIONAL_ENV_VARS
+
+    assert OPTIONAL_ENV_VARS["BOX_CLIENT_ID"]["category"] == "skill"
+    assert OPTIONAL_ENV_VARS["BOX_CLIENT_ID"]["password"] is False
+    assert OPTIONAL_ENV_VARS["BOX_CLIENT_SECRET"]["category"] == "skill"
+    assert OPTIONAL_ENV_VARS["BOX_CLIENT_SECRET"]["password"] is True
+    assert OPTIONAL_ENV_VARS["BOX_ENTERPRISE_ID"]["category"] == "skill"
+    assert OPTIONAL_ENV_VARS["BOX_ENTERPRISE_ID"]["password"] is False
 
 
 def test_required_reference_files_exist():
@@ -101,6 +112,32 @@ def test_all_skill_md_references_exist(skill_text: str):
         assert (REFERENCES_DIR / name).is_file(), f"missing references/{name}"
     for name in re.findall(r"`templates/([^`]+)`", skill_text):
         assert (TEMPLATES_DIR / name).is_file(), f"missing templates/{name}"
+
+
+def test_box_cli_examples_use_current_argument_shapes():
+    docs = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in [SKILL_MD, *REFERENCES_DIR.glob("*.md")]
+    )
+
+    assert (
+        "box collaborations:create <FOLDER_ID> <SERVICE_ACCOUNT_EMAIL> editor"
+        not in docs
+    )
+    assert (
+        "box collaborations:create <FOLDER_ID> collaborator@example.com editor"
+        not in docs
+    )
+    assert "box files:download <FILE_ID> ./local-copy" not in docs
+    assert (
+        "box files:versions:download <FILE_ID> <VERSION_ID> ./older.pdf"
+        not in docs
+    )
+    assert "box folders:update <FOLDER_ID> --parent-id" not in docs
+    assert "box request GET " not in docs
+    assert " -d '{" not in docs
+    assert "box files:metadata:get <FILE_ID> enterprise properties" not in docs
+    assert 'TOKEN="<access_token>"' not in docs
 
 
 def test_ccg_config_template():

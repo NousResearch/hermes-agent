@@ -36,7 +36,7 @@ box folders:items <ID> --json --max-items 100 --fields id,name,type
 # Write
 box folders:create <PARENT_ID> "Project-Alpha" --json
 box files:upload ./report.pdf --parent-id <FOLDER_ID> --json
-box files:download <FILE_ID> ./report.pdf
+box files:download <FILE_ID> --destination . --save-as report.pdf
 
 # Edit (metadata + content)
 box files:update <FILE_ID> --name "Q1-Report.pdf" --description "Final" --json
@@ -46,11 +46,11 @@ box files:move <FILE_ID> <NEW_PARENT_ID> --json
 
 # Share
 box shared-links:create <FILE_ID> file --access company --json
-box collaborations:create <FOLDER_ID> user@example.com editor --json
+box collaborations:create <FOLDER_ID> folder --role editor --login user@example.com --json
 
 # Search
 box search "quarterly review" --json --limit 20
-box metadata-query --json  # see box metadata-query --help for template args
+box metadata-query --help  # requires template scope/key and ancestor folder ID
 
 # Admin-ish (scope-dependent)
 box users:get me --json
@@ -64,9 +64,9 @@ Folder **`0`** is the current actor's root.
 When no dedicated subcommand exists, call any API path:
 
 ```bash
-box request GET /files/<FILE_ID> --json
-box request PUT /files/<FILE_ID> --json -d '{"name":"renamed.pdf"}'
-box request POST /folders --json -d '{"name":"New","parent":{"id":"0"}}'
+box request /files/<FILE_ID> --json
+box request /files/<FILE_ID> -X PUT --body '{"name":"renamed.pdf"}' --json
+box request /folders -X POST --body '{"name":"New","parent":{"id":"0"}}' --json
 ```
 
 Prefer `box request` over hand-written curl when CLI is installed — same auth, same environment.

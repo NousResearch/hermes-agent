@@ -1,0 +1,5 @@
+name: cloudflare-provider
+kind: model-provider
+version: 1.0.0
+description: Cloudflare Workers AI
+author: HimanM

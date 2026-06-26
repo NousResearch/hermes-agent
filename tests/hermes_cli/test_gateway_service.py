@@ -904,6 +904,50 @@ class TestLaunchdServiceRecovery:
         assert "stale" in output.lower()
         assert "not loaded" in output.lower()
 
+    def test_launchd_status_hints_preserve_profile_flag(self, tmp_path, monkeypatch, capsys):
+        # When status probed a named profile, the remediation hints must carry
+        # the same ``--profile <name>`` so following them operates on the right
+        # gateway (bare hints target the default profile's launchd label).
+        plist_path = tmp_path / "ai.hermes.gateway-stock.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda *a, **k: "--profile stock")
+        # returncode != 0 → service not loaded → both the stale-plist hint and
+        # the "not loaded" hint fire.
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=113, stdout="", stderr="Could not find service"),
+        )
+
+        gateway_cli.launchd_status()
+
+        output = capsys.readouterr().out
+        assert "hermes --profile stock gateway start" in output
+        # No bare hint that would target the default profile's gateway.
+        assert "Run: hermes gateway start" not in output
+
+    def test_launchd_status_hints_omit_flag_for_default_profile(self, tmp_path, monkeypatch, capsys):
+        # The default profile yields ``_profile_arg() == ""`` → hints stay bare,
+        # so default-profile output is byte-identical to the pre-fix behavior.
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old content</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda *a, **k: "")
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(returncode=113, stdout="", stderr="Could not find service"),
+        )
+
+        gateway_cli.launchd_status()
+
+        output = capsys.readouterr().out
+        assert "Run: hermes gateway start" in output
+        assert "--profile" not in output
+
     def test_launchd_domain_uses_user_domain(self, monkeypatch):
         # The user/<uid> domain (not gui/<uid>) is the one reachable from
         # non-Aqua/background sessions on macOS 26+ (issue #23387).

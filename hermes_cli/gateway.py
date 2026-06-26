@@ -4034,6 +4034,13 @@ def launchd_restart():
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
     label = get_launchd_label()
+    # When status probed a named profile, its remediation hints must target the
+    # same profile — bare ``hermes gateway start/stop`` would operate on the
+    # default profile's launchd label. ``_profile_arg()`` returns "" for the
+    # default profile, so default-profile output is unchanged. Mirrors the
+    # scope-aware hints already in ``systemd_status()``.
+    profile_arg = _profile_arg()
+    profile_flag = f" {profile_arg}" if profile_arg else ""
     try:
         result = subprocess.run(
             ["launchctl", "list", label],
@@ -4075,7 +4082,7 @@ def launchd_status(deep: bool = False):
         print("✓ Service definition matches the current Hermes install")
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")
-        print("  Run: hermes gateway start")
+        print(f"  Run: hermes{profile_flag} gateway start")
 
     if service_listed:
         if launchd_pid is not None:
@@ -4088,10 +4095,10 @@ def launchd_status(deep: bool = False):
             print("  launchd cannot manage the gateway on this macOS version.")
             if fallback_pid:
                 print(f"✓ Detached fallback process is running (PID {fallback_pid})")
-                print("  Cron jobs will fire. Stop with: hermes gateway stop")
+                print(f"  Cron jobs will fire. Stop with: hermes{profile_flag} gateway stop")
             else:
                 print("✗ No fallback process is running")
-                print("  Run: hermes gateway start")
+                print(f"  Run: hermes{profile_flag} gateway start")
             print("  ⚠ Auto-start at login and auto-restart on crash are NOT available.")
         else:
             print("✓ Gateway service is registered with launchd")
@@ -4101,7 +4108,7 @@ def launchd_status(deep: bool = False):
     else:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
-        print("  Run: hermes gateway start")
+        print(f"  Run: hermes{profile_flag} gateway start")
         if fallback_pid:
             print(f"  Note: a detached gateway process is running (PID {fallback_pid})")
 

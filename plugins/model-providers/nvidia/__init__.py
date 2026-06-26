@@ -11,6 +11,9 @@ nvidia = ProviderProfile(
     description="NVIDIA NIM — accelerated inference",
     signup_url="https://build.nvidia.com/",
     fallback_models=(
+        "nvidia/nemotron-3-super-120b-a12b",
+        "minimaxai/minimax-m3",
+        "minimaxai/minimax-m2.7",
         "nvidia/llama-3.1-nemotron-70b-instruct",
         "nvidia/llama-3.3-70b-instruct",
     ),

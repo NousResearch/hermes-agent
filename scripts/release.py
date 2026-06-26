@@ -45,6 +45,11 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "267614622+agt-user@users.noreply.github.com": "agt-user",  # PR #48496 salvage (telegram CLOSE-WAIT polling heartbeat, #48495)
+    "8180647+herbalizer404@users.noreply.github.com": "herbalizer404",  # PR #49076 + #51835 salvage (auxiliary compression fallback: 403/session-usage payment errors + honor fallback chain when aux provider auth unavailable)
+    "pyxl-dev@users.noreply.github.com": "pyxl-dev",  # PR #52230 salvage (include rate-limit in auxiliary capacity-error fallback gate; #52228)
+    "benbenwyb@gmail.com": "benbenlijie",  # PR #47205 salvage (named custom-provider extra_body + Z.AI Coding overload adaptive backoff; #50663)
+    "dana@added-value.co.il": "Danamove",  # PR #46726 salvage (kill venv-resident pythonw gateway before recreating venv on Windows; #47036/#47557/#47910)
     "145739220+wgu9@users.noreply.github.com": "wgu9",  # PR #51468 salvage (WSL/no-systemd orphan gateway tracking, #51325)
     "165020384+uperLu@users.noreply.github.com": "uperLu",  # PR #50958 salvage (rename plugins/cron → plugins/cron_providers; #50872)
     "277269729+yusekiotacode@users.noreply.github.com": "yusekiotacode",  # PR #48706 salvage (anthropic OAuth login token endpoint → platform.claude.com; #45250/#49821)
@@ -63,6 +68,8 @@ AUTHOR_MAP = {
     "rayjun0412@gmail.com": "rayjun",  # cron model.default salvage co-author (#43952)
     "96944678+sweetcornna@users.noreply.github.com": "sweetcornna",  # cron ticker-liveness salvage co-author (#33849)
     "izumi0uu@gmail.com": "izumi0uu",  # PR #49544 salvage (native rich reply echo; #49534)
+    "dev@pixlmedia.no": "texhy",  # PR #27435 salvage (few-but-huge preflight compression gate; #27405)
+    "qdaszx@naver.com": "qdaszx",  # PR #29190 salvage (non-blocking OSV malware preflight; #29184)
     "w31rdm4ch1n3z@protonmail.com": "w31rdm4ch1nZ",
     "xtpeeps@gmail.com": "x7peeps",
     "ahmad@madsgency.com": "ahmadashfq",
@@ -74,6 +81,10 @@ AUTHOR_MAP = {
     "87440198+JoaoMarcos44@users.noreply.github.com": "JoaoMarcos44",
     "joaomarcosdias444@gmail.com": "JoaoMarcos44",
     "286497132+srojk34@users.noreply.github.com": "srojk34",
+    "srojk34@users.noreply.github.com": "srojk34",  # legacy prefix-less noreply (PR #50098 salvage; #38763)
+    "pinkiilqwq@users.noreply.github.com": "PINKIIILQWQ",  # PR #45035 salvage (resume-to-tip; #38763)
+    "pink@PinkdeMacBook-Air.local": "PINKIIILQWQ",  # PR #45035 local git identity (resume-to-tip; #38763)
+    "ailang323@163.com": "ailang323",  # PR #48682 salvage (compression-tip predicate; #38763)
     "59806492+sitkarev@users.noreply.github.com": "sitkarev",
     "zheng@omegasys.eu": "omegazheng",
     "220877172+james47kjv@users.noreply.github.com": "james47kjv",
@@ -1615,6 +1626,7 @@ AUTHOR_MAP = {
     "claw@openclaw.ai": "wanwan2qq",  # PR #10215 (strip brackets/quotes from /resume; gateway session-ID lookup)
     "simo.kiihamaki@gmail.com": "SimoKiihamaki",  # PR #30773 (Windows /reset+/new freeze; stdin fallback for modal)
     "66773372+Tranquil-Flow@users.noreply.github.com": "Tranquil-Flow",  # PR #27518 (bracketed-paste timeout)
+    "uriyas22@gmail.com": "riyas22",  # PR #43687 salvage (strip cronjob toolset from delegated children, #43466)
     "8bit64k@pm.me": "8bit64k",  # PR #14681 (TUI /q alias from quit to queue)
     "chenglunhu@gmail.com": "hclsys",  # PR #31985 (TUI /q alias regression test)
     "dearmayo@localhost": "ffr31mr",  # PR #32103 (SubdirectoryHintTracker workspace boundary)
@@ -1657,7 +1669,32 @@ AUTHOR_MAP = {
     "desg38@gmail.com": "dschnurbusch",  # PR #42373 salvage (archive compressed conversation lineages)
     "bsmith@bramarstrategicservices.com": "bcsmith528",  # PR #20589 salvage (register_slack_action_handler plugin API)
     "sunsky.lau@gmail.com": "liuhao1024",  # PR #45494 salvage (claim session slot before auto-resume task; #45456)
-    "roadhero@gmail.com": "roadhero",  # PR #27829 (Bedrock target_model api_mode routing)
+    "andrewdmwalker@gmail.com": "capt-marbles",  # PR #38440 salvage (resolve xAI OAuth credentials across profiles; #43589)
+    "infinitycrew39@gmail.com": "infinitycrew39",  # PR #47945 salvage (scope langfuse trace state by turn/request ids; #48292)
+    "eurekaxun@163.com": "huangxun375-stack",  # PR #37251 / #48894 structured OpenViking sync
+    "218421507+Sahil-SS9@users.noreply.github.com": "Sahil-SS9",  # PR #48466/#44919/#44909/#42209 salvage (cron/checkpoint/kanban/skill)
+    # v0.17.0 additions
+    "2081789787@qq.com": "pengyuyanITYU",  # PR #43618 (harden local file tree paths)
+    "adalsteinni@gmail.com": "AIalliAI",  # PR #44159 (desktop hover-reveal inset)
+    "ameobius@local.host": "ameobius",  # PR #44383 co-author (discord gateway task recovery)
+    "andyfieb@gmail.com": "mollusk",  # PR #44493 (desktop assistant-ui recovery)
+    "drmani215@gmail.com": "bionicbutterfly13",  # direct email match
+    "enesilhaydin@gmail.com": "enesilhaydin",  # direct email match
+    "evisolpxe@gmail.com": "Evisolpxe",  # direct email match
+    "fyzan.shaik@gmail.com": "fyzanshaik",  # direct email match
+    "info@amik.co": "AMIK-coorporations",  # PR #40578 (Urdu README) co-author
+    "info@amikchat.site": "AMIK-coorporations",  # PR #40578 (Urdu README)
+    "kyssta69@gmail.com": "kyssta-exe",  # PR #44282 (Windows dashboard re-exec)
+    "30467832+Elshayib@users.noreply.github.com": "Elshayib",  # PR #48351 (custom-provider misattribution guard; #48305)
+    "loongfay@foxmail.com": "loongfay",  # PR #43508 (Yuanbao wechat forward msg)
+    "maplestoryjuni222@gmail.com": "BROCCOLO1D",  # PR #42733 (lazy-parse docker env config)
+    "marvin@photon.codes": "underthestars-zhy",  # PR #46907 co-author (Photon Spectrum project ids)
+    "omar@kostudios.io": "OmarB97",  # PR #43977 (desktop session model metadata)
+    "omarbaradei21@gmail.com": "OmarB97",  # PR #43977 (desktop session model metadata)
+    "philip.a.dsouza@gmail.com": "PhilipAD",  # direct email match
+    "qs2816661685@gmail.com": "qingshan89",  # PR #46895 co-author (desktop remote artifact download)
+    "yspdev@gmail.com": "AJ",  # PR #44510 co-author (desktop named-profile boot loop)
+    "steveonjava@gmail.com": "steveonjava",  # PR #29669 (redact secrets in kanban tool payloads)
 }
 
 

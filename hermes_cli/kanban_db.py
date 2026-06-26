@@ -88,6 +88,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -785,6 +786,7 @@ class Task:
     claim_expires: Optional[int]
     tenant: Optional[str]
     branch_name: Optional[str] = None
+    project_id: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -863,6 +865,7 @@ class Task:
             workspace_kind=row["workspace_kind"],
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
+            project_id=row["project_id"] if "project_id" in keys else None,
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
@@ -1020,6 +1023,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
     workspace_path       TEXT,
     branch_name          TEXT,
+    -- Optional link to a first-class Project (hermes_cli/projects_db). When set,
+    -- the task's worktree is anchored under the project's primary repo with a
+    -- deterministic branch name instead of a random wt/<task-id> fallback.
+    project_id           TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
@@ -1745,25 +1752,6 @@ def init_db(
     return path
 
 
-def _add_column_if_missing(
-    conn: sqlite3.Connection, table: str, column: str, ddl: str
-) -> bool:
-    """Run ``ALTER TABLE <table> ADD COLUMN <ddl>``, idempotent across races.
-
-    Returns ``True`` when the column was actually added by this call.
-    Swallows ``duplicate column name`` errors so a concurrent connection
-    that ran the same migration first does not crash the dispatcher tick
-    (issue #21708).
-    """
-    try:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
-        return True
-    except sqlite3.OperationalError as exc:
-        if "duplicate column name" in str(exc).lower():
-            return False
-        raise
-
-
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -1776,6 +1764,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "result", "result TEXT")
     if "branch_name" not in cols:
         _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
+    if "project_id" not in cols:
+        _add_column_if_missing(conn, "tasks", "project_id", "project_id TEXT")
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
@@ -2262,6 +2252,7 @@ def create_task(
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2302,6 +2293,48 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+
+    # Resolve an optional first-class Project link. A project-linked task is
+    # anchored to the project's primary repo as a git worktree, so its branch
+    # can be named deterministically (project slug + task id) instead of the
+    # random ``wt/<task-id>`` fallback the worker skill applies when no branch
+    # is set. Projects live in the creator's per-profile projects.db; the repo
+    # path is absolute (profile-independent) and the branch name is pure, so the
+    # cross-profile dispatcher needs no projects.db access at dispatch time.
+    project_obj = None
+    # Primary repo of a project-linked worktree task whose path we still need to
+    # derive (a fresh worktree dir under the repo, computed once task_id exists).
+    project_repo: Optional[str] = None
+    if project_id is not None:
+        project_id = str(project_id).strip() or None
+    if project_id:
+        try:
+            from hermes_cli import projects_db as _pdb
+
+            with _pdb.connect_closing() as _pconn:
+                project_obj = _pdb.get_project(_pconn, project_id)
+        except Exception:
+            project_obj = None
+        if project_obj is None:
+            # A project id/slug that doesn't resolve must not crash task
+            # creation or persist a dangling reference — drop the link and
+            # create the task as an ordinary (scratch) task.
+            project_id = None
+        else:
+            # Canonicalise (a slug may have been passed) and anchor the
+            # worktree under the project's primary repo.
+            project_id = project_obj.id
+            if workspace_kind == "scratch" and project_obj.primary_path:
+                workspace_kind = "worktree"
+            if (
+                workspace_kind == "worktree"
+                and workspace_path is None
+                and project_obj.primary_path
+            ):
+                # Defer the concrete path to the insert loop: it's a fresh
+                # ``<repo>/.worktrees/<task-id>`` dir keyed on the new task id.
+                project_repo = str(project_obj.primary_path)
+
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -2375,7 +2408,11 @@ def create_task(
     # task would point cleanup at the user's source tree (#28818). The
     # containment guard in ``_cleanup_workspace`` is the safety rail, but
     # we also stop the bad state from being created in the first place.
-    if workspace_path is None and workspace_kind in {"dir", "worktree"}:
+    if (
+        workspace_path is None
+        and project_repo is None
+        and workspace_kind in {"dir", "worktree"}
+    ):
         board_slug = board if board else get_current_board()
         board_meta = read_board_metadata(board_slug)
         board_default = board_meta.get("default_workdir")
@@ -2419,14 +2456,33 @@ def create_task(
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
+                # Project-linked worktree: a fresh worktree dir under the repo
+                # plus a deterministic branch (project slug + task id). Together
+                # these kill the random ``wt/<task-id>`` worker fallback and the
+                # unanchored ``.worktrees/<id>`` under the dispatcher's cwd.
+                if project_obj is not None and workspace_kind == "worktree":
+                    if project_repo and not workspace_path:
+                        workspace_path = os.path.join(
+                            project_repo, ".worktrees", task_id
+                        )
+                    if not branch_name:
+                        # _pdb was imported above when project_obj was resolved.
+                        try:
+                            branch_name = _pdb.branch_name_for(
+                                project_obj, task_id, title=title or ""
+                            )
+                        except Exception:
+                            branch_name = None
+
                 conn.execute(
                     """
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        branch_name, tenant, idempotency_key, max_runtime_seconds,
+                        branch_name, project_id, tenant, idempotency_key,
+                        max_runtime_seconds,
                         skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2440,6 +2496,7 @@ def create_task(
                         workspace_kind,
                         workspace_path,
                         branch_name,
+                        project_id,
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,

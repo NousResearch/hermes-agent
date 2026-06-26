@@ -66,9 +66,34 @@ class RelayAdapter(BasePlatformAdapter):
         # re-attach the scope here from what we saw inbound. Keyed by chat_id
         # (channel) since that's what send() receives. See routedEgressGuard.ts.
         self._scope_by_chat: Dict[str, str] = {}
+        # chat_id -> author user_id for DM channels (no guild_id). A DM reply has
+        # no guild discriminator, so the connector resolves its tenant from the
+        # recipient's author binding; we re-attach this user_id as
+        # metadata.user_id on the outbound action so it can. See _capture_scope.
+        self._dm_user_by_chat: Dict[str, str] = {}
         self.supports_code_blocks = descriptor.markdown_dialect not in ("", "plain")
+        # Phase 7 Unit 7d-B: watches the transport for a terminal auth revocation
+        # (a 4401 close after a successful handshake = the operator opted this
+        # instance out of the relay). On revocation we surface a clean,
+        # non-retryable "relay disabled" fatal so the dashboard stops showing a
+        # red "retrying" spin against a dead credential.
+        self._revocation_monitor: Optional[asyncio.Task[None]] = None
 
     # ── capability surface (from descriptor) ─────────────────────────────
+    @property
+    def authorization_is_upstream(self) -> bool:
+        """Relay authorization is enforced by the connector, not locally.
+
+        The connector authenticates this gateway's WS (per-instance secret) and
+        performs owner-only author-binding resolution before delivering, so any
+        inbound relay event was already authorized as THIS instance's bound user
+        (``user_instance_binding``, keyed on the connector-observed author id).
+        The instance therefore must not default-deny relay users for lack of a
+        local ``RELAY_ALLOWED_USERS`` env allowlist. See
+        ``BasePlatformAdapter.authorization_is_upstream``.
+        """
+        return True
+
     @property
     def message_len_fn(self) -> Callable[[str], int]:
         return _LEN_FNS.get(self.descriptor.len_unit, len)
@@ -114,7 +139,58 @@ class RelayAdapter(BasePlatformAdapter):
         # the connector's relay bus — there is NO inbound HTTP endpoint (hosted
         # gateways have no public IP). The transport's reader already dispatches
         # `inbound` / `interrupt_inbound` frames to the handlers wired above.
+        # Phase 7 Unit 7d-B: start watching for a terminal auth revocation
+        # (opt-out). Only meaningful when the transport exposes `auth_revoked`
+        # (the production WebSocket transport); the test/stub transports don't.
+        if hasattr(self._transport, "auth_revoked"):
+            self._start_revocation_monitor()
         return True
+
+    def _start_revocation_monitor(self) -> None:
+        """Spawn (once) the task that turns a transport auth-revocation into a
+        clean non-retryable 'relay disabled' fatal. Idempotent."""
+        if self._revocation_monitor is not None and not self._revocation_monitor.done():
+            return
+        try:
+            self._revocation_monitor = asyncio.create_task(
+                self._watch_for_revocation(), name="relay-revocation-monitor"
+            )
+        except RuntimeError:
+            # No running loop (e.g. a unit test calling connect() synchronously
+            # via a stub) — nothing to monitor.
+            self._revocation_monitor = None
+
+    async def _watch_for_revocation(self, poll_interval_s: float = 1.0) -> None:
+        """Poll the transport for a terminal 4401 revocation (opt-out). On
+        revocation, surface a non-retryable `relay_disabled` fatal so the
+        dashboard renders a clean 'Relay disabled' state instead of a red
+        'retrying' spin, and notify the gateway's fatal-error handler so the
+        adapter is cleanly removed (it is NOT queued for reconnection, because
+        the credential is dead until the instance is recreated)."""
+        transport = self._transport
+        try:
+            while True:
+                if transport is None or getattr(transport, "auth_revoked", False):
+                    break
+                await asyncio.sleep(poll_interval_s)
+        except asyncio.CancelledError:
+            raise
+        if transport is None or not getattr(transport, "auth_revoked", False):
+            return
+        logger.warning(
+            "relay credential revoked (opt-out) — marking the relay adapter disabled"
+        )
+        # Non-retryable: a revoked secret never comes back without a recreate, so
+        # _handle_adapter_fatal_error must NOT queue it for reconnection.
+        self._set_fatal_error(
+            "relay_disabled",
+            "Relay disabled (opted out — recreate the instance to re-enable)",
+            retryable=False,
+        )
+        try:
+            await self._notify_fatal_error()
+        except Exception:  # noqa: BLE001 - notification is best-effort
+            logger.debug("relay revocation fatal-error notify failed", exc_info=True)
 
     def _apply_descriptor(self, descriptor: CapabilityDescriptor) -> None:
         """Adopt a (re)negotiated descriptor into the live capability surface."""
@@ -128,29 +204,65 @@ class RelayAdapter(BasePlatformAdapter):
         await self.handle_message(event)
 
     def _capture_scope(self, event) -> None:
-        """Remember chat_id -> guild scope from an inbound event so our outbound
-        (the agent's reply) can re-assert it for the connector's egress tenant
-        resolution. Never raises — scope tracking must not break inbound."""
+        """Remember a chat_id's egress discriminator from an inbound event so our
+        outbound (the agent's reply) can re-assert it for the connector's egress
+        tenant resolution. Never raises — scope tracking must not break inbound.
+
+        Two cases, matching the connector's two tenant-resolution paths:
+          - GUILD message: remember chat_id -> guild_id. The connector resolves
+            the tenant from metadata.guild_id (routing table).
+          - DM (no guild_id): remember chat_id -> the authentic author user_id.
+            A DM carries no guild discriminator, so the connector instead resolves
+            the tenant from the recipient's author binding (resolveByUser); it
+            needs the user_id on the OUTBOUND action to do that. Without this, a
+            DM reply has no resolvable discriminator and the connector's egress
+            guard declines it as "target not routed to an onboarded tenant".
+            See gateway-gateway routedEgressGuard.ts / discordTenantOf.
+        """
         try:
             src = getattr(event, "source", None)
-            scope = getattr(src, "guild_id", None) if src else None
-            chat = getattr(src, "chat_id", None) if src else None
-            if scope and chat:
-                self._scope_by_chat[str(chat)] = str(scope)
+            if not src:
+                return
+            chat = getattr(src, "chat_id", None)
+            if not chat:
+                return
+            guild = getattr(src, "guild_id", None)
+            if guild:
+                self._scope_by_chat[str(chat)] = str(guild)
+                return
+            # DM: no guild_id. Remember the authentic author id for outbound
+            # author-binding resolution (the user we're replying to in this DM).
+            user_id = getattr(src, "user_id", None)
+            if user_id:
+                self._dm_user_by_chat[str(chat)] = str(user_id)
         except Exception:  # noqa: BLE001 - scope tracking must never break inbound
             pass
 
     def _with_scope(self, chat_id: str, metadata: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """Ensure the outbound metadata carries guild_id for the connector's
-        egress tenant resolution. The connector resolves the owning tenant from
-        metadata.guild_id (Discord); without it egress is declined as
-        'target not routed to an onboarded tenant'. No-op when we have no scope
-        for this chat (e.g. DMs) or it's already present."""
+        """Ensure the outbound metadata carries the discriminator the connector's
+        egress guard needs to resolve the owning tenant. Two cases:
+
+          - GUILD reply: re-attach metadata.guild_id (routing-table resolution).
+          - DM reply: there is no guild_id, so re-attach metadata.user_id — the
+            authentic author id we saw inbound — which the connector resolves to
+            the tenant via the recipient's author binding (resolveByUser). Without
+            one of these, egress is declined as 'target not routed to an onboarded
+            tenant'. See gateway-gateway routedEgressGuard.ts / discordTenantOf.
+
+        No-op when the relevant value is already present or unknown for this chat.
+        """
         meta: Dict[str, Any] = dict(metadata or {})
         if not meta.get("guild_id"):
             scope = self._scope_by_chat.get(str(chat_id))
             if scope:
                 meta["guild_id"] = scope
+        # DM author-binding discriminator. Only meaningful when there's no guild
+        # (a guild reply resolves by guild_id); harmless to carry otherwise, but
+        # we only set it when this chat is a known DM and the field is absent.
+        if not meta.get("guild_id") and not meta.get("user_id"):
+            dm_user = self._dm_user_by_chat.get(str(chat_id))
+            if dm_user:
+                meta["user_id"] = dm_user
         return meta
 
     async def on_interrupt(self, session_key: str, chat_id: str) -> None:
@@ -254,6 +366,15 @@ class RelayAdapter(BasePlatformAdapter):
         return MessageEvent(text=text, message_type=MessageType.TEXT, source=source)
 
     async def disconnect(self) -> None:
+        # Phase 7 Unit 7d-B: stop the revocation monitor first so it can't fire a
+        # spurious fatal during/after a deliberate teardown.
+        if self._revocation_monitor is not None:
+            self._revocation_monitor.cancel()
+            try:
+                await self._revocation_monitor
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                pass
+            self._revocation_monitor = None
         if self._transport is not None:
             # Phase 5 §5.3: emit going_idle as part of the gateway's EXISTING
             # drain/shutdown transition (the runner calls adapter.disconnect()
@@ -274,6 +395,33 @@ class RelayAdapter(BasePlatformAdapter):
                 except Exception:  # noqa: BLE001 - going-idle is an optimization, never blocks drain
                     logger.debug("relay going_idle failed during drain", exc_info=True)
             await self._transport.disconnect()
+
+    async def go_dormant(self) -> bool:
+        """Quiesce the relay for a scale-to-zero suspend (D12 / Phase 0).
+
+        Unlike ``disconnect()`` (terminal teardown for shutdown/restart), this
+        keeps the adapter's reconnect path armed so the gateway re-dials and
+        drains its buffered backlog when the machine wakes. Delegates to the
+        transport's ``go_dormant()`` when available; a transport without it (the
+        stub) is a no-op that returns False, so callers degrade safely.
+
+        NOTE: deliberately does NOT stop the revocation monitor — going dormant
+        is not a teardown; the monitor stays live so a real opt-out/revocation
+        during dormancy is still surfaced on wake.
+        """
+        if self._transport is None:
+            return False
+        go_dormant = getattr(self._transport, "go_dormant", None)
+        if not callable(go_dormant):
+            return False
+        try:
+            result: Any = go_dormant()
+            if asyncio.iscoroutine(result):
+                return bool(await result)
+            return bool(result)
+        except Exception:  # noqa: BLE001 - dormancy is best-effort, never blocks the idle path
+            logger.debug("relay go_dormant failed", exc_info=True)
+            return False
 
     async def send(
         self,

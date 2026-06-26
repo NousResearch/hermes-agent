@@ -23,6 +23,7 @@ import type {
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
+  MoaConfigResponse,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
@@ -85,6 +86,8 @@ export type {
   MessagingPlatformsResponse,
   MessagingPlatformTestResponse,
   MessagingPlatformUpdate,
+  MoaConfigResponse,
+  MoaModelSlot,
   ModelAssignmentRequest,
   ModelAssignmentResponse,
   ModelInfoResponse,
@@ -96,6 +99,9 @@ export type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  ProjectFolder,
+  ProjectInfo,
+  ProjectsPayload,
   RpcEvent,
   SessionCreateResponse,
   SessionInfo,
@@ -147,7 +153,9 @@ export async function listSessions(
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`,
+    path:
+      `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
+      `&archived=${archived}&order=${order}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 
@@ -274,6 +282,7 @@ export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
 
 export function getStatus(): Promise<StatusResponse> {
   return window.hermesDesktop.api<StatusResponse>({
+    ...profileScoped(),
     path: '/api/status'
   })
 }
@@ -745,6 +754,22 @@ export function getAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
   })
 }
 
+export function getMoaModels(): Promise<MoaConfigResponse> {
+  return window.hermesDesktop.api<MoaConfigResponse>({
+    ...profileScoped(),
+    path: '/api/model/moa'
+  })
+}
+
+export function saveMoaModels(body: MoaConfigResponse): Promise<MoaConfigResponse & { ok: boolean }> {
+  return window.hermesDesktop.api<MoaConfigResponse & { ok: boolean }>({
+    ...profileScoped(),
+    path: '/api/model/moa',
+    method: 'PUT',
+    body
+  })
+}
+
 export function setModelAssignment(body: ModelAssignmentRequest): Promise<ModelAssignmentResponse> {
   return window.hermesDesktop.api<ModelAssignmentResponse>({
     ...profileScoped(),
@@ -756,6 +781,7 @@ export function setModelAssignment(body: ModelAssignmentRequest): Promise<ModelA
 
 export function restartGateway(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
+    ...profileScoped(),
     path: '/api/gateway/restart',
     method: 'POST'
   })
@@ -763,6 +789,7 @@ export function restartGateway(): Promise<ActionResponse> {
 
 export function updateHermes(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
+    ...profileScoped(),
     path: '/api/hermes/update',
     method: 'POST'
   })
@@ -773,12 +800,14 @@ export function updateHermes(): Promise<ActionResponse> {
  *  distinct from the Electron client clone's git state. */
 export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResponse> {
   return window.hermesDesktop.api<BackendUpdateCheckResponse>({
+    ...profileScoped(),
     path: `/api/hermes/update/check${force ? '?force=true' : ''}`
   })
 }
 
 export function getActionStatus(name: string, lines = 200): Promise<ActionStatusResponse> {
   return window.hermesDesktop.api<ActionStatusResponse>({
+    ...profileScoped(),
     path: `/api/actions/${encodeURIComponent(name)}/status?lines=${Math.max(1, lines)}`
   })
 }

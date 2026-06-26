@@ -128,6 +128,13 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     disabled = ["cronjob", "messaging", "clarify"]
     agent_cfg = (cfg or {}).get("agent") or {}
     user_disabled = agent_cfg.get("disabled_toolsets") or []
+    # The job-spawn loader reads config.yaml directly (yaml.safe_load) and does
+    # NOT route through load_config()'s normalizer, so a scalar hand-edit
+    # ``disabled_toolsets: memory`` arrives here as a bare string. Iterating it
+    # would walk characters and silently disable nothing — coerce to a list so
+    # the scalar form behaves identically to the list form.
+    if isinstance(user_disabled, str):
+        user_disabled = [user_disabled]
     for name in user_disabled:
         name = str(name).strip()
         if name and name not in disabled:

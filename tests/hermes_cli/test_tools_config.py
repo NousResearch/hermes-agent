@@ -59,6 +59,64 @@ def test_agent_disabled_toolsets_with_explicit_platform_config():
     assert "terminal" in enabled
 
 
+def test_scalar_agent_disabled_toolsets_disables_after_normalization():
+    """A scalar ``disabled_toolsets: memory`` (the natural YAML hand-edit form)
+    must actually disable the toolset once routed through the load-time
+    normalizer. Without normalization the bare string is iterated
+    character-by-character and silently disables nothing."""
+    from hermes_cli.config import _normalize_disabled_toolsets
+
+    raw_config = {
+        "agent": {"disabled_toolsets": "memory"},
+        "platform_toolsets": {"cli": ["web", "terminal", "memory"]},
+    }
+    normalized = _normalize_disabled_toolsets(raw_config)
+
+    assert normalized["agent"]["disabled_toolsets"] == ["memory"]
+
+    enabled = _get_platform_tools(normalized, "cli")
+    assert "memory" not in enabled
+    assert "web" in enabled
+    assert "terminal" in enabled
+
+
+def test_normalize_disabled_toolsets_preserves_list_and_ignores_junk():
+    """List form is preserved; a non-string/non-iterable scalar is dropped and
+    an empty/whitespace scalar normalizes to an empty list (no-op)."""
+    from hermes_cli.config import _normalize_disabled_toolsets
+
+    # Already a list → unchanged.
+    cfg_list = {"agent": {"disabled_toolsets": ["memory", "web"]}}
+    assert _normalize_disabled_toolsets(cfg_list)["agent"]["disabled_toolsets"] == [
+        "memory",
+        "web",
+    ]
+    # Non-string scalar can't name a toolset → left untouched (consumers ignore).
+    cfg_int = {"agent": {"disabled_toolsets": 5}}
+    assert _normalize_disabled_toolsets(cfg_int)["agent"]["disabled_toolsets"] == 5
+    # Empty/whitespace scalar → empty list, not a 1-element [" "].
+    cfg_blank = {"agent": {"disabled_toolsets": "   "}}
+    assert _normalize_disabled_toolsets(cfg_blank)["agent"]["disabled_toolsets"] == []
+
+
+def test_cron_resolver_coerces_scalar_disabled_toolsets():
+    """The cron job-spawn loader reads config.yaml directly (bypassing the
+    load-time normalizer), so ``_resolve_cron_disabled_toolsets`` must defend
+    against a scalar value itself — otherwise it walks characters and never
+    appends the intended toolset to the cron denylist."""
+    from cron.scheduler import _resolve_cron_disabled_toolsets
+
+    scalar_cfg = {"agent": {"disabled_toolsets": "memory"}}
+    resolved = _resolve_cron_disabled_toolsets(scalar_cfg)
+
+    assert "memory" in resolved
+    # No stray single characters from char-iterating the scalar.
+    assert "m" not in resolved
+    assert "e" not in resolved
+    # The always-on cron-protected toolsets remain.
+    assert {"cronjob", "messaging", "clarify"}.issubset(set(resolved))
+
+
 def test_all_invalid_platform_toolsets_logs_runtime_warning(caplog):
     """#38798: an explicit platform config whose toolset names are all invalid
     (e.g. 'hermes' instead of 'hermes-cli') must warn at resolve time so an

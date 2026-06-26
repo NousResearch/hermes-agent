@@ -261,7 +261,7 @@ TIPS = [
     ".worktreeinclude in your repo root lists gitignored files to copy into worktrees.",
     "hermes acp runs Hermes as an ACP server for VS Code, Zed, and JetBrains integration.",
     "Custom providers: save named endpoints in config.yaml under custom_providers.",
-    "Don't see your provider (Volcengine Ark, 火山引擎, DashScope, Kimi)? Run `hermes skills search volcengine`.",
+    "Don't see your provider? Run `hermes skills search volcengine` — Volcengine Ark (火山引擎) is also a built-in provider.",
     "HERMES_EPHEMERAL_SYSTEM_PROMPT injects a system prompt that's never persisted to history.",
     "credential_pool_strategies supports fill_first, round_robin, least_used, and random rotation.",
     "hermes auth add nous or hermes auth add openai-codex sets up OAuth-based providers.",

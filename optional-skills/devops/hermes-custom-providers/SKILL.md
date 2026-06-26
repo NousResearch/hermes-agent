@@ -17,17 +17,23 @@ Configuring custom API providers in Hermes via the `custom_providers` section of
 
 ## Why This Skill Exists
 
-Hermes ships with 29+ built-in providers (Anthropic, OpenAI, DeepSeek, Gemini, etc.), but many widely-used providers — especially **Chinese API providers** — are not included as first-class providers. These include:
+Hermes ships with 29+ built-in providers (Anthropic, OpenAI, DeepSeek, Gemini, etc.) and **Volcengine Ark (火山引擎) is now included as a built-in provider** — just look for "Volcengine Ark" in Settings → Providers and paste your API key.
 
-- **Volcengine Ark (火山引擎)** — ByteDance's model platform, serving doubao-seed-2.0, deepseek-v4, glm-5.2, kimi-k2.x, minimax-m3/m2.7
+This skill serves as a **companion reference** for:
+
 - **Alibaba DashScope (阿里百炼)** — Alibaba's AI model platform
 - **Zhipu AI / GLM (智谱)** — Tsinghua-backed LLM provider
 - **Moonshot / Kimi (月之暗面)** — Standalone Kimi API
-- **MiniMax (稀宇科技)** — MiniMax standalone API
+- **Any other provider** with OpenAI/Anthropic-compatible endpoints not yet in the built-in list
 
-These providers collectively serve **tens of millions of users** across China and are the primary AI API providers for the Chinese-speaking developer ecosystem. While some offer OpenAI/Anthropic-compatible endpoints, getting them configured correctly in Hermes requires understanding several non-obvious details.
+For Volcengine Ark specifically, this skill is still useful when you need:
 
-This skill provides the canonical configuration guide for any custom provider, plus a **battle-tested reference implementation** for Volcengine Ark — the most common entry point for Chinese users who want to use Hermes with domestic models.
+- **Custom base_url** — if you're on a Coding Plan with a different endpoint
+- **Custom model list** — if your subscription tier has different models than the Agent Plan defaults
+- **Model reference** — context lengths, capabilities, deprecated models
+- **Troubleshooting** — known issues and workarounds
+
+These providers collectively serve **tens of millions of users** across China and are the primary AI API providers for the Chinese-speaking developer ecosystem. This skill provides the canonical configuration guide for any custom provider, plus a **battle-tested reference implementation** for Volcengine Ark.
 
 ## How to Discover and Use This Skill
 
@@ -314,41 +320,34 @@ After updating:
 3. In the model picker, you should see your custom provider with its models
 4. Try a simple prompt to verify API connectivity
 
-## FAQ: Why Is This a Skill Instead of a Built-in Provider?
+## FAQ: Ark Is Now a Built-in Provider AND a Skill — Why Both?
 
-Several feature requests (#29331, #40195, #51319) asked for Volcengine Ark as a first-class provider in the Settings → Providers menu. Here's why a skill + `custom_providers` approach was chosen instead:
+Volcengine Ark is now available as a **built-in provider** in Settings → Providers. You can paste your API key and start using it immediately. The skill (`hermes-custom-providers`) remains as a **companion reference** for:
 
-### 1. Model lists change per subscription
+### What the built-in provider gives you:
 
-Ark has **two subscription plans** (Agent Plan / Coding Plan), each with different model availability. Even within the same plan, models differ by tier (Small/Medium/Large/Max for Agent Plan, Lite/Pro for Coding Plan). A hardcoded provider list would either be incomplete or show models the user can't access.
+- ⚡ **One-click setup** — select "Volcengine Ark (火山引擎)" from Providers menu, paste API key, done
+- 🎯 **Clean model list** — shows exactly the 11 active Agent Plan models, no stale entries
+- 🔄 **Zero config** — no YAML editing required
 
-### 2. Endpoint paths vary between plans
+### What the skill adds on top:
 
-Some users access Ark via the Coding Plan endpoint, others via the standard Ark endpoint. The correct `base_url` depends on the user's subscription.
-
-### 3. Users control model activation
-
-Models are activated/deactivated per-user from the Ark console. A built-in provider would list models that are not activated for the current user.
-
-### 4. Same pattern helps ALL Chinese providers
-
-The `custom_providers` approach documented in this skill works identically for Alibaba DashScope, Zhipu GLM, Moonshot Kimi, MiniMax standalone, and any other provider with OpenAI/Anthropic-compatible endpoints. One skill covers them all.
-
-### 5. Config changes are explicit and auditable
-
-With a `custom_providers` entry, you can see exactly what's configured in `config.yaml`, back it up, sync it across machines, and version-control it. A built-in provider's model list is hidden in Hermes internals.
+- 📋 **Complete model reference** — context lengths, capabilities, deprecated models
+- 🔧 **Custom configurations** — if you need a different base_url (Coding Plan) or model subset
+- 🩺 **Troubleshooting** — known issues and workarounds for common Ark problems
+- 🌐 **Cross-provider patterns** — same approach works for Alibaba DashScope, Zhipu GLM, Kimi, etc.
 
 ### The tradeoff
 
 | Aspect | Built-in Provider | Skill + custom_providers |
 |--------|:-----------------:|:------------------------:|
 | Setup speed | ⚡ Pick from dropdown | 🐢 Install skill → edit YAML → restart |
-| Discoverability | ✅ "Ark" in Providers menu | ⚠️ Need to know `hermes skills search` exists |
-| Model accuracy | ❌ May list unavailable models | ✅ Exactly your activated models |
+| Discoverability | ✅ "Volcengine Ark" in Providers menu | ⚠️ Need to know `hermes skills search` exists |
+| Model accuracy | ✅ Hardcoded maintained list | ✅ Exactly your activated models |
 | Config portability | ❌ Hidden in Hermes internals | ✅ Visible in `config.yaml` |
 | Works across providers | ❌ One provider per integration | ✅ Same pattern for all providers |
 
-We believe the accuracy and portability advantages outweigh the slightly higher setup friction — especially since the setup only happens once.
+**Recommendation**: Use the built-in provider for Ark. Use the skill when you need custom endpoint configurations or are setting up other Chinese providers.
 
 ## Provider-Specific References
 

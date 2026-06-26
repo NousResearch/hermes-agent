@@ -1966,6 +1966,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 elif not _looks_like_nonconversational_history_message(content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
 
+            # Auto-detect choice prompts and append clickable buttons. Skipped
+            # for nonconversational/system messages (history backfill, status
+            # echoes) since those aren't questions to the user.
+            if message_ids and not nonconversational:
+                await self._maybe_send_choice_buttons(
+                    chat_id, content, reply_to, metadata,
+                )
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -1975,6 +1983,124 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    async def _maybe_send_choice_buttons(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str],
+        metadata: Optional[Dict[str, Any]],
+    ) -> None:
+        """Append clickable choice buttons when ``content`` poses a choice.
+
+        Parses the just-sent message for a question + option list (numbered,
+        circled, lettered, bulleted, or inline ``A or B?``). If 2+ options are
+        found, posts a small follow-up embed carrying an :class:`AutoChoiceView`
+        — picking a button injects that option as a new user message.
+
+        Best-effort: any failure is swallowed (logged at debug) so a parsing
+        or send hiccup never breaks the primary message delivery.
+        """
+        if not self._discord_auto_choice_buttons():
+            return
+        if not self._client or not DISCORD_AVAILABLE:
+            return
+        try:
+            choices = _detect_inline_choices(content)
+            if len(choices) < 2:
+                return
+
+            # Resolve the same target channel send() used (thread wins).
+            target_id = chat_id
+            if metadata and metadata.get("thread_id"):
+                target_id = metadata["thread_id"]
+            channel = self._client.get_channel(int(target_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(target_id))
+            if not channel:
+                return
+
+            view = AutoChoiceView(
+                adapter=self,
+                choices=choices,
+                allowed_user_ids=self._allowed_user_ids,
+                allowed_role_ids=self._allowed_role_ids,
+            )
+            embed = discord.Embed(
+                description="Tap a choice below, or ✏️ Other to type your own.",
+                color=discord.Color.blurple(),
+            )
+            msg = await channel.send(embed=embed, view=view)
+            view._message = msg
+        except Exception as e:
+            logger.debug("[%s] auto-choice buttons skipped: %s", self.name, e)
+
+    async def _inject_user_choice(self, interaction: Any, choice_text: str) -> None:
+        """Feed a clicked choice back into the gateway as a fresh user turn.
+
+        Builds a :class:`MessageEvent` from the interaction's channel + the
+        clicking user — matching the session key a real message in that
+        channel/thread would produce — and dispatches it via
+        ``handle_message``. ``raw_message`` is ``None`` (synthetic event), the
+        same shape other injected/synthetic events use.
+        """
+        channel = getattr(interaction, "channel", None)
+        user = getattr(interaction, "user", None)
+        if channel is None or user is None:
+            return
+
+        is_thread = isinstance(channel, discord.Thread)
+        is_dm = isinstance(channel, discord.DMChannel)
+        thread_id = str(channel.id) if is_thread else None
+        parent_channel_id = (
+            self._get_parent_channel_id(channel) if is_thread else None
+        )
+        guild = getattr(channel, "guild", None)
+
+        if is_dm:
+            chat_type = "dm"
+            chat_name = getattr(user, "display_name", None) or getattr(user, "name", "DM")
+        elif is_thread:
+            chat_type = "thread"
+            chat_name = self._format_thread_chat_name(channel)
+        else:
+            chat_type = "group"
+            chat_name = getattr(channel, "name", str(channel.id))
+            if guild is not None:
+                chat_name = f"{getattr(guild, 'name', '')} / #{chat_name}"
+
+        chat_topic = self._get_effective_topic(channel, is_thread=is_thread)
+
+        source = self.build_source(
+            chat_id=str(channel.id),
+            chat_name=chat_name,
+            chat_type=chat_type,
+            user_id=str(getattr(user, "id", "")),
+            user_name=getattr(user, "display_name", None) or getattr(user, "name", "user"),
+            thread_id=thread_id,
+            chat_topic=chat_topic,
+            is_bot=bool(getattr(user, "bot", False)),
+            guild_id=str(guild.id) if guild is not None else None,
+            parent_chat_id=parent_channel_id,
+            # The click already passed _component_check_auth; mirror on_message's
+            # role-authorized flag so downstream gating treats this like a
+            # genuine allowlisted user message.
+            role_authorized=bool(self._allowed_role_ids),
+        )
+
+        event = MessageEvent(
+            text=choice_text,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=None,
+        )
+
+        logger.info(
+            "[%s] Auto-choice injected as user turn (chat=%s, user=%s, choice=%r)",
+            self.name, source.chat_id,
+            getattr(user, "display_name", "?"), choice_text,
+        )
+        await self.handle_message(event)
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
@@ -4510,6 +4636,21 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in {"false", "0", "no", "off"}
 
+    def _discord_auto_choice_buttons(self) -> bool:
+        """Return whether auto-detected choice buttons are enabled.
+
+        When True (default), an ordinary reply that already poses a question
+        with a short list of options gets clickable buttons appended; clicking
+        one injects that option as a new user message. Disable via
+        ``discord.auto_choice_buttons: false`` or DISCORD_AUTO_CHOICE_BUTTONS.
+        """
+        configured = self.config.extra.get("auto_choice_buttons")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("DISCORD_AUTO_CHOICE_BUTTONS", "true").lower() not in {"false", "0", "no", "off"}
+
     def _discord_allow_any_attachment(self) -> bool:
         """Return whether Discord attachments bypass the SUPPORTED_DOCUMENT_TYPES allowlist.
 
@@ -6185,6 +6326,146 @@ def _component_check_auth(
     return False
 
 
+# ── Auto-detected choice buttons ──────────────────────────────────────────
+# When an ordinary agent reply already contains a question + a short list of
+# options, the Discord adapter offers the same clickable buttons the clarify
+# tool would — without any gateway/clarify-tool involvement. Clicking a button
+# injects the chosen option as if the user had typed it, kicking off a fresh
+# agent turn. See ``DiscordAdapter._maybe_send_choice_buttons``.
+
+# Circled-number markers (①..⑳) used by some models for option lists.
+_CIRCLED_NUMBER_MARKERS = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+
+# Ordered by strength of the "this is a menu" signal. The first style that
+# yields >=2 options wins, so an explicit numbered menu is preferred over a
+# loose bullet list that happens to share the message.
+_CHOICE_LINE_PATTERNS = (
+    re.compile(r"^\s*\d{1,2}\s*[.)、．]\s+(?P<text>\S.*)$"),
+    re.compile(r"^\s*[" + _CIRCLED_NUMBER_MARKERS + r"]\s*(?P<text>\S.*)$"),
+    re.compile(r"^\s*[A-Za-z]\s*[).]\s+(?P<text>\S.*)$"),
+    re.compile(r"^\s*[-*•·]\s+(?P<text>\S.*)$"),
+)
+
+
+def _dedupe_keep_order(items: List[str]) -> List[str]:
+    seen: set = set()
+    out: List[str] = []
+    for it in items:
+        if it not in seen:
+            seen.add(it)
+            out.append(it)
+    return out
+
+
+def _clean_choice_text(text: str) -> str:
+    """Trim a parsed option down to a clean button label body.
+
+    Strips surrounding markdown emphasis (``**bold**``, ``*italic*``,
+    ``` `code` ```) that would otherwise bloat the label, plus trailing
+    list punctuation.
+    """
+    opt = text.strip()
+    opt = opt.strip("*_`").strip()
+    opt = opt.rstrip(" ,，、;；")
+    return opt.strip()
+
+
+def _detect_or_choices(text: str) -> List[str]:
+    """Detect inline ``A or B or C?`` style options on the question clause.
+
+    Conservative by design — only fires when the whole question clause splits
+    cleanly into 2–5 short options, otherwise returns ``[]`` to avoid turning
+    arbitrary prose into buttons.
+    """
+    m = re.search(r"([^?？\n]*[?？])", text)
+    if not m:
+        return []
+    clause = m.group(1).rstrip("?？").strip()
+    parts = re.split(r"\s+or\s+|，?\s*還是\s*|，?\s*或是?\s*", clause)
+    parts = [_clean_choice_text(p) for p in parts]
+    parts = [p for p in parts if p]
+    if not (2 <= len(parts) <= 5 and all(len(p) <= 60 for p in parts)):
+        return []
+    # The first option usually carries the question lead-in
+    # ("Do you want X", "你想要X") — strip it so the button reads as the bare
+    # option, matching the others.
+    parts[0] = re.sub(
+        r"(?i)^.*\b(?:want|like|prefer|choose|need)\s+",
+        "",
+        parts[0],
+    ).strip() or parts[0]
+    parts[0] = re.sub(r"^.*?(?:想要|想|要|選擇|選|偏好)\s*", "", parts[0]).strip() or parts[0]
+    return _dedupe_keep_order([p for p in parts if p])
+
+
+def _detect_inline_choices(content: str, *, max_choices: int = 24) -> List[str]:
+    """Extract clickable choices from an outbound message, or ``[]`` if none.
+
+    Detection is gated on the message reading like a prompt to choose — it
+    must contain a question mark OR a line ending in a colon that introduces
+    the list. This keeps incidental numbered lists (step-by-step
+    instructions, citations, changelog entries) from sprouting buttons.
+
+    Returns clean option bodies WITHOUT their leading markers (the view adds
+    its own ``1.``/``2.`` numbering), capped at ``max_choices``.
+    """
+    if not content or not content.strip():
+        return []
+    text = content.strip()
+
+    has_question = bool(re.search(r"[?？]", text))
+    has_colon_intro = bool(re.search(r"[:：]\s*\n", text))
+    if not (has_question or has_colon_intro):
+        return []
+
+    lines = text.splitlines()
+    for pattern in _CHOICE_LINE_PATTERNS:
+        items: List[str] = []
+        for line in lines:
+            m = pattern.match(line)
+            if m:
+                opt = _clean_choice_text(m.group("text"))
+                if opt:
+                    items.append(opt)
+        items = _dedupe_keep_order(items)
+        if len(items) >= 2:
+            return items[:max_choices]
+
+    inline = _detect_or_choices(text)
+    if len(inline) >= 2:
+        return inline[:max_choices]
+    return []
+
+
+def _fit_button_label(prefix: str, choice: str, *, limit: int = 80) -> str:
+    """Build a Discord button label (≤80 chars) cutting at a word boundary.
+
+    Mirrors ``ClarifyChoiceView``'s cut strategy: prefer the last space in the
+    trailing half of the budget, then a soft boundary (``- , . )``), and fall
+    back to a hard cut with an ellipsis.
+    """
+    budget = limit - len(prefix)
+    if budget <= 1:
+        return (prefix + choice)[:limit]
+    if len(choice) <= budget:
+        return f"{prefix}{choice}"
+    truncated = choice[: budget - 1].rstrip()
+    cut_at = -1
+    space = truncated.rfind(" ")
+    if space >= budget // 2:
+        cut_at = space
+    if cut_at < 0:
+        latest_soft = max(
+            (truncated.rfind(s) for s in ("-", ",", ".", ")")),
+            default=-1,
+        )
+        if latest_soft >= budget // 2:
+            cut_at = latest_soft + 1
+    if cut_at > 0:
+        truncated = truncated[:cut_at]
+    return f"{prefix}{truncated.rstrip()}…"
+
+
 def _define_discord_view_classes() -> None:
     """Register Discord UI view classes as module globals.
 
@@ -6195,7 +6476,7 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView, AutoChoiceView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -7071,6 +7352,134 @@ def _define_discord_view_classes() -> None:
                     await msg.edit(embed=embed, view=self)
                 except Exception:
                     pass
+
+    class AutoChoiceView(discord.ui.View):
+        """Buttons auto-attached to replies that already pose a choice.
+
+        Unlike :class:`ClarifyChoiceView`, this view has NO gateway clarify
+        entry behind it — the agent never called the clarify tool. Picking a
+        button instead *injects* the chosen option back into the gateway as a
+        fresh user message (via ``adapter.handle_message``), exactly as if the
+        user had typed it. ``✏️ Other`` simply dismisses the buttons so the
+        user can type a free-form reply, which the normal message path
+        already handles.
+
+        Auth gating mirrors the clarify view — only allowlisted users/roles
+        may click. Single-use: the first valid click disables all buttons.
+        """
+
+        def __init__(
+            self,
+            adapter,
+            choices: List[str],
+            allowed_user_ids: set,
+            allowed_role_ids: Optional[set] = None,
+        ):
+            super().__init__(timeout=600)  # 10-minute window
+            self._adapter = adapter
+            self.choices = list(choices)[:24]
+            self.allowed_user_ids = allowed_user_ids
+            self.allowed_role_ids = allowed_role_ids or set()
+            self.resolved = False
+            self._message = None
+
+            for index, choice in enumerate(self.choices):
+                button = discord.ui.Button(
+                    label=_fit_button_label(f"{index + 1}. ", choice),
+                    style=discord.ButtonStyle.primary,
+                    custom_id=f"autochoice:{index}",
+                )
+                button.callback = self._make_choice_callback(choice)
+                self.add_item(button)
+
+            other_btn = discord.ui.Button(
+                label="✏️ Other (type answer)",
+                style=discord.ButtonStyle.secondary,
+                custom_id="autochoice:other",
+            )
+            other_btn.callback = self._on_other
+            self.add_item(other_btn)
+
+        def _check_auth(self, interaction: "discord.Interaction") -> bool:
+            return _component_check_auth(
+                interaction, self.allowed_user_ids, self.allowed_role_ids,
+            )
+
+        def _make_choice_callback(self, choice: str):
+            async def _callback(interaction: "discord.Interaction"):
+                await self._resolve_choice(interaction, choice)
+            return _callback
+
+        async def _disable_and_ack(self, interaction: "discord.Interaction") -> None:
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            try:
+                await interaction.response.edit_message(view=self)
+            except Exception:
+                try:
+                    await interaction.response.defer()
+                except Exception:
+                    pass
+
+        async def _resolve_choice(
+            self, interaction: "discord.Interaction", choice: str,
+        ) -> None:
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This prompt has already been answered~", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to answer this prompt~", ephemeral=True,
+                )
+                return
+
+            await self._disable_and_ack(interaction)
+
+            # Inject the chosen option as a brand-new user turn. No clarify
+            # entry to resolve — this is a plain "user typed this" flow.
+            try:
+                await self._adapter._inject_user_choice(interaction, choice)
+            except Exception:
+                logger.error(
+                    "Discord auto-choice injection failed", exc_info=True,
+                )
+
+        async def _on_other(self, interaction: "discord.Interaction") -> None:
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This prompt has already been answered~", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to answer this prompt~", ephemeral=True,
+                )
+                return
+
+            await self._disable_and_ack(interaction)
+            # Nothing to capture — the user's next normal message is picked up
+            # by on_message as usual. Just nudge them.
+            try:
+                await interaction.followup.send(
+                    "Go ahead and type your answer~", ephemeral=True,
+                )
+            except Exception:
+                pass
+
+        async def on_timeout(self):
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            msg = getattr(self, "_message", None)
+            if msg:
+                try:
+                    await msg.edit(view=self)
+                except Exception:
+                    pass
+
 if DISCORD_AVAILABLE:
     _define_discord_view_classes()
 

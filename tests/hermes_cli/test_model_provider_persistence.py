@@ -558,71 +558,75 @@ class TestZaiEndpointPicker:
 
         assert captured["default"] == expected_default
 
+
+class TestBaseUrlChoices:
+    """Generic API-key providers should support Keep / Replace / Clear."""
+
     def test_keep_base_url_is_default(self, config_home, monkeypatch):
         """Pressing Enter at the K/R/C prompt keeps the existing base URL."""
         from hermes_cli.auth import PROVIDER_REGISTRY
 
-        pconfig = PROVIDER_REGISTRY.get("zai")
+        pconfig = PROVIDER_REGISTRY.get("minimax")
         if not pconfig:
-            pytest.skip("zai not in PROVIDER_REGISTRY")
+            pytest.skip("minimax not in PROVIDER_REGISTRY")
 
-        monkeypatch.setenv("GLM_API_KEY", "test-key")
-        monkeypatch.setenv("GLM_BASE_URL", "https://existing.z.ai/api/paas/v4")
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+        monkeypatch.setenv("MINIMAX_BASE_URL", "https://existing.minimax.example/v1")
 
         from hermes_cli.main import _model_flow_api_key_provider
         from hermes_cli.config import load_config, get_env_value
 
-        with patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
+        with patch("hermes_cli.auth._prompt_model_selection", return_value="MiniMax-M2"), \
              patch("hermes_cli.auth.deactivate_provider"), \
              patch("builtins.input", return_value=""):
-            _model_flow_api_key_provider(load_config(), "zai", "old-model")
+            _model_flow_api_key_provider(load_config(), "minimax", "old-model")
 
-        saved = get_env_value("GLM_BASE_URL") or ""
-        assert saved == "https://existing.z.ai/api/paas/v4"
+        saved = get_env_value("MINIMAX_BASE_URL") or ""
+        assert saved == "https://existing.minimax.example/v1"
 
     def test_replace_base_url_prompts_for_new_url(self, config_home, monkeypatch):
         """Choosing R replaces the configured base URL."""
         from hermes_cli.auth import PROVIDER_REGISTRY
 
-        pconfig = PROVIDER_REGISTRY.get("zai")
+        pconfig = PROVIDER_REGISTRY.get("minimax")
         if not pconfig:
-            pytest.skip("zai not in PROVIDER_REGISTRY")
+            pytest.skip("minimax not in PROVIDER_REGISTRY")
 
-        monkeypatch.setenv("GLM_API_KEY", "test-key")
-        monkeypatch.setenv("GLM_BASE_URL", "https://existing.z.ai/api/paas/v4")
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+        monkeypatch.setenv("MINIMAX_BASE_URL", "https://existing.minimax.example/v1")
 
         from hermes_cli.main import _model_flow_api_key_provider
         from hermes_cli.config import load_config, get_env_value
 
-        with patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
+        with patch("hermes_cli.auth._prompt_model_selection", return_value="MiniMax-M2"), \
              patch("hermes_cli.auth.deactivate_provider"), \
              patch(
                  "builtins.input",
-                 side_effect=["", "r", "https://replacement.z.ai/api/paas/v4"],
+                 side_effect=["", "r", "https://replacement.minimax.example/v1"],
              ):
-            _model_flow_api_key_provider(load_config(), "zai", "old-model")
+            _model_flow_api_key_provider(load_config(), "minimax", "old-model")
 
-        saved = get_env_value("GLM_BASE_URL") or ""
-        assert saved == "https://replacement.z.ai/api/paas/v4"
+        saved = get_env_value("MINIMAX_BASE_URL") or ""
+        assert saved == "https://replacement.minimax.example/v1"
 
     def test_clear_base_url_saves_empty_value(self, config_home, monkeypatch):
         """Choosing C clears the configured base URL."""
         from hermes_cli.auth import PROVIDER_REGISTRY
 
-        pconfig = PROVIDER_REGISTRY.get("zai")
+        pconfig = PROVIDER_REGISTRY.get("minimax")
         if not pconfig:
-            pytest.skip("zai not in PROVIDER_REGISTRY")
+            pytest.skip("minimax not in PROVIDER_REGISTRY")
 
-        monkeypatch.setenv("GLM_API_KEY", "test-key")
-        monkeypatch.setenv("GLM_BASE_URL", "https://existing.z.ai/api/paas/v4")
+        monkeypatch.setenv("MINIMAX_API_KEY", "test-key")
+        monkeypatch.setenv("MINIMAX_BASE_URL", "https://existing.minimax.example/v1")
 
         from hermes_cli.main import _model_flow_api_key_provider
         from hermes_cli.config import load_config, get_env_value
 
-        with patch("hermes_cli.auth._prompt_model_selection", return_value="glm-5"), \
+        with patch("hermes_cli.auth._prompt_model_selection", return_value="MiniMax-M2"), \
              patch("hermes_cli.auth.deactivate_provider"), \
              patch("builtins.input", side_effect=["", "c"]):
-            _model_flow_api_key_provider(load_config(), "zai", "old-model")
+            _model_flow_api_key_provider(load_config(), "minimax", "old-model")
 
-        saved = get_env_value("GLM_BASE_URL") or ""
+        saved = get_env_value("MINIMAX_BASE_URL") or ""
         assert saved == ""

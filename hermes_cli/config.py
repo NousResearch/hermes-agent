@@ -2017,6 +2017,7 @@ DEFAULT_CONFIG = {
     
     "stt": {
         "enabled": True,
+        "echo": True,  # Post raw STT transcripts back to the chat (🎙️ "...")
         "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe) | "elevenlabs" (Scribe)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3

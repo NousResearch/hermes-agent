@@ -10125,18 +10125,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _successful_transcripts:
                     _echo_adapter = self.adapters.get(source.platform)
                     _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                    if _echo_adapter:
-                        for _tx in _successful_transcripts:
-                            try:
-                                await _echo_adapter.send(
-                                    source.chat_id,
-                                    f'🎙️ "{_tx}"',
-                                    metadata=_echo_meta,
-                                )
-                            except Exception as _echo_exc:
-                                logger.debug(
-                                    "Transcript echo failed (non-fatal): %s", _echo_exc,
-                                )
+                    await self._echo_successful_transcripts(
+                        adapter=_echo_adapter,
+                        chat_id=source.chat_id,
+                        transcripts=_successful_transcripts,
+                        metadata=_echo_meta,
+                    )
                 # NOTE: Previously, when transcription failed (e.g. no STT
                 # provider configured), the gateway also emitted a hardcoded
                 # English notice via `_stt_adapter.send()`. That bypassed the
@@ -14572,6 +14566,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prefix
         return user_text
 
+    async def _echo_successful_transcripts(
+        self,
+        *,
+        adapter: Any,
+        chat_id: str,
+        transcripts: List[str],
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Post raw STT transcripts back to the chat when ``stt.echo`` is enabled."""
+        if not getattr(self.config, "stt_echo", True):
+            return
+        if not adapter or not transcripts:
+            return
+        for tx in transcripts:
+            try:
+                await adapter.send(
+                    chat_id,
+                    f'🎙️ "{tx}"',
+                    metadata=metadata,
+                )
+            except Exception as exc:
+                logger.debug("Transcript echo failed (non-fatal): %s", exc)
+
     async def _enrich_message_with_transcription(
         self,
         user_text: str,
@@ -14708,18 +14725,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if successful_transcripts:
                 echo_adapter = self.adapters.get(source.platform)
                 echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                if echo_adapter:
-                    for tx in successful_transcripts:
-                        try:
-                            await echo_adapter.send(
-                                source.chat_id,
-                                f'🎙️ "{tx}"',
-                                metadata=echo_meta,
-                            )
-                        except Exception as echo_exc:
-                            logger.debug(
-                                "Transcript echo failed (non-fatal): %s", echo_exc,
-                            )
+                await self._echo_successful_transcripts(
+                    adapter=echo_adapter,
+                    chat_id=source.chat_id,
+                    transcripts=successful_transcripts,
+                    metadata=echo_meta,
+                )
             return enriched_text or None
 
         # Non-audio fallback: preserve original _dequeue_pending_text semantics.
@@ -18589,18 +18600,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         pending_text = _enriched
                                         if _transcripts:
                                             _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                                            for _tx in _transcripts:
-                                                try:
-                                                    await _adapter.send(
-                                                        source.chat_id,
-                                                        f'🎙️ "{_tx}"',
-                                                        metadata=_echo_meta,
-                                                    )
-                                                except Exception as _echo_exc:
-                                                    logger.debug(
-                                                        "Voice-interrupt echo failed (non-fatal): %s",
-                                                        _echo_exc,
-                                                    )
+                                            await self._echo_successful_transcripts(
+                                                adapter=_adapter,
+                                                chat_id=source.chat_id,
+                                                transcripts=_transcripts,
+                                                metadata=_echo_meta,
+                                            )
                                     except Exception as _trans_exc:
                                         logger.warning(
                                             "Voice-interrupt transcription failed: %s", _trans_exc,
@@ -19009,17 +19014,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             pending = _enriched or None
                             if _transcripts:
                                 _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                                for _tx in _transcripts:
-                                    try:
-                                        await adapter.send(
-                                            source.chat_id,
-                                            f'🎙️ "{_tx}"',
-                                            metadata=_echo_meta,
-                                        )
-                                    except Exception as _echo_exc:
-                                        logger.debug(
-                                            "Voice-drain echo failed (non-fatal): %s", _echo_exc,
-                                        )
+                                await self._echo_successful_transcripts(
+                                    adapter=adapter,
+                                    chat_id=source.chat_id,
+                                    transcripts=_transcripts,
+                                    metadata=_echo_meta,
+                                )
                         except Exception as _trans_exc:
                             logger.warning(
                                 "Voice-drain transcription failed: %s", _trans_exc,

@@ -135,6 +135,14 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
     return is_truthy_value(enabled, default=True)
 
 
+def is_stt_echo_enabled(stt_config: Optional[dict] = None) -> bool:
+    """Return whether raw STT transcripts should be echoed back to the chat."""
+    if stt_config is None:
+        stt_config = _load_stt_config()
+    echo = stt_config.get("echo", True)
+    return is_truthy_value(echo, default=True)
+
+
 def _has_openai_audio_backend() -> bool:
     """Return True when OpenAI audio can use config credentials, env credentials, or the managed gateway."""
     try:

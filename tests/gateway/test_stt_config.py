@@ -16,6 +16,27 @@ def test_gateway_config_stt_disabled_from_dict_nested():
     assert config.stt_enabled is False
 
 
+def test_gateway_config_stt_echo_disabled_from_dict_nested():
+    config = GatewayConfig.from_dict({"stt": {"echo": False}})
+    assert config.stt_echo is False
+
+
+def test_load_gateway_config_bridges_stt_echo_from_config_yaml(tmp_path, monkeypatch):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.dump({"stt": {"echo": False}}),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    config = load_gateway_config()
+
+    assert config.stt_echo is False
+
+
 def test_load_gateway_config_bridges_stt_enabled_from_config_yaml(tmp_path, monkeypatch):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
@@ -185,3 +206,87 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     # Success path: the transcript passes through as a plain quoted line, with
     # no "voice message" meta-commentary that the LLM would echo back.
     assert "queued voice transcript" in result
+
+
+@pytest.mark.asyncio
+async def test_echo_successful_transcripts_skipped_when_stt_echo_disabled():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_echo=False)
+    adapter = AsyncMock()
+
+    await runner._echo_successful_transcripts(
+        adapter=adapter,
+        chat_id="123",
+        transcripts=["hello from voice"],
+        metadata={"thread_id": "456"},
+    )
+
+    adapter.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_echo_successful_transcripts_posts_when_enabled():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_echo=True)
+    adapter = AsyncMock()
+
+    await runner._echo_successful_transcripts(
+        adapter=adapter,
+        chat_id="123",
+        transcripts=["hello from voice"],
+        metadata={"thread_id": "456"},
+    )
+
+    adapter.send.assert_awaited_once_with(
+        "123",
+        '🎙️ "hello from voice"',
+        metadata={"thread_id": "456"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_prepare_inbound_message_text_skips_transcript_echo_when_disabled():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True, stt_echo=False)
+    runner._model = "test-model"
+    runner._base_url = ""
+    runner._has_setup_skill = lambda: False
+    echo_adapter = AsyncMock()
+    runner.adapters = {Platform.TELEGRAM: echo_adapter}
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+    )
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/queued-voice.ogg"],
+        media_types=["audio/ogg"],
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "queued voice transcript",
+            "provider": "local_command",
+        },
+    ):
+        result = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    assert result is not None
+    assert "queued voice transcript" in result
+    echo_adapter.send.assert_not_called()

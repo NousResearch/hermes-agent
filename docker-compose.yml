@@ -1,7 +1,7 @@
 # Hermes-Agent — Docker Compose (Ollama + PostgreSQL + WeChat)
 #
-# Default compose file for running the local stack against the published
-# upstream Docker Hub Hermes image while keeping the local ./data env and config mounts.
+# Default compose file for running the local stack against the fork's
+# published GHCR image (includes Weixin QR onboarding + dashboard auth).
 #
 # First-run setup:
 #   mkdir -p data
@@ -27,7 +27,7 @@
 #   5433 → 5432   PostgreSQL (host:5433 → container:5432)
 
 x-hermes-common: &hermes-common
-  image: ${HERMES_UPSTREAM_IMAGE:-docker.io/nousresearch/hermes-agent:latest}
+  image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
   pull_policy: always
   restart: unless-stopped
   volumes:

@@ -9,8 +9,10 @@ applyTo:
 
 # Quick Deploy from Fork
 
-This fork's canonical deployment path is the published upstream Docker Hub image
-(`docker.io/nousresearch/hermes-agent:latest`) wrapped by fork-owned compose files.
+This fork's canonical deployment path is the fork's published GHCR image
+(`ghcr.io/jzkk720/hermes-agent:latest`) — built from the fork's source
+(upstream + Weixin QR onboarding + dashboard auth) via the
+`fork-ghcr-publish.yml` GitHub Actions workflow.
 Do **not** use `docker compose up -d --build` for routine installs — that builds
 from local source and is only for testing fork code changes.
 

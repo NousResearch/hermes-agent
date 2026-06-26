@@ -26,8 +26,8 @@ applyTo:
 
 ## Evaluating Upstream Images
 
-- [docker-compose.yml](../../docker-compose.yml) keeps this fork as a deployment wrapper around the published upstream `nousresearch/hermes-agent:latest` image rather than a local `hermes-agent:local` build.
-- The upstream repo publishes `nousresearch/hermes-agent` from [docker publish workflow](../workflows/docker-publish.yml). Do not assume a GHCR image exists for Hermes unless the target registry is explicitly documented or verified.
+- [docker-compose.yml](../../docker-compose.yml) keeps this fork as a deployment wrapper around the fork's published GHCR image `ghcr.io/jzkk720/hermes-agent:latest` rather than a local `hermes-agent:local` build.
+- The fork publishes its own GHCR image via [fork-ghcr-publish workflow](../workflows/fork-ghcr-publish.yml), which builds from the fork's source (upstream + Weixin QR onboarding + dashboard auth) on every push to main.
 - For routine updates in this fork, prefer `docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans`; do not switch to `--build` or fork-owned image tags unless the user is explicitly testing image contents.
 - Treat [docker-compose.upstream.yml](../../docker-compose.upstream.yml) as the preferred pulled-image refresh lane for this fork when the goal is to stay on the published upstream image while keeping fork-local mounts and state.
 - Re-check whether the default [docker/hermes-config.yaml](../../docker/hermes-config.yaml) mount and any optional overlays are still necessary; they preserve the fork wrapper but can also block future upstream behavior changes.

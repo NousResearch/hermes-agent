@@ -1,15 +1,15 @@
-# Standalone compose file for running the local stack against the published
-# upstream Docker Hub Hermes image while keeping the local ./data env and config mounts.
+# Standalone compose file for running the local stack against the fork's
+# published GHCR image (includes Weixin QR onboarding + dashboard auth).
 #
 # Routine refresh:
 #   docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans
 #
-# Override HERMES_UPSTREAM_IMAGE if you want a different upstream tag:
-#   HERMES_UPSTREAM_IMAGE=docker.io/nousresearch/hermes-agent:v2026.4.23 \
+# Override HERMES_FORK_IMAGE if you want a different fork tag:
+#   HERMES_FORK_IMAGE=ghcr.io/jzkk720/hermes-agent:sha-abc1234 \
 #     docker compose -f docker-compose.upstream.yml up -d --pull always --force-recreate --remove-orphans
 
 x-hermes-common: &hermes-common
-  image: ${HERMES_UPSTREAM_IMAGE:-docker.io/nousresearch/hermes-agent:latest}
+  image: ${HERMES_FORK_IMAGE:-ghcr.io/jzkk720/hermes-agent:latest}
   pull_policy: always
   restart: unless-stopped
   volumes:

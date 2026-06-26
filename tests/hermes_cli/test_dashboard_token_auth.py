@@ -160,7 +160,7 @@ def test_list_token_providers_empty_when_none_registered():
 
 
 class _NonInteractiveProvider(_TokenProvider):
-    """A token-only credential — declares it has no interactive session."""
+    """A token-only credential with no interactive session."""
 
     name = "svc-cred"
     display_name = "Service Credential"
@@ -173,10 +173,8 @@ def test_oauth_provider_defaults_supports_session_true():
 
 
 def test_list_session_providers_excludes_non_interactive():
-    # A non-interactive (token-only) provider must NOT appear in the
-    # interactive-session set, so the login page / /auth/login / the gate's
-    # verify+refresh loops never offer it a login or ask it to refresh a cookie
-    # (it raises on start_login). Symmetric to list_token_providers.
+    # Token-only providers stay out of the interactive set. Mirror of
+    # list_token_providers.
     register_provider(_OAuthOnly())
     register_provider(_NonInteractiveProvider())
     assert {p.name for p in list_providers()} == {"oauth-only", "svc-cred"}

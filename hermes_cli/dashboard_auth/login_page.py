@@ -465,9 +465,8 @@ def render_login_html(*, next_path: str = "") -> str:
     validating ``next_path`` against the same-origin rules before we
     emit it; we still HTML-escape it as defence in depth.
     """
-    # Only interactive (cookie-session) providers get a login button. A
-    # non-interactive service credential (e.g. the drain bearer secret) has no
-    # login flow — rendering its button would 500 on click (start_login raises).
+    # Only interactive providers get a login button; a token-only credential
+    # (e.g. drain) has no login flow and would 500 on click.
     providers = list_session_providers()
     if not providers:
         return _EMPTY_HTML

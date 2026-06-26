@@ -67,20 +67,12 @@ def list_token_providers() -> List[DashboardAuthProvider]:
 
 
 def list_session_providers() -> List[DashboardAuthProvider]:
-    """Registered providers that participate in interactive cookie sessions.
-
-    The subset of ``list_providers()`` whose ``supports_session`` flag is True,
-    in registration order. The login page, the ``/auth/login`` dispatch, and
-    the gate's verify/refresh loops consult these (and only these), so a
-    non-interactive (token-only) provider is never offered a login nor asked to
-    verify/refresh a browser cookie. Symmetric counterpart to
-    ``list_token_providers``. ``supports_session`` defaults True on the ABC, so
-    OAuth/password providers are unaffected.
+    """Registered providers with supports_session True (interactive cookie
+    sessions). The login page, /auth/login, and the gate's verify/refresh loops
+    consult only these. Mirror of list_token_providers.
     """
     with _lock:
-        return [
-            p for p in _providers.values() if getattr(p, "supports_session", True)
-        ]
+        return [p for p in _providers.values() if getattr(p, "supports_session", True)]
 
 
 def clear_providers() -> None:

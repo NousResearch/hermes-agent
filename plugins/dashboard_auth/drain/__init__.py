@@ -143,12 +143,8 @@ class DrainSecretProvider(DashboardAuthProvider):
     name = "drain-secret"
     display_name = "Drain Control (service credential)"
     supports_token = True
-    # Service credential only — no login, cookie, session, or refresh. The
-    # interactive surfaces (login page, /auth/login, the gate's verify/refresh
-    # loops) consult only list_session_providers(), so this provider is never
-    # offered a login button, dispatched a login, or asked to verify/refresh a
-    # browser cookie. Without this, start_login/refresh_session would be reached
-    # and 500 the dashboard.
+    # Service credential, not an interactive login: keeps it out of the login
+    # page, /auth/login, and the gate's verify/refresh loops.
     supports_session = False
 
     def __init__(self, *, secret: str, scope: str = "drain") -> None:
@@ -201,11 +197,10 @@ class DrainSecretProvider(DashboardAuthProvider):
         # stacks harmlessly in the cookie-verify loop.
         return None
 
-    def refresh_session(self, *, refresh_token: str) -> Optional[Session]:
-        # Never minted a session, so it can't refresh one. Return None (don't
-        # raise) so it stacks harmlessly in middleware's _attempt_refresh loop,
-        # same as verify_session above.
-        return None
+    def refresh_session(self, *, refresh_token: str) -> Session:
+        raise NotImplementedError(
+            "DrainSecretProvider is a non-interactive service credential."
+        )
 
     def revoke_session(self, *, refresh_token: str) -> None:
         return None

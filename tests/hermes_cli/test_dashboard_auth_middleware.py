@@ -302,12 +302,9 @@ def test_login_unknown_provider_returns_404(gated_app):
 
 
 def test_login_non_interactive_provider_returns_404_not_500(gated_app):
-    """A non-interactive (token-only) provider must NOT be dispatchable via
-    /auth/login. Regression: the drain service credential's ``start_login``
-    raises NotImplementedError; before the capability gate, hitting
-    ``?provider=drain-secret`` (a rendered login button) 500'd the dashboard.
-    It must now 404 (treated like a non-login provider), and the provider must
-    not appear in the /api/auth/providers login bootstrap.
+    """Regression: a token-only provider (drain) has no login flow, so
+    /auth/login?provider=drain-secret must 404 (not 500 on start_login) and it
+    must not appear in the /api/auth/providers bootstrap.
     """
     import secrets
 

@@ -9,6 +9,7 @@ confirm the prologue produces the right ``TurnContext`` and applies the
 from __future__ import annotations
 
 import types
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +31,21 @@ class _FakeGuardrails:
 
     def reset_for_turn(self):
         self.reset_called = True
+
+
+class _FakeSessionDB:
+    def __init__(self, block: str = ""):
+        self.block = block
+        self.calls = []
+
+    def build_memory_sidecar_context_block(self, **kwargs):
+        self.calls.append(kwargs)
+        return self.block
+
+
+class _ExplodingSessionDB:
+    def build_memory_sidecar_context_block(self, **_kwargs):
+        raise RuntimeError("sidecar unavailable")
 
 
 class _FakeAgent:
@@ -56,7 +72,7 @@ class _FakeAgent:
         )
         self._cached_system_prompt = "SYSTEM"
         self._memory_store = None
-        self._memory_manager = None
+        self._memory_manager: Any = None
         self._memory_nudge_interval = 0
         self._turns_since_memory = 0
         self._user_turn_count = 0
@@ -67,6 +83,7 @@ class _FakeAgent:
         self._memory_write_origin = "assistant_tool"
         self._stream_context_scrubber = None
         self._stream_think_scrubber = None
+        self._session_db: Any = None
         # Attributes the prologue assigns; recorded for assertions.
         self._invalid_tool_retries = -1
         self._vision_supported = None
@@ -99,6 +116,9 @@ class _FakeAgent:
 
     def _persist_session(self, *_a, **_k):
         self._persist_calls += 1
+
+    def _get_session_db_for_recall(self):
+        return self._session_db
 
 
 @pytest.fixture(autouse=True)
@@ -216,6 +236,44 @@ def test_ensure_db_session_runs_after_system_prompt_restore():
     assert agent._cached_system_prompt == "REBUILT-SYSTEM"
 
 
+def test_sidecar_context_is_prefetched_into_ext_cache():
+    agent = _FakeAgent()
+    agent._session_db = _FakeSessionDB(block="Memory sidecar context:\n- prior deploy fix")
+
+    ctx = _build(agent, user_message="deploy smoke failing")
+
+    assert "Memory sidecar context:" in ctx.ext_prefetch_cache
+    assert "prior deploy fix" in ctx.ext_prefetch_cache
+    assert agent._session_db.calls == [{
+        "session_id": "sess-1",
+        "query": "deploy smoke failing",
+        "limit": 3,
+        "max_observations": 3,
+    }]
+
+
+def test_sidecar_context_appends_after_memory_manager_prefetch():
+    agent = _FakeAgent()
+    agent._memory_manager = types.SimpleNamespace(prefetch_all=lambda _q: "provider memory")
+    agent._session_db = _FakeSessionDB(block="Memory sidecar context:\n- deploy note")
+
+    ctx = _build(agent, user_message="deploy smoke failing")
+
+    assert ctx.ext_prefetch_cache == (
+        "provider memory\n\nMemory sidecar context:\n- deploy note"
+    )
+
+
+def test_sidecar_failure_is_fail_open_and_preserves_provider_prefetch():
+    agent = _FakeAgent()
+    agent._memory_manager = types.SimpleNamespace(prefetch_all=lambda _q: "provider memory")
+    agent._session_db = _ExplodingSessionDB()
+
+    ctx = _build(agent, user_message="deploy smoke failing")
+
+    assert ctx.ext_prefetch_cache == "provider memory"
+
+
 # ── Between-turns MCP refresh (cache-safe late-binding) ──────────────────────
 #
 # A slow MCP server that connects after the agent's build-time tool snapshot
@@ -278,10 +336,9 @@ def test_between_turns_refresh_no_churn_when_unchanged():
     import model_tools
     with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=True), \
          patch.object(
-             model_tools, "get_tool_definitions",
-             return_value=[{"type": "function", "function": {"name": "a", "description": "", "parameters": {}}}],
-         ):
+            model_tools, "get_tool_definitions",
+            return_value=[{"type": "function", "function": {"name": "a", "description": "", "parameters": {}}}],
+        ):
         _build(agent)
 
     assert agent.tools is same  # not replaced → no churn
-

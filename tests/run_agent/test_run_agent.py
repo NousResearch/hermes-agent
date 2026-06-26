@@ -3588,6 +3588,38 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_sidecar_context_is_injected_into_current_user_message(self, agent):
+        self._setup_agent(agent)
+        agent.session_id = "sess-123"
+        session_db = MagicMock()
+        session_db.build_memory_sidecar_context_block.return_value = (
+            "Memory sidecar context:\n- prior deploy fix"
+        )
+        agent._get_session_db_for_recall = MagicMock(return_value=session_db)
+        resp = _mock_response(content="Final answer", finish_reason="stop")
+        agent.client.chat.completions.create.return_value = resp
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("deploy smoke failing")
+
+        assert result["final_response"] == "Final answer"
+        assert result["completed"] is True
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        user_message = next(msg for msg in sent_messages if msg.get("role") == "user")
+        assert "deploy smoke failing" in user_message["content"]
+        assert "Memory sidecar context:" in user_message["content"]
+        assert "prior deploy fix" in user_message["content"]
+        session_db.build_memory_sidecar_context_block.assert_called_once_with(
+            session_id="sess-123",
+            query="deploy smoke failing",
+            limit=3,
+            max_observations=3,
+        )
+
     def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
         self._setup_agent(agent)
         agent.model = "qwen3.5:9b"

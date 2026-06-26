@@ -4539,3 +4539,118 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+class TestMemorySidecarRuntime:
+    def test_append_message_updates_session_fact(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            from agent.memory_sidecar import MemorySidecarStore
+
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="Investigate why deploys fail in production")
+            db.append_message("s1", role="assistant", content="Working summary: traced failure to missing env var")
+
+            store = MemorySidecarStore()
+            try:
+                fact = store.get_session_fact("s1")
+                assert fact is not None
+                assert "deploys fail in production" in (fact.user_goal or "")
+                assert "missing env var" in (fact.latest_summary or "")
+            finally:
+                store.close()
+        finally:
+            db.close()
+
+    def test_append_message_creates_explicit_observation(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            from agent.memory_sidecar import ContextQuery, MemorySidecarStore
+
+            db.create_session(session_id="s1", source="cli")
+            db.append_message(
+                "s1",
+                role="assistant",
+                content="Decision: patch hermes_state.py before wiring dashboard queries",
+            )
+
+            store = MemorySidecarStore()
+            try:
+                result = store.query_context(ContextQuery(session_id="s1", types=("decision",)))
+                assert len(result.observations) == 1
+                obs = result.observations[0]
+                assert obs.observation_type == "decision"
+                assert obs.message_id is not None
+                assert any(f.file_path == "hermes_state.py" for f in obs.files)
+            finally:
+                store.close()
+        finally:
+            db.close()
+
+    def test_query_memory_sidecar_context_returns_structured_hits(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        db = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="Goal: stabilize deploys before launch")
+            db.append_message(
+                "s1",
+                role="assistant",
+                content="Decision: patch deploy.py before touching the dashboard.",
+            )
+            db.append_message(
+                "s1",
+                role="assistant",
+                content="Next step: rerun the deploy smoke test after patching deploy.py.",
+            )
+
+            result = db.query_memory_sidecar_context(
+                session_id="s1",
+                query="deploy.py",
+                limit=5,
+            )
+
+            assert result is not None
+            assert result.session_fact is not None
+            assert "stabilize deploys" in (result.session_fact.user_goal or "")
+            assert any(obs.observation_type == "decision" for obs in result.observations)
+            assert any(obs.observation_type == "next_step" for obs in result.observations)
+        finally:
+            db.close()
+
+    def test_build_memory_sidecar_context_block_is_prompt_ready(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        writer = SessionDB(db_path=tmp_path / "state.db")
+        try:
+            writer.create_session(session_id="s1", source="cli")
+            writer.append_message("s1", role="user", content="Investigate flaky deploy smoke failures")
+            writer.append_message(
+                "s1",
+                role="assistant",
+                content="Decision: update deploy.py before changing alerts.",
+            )
+            writer.append_message(
+                "s1",
+                role="assistant",
+                content="Next step: rerun the deploy smoke test and inspect deploy.py logs.",
+            )
+        finally:
+            writer.close()
+
+        reader = SessionDB(db_path=tmp_path / "state.db", read_only=True)
+        try:
+            block = reader.build_memory_sidecar_context_block(
+                session_id="s1",
+                query="deploy smoke",
+                limit=5,
+            )
+
+            assert "Memory sidecar context:" in block
+            assert "User goal:" in block
+            assert "Recent decisions:" in block
+            assert "Next steps:" in block
+            assert "deploy.py" in block
+        finally:
+            reader.close()

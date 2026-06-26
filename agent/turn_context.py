@@ -462,14 +462,40 @@ def build_turn_context(
         except Exception:
             pass
 
-    # External memory provider: prefetch once before the tool loop.
-    ext_prefetch_cache = ""
+    # External memory provider + local memory sidecar: prefetch once before the tool loop.
+    ext_prefetch_cache_parts: list[str] = []
     if agent._memory_manager:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+            _provider_prefetch = agent._memory_manager.prefetch_all(_query) or ""
+            if _provider_prefetch:
+                ext_prefetch_cache_parts.append(str(_provider_prefetch))
         except Exception:
             pass
+
+    try:
+        _query = original_user_message if isinstance(original_user_message, str) else ""
+        _get_session_db = getattr(agent, "_get_session_db_for_recall", None)
+        if _query and callable(_get_session_db):
+            _session_db = _get_session_db()
+            _build_sidecar_context = getattr(
+                _session_db, "build_memory_sidecar_context_block", None
+            )
+            if callable(_build_sidecar_context):
+                _sidecar_context = _build_sidecar_context(
+                    session_id=agent.session_id,
+                    query=_query,
+                    limit=3,
+                    max_observations=3,
+                )
+                if _sidecar_context:
+                    ext_prefetch_cache_parts.append(str(_sidecar_context))
+    except Exception:
+        pass
+
+    ext_prefetch_cache = "\n\n".join(
+        part.strip() for part in ext_prefetch_cache_parts if isinstance(part, str) and part.strip()
+    )
 
     return TurnContext(
         user_message=user_message,

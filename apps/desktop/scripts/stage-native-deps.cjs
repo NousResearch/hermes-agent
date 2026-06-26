@@ -66,6 +66,31 @@ const NATIVE_DEPS = [
   }
 ]
 
+// Pure-JS runtime deps that the packaged MAIN process require()s but that the
+// asar excludes (same reason as NATIVE_DEPS above: `files:` + before-build.cjs
+// returning false skip electron-builder's node_modules collector). Unlike
+// node-pty these have no .node binaries, so we stage each package's WHOLE
+// directory into a real node_modules layout under build/native-deps/npm/node_modules
+// and let Node's normal resolver satisfy the inner cross-package requires.
+//
+// We nest node_modules inside npm/ so electron-builder does not recognise
+// it as a project node_modules and restructure it during packaging (#50440).
+// The staged layout at runtime becomes resources/native-deps/npm/node_modules/;
+// git-review-ops.cjs require()s simple-git from this path.
+//
+// This list is the closed runtime dependency set of simple-git@3.x. If
+// simple-git's deps change (check `npm ls simple-git`) update this list.
+// git-review-ops.cjs require()s simple-git from this staged tree at runtime.
+const VENDOR_DEPS = [
+  'simple-git',
+  '@kwsites/file-exists',
+  '@kwsites/promise-deferred',
+  '@simple-git/args-pathspec',
+  '@simple-git/argv-parser',
+  'debug',
+  'ms'
+]
+
 function rmrf(target) {
   fs.rmSync(target, { recursive: true, force: true })
 }
@@ -148,12 +173,40 @@ function stageOne(spec) {
   console.log(`[stage-native-deps] ${path.relative(APP_ROOT, spec.to)}: ${copied} files`)
 }
 
+// Copy one pure-JS package's whole directory into the staged node_modules tree,
+// excluding the package's own nested node_modules (the vendored set is flat /
+// hoisted, so every cross-package require resolves against the staged root).
+function stageVendorOne(pkgName) {
+  // Workspace dedup hoists these to the repo root's node_modules (flat, no
+  // nesting -- verified for the simple-git tree). Resolve there directly; a
+  // bare require.resolve can't reach package.json when the dep declares an
+  // `exports` map that doesn't expose it (simple-git does).
+  const pkgRoot = path.join(REPO_ROOT, 'node_modules', pkgName)
+  if (!fs.existsSync(path.join(pkgRoot, 'package.json'))) {
+    throw new Error(
+      `stage-native-deps: vendor dep "${pkgName}" not found at ${pkgRoot}.  Run ` +
+        `\`npm install\` at the workspace root first.`
+    )
+  }
+  const dest = path.join(STAGE_ROOT, 'npm', 'node_modules', pkgName)
+  ensureDir(path.dirname(dest))
+  fs.cpSync(pkgRoot, dest, {
+    recursive: true,
+    dereference: true,
+    filter: src => path.basename(src) !== 'node_modules'
+  })
+}
+
 function main() {
   rmrf(STAGE_ROOT)
   ensureDir(STAGE_ROOT)
   for (const spec of NATIVE_DEPS) {
     stageOne(spec)
   }
+  for (const pkgName of VENDOR_DEPS) {
+    stageVendorOne(pkgName)
+  }
+  console.log(`[stage-native-deps] node_modules vendor: ${VENDOR_DEPS.length} packages`)
 }
 
 main()

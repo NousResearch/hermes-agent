@@ -10,7 +10,28 @@ const { execFile } = require('node:child_process')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
-const simpleGit = require('simple-git')
+let simpleGit
+try {
+  simpleGit = require('simple-git')
+} catch {
+  // Packaged builds ship no node_modules inside the asar: package.json sets
+  // `files:` (excludes node_modules) and scripts/before-build.cjs returns false
+  // to skip electron-builder's dependency collector. simple-git and its pure-JS
+  // dep tree are staged under resources/native-deps/npm/node_modules via
+  // scripts/stage-native-deps.cjs; resolve from there when the bare require
+  // fails in the packaged asar. Dev resolves the workspace-hoisted copy normally
+  // and never reaches this branch. Mirrors the node-pty fallback in main.cjs.
+  const resourcesPath = process.resourcesPath
+  try {
+    simpleGit = require(path.join(resourcesPath, 'native-deps', 'npm', 'node_modules', 'simple-git'))
+  } catch {
+    // electron-builder may hoist node_modules out of extraResources directories,
+    // moving build/native-deps/npm/node_modules → resources/node_modules. When the
+    // primary fallback above fails, try the hoisted location as a last resort
+    // so a packaging quirk does not crash the app (#50440).
+    simpleGit = require(path.join(resourcesPath, 'node_modules', 'simple-git'))
+  }
+}
 
 const { resolveRequestedPathForIpc } = require('./hardening.cjs')
 

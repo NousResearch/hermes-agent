@@ -11904,9 +11904,6 @@ async def pty_ws(ws: WebSocket) -> None:
 
 
     try:
-        # Offloaded: spawn forks+execs a TUI child (blocking). On the event
-        # loop it stalls every other dashboard request — and PTY auto-reconnect
-        # makes connects frequent, so the stall recurs.
         bridge = await asyncio.to_thread(PtyBridge.spawn, argv, cwd=cwd, env=env)
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
@@ -11968,9 +11965,6 @@ async def pty_ws(ws: WebSocket) -> None:
             await reader_task
         except (asyncio.CancelledError, Exception):
             pass
-        # Offloaded: close() escalates SIGHUP→SIGTERM→SIGKILL with up to ~1.5s
-        # of blocking waits. On the event loop that freezes the whole dashboard
-        # on every PTY teardown (frequent under auto-reconnect).
         await asyncio.to_thread(bridge.close)
 
 

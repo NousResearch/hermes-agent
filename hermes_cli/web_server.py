@@ -167,6 +167,7 @@ def _resolve_restart_drain_timeout() -> float:
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
+    app.state.pty_active_session_files = {}  # dict[str, Path]
     # Serializes chat-argv resolution so concurrent /api/pty connections
     # don't trigger overlapping ``npm install`` / ``npm run build`` work.
     # On app.state (not a module global) so the Lock binds to the running
@@ -232,6 +233,15 @@ def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
     except AttributeError:
         app.state.chat_argv_lock = asyncio.Lock()
         return app.state.chat_argv_lock
+
+
+def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
+    """Return channel -> active-session-file state for dashboard PTYs."""
+    try:
+        return app.state.pty_active_session_files
+    except AttributeError:
+        app.state.pty_active_session_files = {}
+        return app.state.pty_active_session_files
 
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
@@ -482,6 +492,11 @@ async def _dashboard_auth_gate(request: Request, call_next):
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
+    # A request already authenticated by the token-auth seam (a service caller
+    # presenting a bearer token on a registered token route) carries
+    # ``token_authenticated`` — never bounce it through the cookie/session gate.
+    if getattr(request.state, "token_authenticated", False):
+        return await call_next(request)
     # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
     # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
     # and is skipped here so the gate's session attachment isn't overridden.
@@ -495,6 +510,20 @@ async def auth_middleware(request: Request, call_next):
                 content={"detail": "Unauthorized"},
             )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _token_auth_seam(request: Request, call_next):
+    """Outermost auth seam: non-interactive bearer-token auth for opted-in routes.
+
+    Registered LAST so it runs FIRST (Starlette middleware is outermost-last).
+    A registered token route is fully owned here — authenticate by token,
+    attach the principal + ``token_authenticated`` flag, and let the downstream
+    cookie/session gates skip enforcement. Non-token routes pass straight
+    through untouched.
+    """
+    from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
+    return await token_auth_middleware(request, call_next)
 
 
 # ---------------------------------------------------------------------------
@@ -2617,6 +2646,71 @@ async def restart_gateway(profile: Optional[str] = None):
         "ok": True,
         "pid": proc.pid,
         "name": "gateway-restart",
+    }
+
+
+@app.post("/api/gateway/drain")
+async def gateway_drain(request: Request):
+    """Begin or cancel an external (NAS-driven) gateway drain.
+
+    Authenticated by the non-interactive token-auth seam: the
+    ``dashboard_auth/drain`` plugin registers this exact path as a token route
+    and verifies the ``Authorization`` bearer secret. If that plugin isn't
+    active (no ``HERMES_DASHBOARD_DRAIN_SECRET``), the route is NOT a token
+    route, so on a gated bind the cookie gate handles it (a browser session can
+    still drive it from the dashboard) and on a loopback bind the legacy
+    session-token gate applies — either way it is never unauthenticated on a
+    network-exposed bind.
+
+    Body: ``{"action": "drain"}`` (begin) or ``{"action": "cancel"}`` (cancel).
+    Begin writes the ``.drain_request.json`` marker the gateway's
+    ``_drain_control_watcher`` observes (flip to ``draining`` + refuse new
+    turns); cancel removes it (revert to ``running`` + re-accept). Idempotent
+    on both sides. This endpoint only writes/removes the marker — the gateway
+    process owns the actual state transition (there is no HTTP control channel
+    into the running gateway; the marker IS the channel, decisions.md Q-B).
+
+    The force-override (D6: "unless a user commands it") is NOT here — an
+    immediate, drain-skipping action maps onto the existing
+    ``POST /api/gateway/restart`` force path, which supersedes a drain.
+    """
+    from gateway.drain_control import (
+        clear_drain_request,
+        drain_requested,
+        write_drain_request,
+    )
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    action = str((body or {}).get("action", "drain")).strip().lower()
+
+    # Attribute the request to the verified token principal when present
+    # (token-auth seam attaches it); fall back to a generic label otherwise.
+    principal_obj = getattr(request.state, "token_principal", None)
+    principal = getattr(principal_obj, "principal", None) or "dashboard"
+
+    if action == "cancel":
+        existed = clear_drain_request()
+        _log.info("Gateway drain CANCEL requested by %s (existed=%s)", principal, existed)
+        return {"ok": True, "action": "cancel", "was_draining": existed}
+
+    if action != "drain":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown drain action {action!r}; expected 'drain' or 'cancel'",
+        )
+
+    payload = write_drain_request(principal=str(principal))
+    _log.info("Gateway drain BEGIN requested by %s", principal)
+    return {
+        "ok": True,
+        "action": "drain",
+        "requested_at": payload["requested_at"],
+        # Echo so a caller polling /api/status knows the marker is now set;
+        # the gateway watcher flips gateway_state -> draining within ~1s.
+        "draining": drain_requested(),
     }
 
 
@@ -11460,6 +11554,7 @@ def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
+    active_session_file: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -11479,6 +11574,12 @@ def _resolve_chat_argv(
     `sidecar_url` (when set) is forwarded as ``HERMES_TUI_SIDECAR_URL`` so
     the spawned ``tui_gateway.entry`` can mirror dispatcher emits to the
     dashboard's ``/api/pub`` endpoint (see :func:`pub_ws`).
+
+    `active_session_file` (when set) is forwarded as
+    ``HERMES_TUI_ACTIVE_SESSION_FILE``. The TUI writes the current session id
+    there whenever it creates/resumes/switches sessions, giving the dashboard a
+    small cross-process breadcrumb for reconnecting after an unexpected browser
+    WebSocket close.
 
     `profile` (when set) scopes the ENTIRE chat to that profile by pointing
     ``HERMES_HOME`` at the profile dir in the child env. Every spawned
@@ -11526,6 +11627,9 @@ def _resolve_chat_argv(
 
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
+
+    if active_session_file:
+        env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
 
     # Profile-scoped chats must NOT attach to the dashboard's in-memory
     # gateway — it runs under the dashboard's own profile. Without the
@@ -11575,6 +11679,7 @@ async def _resolve_chat_argv_async(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
+    active_session_file: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv without blocking the dashboard event loop.
 
@@ -11586,12 +11691,18 @@ async def _resolve_chat_argv_async(
     multiple browser tabs connect at once without occupying worker threads
     while queued connections wait.
     """
+    kwargs = {
+        "resume": resume,
+        "sidecar_url": sidecar_url,
+        "profile": profile,
+    }
+    if active_session_file is not None:
+        kwargs["active_session_file"] = active_session_file
+
     async with _get_chat_argv_lock(app):
         return await asyncio.to_thread(
             _resolve_chat_argv,
-            resume=resume,
-            sidecar_url=sidecar_url,
-            profile=profile,
+            **kwargs,
         )
 
 
@@ -11651,6 +11762,37 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     channel = ws.query_params.get("channel", "")
 
     return channel if _VALID_CHANNEL_RE.match(channel) else None
+
+
+def _active_session_file_for_channel(app: "FastAPI", channel: str) -> Path:
+    """Return the per-channel file where a dashboard TUI writes its active sid."""
+    files = _get_pty_active_session_files(app)
+    existing = files.get(channel)
+    if existing is not None:
+        return existing
+
+    fd, raw_path = tempfile.mkstemp(prefix="hermes-pty-active-", suffix=".json")
+    os.close(fd)
+    path = Path(raw_path)
+    files[channel] = path
+    return path
+
+
+def _read_active_session_file(path: Path) -> Optional[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    session_id = str(data.get("session_id") or "").strip()
+    return session_id or None
+
+
+def _forget_active_session_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _ws_close_reason(text: str) -> str:
@@ -11723,11 +11865,32 @@ async def pty_ws(ws: WebSocket) -> None:
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
+    force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    active_session_file: Optional[Path] = None
+
+    if channel:
+        active_session_file = _active_session_file_for_channel(ws.app, channel)
+        if force_fresh:
+            resume = None
+            _forget_active_session_file(active_session_file)
+        elif not resume:
+            resume = _read_active_session_file(active_session_file)
+
+    resolve_kwargs = {
+        "resume": resume,
+        "sidecar_url": sidecar_url,
+        "profile": profile,
+    }
+    if active_session_file is not None:
+        resolve_kwargs["active_session_file"] = str(active_session_file)
 
     try:
-        argv, cwd, env = await _resolve_chat_argv_async(
-            resume=resume, sidecar_url=sidecar_url, profile=profile
-        )
+        argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
     except HTTPException as exc:
         # Unknown/invalid profile from _resolve_profile_dir.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")

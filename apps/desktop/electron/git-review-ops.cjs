@@ -188,7 +188,12 @@ async function defaultBranchName(git) {
 
   // Prefer a local trunk, then a remote-only one (returns the clean name either
   // way) so "branch off main" works even before main is checked out locally.
-  for (const ref of ['refs/heads/main', 'refs/heads/master', 'refs/remotes/origin/main', 'refs/remotes/origin/master']) {
+  for (const ref of [
+    'refs/heads/main',
+    'refs/heads/master',
+    'refs/remotes/origin/main',
+    'refs/remotes/origin/master'
+  ]) {
     try {
       await git.raw(['rev-parse', '--verify', '--quiet', ref])
 

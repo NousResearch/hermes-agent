@@ -15,9 +15,7 @@ import { LoadingState, Pill } from './primitives'
 /** Seed editable values from the schema: non-secret fields keep their current
  *  value, secret fields start blank (their value is never returned). */
 function seedValues(config: MemoryProviderConfig): Record<string, string> {
-  return Object.fromEntries(
-    config.fields.map(field => [field.key, field.kind === 'secret' ? '' : field.value])
-  )
+  return Object.fromEntries(config.fields.map(field => [field.key, field.kind === 'secret' ? '' : field.value]))
 }
 
 function FieldControl({

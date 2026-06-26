@@ -524,7 +524,11 @@ function ToolEntry({ part }: ToolEntryProps) {
                   <div className="space-y-0.5">
                     {view.stderr && <p className={TOOL_SECTION_LABEL_CLASS}>stdout</p>}
                     <pre className={cn(TOOL_SECTION_PRE_CLASS, 'whitespace-pre-wrap wrap-anywhere')}>
-                      {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.stdout)} /> : clampForDisplay(view.stdout)}
+                      {view.rendersAnsi ? (
+                        <AnsiText text={clampForDisplay(view.stdout)} />
+                      ) : (
+                        clampForDisplay(view.stdout)
+                      )}
                     </pre>
                   </div>
                 )}
@@ -537,7 +541,11 @@ function ToolEntry({ part }: ToolEntryProps) {
                         'whitespace-pre-wrap wrap-anywhere text-(--ui-text-tertiary)'
                       )}
                     >
-                      {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.stderr)} /> : clampForDisplay(view.stderr)}
+                      {view.rendersAnsi ? (
+                        <AnsiText text={clampForDisplay(view.stderr)} />
+                      ) : (
+                        clampForDisplay(view.stderr)
+                      )}
                     </pre>
                   </div>
                 )}
@@ -550,7 +558,10 @@ function ToolEntry({ part }: ToolEntryProps) {
                     {view.rendersAnsi ? <AnsiText text={clampForDisplay(view.detail)} /> : clampForDisplay(view.detail)}
                   </pre>
                 ) : (
-                  <CompactMarkdown className={cn(TOOL_SECTION_SURFACE_CLASS, 'wrap-anywhere')} text={clampForDisplay(view.detail)} />
+                  <CompactMarkdown
+                    className={cn(TOOL_SECTION_SURFACE_CLASS, 'wrap-anywhere')}
+                    text={clampForDisplay(view.detail)}
+                  />
                 )}
               </div>
             ))}

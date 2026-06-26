@@ -97,10 +97,7 @@ describe('sortWorktreeGroups', () => {
   })
 
   it('falls back to label order for equally-idle lanes', () => {
-    const groups = [
-      lane({ id: 'b', label: 'beta', isMain: false }),
-      lane({ id: 'a', label: 'alpha', isMain: false })
-    ]
+    const groups = [lane({ id: 'b', label: 'beta', isMain: false }), lane({ id: 'a', label: 'alpha', isMain: false })]
 
     expect(sortWorktreeGroups(groups).map(g => g.label)).toEqual(['alpha', 'beta'])
   })
@@ -108,7 +105,11 @@ describe('sortWorktreeGroups', () => {
 
 describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
   it('injects a linked worktree lane discovered by git that has no sessions yet', () => {
-    const repo = { id: '/repo', path: '/repo', groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })] }
+    const repo = {
+      id: '/repo',
+      path: '/repo',
+      groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })]
+    }
 
     const discovered: HermesGitWorktree[] = [
       { branch: 'feature', detached: false, isMain: false, locked: false, path: '/repo-wt-feature' }
@@ -122,7 +123,11 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
   })
 
   it('never spawns a lane per kanban task worktree', () => {
-    const repo = { id: '/repo', path: '/repo', groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })] }
+    const repo = {
+      id: '/repo',
+      path: '/repo',
+      groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })]
+    }
 
     const discovered: HermesGitWorktree[] = [
       { branch: 'wt/t_aaaaaaaa', detached: false, isMain: false, locked: false, path: '/repo/.worktrees/t_aaaaaaaa' },
@@ -137,7 +142,13 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
       id: '/repo',
       path: '/repo',
       groups: [
-        lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo', sessions: [makeSession('/repo')] })
+        lane({
+          id: '/repo::branch::main',
+          label: 'main',
+          isMain: true,
+          path: '/repo',
+          sessions: [makeSession('/repo')]
+        })
       ]
     }
 
@@ -155,22 +166,34 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
   it('is a no-op when git worktree list is unavailable (remote backend)', () => {
     const groups = [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo' })]
 
-    expect(mergeRepoWorktreeGroups({ id: '/repo', path: '/repo', groups }, undefined).map(g => g.label)).toEqual(['main'])
+    expect(mergeRepoWorktreeGroups({ id: '/repo', path: '/repo', groups }, undefined).map(g => g.label)).toEqual([
+      'main'
+    ])
   })
 
   it('does not add a second "main" for a linked worktree checked out on main', () => {
-    const groups = [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo', sessions: [makeSession('/repo')] })]
+    const groups = [
+      lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo', sessions: [makeSession('/repo')] })
+    ]
 
     const discovered: HermesGitWorktree[] = [
       { branch: 'main', detached: false, isMain: false, locked: false, path: '/repo/.worktrees/main-mirror' }
     ]
 
-    expect(mergeRepoWorktreeGroups({ id: '/repo', path: '/repo', groups }, discovered).filter(g => g.label === 'main')).toHaveLength(1)
+    expect(
+      mergeRepoWorktreeGroups({ id: '/repo', path: '/repo', groups }, discovered).filter(g => g.label === 'main')
+    ).toHaveLength(1)
   })
 
   it('surfaces a user-named "New worktree" under .worktrees/ as its own lane', () => {
     const discovered: HermesGitWorktree[] = [
-      { branch: 'hermes/test-gui-stuff', detached: false, isMain: false, locked: false, path: '/repo/.worktrees/test-gui-stuff' }
+      {
+        branch: 'hermes/test-gui-stuff',
+        detached: false,
+        isMain: false,
+        locked: false,
+        path: '/repo/.worktrees/test-gui-stuff'
+      }
     ]
 
     const merged = mergeRepoWorktreeGroups({ id: '/repo', path: '/repo', groups: [] }, discovered)
@@ -185,7 +208,13 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
       id: '/repo',
       path: '/repo',
       groups: [
-        lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo', sessions: [makeSession('/repo')] }),
+        lane({
+          id: '/repo::branch::main',
+          label: 'main',
+          isMain: true,
+          path: '/repo',
+          sessions: [makeSession('/repo')]
+        }),
         lane({
           id: '/repo-ci',
           label: 'hermes-agent-ci',
@@ -297,7 +326,13 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
       id: '/repo',
       path: '/repo',
       groups: [
-        lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo', sessions: [makeSession('/repo')] })
+        lane({
+          id: '/repo::branch::main',
+          label: 'main',
+          isMain: true,
+          path: '/repo',
+          sessions: [makeSession('/repo')]
+        })
       ]
     }
 
@@ -322,10 +357,20 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
     const repo = {
       id: '/repo',
       path: '/repo',
-      groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo', sessions: [makeSession('/repo')] })]
+      groups: [
+        lane({
+          id: '/repo::branch::main',
+          label: 'main',
+          isMain: true,
+          path: '/repo',
+          sessions: [makeSession('/repo')]
+        })
+      ]
     }
 
-    const discovered: HermesGitWorktree[] = [{ branch: 'main', detached: false, isMain: true, locked: false, path: '/repo' }]
+    const discovered: HermesGitWorktree[] = [
+      { branch: 'main', detached: false, isMain: true, locked: false, path: '/repo' }
+    ]
 
     const home = mergeRepoWorktreeGroups(repo, discovered).find(g => g.isHome)
 
@@ -338,12 +383,26 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
       id: '/repo',
       path: '/repo',
       groups: [
-        lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo', sessions: [makeSession('/repo', { id: 'a' })] }),
-        lane({ id: '/repo::branch::old', label: 'old-feature', isMain: true, path: '/repo', sessions: [makeSession('/repo', { id: 'b' })] })
+        lane({
+          id: '/repo::branch::main',
+          label: 'main',
+          isMain: true,
+          path: '/repo',
+          sessions: [makeSession('/repo', { id: 'a' })]
+        }),
+        lane({
+          id: '/repo::branch::old',
+          label: 'old-feature',
+          isMain: true,
+          path: '/repo',
+          sessions: [makeSession('/repo', { id: 'b' })]
+        })
       ]
     }
 
-    const discovered: HermesGitWorktree[] = [{ branch: 'bb/live', detached: false, isMain: true, locked: false, path: '/repo' }]
+    const discovered: HermesGitWorktree[] = [
+      { branch: 'bb/live', detached: false, isMain: true, locked: false, path: '/repo' }
+    ]
 
     const merged = mergeRepoWorktreeGroups(repo, discovered)
     const home = merged.find(g => g.isHome)
@@ -354,7 +413,19 @@ describe('mergeRepoWorktreeGroups (visual enhancer)', () => {
   })
 
   it('leaves main lanes untouched on a remote backend (no git probe)', () => {
-    const repo = { id: '/repo', path: '/repo', groups: [lane({ id: '/repo::branch::main', label: 'main', isMain: true, path: '/repo', sessions: [makeSession('/repo')] })] }
+    const repo = {
+      id: '/repo',
+      path: '/repo',
+      groups: [
+        lane({
+          id: '/repo::branch::main',
+          label: 'main',
+          isMain: true,
+          path: '/repo',
+          sessions: [makeSession('/repo')]
+        })
+      ]
+    }
 
     // No discovered worktrees → no live branch truth → backend label stands.
     const merged = mergeRepoWorktreeGroups(repo, undefined)
@@ -411,9 +482,9 @@ describe('liveSessionProjectId', () => {
     // "Convert a branch" / "new worktree" land at `<repoRoot>/.worktrees/<slug>`,
     // so they belong to the same auto project as the repo root and must show in
     // the overview at once, not wait for the next backend refresh.
-    expect(
-      liveSessionProjectId(makeSession('/www/app/.worktrees/test1', { git_repo_root: '/www/app' }), [])
-    ).toBe('/www/app')
+    expect(liveSessionProjectId(makeSession('/www/app/.worktrees/test1', { git_repo_root: '/www/app' }), [])).toBe(
+      '/www/app'
+    )
   })
 
   it('routes an in-tree worktree session to the owning explicit project', () => {
@@ -488,7 +559,9 @@ describe('overlayLiveLanes', () => {
           label: 'app',
           path: '/www/app',
           sessionCount: 1,
-          groups: [lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app', sessions: [existing] })]
+          groups: [
+            lane({ id: '/www/app::branch::main', label: 'main', isMain: true, path: '/www/app', sessions: [existing] })
+          ]
         }
       ]
     })
@@ -513,7 +586,12 @@ describe('overlayLiveLanes', () => {
           path: '/www/app',
           sessionCount: 1,
           groups: [
-            lane({ id: '/www/app::branch::baby', label: 'baby', path: '/www/app/.worktrees/baby', sessions: [existing] })
+            lane({
+              id: '/www/app::branch::baby',
+              label: 'baby',
+              path: '/www/app/.worktrees/baby',
+              sessions: [existing]
+            })
           ]
         }
       ]
@@ -560,7 +638,10 @@ describe('overlayLiveLanes', () => {
   })
 
   it('places into a visual-only discovered worktree lane after merge', () => {
-    const discovered = [{ path: '/www/app-retry', branch: 'bb/ci-install-retry', isMain: false, detached: false, locked: false }]
+    const discovered = [
+      { path: '/www/app-retry', branch: 'bb/ci-install-retry', isMain: false, detached: false, locked: false }
+    ]
+
     const groups = mergeRepoWorktreeGroups({ id: '/www/app', path: '/www/app', groups: [] }, discovered)
 
     const project = projectNode({

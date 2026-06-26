@@ -194,9 +194,9 @@ export const Thread: FC<{
   const { t } = useI18n()
   const copy = t.assistant.thread
 
-  const [restoreConfirmTarget, setRestoreConfirmTarget] = useState<(RestoreMessageTarget & { messageId: string }) | null>(
-    null
-  )
+  const [restoreConfirmTarget, setRestoreConfirmTarget] = useState<
+    (RestoreMessageTarget & { messageId: string }) | null
+  >(null)
 
   const closeRestoreConfirm = useCallback(() => setRestoreConfirmTarget(null), [])
 
@@ -219,7 +219,9 @@ export const Thread: FC<{
 
   const messageComponents = useMemo(
     () => ({
-      AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} onDismissError={onDismissError} />,
+      AssistantMessage: () => (
+        <AssistantMessage onBranchInNewChat={onBranchInNewChat} onDismissError={onDismissError} />
+      ),
       SystemMessage,
       UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
       UserMessage: () => (

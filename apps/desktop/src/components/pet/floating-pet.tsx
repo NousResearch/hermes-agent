@@ -142,13 +142,17 @@ export function FloatingPet() {
         if (active) {
           try {
             const meta = await requestGateway<PetInfoMeta>('pet.info.meta', { profile: petProfile() })
+
             if (cancelled || !meta) {
               return
             }
+
             if (!meta.enabled) {
               setPetInfo({ enabled: false })
+
               return
             }
+
             if (samePetRevision($petInfo.get(), meta)) {
               return
             }
@@ -161,6 +165,7 @@ export function FloatingPet() {
 
         if (!cancelled && next) {
           const current = $petInfo.get()
+
           if (
             next.enabled &&
             current.enabled &&
@@ -172,6 +177,7 @@ export function FloatingPet() {
           ) {
             return
           }
+
           setPetInfo(next)
         }
       } catch {
@@ -350,6 +356,7 @@ export function FloatingPet() {
           (info.frameW ?? 192) * next,
           (info.frameH ?? 208) * next
         )
+
         persistString(POSITION_KEY, JSON.stringify(at))
 
         return at
@@ -357,6 +364,7 @@ export function FloatingPet() {
     },
     [requestGateway, info.frameW, info.frameH]
   )
+
   usePetZoomGesture(containerRef, onScale, active && !overlayActive)
 
   // While popped out, the desktop overlay window owns the mascot — hide the
@@ -396,7 +404,10 @@ export function FloatingPet() {
           zIndex: 0
         }}
       />
-      <div ref={spriteWrapRef} style={{ lineHeight: 0, position: 'relative', transform: facing(position.x, petW), zIndex: 1 }}>
+      <div
+        ref={spriteWrapRef}
+        style={{ lineHeight: 0, position: 'relative', transform: facing(position.x, petW), zIndex: 1 }}
+      >
         <PetSprite info={info} />
       </div>
     </div>

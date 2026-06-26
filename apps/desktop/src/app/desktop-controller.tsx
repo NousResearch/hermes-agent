@@ -43,11 +43,15 @@ import {
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
-import { $paneOpen } from '../store/panes'
 import { respondToApprovalAction } from '../store/native-notifications'
+import { $paneOpen } from '../store/panes'
 import { setPetActivity } from '../store/pet'
 import { setPetScale } from '../store/pet-gallery'
-import { setPetOverlayOpenAppHandler, setPetOverlayScaleHandler, setPetOverlaySubmitHandler } from '../store/pet-overlay'
+import {
+  setPetOverlayOpenAppHandler,
+  setPetOverlayScaleHandler,
+  setPetOverlaySubmitHandler
+} from '../store/pet-overlay'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
@@ -1225,6 +1229,7 @@ export function DesktopController() {
     (chatOpen && Boolean(previewTarget || filePreviewTarget) && previewPaneOpen) ||
     (chatOpen && !narrowViewport && fileBrowserOpen) ||
     (chatOpen && Boolean(currentCwd.trim()) && !narrowViewport && reviewOpen)
+
   // Once the terminal would share its rail with another sidebar, drop it to a
   // full-width row beneath them rather than cramming in one more skinny column.
   const terminalAsRow = terminalSidebarOpen && railColumnOpen

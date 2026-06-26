@@ -41,5 +41,4 @@ export const ALWAYS_EXCLUDED = new Set([
 
 // True when any segment of a relative path is excluded (review rows like
 // `node_modules/.bin/foo` or a bare `.DS_Store`). Handles `/` and `\`.
-export const isExcludedPath = (relPath: string): boolean =>
-  relPath.split(/[/\\]/).some(seg => ALWAYS_EXCLUDED.has(seg))
+export const isExcludedPath = (relPath: string): boolean => relPath.split(/[/\\]/).some(seg => ALWAYS_EXCLUDED.has(seg))

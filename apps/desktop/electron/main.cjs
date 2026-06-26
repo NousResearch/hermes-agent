@@ -21,7 +21,6 @@ const crypto = require('node:crypto')
 const fs = require('node:fs')
 const http = require('node:http')
 const https = require('node:https')
-const net = require('node:net')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
@@ -330,9 +329,7 @@ function hermesManagedNodePathEntries() {
 }
 
 function pathWithHermesManagedNode(...entries) {
-  return [...hermesManagedNodePathEntries(), ...entries, process.env.PATH]
-    .filter(Boolean)
-    .join(path.delimiter)
+  return [...hermesManagedNodePathEntries(), ...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
 }
 
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
@@ -1325,10 +1322,7 @@ function unwrapWindowsVenvHermesCommand(command, dashboardArgs) {
     bootstrap: false,
     env: buildDesktopBackendEnv({
       hermesHome: HERMES_HOME,
-      pythonPathEntries: [
-        ...(directoryExists(root) ? [root] : []),
-        ...getVenvSitePackagesEntries(venvRoot)
-      ],
+      pythonPathEntries: [...(directoryExists(root) ? [root] : []), ...getVenvSitePackagesEntries(venvRoot)],
       venvRoot
     }),
     kind: 'python',
@@ -1604,9 +1598,7 @@ function applyWindowsNoConsoleSpawnHints(backend) {
 
   const usesHermesModule =
     backend.kind === 'python' ||
-    (Array.isArray(backend.args) &&
-      backend.args[0] === '-m' &&
-      backend.args[1] === 'hermes_cli.main')
+    (Array.isArray(backend.args) && backend.args[0] === '-m' && backend.args[1] === 'hermes_cli.main')
 
   if (!usesHermesModule) return backend
 
@@ -2182,7 +2174,8 @@ async function applyUpdates(opts = {}) {
 
     emitUpdateProgress({
       stage: 'restart',
-      message: 'Updating Hermes — this window will close and the updater will open. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
+      message:
+        'Updating Hermes — this window will close and the updater will open. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
       percent: 100
     })
     repairMacUpdaterHelper(updater)
@@ -2265,7 +2258,9 @@ async function handOffWindowsBootstrapRecovery(reason) {
   })
   child.unref()
 
-  rememberLog(`[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`)
+  rememberLog(
+    `[bootstrap] handed off ${reason} recovery to updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release app.asar`
+  )
   // Same dwell as the in-app update hand-off (#50419): give the updater's
   // window time to appear before we vanish, so the recovery doesn't look like
   // a crash and provoke a mid-recovery relaunch.
@@ -2792,8 +2787,7 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
 
   const venvRoot = path.join(root, 'venv')
   const venvPython = getVenvPython(venvRoot)
-  const command =
-    IS_WINDOWS && fileExists(venvPython) ? getNoConsoleVenvPython(venvRoot) : toNoConsolePython(python)
+  const command = IS_WINDOWS && fileExists(venvPython) ? getNoConsoleVenvPython(venvRoot) : toNoConsolePython(python)
 
   return applyWindowsNoConsoleSpawnHints({
     kind: 'python',
@@ -2817,9 +2811,7 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
 // ensureRuntime() to create / refresh it before launch.
 function createActiveBackend(dashboardArgs) {
   const venvPython = getVenvPython(VENV_ROOT)
-  const command = fileExists(venvPython)
-    ? getNoConsoleVenvPython(VENV_ROOT)
-    : toNoConsolePython(findSystemPython())
+  const command = fileExists(venvPython) ? getNoConsoleVenvPython(VENV_ROOT) : toNoConsolePython(findSystemPython())
 
   return applyWindowsNoConsoleSpawnHints({
     kind: 'python',
@@ -2909,15 +2901,17 @@ function resolveHermesBackend(dashboardArgs) {
       // and lets the resolver fall through to step 6 / bootstrap.
       const shellForProbe = isCommandScript(hermesCommand)
       if (verifyHermesCli(hermesCommand, { shell: shellForProbe })) {
-        return unwrapWindowsVenvHermesCommand(hermesCommand, dashboardArgs) || {
-          label: `existing Hermes CLI at ${hermesCommand}`,
-          command: hermesCommand,
-          args: dashboardArgs,
-          bootstrap: false,
-          env: {},
-          kind: 'command',
-          shell: shellForProbe
-        }
+        return (
+          unwrapWindowsVenvHermesCommand(hermesCommand, dashboardArgs) || {
+            label: `existing Hermes CLI at ${hermesCommand}`,
+            command: hermesCommand,
+            args: dashboardArgs,
+            bootstrap: false,
+            env: {},
+            kind: 'command',
+            shell: shellForProbe
+          }
+        )
       }
       rememberLog(
         `Ignoring existing Hermes CLI at ${hermesCommand}: --version probe failed; falling through to bootstrap.`
@@ -2997,7 +2991,9 @@ async function ensureRuntime(backend) {
     rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
 
     if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
-      const handoffError = new Error('Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.')
+      const handoffError = new Error(
+        'Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.'
+      )
       handoffError.isBootstrapFailure = true
       handoffError.bootstrapHandedOff = true
       bootstrapFailure = handoffError
@@ -5512,7 +5508,10 @@ async function startHermes() {
 
     await advanceBootProgress('backend.port', 'Waiting for Hermes backend to launch', 86)
     // Discover the ephemeral port the child bound to
-    const port = await Promise.race([waitForDashboardPortAnnouncement(hermesProcess, { readyFile }), backendStartFailed])
+    const port = await Promise.race([
+      waitForDashboardPortAnnouncement(hermesProcess, { readyFile }),
+      backendStartFailed
+    ])
     if (readyFile) {
       fs.unlink(readyFile, () => {})
     }
@@ -6932,9 +6931,7 @@ ipcMain.handle('hermes:fs:trash', async (_event, targetPath) => {
 
 // Git-driven worktree management ("Start work" flow). Errors surface to the
 // renderer as rejected promises so it can toast a friendly message.
-ipcMain.handle('hermes:git:worktreeList', async (_event, repoPath) =>
-  listWorktrees(repoPath, resolveGitBinary())
-)
+ipcMain.handle('hermes:git:worktreeList', async (_event, repoPath) => listWorktrees(repoPath, resolveGitBinary()))
 
 ipcMain.handle('hermes:git:worktreeAdd', async (_event, repoPath, options) =>
   addWorktree(repoPath, options || {}, resolveGitBinary())
@@ -6948,9 +6945,7 @@ ipcMain.handle('hermes:git:branchSwitch', async (_event, repoPath, branch) =>
   switchBranch(repoPath, branch, resolveGitBinary())
 )
 
-ipcMain.handle('hermes:git:branchList', async (_event, repoPath) =>
-  listBranches(repoPath, resolveGitBinary())
-)
+ipcMain.handle('hermes:git:branchList', async (_event, repoPath) => listBranches(repoPath, resolveGitBinary()))
 
 // Compact repo status (branch, ahead/behind, change counts + files) for the
 // composer coding rail. Returns null on a non-repo / remote backend so the rail

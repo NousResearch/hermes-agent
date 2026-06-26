@@ -31,10 +31,34 @@ import type { SidebarProjectTree } from './workspace-groups'
 
 // Curated codicons for the project glyph (tinted by the chosen color).
 const ICONS = [
-  'folder-library', 'repo', 'rocket', 'beaker', 'flame', 'star-full', 'heart',
-  'zap', 'target', 'lightbulb', 'tools', 'device-desktop', 'device-mobile', 'terminal',
-  'dashboard', 'globe', 'broadcast', 'cloud', 'database', 'package', 'book',
-  'organization', 'bug', 'shield', 'key', 'gift', 'telescope', 'home'
+  'folder-library',
+  'repo',
+  'rocket',
+  'beaker',
+  'flame',
+  'star-full',
+  'heart',
+  'zap',
+  'target',
+  'lightbulb',
+  'tools',
+  'device-desktop',
+  'device-mobile',
+  'terminal',
+  'dashboard',
+  'globe',
+  'broadcast',
+  'cloud',
+  'database',
+  'package',
+  'book',
+  'organization',
+  'bug',
+  'shield',
+  'key',
+  'gift',
+  'telescope',
+  'home'
 ]
 
 // Per-project actions, modeled on git GUIs (GitHub Desktop / GitKraken): reveal
@@ -114,7 +138,12 @@ export function ProjectMenu({
         {/* Closing the menu refocuses the trigger (also the popover anchor),
             which the appearance popover would read as focus-outside and die on.
             Suppress that refocus so it survives. */}
-        <DropdownMenuContent align="end" className="w-48" onCloseAutoFocus={event => event.preventDefault()} sideOffset={6}>
+        <DropdownMenuContent
+          align="end"
+          className="w-48"
+          onCloseAutoFocus={event => event.preventDefault()}
+          sideOffset={6}
+        >
           {!project.isAuto && (
             <>
               <DropdownMenuItem onSelect={() => openProjectRename(target)}>

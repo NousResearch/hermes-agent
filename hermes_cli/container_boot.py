@@ -281,6 +281,10 @@ def _strip_container_argv_prefix(argv: Sequence[str]) -> list[str]:
         # Defensive: an `init` prefix with no wrapper token in argv.
         args = args[1:]
 
+    # Non-PID-1 entrypoints go through the dispatch shim instead of /init.
+    if args and args[0].endswith("entrypoint-dispatch.sh"):
+        args = args[1:]
+
     # The wrapper re-execs `hermes <subcommand>`; peel an explicit hermes.
     if args and Path(args[0]).name == "hermes":
         args = args[1:]

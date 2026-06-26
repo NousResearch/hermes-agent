@@ -967,6 +967,41 @@ class TestGroupAtGuardMiddleware:
         next_fn.assert_awaited_once()
 
 
+class TestAutoSetHomeAfterGroupAtGuard:
+    @pytest.mark.asyncio
+    async def test_unaddressed_group_does_not_set_home(self, monkeypatch, tmp_path):
+        """Group traffic dropped by GroupAtGuard must not persist YUANBAO_HOME_CHANNEL."""
+        monkeypatch.delenv("YUANBAO_HOME_CHANNEL", raising=False)
+        monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+        monkeypatch.setattr(
+            "hermes_constants.get_hermes_home",
+            lambda: tmp_path,
+        )
+
+        adapter = make_adapter()
+        adapter._auto_sethome_done = False
+        adapter._access_policy = AccessPolicy(
+            dm_policy="pairing",
+            dm_allow_from=[],
+            group_policy="open",
+            group_allow_from=[],
+        )
+        adapter._session_store = None
+
+        push_data = make_json_push(
+            from_account="alice",
+            group_code="grp-1",
+            text="hello group",
+            msg_id="msg-group-001",
+        )
+        ctx = InboundContext(adapter=adapter, raw_frames=[push_data])
+        pipeline = InboundPipelineBuilder.build()
+        await pipeline.execute(ctx)
+
+        assert "YUANBAO_HOME_CHANNEL" not in os.environ
+        assert not (tmp_path / "config.yaml").exists()
+
+
 # ============================================================
 # 4. Factory Tests
 # ============================================================
@@ -987,8 +1022,8 @@ class TestCreateInboundPipeline:
             "placeholder-filter",
             "owner-command",
             "build-source",
-            "auto-sethome",
             "group-at-guard",
+            "auto-sethome",
             "group-attribution",
             "classify-msg-type",
             "quote-context",

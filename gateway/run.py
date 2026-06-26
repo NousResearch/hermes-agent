@@ -5901,7 +5901,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ).strip().lower()
             if dm_policy != "open" and group_policy != "open":
                 continue
-            platform_opted_in = _allow_all or (
+            _gateway_allow_all = os.getenv(
+                "GATEWAY_ALLOW_ALL_USERS", ""
+            ).lower() in {"true", "1", "yes"}
+            platform_opted_in = _gateway_allow_all or (
                 allow_all_env
                 and os.getenv(allow_all_env, "").lower() in {"true", "1", "yes"}
             )

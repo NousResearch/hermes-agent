@@ -1628,9 +1628,11 @@ class AutoSetHomeMiddleware(InboundMiddleware):
     home is superseded by the first DM (direct > group upgrade).
     Silent: writes config.yaml and env, no user-facing message.
 
-    Runs after :class:`BuildSourceMiddleware` and only for senders that pass
-    strict authorization (allowlist / explicit open opt-in / pairing-store
-    approval). Intake-only pairing forwards must not claim ``YUANBAO_HOME_CHANNEL``.
+    Runs after :class:`BuildSourceMiddleware` and :class:`GroupAtGuardMiddleware`
+    so unaddressed group traffic is dropped before home-channel persistence.
+    Only senders that pass strict authorization (allowlist / explicit open
+    opt-in / pairing-store approval) may claim ``YUANBAO_HOME_CHANNEL``.
+    Intake-only pairing forwards must not claim ``YUANBAO_HOME_CHANNEL``.
     """
 
     name = "auto-sethome"
@@ -3214,8 +3216,8 @@ class InboundPipelineBuilder:
         PlaceholderFilterMiddleware,
         OwnerCommandMiddleware,
         BuildSourceMiddleware,
-        AutoSetHomeMiddleware,
         GroupAtGuardMiddleware,
+        AutoSetHomeMiddleware,
         GroupAttributionMiddleware,
         ClassifyMessageTypeMiddleware,
         QuoteContextMiddleware,

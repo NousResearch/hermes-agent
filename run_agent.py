@@ -1736,6 +1736,21 @@ class AIAgent:
                 codex_message_items=None,
                 timestamp=user_msg.get("timestamp"),
             )
+            # Track the message identity so _flush_messages_to_session_db
+            # does NOT write it again when _persist_session runs later in
+            # the prologue. Without this, the same user_msg dict is flushed
+            # twice → duplicate row in state.db (#45110).
+            flushed_ids = getattr(self, "_flushed_db_message_ids", None)
+            if isinstance(flushed_ids, set):
+                flushed_ids.add(id(user_msg))
+            else:
+                self._flushed_db_message_ids = {id(user_msg)}
+            # _flush_messages_to_session_db resets _flushed_db_message_ids
+            # when the session id changes OR _last_flushed_db_idx == 0.
+            # Set both so our tracked id survives the reset check.
+            self._flushed_db_message_session_id = self.session_id
+            if getattr(self, "_last_flushed_db_idx", 0) == 0:
+                self._last_flushed_db_idx = 1
         except Exception as exc:
             # Log at debug rather than warning — the existing crash-resilience
             # ``_persist_session`` call later in the prologue is the

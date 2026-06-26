@@ -23,6 +23,7 @@ from plugins.memory.hindsight import (
     RETAIN_SCHEMA,
     _load_config,
     _build_embedded_profile_env,
+    _install_embedded_readiness_fallback,
     _normalize_observation_scopes,
     _normalize_retain_tags,
     _resolve_bank_id_template,
@@ -423,6 +424,7 @@ class TestConfig:
         class FakeHindsightEmbedded:
             def __init__(self, **kwargs):
                 captured.update(kwargs)
+                self._ensure_started = lambda: None
 
         monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
         monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
@@ -442,6 +444,56 @@ class TestConfig:
 
         assert captured["idle_timeout"] == 0
         assert captured["llm_provider"] == "openai"
+
+    def test_embedded_readiness_fallback_uses_healthy_daemon_after_start_timeout(self, monkeypatch):
+        class FakeManager:
+            def get_url(self, profile):
+                assert profile == "default"
+                return "http://127.0.0.1:8984"
+
+        class FakeEmbeddedClient:
+            def __init__(self):
+                self._manager = FakeManager()
+                self._client = None
+                self._started = False
+
+            def _ensure_started(self):
+                raise RuntimeError("Failed to start daemon for profile 'default'")
+
+        class FakeHindsight:
+            def __init__(self, base_url, **kwargs):
+                self.base_url = base_url
+                self.kwargs = kwargs
+
+        fake = FakeEmbeddedClient()
+        monkeypatch.setattr("plugins.memory.hindsight._probe_http_health", lambda url: url == "http://127.0.0.1:8984")
+        monkeypatch.setitem(sys.modules, "hindsight_client", SimpleNamespace(Hindsight=FakeHindsight))
+
+        _install_embedded_readiness_fallback(fake, "default")
+        fake._ensure_started()
+
+        assert fake._started is True
+        assert fake._client.base_url == "http://127.0.0.1:8984"
+
+    def test_embedded_readiness_fallback_keeps_real_failure_when_health_fails(self, monkeypatch):
+        class FakeManager:
+            def get_url(self, profile):
+                return "http://127.0.0.1:8984"
+
+        class FakeEmbeddedClient:
+            def __init__(self):
+                self._manager = FakeManager()
+
+            def _ensure_started(self):
+                raise RuntimeError("Failed to start daemon for profile 'default'")
+
+        fake = FakeEmbeddedClient()
+        monkeypatch.setattr("plugins.memory.hindsight._probe_http_health", lambda url: False)
+
+        _install_embedded_readiness_fallback(fake, "default")
+
+        with pytest.raises(RuntimeError, match="Failed to start daemon"):
+            fake._ensure_started()
 
 
 class TestPostSetup:

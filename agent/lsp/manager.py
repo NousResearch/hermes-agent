@@ -169,7 +169,9 @@ class LSPService:
         self._loop = _BackgroundLoop()
         if self._enabled:
             self._loop.start()
-
+            # Fire-and-forget: schedule on the background loop, don't block __init__
+            assert self._loop._loop is not None  # guaranteed after start()
+            asyncio.run_coroutine_threadsafe(self._start_reaper(), self._loop._loop)
         # Per-(server_id, workspace_root) state
         self._clients: Dict[Tuple[str, str], LSPClient] = {}
         self._broken: set = set()
@@ -565,6 +567,33 @@ class LSPService:
         finally:
             with self._state_lock:
                 self._spawning.pop(key, None)
+
+    async def _start_reaper(self):
+        """Periodically reap idle LSP clients to prevent memory leaks."""
+        while True:
+            await asyncio.sleep(300)  # check every 5 minutes
+            try:
+                await self._reap_idle()
+            except Exception:
+                pass
+
+    async def _reap_idle(self):
+        """Shutdown clients that haven't been used within _idle_timeout seconds."""
+        now = time.time()
+        to_reap = []
+        with self._state_lock:
+            for key, last in list(self._last_used.items()):
+                if now - last > self._idle_timeout:
+                    to_reap.append(key)
+        for key in to_reap:
+            with self._state_lock:
+                client = self._clients.pop(key, None)
+                self._last_used.pop(key, None)
+            if client and client.is_running:
+                try:
+                    await client.shutdown()
+                except Exception:
+                    pass
 
     async def _shutdown_async(self) -> None:
         with self._state_lock:

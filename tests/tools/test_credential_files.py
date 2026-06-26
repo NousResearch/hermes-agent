@@ -14,6 +14,7 @@ from tools.credential_files import (
     get_skills_directory_mount,
     iter_cache_files,
     iter_skills_files,
+    to_agent_visible_skill_path,
     register_credential_file,
     register_credential_files,
 )
@@ -135,6 +136,17 @@ class TestSkillsDirectoryMount:
             mounts = get_skills_directory_mount(container_base="/home/user/.hermes")
 
         assert mounts[0]["container_path"] == "/home/user/.hermes/skills"
+
+    def test_agent_visible_skill_path_uses_posix_container_separators(self, tmp_path):
+        hermes_home = tmp_path / ".hermes"
+        skill_dir = hermes_home / "skills" / "cat" / "my-skill"
+        skill_dir.mkdir(parents=True)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home), "TERMINAL_ENV": "docker"}):
+            visible = to_agent_visible_skill_path(str(skill_dir))
+
+        assert visible == "/root/.hermes/skills/cat/my-skill"
+        assert "\\" not in visible
 
     def test_symlinks_are_sanitized(self, tmp_path):
         """Symlinks in skills dir should be excluded from the mount."""

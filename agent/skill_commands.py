@@ -7,6 +7,7 @@ can invoke skills via /skill-name commands.
 import json
 import logging
 import os
+import posixpath
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -19,6 +20,17 @@ from agent.skill_preprocessing import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _join_visible_skill_path(skill_dir: str, relative_path: str) -> str:
+    """Join a model-visible skill path without corrupting Docker paths.
+
+    Docker-visible skill paths point into a Linux container, so they must keep
+    POSIX separators even when the host process runs on Windows.
+    """
+    if os.environ.get("TERMINAL_ENV", "local") == "docker":
+        return posixpath.join(skill_dir.rstrip("/"), relative_path)
+    return str(Path(skill_dir) / relative_path)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
@@ -175,9 +187,7 @@ def _build_skill_message(
     from tools.credential_files import to_agent_visible_skill_path
 
     content = str(loaded_skill.get("content") or "")
-    visible_skill_dir = (
-        Path(to_agent_visible_skill_path(str(skill_dir))) if skill_dir else None
-    )
+    visible_skill_dir = to_agent_visible_skill_path(str(skill_dir)) if skill_dir else None
 
     # ── Template substitution and inline-shell expansion ──
     # Done before anything else so downstream blocks (setup notes,
@@ -247,7 +257,7 @@ def _build_skill_message(
                         rel = str(f.relative_to(skill_dir))
                         supporting.append(rel)
 
-    if supporting and skill_dir:
+    if supporting and skill_dir and visible_skill_dir:
         try:
             skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
         except ValueError:
@@ -256,11 +266,11 @@ def _build_skill_message(
         parts.append("")
         parts.append("[This skill has supporting files:]")
         for sf in supporting:
-            parts.append(f"- {sf}  ->  {visible_skill_dir / sf}")
+            parts.append(f"- {sf}  ->  {_join_visible_skill_path(visible_skill_dir, sf)}")
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
             f'file_path="<path>"), or run scripts directly by absolute path '
-            f"(e.g. `node {visible_skill_dir}/scripts/foo.js`)."
+            f"(e.g. `node {_join_visible_skill_path(visible_skill_dir, 'scripts/foo.js')}`)."
         )
 
     if user_instruction:

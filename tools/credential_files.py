@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import posixpath
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Dict, List
@@ -272,7 +273,10 @@ def to_agent_visible_skill_path(
     except Exception:
         return host_path
 
-    return str(Path(container_base.rstrip("/")) / "skills" / rel)
+    # The returned path is for a Linux container even when Hermes is running
+    # on a native Windows host, so do not build it with pathlib.Path (which
+    # would render backslashes on Windows).
+    return posixpath.join(container_base.rstrip("/"), "skills", rel.as_posix())
 
 
 _safe_skills_tempdir: Path | None = None

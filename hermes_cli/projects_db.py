@@ -709,6 +709,29 @@ def project_for_path(
 
 # Deterministic branch slug: lowercase, separators collapsed, capped.
 _BRANCH_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
+_INVALID_REFS = {".", ".."}
+
+
+def _sanitize_refname_component(raw: str) -> str:
+    """Sanitize a single branch-name component so it obeys ``git check-ref-format``.
+
+    * Collapses consecutive dots (``..``) to a single dot.
+    * Strips a trailing ``.lock`` suffix (reserved by git).
+    * Strips leading and trailing dots and hyphens.
+    * Returns empty string when the input degenerates (e.g. ``"."``, ``".lock"``).
+    """
+    s = _BRANCH_SAFE_RE.sub("-", raw.strip().lower())
+    # Collapse consecutive dots to a single dot.
+    s = re.sub(r"\.{2,}", ".", s)
+    # Strip trailing .lock suffix (case-insensitive).
+    if s.lower().endswith(".lock"):
+        s = s[: -len(".lock")]
+    # Strip leading/trailing dots and hyphens.
+    s = s.strip(".-")
+    # Reject degenerate values.
+    if not s or s in _INVALID_REFS:
+        return ""
+    return s
 
 
 def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:
@@ -720,8 +743,7 @@ def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:
     slug = project.slug or _slugify(project.name)
     base = f"{slug}/{task_id}"
     if title:
-        tslug = _BRANCH_SAFE_RE.sub("-", str(title).strip().lower()).strip("-")
-        tslug = tslug[:40].strip("-")
+        tslug = _sanitize_refname_component(title)[:40]
         if tslug:
             base = f"{base}-{tslug}"
     return base

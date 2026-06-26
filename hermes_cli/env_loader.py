@@ -244,8 +244,65 @@ def load_hermes_dotenv(
 
     _apply_external_secret_sources(home_path)
     _apply_managed_env()
+    _apply_macos_system_proxy()
 
     return loaded
+
+
+def _apply_macos_system_proxy() -> None:
+    """If HTTP_PROXY is not set, read macOS system proxy settings via scutil.
+
+    macOS system proxy (configured in System Preferences → Network → Proxies,
+    or set by VPN apps like Clash Verge / V2rayU / Surge) is NOT automatically
+    inherited by command-line processes.  This bridges that gap: when the user
+    has a system-wide HTTP/HTTPS proxy enabled but hasn't set the env vars,
+    Hermes picks it up automatically so providers that need the proxy (e.g.
+    openai-codex behind a firewall) work out of the box.
+
+    Does NOT override explicitly configured values in .env or the shell
+    environment — those always win.
+    """
+    if os.environ.get("HTTP_PROXY") or os.environ.get("HTTPS_PROXY"):
+        return  # user already configured — don't touch
+
+    if sys.platform != "darwin":
+        return
+
+    import re
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["scutil", "--proxy"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except Exception:
+        return
+
+    if result.returncode != 0:
+        return
+
+    # scutil --proxy outputs NeXTSTEP-style plist, not JSON.
+    # Extract key-value pairs with a simple regex.
+    raw = result.stdout
+    props: dict[str, str] = {}
+    for m in re.finditer(r'^\s*(\w+)\s*:\s*(.+?)\s*$', raw, re.MULTILINE):
+        props[m.group(1)] = m.group(2)
+
+    http_enabled = props.get("HTTPEnable", "0")
+    https_enabled = props.get("HTTPSEnable", "0")
+
+    if http_enabled == "1":
+        host = props.get("HTTPProxy", "")
+        port = props.get("HTTPPort", "0")
+        if host and port and port != "0":
+            os.environ["HTTP_PROXY"] = f"http://{host}:{port}"
+
+    if https_enabled == "1":
+        host = props.get("HTTPSProxy", "")
+        port = props.get("HTTPSPort", "0")
+        if host and port and port != "0":
+            os.environ["HTTPS_PROXY"] = f"http://{host}:{port}"
 
 
 def _apply_managed_env() -> None:

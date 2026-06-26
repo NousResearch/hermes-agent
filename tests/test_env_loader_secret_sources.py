@@ -7,8 +7,11 @@ don't see an unexplained "credentials ✓" line when their .env is empty.
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -173,3 +176,63 @@ def test_apply_external_secret_sources_dedupes_within_process(tmp_path, monkeypa
     env_loader.reset_secret_source_cache()
     env_loader._apply_external_secret_sources(tmp_path)
     assert call_count["n"] == 2
+
+
+def test_apply_macos_system_proxy_reads_enabled_http_https(monkeypatch):
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.setattr(env_loader.sys, "platform", "darwin")
+
+    sample = """<dictionary> {
+  HTTPEnable : 1
+  HTTPProxy : 127.0.0.1
+  HTTPPort : 7897
+  HTTPSEnable : 1
+  HTTPSProxy : 127.0.0.1
+  HTTPSPort : 7897
+}"""
+
+    def _fake_run(args, **kwargs):
+        assert args == ["scutil", "--proxy"]
+        assert kwargs["capture_output"] is True
+        assert kwargs["text"] is True
+        return SimpleNamespace(returncode=0, stdout=sample)
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    env_loader._apply_macos_system_proxy()
+
+    assert os.environ["HTTP_PROXY"] == "http://127.0.0.1:7897"
+    assert os.environ["HTTPS_PROXY"] == "http://127.0.0.1:7897"
+
+
+def test_apply_macos_system_proxy_keeps_explicit_proxy(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://explicit.example:8888")
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.setattr(env_loader.sys, "platform", "darwin")
+
+    def _should_not_run(*_args, **_kwargs):
+        raise AssertionError("explicit proxy env should skip scutil lookup")
+
+    monkeypatch.setattr(subprocess, "run", _should_not_run)
+
+    env_loader._apply_macos_system_proxy()
+
+    assert os.environ["HTTP_PROXY"] == "http://explicit.example:8888"
+    assert "HTTPS_PROXY" not in os.environ
+
+
+def test_apply_macos_system_proxy_noops_off_macos(monkeypatch):
+    monkeypatch.delenv("HTTP_PROXY", raising=False)
+    monkeypatch.delenv("HTTPS_PROXY", raising=False)
+    monkeypatch.setattr(env_loader.sys, "platform", "linux")
+
+    def _should_not_run(*_args, **_kwargs):
+        raise AssertionError("non-macOS platforms should skip scutil lookup")
+
+    monkeypatch.setattr(subprocess, "run", _should_not_run)
+
+    env_loader._apply_macos_system_proxy()
+
+    assert "HTTP_PROXY" not in os.environ
+    assert "HTTPS_PROXY" not in os.environ

@@ -1460,6 +1460,25 @@ class SessionStore:
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
     
+    def has_platform_message_id(
+        self, session_id: str, platform_message_id: str
+    ) -> bool:
+        """Check if a message with the given platform_message_id is persisted.
+
+        Thin wrapper over SessionDB.has_platform_message_id(). Returns False
+        when no DB is available (in-memory sessions). Used by the gateway's
+        transient-failure dedupe guard (#47237).
+        """
+        if not self._db:
+            return False
+        try:
+            return self._db.has_platform_message_id(
+                session_id, platform_message_id
+            )
+        except Exception:
+            logger.debug("has_platform_message_id lookup failed", exc_info=True)
+            return False
+
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.
 

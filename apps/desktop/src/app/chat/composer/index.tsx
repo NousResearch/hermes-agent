@@ -45,8 +45,8 @@ import {
   $composerPoppedOut,
   POPOUT_WIDTH_REM,
   readPopoutBounds,
-  setComposerPoppedOut,
-  setComposerPopoutPosition
+  setComposerPopoutPosition,
+  setComposerPoppedOut
 } from '@/store/composer-popout'
 import {
   $queuedPromptsBySession,
@@ -60,8 +60,10 @@ import {
   updateQueuedPrompt
 } from '@/store/composer-queue'
 import { $statusItemsBySession } from '@/store/composer-status'
-import { $previewStatusBySession } from '@/store/preview-status'
 import { notify } from '@/store/notifications'
+import { $previewStatusBySession } from '@/store/preview-status'
+import { listRepoBranches, requestStartWorkSession, startWorkInRepo, switchBranchInRepo } from '@/store/projects'
+import { toggleReview } from '@/store/review'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { isSecondaryWindow } from '@/store/windows'
@@ -80,6 +82,7 @@ import {
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
   onComposerInsertRequest,
+  onComposerSubmitRequest,
   onComposerVoiceToggleRequest
 } from './focus'
 import { HelpHint } from './help-hint'
@@ -108,6 +111,7 @@ import {
   slashChipElement
 } from './rich-editor'
 import { ComposerStatusStack } from './status-stack'
+import { CodingStatusRow } from './status-stack/coding-row'
 import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
@@ -780,6 +784,16 @@ export function ChatBar({
     if (!pastedText) {
       event.preventDefault()
 
+      // Under WSL2/WSLg the Windows host clipboard doesn't bridge *images* to
+      // the Linux clipboard the DOM paste event reads, so a host screenshot
+      // arrives as an empty paste (no blobs, no text). Fall back to the main
+      // process, which pulls the image straight off the Windows clipboard.
+      // Silent so a genuinely-empty paste doesn't pop a "no image" warning.
+      if (onPasteClipboardImage) {
+        triggerHaptic('selection')
+        void onPasteClipboardImage({ silent: true })
+      }
+
       return
     }
 
@@ -1351,6 +1365,80 @@ export function ChatBar({
     }
   }, [setComposerText])
 
+  // Hand a worktree off to the controller: open a fresh session anchored there,
+  // carrying the composer draft as its first turn. Clearing here means the draft
+  // travels to the new session instead of getting stashed under this one.
+  const openInWorktree = useCallback(
+    (path: string) => {
+      const text = draftRef.current
+      clearDraft()
+      clearComposerAttachments()
+      requestStartWorkSession(path, text)
+    },
+    [clearDraft]
+  )
+
+  // Branch off into a NEW worktree (base = branch name, or current HEAD). A
+  // create failure throws back to the row (which toasts) before we touch the
+  // draft; a missing cwd / remote backend no-ops (the row hides the affordance).
+  const handleBranchOff = useCallback(
+    async (branch: string, base?: string) => {
+      const repoPath = cwd?.trim()
+      const result = repoPath && (await startWorkInRepo(repoPath, { base, branch, name: branch }))
+
+      if (result) {
+        openInWorktree(result.path)
+      }
+    },
+    [cwd, openInWorktree]
+  )
+
+  // Convert an EXISTING branch into a fresh worktree + session (no new branch).
+  // Mirrors handleBranchOff's hand-off: create the worktree, then open a session
+  // anchored there carrying the draft.
+  const handleConvertBranch = useCallback(
+    async (branch: string, path?: null | string, isDefault?: boolean) => {
+      if (path?.trim()) {
+        openInWorktree(path)
+
+        return
+      }
+
+      const repoPath = cwd?.trim()
+
+      if (repoPath && isDefault) {
+        await switchBranchInRepo(repoPath, branch)
+        openInWorktree(repoPath)
+
+        return
+      }
+
+      const result = repoPath && (await startWorkInRepo(repoPath, { existingBranch: branch }))
+
+      if (result) {
+        openInWorktree(result.path)
+      }
+    },
+    [cwd, openInWorktree]
+  )
+
+  const handleListBranches = useCallback(async () => {
+    const repoPath = cwd?.trim()
+
+    return repoPath ? listRepoBranches(repoPath) : []
+  }, [cwd])
+
+  const handleSwitchBranch = useCallback(
+    async (branch: string) => {
+      const repoPath = cwd?.trim()
+
+      if (repoPath) {
+        await switchBranchInRepo(repoPath, branch)
+      }
+    },
+    [cwd]
+  )
+
   const loadIntoComposer = (text: string, attachments: ComposerAttachment[]) => {
     draftRef.current = text
     setComposerText(text)
@@ -1674,6 +1762,41 @@ export function ChatBar({
     }
   }, [autoDrainNext, busy, queuedPrompts.length])
 
+  // Esc cancels the in-flight turn when the CHAT has focus — not just the
+  // composer input (which has its own handler above). Clicking into the
+  // transcript and hitting Esc now stops the run, matching the Stop button.
+  // Intentional only: we bail if (a) the composer/another field already
+  // handled Esc (defaultPrevented), (b) focus is in any input/textarea/
+  // contenteditable (you're typing, not stopping), or (c) a dialog/popover is
+  // open — Esc must close that overlay, never double as canceling the stream
+  // behind it. A latest-handler ref keeps the listener registered once.
+  const escCancelRef = useRef<(event: globalThis.KeyboardEvent) => void>(() => {})
+  escCancelRef.current = (event: globalThis.KeyboardEvent) => {
+    if (event.key !== 'Escape' || event.defaultPrevented || !busy) {
+      return
+    }
+
+    const active = document.activeElement as HTMLElement | null
+    if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.isContentEditable)) {
+      return
+    }
+
+    if (document.querySelector('[role="dialog"],[role="alertdialog"],[data-radix-popper-content-wrapper]')) {
+      return
+    }
+
+    event.preventDefault()
+    triggerHaptic('cancel')
+    void Promise.resolve(onCancel())
+  }
+
+  useEffect(() => {
+    const onKeyDown = (event: globalThis.KeyboardEvent) => escCancelRef.current(event)
+    window.addEventListener('keydown', onKeyDown)
+
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
   // Queue-edit cleanup: on session swap the scope effect already stashed the
   // edit snapshot; only restore into the composer when still on the same scope.
   useEffect(() => {
@@ -1705,6 +1828,22 @@ export function ChatBar({
       .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
       .catch(restore)
   }
+
+  // External "submit this prompt" requests (e.g. the review pane's agent-ship
+  // button) route through the same send path. A ref keeps the listener stable
+  // while always calling the latest dispatchSubmit closure.
+  const dispatchSubmitRef = useRef(dispatchSubmit)
+  dispatchSubmitRef.current = dispatchSubmit
+
+  useEffect(
+    () =>
+      onComposerSubmitRequest(({ target, text }) => {
+        if (target === 'main' && !inputDisabled) {
+          dispatchSubmitRef.current(text)
+        }
+      }),
+    [inputDisabled]
+  )
 
   const submitDraft = () => {
     if (disabled) {
@@ -2099,7 +2238,7 @@ export function ChatBar({
           <div className="relative w-full rounded-[inherit]">
             <div
               className={cn(
-                'group/composer-surface relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] transition-[border-color] duration-200 ease-out focus-within:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)]',
+                'group/composer-surface relative z-4 isolate grid grid-rows-[auto_1fr] overflow-hidden rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]',
                 COMPOSER_DROP_FADE_CLASS,
                 dragActive && COMPOSER_DROP_ACTIVE_CLASS
               )}
@@ -2113,6 +2252,14 @@ export function ChatBar({
                   composerFill,
                   composerSurfaceGlass
                 )}
+              />
+              <CodingStatusRow
+                onBranchOff={handleBranchOff}
+                onConvertBranch={handleConvertBranch}
+                onListBranches={handleListBranches}
+                onOpen={toggleReview}
+                onOpenWorktree={openInWorktree}
+                onSwitchBranch={handleSwitchBranch}
               />
               <div
                 className={cn(

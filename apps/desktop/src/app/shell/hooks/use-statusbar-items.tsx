@@ -4,6 +4,7 @@ import { useCallback, useMemo } from 'react'
 import type { CommandCenterSection } from '@/app/command-center'
 import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import {
@@ -13,7 +14,6 @@ import {
   Command,
   Hash,
   Loader2,
-  Sparkles,
   Terminal,
   Zap,
   ZapFilled
@@ -322,7 +322,7 @@ export function useStatusbarItems({
           ) : subagentsRunning > 0 ? (
             <Loader2 className="size-3 animate-spin" />
           ) : (
-            <Sparkles className="size-3" />
+            <Codicon name="hubot" size="0.75rem" />
           ),
         id: 'agents',
         label: copy.agents,

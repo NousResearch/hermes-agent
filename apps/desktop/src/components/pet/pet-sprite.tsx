@@ -117,7 +117,9 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride }: PetSprite
       return
     }
 
-    const ctx = canvas.getContext('2d')
+    // willReadFrequently: the pop-out overlay samples this canvas's alpha under
+    // the cursor (per-pixel click-through), so opt into the CPU-readback path.
+    const ctx = canvas.getContext('2d', { willReadFrequently: true })
 
     if (!ctx) {
       return

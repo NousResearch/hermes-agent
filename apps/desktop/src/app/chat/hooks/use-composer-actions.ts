@@ -411,25 +411,36 @@ export function useComposerActions({ activeSessionId, currentCwd, requestGateway
     }
   }, [attachImagePath, copy.attachImages, currentCwd, t.composer.images])
 
-  const pasteClipboardImage = useCallback(async () => {
-    try {
-      const path = await window.hermesDesktop?.saveClipboardImage()
+  const pasteClipboardImage = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      try {
+        const path = await window.hermesDesktop?.saveClipboardImage()
 
-      if (!path) {
-        notify({
-          kind: 'warning',
-          title: copy.clipboard,
-          message: copy.noClipboardImage
-        })
+        if (!path) {
+          if (!silent) {
+            notify({
+              kind: 'warning',
+              title: copy.clipboard,
+              message: copy.noClipboardImage
+            })
+          }
 
-        return
+          return false
+        }
+
+        await attachImagePath(path)
+
+        return true
+      } catch (err) {
+        if (!silent) {
+          notifyError(err, copy.clipboardPasteFailed)
+        }
+
+        return false
       }
-
-      await attachImagePath(path)
-    } catch (err) {
-      notifyError(err, copy.clipboardPasteFailed)
-    }
-  }, [attachImagePath, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage])
+    },
+    [attachImagePath, copy.clipboard, copy.clipboardPasteFailed, copy.noClipboardImage]
+  )
 
   const attachContextFolderPath = useCallback(
     (folderPath: string) => {

@@ -5757,14 +5757,27 @@ def call_llm(
                     refreshed_client.chat.completions.create(**kwargs), task)
 
         # ── Auth refresh retry ───────────────────────────────────────
+        # Derive the real provider when the task resolved to "auto" (auxiliary
+        # and compression calls dispatch as "auto" but bind to a concrete OAuth
+        # backend, e.g. api.anthropic.com). Without this the auto-routed client
+        # is excluded from refresh and a 401 on a stale singleton OAuth token
+        # (Anthropic) retries forever instead of refreshing.
+        _refresh_provider = resolved_provider
+        if _refresh_provider in {"auto", "", None}:
+            _refresh_provider = _recoverable_pool_provider(
+                resolved_provider, client, main_runtime=main_runtime)
         if (_is_auth_error(first_err)
-                and resolved_provider not in {"auto", "", None}
+                and _refresh_provider
                 and not client_is_nous):
-            if _refresh_provider_credentials(resolved_provider):
+            if _refresh_provider_credentials(_refresh_provider):
                 logger.info(
                     "Auxiliary %s: refreshed %s credentials after auth error, retrying",
-                    task or "call", resolved_provider,
+                    task or "call", _refresh_provider,
                 )
+                # The client may be cached under the "auto" key; provider-keyed
+                # eviction misses it, so evict by instance to force a rebuild
+                # that picks up the refreshed token.
+                _evict_cached_client_instance(client)
                 return _retry_same_provider_sync(
                     task=task,
                     resolved_provider=resolved_provider,
@@ -6260,14 +6273,27 @@ async def async_call_llm(
                     await refreshed_client.chat.completions.create(**kwargs), task)
 
         # ── Auth refresh retry (mirrors sync call_llm) ───────────────
+        # Derive the real provider when the task resolved to "auto" (auxiliary
+        # and compression calls dispatch as "auto" but bind to a concrete OAuth
+        # backend, e.g. api.anthropic.com). Without this the auto-routed client
+        # is excluded from refresh and a 401 on a stale singleton OAuth token
+        # (Anthropic) retries forever instead of refreshing.
+        _refresh_provider = resolved_provider
+        if _refresh_provider in {"auto", "", None}:
+            _refresh_provider = _recoverable_pool_provider(
+                resolved_provider, client, main_runtime=main_runtime)
         if (_is_auth_error(first_err)
-                and resolved_provider not in {"auto", "", None}
+                and _refresh_provider
                 and not client_is_nous):
-            if _refresh_provider_credentials(resolved_provider):
+            if _refresh_provider_credentials(_refresh_provider):
                 logger.info(
                     "Auxiliary %s (async): refreshed %s credentials after auth error, retrying",
-                    task or "call", resolved_provider,
+                    task or "call", _refresh_provider,
                 )
+                # The client may be cached under the "auto" key; provider-keyed
+                # eviction misses it, so evict by instance to force a rebuild
+                # that picks up the refreshed token.
+                _evict_cached_client_instance(client)
                 return await _retry_same_provider_async(
                     task=task,
                     resolved_provider=resolved_provider,

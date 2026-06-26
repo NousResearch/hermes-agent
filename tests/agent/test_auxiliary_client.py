@@ -1415,6 +1415,17 @@ class TestIsPaymentError:
         setattr(exc, "status_code", 403)
         assert _is_payment_error(exc) is True
 
+    def test_429_zai_subscription_plan_is_payment(self):
+        """z.ai returns 429 (code 1311) when the active plan doesn't include
+        the requested model. It's permanent, so it must classify as a payment
+        error (switch backend) rather than a transient rate limit. (#13234)"""
+        exc = Exception(
+            "Your current subscription plan does not yet include access to "
+            "model GLM-5V-Turbo."
+        )
+        setattr(exc, "status_code", 429)
+        assert _is_payment_error(exc) is True
+
     def test_429_session_usage_limit_is_payment(self):
         exc = Exception(
             "you have reached your session usage limit, upgrade for higher limits"

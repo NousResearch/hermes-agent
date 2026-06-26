@@ -1531,7 +1531,8 @@ class CLICommandsMixin:
         )
         if out is None:
             out = ("Unknown /memory subcommand. "
-                   "Use: pending, approve <id>, reject <id>, approval <on|off>.")
+                   "Use: pending, approve <id>, reject <id>, show <id>, "
+                   "approval <off|on|background_only>.")
         print(out)
 
     def _save_write_approval(self, subsystem: str, value):

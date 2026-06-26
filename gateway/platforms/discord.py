@@ -3247,6 +3247,17 @@ class DiscordAdapter(BasePlatformAdapter):
             task = kb.get_task(conn, task_id)
 
             if chat_id:
+                notifier_profile = getattr(self, "_kanban_notifier_profile", None)
+                if not notifier_profile:
+                    active_profile_name = getattr(self, "_active_profile_name", None)
+                    if callable(active_profile_name):
+                        notifier_profile = active_profile_name()
+                if not notifier_profile:
+                    try:
+                        from hermes_cli.profiles import get_active_profile_name
+                        notifier_profile = get_active_profile_name() or "default"
+                    except Exception:
+                        notifier_profile = "default"
                 kb.add_notify_sub(
                     conn,
                     task_id=task_id,
@@ -3254,7 +3265,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     chat_id=chat_id,
                     thread_id=thread_id,
                     user_id=payload["user_id"] or None,
-                    notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                    notifier_profile=notifier_profile if isinstance(notifier_profile, str) else "default",
                 )
             return {
                 "id": task_id,

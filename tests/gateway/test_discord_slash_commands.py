@@ -290,6 +290,53 @@ def test_ai_company_task_creation_accepts_ready_in_real_kanban_db(adapter, monke
     assert subscribers[0]["notifier_profile"] == "rino"
 
 
+def test_ai_company_task_creation_uses_active_profile_fallback_without_adapter_method(adapter, monkeypatch):
+    """DiscordAdapter itself does not define _active_profile_name; natural task creation must not crash."""
+    fake_conn = MagicMock()
+    fake_conn.close = MagicMock()
+
+    def fake_create_task(conn, **kwargs):
+        return "t_fallback123"
+
+    def fake_get_task(conn, task_id):
+        return SimpleNamespace(
+            id=task_id,
+            title="カンバン登録の確認",
+            assignee="operations-orchestrator",
+            status="ready",
+        )
+
+    fake_add_notify_sub = MagicMock()
+    monkeypatch.setattr("hermes_cli.kanban_db.connect", MagicMock(return_value=fake_conn))
+    monkeypatch.setattr("hermes_cli.kanban_db.create_task", fake_create_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.get_task", fake_get_task)
+    monkeypatch.setattr("hermes_cli.kanban_db.add_notify_sub", fake_add_notify_sub)
+    monkeypatch.setattr("hermes_cli.profiles.get_active_profile_name", lambda: "default")
+    monkeypatch.delenv("HERMES_TASK_KANBAN_BOARD", raising=False)
+    monkeypatch.delenv("HERMES_TASK_DEFAULT_ASSIGNEE", raising=False)
+
+    if hasattr(adapter, "_active_profile_name"):
+        delattr(adapter, "_active_profile_name")
+
+    payload = {
+        "title": "カンバン登録の確認",
+        "body": "Discordの自然文依頼から登録されたタスクです。",
+        "created_by": "内田さん",
+        "user_id": "67890",
+    }
+
+    created = adapter._create_ai_company_task(
+        payload=payload,
+        idempotency_key="discord-natural-task:fallback-profile",
+        chat_id="12345",
+        thread_id=None,
+    )
+
+    assert created["id"] == "t_fallback123"
+    fake_add_notify_sub.assert_called_once()
+    assert fake_add_notify_sub.call_args.kwargs["notifier_profile"] == "default"
+
+
 # ------------------------------------------------------------------
 # Auto-registration from COMMAND_REGISTRY
 # ------------------------------------------------------------------

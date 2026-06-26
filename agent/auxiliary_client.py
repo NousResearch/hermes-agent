@@ -237,33 +237,40 @@ def _is_arcee_trinity_thinking(model: Optional[str]) -> bool:
     return bare == "trinity-large-thinking"
 
 
-# Context window enforced by ChatGPT's Codex OAuth backend for gpt-5.5.
+# Context window enforced by ChatGPT's Codex OAuth backend for gpt-5.4/5.5.
 # The raw OpenAI API and OpenRouter expose 1.05M for the same slug, but the
 # Codex backend hard-caps at 272K (verified live: a ~330K-token request to
 # chatgpt.com/backend-api/codex/responses is rejected with
 # ``context_length_exceeded`` while ~250K succeeds). With a 272K ceiling the
 # default 50% compaction trigger fires at ~136K — wasteful, since the model
 # can hold far more raw context before summarization actually buys anything.
-# We raise the trigger to 85% (~231K) on this exact route so Codex gpt-5.5
-# sessions use the window they actually have.
-_CODEX_GPT55_COMPACTION_THRESHOLD = 0.85
+# We raise the trigger to 85% (~231K) on this exact route so Codex gpt-5.4/
+# gpt-5.5 sessions use the window they actually have.
+_CODEX_GPT54_GPT55_COMPACTION_THRESHOLD = 0.85
 
 
-def _is_codex_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
-    """True for gpt-5.5 accessed through the ChatGPT Codex OAuth backend.
+def _is_codex_gpt54_or_gpt55(model: Optional[str], provider: Optional[str] = None) -> bool:
+    """True for gpt-5.4 / gpt-5.5 on the ChatGPT Codex OAuth backend.
 
     Matches only the Codex OAuth route (provider ``openai-codex``), not the
     direct OpenAI API, OpenRouter, or GitHub Copilot paths — those expose a
     larger context window for the same slug and must keep the user's default
-    compaction threshold. ``gpt-5.5-pro`` and dated snapshots
-    (``gpt-5.5-2026-04-23``) are matched via prefix so the override tracks the
-    family without re-listing every variant.
+    compaction threshold. ``gpt-5.4-pro`` / ``gpt-5.5-pro`` and dated snapshots
+    are matched via prefix so the override tracks both 272K-capped families
+    without re-listing every variant.
     """
     prov = (provider or "").strip().lower()
     if prov != "openai-codex":
         return False
     bare = (model or "").strip().lower().rsplit("/", 1)[-1]
-    return bare == "gpt-5.5" or bare.startswith("gpt-5.5-") or bare.startswith("gpt-5.5.")
+    return (
+        bare == "gpt-5.4"
+        or bare.startswith("gpt-5.4-")
+        or bare.startswith("gpt-5.4.")
+        or bare == "gpt-5.5"
+        or bare.startswith("gpt-5.5-")
+        or bare.startswith("gpt-5.5.")
+    )
 
 
 def _fixed_temperature_for_model(
@@ -302,18 +309,19 @@ def _compression_threshold_for_model(
 
     Per-model/route overrides:
       - Arcee Trinity Large Thinking → 0.75 (preserve reasoning context).
-      - gpt-5.5 on the Codex OAuth route → 0.85, because Codex caps the window
-        at 272K and the default 50% trigger would compact at ~136K. Gated by
-        ``allow_codex_gpt55_autoraise`` so the user can opt back down to the
-        global default (the caller passes the config flag through here).
+      - gpt-5.4 / gpt-5.5 on the Codex OAuth route → 0.85, because Codex caps
+        both families at 272K and the default 50% trigger would compact at
+        ~136K. Gated by ``allow_codex_gpt55_autoraise`` (historical config-key
+        name kept for backward compatibility) so the user can opt back down to
+        the global default (the caller passes the config flag through here).
 
     Returns a float in (0, 1] to override the global ``compression.threshold``
     config value, or ``None`` to leave the user's config value unchanged.
     """
     if _is_arcee_trinity_thinking(model):
         return 0.75
-    if allow_codex_gpt55_autoraise and _is_codex_gpt55(model, provider):
-        return _CODEX_GPT55_COMPACTION_THRESHOLD
+    if allow_codex_gpt55_autoraise and _is_codex_gpt54_or_gpt55(model, provider):
+        return _CODEX_GPT54_GPT55_COMPACTION_THRESHOLD
     return None
 
 # Default auxiliary models for direct API-key providers (cheap/fast for side tasks)
@@ -3862,7 +3870,15 @@ def resolve_provider_client(
     # main_model also empty), the branches still hit their own
     # missing-credentials returns and ``_resolve_auto`` falls through to
     # the Step-2 chain as before.
-    if not model:
+    #
+    # Prefer explicit caller model, then provider-scoped aux model, then main model.
+    # Do NOT pre-fill a blank ``auto`` request from the config/main default here.
+    # ``auto`` has its own main-runtime resolver below; pre-filling first can pair
+    # a stale configured model with a live fallback provider (e.g. Claude model
+    # sent to Codex after the main lane fell back to gpt-5.5). Let _resolve_auto()
+    # return the actual current runtime model when the caller did not explicitly
+    # request one. (# compression-current-model)
+    if not model and provider != "auto":
         model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:

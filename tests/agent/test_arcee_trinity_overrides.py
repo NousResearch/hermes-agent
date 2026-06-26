@@ -17,7 +17,7 @@ from agent.auxiliary_client import (
     _compression_threshold_for_model,
     _fixed_temperature_for_model,
     _is_arcee_trinity_thinking,
-    _is_codex_gpt55,
+    _is_codex_gpt54_or_gpt55,
 )
 
 
@@ -78,14 +78,14 @@ def test_compression_threshold_default_none_for_other_models() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Codex gpt-5.5 compaction-threshold autoraise
+# Codex gpt-5.4 / gpt-5.5 compaction-threshold autoraise
 #
-# ChatGPT's Codex OAuth backend caps gpt-5.5 at a 272K window (verified live:
-# ~330K-token request rejected with context_length_exceeded, ~250K accepted).
-# The default 50% compaction trigger would fire at ~136K — half the usable
-# window — so this route raises the trigger to 85%. Only the Codex OAuth route
-# is affected; the same slug on OpenAI direct / OpenRouter / Copilot exposes a
-# larger window and keeps the user's global threshold.
+# ChatGPT's Codex OAuth backend caps both families at a 272K window (verified
+# live via the Codex /models resolver and per-slug fallback table). The default
+# 50% compaction trigger would fire at ~136K — half the usable window — so this
+# route raises the trigger to 85%. Only the Codex OAuth route is affected; the
+# same slugs on OpenAI direct / OpenRouter / Copilot expose a larger window and
+# keep the user's global threshold.
 # ---------------------------------------------------------------------------
 
 
@@ -99,32 +99,40 @@ def test_compression_threshold_default_none_for_other_models() -> None:
         "openai/gpt-5.5",  # aggregator-prefixed (still on the codex route)
         "GPT-5.5",  # case-insensitive
         "  gpt-5.5  ",  # whitespace tolerant
+        "gpt-5.4",  # base 5.4 (272K-capped)
+        "gpt-5.4-pro",  # pro 5.4 variant (272K-capped)
+        "gpt-5.4-2026-01-01",  # dated 5.4 snapshot
+        "openai/gpt-5.4",  # aggregator-prefixed 5.4
     ],
 )
-def test_is_codex_gpt55_matches_on_codex_provider(model: str) -> None:
-    assert _is_codex_gpt55(model, "openai-codex") is True
+def test_is_codex_gpt54_or_gpt55_matches_on_codex_provider(model: str) -> None:
+    assert _is_codex_gpt54_or_gpt55(model, "openai-codex") is True
 
 
 @pytest.mark.parametrize(
     "provider",
     ["openrouter", "openai", "copilot", "openai-api", "", None],
 )
-def test_is_codex_gpt55_rejects_non_codex_providers(provider) -> None:
-    # gpt-5.5 on any non-Codex route keeps the larger window — no override.
-    assert _is_codex_gpt55("gpt-5.5", provider) is False
+def test_is_codex_gpt54_or_gpt55_rejects_non_codex_providers(provider) -> None:
+    # gpt-5.4 / gpt-5.5 on any non-Codex route keep the larger window.
+    assert _is_codex_gpt54_or_gpt55("gpt-5.5", provider) is False
+    assert _is_codex_gpt54_or_gpt55("gpt-5.4", provider) is False
 
 
 @pytest.mark.parametrize(
     "model",
-    ["gpt-5.4", "gpt-5", "gpt-5.55", "gpt-5.50", "", None],
+    ["gpt-5", "gpt-5.55", "gpt-5.50", "gpt-5.45", "gpt-5.40", "", None],
 )
-def test_is_codex_gpt55_rejects_non_55_models(model) -> None:
-    # gpt-5.55 / gpt-5.50 are different families and must NOT match — the
-    # "gpt-5.5-" / "gpt-5.5." prefix guards require a separator after "5.5".
-    assert _is_codex_gpt55(model, "openai-codex") is False
+def test_is_codex_gpt54_or_gpt55_rejects_non_54_55_models(model) -> None:
+    # Close numeric neighbours must NOT match — the prefix guards require a
+    # separator after "5.4" / "5.5" so e.g. gpt-5.45 and gpt-5.55 stay out.
+    assert _is_codex_gpt54_or_gpt55(model, "openai-codex") is False
 
 
 def test_compression_threshold_for_codex_gpt55() -> None:
+    assert _compression_threshold_for_model("gpt-5.4", "openai-codex") == 0.85
+    assert _compression_threshold_for_model("gpt-5.4-pro", "openai-codex") == 0.85
+    assert _compression_threshold_for_model("openai/gpt-5.4", "openai-codex") == 0.85
     assert _compression_threshold_for_model("gpt-5.5", "openai-codex") == 0.85
     assert _compression_threshold_for_model("gpt-5.5-pro", "openai-codex") == 0.85
     assert _compression_threshold_for_model("openai/gpt-5.5", "openai-codex") == 0.85
@@ -132,14 +140,24 @@ def test_compression_threshold_for_codex_gpt55() -> None:
 
 def test_compression_threshold_codex_gpt55_other_routes_unaffected() -> None:
     # Same slug, different route → no override (keep the user's config value).
+    assert _compression_threshold_for_model("gpt-5.4", "openrouter") is None
+    assert _compression_threshold_for_model("gpt-5.4", "openai") is None
+    assert _compression_threshold_for_model("gpt-5.4", "copilot") is None
     assert _compression_threshold_for_model("gpt-5.5", "openrouter") is None
     assert _compression_threshold_for_model("gpt-5.5", "openai") is None
     assert _compression_threshold_for_model("gpt-5.5", "copilot") is None
+    assert _compression_threshold_for_model("openai/gpt-5.4") is None  # no provider
     assert _compression_threshold_for_model("openai/gpt-5.5") is None  # no provider
 
 
 def test_compression_threshold_codex_gpt55_opt_out() -> None:
-    # allow_codex_gpt55_autoraise=False reverts to the global default (None).
+    # Historical flag name still governs both Codex families.
+    assert (
+        _compression_threshold_for_model(
+            "gpt-5.4", "openai-codex", allow_codex_gpt55_autoraise=False
+        )
+        is None
+    )
     assert (
         _compression_threshold_for_model(
             "gpt-5.5", "openai-codex", allow_codex_gpt55_autoraise=False

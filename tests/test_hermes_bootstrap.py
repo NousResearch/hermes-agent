@@ -20,10 +20,12 @@ Key invariants covered by these tests:
 from __future__ import annotations
 
 import io
+import logging
 import os
 import subprocess
 import sys
 import textwrap
+import types
 
 import pytest
 
@@ -229,6 +231,32 @@ class TestStdioReconfigureErrorHandling:
         monkeypatch.setattr(sys, "stderr", _BrokenStream())
         # Must not raise.
         hb.apply_windows_utf8_bootstrap()
+
+
+class TestDurableLazyTargetActivation:
+    """Failures in durable lazy-install activation should stay non-fatal
+    but become observable."""
+
+    def test_activation_failure_logs_warning(self, monkeypatch, caplog):
+        hb = _fresh_import()
+        monkeypatch.setenv("HERMES_LAZY_INSTALL_TARGET", "/tmp/hermes-lazy")
+
+        fake_tools = types.ModuleType("tools")
+        fake_lazy_deps = types.ModuleType("tools.lazy_deps")
+
+        def _raise():
+            raise RuntimeError("simulated activation failure")
+
+        fake_lazy_deps.activate_durable_lazy_target = _raise
+        fake_tools.lazy_deps = fake_lazy_deps
+        monkeypatch.setitem(sys.modules, "tools", fake_tools)
+        monkeypatch.setitem(sys.modules, "tools.lazy_deps", fake_lazy_deps)
+
+        with caplog.at_level(logging.WARNING):
+            hb.activate_durable_lazy_target()
+
+        assert "Lazy-install activation failed; optional tools may be unavailable" in caplog.text
+        assert "simulated activation failure" in caplog.text
 
 
 class TestEntryPointsImportBootstrap:

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -28,6 +28,18 @@ def _make_source() -> SessionSource:
 
 def _make_event(text: str) -> MessageEvent:
     return MessageEvent(text=text, source=_make_source(), message_id="m1")
+
+
+def _make_voice_event(text: str = "voice_message_1.ogg") -> MessageEvent:
+    source = _make_source()
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.VOICE,
+        source=source,
+        message_id="m1",
+        media_urls=["/tmp/voice_message_1.ogg"],
+        media_types=["audio/ogg"],
+    )
 
 
 def _make_runner():
@@ -168,6 +180,67 @@ async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch)
     # Whatever /reload_mcp returns, it must not be the unknown-command guard.
     if result is not None:
         assert "Unknown command" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event_text", ["voice_message_1.ogg", ""])
+async def test_pending_clarify_voice_reply_uses_transcript_and_choice_coercion(
+    monkeypatch,
+    event_text,
+):
+    """Filename-bearing and captionless voice replies resolve from raw STT text."""
+    import gateway.run as gateway_run
+    from tools import clarify_gateway
+
+    runner = _make_runner()
+    session_key = build_session_key(_make_source())
+    clarify_id = f"clarify-voice-{event_text or 'empty'}"
+    clarify_gateway.register(
+        clarify_id,
+        session_key,
+        "Pick one",
+        ["first choice", "second choice"],
+    )
+    runner.hooks.emit_collect = AsyncMock(return_value=[])
+    runner._transcribe_pending_audio_event_once = AsyncMock(
+        return_value=('"2"', ["2"]),
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_voice_event(event_text))
+
+    assert result == ""
+    runner._transcribe_pending_audio_event_once.assert_awaited_once()
+    assert clarify_gateway.wait_for_response(clarify_id, timeout=0.1) == "second choice"
+
+
+@pytest.mark.asyncio
+async def test_failed_clarify_voice_transcription_does_not_resolve_marker(monkeypatch):
+    """An STT status marker is not a user answer; the clarify stays pending."""
+    import gateway.run as gateway_run
+    from tools import clarify_gateway
+
+    runner = _make_runner()
+    event = _make_voice_event("")
+    session_key = build_session_key(event.source)
+    clarify_id = "clarify-voice-stt-failure"
+    clarify_gateway.register(clarify_id, session_key, "Say anything", None)
+    runner._transcribe_pending_audio_event_once = AsyncMock(
+        return_value=("[voice message could not be transcribed]", []),
+    )
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    try:
+        assert await runner._handle_message(event) == ""
+        runner._transcribe_pending_audio_event_once.assert_awaited_once()
+        assert clarify_gateway.has_pending(session_key) is True
+    finally:
+        clarify_gateway.clear_session(session_key)
 
 
 # ------------------------------------------------------------------

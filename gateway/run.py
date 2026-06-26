@@ -10210,7 +10210,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             _pending_clarify = None
         if _pending_clarify is not None and _clarify_mod is not None:
-            _raw_clarify_reply = (event.text or "").strip()
+            _clarify_has_audio = bool(self._pending_event_audio_paths(event))
+            _raw_clarify_reply = await self._prepare_clarify_reply_text(event)
+            if _clarify_has_audio and not _raw_clarify_reply:
+                logger.info(
+                    "Gateway retained pending clarify after voice transcription "
+                    "produced no usable text (session=%s, id=%s)",
+                    _quick_key,
+                    _pending_clarify.clarify_id,
+                )
+                return ""
             # Skip slash commands — the user clearly wanted to issue a
             # command, not answer the clarify.  Leave the clarify pending
             # so the user can retry; if it times out, the agent unblocks
@@ -11930,6 +11939,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source=source,
             history=history,
             session_key=session_key,
+        )
+
+    async def _prepare_clarify_reply_text(self, event) -> str:
+        """Return raw text or successful voice transcripts for a clarify reply."""
+        if not self._pending_event_audio_paths(event):
+            return (event.text or "").strip()
+
+        _, successful_transcripts = await self._transcribe_pending_audio_event_once(
+            event, "",
+        )
+        return "\n\n".join(
+            transcript.strip()
+            for transcript in successful_transcripts
+            if transcript.strip()
         )
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:

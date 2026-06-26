@@ -1214,7 +1214,7 @@ def test_slash_exec_plugin_handler_error_returns_output(server):
     assert worker.calls == []
 
 
-@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan"])
+@pytest.mark.parametrize("cmd", ["retry", "queue hello", "q hello", "steer fix the test", "plan", "learn https://example.com/api"])
 def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
     """slash.exec must route _pending_input commands to command.dispatch
     internally instead of returning the old 4018 "use command.dispatch"
@@ -1254,6 +1254,12 @@ def test_slash_exec_routes_pending_input_commands_to_dispatch(server, cmd):
     # Internal routing must yield the same payload as command.dispatch.
     assert routed.get("result") == direct.get("result")
     assert routed.get("error") == direct.get("error")
+
+
+def test_pending_input_commands_includes_learn(server):
+    """Guard: _PENDING_INPUT_COMMANDS must list 'learn' — removing it would
+    silently re-break /learn in the TUI/Desktop (IPC queue has no reader)."""
+    assert "learn" in server._PENDING_INPUT_COMMANDS
 
 
 def test_command_dispatch_queue_sends_message(server):

@@ -23,6 +23,9 @@ from tools.mcp_oauth import (
     _make_callback_handler,
     _redirect_handler,
     _paste_callback_reader,
+    _build_client_metadata,
+    _configure_callback_port,
+    _set_oauth_redirect_host,
 )
 
 
@@ -231,6 +234,15 @@ class TestUtilities:
         # At least 2 different ports out of 5 attempts
         assert len(ports) >= 2
 
+    def test_find_free_port_supports_localhost_dual_stack_request(self):
+        port = _find_free_port("localhost")
+        assert isinstance(port, int)
+        assert 1024 <= port <= 65535
+
+    def test_set_oauth_redirect_host_rejects_unknown_value(self):
+        with pytest.raises(ValueError):
+            _set_oauth_redirect_host("example.com")
+
     def test_can_open_browser_false_in_ssh(self, monkeypatch):
         monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
         assert _can_open_browser() is False
@@ -272,6 +284,20 @@ class TestRedirectHandlerSshHint:
         assert "49200" in err
         assert "ssh -N -L" in err
         assert "Remote session detected" in err
+        assert "http://127.0.0.1:49200/callback" in err
+
+    def test_ssh_hint_shows_localhost_redirect_host(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49203)
+        monkeypatch.setattr(mco, "_oauth_uri_host", "localhost")
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        self._run(_redirect_handler("https://example.com/auth?foo=bar"))
+
+        err = capsys.readouterr().err
+        assert "http://localhost:49203/callback" in err
 
     def test_ssh_hint_shown_via_ssh_tty(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
@@ -585,6 +611,22 @@ def test_configure_callback_port_uses_explicit_port():
     port = _configure_callback_port(cfg)
     assert port == 54321
     assert cfg["_resolved_port"] == 54321
+
+
+def test_build_client_metadata_uses_localhost_redirect_host():
+    pytest.importorskip("mcp")
+    cfg = {"redirect_host": "localhost", "redirect_port": 8771}
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+    assert str(md.redirect_uris[0]) == "http://localhost:8771/callback"
+
+
+def test_build_client_metadata_uses_ipv6_redirect_host():
+    pytest.importorskip("mcp")
+    cfg = {"redirect_host": "::1", "redirect_port": 8771}
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+    assert str(md.redirect_uris[0]) == "http://[::1]:8771/callback"
 
 
 def test_build_oauth_auth_preserves_server_url_path():

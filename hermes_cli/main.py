@@ -63,6 +63,16 @@ except ModuleNotFoundError:
 
 import os
 import sys
+import warnings
+
+# Optional platform SDKs such as lark_oapi can emit this specific
+# pkg_resources deprecation warning at import time, which otherwise goes
+# straight to raw stderr before the interactive UI takes over.
+warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated as an API\..*",
+    category=UserWarning,
+)
 
 
 def _set_process_title() -> None:

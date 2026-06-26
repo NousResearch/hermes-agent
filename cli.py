@@ -14794,9 +14794,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
                 _aio_probe.set_event_loop_policy(_SelectEventLoopPolicy())
 
-        # Run the application with patch_stdout for proper output handling
+        # Run the application with patch_stdout for proper output handling.
+        # prompt_toolkit only proxies stdout; raw stderr writes from warnings,
+        # background MCP reconnect paths, or third-party SDKs can still corrupt
+        # the live prompt. Divert stderr into a side log for the duration of the
+        # interactive app.
         try:
-            with patch_stdout():
+            from hermes_logging import redirect_stderr_to_log
+
+            with redirect_stderr_to_log(), patch_stdout():
                 # Set the custom handler on prompt_toolkit's event loop
                 try:
                     import asyncio as _aio
@@ -15092,6 +15098,20 @@ def main(
     try:
         from hermes_cli.stdio import configure_windows_stdio
         configure_windows_stdio()
+    except Exception:
+        pass
+
+    # Optional MCP/platform SDKs can emit import-time deprecation warnings to
+    # raw stderr during tool discovery, before prompt_toolkit takes control of
+    # the screen. Silence the known lark_oapi/pkg_resources warning so startup
+    # stays clean; real errors still surface normally.
+    try:
+        import warnings
+        warnings.filterwarnings(
+            "ignore",
+            message=r"pkg_resources is deprecated as an API\..*",
+            category=UserWarning,
+        )
     except Exception:
         pass
 

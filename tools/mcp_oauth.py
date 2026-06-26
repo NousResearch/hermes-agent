@@ -92,6 +92,8 @@ class OAuthNonInteractiveError(RuntimeError):
 # Port used by the most recent build_oauth_auth() call.  Exposed so that
 # tests can verify the callback server and the redirect_uri share a port.
 _oauth_port: int | None = None
+_oauth_bind_host: str = "127.0.0.1"
+_oauth_uri_host: str = "127.0.0.1"
 
 
 # Skip tokens accepted at the paste prompt — exit OAuth without auth.
@@ -128,11 +130,69 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w\-]", "_", name).strip("_")[:128] or "default"
 
 
-def _find_free_port() -> int:
-    """Find an available TCP port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+def _set_oauth_redirect_host(host: str) -> None:
+    """Configure the loopback host used for OAuth callback binding + URIs."""
+    global _oauth_bind_host, _oauth_uri_host
+    normalized = (host or "127.0.0.1").strip() or "127.0.0.1"
+    if normalized not in {"localhost", "127.0.0.1", "::1"}:
+        raise ValueError(
+            f"Unsupported oauth.redirect_host '{host}'. Use one of: localhost, 127.0.0.1, ::1"
+        )
+    _oauth_bind_host = normalized
+    _oauth_uri_host = normalized
+
+
+def _loopback_families(bind_host: str) -> list[tuple[int, str]]:
+    """Return loopback families/hosts that must share the callback port."""
+    if bind_host == "localhost":
+        return [
+            (socket.AF_INET, "127.0.0.1"),
+            (socket.AF_INET6, "::1"),
+        ]
+    if bind_host == "::1":
+        return [(socket.AF_INET6, "::1")]
+    return [(socket.AF_INET, "127.0.0.1")]
+
+
+def _find_free_port(bind_host: str = "127.0.0.1") -> int:
+    """Find an available TCP port on the requested loopback family/families."""
+    families = _loopback_families(bind_host)
+    if len(families) == 1:
+        family, host = families[0]
+        with socket.socket(family, socket.SOCK_STREAM) as s:
+            s.bind((host, 0))
+            return s.getsockname()[1]
+
+    last_error: OSError | None = None
+    for _ in range(20):
+        family, host = families[0]
+        with socket.socket(family, socket.SOCK_STREAM) as first:
+            first.bind((host, 0))
+            port = first.getsockname()[1]
+        reserved: list[socket.socket] = []
+        try:
+            for family, host in families:
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                try:
+                    if family == socket.AF_INET6:
+                        try:
+                            sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                        except OSError:
+                            pass
+                    sock.bind((host, port))
+                    reserved.append(sock)
+                except OSError as exc:
+                    sock.close()
+                    last_error = exc
+                    break
+            else:
+                return port
+        finally:
+            for sock in reserved:
+                sock.close()
+    if last_error is not None:
+        raise last_error
+    raise OSError("Could not find a free loopback port")
 
 
 def _is_interactive() -> bool:
@@ -410,16 +470,16 @@ async def _redirect_handler(authorization_url: str) -> None:
     )
     print(msg, file=sys.stderr)
 
-    # On a remote SSH session the OAuth provider redirects to
-    # http://127.0.0.1:<port>/callback, which reaches the callback server on
-    # the *remote* machine — not the user's local machine where the browser
-    # opened.  Two ways out: paste the redirect URL back (default fallback,
-    # offered by _wait_for_callback on interactive TTYs), or set up an SSH
-    # port forward so the redirect tunnels through.
+    # On a remote SSH session the OAuth provider redirects to the configured
+    # loopback callback host, which reaches the callback server on the *remote*
+    # machine — not the user's local machine where the browser opened. Two ways
+    # out: paste the redirect URL back (default fallback, offered by
+    # _wait_for_callback on interactive TTYs), or set up an SSH port forward so
+    # the redirect tunnels through.
     if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
         print(
             f"  Remote session detected. After you authorize, the provider redirects to\n"
-            f"    http://127.0.0.1:{_oauth_port}/callback\n"
+            f"    http://{_oauth_uri_host}:{_oauth_port}/callback\n"
             f"  which only the listener on THIS machine can receive. Two options:\n"
             f"\n"
             f"    1. Easiest — when your browser shows a connection error after\n"
@@ -478,9 +538,14 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     # We just need to poll for the result.
     handler_cls, result = _make_callback_handler()
 
-    # Start a temporary server on the known port
+    # Start a temporary server on the known port.
+    server_cls = HTTPServer
+    if _oauth_bind_host == "::1":
+        class _IPv6HTTPServer(HTTPServer):
+            address_family = socket.AF_INET6
+        server_cls = _IPv6HTTPServer
     try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
+        server = server_cls((_oauth_bind_host, _oauth_port), handler_cls)
     except OSError:
         # Port already in use — the server from build_oauth_auth is running.
         # Fall back to polling the server started by build_oauth_auth.
@@ -655,7 +720,9 @@ def _configure_callback_port(cfg: dict) -> int:
     """
     global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
-    port = _find_free_port() if requested == 0 else requested
+    redirect_host = cfg.get("redirect_host", "127.0.0.1")
+    _set_oauth_redirect_host(redirect_host)
+    port = _find_free_port(_oauth_bind_host) if requested == 0 else requested
     cfg["_resolved_port"] = port
     _oauth_port = port  # legacy consumer: _wait_for_callback reads this
     return port
@@ -674,7 +741,7 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         )
     client_name = cfg.get("client_name", "Hermes Agent")
     scope = cfg.get("scope")
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = f"http://{_oauth_uri_host}:{port}/callback"
 
     metadata_kwargs: dict[str, Any] = {
         "client_name": client_name,
@@ -701,7 +768,7 @@ def _maybe_preregister_client(
     if not client_id:
         return
     port = cfg["_resolved_port"]
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = f"http://{_oauth_uri_host}:{port}/callback"
 
     info_dict: dict[str, Any] = {
         "client_id": client_id,

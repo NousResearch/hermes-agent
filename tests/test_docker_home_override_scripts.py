@@ -43,8 +43,32 @@ def test_dashboard_run_resets_home_before_dropping_privileges() -> None:
     text = DASHBOARD_RUN.read_text(encoding="utf-8")
 
     assert "#!/command/with-contenv sh" in text
-    assert "export HOME=/opt/data" in text
-    assert "exec s6-setuidgid hermes hermes dashboard" in text
+
+    # HOME must be reset before privileges are dropped, so HOME-anchored
+    # state lands under the hermes user's home (default /opt/data) rather
+    # than the /root that with-contenv repopulates from /init.
+    #
+    # Assert the contract, not a frozen literal: the script resolves the
+    # hermes home from passwd and falls back to /opt/data
+    # (``export HOME="${_hermes_passwd_home:-/opt/data}"``), so a literal
+    # ``export HOME=/opt/data`` substring no longer appears. What must hold
+    # is (1) HOME is exported, (2) it is anchored to the /opt/data default,
+    # and (3) that export happens BEFORE the s6-setuidgid privilege drop.
+    home_export_idx = text.find("export HOME=")
+    assert home_export_idx != -1, "dashboard run must export HOME"
+    assert "/opt/data" in text, (
+        "HOME export must anchor to the /opt/data default (directly or as "
+        "the ${...:-/opt/data} fallback)"
+    )
+
+    setuidgid_idx = text.find("exec s6-setuidgid hermes hermes dashboard")
+    assert setuidgid_idx != -1, (
+        "dashboard run must exec via s6-setuidgid to drop privileges"
+    )
+    assert home_export_idx < setuidgid_idx, (
+        "HOME must be reset BEFORE s6-setuidgid drops privileges, or "
+        "HOME-anchored state lands under /root instead of the hermes home"
+    )
 
 
 def test_dashboard_run_does_not_derive_insecure_from_bind_host() -> None:

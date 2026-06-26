@@ -1434,3 +1434,170 @@ def test_session_split_restores_source_thread_id_from_binding(tmp_path):
     meta = GatewayRunner._thread_metadata_for_source(runner, source)
     assert meta is not None
     assert meta["thread_id"] == "17585"
+
+
+# ---------------------------------------------------------------------------
+# Tests for format_session_info with source overrides
+# ---------------------------------------------------------------------------
+
+def test_format_session_info_honors_topic_override(tmp_path):
+    """Verify that _format_session_info resolves and displays the overridden/topic model."""
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from gateway.config import Platform
+    from unittest.mock import patch
+
+    runner = object.__new__(GatewayRunner)
+    runner._session_model_overrides = {
+        "agent:main:telegram:dm:208214988:17585": {
+            "model": "MiniMax-M3",
+            "provider": "minimax",
+        }
+    }
+
+    # Mock the session key derivation and config loading
+    runner._session_key_for_source = lambda source: "agent:main:telegram:dm:208214988:17585"
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="208214988",
+        chat_id="208214988",
+        user_name="tester",
+        chat_type="dm",
+        thread_id="17585",
+    )
+
+    with patch("gateway.run._load_gateway_config", return_value={}):
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={}):
+            info = runner._format_session_info(source=source)
+
+    assert "MiniMax-M3" in info
+    assert "minimax" in info
+
+
+def test_format_session_info_no_source_falls_back_to_default(tmp_path):
+    """Verify that _format_session_info falls back to default config if no source is provided."""
+    from gateway.run import GatewayRunner
+    from unittest.mock import patch
+
+    runner = object.__new__(GatewayRunner)
+    runner._session_model_overrides = {
+        "agent:main:telegram:dm:208214988:17585": {
+            "model": "MiniMax-M3",
+            "provider": "minimax",
+        }
+    }
+
+    with patch("gateway.run._load_gateway_config", return_value={
+        "model": {
+            "default": "gemini-3.1-flash-lite",
+            "provider": "gemini",
+        }
+    }):
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={}):
+            info = runner._format_session_info(source=None)
+
+    assert "gemini-3.1-flash-lite" in info
+    assert "gemini" in info
+
+
+# ---------------------------------------------------------------------------
+# Tests for topic-specific profiles
+# ---------------------------------------------------------------------------
+
+def test_topic_profile_persistence(tmp_path):
+    """Verify that topic profiles can be saved, loaded, and removed persistently."""
+    from gateway.run import _save_topic_profile, _load_topic_profiles, _remove_topic_profile
+    from unittest.mock import patch
+
+    with patch("gateway.run._hermes_home", tmp_path):
+        assert _load_topic_profiles() == {}
+        
+        _save_topic_profile("telegram:dm:208214988:17585", "coder")
+        assert _load_topic_profiles() == {"telegram:dm:208214988:17585": "coder"}
+        
+        _remove_topic_profile("telegram:dm:208214988:17585")
+        assert _load_topic_profiles() == {}
+
+
+def test_session_key_for_source_honors_profile_override(tmp_path):
+    """Verify that _session_key_for_source resolves the persistent profile override and updates source."""
+    from gateway.run import GatewayRunner
+    from gateway.session import SessionSource
+    from gateway.config import Platform, GatewayConfig
+    from unittest.mock import patch, MagicMock
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(platforms={})
+    runner.config.multiplex_profiles = True
+    runner.session_store = MagicMock()
+    # Mock generation to use building logic
+    from gateway.session import build_session_key
+    runner.session_store._generate_session_key.side_effect = lambda src: build_session_key(src, profile=src.profile)
+    runner._normalize_source_for_session_key = lambda src: src
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="208214988",
+        chat_type="dm",
+        thread_id="17585",
+        profile=None,
+    )
+
+    with patch("gateway.run._load_topic_profiles", return_value={"telegram:dm:208214988:17585": "coder"}):
+        session_key = runner._session_key_for_source(source)
+
+    assert source.profile == "coder"
+    assert "agent:coder" in session_key
+
+
+@pytest.mark.asyncio
+async def test_handle_profile_command_switches_profile(tmp_path):
+    """Verify that /profile <name> updates and /profile default clears the override."""
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+    from gateway.platforms.base import MessageEvent
+    from gateway.session import SessionSource
+    from gateway.config import Platform
+    from unittest.mock import patch, MagicMock
+
+    class TestSlashCommands(GatewaySlashCommandsMixin):
+        def __init__(self):
+            self._evict_cached_agent = MagicMock()
+            self._normalize_source_for_session_key = lambda src: src
+            self._session_key_for_source = lambda src: "dummy"
+            self._active_profile_name = lambda: "default"
+
+    cmd = TestSlashCommands()
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="208214988",
+        chat_type="dm",
+        thread_id="17585",
+    )
+    event = MessageEvent(
+        text="/profile coder",
+        source=source,
+        message_id="m1",
+    )
+
+    # Mock list_profiles to return "default" and "coder"
+    profile1 = MagicMock()
+    profile1.name = "default"
+    profile2 = MagicMock()
+    profile2.name = "coder"
+
+    with patch("hermes_cli.profiles.list_profiles", return_value=[profile1, profile2]):
+        with patch("gateway.run._save_topic_profile") as mock_save:
+            res = await cmd._handle_profile_command(event)
+            mock_save.assert_called_once_with("telegram:dm:208214988:17585", "coder")
+            assert "Pinned this topic to profile `coder`" in res
+            assert source.profile == "coder"
+
+        # Now clear it
+        event.text = "/profile default"
+        with patch("gateway.run._remove_topic_profile") as mock_remove:
+            res = await cmd._handle_profile_command(event)
+            mock_remove.assert_called_once_with("telegram:dm:208214988:17585")
+            assert "Cleared the topic profile binding" in res
+            assert source.profile is None

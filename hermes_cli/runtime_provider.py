@@ -30,9 +30,92 @@ from hermes_cli.auth import (
     resolve_external_process_provider_credentials,
     has_usable_secret,
 )
+import json
 from hermes_cli.config import get_compatible_custom_providers, load_config
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import OPENROUTER_BASE_URL, get_default_hermes_root, get_hermes_home
 from utils import base_url_host_matches, base_url_hostname, env_int
+
+
+def _env_get(env: Optional[Dict[str, Any]], key: str, default: str = "") -> str:
+    if env is None:
+        return os.getenv(key, default)
+    value = env.get(key, default)
+    return "" if value is None else str(value)
+
+
+def _resolve_api_key_credentials(provider: str, env: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if env is None:
+        return resolve_api_key_provider_credentials(provider)
+    return resolve_api_key_provider_credentials(provider, env=env)
+
+
+def _scoped_auth_store_allowed(env: Optional[Dict[str, Any]]) -> bool:
+    if env is None:
+        return True
+    try:
+        profile_home = get_hermes_home().resolve(strict=False)
+        default_home = get_default_hermes_root().resolve(strict=False)
+        return profile_home != default_home
+    except Exception:
+        return False
+
+
+def _load_pool_for_env(provider: str, env: Optional[Dict[str, Any]]) -> Optional[CredentialPool]:
+    if env is None:
+        return load_pool(provider)
+    if not _scoped_auth_store_allowed(env):
+        return None
+    auth_path = get_hermes_home() / "auth.json"
+    try:
+        if not auth_path.is_file():
+            return CredentialPool(provider, [])
+        data = json.loads(auth_path.read_text(encoding="utf-8"))
+        pools = data.get("credential_pool") if isinstance(data, dict) else None
+        raw_entries = pools.get(provider) if isinstance(pools, dict) else []
+        if not isinstance(raw_entries, list):
+            raw_entries = []
+        entries = [PooledCredential.from_dict(provider, entry) for entry in raw_entries]
+        return CredentialPool(provider, entries)
+    except Exception as exc:
+        logger.debug("Runtime provider: could not load scoped pool for %s: %s", provider, exc)
+        return CredentialPool(provider, [])
+
+
+def _scoped_provider_state_exists(provider: str, env: Optional[Dict[str, Any]]) -> bool:
+    if env is None:
+        return True
+    if not _scoped_auth_store_allowed(env):
+        return False
+    auth_path = get_hermes_home() / "auth.json"
+    try:
+        if not auth_path.is_file():
+            return False
+        data = json.loads(auth_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        logger.debug("Runtime provider: could not inspect scoped auth state for %s: %s", provider, exc)
+        return False
+    providers = data.get("providers") if isinstance(data, dict) else None
+    state = providers.get(provider) if isinstance(providers, dict) else None
+    return isinstance(state, dict) and bool(state)
+
+
+def _scoped_auth_unavailable(provider: str) -> AuthError:
+    return AuthError(
+        f"Provider '{provider}' has no profile-scoped auth credentials. "
+        "Configure credentials in the routed profile instead of relying on "
+        "gateway/global auth state.",
+        provider=provider,
+        code="no_scoped_credentials",
+    )
+
+
+def _get_named_custom_provider_for_env(
+    requested_provider: str,
+    env: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if env is None:
+        return _get_named_custom_provider(requested_provider)
+    return _get_named_custom_provider(requested_provider, env=env)
 
 
 def _getenv(name: str, default: str = "") -> str:
@@ -115,7 +198,7 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     return None
 
 
-def _host_derived_api_key(base_url: str) -> str:
+def _host_derived_api_key(base_url: str, env: Optional[Dict[str, Any]] = None) -> str:
     """Look up `<VENDOR>_API_KEY` in the env, derived from the base URL host.
 
     Examples:
@@ -435,7 +518,11 @@ def _resolve_runtime_from_pool_entry(
     }
 
 
-def resolve_requested_provider(requested: Optional[str] = None) -> str:
+def resolve_requested_provider(
+    requested: Optional[str] = None,
+    *,
+    env: Optional[Dict[str, Any]] = None,
+) -> str:
     """Resolve provider request from explicit arg, config, then env."""
     if requested and requested.strip():
         return requested.strip().lower()
@@ -459,13 +546,14 @@ def _try_resolve_from_custom_pool(
     provider_label: str,
     api_mode_override: Optional[str] = None,
     provider_name: Optional[str] = None,
+    env: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     """Check if a credential pool exists for a custom endpoint and return a runtime dict if so."""
     pool_key = get_custom_provider_pool_key(base_url, provider_name=provider_name)
     if not pool_key:
         return None
     try:
-        pool = load_pool(pool_key)
+        pool = _load_pool_for_env(pool_key, env)
         if not pool.has_credentials():
             return None
         entry = pool.select()
@@ -501,7 +589,11 @@ def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> No
             return
 
 
-def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
+def _get_named_custom_provider(
+    requested_provider: str,
+    *,
+    env: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
     if not requested_norm:
         return None
@@ -525,7 +617,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return None
     if requested_norm != "custom" and not requested_norm.startswith("custom:"):
         try:
-            canonical = auth_mod.resolve_provider(requested_norm)
+            canonical = auth_mod.resolve_provider(requested_norm, env=env)
         except AuthError:
             pass
         else:
@@ -551,8 +643,11 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
             # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
-            resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
+            key_env = str(entry.get("key_env") or entry.get("api_key_env") or "").strip()
+            if env is not None:
+                resolved_api_key = _env_get(env, key_env).strip() if key_env else ""
+            else:
+                resolved_api_key = _getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:
                 resolved_api_key = str(entry.get("api_key", "") or "").strip()
@@ -802,6 +897,7 @@ def _resolve_named_custom_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    env: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated
     # from a `model_aliases:` direct-alias resolution) — build a runtime
@@ -825,7 +921,7 @@ def _resolve_named_custom_runtime(
         # Check credential pool first — mirrors the named-custom-provider path
         # so bare `provider: custom` with a configured custom_providers entry
         # also gets its api_key from the pool instead of env var fallbacks.
-        pool_result = _try_resolve_from_custom_pool(base_url, "custom", None)
+        pool_result = _try_resolve_from_custom_pool(base_url, "custom", None, env=env)
         if pool_result:
             pool_result["source"] = "direct-alias"
             return pool_result
@@ -854,7 +950,7 @@ def _resolve_named_custom_runtime(
             "requested_provider": requested_provider,
         }
 
-    custom_provider = _get_named_custom_provider(requested_provider)
+    custom_provider = _get_named_custom_provider_for_env(requested_provider, env)
     if not custom_provider:
         return None
 
@@ -866,7 +962,13 @@ def _resolve_named_custom_runtime(
         return None
 
     # Check if a credential pool exists for this custom endpoint
-    pool_result = _try_resolve_from_custom_pool(base_url, "custom", custom_provider.get("api_mode"), provider_name=custom_provider.get("name"))
+    pool_result = _try_resolve_from_custom_pool(
+        base_url,
+        "custom",
+        custom_provider.get("api_mode"),
+        provider_name=custom_provider.get("name"),
+        env=env,
+    )
     if pool_result:
         # Propagate the model name even when using pooled credentials —
         # the pool doesn't know about the custom_providers model field.
@@ -925,6 +1027,7 @@ def _resolve_openrouter_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    env: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     model_cfg = _get_model_config()
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
@@ -1042,6 +1145,7 @@ def _resolve_openrouter_runtime(
         pool_result = _try_resolve_from_custom_pool(
             base_url, effective_provider, _parse_api_mode(model_cfg.get("api_mode")),
             provider_name=requested_provider if requested_norm != "custom" else None,
+            env=env,
         )
         if pool_result:
             return pool_result
@@ -1067,6 +1171,7 @@ def _resolve_azure_foundry_runtime(
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
     target_model: Optional[str] = None,
+    env: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Resolve an Azure Foundry runtime entry.
 
@@ -1236,6 +1341,7 @@ def _resolve_explicit_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    env: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
@@ -1250,9 +1356,15 @@ def _resolve_explicit_runtime(
         base_url = explicit_base_url or cfg_base_url or "https://api.anthropic.com"
         api_key = explicit_api_key
         if not api_key:
-            from agent.anthropic_adapter import resolve_anthropic_token
-
-            api_key = resolve_anthropic_token()
+            if env is None:
+                from agent.anthropic_adapter import resolve_anthropic_token
+                api_key = resolve_anthropic_token()
+            else:
+                api_key = (
+                    _env_get(env, "ANTHROPIC_API_KEY").strip()
+                    or _env_get(env, "ANTHROPIC_TOKEN").strip()
+                    or _env_get(env, "CLAUDE_CODE_OAUTH_TOKEN").strip()
+                )
             if not api_key:
                 raise AuthError(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
@@ -1387,6 +1499,7 @@ def resolve_runtime_provider(
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
     target_model: Optional[str] = None,
+    env: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution.
 
@@ -1442,6 +1555,7 @@ def resolve_runtime_provider(
             explicit_api_key=explicit_api_key,
             explicit_base_url=explicit_base_url,
             target_model=target_model,
+            env=env,
         )
         return azure_runtime
 
@@ -1449,6 +1563,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        env=env,
     )
     if custom_runtime:
         custom_runtime["requested_provider"] = requested_provider
@@ -1458,6 +1573,7 @@ def resolve_runtime_provider(
         requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        env=env,
     )
     model_cfg = _get_model_config()
     explicit_runtime = _resolve_explicit_runtime(
@@ -1466,6 +1582,7 @@ def resolve_runtime_provider(
         model_cfg=model_cfg,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        env=env,
     )
     if explicit_runtime:
         return explicit_runtime
@@ -1491,7 +1608,7 @@ def resolve_runtime_provider(
         )
 
     try:
-        pool = load_pool(provider) if should_use_pool else None
+        pool = _load_pool_for_env(provider, env) if should_use_pool else None
     except Exception:
         pool = None
     if pool and pool.has_credentials():
@@ -1570,6 +1687,8 @@ def resolve_runtime_provider(
 
     if provider == "openai-codex":
         try:
+            if not _scoped_provider_state_exists(provider, env):
+                raise _scoped_auth_unavailable(provider)
             creds = resolve_codex_runtime_credentials()
             return {
                 "provider": "openai-codex",
@@ -1590,6 +1709,8 @@ def resolve_runtime_provider(
 
     if provider == "xai-oauth":
         try:
+            if not _scoped_provider_state_exists(provider, env):
+                raise _scoped_auth_unavailable(provider)
             creds = resolve_xai_oauth_runtime_credentials()
             return {
                 "provider": "xai-oauth",
@@ -1608,6 +1729,8 @@ def resolve_runtime_provider(
 
     if provider == "qwen-oauth":
         try:
+            if not _scoped_provider_state_exists(provider, env):
+                raise _scoped_auth_unavailable(provider)
             creds = resolve_qwen_runtime_credentials()
             return {
                 "provider": "qwen-oauth",
@@ -1702,8 +1825,15 @@ def resolve_runtime_provider(
                     "config.yaml model section at a custom env var."
                 )
         else:
-            from agent.anthropic_adapter import resolve_anthropic_token
-            token = resolve_anthropic_token()
+            if env is None:
+                from agent.anthropic_adapter import resolve_anthropic_token
+                token = resolve_anthropic_token()
+            else:
+                token = (
+                    _env_get(env, "ANTHROPIC_API_KEY").strip()
+                    or _env_get(env, "ANTHROPIC_TOKEN").strip()
+                    or _env_get(env, "CLAUDE_CODE_OAUTH_TOKEN").strip()
+                )
             if not token:
                 raise AuthError(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
@@ -1731,7 +1861,16 @@ def resolve_runtime_provider(
         # Lambda execution roles, SSO, and other implicit sources that our
         # env-var check can't detect.
         is_explicit = requested_provider in {"bedrock", "aws", "aws-bedrock", "amazon-bedrock", "amazon"}
-        if not is_explicit and not has_aws_credentials():
+        scoped_aws_source = resolve_aws_auth_env_var(env) if env is not None else None
+        if env is not None and not scoped_aws_source:
+            raise AuthError(
+                "No profile-scoped AWS credentials found for Bedrock. Add AWS_ACCESS_KEY_ID + "
+                "AWS_SECRET_ACCESS_KEY, AWS_PROFILE, AWS_BEARER_TOKEN_BEDROCK, or another "
+                "Bedrock-supported AWS credential hint to the routed profile .env.",
+                provider=provider,
+                code="no_scoped_aws_credentials",
+            )
+        if env is None and not is_explicit and not has_aws_credentials():
             raise AuthError(
                 "No AWS credentials found for Bedrock. Configure one of:\n"
                 "  - AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY\n"
@@ -1743,8 +1882,8 @@ def resolve_runtime_provider(
         # Read bedrock-specific config from config.yaml
         _bedrock_cfg = load_config().get("bedrock", {})
         # Region priority: config.yaml bedrock.region → env var → us-east-1
-        region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
-        auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
+        region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region(env)
+        auth_source = scoped_aws_source or resolve_aws_auth_env_var() or "aws-sdk-default-chain"
         # Build guardrail config if configured
         _gr = _bedrock_cfg.get("guardrail", {})
         guardrail_config = None
@@ -1791,7 +1930,7 @@ def resolve_runtime_provider(
     # API-key providers (z.ai/GLM, Kimi, MiniMax, MiniMax-CN)
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
-        creds = resolve_api_key_provider_credentials(provider)
+        creds = _resolve_api_key_credentials(provider, env)
         # Honour model.base_url from config.yaml when the configured provider
         # matches this provider — mirrors the Anthropic path above.  Without
         # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
@@ -1847,6 +1986,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        env=env,
     )
     runtime["requested_provider"] = requested_provider
     return runtime

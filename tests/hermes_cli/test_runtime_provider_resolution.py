@@ -180,6 +180,7 @@ def test_resolve_runtime_provider_qwen_oauth(monkeypatch):
             "expires_at_ms": 1775640710946,
         },
     )
+    monkeypatch.setattr(rp, "_load_pool_for_env", lambda *a, **k: None)
 
     resolved = rp.resolve_runtime_provider(requested="qwen-oauth")
 
@@ -236,6 +237,7 @@ def test_qwen_oauth_auto_fallthrough_on_auth_failure(monkeypatch):
     )
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-or-key")
+    monkeypatch.setattr(rp, "_load_pool_for_env", lambda *a, **k: None)
 
     # Should NOT raise — falls through to OpenRouter
     resolved = rp.resolve_runtime_provider(requested="auto")
@@ -2851,8 +2853,8 @@ def _patch_bedrock(monkeypatch, config_default=""):
     monkeypatch.setattr(rp, "_get_model_config", lambda: {"default": config_default})
     monkeypatch.setattr(rp, "load_config", lambda: {"bedrock": {}})
     monkeypatch.setattr(ba, "has_aws_credentials", lambda: True)
-    monkeypatch.setattr(ba, "resolve_aws_auth_env_var", lambda: "AWS_PROFILE")
-    monkeypatch.setattr(ba, "resolve_bedrock_region", lambda: "eu-north-1")
+    monkeypatch.setattr(ba, "resolve_aws_auth_env_var", lambda *a, **k: "AWS_PROFILE")
+    monkeypatch.setattr(ba, "resolve_bedrock_region", lambda *a, **k: "eu-north-1")
 
 
 def test_resolve_runtime_provider_bedrock_claude_target_model_uses_anthropic_messages(monkeypatch):

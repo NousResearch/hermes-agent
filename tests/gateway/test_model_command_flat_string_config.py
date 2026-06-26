@@ -160,16 +160,13 @@ async def test_model_global_persists_when_config_has_proper_dict_model(tmp_path,
 
 @pytest.mark.asyncio
 async def test_model_no_flag_persists_by_default(tmp_path, monkeypatch):
-    """A plain ``/model X`` (no --global) now persists to config.yaml.
-
-    This is the user-facing fix: switching models in one session survives
-    into the next without re-typing the switch every time.
-    """
+    """A plain ``/model X`` (no --global) on gateway now persists to topic_models.json instead of config.yaml."""
     cfg_path = _setup_isolated_home(
         tmp_path,
         monkeypatch,
         {"default": "old-model", "provider": "openai-codex"},
     )
+    hermes_home = tmp_path / ".hermes"
 
     result = await _make_runner()._handle_model_command(
         _make_event("/model gpt-5.5")
@@ -178,7 +175,14 @@ async def test_model_no_flag_persists_by_default(tmp_path, monkeypatch):
     assert result is not None
     assert "gpt-5.5" in result
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
-    assert written["model"]["default"] == "gpt-5.5"
+    assert written["model"]["default"] == "old-model"
+
+    import json
+    topic_models_path = hermes_home / "topic_models.json"
+    assert topic_models_path.exists()
+    topic_models = json.loads(topic_models_path.read_text(encoding="utf-8"))
+    assert "agent:main:telegram:dm:12345" in topic_models
+    assert topic_models["agent:main:telegram:dm:12345"]["model"] == "gpt-5.5"
 
 
 @pytest.mark.asyncio

@@ -39,6 +39,7 @@ import subprocess
 import threading
 import time
 import uuid
+from pathlib import Path
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
@@ -53,6 +54,7 @@ logger = logging.getLogger(__name__)
 
 # Checkpoint file for crash recovery (gateway only)
 CHECKPOINT_PATH = get_hermes_home() / "processes.json"
+_IMPORT_CHECKPOINT_PATH = CHECKPOINT_PATH
 
 # Limits
 MAX_OUTPUT_CHARS = 200_000      # 200KB rolling output buffer
@@ -75,6 +77,24 @@ WATCH_GLOBAL_WINDOW_SECONDS = 10
 WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 
 
+def _checkpoint_path_for_home(home: str | Path | None = None) -> Path:
+    """Return the checkpoint path for the active Hermes home.
+
+    Tests historically monkeypatch ``CHECKPOINT_PATH`` directly.  Preserve
+    that contract; otherwise derive the path from the current/profile home so
+    routed profile process metadata is not persisted in the gateway home.
+    """
+    configured = Path(CHECKPOINT_PATH)
+    if configured != _IMPORT_CHECKPOINT_PATH:
+        return configured
+    base = Path(home).expanduser() if home else get_hermes_home()
+    return base / "processes.json"
+
+
+def _checkpoint_path_overridden() -> bool:
+    return Path(CHECKPOINT_PATH) != _IMPORT_CHECKPOINT_PATH
+
+
 def format_uptime_short(seconds: int) -> str:
     s = max(0, int(seconds))
     if s < 60:
@@ -93,6 +113,8 @@ class ProcessSession:
     command: str                                 # Original command string
     task_id: str = ""                           # Task/sandbox isolation key
     session_key: str = ""                       # Gateway session key (for reset protection)
+    agent_profile: str = ""                     # Routed gateway profile name
+    agent_hermes_home: str = ""                 # Routed profile HERMES_HOME
     pid: Optional[int] = None                   # OS process ID
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
     env_ref: Any = None                         # Reference to the environment object
@@ -195,6 +217,7 @@ class ProcessRegistry:
         self._global_watch_window_hits: int = 0
         self._global_watch_tripped_until: float = 0.0
         self._global_watch_suppressed_during_trip: int = 0
+        self._checkpoint_paths: set[Path] = {_checkpoint_path_for_home()}
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:
@@ -288,6 +311,8 @@ class ProcessRegistry:
                 self.completion_queue.put({
                     "session_id": session.id,
                     "session_key": session.session_key,
+                    "agent_profile": session.agent_profile,
+                    "agent_hermes_home": session.agent_hermes_home,
                     "command": session.command,
                     "type": "watch_disabled",
                     "suppressed": session._watch_suppressed,
@@ -319,6 +344,8 @@ class ProcessRegistry:
         self.completion_queue.put({
             "session_id": session.id,
             "session_key": session.session_key,
+            "agent_profile": session.agent_profile,
+            "agent_hermes_home": session.agent_hermes_home,
             "command": session.command,
             "type": "watch_match",
             "pattern": matched_pattern,
@@ -666,6 +693,8 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        agent_profile: str = "",
+        agent_hermes_home: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -682,6 +711,8 @@ class ProcessRegistry:
             command=command,
             task_id=task_id,
             session_key=session_key,
+            agent_profile=agent_profile,
+            agent_hermes_home=agent_hermes_home,
             cwd=_resolve_safe_cwd(cwd or os.getcwd()),
             started_at=time.time(),
         )
@@ -805,6 +836,8 @@ class ProcessRegistry:
         task_id: str = "",
         session_key: str = "",
         timeout: int = 10,
+        agent_profile: str = "",
+        agent_hermes_home: str = "",
     ) -> ProcessSession:
         """
         Spawn a background process through a non-local environment backend.
@@ -1042,6 +1075,8 @@ class ProcessRegistry:
                 "type": "completion",
                 "session_id": session.id,
                 "session_key": session.session_key,
+                "agent_profile": session.agent_profile,
+                "agent_hermes_home": session.agent_hermes_home,
                 "command": session.command,
                 "exit_code": session.exit_code,
                 "completion_reason": session.completion_reason,
@@ -1130,6 +1165,51 @@ class ProcessRegistry:
         with self._lock:
             session = self._running.get(session_id) or self._finished.get(session_id)
         return self._refresh_detached_session(session)
+
+    @staticmethod
+    def _normalize_home(value: str) -> str:
+        value = str(value or "").strip()
+        if not value:
+            return ""
+        try:
+            return str(Path(value).expanduser().resolve(strict=False))
+        except Exception:
+            return value
+
+    def _current_scope(self) -> tuple[bool, str, str]:
+        try:
+            from gateway.session_context import get_session_env
+            active_profile = get_session_env("HERMES_SESSION_AGENT_PROFILE", "")
+            active_home = get_session_env("HERMES_SESSION_AGENT_HERMES_HOME", "")
+        except Exception:
+            active_profile = ""
+            active_home = ""
+
+        active_home = self._normalize_home(active_home)
+        active_profile = str(active_profile or "").strip()
+        is_routed = bool(active_profile or active_home)
+        return is_routed, active_home, active_profile
+
+    def _in_current_scope(self, session: ProcessSession) -> bool:
+        is_routed, active_home, active_profile = self._current_scope()
+        session_home = self._normalize_home(session.agent_hermes_home)
+        session_profile = str(session.agent_profile or "").strip()
+        if not session_profile:
+            parts = str(session.session_key or "").split(":", 2)
+            if len(parts) >= 2 and parts[0] == "agent" and parts[1] not in {"", "main", "cron"}:
+                session_profile = parts[1]
+        if is_routed:
+            if active_home:
+                return bool(session_home and session_home == active_home)
+            return False
+        return not bool(session_home or session_profile)
+
+    def _get_for_current_scope(self, session_id: str) -> Optional[ProcessSession]:
+        """Return a process only when it belongs to the active profile scope."""
+        session = self.get(session_id)
+        if session is None or not self._in_current_scope(session):
+            return None
+        return session
 
     def _reconcile_local_exit(self, session: "ProcessSession") -> None:
         """Reconcile session.exited against the real child process state.
@@ -1520,6 +1600,7 @@ class ProcessRegistry:
             all_sessions = list(self._running.values()) + list(self._finished.values())
 
         all_sessions = [self._refresh_detached_session(s) for s in all_sessions]
+        all_sessions = [s for s in all_sessions if self._in_current_scope(s)]
 
         if task_id:
             all_sessions = [s for s in all_sessions if s.task_id == task_id]
@@ -1650,11 +1731,16 @@ class ProcessRegistry:
 
     # ----- Checkpoint (crash recovery) -----
 
+    @staticmethod
+    def _checkpoint_path_for_session(session: ProcessSession) -> Path:
+        home = str(session.agent_hermes_home or "").strip()
+        return _checkpoint_path_for_home(home or None)
+
     def _write_checkpoint(self):
         """Write running process metadata to checkpoint file atomically."""
         try:
             with self._lock:
-                entries = []
+                entries_by_path: Dict[Path, list[dict]] = {}
                 for s in self._running.values():
                     if not s.exited:
                         # Lazily backfill the kernel start time for host PIDs so
@@ -1662,7 +1748,8 @@ class ProcessRegistry:
                         # for sessions spawned before this field existed.
                         if s.host_start_time is None and s.pid_scope == "host" and s.pid:
                             s.host_start_time = self._safe_host_start_time(s.pid)
-                        entries.append({
+                        path = self._checkpoint_path_for_session(s)
+                        entries_by_path.setdefault(path, []).append({
                             "session_id": s.id,
                             "command": s.command,
                             "pid": s.pid,
@@ -1672,6 +1759,8 @@ class ProcessRegistry:
                             "started_at": s.started_at,
                             "task_id": s.task_id,
                             "session_key": s.session_key,
+                            "agent_profile": s.agent_profile,
+                            "agent_hermes_home": s.agent_hermes_home,
                             "watcher_platform": s.watcher_platform,
                             "watcher_chat_id": s.watcher_chat_id,
                             "watcher_user_id": s.watcher_user_id,
@@ -1682,26 +1771,62 @@ class ProcessRegistry:
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
                         })
+                if _checkpoint_path_overridden():
+                    paths = set(entries_by_path) or {Path(CHECKPOINT_PATH)}
+                else:
+                    paths = set(self._checkpoint_paths) | set(entries_by_path)
+                if not paths:
+                    paths = {_checkpoint_path_for_home()}
+                self._checkpoint_paths = paths
             
             # Atomic write to avoid corruption on crash
             from utils import atomic_json_write
-            atomic_json_write(CHECKPOINT_PATH, entries)
+            for path in paths:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                atomic_json_write(path, entries_by_path.get(path, []))
         except Exception as e:
             logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
-    def recover_from_checkpoint(self) -> int:
+    def recover_from_checkpoint(self, checkpoint_paths: list[str | Path] | None = None) -> int:
         """
         On gateway startup, probe PIDs from checkpoint file.
 
         Returns the number of processes recovered as detached.
         """
-        if not CHECKPOINT_PATH.exists():
+        paths: list[Path] = [_checkpoint_path_for_home()]
+        if not _checkpoint_path_overridden():
+            from hermes_constants import get_default_hermes_root
+            try:
+                root = get_default_hermes_root()
+                profiles_dir = root / "profiles"
+                if profiles_dir.exists():
+                    for p_dir in profiles_dir.iterdir():
+                        if p_dir.is_dir() and (p_dir / "processes.json").exists():
+                            paths.append(p_dir / "processes.json")
+            except Exception:
+                pass
+        if checkpoint_paths and not _checkpoint_path_overridden():
+            paths.extend(Path(path) for path in checkpoint_paths)
+
+        seen_paths: set[Path] = set()
+        entries: list[dict] = []
+        for path in paths:
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
+            if not path.exists():
+                continue
+            try:
+                loaded = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if isinstance(loaded, list):
+                entries.extend(entry for entry in loaded if isinstance(entry, dict))
+
+        if not entries:
             return 0
 
-        try:
-            entries = json.loads(CHECKPOINT_PATH.read_text(encoding="utf-8"))
-        except Exception:
-            return 0
+        self._checkpoint_paths |= seen_paths
 
         recovered = 0
         for entry in entries:
@@ -1739,26 +1864,31 @@ class ProcessRegistry:
                     )
                 continue
 
+            raw_agent_profile = str(entry.get("agent_profile", "") or "").strip()
+            raw_agent_home = str(entry.get("agent_hermes_home", "") or "").strip()
+            legacy_profile_without_home = bool(raw_agent_profile and not raw_agent_home)
             session = ProcessSession(
                 id=entry["session_id"],
                 command=entry.get("command", "unknown"),
                 task_id=entry.get("task_id", ""),
                 session_key=entry.get("session_key", ""),
+                agent_profile="" if legacy_profile_without_home else raw_agent_profile,
+                agent_hermes_home=raw_agent_home,
                 pid=pid,
                 host_start_time=recorded_start,
                 pid_scope=pid_scope,
                 cwd=entry.get("cwd"),
                 started_at=entry.get("started_at", time.time()),
                 detached=True,  # Can't read output, but can report status + kill
-                watcher_platform=entry.get("watcher_platform", ""),
-                watcher_chat_id=entry.get("watcher_chat_id", ""),
-                watcher_user_id=entry.get("watcher_user_id", ""),
-                watcher_user_name=entry.get("watcher_user_name", ""),
-                watcher_thread_id=entry.get("watcher_thread_id", ""),
-                watcher_message_id=entry.get("watcher_message_id", ""),
-                watcher_interval=entry.get("watcher_interval", 0),
-                notify_on_complete=entry.get("notify_on_complete", False),
-                watch_patterns=entry.get("watch_patterns", []),
+                watcher_platform="" if legacy_profile_without_home else entry.get("watcher_platform", ""),
+                watcher_chat_id="" if legacy_profile_without_home else entry.get("watcher_chat_id", ""),
+                watcher_user_id="" if legacy_profile_without_home else entry.get("watcher_user_id", ""),
+                watcher_user_name="" if legacy_profile_without_home else entry.get("watcher_user_name", ""),
+                watcher_thread_id="" if legacy_profile_without_home else entry.get("watcher_thread_id", ""),
+                watcher_message_id="" if legacy_profile_without_home else entry.get("watcher_message_id", ""),
+                watcher_interval=0 if legacy_profile_without_home else entry.get("watcher_interval", 0),
+                notify_on_complete=False if legacy_profile_without_home else entry.get("notify_on_complete", False),
+                watch_patterns=[] if legacy_profile_without_home else entry.get("watch_patterns", []),
             )
             with self._lock:
                 self._running[session.id] = session
@@ -1771,6 +1901,8 @@ class ProcessRegistry:
                     "session_id": session.id,
                     "check_interval": session.watcher_interval,
                     "session_key": session.session_key,
+                    "agent_profile": session.agent_profile,
+                    "agent_hermes_home": session.agent_hermes_home,
                     "platform": session.watcher_platform,
                     "chat_id": session.watcher_chat_id,
                     "user_id": session.watcher_user_id,
@@ -2055,6 +2187,12 @@ def _handle_process(args, **kw):
     elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
+        scoped = process_registry._get_for_current_scope(session_id)
+        if scoped is None:
+            return json.dumps({
+                "status": "not_found",
+                "error": "No process with ID in current profile scope",
+            }, ensure_ascii=False)
         if action == "poll":
             return json.dumps(process_registry.poll(session_id), ensure_ascii=False)
         elif action == "log":

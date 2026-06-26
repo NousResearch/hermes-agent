@@ -1413,6 +1413,173 @@ class MultiplexConfigError(RuntimeError):
     """
 
 
+class RoutingSessionStoreProxy:
+    def __init__(self, runner):
+        self._runner = runner
+        self._db_proxy = RoutingSessionDBProxy(runner)
+
+    @property
+    def _db(self):
+        return self._db_proxy
+
+    @property
+    def _lock(self):
+        return self._resolve_store_for_args()._lock
+
+    @property
+    def _entries(self):
+        return self._resolve_store_for_args()._entries
+
+    def _resolve_store_for_args(self, *args, **kwargs):
+        # 1. Check if active home override is active
+        try:
+            from hermes_constants import get_hermes_home, get_default_hermes_root
+            cur = get_hermes_home().resolve()
+            root = get_default_hermes_root().resolve()
+            if cur != root:
+                return self._runner._get_or_create_store_for_home(cur)
+        except Exception:
+            pass
+
+        # 2. Check for SessionSource in args/kwargs
+        from gateway.session import SessionSource
+        for arg in args:
+            if isinstance(arg, SessionSource):
+                return self._runner.session_store_for_source(arg)
+        for val in kwargs.values():
+            if isinstance(val, SessionSource):
+                return self._runner.session_store_for_source(val)
+
+        # 3. Check for session_key (string starting with agent:) in args/kwargs
+        for arg in args:
+            if isinstance(arg, str) and arg.startswith("agent:"):
+                parts = arg.split(":")
+                if len(parts) > 1:
+                    profile_name = parts[1]
+                    if profile_name != "main":
+                        from hermes_cli.profiles import get_profile_dir
+                        try:
+                            ph = get_profile_dir(profile_name).resolve()
+                            return self._runner._get_or_create_store_for_home(ph)
+                        except Exception:
+                            pass
+                break
+        for val in kwargs.values():
+            if isinstance(val, str) and val.startswith("agent:"):
+                parts = val.split(":")
+                if len(parts) > 1:
+                    profile_name = parts[1]
+                    if profile_name != "main":
+                        from hermes_cli.profiles import get_profile_dir
+                        try:
+                            ph = get_profile_dir(profile_name).resolve()
+                            return self._runner._get_or_create_store_for_home(ph)
+                        except Exception:
+                            pass
+                break
+
+        # 4. Check for session_id (which might be in args/kwargs)
+        session_id = kwargs.get("session_id")
+        if not session_id:
+            for arg in args:
+                if isinstance(arg, str) and len(arg) >= 32 and "-" in arg:
+                    session_id = arg
+                    break
+        if session_id:
+            if hasattr(self._runner, "_profile_session_stores"):
+                for store in self._runner._profile_session_stores.values():
+                    if hasattr(store, "_entries"):
+                        for entry in store._entries.values():
+                            if entry.session_id == session_id:
+                                return store
+            # Fallback scan of all profiles
+            for home in self._runner._all_profile_homes():
+                store = self._runner._get_or_create_store_for_home(home)
+                if hasattr(store, "_entries"):
+                    for entry in store._entries.values():
+                        if entry.session_id == session_id:
+                            return store
+
+        # Default fallback to the global session store
+        from hermes_constants import get_default_hermes_root
+        try:
+            root = get_default_hermes_root().resolve()
+            return self._runner._get_or_create_store_for_home(root)
+        except Exception:
+            return self._runner.session_store
+
+    def __getattr__(self, name):
+        store = self._resolve_store_for_args()
+        return getattr(store, name)
+
+    def _generate_session_key(self, source, *args, **kwargs):
+        return self._resolve_store_for_args(source, *args, **kwargs)._generate_session_key(source, *args, **kwargs)
+
+    def get_or_create_session(self, source, *args, **kwargs):
+        return self._resolve_store_for_args(source, *args, **kwargs).get_or_create_session(source, *args, **kwargs)
+
+    def switch_session(self, session_key, *args, **kwargs):
+        return self._resolve_store_for_args(session_key, *args, **kwargs).switch_session(session_key, *args, **kwargs)
+
+    def append_to_transcript(self, session_id, *args, **kwargs):
+        return self._resolve_store_for_args(session_id, *args, **kwargs).append_to_transcript(session_id, *args, **kwargs)
+
+    def load_transcript(self, session_id, *args, **kwargs):
+        return self._resolve_store_for_args(session_id, *args, **kwargs).load_transcript(session_id, *args, **kwargs)
+
+    def rewrite_transcript(self, session_id, *args, **kwargs):
+        return self._resolve_store_for_args(session_id, *args, **kwargs).rewrite_transcript(session_id, *args, **kwargs)
+
+    def rewind_session(self, session_id, *args, **kwargs):
+        return self._resolve_store_for_args(session_id, *args, **kwargs).rewind_session(session_id, *args, **kwargs)
+
+    def lookup_by_session_id(self, session_id, *args, **kwargs):
+        return self._resolve_store_for_args(session_id, *args, **kwargs).lookup_by_session_id(session_id, *args, **kwargs)
+
+    def has_platform_message_id(self, session_id, *args, **kwargs):
+        return self._resolve_store_for_args(session_id, *args, **kwargs).has_platform_message_id(session_id, *args, **kwargs)
+
+    def reset_session(self, session_key, *args, **kwargs):
+        return self._resolve_store_for_args(session_key, *args, **kwargs).reset_session(session_key, *args, **kwargs)
+
+    def suspend_session(self, session_key, *args, **kwargs):
+        return self._resolve_store_for_args(session_key, *args, **kwargs).suspend_session(session_key, *args, **kwargs)
+
+    def mark_resume_pending(self, session_key, *args, **kwargs):
+        return self._resolve_store_for_args(session_key, *args, **kwargs).mark_resume_pending(session_key, *args, **kwargs)
+
+    def clear_resume_pending(self, session_key, *args, **kwargs):
+        return self._resolve_store_for_args(session_key, *args, **kwargs).clear_resume_pending(session_key, *args, **kwargs)
+
+    @property
+    def config(self):
+        return self._resolve_store_for_args().config
+
+
+class RoutingSessionDBProxy:
+    def __init__(self, runner):
+        self._runner = runner
+
+    def _resolve_db_for_args(self, *args, **kwargs):
+        store_proxy = RoutingSessionStoreProxy(self._runner)
+        store = store_proxy._resolve_store_for_args(*args, **kwargs)
+        if store:
+            return store._db
+        return None
+
+    def __getattr__(self, name):
+        db = self._resolve_db_for_args()
+        return getattr(db, name)
+
+    def delete_telegram_topic_binding(self, chat_id, thread_id, *args, **kwargs):
+        from gateway.session import SessionSource, Platform
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, thread_id=thread_id)
+        store = self._runner.session_store_for_source(source)
+        if store and store._db:
+            return store._db.delete_telegram_topic_binding(chat_id, thread_id, *args, **kwargs)
+        return False
+
+
 @_contextmanager
 def _profile_runtime_scope(profile_home: "Path"):
     """Scope config/skills/memory AND credentials to a profile for one turn.
@@ -2223,6 +2390,94 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _load_topic_models() -> dict:
+    """Load the persistent topic-specific model overrides from ~/.hermes/topic_models.json."""
+    import json
+    path = _hermes_home / "topic_models.json"
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_topic_model(session_key: str, model_data: dict) -> None:
+    """Save a persistent topic-specific model override to ~/.hermes/topic_models.json."""
+    path = _hermes_home / "topic_models.json"
+    data = _load_topic_models()
+    data[session_key] = model_data
+    try:
+        atomic_json_write(path, data)
+    except Exception as e:
+        logger.warning("Failed to save topic model: %s", e)
+
+
+def _remove_topic_model(session_key: str) -> None:
+    """Remove a persistent topic-specific model override from ~/.hermes/topic_models.json."""
+    path = _hermes_home / "topic_models.json"
+    data = _load_topic_models()
+    if session_key in data:
+        data.pop(session_key)
+        try:
+            atomic_json_write(path, data)
+        except Exception as e:
+            logger.warning("Failed to remove topic model: %s", e)
+
+
+def _topic_profile_key(source: Any) -> str:
+    """Derive a profile lookup key from a session source.
+
+    We use a representation of the source's platform, chat type, chat ID, and thread ID
+    which is completely independent of the profile namespace.
+    """
+    if not source:
+        return ""
+    platform = getattr(source, "platform", None)
+    platform_str = platform.value if platform else ""
+    chat_type = getattr(source, "chat_type", "dm") or "dm"
+    chat_id = getattr(source, "chat_id", "") or ""
+    thread_id = getattr(source, "thread_id", "") or ""
+    return f"{platform_str}:{chat_type}:{chat_id}:{thread_id}"
+
+
+def _load_topic_profiles() -> dict:
+    """Load the persistent topic-specific profile overrides from ~/.hermes/topic_profiles.json."""
+    import json
+    path = _hermes_home / "topic_profiles.json"
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_topic_profile(topic_key: str, profile_name: str) -> None:
+    """Save a persistent topic-specific profile override to ~/.hermes/topic_profiles.json."""
+    path = _hermes_home / "topic_profiles.json"
+    data = _load_topic_profiles()
+    data[topic_key] = profile_name
+    try:
+        atomic_json_write(path, data)
+    except Exception as e:
+        logger.warning("Failed to save topic profile: %s", e)
+
+
+def _remove_topic_profile(topic_key: str) -> None:
+    """Remove a persistent topic-specific profile override from ~/.hermes/topic_profiles.json."""
+    path = _hermes_home / "topic_profiles.json"
+    data = _load_topic_profiles()
+    if topic_key in data:
+        data.pop(topic_key)
+        try:
+            atomic_json_write(path, data)
+        except Exception as e:
+            logger.warning("Failed to remove topic profile: %s", e)
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -2544,6 +2799,102 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     _startup_restore_in_progress: bool = False
 
+    def _get_or_create_store_for_home(self, home: "Path"):
+        home = home.resolve()
+        if not hasattr(self, "_profile_cache_lock"):
+            import threading
+            self._profile_cache_lock = threading.Lock()
+        if not hasattr(self, "_profile_session_stores"):
+            self._profile_session_stores = {}
+        with self._profile_cache_lock:
+            if home not in self._profile_session_stores:
+                from gateway.session import SessionStore
+                from tools.process_registry import process_registry
+                profile_sessions_dir = home / "sessions"
+                store = SessionStore(
+                    profile_sessions_dir,
+                    self.config,
+                    has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
+                    db_path=home / "state.db",
+                )
+                self._profile_session_stores[home] = store
+            return self._profile_session_stores[home]
+
+    @property
+    def session_store(self):
+        from hermes_constants import get_hermes_home
+        current_home = get_hermes_home().resolve()
+        return self._get_or_create_store_for_home(current_home)
+
+    @session_store.setter
+    def session_store(self, value):
+        from hermes_constants import get_hermes_home
+        current_home = get_hermes_home().resolve()
+        if not hasattr(self, "_profile_cache_lock"):
+            import threading
+            self._profile_cache_lock = threading.Lock()
+        if not hasattr(self, "_profile_session_stores"):
+            self._profile_session_stores = {}
+        with self._profile_cache_lock:
+            self._profile_session_stores[current_home] = value
+
+    def session_store_for_source(self, source: SessionSource):
+        profile_name = self._routed_profile_for_source(source)
+        if profile_name:
+            from hermes_cli.profiles import get_profile_dir
+            home = get_profile_dir(profile_name).resolve()
+        else:
+            from hermes_constants import get_default_hermes_root
+            home = get_default_hermes_root().resolve()
+        return self._get_or_create_store_for_home(home)
+
+    def _all_profile_homes(self) -> List["Path"]:
+        from hermes_cli.profiles import list_profiles
+        try:
+            return [p.path.resolve() for p in list_profiles()]
+        except Exception:
+            from hermes_constants import get_default_hermes_root
+            root = get_default_hermes_root().resolve()
+            homes = [root]
+            profiles_dir = root / "profiles"
+            if profiles_dir.is_dir():
+                for p in profiles_dir.iterdir():
+                    if p.is_dir():
+                        homes.append(p.resolve())
+            return homes
+
+    @property
+    def _session_db(self):
+        from hermes_constants import get_hermes_home
+        current_home = get_hermes_home().resolve()
+        if not hasattr(self, "_profile_cache_lock"):
+            import threading
+            self._profile_cache_lock = threading.Lock()
+        if not hasattr(self, "_profile_session_dbs"):
+            self._profile_session_dbs = {}
+        with self._profile_cache_lock:
+            if current_home not in self._profile_session_dbs:
+                try:
+                    from hermes_state import SessionDB
+                    db = SessionDB(db_path=current_home / "state.db")
+                    self._profile_session_dbs[current_home] = db
+                except Exception as e:
+                    logger.warning("SQLite session store not available for %s: %s", current_home, e)
+                    self._profile_session_dbs[current_home] = None
+            return self._profile_session_dbs[current_home]
+
+    @_session_db.setter
+    def _session_db(self, value):
+        from hermes_constants import get_hermes_home
+        current_home = get_hermes_home().resolve()
+        if not hasattr(self, "_profile_cache_lock"):
+            import threading
+            self._profile_cache_lock = threading.Lock()
+        if not hasattr(self, "_profile_session_dbs"):
+            self._profile_session_dbs = {}
+        with self._profile_cache_lock:
+            self._profile_session_dbs[current_home] = value
+
     def __init__(self, config: Optional[GatewayConfig] = None):
         global _gateway_runner_ref
         self.config = config or load_gateway_config()
@@ -2585,6 +2936,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self.config.sessions_dir, self.config,
             has_active_processes_fn=lambda key: process_registry.has_active_for_session(key),
         )
+        self._routing_session_store = RoutingSessionStoreProxy(self)
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
@@ -2677,9 +3029,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._agent_cache: "OrderedDict[str, tuple]" = OrderedDict()
         self._agent_cache_lock = _threading.Lock()
 
-        # Per-session model overrides from /model command.
-        # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        try:
+            self._session_model_overrides.update(_load_topic_models())
+        except Exception as e:
+            logger.warning("Failed to load topic models at startup: %s", e)
         # Per-session reasoning effort overrides from /reasoning.
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
@@ -3138,6 +3492,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _session_key_for_source(self, source: SessionSource) -> str:
         """Resolve the current session key for a source, honoring gateway config when available."""
+        try:
+            normalized = self._normalize_source_for_session_key(source)
+            key = _topic_profile_key(normalized)
+            persistent_profile = _load_topic_profiles().get(key)
+            if persistent_profile:
+                source.profile = persistent_profile
+        except Exception:
+            pass
+
         if hasattr(self, "session_store") and self.session_store is not None:
             try:
                 session_key = self.session_store._generate_session_key(source)
@@ -3150,15 +3513,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # produces the same namespace as the primary path: None (legacy
         # agent:main) unless multiplexing is on, then the active profile.
         _profile = None
-        if getattr(config, "multiplex_profiles", False):
-            if source.profile:
-                _profile = source.profile
-            else:
-                try:
-                    from hermes_cli.profiles import get_active_profile_name
-                    _profile = get_active_profile_name() or "default"
-                except Exception:
-                    _profile = None
+        if source.profile:
+            _profile = source.profile
+        elif getattr(config, "multiplex_profiles", False):
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                _profile = get_active_profile_name() or "default"
+            except Exception:
+                _profile = None
         return build_session_key(
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
@@ -3406,6 +3768,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         model = _resolve_gateway_model(user_config)
         override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
+        if not override and resolved_session_key:
+            try:
+                persistent_override = _load_topic_models().get(resolved_session_key)
+                if persistent_override:
+                    self._session_model_overrides[resolved_session_key] = persistent_override
+                    override = persistent_override
+            except Exception:
+                pass
         if override:
             override_model = override.get("model", model)
             override_runtime = {
@@ -6025,7 +6395,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
-            adapter.set_session_store(self.session_store)
+            adapter.set_session_store(self._routing_session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
@@ -6379,26 +6749,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await asyncio.sleep(5)
         while self._running:
             try:
-                if self._session_db is None:
-                    await asyncio.sleep(interval)
-                    continue
-                pending = await asyncio.to_thread(self._session_db.list_pending_handoffs)
-                for row in pending:
-                    session_id = row.get("id")
-                    if not session_id:
-                        continue
-                    if not await asyncio.to_thread(self._session_db.claim_handoff, session_id):
-                        # Another tick or another gateway already claimed it.
-                        continue
-                    try:
-                        await self._process_handoff(row)
-                        await asyncio.to_thread(self._session_db.complete_handoff, session_id)
-                    except Exception as exc:
-                        logger.warning(
-                            "Handoff for session %s failed: %s",
-                            session_id, exc, exc_info=True,
-                        )
-                        await asyncio.to_thread(self._session_db.fail_handoff, session_id, str(exc))
+                for home in self._all_profile_homes():
+                    with _profile_runtime_scope(home):
+                        if self._session_db is None:
+                            continue
+                        pending = await asyncio.to_thread(self._session_db.list_pending_handoffs)
+                        for row in pending:
+                            session_id = row.get("id")
+                            if not session_id:
+                                continue
+                            if not await asyncio.to_thread(self._session_db.claim_handoff, session_id):
+                                # Another tick or another gateway already claimed it.
+                                continue
+                            try:
+                                await self._process_handoff(row)
+                                await asyncio.to_thread(self._session_db.complete_handoff, session_id)
+                            except Exception as exc:
+                                logger.warning(
+                                    "Handoff for session %s failed: %s",
+                                    session_id, exc, exc_info=True,
+                                )
+                                await asyncio.to_thread(self._session_db.fail_handoff, session_id, str(exc))
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -6587,162 +6958,162 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _MAX_FINALIZE_RETRIES = 3
         while self._running:
             try:
-                self.session_store._ensure_loaded()
-                # Collect expired sessions first, then log a single summary.
-                _expired_entries = []
-                for key, entry in list(self.session_store._entries.items()):
-                    if entry.expiry_finalized:
-                        continue
-                    if not self.session_store._is_session_expired(entry):
-                        continue
-                    _expired_entries.append((key, entry))
+                for home in self._all_profile_homes():
+                    with _profile_runtime_scope(home):
+                        self.session_store._ensure_loaded()
+                        # Collect expired sessions first, then log a single summary.
+                        _expired_entries = []
+                        for key, entry in list(self.session_store._entries.items()):
+                            if entry.expiry_finalized:
+                                continue
+                            if not self.session_store._is_session_expired(entry):
+                                continue
+                            _expired_entries.append((key, entry))
 
-                if _expired_entries:
-                    # Extract platform names from session keys for a compact summary.
-                    # Keys look like "agent:main:telegram:dm:12345" — platform is field [2].
-                    _platforms: dict[str, int] = {}
-                    for _k, _e in _expired_entries:
-                        _parts = _k.split(":")
-                        _plat = _parts[2] if len(_parts) > 2 else "unknown"
-                        _platforms[_plat] = _platforms.get(_plat, 0) + 1
-                    _plat_summary = ", ".join(
-                        f"{p}:{c}" for p, c in sorted(_platforms.items())
-                    )
-                    logger.info(
-                        "Session expiry: %d sessions to finalize (%s)",
-                        len(_expired_entries), _plat_summary,
-                    )
-
-                for key, entry in _expired_entries:
-                    try:
-                        try:
-                            from hermes_cli.plugins import invoke_hook as _invoke_hook
-                            _parts = key.split(":")
-                            _platform = _parts[2] if len(_parts) > 2 else ""
-                            _invoke_hook(
-                                "on_session_finalize",
-                                session_id=entry.session_id,
-                                platform=_platform,
-                                reason="session_expired",
+                        if _expired_entries:
+                            # Extract platform names from session keys for a compact summary.
+                            # Keys look like "agent:main:telegram:dm:12345" — platform is field [2].
+                            _platforms: dict[str, int] = {}
+                            for _k, _e in _expired_entries:
+                                _parts = _k.split(":")
+                                _plat = _parts[2] if len(_parts) > 2 else "unknown"
+                                _platforms[_plat] = _platforms.get(_plat, 0) + 1
+                            _plat_summary = ", ".join(
+                                f"{p}:{c}" for p, c in sorted(_platforms.items())
                             )
-                        except Exception:
-                            pass
-                        # Shut down memory provider and close tool resources
-                        # on the cached agent.  Idle agents live in
-                        # _agent_cache (not _running_agents), so look there.
-                        _cached_agent = None
-                        _cache_lock = getattr(self, "_agent_cache_lock", None)
-                        if _cache_lock is not None:
-                            with _cache_lock:
-                                _cached = self._agent_cache.get(key)
-                                _cached_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
-                        # Fall back to _running_agents in case the agent is
-                        # still mid-turn when the expiry fires.
-                        if _cached_agent is None:
-                            _cached_agent = self._running_agents.get(key)
-                        if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
-                            self._cleanup_agent_resources(_cached_agent)
-                        # Drop the cache entry so the AIAgent (and its LLM
-                        # clients, tool schemas, memory provider refs) can
-                        # be garbage-collected.  Otherwise the cache grows
-                        # unbounded across the gateway's lifetime.
-                        self._evict_cached_agent(key)
-                        # Permanently finalizing this session — drop its
-                        # per-session control state so the dicts don't grow
-                        # unbounded across the gateway's lifetime. (Idle
-                        # agent-cache eviction must NOT prune these: the
-                        # session is still alive and a resumed turn rebuilds
-                        # its agent from these overrides. Only true session
-                        # finalization, /new, and /reset clear them.)
-                        self._session_model_overrides.pop(key, None)
-                        self._set_session_reasoning_override(key, None)
-                        if hasattr(self, "_pending_model_notes"):
-                            self._pending_model_notes.pop(key, None)
-                        _pending_approvals = getattr(self, "_pending_approvals", None)
-                        if isinstance(_pending_approvals, dict):
-                            _pending_approvals.pop(key, None)
-                        _update_prompt_pending = getattr(self, "_update_prompt_pending", None)
-                        if isinstance(_update_prompt_pending, dict):
-                            _update_prompt_pending.pop(key, None)
-                        with self.session_store._lock:
-                            entry.expiry_finalized = True
-                            self.session_store._save()
-                        logger.debug(
-                            "Session expiry finalized for %s",
-                            entry.session_id,
-                        )
-                        _finalize_failures.pop(entry.session_id, None)
-                    except Exception as e:
-                        failures = _finalize_failures.get(entry.session_id, 0) + 1
-                        _finalize_failures[entry.session_id] = failures
-                        if failures >= _MAX_FINALIZE_RETRIES:
-                            logger.warning(
-                                "Session finalize gave up after %d attempts for %s: %s. "
-                                "Marking as finalized to prevent infinite retry loop.",
-                                failures, entry.session_id, e,
-                            )
-                            with self.session_store._lock:
-                                entry.expiry_finalized = True
-                                self.session_store._save()
-                            _finalize_failures.pop(entry.session_id, None)
-                        else:
-                            logger.debug(
-                                "Session finalize failed (%d/%d) for %s: %s",
-                                failures, _MAX_FINALIZE_RETRIES, entry.session_id, e,
+                            logger.info(
+                                "Session expiry: %d sessions to finalize (%s)",
+                                len(_expired_entries), _plat_summary,
                             )
 
-                if _expired_entries:
-                    _done = sum(
-                        1 for _, e in _expired_entries if e.expiry_finalized
-                    )
-                    _failed = len(_expired_entries) - _done
-                    if _failed:
-                        logger.info(
-                            "Session expiry done: %d finalized, %d pending retry",
-                            _done, _failed,
-                        )
-                    else:
-                        logger.info(
-                            "Session expiry done: %d finalized", _done,
-                        )
-
-                # Sweep agents that have been idle beyond the TTL regardless
-                # of session reset policy.  This catches sessions with very
-                # long / "never" reset windows, whose cached AIAgents would
-                # otherwise pin memory for the gateway's entire lifetime.
-                try:
-                    _idle_evicted = self._sweep_idle_cached_agents()
-                    if _idle_evicted:
-                        logger.info(
-                            "Agent cache idle sweep: evicted %d agent(s)",
-                            _idle_evicted,
-                        )
-                except Exception as _e:
-                    logger.debug("Idle agent sweep failed: %s", _e)
-
-                # Periodically prune stale SessionStore entries.  The
-                # in-memory dict (and sessions.json) would otherwise grow
-                # unbounded in gateways serving many rotating chats /
-                # threads / users over long time windows.  Pruning is
-                # invisible to users — a resumed session just gets a
-                # fresh session_id, exactly as if the reset policy fired.
-                _last_prune_ts = getattr(self, "_last_session_store_prune_ts", 0.0)
-                _prune_interval = 3600.0  # once per hour
-                if time.time() - _last_prune_ts > _prune_interval:
-                    try:
-                        _max_age = int(
-                            getattr(self.config, "session_store_max_age_days", 0) or 0
-                        )
-                        if _max_age > 0:
-                            _pruned = self.session_store.prune_old_entries(_max_age)
-                            if _pruned:
-                                logger.info(
-                                    "SessionStore prune: dropped %d stale entries",
-                                    _pruned,
+                        for key, entry in _expired_entries:
+                            try:
+                                try:
+                                    from hermes_cli.plugins import invoke_hook as _invoke_hook
+                                    _parts = key.split(":")
+                                    _platform = _parts[2] if len(_parts) > 2 else ""
+                                    _invoke_hook(
+                                        "on_session_finalize",
+                                        session_id=entry.session_id,
+                                        platform=_platform,
+                                        reason="session_expired",
+                                    )
+                                except Exception:
+                                    pass
+                                # Shut down memory provider and close tool resources
+                                # on the cached agent.  Idle agents live in
+                                # _agent_cache (not _running_agents), so look there.
+                                _cached_agent = None
+                                _cache_lock = getattr(self, "_agent_cache_lock", None)
+                                if _cache_lock is not None:
+                                    with _cache_lock:
+                                        _cached = self._agent_cache.get(key)
+                                        _cached_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+                                # Fall back to _running_agents in case the agent is
+                                # still mid-turn when the expiry fires.
+                                if _cached_agent is None:
+                                    _cached_agent = self._running_agents.get(key)
+                                if _cached_agent and _cached_agent is not _AGENT_PENDING_SENTINEL:
+                                    self._cleanup_agent_resources(_cached_agent)
+                                # Drop the cache entry so the AIAgent (and its LLM
+                                # clients, tool schemas, memory provider refs) can
+                                # be garbage-collected.  Otherwise the cache grows
+                                # unbounded across the gateway's lifetime.
+                                self._evict_cached_agent(key)
+                                # Permanently finalizing this session — drop its
+                                # per-session control state so the dicts don't grow
+                                # unbounded across the gateway's lifetime. (Idle
+                                # agent-cache eviction must NOT prune these: the
+                                # session is still alive and a resumed turn rebuilds
+                                # its agent from these overrides. Only true session
+                                # finalization, /new, and /reset clear them.)
+                                self._session_model_overrides.pop(key, None)
+                                _remove_topic_model(key)
+                                self._set_session_reasoning_override(key, None)
+                                if hasattr(self, "_pending_model_notes"):
+                                    self._pending_model_notes.pop(key, None)
+                                _pending_approvals = getattr(self, "_pending_approvals", None)
+                                if isinstance(_pending_approvals, dict):
+                                    _pending_approvals.pop(key, None)
+                                _update_prompt_pending = getattr(self, "_update_prompt_pending", None)
+                                if isinstance(_update_prompt_pending, dict):
+                                    _update_prompt_pending.pop(key, None)
+                                with self.session_store._lock:
+                                    entry.expiry_finalized = True
+                                    self.session_store._save()
+                                logger.debug(
+                                    "Session expiry finalized for %s",
+                                    entry.session_id,
                                 )
-                    except Exception as _e:
-                        logger.debug("SessionStore prune failed: %s", _e)
-                    self._last_session_store_prune_ts = time.time()
+                                _finalize_failures.pop(entry.session_id, None)
+                            except Exception as e:
+                                failures = _finalize_failures.get(entry.session_id, 0) + 1
+                                _finalize_failures[entry.session_id] = failures
+                                if failures >= _MAX_FINALIZE_RETRIES:
+                                    logger.warning(
+                                        "Session finalize gave up after %d attempts for %s: %s. "
+                                        "Marking as finalized to prevent infinite retry loop.",
+                                        failures, entry.session_id, e,
+                                    )
+                                    with self.session_store._lock:
+                                        entry.expiry_finalized = True
+                                        self.session_store._save()
+                                    _finalize_failures.pop(entry.session_id, None)
+                                else:
+                                    logger.debug(
+                                        "Session finalize failed (%d/%d) for %s: %s",
+                                        failures, _MAX_FINALIZE_RETRIES, entry.session_id, e,
+                                    )
+
+                        if _expired_entries:
+                            _done = sum(
+                                1 for _, e in _expired_entries if e.expiry_finalized
+                            )
+                            _failed = len(_expired_entries) - _done
+                            if _failed:
+                                logger.info(
+                                    "Session expiry done: %d finalized, %d pending retry",
+                                    _done, _failed,
+                                )
+                            else:
+                                logger.info(
+                                    "Session expiry done: %d finalized", _done,
+                                )
+
+                        # Sweep agents that have been idle beyond the TTL regardless
+                        # of session reset policy.  This catches sessions with very
+                        # long / "never" reset windows, whose cached AIAgents would
+                        # otherwise pin memory for the gateway's entire lifetime.
+                        try:
+                            # Note: _sweep_idle_cached_agents sweeps the global _agent_cache,
+                            # but running it inside the profile scope ensures safe cleanup.
+                            _idle_evicted = self._sweep_idle_cached_agents()
+                            if _idle_evicted:
+                                logger.info(
+                                    "Agent cache idle sweep: evicted %d agent(s)",
+                                    _idle_evicted,
+                                )
+                        except Exception as _e:
+                            logger.debug("Idle agent sweep failed: %s", _e)
+
+                        # Periodically prune stale SessionStore entries.
+                        _last_prune_ts = getattr(self, "_last_session_store_prune_ts", 0.0)
+                        _prune_interval = 3600.0  # once per hour
+                        if time.time() - _last_prune_ts > _prune_interval:
+                            try:
+                                _max_age = int(
+                                    getattr(self.config, "session_store_max_age_days", 0) or 0
+                                )
+                                if _max_age > 0:
+                                    _pruned = self.session_store.prune_old_entries(_max_age)
+                                    if _pruned:
+                                        logger.info(
+                                            "SessionStore prune: dropped %d stale entries",
+                                            _pruned,
+                                        )
+                            except Exception as _e:
+                                logger.debug("SessionStore prune failed: %s", _e)
+                            self._last_session_store_prune_ts = time.time()
             except Exception as e:
                 logger.debug("Session expiry watcher error: %s", e)
             # Sleep in small increments so we can stop quickly
@@ -6758,6 +7129,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return get_active_profile_name() or "default"
         except Exception:
             return "default"
+
+    def _routed_profile_for_source(self, source: SessionSource) -> Optional[str]:
+        """Return the profile name bound to the source's topic, or None.
+
+        None  → unbound topic: nothing is scoped, behavior is UNCHANGED.
+        "<name>" → enter _profile_runtime_scope(get_profile_dir(<name>)) for the whole turn.
+        """
+        try:
+            normalized = self._normalize_source_for_session_key(source)
+            key = _topic_profile_key(normalized)
+            name = (_load_topic_profiles().get(key) or "").strip()
+            if not name or name in ("default", self._active_profile_name()):
+                return None
+            return name
+        except Exception:
+            return None
 
     # ── Kanban board watchers ───────────────────────────────────────────
     # The kanban notifier/dispatcher watcher loops + their helpers live in
@@ -6825,7 +7212,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     adapter.set_message_handler(self._handle_message)
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
-                    adapter.set_session_store(self.session_store)
+                    adapter.set_session_store(self._routing_session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter._busy_text_mode = self._busy_text_mode
@@ -7258,8 +7645,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # old gateway's connection holding the WAL lock until Python
             # actually exits — causing 'database is locked' errors when
             # the new gateway tries to open the same file.
-            for _db_holder in (self, getattr(self, "session_store", None)):
-                _db = getattr(_db_holder, "_db", None) if _db_holder else None
+            dbs_to_close = []
+            if hasattr(self, "_profile_session_dbs"):
+                dbs_to_close.extend(self._profile_session_dbs.values())
+            if hasattr(self, "_profile_session_stores"):
+                for store in self._profile_session_stores.values():
+                    if hasattr(store, "_db") and store._db not in dbs_to_close:
+                        dbs_to_close.append(store._db)
+            for holder in (self, getattr(self, "session_store", None)):
+                db = getattr(holder, "_db", None) if holder else None
+                if db and db not in dbs_to_close:
+                    dbs_to_close.append(db)
+            
+            for _db in dbs_to_close:
                 if _db is None or not hasattr(_db, "close"):
                     continue
                 try:
@@ -7490,7 +7888,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._make_profile_message_handler(profile_name)
             )
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
-            adapter.set_session_store(self.session_store)
+            adapter.set_session_store(self._routing_session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter._busy_text_mode = self._busy_text_mode
@@ -7697,8 +8095,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         await adapter.send(source.chat_id, content, metadata=metadata)
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
+        # Ensure we set source.profile from topic overrides before resolving profile
+        try:
+            normalized = self._normalize_source_for_session_key(event.source)
+            key = _topic_profile_key(normalized)
+            persistent_profile = _load_topic_profiles().get(key)
+            if persistent_profile:
+                event.source.profile = persistent_profile
+        except Exception:
+            pass
+
+        source = event.source
+        routed = self._routed_profile_for_source(source)
+        multiplex = getattr(getattr(self, "config", None), "multiplex_profiles", False)
+
+        if not multiplex and routed is None:
+            return await self._handle_message_inner(event)
+
+        profile_home = self._resolve_profile_home_for_source(source)
+        with _profile_runtime_scope(profile_home):
+            return await self._handle_message_inner(event)
+
+    async def _handle_message_inner(self, event: MessageEvent) -> Optional[str]:
         """
-        Handle an incoming message from any platform.
+        Handle an incoming message from any platform (core pipeline).
         
         This is the core message processing pipeline:
         1. Check user authorization
@@ -7709,6 +8129,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         6. Run agent conversation
         7. Return response
         """
+        try:
+            normalized = self._normalize_source_for_session_key(event.source)
+            key = _topic_profile_key(normalized)
+            persistent_profile = _load_topic_profiles().get(key)
+            if persistent_profile:
+                event.source.profile = persistent_profile
+        except Exception:
+            pass
+
         source = event.source
 
         if (
@@ -9009,7 +9438,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            routed = self._routed_profile_for_source(source)
+            if routed is not None:
+                profile_home = self._resolve_profile_home_for_source(source)
+                with _profile_runtime_scope(profile_home):
+                    _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            else:
+                _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             if getattr(event, "_moa_disable_after_turn", False):
                 try:
                     _restore = getattr(event, "_moa_restore_override", None)
@@ -9506,7 +9941,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(context)
-        
+
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
         persist_user_message = None
@@ -9569,14 +10004,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
                         try:
-                            session_info = self._format_session_info()
+                            session_info = self._format_session_info(source=source)
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
                             pass
+                        _reset_meta = self._thread_metadata_for_source(source)
                         await adapter.send(
                             source.chat_id, notice,
-                            metadata=self._thread_metadata_for_source(source),
+                            metadata=_reset_meta,
                         )
             except Exception as e:
                 logger.debug("Auto-reset notification failed (non-fatal): %s", e)
@@ -10761,12 +11197,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(
+        self,
+        source: Optional[SessionSource] = None,
+    ) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
+
+        The optional ``source`` arg surfaces the model the bound profile/topic
+        will actually use for the next turn — not the global default. When
+        omitted, behavior is identical to the previous signature.
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
@@ -10778,19 +11221,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         custom_provs = None
         data = None
 
+        if source is not None:
+            try:
+                model, runtime_kwargs = self._resolve_session_agent_runtime(source=source)
+                provider = runtime_kwargs.get("provider")
+                base_url = runtime_kwargs.get("base_url")
+                api_key = runtime_kwargs.get("api_key")
+            except Exception:
+                pass
+
         try:
             data = _load_gateway_config()
             if data:
                 model_cfg = data.get("model", {})
                 if isinstance(model_cfg, dict):
-                    raw_ctx = model_cfg.get("context_length")
-                    if raw_ctx is not None:
-                        try:
-                            config_context_length = int(raw_ctx)
-                        except (TypeError, ValueError):
-                            pass
-                    provider = model_cfg.get("provider") or None
-                    base_url = model_cfg.get("base_url") or None
+                    default_model = model_cfg.get("default") or model_cfg.get("model") or ""
+                    if not model:
+                        model = default_model
+
+                    if model == default_model:
+                        raw_ctx = model_cfg.get("context_length")
+                        if raw_ctx is not None:
+                            try:
+                                config_context_length = int(raw_ctx)
+                            except (TypeError, ValueError):
+                                pass
+                        if not provider:
+                            provider = model_cfg.get("provider") or None
+                        if not base_url:
+                            base_url = model_cfg.get("base_url") or None
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
                     custom_provs = get_compatible_custom_providers(data)
@@ -10798,6 +11257,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     custom_provs = data.get("custom_providers")
         except Exception:
             pass
+
+        if not model:
+            model = _resolve_gateway_model()
 
         # Also check custom_providers for context_length when top-level model.context_length is not set
         if config_context_length is None and data:
@@ -11751,9 +12213,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)
 
-
-
     async def _run_background_task(
+        self,
+        prompt: str,
+        source: "SessionSource",
+        task_id: str,
+        event_message_id: Optional[str] = None,
+        media_urls: Optional[List[str]] = None,
+        media_types: Optional[List[str]] = None,
+    ) -> None:
+        """Execute a background agent task and deliver the result to the chat."""
+        routed = self._routed_profile_for_source(source)
+        if routed is not None:
+            profile_home = self._resolve_profile_home_for_source(source)
+            with _profile_runtime_scope(profile_home):
+                return await self._run_background_task_inner(
+                    prompt, source, task_id, event_message_id, media_urls, media_types
+                )
+        else:
+            return await self._run_background_task_inner(
+                prompt, source, task_id, event_message_id, media_urls, media_types
+            )
+
+    async def _run_background_task_inner(
         self,
         prompt: str,
         source: "SessionSource",
@@ -12333,13 +12815,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     async def _restore_telegram_topic_session(self, event: MessageEvent, raw_session_id: str) -> str:
         """Restore an existing Telegram-owned Hermes session into this topic."""
         source = event.source
-        session_id = self._session_db.resolve_session_id(raw_session_id.strip())
+        raw = raw_session_id.strip()
+        session_id = self._session_db.resolve_session_id(raw)
         if not session_id:
-            return f"Session not found: {raw_session_id.strip()}"
+            return f"Session not found: {raw}"
 
         session = self._session_db.get_session(session_id)
         if not session:
-            return f"Session not found: {raw_session_id.strip()}"
+            return f"Session not found: {raw}"
         if str(session.get("source") or "") != "telegram":
             return "That session is not a Telegram session and cannot be restored into this topic."
         if str(session.get("user_id") or "") != str(source.user_id):
@@ -12402,19 +12885,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from tools.mcp_tool import shutdown_mcp_servers, discover_mcp_tools, _servers, _lock
 
             # Capture old server names before shutdown
+            from tools.mcp_tool import _load_mcp_config, _get_mcp_config_fingerprint
+            try:
+                active_cfgs = _load_mcp_config()
+                active_fps = {
+                    _get_mcp_config_fingerprint(name, cfg)
+                    for name, cfg in active_cfgs.items()
+                }
+            except Exception:
+                active_fps = set()
+
             with _lock:
-                old_servers = set(_servers.keys())
+                old_servers = {
+                    k for k in _servers.keys()
+                    if k in active_fps or (getattr(_servers[k], "fingerprint", None) in active_fps)
+                }
 
             # Read new config before shutting down, so we know what will be added/removed
             # Shutdown existing connections
-            await loop.run_in_executor(None, shutdown_mcp_servers)
+            import contextvars
+            ctx = contextvars.copy_context()
+            await loop.run_in_executor(None, lambda: ctx.run(shutdown_mcp_servers))
 
             # Reconnect by discovering tools (reads config.yaml fresh)
-            new_tools = await loop.run_in_executor(None, discover_mcp_tools)
+            new_tools = await loop.run_in_executor(None, lambda: ctx.run(discover_mcp_tools))
 
             # Compute what changed
             with _lock:
-                connected_servers = set(_servers.keys())
+                connected_servers = {
+                    k for k in _servers.keys()
+                    if k in active_fps or (getattr(_servers[k], "fingerprint", None) in active_fps)
+                }
 
             added = connected_servers - old_servers
             removed = old_servers - connected_servers
@@ -12422,11 +12923,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             lines = [t("gateway.reload_mcp.header")]
             if reconnected:
-                lines.append(t("gateway.reload_mcp.reconnected", names=", ".join(sorted(reconnected))))
+                lines.append(t("gateway.reload_mcp.reconnected", names=", ".join(sorted({k.split(":")[0] for k in reconnected}))))
             if added:
-                lines.append(t("gateway.reload_mcp.added", names=", ".join(sorted(added))))
+                lines.append(t("gateway.reload_mcp.added", names=", ".join(sorted({k.split(":")[0] for k in added}))))
             if removed:
-                lines.append(t("gateway.reload_mcp.removed", names=", ".join(sorted(removed))))
+                lines.append(t("gateway.reload_mcp.removed", names=", ".join(sorted({k.split(":")[0] for k in removed}))))
             if not connected_servers:
                 lines.append(t("gateway.reload_mcp.none_connected"))
             else:
@@ -13327,6 +13828,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
+        _resolve_home = getattr(self, "_resolve_profile_home_for_source", None)
+        if _resolve_home is not None:
+            profile_home = _resolve_home(context.source)
+        else:
+            from hermes_constants import get_hermes_home
+            profile_home = get_hermes_home()
+
+        from hermes_cli.profiles import get_active_profile_name
+        agent_profile = (context.source.profile or "").strip() or get_active_profile_name() or "default"
+        agent_hermes_home = str(profile_home)
+
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -13337,6 +13849,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             async_delivery=_async_delivery,
+            agent_profile=agent_profile,
+            agent_hermes_home=agent_hermes_home,
         )
 
     def _clear_session_env(self, tokens: list) -> None:
@@ -14119,6 +14633,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _api_key = str(runtime.get("api_key", "") or "")
         _api_key_fingerprint = hashlib.sha256(_api_key.encode()).hexdigest() if _api_key else ""
 
+        # Fingerprint the active SOUL.md to bust the cache when it is edited.
+        from hermes_constants import get_hermes_home
+        _soul_path = get_hermes_home() / "SOUL.md"
+        _soul_fingerprint = ""
+        if _soul_path.exists():
+            try:
+                _stat = _soul_path.stat()
+                _soul_fingerprint = f"{_stat.st_mtime}:{_stat.st_size}"
+            except Exception:
+                pass
+
         _cache_keys_sorted = sorted((cache_keys or {}).items())
 
         blob = _j.dumps(
@@ -14135,6 +14660,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _cache_keys_sorted,
                 str(user_id or ""),
                 str(user_id_alt or ""),
+                _soul_fingerprint,
             ],
             sort_keys=True,
             default=str,
@@ -14933,7 +15459,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "proxy response: url=%s session=%s time=%.1fs response=%d chars",
             proxy_url, (session_id or "")[:20], _elapsed, len(full_response),
         )
-
         return {
             "final_response": full_response or "(No response from remote agent)",
             "messages": [
@@ -14974,7 +15499,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         multiplexing is off this is a transparent pass-through — zero behavior
         change for single-profile gateways.
         """
-        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+        routed = self._routed_profile_for_source(source)
+        multiplex = getattr(getattr(self, "config", None), "multiplex_profiles", False)
+        if not multiplex and routed is None:
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,
@@ -15002,13 +15529,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         by the /p/<profile>/ URL prefix or a per-credential adapter), falling
         back to the active profile (the multiplexer's own home).
         """
-        from hermes_cli.profiles import get_active_profile_name, get_profile_dir
+        from hermes_cli.profiles import (
+            get_active_profile_name,
+            get_profile_dir,
+            validate_profile_identity,
+            write_profile_identity_marker,
+            _get_profiles_root,
+            PROFILE_IDENTITY_FILENAME,
+        )
+        name = (source.profile or "").strip() or get_active_profile_name() or "default"
         try:
-            name = (source.profile or "").strip() or get_active_profile_name() or "default"
-            return get_profile_dir(name)
-        except Exception:
+            p_dir = get_profile_dir(name)
+            if name != "default":
+                # A profile directory created before the isolation feature has no
+                # identity marker. Without it, validate_profile_identity() would
+                # raise and we'd silently fall back to the GLOBAL home — mixing this
+                # profile's sessions/memory into ~/.hermes. Auto-create the marker
+                # (migration) so isolation engages. Genuine security violations
+                # (symlink escape, dir outside root) are still rejected by the
+                # validation below, since it checks ancestry BEFORE the marker.
+                marker = p_dir / PROFILE_IDENTITY_FILENAME
+                if p_dir.is_dir() and not marker.exists():
+                    try:
+                        write_profile_identity_marker(name, p_dir, _get_profiles_root())
+                        logger.info(
+                            "Auto-created identity marker for profile %r (migration)", name
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Could not auto-create identity marker for profile %r: %s",
+                            name, exc,
+                        )
+                validate_profile_identity(name, p_dir, _get_profiles_root())
+            return p_dir
+        except Exception as exc:
             from hermes_constants import get_hermes_home
+            # NEVER fall back silently: a silent fallback to the global home breaks
+            # data isolation (the exact bug found in live testing). Make it loud.
+            logger.warning(
+                "Profile %r identity validation failed (%s); falling back to GLOBAL "
+                "home — profile isolation is DEGRADED for this turn",
+                name, exc,
+            )
             return get_hermes_home()
+
 
     async def _run_agent_inner(
         self,

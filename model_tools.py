@@ -144,7 +144,9 @@ def _run_async(coro):
                 worker_loop.close()
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(_run_in_worker)
+        from contextvars import copy_context
+        ctx = copy_context()
+        future = pool.submit(ctx.run, _run_in_worker)
         try:
             return future.result(timeout=300)
         except concurrent.futures.TimeoutError:

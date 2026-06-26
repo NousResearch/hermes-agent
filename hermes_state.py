@@ -768,7 +768,9 @@ class SessionDB:
     _CHECKPOINT_EVERY_N_WRITES = 50
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        if db_path is None:
+            db_path = get_hermes_home() / "state.db"
+        self.db_path = db_path
         self.read_only = read_only
 
         self._lock = threading.Lock()

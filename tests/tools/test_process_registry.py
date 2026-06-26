@@ -829,6 +829,39 @@ class TestCheckpoint:
             assert w["thread_id"] == "42"
             assert w["check_interval"] == 60
 
+    def test_recover_legacy_profile_without_home_does_not_rearm_watcher(
+        self, registry, tmp_path
+    ):
+        checkpoint = tmp_path / "procs.json"
+        checkpoint.write_text(json.dumps([{
+            "session_id": "proc_legacy_profile",
+            "command": "sleep 999",
+            "pid": os.getpid(),
+            "task_id": "t1",
+            "session_key": "agent:alpha-test:telegram:u:dm:c",
+            "agent_profile": "alpha-test",
+            "agent_hermes_home": "",
+            "watcher_platform": "telegram",
+            "watcher_chat_id": "123",
+            "watcher_user_id": "u123",
+            "watcher_thread_id": "42",
+            "watcher_interval": 60,
+            "notify_on_complete": True,
+            "watch_patterns": ["done"],
+        }]))
+
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            recovered = registry.recover_from_checkpoint()
+
+        assert recovered == 1
+        assert registry.pending_watchers == []
+        session = registry.get("proc_legacy_profile")
+        assert session is not None
+        assert session.agent_profile == ""
+        assert session.agent_hermes_home == ""
+        assert session.watcher_interval == 0
+        assert session.notify_on_complete is False
+
     def test_recover_skips_watcher_when_no_interval(self, registry, tmp_path):
         checkpoint = tmp_path / "procs.json"
         checkpoint.write_text(json.dumps([{

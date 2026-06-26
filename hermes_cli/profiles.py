@@ -28,8 +28,10 @@ import stat
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from hashlib import sha256
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
@@ -131,6 +133,444 @@ _CLONE_ALL_HISTORY_EXCLUDE_ROOT: frozenset[str] = frozenset({
 # `hermes skills install` or drop SKILL.md files into the profile's skills/.
 # Delete the marker file to opt back in.
 NO_BUNDLED_SKILLS_MARKER = ".no-bundled-skills"
+PROFILE_IDENTITY_FILENAME = ".hermes_profile.json"
+PROFILE_IDENTITY_VERSION = 1
+
+_AUDIT_SECRET_KEY_PARTS = (
+    "API",
+    "AUTH",
+    "BEARER",
+    "COOKIE",
+    "CREDENTIAL",
+    "KEY",
+    "PASSWORD",
+    "SECRET",
+    "TOKEN",
+)
+_AUDIT_SENSITIVE_ROOTS = (
+    ".env",
+    "auth.json",
+    "config.yaml",
+    "SOUL.md",
+    "memories",
+    "sessions",
+    "logs",
+    "plugins",
+    "hooks",
+    "mcp",
+    "cron",
+)
+_AUDIT_MEMORY_FILES = (
+    "SOUL.md",
+    "memories/MEMORY.md",
+    "memories/USER.md",
+)
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _has_symlink_ancestor(path: Path, stop_at: Path | None = None) -> bool:
+    """Return True when path or an existing ancestor is a symlink."""
+    current = path
+    stop = stop_at.resolve(strict=False) if stop_at is not None else None
+    while True:
+        if stop is not None:
+            try:
+                if current.resolve(strict=False) == stop:
+                    return False
+            except OSError:
+                return True
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return True
+        parent = current.parent
+        if parent == current:
+            return False
+        current = parent
+
+
+def _profile_identity_payload(
+    profile_id: str,
+    profile_dir: Path,
+    profiles_root: Path | None = None,
+) -> Dict[str, Any]:
+    root = profiles_root or profile_dir.parent
+    return {
+        "version": PROFILE_IDENTITY_VERSION,
+        "profile_id": profile_id,
+        "home_realpath": str(profile_dir.resolve(strict=False)),
+        "profiles_root_realpath": str(root.resolve(strict=False)),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def write_profile_identity_marker(
+    profile_name: str,
+    profile_dir: Path | None = None,
+    profiles_root: Path | None = None,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Write a non-secret identity marker for a routed profile."""
+    canon = normalize_profile_name(profile_name)
+    validate_profile_name(canon)
+    profile_dir = (profile_dir or get_profile_dir(canon)).expanduser()
+    marker = profile_dir / PROFILE_IDENTITY_FILENAME
+    if marker.is_symlink():
+        raise ValueError(f"{PROFILE_IDENTITY_FILENAME} must not be a symlink")
+    if marker.exists() and not overwrite:
+        return marker
+    if not profile_dir.is_dir():
+        raise FileNotFoundError(f"Profile '{canon}' does not exist at {profile_dir}")
+    payload = _profile_identity_payload(canon, profile_dir, profiles_root)
+    tmp = marker.with_name(f"{marker.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    try:
+        tmp.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+    tmp.replace(marker)
+    return marker
+
+
+def load_profile_identity_marker(profile_dir: Path) -> Dict[str, Any]:
+    marker = profile_dir / PROFILE_IDENTITY_FILENAME
+    if marker.is_symlink():
+        raise ValueError(f"{PROFILE_IDENTITY_FILENAME} must not be a symlink")
+    if not marker.is_file():
+        raise FileNotFoundError(f"Missing {PROFILE_IDENTITY_FILENAME}")
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise ValueError(f"Invalid {PROFILE_IDENTITY_FILENAME}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Invalid {PROFILE_IDENTITY_FILENAME}: expected object")
+    return data
+
+
+def validate_profile_identity(
+    profile_name: str,
+    profile_dir: Path,
+    profiles_root: Path,
+) -> None:
+    """Fail closed unless the routed profile identity matches the filesystem."""
+    canon = normalize_profile_name(profile_name)
+    validate_profile_name(canon)
+    profile_dir = profile_dir.expanduser()
+    profiles_root = profiles_root.expanduser()
+    if _has_symlink_ancestor(profile_dir, profiles_root.parent):
+        raise ValueError("profile home ancestry must not contain symlinks")
+    if _has_symlink_ancestor(profiles_root, profiles_root.parent):
+        raise ValueError("profiles root ancestry must not contain symlinks")
+    home_real = profile_dir.resolve(strict=False)
+    root_real = profiles_root.resolve(strict=False)
+    if not _is_relative_to(home_real, root_real):
+        raise ValueError("profile home must stay inside profiles root")
+    if home_real == (Path.home() / ".hermes").resolve(strict=False):
+        raise ValueError("profile home must not be ~/.hermes")
+    if not home_real.is_dir():
+        raise FileNotFoundError(f"profile home does not exist: {home_real}")
+    marker = load_profile_identity_marker(home_real)
+    if marker.get("version") != PROFILE_IDENTITY_VERSION:
+        raise ValueError(f"{PROFILE_IDENTITY_FILENAME} version mismatch")
+    if marker.get("profile_id") != canon:
+        raise ValueError(f"{PROFILE_IDENTITY_FILENAME} profile_id mismatch")
+    if str(marker.get("home_realpath") or "") != str(home_real):
+        raise ValueError(f"{PROFILE_IDENTITY_FILENAME} home_realpath mismatch")
+    if str(marker.get("profiles_root_realpath") or "") != str(root_real):
+        raise ValueError(f"{PROFILE_IDENTITY_FILENAME} profiles_root_realpath mismatch")
+
+
+def _read_env_keyset_and_secret_flag(path: Path) -> tuple[list[str], bool]:
+    keys: list[str] = []
+    secret_bearing = False
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return keys, False
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, raw_value = stripped.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        keys.append(key)
+        value = raw_value.strip().strip("'\"")
+        if _is_secret_key_name(key) and _looks_secret_value(value):
+            secret_bearing = True
+    return sorted(set(keys)), secret_bearing
+
+
+def _is_secret_key_name(key: str) -> bool:
+    lowered = str(key or "").strip().lower()
+    if lowered in {"auth_type", "record_key"} or lowered.endswith("_key_env"):
+        return False
+    if lowered in {"url", "base_url", "api_url", "endpoint"} or lowered.endswith("_url"):
+        return False
+    upper = lowered.upper()
+    return any(part in upper for part in _AUDIT_SECRET_KEY_PARTS)
+
+
+def _looks_secret_value(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip().strip("'\"")
+    if not text:
+        return False
+    if text.lower() in {
+        "true",
+        "false",
+        "none",
+        "null",
+        "default",
+        "changeme",
+        "change-me",
+        "placeholder",
+    }:
+        return False
+    if re.fullmatch(r"[0-9_.,:-]+", text):
+        return False
+    return True
+
+
+def _secret_fingerprint(value: Any) -> str | None:
+    if not _looks_secret_value(value):
+        return None
+    text = str(value or "").strip()
+    return sha256(text.encode("utf-8")).hexdigest()
+
+
+def _read_env_secret_fingerprints(path: Path) -> tuple[set[str], list[str]]:
+    fingerprints: set[str] = set()
+    keys: list[str] = []
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return fingerprints, keys
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, raw_value = stripped.split("=", 1)
+        key = key.strip()
+        if not key or not _is_secret_key_name(key):
+            continue
+        value = raw_value.strip().strip("'\"")
+        fp = _secret_fingerprint(value)
+        if fp:
+            fingerprints.add(fp)
+            keys.append(key)
+    return fingerprints, sorted(set(keys))
+
+
+def _json_secret_fingerprints(value: Any, key_path: tuple[str, ...] = ()) -> set[str]:
+    fingerprints: set[str] = set()
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            fingerprints |= _json_secret_fingerprints(nested, (*key_path, str(key)))
+        return fingerprints
+    if isinstance(value, list):
+        for nested in value:
+            fingerprints |= _json_secret_fingerprints(nested, key_path)
+        return fingerprints
+    if key_path and isinstance(value, str) and _is_secret_key_name(key_path[-1]):
+        fp = _secret_fingerprint(value)
+        if fp:
+            fingerprints.add(fp)
+    return fingerprints
+
+
+def _read_json_secret_fingerprints(path: Path) -> set[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return set()
+    return _json_secret_fingerprints(data)
+
+
+def _read_yaml_secret_fingerprints(path: Path) -> set[str]:
+    try:
+        import yaml
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except Exception:
+        return set()
+    return _json_secret_fingerprints(data)
+
+
+def _file_sha256(path: Path) -> str | None:
+    try:
+        return sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _audit_add(findings: list[dict], status: str, relpath: str, message: str, **extra: Any) -> None:
+    item = {"status": status, "path": relpath, "message": message}
+    item.update(extra)
+    findings.append(item)
+
+
+def audit_profile_isolation(
+    profile_name: str,
+    *,
+    safe_root: str | Path | None = None,
+) -> Dict[str, Any]:
+    """Audit routed profile isolation without printing secret values."""
+    canon = normalize_profile_name(profile_name)
+    validate_profile_name(canon)
+    profiles_root = Path(safe_root).expanduser().resolve(strict=False) if safe_root else _get_profiles_root().resolve(strict=False)
+    profile_dir = (profiles_root / canon).resolve(strict=False)
+    default_home = _get_default_hermes_home().resolve(strict=False)
+    main_home = profiles_root.parent.resolve(strict=False) if default_home == profile_dir else default_home
+    findings: list[dict] = []
+
+    try:
+        validate_profile_identity(canon, profile_dir, profiles_root)
+        _audit_add(findings, "OK", PROFILE_IDENTITY_FILENAME, "identity marker matches profile home")
+    except Exception as exc:
+        _audit_add(findings, "FAIL", PROFILE_IDENTITY_FILENAME, str(exc))
+
+    for rel in _AUDIT_SENSITIVE_ROOTS:
+        target = profile_dir / rel
+        if not target.exists() and not target.is_symlink():
+            continue
+        try:
+            if target.is_symlink():
+                resolved = target.resolve(strict=False)
+                if not _is_relative_to(resolved, profile_dir):
+                    _audit_add(findings, "FAIL", rel, "symlink points outside profile home")
+                continue
+            if target.is_file() and target.stat().st_nlink > 1:
+                _audit_add(findings, "FAIL", rel, "hardlink count is greater than one")
+        except OSError as exc:
+            _audit_add(findings, "FAIL", rel, f"cannot stat path: {exc}")
+            continue
+        if target.is_dir():
+            for child in target.rglob("*"):
+                child_rel = child.relative_to(profile_dir).as_posix()
+                try:
+                    if child.is_symlink():
+                        resolved = child.resolve(strict=False)
+                        if not _is_relative_to(resolved, profile_dir):
+                            _audit_add(findings, "FAIL", child_rel, "symlink points outside profile home")
+                        continue
+                    if child.is_file() and child.stat().st_nlink > 1:
+                        _audit_add(findings, "FAIL", child_rel, "hardlink count is greater than one")
+                except OSError as exc:
+                    _audit_add(findings, "FAIL", child_rel, f"cannot inspect path: {exc}")
+
+    env_path = profile_dir / ".env"
+    main_env = main_home / ".env"
+    if env_path.is_file() and main_env.is_file():
+        keys, secret_bearing = _read_env_keyset_and_secret_flag(env_path)
+        keyset_hash = sha256("\n".join(keys).encode("utf-8")).hexdigest()[:16]
+        profile_secret_fps, _profile_secret_keys = _read_env_secret_fingerprints(env_path)
+        main_secret_fps, _main_secret_keys = _read_env_secret_fingerprints(main_env)
+        shared_secret_fps = profile_secret_fps & main_secret_fps
+        if shared_secret_fps:
+            _audit_add(
+                findings,
+                "FAIL",
+                ".env",
+                "profile .env shares secret values with main .env",
+                keyset_hash=keyset_hash,
+                shared_secret_count=len(shared_secret_fps),
+            )
+        elif _file_sha256(env_path) == _file_sha256(main_env):
+            status = "FAIL" if secret_bearing else "WARN"
+            _audit_add(
+                findings,
+                status,
+                ".env",
+                "profile .env is byte-identical to main .env",
+                keyset_hash=keyset_hash,
+            )
+
+    auth_path = profile_dir / "auth.json"
+    main_auth = main_home / "auth.json"
+    if auth_path.is_file() and main_auth.is_file() and auth_path.stat().st_size > 0:
+        shared_secret_fps = (
+            _read_json_secret_fingerprints(auth_path)
+            & _read_json_secret_fingerprints(main_auth)
+        )
+        if shared_secret_fps:
+            _audit_add(
+                findings,
+                "FAIL",
+                "auth.json",
+                "profile auth.json shares secret values with main auth.json",
+                shared_secret_count=len(shared_secret_fps),
+            )
+        elif _file_sha256(auth_path) == _file_sha256(main_auth):
+            _audit_add(findings, "FAIL", "auth.json", "profile auth.json is byte-identical to main auth.json")
+
+    config_path = profile_dir / "config.yaml"
+    main_config = main_home / "config.yaml"
+    if config_path.is_file() and main_config.is_file() and config_path.stat().st_size > 0:
+        shared_secret_fps = (
+            _read_yaml_secret_fingerprints(config_path)
+            & _read_yaml_secret_fingerprints(main_config)
+        )
+        if shared_secret_fps:
+            _audit_add(
+                findings,
+                "FAIL",
+                "config.yaml",
+                "profile config.yaml shares secret values with main config.yaml",
+                shared_secret_count=len(shared_secret_fps),
+            )
+
+    for rel in _AUDIT_MEMORY_FILES:
+        path = profile_dir / rel
+        main_path = main_home / rel
+        if not (path.is_file() and main_path.is_file()):
+            continue
+        try:
+            if path.stat().st_size == 0:
+                continue
+        except OSError:
+            continue
+        if _file_sha256(path) == _file_sha256(main_path):
+            _audit_add(findings, "FAIL", rel, "profile identity/memory file is non-empty and identical to main")
+
+    if not any(f["status"] in {"FAIL", "WARN"} for f in findings):
+        _audit_add(findings, "OK", ".", "no isolation issues detected")
+
+    overall = "FAIL" if any(f["status"] == "FAIL" for f in findings) else (
+        "WARN" if any(f["status"] == "WARN" for f in findings) else "OK"
+    )
+    return {
+        "profile": canon,
+        "home": profile_dir.name,
+        "profiles_root": profiles_root.name,
+        "status": overall,
+        "findings": findings,
+    }
+
+
+def format_profile_isolation_audit(report: Dict[str, Any]) -> str:
+    lines = [
+        f"Profile isolation audit: {report.get('profile')}",
+        f"Status: {report.get('status')}",
+    ]
+    for finding in report.get("findings", []):
+        extra = ""
+        if finding.get("keyset_hash"):
+            extra = f" keyset_hash={finding['keyset_hash']}"
+        lines.append(
+            f"- {finding.get('status')}: {finding.get('path')}: {finding.get('message')}{extra}"
+        )
+    return "\n".join(lines)
 
 
 def has_bundled_skills_opt_out(profile_dir: Path) -> bool:
@@ -1034,6 +1474,8 @@ def create_profile(
     # / launchd / windows) this is a no-op — the existing per-profile
     # unit-generation paths handle gateway lifecycle.
     _maybe_register_gateway_service(canon)
+
+    write_profile_identity_marker(canon, profile_dir, profile_dir.parent, overwrite=True)
 
     return profile_dir
 

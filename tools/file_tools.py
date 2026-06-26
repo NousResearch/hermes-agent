@@ -24,7 +24,145 @@ logger = logging.getLogger(__name__)
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 
 
-def _expand_tilde(path: str) -> str:
+from typing import Optional
+
+def get_profile_home_for_session(session_id: Optional[str]) -> Optional[Path]:
+    if not session_id:
+        from gateway.session_context import get_session_env
+        session_id = get_session_env("HERMES_SESSION_ID")
+    if not session_id:
+        from hermes_constants import get_hermes_home, get_default_hermes_root
+        try:
+            cur = get_hermes_home().resolve()
+            root = get_default_hermes_root().resolve()
+            if cur != root and (root / "profiles") in cur.parents:
+                return cur
+        except Exception:
+            pass
+        return None
+    from hermes_constants import get_default_hermes_root
+    try:
+        root = get_default_hermes_root()
+    except Exception:
+        return None
+    
+    # Check default home first
+    default_home = root
+    if (default_home / "state.db").exists():
+        try:
+            import sqlite3
+            with sqlite3.connect(default_home / "state.db") as conn:
+                cursor = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,))
+                if cursor.fetchone():
+                    return default_home
+        except Exception:
+            pass
+
+    # Check named profiles
+    profiles_dir = root / "profiles"
+    if profiles_dir.exists():
+        for p_dir in profiles_dir.iterdir():
+            if p_dir.is_dir() and (p_dir / "state.db").exists():
+                try:
+                    import sqlite3
+                    with sqlite3.connect(p_dir / "state.db") as conn:
+                        cursor = conn.execute("SELECT 1 FROM sessions WHERE id = ?", (session_id,))
+                        if cursor.fetchone():
+                            return p_dir
+                except Exception:
+                    pass
+    return None
+
+
+def _check_profile_hard_guards(resolved_path: str, profile_home: Optional[Path]) -> Optional[str]:
+    if not profile_home:
+        return None
+    # Only guard named profiles
+    if profile_home.parent.name != "profiles":
+        return None
+    try:
+        from hermes_constants import get_default_hermes_root
+        root = get_default_hermes_root().resolve()
+        resolved_target = Path(resolved_path).resolve()
+        
+        # Block writing to the global SOUL.md
+        global_soul = (root / "SOUL.md").resolve()
+        if resolved_target == global_soul:
+            return "Refusing to write to the global SOUL.md from a routed profile session."
+            
+        # Block writing to other profiles' homes
+        profiles_dir = (root / "profiles").resolve()
+        if profiles_dir.exists() and resolved_target.is_relative_to(profiles_dir):
+            rel_to_profiles = resolved_target.relative_to(profiles_dir)
+            parts = rel_to_profiles.parts
+            if parts and parts[0] != profile_home.name:
+                return f"Refusing to write to another profile's home directory: {parts[0]}"
+
+        # Block any write inside the default hermes root unless it is inside the active profile home
+        if resolved_target.is_relative_to(root):
+            if not resolved_target.is_relative_to(profile_home.resolve()):
+                return f"Refusing to write to path outside profile home: {resolved_path}"
+
+        # Block any write outside profile_home, except:
+        # 1. Inside profile_home
+        # 2. Inside system temp directories
+        # 3. Inside active workspace / CWD directories
+        if resolved_target.is_relative_to(profile_home.resolve()):
+            return None
+
+        # Temp directories
+        import tempfile
+        temp_roots = [
+            Path(tempfile.gettempdir()).resolve(),
+            Path("/tmp").resolve(),
+            Path("/private/var/tmp").resolve(),
+            Path("/var/tmp").resolve(),
+        ]
+        if any(resolved_target.is_relative_to(tr) for tr in temp_roots):
+            return None
+
+        # Allowed CWD/workspace roots
+        allowed_roots = []
+        allowed_roots.append(Path(os.getcwd()).resolve())
+
+        tcwd = _configured_terminal_cwd()
+        if tcwd:
+            allowed_roots.append(Path(tcwd).resolve())
+
+        try:
+            from tools.terminal_tool import _active_environments, _env_lock
+            with _env_lock:
+                for env in _active_environments.values():
+                    env_cwd = getattr(env, "cwd", None)
+                    if env_cwd:
+                        allowed_roots.append(Path(env_cwd).resolve())
+        except Exception:
+            pass
+
+        try:
+            with _file_ops_lock:
+                for cached in _file_ops_cache.values():
+                    cached_cwd = getattr(cached, "cwd", None)
+                    if cached_cwd:
+                        allowed_roots.append(Path(cached_cwd).resolve())
+                    env = getattr(cached, "env", None)
+                    if env:
+                        env_cwd = getattr(env, "cwd", None)
+                        if env_cwd:
+                            allowed_roots.append(Path(env_cwd).resolve())
+        except Exception:
+            pass
+
+        if any(resolved_target.is_relative_to(ar) for ar in allowed_roots):
+            return None
+
+        return f"Refusing to write to path outside profile home: {resolved_path}"
+    except Exception as e:
+        logger.debug("Profile hard guard check failed: %s", e)
+    return None
+
+
+def _expand_tilde(path: str, profile_home: Optional[Path] = None) -> str:
     """Expand ``~`` using the effective profile home when available.
 
     In-process file tools share the gateway process's HOME, which may differ
@@ -35,12 +173,16 @@ def _expand_tilde(path: str) -> str:
     """
     if not path or "~" not in path:
         return path
-    try:
-        from hermes_constants import get_subprocess_home
+    home = None
+    if profile_home is not None:
+        home = str(profile_home)
+    else:
+        try:
+            from hermes_constants import get_subprocess_home
 
-        home = get_subprocess_home()
-    except Exception:
-        home = None
+            home = get_subprocess_home()
+        except Exception:
+            home = None
     if home and (path == "~" or path.startswith("~/")):
         return home if path == "~" else os.path.join(home, path[2:])
     return os.path.expanduser(path)
@@ -282,13 +424,13 @@ def _resolve_base_dir(task_id: str = "default") -> Path:
     return base.resolve()
 
 
-def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
+def _resolve_path_for_task(filepath: str, task_id: str = "default", profile_home: Optional[Path] = None) -> Path:
     """Resolve *filepath* against the task's absolute base directory.
 
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
-    p = Path(_expand_tilde(filepath))
+    p = Path(_expand_tilde(filepath, profile_home=profile_home))
     if p.is_absolute():
         return p.resolve()
     return (_resolve_base_dir(task_id) / p).resolve()
@@ -433,6 +575,11 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     )
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
+            if prefix == "/private/var/":
+                if resolved.startswith("/private/var/folders/") or resolved.startswith("/private/var/tmp/"):
+                    continue
+                if normalized.startswith("/private/var/folders/") or normalized.startswith("/private/var/tmp/"):
+                    continue
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
@@ -1337,6 +1484,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     Pass ``True`` after explicit user direction — same shape as ``force``
     on the terminal tool.
     """
+    profile_home = get_profile_home_for_session(session_id)
+    if profile_home and path == "SOUL.md":
+        path = str(profile_home / "SOUL.md")
+
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
@@ -1355,9 +1506,15 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         # fall back to the legacy path — write proceeds, per-task staleness
         # check below still runs.
         try:
-            _resolved = str(_resolve_path_for_task(path, task_id))
+            _resolved = str(_resolve_path_for_task(path, task_id, profile_home=profile_home))
         except Exception:
             _resolved = None
+
+        # Always run hard guards, falling back to expand_tilde if resolution failed
+        _resolved_for_guard = _resolved if _resolved is not None else _expand_tilde(path, profile_home=profile_home)
+        hard_err = _check_profile_hard_guards(_resolved_for_guard, profile_home)
+        if hard_err:
+            return tool_error(hard_err)
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
@@ -1419,6 +1576,19 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     targets under another profile's skills/plugins/cron/memories
     directory. Same shape as ``write_file``'s flag.
     """
+    profile_home = get_profile_home_for_session(session_id)
+    if profile_home:
+        if path == "SOUL.md":
+            path = str(profile_home / "SOUL.md")
+        if mode == "patch" and patch:
+            import re as _re
+            def _repl_header(m):
+                orig_file = m.group(2).strip()
+                if orig_file == "SOUL.md":
+                    return f"{m.group(1)}{profile_home / 'SOUL.md'}"
+                return m.group(0)
+            patch = _re.sub(r'(^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*)(.+)$', _repl_header, patch, flags=_re.MULTILINE)
+
     # Check sensitive paths for both replace (explicit path) and V4A patch (extract paths)
     _paths_to_check = []
     if path:
@@ -1451,6 +1621,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:
                 return tool_error(cross_warning)
+        try:
+            _resolved = str(_resolve_path_for_task(_p, task_id, profile_home=profile_home))
+        except Exception:
+            _resolved = _p
+        hard_err = _check_profile_hard_guards(_resolved, profile_home)
+        if hard_err:
+            return tool_error(hard_err)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
@@ -1459,7 +1636,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _seen: set[str] = set()
         for _p in _paths_to_check:
             try:
-                _r = str(_resolve_path_for_task(_p, task_id))
+                _r = str(_resolve_path_for_task(_p, task_id, profile_home=profile_home))
             except Exception:
                 _r = None
             if _r and _r not in _seen:
@@ -1481,7 +1658,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             _path_to_resolved: dict[str, str] = {}
             for _p in _paths_to_check:
                 try:
-                    _r = str(_resolve_path_for_task(_p, task_id))
+                    _r = str(_resolve_path_for_task(_p, task_id, profile_home=profile_home))
                 except Exception:
                     _r = None
                 _path_to_resolved[_p] = _r

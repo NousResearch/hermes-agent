@@ -65,6 +65,7 @@ except Exception:
 
 AUTH_STORE_VERSION = 1
 AUTH_LOCK_TIMEOUT_SECONDS = 15.0
+STRICT_PROFILE_AUTH_ENV = "HERMES_PROFILE_STRICT_AUTH"
 
 # Nous Portal defaults
 DEFAULT_NOUS_PORTAL_URL = "https://portal.nousresearch.com"
@@ -87,6 +88,15 @@ MINIMAX_OAUTH_GLOBAL_BASE = "https://api.minimax.io"
 MINIMAX_OAUTH_CN_BASE = "https://api.minimaxi.com"
 MINIMAX_OAUTH_GLOBAL_INFERENCE = "https://api.minimax.io/anthropic"
 MINIMAX_OAUTH_CN_INFERENCE = "https://api.minimaxi.com/anthropic"
+
+
+def _env_get(env: Optional[Dict[str, Any]], key: str, default: str = "") -> str:
+    if env is None:
+        return os.getenv(key, default)
+    value = env.get(key, default)
+    return "" if value is None else str(value)
+
+
 MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
@@ -557,7 +567,7 @@ def has_usable_secret(value: Any, *, min_length: int = 4) -> bool:
 
 
 def _resolve_api_key_provider_secret(
-    provider_id: str, pconfig: ProviderConfig
+    provider_id: str, pconfig: ProviderConfig, env: Optional[Dict[str, Any]] = None
 ) -> tuple[str, str]:
     """Resolve an API-key provider's token and indicate where it came from."""
     if provider_id == "copilot":
@@ -573,26 +583,32 @@ def _resolve_api_key_provider_secret(
             pass
         return "", ""
 
-    from hermes_cli.config import get_env_value
     for env_var in pconfig.api_key_env_vars:
-        # Check both os.environ and ~/.hermes/.env file
-        val = (get_env_value(env_var) or "").strip()
+        if env is None:
+            from hermes_cli.config import get_env_value
+            # Check both os.environ and ~/.hermes/.env file
+            val = (get_env_value(env_var) or "").strip()
+        else:
+            val = _env_get(env, env_var).strip()
         if has_usable_secret(val):
             return val, env_var
 
-    # Fallback: try credential pool (e.g. zai key stored via auth.json)
-    try:
-        from agent.credential_pool import load_pool
-        pool = load_pool(provider_id)
-        if pool and pool.has_credentials():
-            entry = pool.peek()
-            if entry:
-                key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
-                key = str(key).strip()
-                if has_usable_secret(key):
-                    return key, f"credential_pool:{provider_id}"
-    except Exception:
-        pass
+    # Fallback: try credential pool (e.g. zai key stored via auth.json).
+    # Scoped callers pass an explicit env mapping; they must not inherit the
+    # process/global pool after their scoped env misses.
+    if env is None:
+        try:
+            from agent.credential_pool import load_pool
+            pool = load_pool(provider_id)
+            if pool and pool.has_credentials():
+                entry = pool.peek()
+                if entry:
+                    key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
+                    key = str(key).strip()
+                    if has_usable_secret(key):
+                        return key, f"credential_pool:{provider_id}"
+        except Exception:
+            pass
 
     return "", ""
 
@@ -880,6 +896,8 @@ def _global_auth_file_path() -> Optional[Path]:
 
     See issue #18594 follow-up (credential_pool shadowing).
     """
+    if profile_strict_auth_enabled():
+        return None
     try:
         from hermes_constants import get_default_hermes_root
         global_root = get_default_hermes_root()
@@ -899,6 +917,28 @@ def _global_auth_file_path() -> Optional[Path]:
     # belongs (that's what protects the real user's auth store from being
     # corrupted by a mis-configured test).
     return global_root / "auth.json"
+
+
+def profile_strict_auth_enabled(env: Optional[Dict[str, Any]] = None) -> bool:
+    """Return True when routed-profile auth must not use global fallbacks."""
+    if isinstance(env, dict) and is_truthy_value(
+        str(env.get(STRICT_PROFILE_AUTH_ENV, "") or "")
+    ):
+        return True
+    if is_truthy_value(os.getenv(STRICT_PROFILE_AUTH_ENV, "")):
+        return True
+    try:
+        from gateway.session_context import get_runtime_env, get_session_env
+        if is_truthy_value(get_session_env(STRICT_PROFILE_AUTH_ENV, "")):
+            return True
+        runtime_env = get_runtime_env()
+        if isinstance(runtime_env, dict) and is_truthy_value(
+            str(runtime_env.get(STRICT_PROFILE_AUTH_ENV, "") or "")
+        ):
+            return True
+    except Exception:
+        pass
+    return False
 
 
 def _load_global_auth_store() -> Dict[str, Any]:
@@ -1485,6 +1525,7 @@ def resolve_provider(
     *,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    env: Optional[Dict[str, Any]] = None,
 ) -> str:
     """
     Determine which inference provider to use.
@@ -1577,7 +1618,7 @@ def resolve_provider(
     except Exception as e:
         logger.debug("Could not detect active auth provider: %s", e)
 
-    if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
+    if has_usable_secret(_env_get(env, "OPENAI_API_KEY")) or has_usable_secret(_env_get(env, "OPENROUTER_API_KEY")):
         return "openrouter"
 
     # Auto-detect an OpenRouter credential added via `hermes auth add openrouter`
@@ -1608,17 +1649,18 @@ def resolve_provider(
         if pid in {"copilot", "lmstudio"}:
             continue
         for env_var in pconfig.api_key_env_vars:
-            if has_usable_secret(os.getenv(env_var, "")):
+            if has_usable_secret(_env_get(env, env_var)):
                 return pid
 
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
     # This runs after API-key providers so explicit keys always win.
-    try:
-        from agent.bedrock_adapter import has_aws_credentials
-        if has_aws_credentials():
-            return "bedrock"
-    except ImportError:
-        pass  # boto3 not installed — skip Bedrock auto-detection
+    if env is None or any(_env_get(env, key).strip() for key in ("AWS_ACCESS_KEY_ID", "AWS_PROFILE")):
+        try:
+            from agent.bedrock_adapter import has_aws_credentials
+            if has_aws_credentials():
+                return "bedrock"
+        except ImportError:
+            pass  # boto3 not installed — skip Bedrock auto-detection
 
     raise AuthError(
         "No inference provider configured. Run 'hermes model' to choose a "
@@ -3663,6 +3705,8 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     Returns tokens dict if valid and not expired, None otherwise.
     Does NOT write to the shared file.
     """
+    if profile_strict_auth_enabled():
+        return None
     codex_home = os.getenv("CODEX_HOME", "").strip()
     if not codex_home:
         codex_home = str(Path.home() / ".codex")
@@ -4721,6 +4765,8 @@ def _nous_shared_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
 
 def _merge_shared_nous_oauth_state(state: Dict[str, Any]) -> bool:
     """Copy fresher shared OAuth tokens into a profile-local Nous state."""
+    if profile_strict_auth_enabled():
+        return False
     shared = _read_shared_nous_state()
     if not shared:
         return False
@@ -4764,6 +4810,8 @@ def _write_shared_nous_state(state: Dict[str, Any]) -> None:
     We deliberately omit the runtime ``agent_key`` compatibility field;
     the OAuth tokens are the cross-profile source of truth.
     """
+    if profile_strict_auth_enabled():
+        return
     refresh_token = state.get("refresh_token")
     access_token = state.get("access_token")
     if not (isinstance(refresh_token, str) and refresh_token.strip()):
@@ -4828,6 +4876,8 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
     lacks required fields. Callers should treat ``None`` as "no shared
     credentials available — fall through to device-code".
     """
+    if profile_strict_auth_enabled():
+        return None
     try:
         path = _nous_shared_store_path()
     except RuntimeError:
@@ -4853,6 +4903,8 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
 
 def _clear_shared_nous_state(reason: str) -> None:
     """Remove the shared Nous OAuth store after a terminal token failure."""
+    if profile_strict_auth_enabled():
+        return
     try:
         with _nous_shared_store_lock():
             path = _nous_shared_store_path()
@@ -4997,6 +5049,8 @@ def _try_import_shared_nous_state(
     etc.) — caller should then fall through to the normal device-code
     flow.
     """
+    if profile_strict_auth_enabled():
+        return None
     try:
         with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds + 5.0, AUTH_LOCK_TIMEOUT_SECONDS)):
             shared = _read_shared_nous_state()
@@ -6046,7 +6100,7 @@ def get_xai_oauth_auth_status() -> Dict[str, Any]:
         }
 
 
-def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
+def get_api_key_provider_status(provider_id: str, env: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Status snapshot for API-key providers (z.ai, Kimi, MiniMax)."""
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "api_key":
@@ -6054,11 +6108,11 @@ def get_api_key_provider_status(provider_id: str) -> Dict[str, Any]:
 
     api_key = ""
     key_source = ""
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig, env=env)
 
     env_url = ""
     if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip()
+        env_url = _env_get(env, pconfig.base_url_env_var).strip()
 
     if provider_id in {"kimi-coding", "kimi-coding-cn"}:
         base_url = _resolve_kimi_base_url(api_key, pconfig.inference_base_url, env_url)
@@ -6107,7 +6161,7 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     }
 
 
-def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
+def get_auth_status(provider_id: Optional[str] = None, env: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Generic auth status dispatcher."""
     target = (provider_id or get_active_provider() or "").strip().lower()
     if not target:
@@ -6131,7 +6185,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     # API-key providers
     pconfig = PROVIDER_REGISTRY.get(target)
     if pconfig and pconfig.auth_type == "api_key":
-        return get_api_key_provider_status(target)
+        return get_api_key_provider_status(target, env=env)
     # AWS SDK providers (Bedrock) — check via boto3 credential chain
     if pconfig and pconfig.auth_type == "aws_sdk":
         try:
@@ -6219,7 +6273,11 @@ def _get_azure_foundry_auth_status() -> Dict[str, Any]:
     return info
 
 
-def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
+def resolve_api_key_provider_credentials(
+    provider_id: str,
+    *,
+    env: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Resolve API key and base URL for an API-key provider.
 
     Returns dict with: provider, api_key, base_url, source.
@@ -6234,7 +6292,7 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     api_key = ""
     key_source = ""
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig, env=env)
 
     # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
     # see the local server as configured. doctor still reports unconfigured
@@ -6264,8 +6322,20 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     }
 
 
-def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str, Any]:
+def resolve_external_process_provider_credentials(
+    provider_id: str,
+    *,
+    env: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Resolve runtime details for local subprocess-backed providers."""
+    if profile_strict_auth_enabled(env):
+        raise AuthError(
+            "External-process providers are disabled for strict routed profiles. "
+            "Configure provider credentials inside the routed profile instead.",
+            provider=provider_id,
+            code="profile_strict_external_process_disabled",
+        )
+
     pconfig = PROVIDER_REGISTRY.get(provider_id)
     if not pconfig or pconfig.auth_type != "external_process":
         raise AuthError(
@@ -6274,16 +6344,16 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
             code="invalid_provider",
         )
 
-    base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+    base_url = _env_get(env, pconfig.base_url_env_var).strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
 
     command = (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
-        or os.getenv("COPILOT_CLI_PATH", "").strip()
+        _env_get(env, "HERMES_COPILOT_ACP_COMMAND").strip()
+        or _env_get(env, "COPILOT_CLI_PATH").strip()
         or "copilot"
     )
-    raw_args = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
+    raw_args = _env_get(env, "HERMES_COPILOT_ACP_ARGS").strip()
     args = shlex.split(raw_args) if raw_args else ["--acp", "--stdio"]
     resolved_command = shutil.which(command) if command else None
     if not resolved_command and not base_url.startswith("acp+tcp://"):

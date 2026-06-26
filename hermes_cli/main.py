@@ -10469,9 +10469,13 @@ def cmd_profile(args):
         check_alias_collision,
         create_wrapper_script,
         remove_wrapper_script,
+        audit_profile_isolation,
+        format_profile_isolation_audit,
+        write_profile_identity_marker,
         _is_wrapper_dir_in_path,
         _get_wrapper_dir,
     )
+    from pathlib import Path
     from hermes_constants import display_hermes_home
 
     action = getattr(args, "profile_action", None)
@@ -10773,6 +10777,28 @@ def cmd_profile(args):
         if not all_flag:
             sys.exit(0 if ok_count == 1 else 1)
         sys.exit(0 if ok_count > 0 else 1)
+
+    elif action == "audit-isolation":
+        name = args.profile_name
+        try:
+            if getattr(args, "write_marker", False):
+                from hermes_cli.profiles import get_profile_dir
+                profile_dir = get_profile_dir(name)
+                safe_root = Path(getattr(args, "safe_root", None)).expanduser() if getattr(args, "safe_root", None) else profile_dir.parent
+                write_profile_identity_marker(name, profile_dir, safe_root, overwrite=True)
+            report = audit_profile_isolation(
+                name,
+                safe_root=getattr(args, "safe_root", None),
+            )
+            if getattr(args, "json", False):
+                print(json.dumps(report, indent=2, sort_keys=True))
+            else:
+                print(format_profile_isolation_audit(report))
+            if report.get("status") == "FAIL":
+                sys.exit(1)
+        except Exception as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            sys.exit(1)
 
     elif action == "show":
         name = args.profile_name
@@ -12848,12 +12874,12 @@ def main():
         # raw file path instead.
         if action == "repair":
             from hermes_state import (
-                DEFAULT_DB_PATH,
                 _db_opens_cleanly,
                 repair_state_db_schema,
             )
+            from hermes_constants import get_hermes_home
 
-            db_path = DEFAULT_DB_PATH
+            db_path = get_hermes_home() / "state.db"
             if not db_path.exists():
                 print(f"No session database at {db_path} (nothing to repair).")
                 return

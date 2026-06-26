@@ -2892,7 +2892,7 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-sync"
-        mock_refresh.assert_called_once_with("openai-codex")
+        mock_refresh.assert_called_once_with("openai-codex", env=None)
 
     def test_call_llm_refreshes_codex_on_401_for_non_vision(self):
         stale_client = MagicMock()
@@ -2916,7 +2916,7 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-non-vision"
-        mock_refresh.assert_called_once_with("openai-codex")
+        mock_refresh.assert_called_once_with("openai-codex", env=None)
         assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
 
@@ -2942,7 +2942,7 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-anthropic"
-        mock_refresh.assert_called_once_with("anthropic")
+        mock_refresh.assert_called_once_with("anthropic", env=None)
         assert stale_client.chat.completions.create.call_count == 1
         assert fresh_client.chat.completions.create.call_count == 1
 
@@ -2971,7 +2971,7 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-async"
-        mock_refresh.assert_called_once_with("openai-codex")
+        mock_refresh.assert_called_once_with("openai-codex", env=None)
 
     def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
         stale_client = MagicMock()
@@ -3026,7 +3026,7 @@ class TestAuxiliaryAuthRefreshRetry:
             )
 
         assert resp.choices[0].message.content == "fresh-async-anthropic"
-        mock_refresh.assert_called_once_with("anthropic")
+        mock_refresh.assert_called_once_with("anthropic", env=None)
         assert stale_client.chat.completions.create.await_count == 1
         assert fresh_client.chat.completions.create.await_count == 1
 
@@ -3332,7 +3332,7 @@ class TestVisionAutoSkipsKimiCoding:
             "agent.auxiliary_client.resolve_provider_client", rpc_mock,
         )
 
-        def fake_strict(provider, model=None):
+        def fake_strict(provider, model=None, env=None):
             if provider == "openrouter":
                 return fake_or_client, "google/gemini-3-flash-preview"
             if provider == "nous":
@@ -3368,7 +3368,7 @@ class TestVisionAutoSkipsKimiCoding:
         )
         monkeypatch.setattr(
             "agent.auxiliary_client._resolve_strict_vision_backend",
-            lambda p, m=None: (fake_or_client, "gemini")
+            lambda p, m=None, env=None: (fake_or_client, "gemini")
             if p == "openrouter"
             else (None, None),
         )

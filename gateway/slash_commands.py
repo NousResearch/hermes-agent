@@ -182,6 +182,13 @@ class GatewaySlashCommandsMixin:
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
+        try:
+            from gateway.run import _load_topic_models
+            persistent_override = _load_topic_models().get(session_key)
+            if persistent_override:
+                self._session_model_overrides[session_key] = persistent_override
+        except Exception:
+            pass
         self._set_session_reasoning_override(session_key, None)
         if hasattr(self, "_pending_model_notes"):
             self._pending_model_notes.pop(session_key, None)
@@ -223,7 +230,7 @@ class GatewaySlashCommandsMixin:
 
         # Resolve session config info to surface to the user
         try:
-            session_info = self._format_session_info()
+            session_info = self._format_session_info(source=source)
         except Exception:
             session_info = ""
 
@@ -295,17 +302,77 @@ class GatewaySlashCommandsMixin:
         return EphemeralReply(f"{header}{_tip_line}")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show active profile name and home directory."""
-        from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+        """Handle /profile command — switch and show active profile for this topic.
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        Supports:
+          /profile                              — show active profile and list available profiles
+          /profile <name>                       — pin topic to a profile
+          /profile default/reset/clear          — clear topic profile override
+        """
+        from hermes_constants import display_hermes_home
+        from hermes_cli.profiles import list_profiles, get_active_profile_name
+        from gateway.run import _topic_profile_key, _remove_topic_profile, _save_topic_profile
+
+        source = event.source
+        source = self._normalize_source_for_session_key(source)
+        topic_key = _topic_profile_key(source)
+        session_key = self._session_key_for_source(source)
+
+        profile_input = event.get_command_args().strip()
+
+        # Load all valid profiles on disk
+        try:
+            profiles = list_profiles()
+            valid_profiles = {p.name for p in profiles}
+        except Exception:
+            valid_profiles = {"default"}
+
+        if profile_input:
+            if profile_input in ("default", "reset", "clear"):
+                try:
+                    _remove_topic_profile(topic_key)
+                except Exception:
+                    pass
+                event.source.profile = None
+                self._evict_cached_agent(session_key)
+                return (
+                    "Cleared the topic profile binding. Now using the global "
+                    f"active profile '{self._active_profile_name()}'."
+                )
+
+            if profile_input not in valid_profiles:
+                available = ", ".join(f"`{name}`" for name in sorted(valid_profiles))
+                return f"Unknown profile '{profile_input}'. Available profiles: {available}."
+
+            # Save the profile override
+            try:
+                _save_topic_profile(topic_key, profile_input)
+            except Exception:
+                pass
+            event.source.profile = profile_input
+
+            # Evict the cached agent session since the profile/session key changed
+            self._evict_cached_agent(session_key)
+
+            return f"Pinned this topic to profile `{profile_input}`."
+
+        # No args: show active profile (same format as upstream /profile) and
+        # list the available profiles that this topic can switch to.
+        topic_profile = event.source.profile or get_active_profile_name()
 
         lines = [
-            t("gateway.profile.header", profile=profile_name),
-            t("gateway.profile.home", home=display),
+            t("gateway.profile.header", profile=topic_profile),
+            t("gateway.profile.home", home=display_hermes_home()),
+            "",
+            "Available profiles (tap to switch):",
         ]
+        for name in sorted(valid_profiles):
+            is_active = (name == topic_profile)
+            bullet = "*" if is_active else "-"
+            lines.append(f"{bullet} `/profile {name}`")
+
+        lines.append("")
+        lines.append("To clear the binding: `/profile default`")
 
         return "\n".join(lines)
 
@@ -1124,6 +1191,10 @@ class GatewaySlashCommandsMixin:
         )
         from hermes_cli.providers import get_label
 
+        # On gateway (non-local) sources a plain ``/model X`` binds the model to
+        # this topic (topic_models.json) instead of the global config.yaml.
+        is_gateway = (event.source.platform != Platform.LOCAL) if event.source.platform else False
+
         raw_args = event.get_command_args().strip()
 
         # Parse --provider, --global, --session, and --refresh flags
@@ -1135,6 +1206,8 @@ class GatewaySlashCommandsMixin:
             is_session,
         ) = parse_model_flags(raw_args)
         persist_global = resolve_persist_behavior(is_global_flag, is_session)
+        if is_gateway and not is_global_flag:
+            persist_global = False
 
         # --refresh: bust the disk cache so the picker shows live data.
         if force_refresh:
@@ -1177,6 +1250,17 @@ class GatewaySlashCommandsMixin:
         # (#30479).
         source = self._normalize_source_for_session_key(source)
         session_key = self._session_key_for_source(source)
+
+        if model_input in ("default", "reset", "clear"):
+            self._session_model_overrides.pop(session_key, None)
+            try:
+                from gateway.run import _remove_topic_model
+                _remove_topic_model(session_key)
+            except Exception:
+                pass
+            self._evict_cached_agent(session_key)
+            return "Topic-specific model override cleared. Now using the global default model."
+
         override = self._session_model_overrides.get(session_key, {})
         if override:
             current_model = override.get("model", current_model)
@@ -1325,6 +1409,19 @@ class GatewaySlashCommandsMixin:
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
                         }
+                        if is_gateway:
+                            if persist_global:
+                                try:
+                                    from gateway.run import _remove_topic_model
+                                    _remove_topic_model(_session_key)
+                                except Exception:
+                                    pass
+                            else:
+                                try:
+                                    from gateway.run import _save_topic_model
+                                    _save_topic_model(_session_key, _self._session_model_overrides[_session_key])
+                                except Exception as e:
+                                    logger.warning("Failed to save persistent topic model: %s", e)
 
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
@@ -1554,6 +1651,19 @@ class GatewaySlashCommandsMixin:
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
             }
+            if is_gateway:
+                if persist_global:
+                    try:
+                        from gateway.run import _remove_topic_model
+                        _remove_topic_model(session_key)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        from gateway.run import _save_topic_model
+                        _save_topic_model(session_key, self._session_model_overrides[session_key])
+                    except Exception as e:
+                        logger.warning("Failed to save persistent topic model: %s", e)
 
             # Evict cached agent so the next turn creates a fresh agent from the
             # override rather than relying on cache signature mismatch detection.

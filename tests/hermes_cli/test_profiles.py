@@ -36,6 +36,10 @@ from hermes_cli.profiles import (
     NO_BUNDLED_SKILLS_MARKER,
     backfill_profile_envs,
     profiles_to_serve,
+    PROFILE_IDENTITY_FILENAME,
+    audit_profile_isolation,
+    validate_profile_identity,
+    write_profile_identity_marker,
 )
 from hermes_cli.config import DEFAULT_CONFIG
 
@@ -1676,3 +1680,247 @@ class TestProfilesToServe:
     def test_on_no_named_profiles_returns_just_default(self, profile_env):
         serve = profiles_to_serve(multiplex=True)
         assert [n for n, _ in serve] == ["default"]
+
+
+class TestProfileIsolationAudit:
+    def test_create_profile_writes_identity_marker(self, profile_env):
+        tmp_path = profile_env
+        profile_dir = create_profile("alpha-test", no_alias=True)
+        marker = profile_dir / PROFILE_IDENTITY_FILENAME
+
+        assert marker.is_file()
+        validate_profile_identity(
+            "alpha-test",
+            profile_dir,
+            tmp_path / ".hermes" / "profiles",
+        )
+
+    def test_audit_fails_for_secret_env_identical_to_main(self, profile_env):
+        tmp_path = profile_env
+        main_home = tmp_path / ".hermes"
+        profile_dir = create_profile("alpha-test", no_alias=True)
+        env_text = "OPENROUTER_API_KEY=sk-test\n"
+        (main_home / ".env").write_text(env_text, encoding="utf-8")
+        (profile_dir / ".env").write_text(env_text, encoding="utf-8")
+
+        report = audit_profile_isolation("alpha-test")
+
+        assert report["status"] == "FAIL"
+        assert any(f["path"] == ".env" and f["status"] == "FAIL" for f in report["findings"])
+
+    def test_audit_fails_for_shared_env_secret_value_even_when_not_identical(self, profile_env):
+        tmp_path = profile_env
+        main_home = tmp_path / ".hermes"
+        profile_dir = create_profile("alpha-test", no_alias=True)
+        (main_home / ".env").write_text(
+            "OPENROUTER_API_KEY=shared-secret\nOTHER=main\n",
+            encoding="utf-8",
+        )
+        (profile_dir / ".env").write_text(
+            "# reordered copy\nOTHER=profile\nOPENROUTER_API_KEY=shared-secret\n",
+            encoding="utf-8",
+        )
+
+        report = audit_profile_isolation("alpha-test")
+
+        assert report["status"] == "FAIL"
+        assert any(
+            f["path"] == ".env"
+            and f["status"] == "FAIL"
+            and f.get("shared_secret_count") == 1
+            for f in report["findings"]
+        )
+
+    def test_audit_fails_for_shared_alphabetic_env_secret_value(self, profile_env):
+        tmp_path = profile_env
+        main_home = tmp_path / ".hermes"
+        profile_dir = create_profile("alpha-test", no_alias=True)
+        (main_home / ".env").write_text(
+            "OPENROUTER_API_KEY=supersecretvalue\n",
+            encoding="utf-8",
+        )
+        (profile_dir / ".env").write_text(
+            "OPENROUTER_API_KEY=supersecretvalue\nOTHER=profile\n",
+            encoding="utf-8",
+        )
+
+        report = audit_profile_isolation("alpha-test")
+
+        assert report["status"] == "FAIL"
+        assert any(
+            f["path"] == ".env"
+            and f["status"] == "FAIL"
+            and f.get("shared_secret_count") == 1
+            for f in report["findings"]
+        )
+
+    def test_audit_fails_for_shared_auth_secret_value_even_when_json_differs(self, profile_env):
+        tmp_path = profile_env
+        main_home = tmp_path / ".hermes"
+        profile_dir = create_profile("alpha-test", no_alias=True)
+        (main_home / "auth.json").write_text(
+            json.dumps({"providers": {"nous": {"access_token": "shared-token"}}}),
+            encoding="utf-8",
+        )
+        (profile_dir / "auth.json").write_text(
+            json.dumps(
+                {
+                    "providers": {
+                        "nous": {
+                            "label": "profile",
+                            "refresh_token": "different-refresh",
+                            "access_token": "shared-token",
+                        }
+                    }
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
+        report = audit_profile_isolation("alpha-test")
+
+        assert report["status"] == "FAIL"
+        assert any(
+            f["path"] == "auth.json"
+            and f["status"] == "FAIL"
+            and f.get("shared_secret_count") == 1
+            for f in report["findings"]
+        )
+
+    def test_audit_fails_for_shared_alphabetic_auth_secret_value(self, profile_env):
+        tmp_path = profile_env
+        main_home = tmp_path / ".hermes"
+        profile_dir = create_profile("alpha-test", no_alias=True)
+        (main_home / "auth.json").write_text(
+            json.dumps({"providers": {"nous": {"access_token": "supersecretvalue"}}}),
+            encoding="utf-8",
+        )
+        (profile_dir / "auth.json").write_text(
+            json.dumps({"providers": {"nous": {"access_token": "supersecretvalue"}}}),
+            encoding="utf-8",
+        )
+
+        report = audit_profile_isolation("alpha-test")
+
+        assert report["status"] == "FAIL"
+        assert any(
+            f["path"] == "auth.json"
+            and f["status"] == "FAIL"
+            and f.get("shared_secret_count") == 1
+            for f in report["findings"]
+        )
+
+    def test_audit_fails_for_shared_config_secret_value_even_when_yaml_differs(
+        self, profile_env
+    ):
+        tmp_path = profile_env
+        main_home = tmp_path / ".hermes"
+        profile_dir = create_profile("alpha-test", no_alias=True)
+        (main_home / "config.yaml").write_text(
+            "model:\n"
+            "  provider: custom\n"
+            "  api_key: shared-inline-secret\n"
+            "  default: main-model\n",
+            encoding="utf-8",
+        )
+        (profile_dir / "config.yaml").write_text(
+            "model:\n"
+            "  default: profile-model\n"
+            "  api_key: shared-inline-secret\n"
+            "  provider: custom\n",
+            encoding="utf-8",
+        )
+
+        report = audit_profile_isolation("alpha-test")
+
+        assert report["status"] == "FAIL"
+        assert any(
+            f["path"] == "config.yaml"
+            and f["status"] == "FAIL"
+            and f.get("shared_secret_count") == 1
+            for f in report["findings"]
+        )
+
+    def test_audit_fails_for_shared_alphabetic_config_secret_value(
+        self, profile_env
+    ):
+        tmp_path = profile_env
+        main_home = tmp_path / ".hermes"
+        profile_dir = create_profile("alpha-test", no_alias=True)
+        (main_home / "config.yaml").write_text(
+            "providers:\n  custom:\n    api_key: supersecretvalue\n",
+            encoding="utf-8",
+        )
+        (profile_dir / "config.yaml").write_text(
+            "providers:\n  custom:\n    api_key: supersecretvalue\n",
+            encoding="utf-8",
+        )
+
+        report = audit_profile_isolation("alpha-test")
+
+        assert report["status"] == "FAIL"
+        assert any(
+            f["path"] == "config.yaml"
+            and f["status"] == "FAIL"
+            and f.get("shared_secret_count") == 1
+            for f in report["findings"]
+        )
+
+    def test_audit_safe_root_uses_profile_under_safe_root_and_main_home_from_env(
+        self, profile_env
+    ):
+        tmp_path = profile_env
+        main_home = tmp_path / ".hermes"
+        external_root = tmp_path / "external-profiles"
+        profile_dir = external_root / "alpha-test"
+        profile_dir.mkdir(parents=True)
+        write_profile_identity_marker(
+            "alpha-test",
+            profile_dir,
+            external_root,
+            overwrite=True,
+        )
+        (main_home / ".env").write_text("OPENROUTER_API_KEY=main-secret\n", encoding="utf-8")
+        (profile_dir / ".env").write_text("OPENROUTER_API_KEY=main-secret\n", encoding="utf-8")
+
+        report = audit_profile_isolation("alpha-test", safe_root=external_root)
+
+        assert report["status"] == "FAIL"
+        assert any(f["path"] == ".env" and f["status"] == "FAIL" for f in report["findings"])
+
+    def test_audit_fails_for_nonempty_memory_identical_to_main(self, profile_env):
+        tmp_path = profile_env
+        main_home = tmp_path / ".hermes"
+        profile_dir = create_profile("alpha-test", no_alias=True)
+        (main_home / "memories").mkdir(exist_ok=True)
+        (profile_dir / "memories").mkdir(exist_ok=True)
+        text = "shared memory should not be cloned into routed profile\n"
+        (main_home / "memories" / "MEMORY.md").write_text(text, encoding="utf-8")
+        (profile_dir / "memories" / "MEMORY.md").write_text(text, encoding="utf-8")
+
+        report = audit_profile_isolation("alpha-test")
+
+        assert report["status"] == "FAIL"
+        assert any(
+            f["path"] == "memories/MEMORY.md" and f["status"] == "FAIL"
+            for f in report["findings"]
+        )
+
+    def test_audit_fails_for_outgoing_plugin_symlink(self, profile_env):
+        tmp_path = profile_env
+        main_home = tmp_path / ".hermes"
+        profile_dir = create_profile("alpha-test", no_alias=True)
+        shared_plugin = main_home / "plugins" / "shared-plugin"
+        shared_plugin.mkdir(parents=True)
+        profile_plugins = profile_dir / "plugins"
+        profile_plugins.mkdir(exist_ok=True)
+        (profile_plugins / "shared-plugin").symlink_to(shared_plugin, target_is_directory=True)
+
+        report = audit_profile_isolation("alpha-test")
+
+        assert report["status"] == "FAIL"
+        assert any(
+            f["path"] == "plugins/shared-plugin" and f["status"] == "FAIL"
+            for f in report["findings"]
+        )

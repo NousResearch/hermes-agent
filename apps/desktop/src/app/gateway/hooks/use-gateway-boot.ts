@@ -547,8 +547,9 @@ export function useGatewayBoot({
         publish(survivor.connection)
       }
 
-      $activeGatewayProfile.set(survivor?.profile ?? $activeGatewayProfile.get())
-      void ensureGatewayForProfile(survivor?.profile ?? $activeGatewayProfile.get())
+      const profile = survivor?.profile ?? $activeGatewayProfile.get()
+      $activeGatewayProfile.set(profile)
+      void ensureGatewayForProfile(profile)
 
       // Mirror the current (already-open) socket state into the composer so the
       // input doesn't sit disabled after the swap.

@@ -554,7 +554,7 @@ install_uv() {
 
     if [ -x "$_managed_uv" ]; then
         UV_CMD="$_managed_uv"
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        UV_VERSION=$("$UV_CMD" --version 2>/dev/null)
         log_success "Managed uv found ($UV_VERSION)"
         return 0
     fi
@@ -590,7 +590,7 @@ install_uv() {
             exit 1
         fi
         rm -f "$_uv_install_log"
-        UV_VERSION=$($UV_CMD --version 2>/dev/null)
+        UV_VERSION=$("$UV_CMD" --version 2>/dev/null)
         log_success "Managed uv installed ($UV_VERSION)"
     else
         log_error "Failed to install uv"
@@ -1315,7 +1315,7 @@ setup_venv() {
     fi
 
     # uv creates the venv and pins the Python version in one step
-    $UV_CMD venv venv --python "$PYTHON_VERSION"
+    "$UV_CMD" venv venv --python "$PYTHON_VERSION"
 
     # Neutralize any inherited UV_PYTHON (e.g. UV_PYTHON=3.14 left in the
     # user's shell env). uv honours UV_PYTHON over an existing venv for the
@@ -1469,7 +1469,7 @@ install_deps() {
         #                  This respects the curation in pyproject.toml.
         # uv's own progress UI handles TTY detection and downgrades
         # gracefully when stdout/stderr aren't terminals.
-        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
+        if UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" "$UV_CMD" sync --extra all --locked; then
             log_success "Main package installed (hash-verified via uv.lock)"
             log_success "All dependencies installed"
             return 0
@@ -1550,7 +1550,7 @@ PY
     install_tier() {
         local name="$1"; local spec="$2"
         log_info "Trying tier: $name ..."
-        if $UV_CMD pip install -e "$spec" 2>"$ALL_INSTALL_LOG"; then
+        if "$UV_CMD" pip install -e "$spec" 2>"$ALL_INSTALL_LOG"; then
             log_success "Main package installed ($name)"
             _installed=true
             _tier_name="$name"

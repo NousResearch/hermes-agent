@@ -324,20 +324,18 @@ export function PetOverlayApp() {
     const anchor = zoomAnchorRef.current
     zoomAnchorRef.current = null
 
-    // The sprite's bottom-center sits at (curW/2, curH - paddingBottom) and
-    // scales about that point. Solve for the new window origin that holds either
-    // the cursor pixel (wheel) or that bottom-center (slider) at a fixed spot.
-    const dx = anchor ? anchor.clientX - curW / 2 : 0
-    const dy = anchor ? anchor.clientY - (curH - PET_PADDING_BOTTOM) : 0
+    // The sprite scales about its bottom-center, at window-local (curW/2,
+    // curH - paddingBottom). Hold the anchor pixel fixed on screen as it scales;
+    // with no wheel anchor we pin the bottom-center itself (ratio 1 ⇒ no shift).
     const ratio = anchor?.ratio ?? 1
-    const anchorX = anchor?.clientX ?? curW / 2
-    const anchorY = anchor?.clientY ?? curH - PET_PADDING_BOTTOM
+    const ax = anchor?.clientX ?? curW / 2
+    const ay = anchor?.clientY ?? curH - PET_PADDING_BOTTOM
 
     const bounds = {
       height,
       width,
-      x: Math.round(window.screenX + anchorX - dx * ratio - width / 2),
-      y: Math.round(window.screenY + anchorY - dy * ratio - (height - PET_PADDING_BOTTOM))
+      x: Math.round(window.screenX + ax - (ax - curW / 2) * ratio - width / 2),
+      y: Math.round(window.screenY + ay - (ay - (curH - PET_PADDING_BOTTOM)) * ratio - (height - PET_PADDING_BOTTOM))
     }
 
     window.hermesDesktop?.petOverlay?.setBounds(bounds)

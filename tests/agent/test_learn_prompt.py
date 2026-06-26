@@ -89,3 +89,216 @@ class TestLearnRegistryWiring:
         from hermes_cli.commands import resolve_command
 
         assert not resolve_command("learn").cli_only
+
+
+# ===========================================================================
+# Decomposition & delta-update enhancement
+#
+# The enhancement layers flag-driven modes (decompose / single / update /
+# dry-run) onto the open-ended baseline above. build_learn_prompt stays a pure,
+# total, deterministic str->str function, so these contracts are expressed as
+# assertions over a representative request corpus.
+# ===========================================================================
+
+import itertools
+
+import pytest
+
+from agent.learn_prompt import LearnMode, parse_learn_request
+
+
+def _norm(text: str) -> str:
+    """Collapse whitespace so wrapped multi-word phrases match regardless of
+    the line-wrap column."""
+    return " ".join(text.split())
+
+
+_BASE_TEXTS = [
+    "",
+    "   ",
+    "document the deployment runbook",
+    "summarize our REST API conventions and error handling",
+    "cafe deja-vu handle unicode and emoji correctly",
+    "discuss --decompose as a concept without triggering it",
+    "a" * 40,
+]
+
+_FLAG_SETS = [
+    [],
+    ["--decompose"],
+    ["--no-decompose"],
+    ["--dry-run"],
+    ["--decompose", "--dry-run"],
+    ["--no-decompose", "--dry-run"],
+    ["--decompose", "--no-decompose"],
+    ["--update", "my-skill"],
+    ["--update", "my-skill", "--dry-run"],
+    ["--update", "parent-skill", "--decompose"],
+    ["--update"],
+]
+
+
+def _request_corpus() -> list[str]:
+    corpus: list[str] = []
+    for base, flags in itertools.product(_BASE_TEXTS, _FLAG_SETS):
+        if flags:
+            corpus.append((" ".join(flags) + " " + base).strip())
+            corpus.append((base + " " + " ".join(flags)).strip())
+        else:
+            corpus.append(base)
+    corpus += [
+        "update my-skill with the new authentication docs",
+        "update billing-parent with new tax rules --dry-run",
+        "UPDATE Cap-Skill WITH mixed case keywords",
+        "update",
+        "update foo",
+        "foo --update",
+    ]
+    return corpus
+
+
+CORPUS = _request_corpus()
+
+
+class TestLearnFlagParsing:
+    @pytest.mark.parametrize(
+        "req,mode,target,dry,conflict",
+        [
+            ("just some text", LearnMode.AUTO, None, False, False),
+            ("--decompose text", LearnMode.DECOMPOSE, None, False, False),
+            ("--no-decompose text", LearnMode.SINGLE, None, False, False),
+            ("--decompose --no-decompose text", LearnMode.SINGLE, None, False, True),
+            ("--update foo with bar", LearnMode.UPDATE, "foo", False, False),
+            ("update foo with bar", LearnMode.UPDATE, "foo", False, False),
+            ("--update foo --decompose bar", LearnMode.UPDATE, "foo", False, False),
+            ("--dry-run text", LearnMode.AUTO, None, True, False),
+            ("--decompose --dry-run text", LearnMode.DECOMPOSE, None, True, False),
+            ("--update", LearnMode.AUTO, None, False, False),
+        ],
+    )
+    def test_mode_resolution_table(self, req, mode, target, dry, conflict):
+        d = parse_learn_request(req)
+        assert d.mode is mode
+        assert d.update_target == target
+        assert d.dry_run is dry
+        assert d.conflicting_flags is conflict
+
+    def test_update_precedence_over_decompose(self):
+        d = parse_learn_request("--decompose --update myskill with stuff")
+        assert d.mode is LearnMode.UPDATE and d.update_target == "myskill"
+
+    def test_unrecognized_flags_pass_through(self):
+        d = parse_learn_request("document this --unknown-flag and --another")
+        assert "--unknown-flag" in d.source_text and "--another" in d.source_text
+        assert d.mode is LearnMode.AUTO
+
+    def test_directive_is_frozen(self):
+        d = parse_learn_request("text")
+        with pytest.raises(Exception):
+            d.mode = LearnMode.DECOMPOSE  # type: ignore[misc]
+
+
+class TestLearnPromptModes:
+    @pytest.mark.parametrize("req", CORPUS)
+    def test_pure_total_deterministic(self, req):
+        out1 = build_learn_prompt(req)
+        out2 = build_learn_prompt(req)
+        assert isinstance(out1, str) and out1 != ""
+        assert out1 == out2
+
+    @pytest.mark.parametrize("req", CORPUS)
+    def test_invariants_present_in_every_prompt(self, req):
+        out = build_learn_prompt(req)
+        # Authoring standards travel with every mode.
+        assert _AUTHORING_STANDARDS in out
+        # Gather tools + skill_manage-only writes named in every mode.
+        for tok in ("read_file", "search_files", "web_extract", "skill_manage"):
+            assert tok in out
+
+    @pytest.mark.parametrize("req", CORPUS)
+    def test_source_text_preserved(self, req):
+        d = parse_learn_request(req)
+        out = build_learn_prompt(req)
+        if d.source_text:
+            assert d.source_text in out
+
+    def test_auto_emits_threshold_and_single_default(self):
+        auto = [r for r in CORPUS if parse_learn_request(r).mode is LearnMode.AUTO]
+        assert auto
+        for req in auto:
+            norm = _norm(build_learn_prompt(req))
+            assert "Decomposition Threshold" in norm
+            assert "MAX_SKILL_CONTENT_CHARS" in norm
+            assert "100,000 characters" in norm
+            assert "distinct single-responsibility topic" in norm
+            assert "`create`" in norm
+
+    def test_decompose_forces_hierarchy(self):
+        for req in ("--decompose document everything", "build the kit --decompose"):
+            assert parse_learn_request(req).mode is LearnMode.DECOMPOSE
+            norm = _norm(build_learn_prompt(req))
+            assert "Parent Skill" in norm and "Child Skill" in norm
+            assert "Progressive Disclosure" in norm
+            assert "metadata.hermes.children" in norm
+            assert "metadata.hermes.parent" in norm
+            assert "metadata.hermes.depends_on" in norm
+            assert "do not introduce any new top-level frontmatter" in norm.lower()
+
+    def test_no_decompose_single_and_conflict(self):
+        out = build_learn_prompt("--no-decompose keep it one skill")
+        assert parse_learn_request("--no-decompose x").mode is LearnMode.SINGLE
+        assert "author exactly one skill" in _norm(out).lower()
+
+        conflict = "--decompose --no-decompose ambiguous request"
+        d = parse_learn_request(conflict)
+        assert d.mode is LearnMode.SINGLE and d.conflicting_flags
+        norm = _norm(build_learn_prompt(conflict)).lower()
+        assert "these flags conflict" in norm
+
+    def test_update_minimal_patching_and_versioning(self):
+        for req, target in [
+            ("--update auth-skill with new oauth flow", "auth-skill"),
+            ("update billing with tax rules", "billing"),
+            ("--update my-skill", "my-skill"),
+        ]:
+            d = parse_learn_request(req)
+            assert d.mode is LearnMode.UPDATE and d.update_target == target
+            norm = _norm(build_learn_prompt(req))
+            assert f"`{target}`" in norm
+            assert "Read the existing skill before modifying" in norm
+            assert "`patch`" in norm and "`write_file`" in norm
+            assert "Reserve the `edit` action for a full rewrite" in norm
+            assert "report that the skill was not found" in norm
+            assert "Increment the `version`" in norm
+            assert "summary of the change" in norm
+            assert "metadata.hermes.children" in norm
+
+    def test_dry_run_previews_and_suppresses_writes(self):
+        dry = [r for r in CORPUS if parse_learn_request(r).dry_run]
+        assert dry
+        for req in dry:
+            norm = _norm(build_learn_prompt(req))
+            assert "DRY RUN" in norm
+            assert "planned skills to create" in norm
+            assert "planned patches" in norm
+            assert "planned supporting files" in norm
+            for action in ("create", "edit", "patch", "delete", "write_file", "remove_file"):
+                assert f"`{action}`" in norm
+
+    def test_dry_run_with_decompose_lists_names(self):
+        norm = _norm(build_learn_prompt("--decompose --dry-run the big manual"))
+        assert "Parent Skill and Child Skill names" in norm
+
+
+class TestLearnRegistryAdvertisesFlags:
+    def test_args_hint_advertises_flags(self):
+        from hermes_cli.commands import resolve_command
+
+        hint = resolve_command("learn").args_hint or ""
+        for flag in ("--decompose", "--no-decompose", "--update", "--dry-run"):
+            assert flag in hint
+
+    def test_no_new_model_tool_registered(self):
+        from tools.registry import registry
+
+        assert "learn" not in set(registry.get_all_tool_names())

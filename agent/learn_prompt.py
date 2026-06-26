@@ -24,6 +24,14 @@ gateway ``/learn``, the dashboard "Learn a skill" panel) calls
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from enum import Enum
+
+# Per-skill content ceiling enforced by ``skill_manage``
+# (``MAX_SKILL_CONTENT_CHARS`` in ``tools/skill_manager_tool.py``). Named here so
+# the decomposition threshold can refer to it explicitly in the prompt.
+MAX_SKILL_CONTENT_CHARS = 100_000
+
 # The house-style rules, distilled from AGENTS.md "Skill authoring standards
 # (HARDLINE)" and the hermes-agent-dev new-skill salvage reference. Embedded in
 # the prompt so the agent authors skills the way a maintainer would by hand.
@@ -96,8 +104,12 @@ Quality bar:
   templates in `templates/`."""
 
 
-def build_learn_prompt(user_request: str) -> str:
-    """Build the agent prompt for an open-ended ``/learn`` request.
+def _baseline_single_skill_prompt(user_request: str) -> str:
+    """Build the open-ended single-skill ``/learn`` prompt (upstream baseline).
+
+    This is the original ``/learn`` behavior: gather the described sources and
+    author ONE ``SKILL.md`` via ``skill_manage``. It is reused as the base for
+    AUTO and SINGLE modes; DECOMPOSE and UPDATE assemble their own prompts.
 
     Args:
         user_request: the free-text the user gave after ``/learn`` — a
@@ -134,3 +146,256 @@ def build_learn_prompt(user_request: str) -> str:
         "When done, tell the user the skill name, its category, and a "
         "one-line summary of what it captured."
     )
+
+
+# ---------------------------------------------------------------------------
+# Decomposition & delta-update enhancement
+#
+# `/learn` accepts optional flags that layer two capabilities on top of the
+# open-ended baseline above, without adding any new model-facing tool:
+#   --decompose / --no-decompose : force or forbid a parent+children hierarchy
+#   --update <name>              : delta-update an existing skill (also the
+#                                  natural-language "update <name> with ...")
+#   --dry-run                    : preview the plan, write nothing
+# Flags are recognized as whitespace-delimited tokens anywhere in the request;
+# unrecognized --flags pass through untouched as part of the source text.
+# ---------------------------------------------------------------------------
+
+
+class LearnMode(str, Enum):
+    """Resolved authoring mode for a ``/learn`` request."""
+
+    AUTO = "auto"            # no flag: single by default, decompose if large
+    SINGLE = "single"        # --no-decompose: force one skill
+    DECOMPOSE = "decompose"  # --decompose: force a hierarchy
+    UPDATE = "update"        # --update <name> / "update <name> with ..."
+
+
+@dataclass(frozen=True)
+class LearnDirective:
+    """Parsed intent extracted from a ``/learn`` request. Pure data, no I/O."""
+
+    mode: LearnMode
+    source_text: str                 # request text with recognized flags removed
+    update_target: str | None = None
+    dry_run: bool = False
+    conflicting_flags: bool = False   # --decompose AND --no-decompose both given
+
+
+_FLAG_DECOMPOSE = "--decompose"
+_FLAG_NO_DECOMPOSE = "--no-decompose"
+_FLAG_DRY_RUN = "--dry-run"
+_FLAG_UPDATE = "--update"
+
+
+def parse_learn_request(user_request: str) -> LearnDirective:
+    """Extract control flags and free text from a ``/learn`` request.
+
+    Deterministic and side-effect free. Recognizes ``--decompose``,
+    ``--no-decompose``, ``--update <name>`` and ``--dry-run`` as
+    whitespace-delimited tokens anywhere in the text, plus the natural-language
+    ``update <name> with <sources>`` phrasing. Recognized flags are stripped;
+    the remainder becomes ``source_text``. Unrecognized ``--flags`` are left
+    untouched in ``source_text``.
+
+    Mode precedence: ``--update`` > ``--no-decompose`` (sets
+    ``conflicting_flags`` when ``--decompose`` is also present) > ``--decompose``
+    > AUTO. ``dry_run`` is orthogonal. ``--update`` with no following name
+    yields no target (mode falls through to AUTO).
+    """
+    text = user_request if isinstance(user_request, str) else ""
+    tokens = text.split()
+
+    decompose = False
+    no_decompose = False
+    dry_run = False
+    update_target: str | None = None
+
+    remaining: list[str] = []
+    i = 0
+    n = len(tokens)
+    while i < n:
+        token = tokens[i]
+        if token == _FLAG_DECOMPOSE:
+            decompose = True
+        elif token == _FLAG_NO_DECOMPOSE:
+            no_decompose = True
+        elif token == _FLAG_DRY_RUN:
+            dry_run = True
+        elif token == _FLAG_UPDATE:
+            if i + 1 < n and not tokens[i + 1].startswith("--"):
+                update_target = tokens[i + 1]
+                i += 1
+        else:
+            remaining.append(token)
+        i += 1
+
+    # Natural-language form: "update <name> with <sources>".
+    if (
+        update_target is None
+        and len(remaining) >= 3
+        and remaining[0].lower() == "update"
+        and remaining[2].lower() == "with"
+    ):
+        update_target = remaining[1]
+        source_text = " ".join(remaining[3:])
+    else:
+        source_text = " ".join(remaining)
+
+    conflicting_flags = decompose and no_decompose
+
+    if update_target is not None:
+        mode = LearnMode.UPDATE
+    elif no_decompose:
+        mode = LearnMode.SINGLE
+    elif decompose:
+        mode = LearnMode.DECOMPOSE
+    else:
+        mode = LearnMode.AUTO
+
+    return LearnDirective(
+        mode=mode,
+        source_text=source_text,
+        update_target=update_target,
+        dry_run=dry_run,
+        conflicting_flags=conflicting_flags,
+    )
+
+
+# Fallback source description for an empty request in decompose/update modes
+# (the baseline single-skill prompt has its own conversation fallback).
+_CONVERSATION_FALLBACK = (
+    "the workflow we just went through in this conversation - review the steps "
+    "taken and distill them into reusable skills"
+)
+
+# Decomposition decision rule (AUTO mode). Defines the Decomposition Threshold
+# relative to MAX_SKILL_CONTENT_CHARS and the distinct-topic count, and states
+# the single-skill default below the threshold.
+_THRESHOLD_RULE = """\
+DECOMPOSITION CHECK (automatic): before authoring, estimate the scope. Apply the
+Decomposition Threshold, measured by two signals: the estimated authored content
+size relative to MAX_SKILL_CONTENT_CHARS (100,000 characters), and the count of
+distinct single-responsibility topics the material covers. Decompose the material
+into a skill hierarchy WHEN the estimated authored content would exceed
+MAX_SKILL_CONTENT_CHARS (100,000 characters) OR would span more than one distinct
+single-responsibility topic. Otherwise author a single SKILL.md via the
+`skill_manage` action `create` (the default). Aim for approximately 200 lines per
+skill; relocate overflow into `references/`/`templates/`/`scripts/`/`assets/`."""
+
+# Parent/child structure + hierarchy frontmatter, shared by AUTO (conditional)
+# and DECOMPOSE (forced).
+_DECOMP_GUIDANCE = """\
+HIERARCHY RULES (when you decompose):
+- Author ONE Parent Skill with an overview, a `## When to Use` section, and links
+  to each Child Skill. The Parent Skill orchestrates the hierarchy.
+- Author each Child Skill as a focused, single-responsibility skill covering
+  exactly one topic.
+- Direct the Parent Skill to load Child Skills on demand through Progressive
+  Disclosure, so only the relevant sub-skill loads.
+- Follow the modern SKILL.md section order for every skill, parent and children
+  alike.
+- Record hierarchy/dependency links strictly under `metadata.hermes.*`: child
+  names under `metadata.hermes.children` on the parent, the parent name under
+  `metadata.hermes.parent` on each child, and any cross-skill dependencies under
+  `metadata.hermes.depends_on`. Do not introduce any new top-level frontmatter
+  keys for these relationships."""
+
+# Delta-update guidance (UPDATE mode).
+_UPDATE_GUIDANCE = """\
+DELTA UPDATE: change only what the new sources affect; preserve everything else.
+- Read the existing skill before modifying it. If the named skill does not exist,
+  report that the skill was not found rather than create a new skill.
+- Identify the changed sections or references implied by the new sources.
+- Apply changes with the `skill_manage` action `patch` or `write_file` for
+  targeted edits. Reserve the `edit` action for a full rewrite.
+- Leave unchanged sections and references untouched.
+- Increment the `version` frontmatter field of each modified skill; if a modified
+  skill has no `version`, add one set to an initial value. Record a summary of the
+  change in each modified skill.
+- If the named skill is a Parent Skill, read it and its children listed under
+  `metadata.hermes.children`, apply delta updates only to the children affected by
+  the new sources, and keep `metadata.hermes.children`/`metadata.hermes.parent`
+  consistent when a child is added or removed."""
+
+# Dry-run wrapper (any mode).
+_DRYRUN_GUIDANCE = """\
+DRY RUN (preview only): do NOT modify any skill on disk. List the planned skills
+to create, the planned patches to apply, and the planned supporting files. Invoke
+no write action of `skill_manage` (do not call `create`, `edit`, `patch`,
+`delete`, `write_file`, or `remove_file`). When the plan involves decomposition,
+include the planned Parent Skill and Child Skill names in the preview."""
+
+
+def _gather_and_standards_block(req: str) -> str:
+    """Shared gather-sources + authoring-standards + save block.
+
+    Used by the decompose/update prompts so they carry the same invariants as
+    the baseline single-skill prompt (gather tools named, `skill_manage`-only
+    writes, the full HARDLINE standards, and the source text embedded verbatim).
+    """
+    return (
+        f"WHAT TO LEARN FROM:\n{req}\n\n"
+        "Gather the material with the tools you already have - `read_file` and "
+        "`search_files` for local files or directories, `web_extract` for URLs, "
+        "the current conversation history if they referred to something you just "
+        "did, and the text they pasted as-is. Save every skill with the "
+        "`skill_manage` tool; do not write skill files with any other tool and do "
+        "not introduce a new tool.\n\n"
+        f"{_AUTHORING_STANDARDS}"
+    )
+
+
+def build_learn_prompt(user_request: str) -> str:
+    """Construct the standards-guided ``/learn`` prompt.
+
+    Pure, total, and deterministic: a single ``str`` in, a non-empty ``str`` out;
+    the same input always yields byte-identical output and the function never
+    raises. With no flags it reproduces the open-ended single-skill baseline
+    (plus an automatic decomposition-threshold check); flags switch it to a
+    forced hierarchy, a forced single skill, or a delta update, and ``--dry-run``
+    wraps any mode as a write-free preview.
+    """
+    directive = parse_learn_request(user_request)
+
+    if directive.mode is LearnMode.UPDATE and directive.update_target is not None:
+        req = directive.source_text.strip() or _CONVERSATION_FALLBACK
+        prompt = (
+            f"[/learn] Delta-update the existing skill `{directive.update_target}` "
+            "from the source(s) described below.\n\n"
+            f"{_gather_and_standards_block(req)}\n\n"
+            f"{_UPDATE_GUIDANCE}"
+        )
+    elif directive.mode is LearnMode.DECOMPOSE:
+        req = directive.source_text.strip() or _CONVERSATION_FALLBACK
+        prompt = (
+            "[/learn] Decompose the source(s) described below into a modular skill "
+            "hierarchy (a parent skill plus focused child skills) rather than one "
+            "monolithic skill.\n\n"
+            f"{_gather_and_standards_block(req)}\n\n"
+            f"{_DECOMP_GUIDANCE}"
+        )
+    elif directive.mode is LearnMode.SINGLE:
+        prompt = _baseline_single_skill_prompt(directive.source_text)
+        note = (
+            "\n\nSINGLE SKILL (--no-decompose): author exactly one skill; do not "
+            "split the material into a hierarchy."
+        )
+        if directive.conflicting_flags:
+            note += (
+                " Note: both `--decompose` and `--no-decompose` were supplied; "
+                "these flags conflict, so `--no-decompose` takes precedence and a "
+                "single skill is authored."
+            )
+        prompt += note
+    else:  # AUTO
+        prompt = (
+            f"{_baseline_single_skill_prompt(directive.source_text)}\n\n"
+            f"{_THRESHOLD_RULE}\n\n"
+            f"{_DECOMP_GUIDANCE}"
+        )
+
+    if directive.dry_run:
+        prompt += f"\n\n{_DRYRUN_GUIDANCE}"
+
+    return prompt

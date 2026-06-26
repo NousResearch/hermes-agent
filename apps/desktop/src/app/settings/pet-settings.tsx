@@ -1,5 +1,6 @@
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { PetThumb } from '@/components/pet/pet-thumb'
@@ -47,6 +48,7 @@ import { ListRow, SectionHeading } from './primitives'
  */
 export function PetSettings() {
   const { t } = useI18n()
+  const navigate = useNavigate()
   const copy = t.settings.appearance.pet
   const { requestGateway } = useGatewayRequest()
   const gatewayState = useStore($gatewayState)
@@ -136,7 +138,14 @@ export function PetSettings() {
                   spellCheck={false}
                   value={query}
                 />
-                <Button className="shrink-0 flex gap-1.5 items-center px-4" variant="outline" onClick={() => openPetGenerate()}>
+                <Button
+                  className="shrink-0 flex gap-1.5 items-center px-4"
+                  variant="outline"
+                  onClick={() => {
+                    navigate('/')
+                    setTimeout(() => openPetGenerate(), 100)
+                  }}
+                >
                   <Egg className="size-4 text-primary" />
                   <span>{t.commandCenter.generatePet.title}</span>
                 </Button>

@@ -4730,6 +4730,12 @@ class FeishuAdapter(BasePlatformAdapter):
             log_level=lark.LogLevel.INFO,
             event_handler=self._event_handler,
             domain=domain,
+            # Channel SDK signaling tag: without this UA tag the Feishu
+            # server does not push group @mention events over the WebSocket
+            # transport.  The tag tells the server to use the Channel protocol
+            # which enables group-message routing in addition to P2P DM.
+            # See https://github.com/NousResearch/hermes-agent/issues/50656
+            extra_ua_tags=["channel"],
         )
         self._ws_future = loop.run_in_executor(
             None,

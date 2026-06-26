@@ -572,11 +572,19 @@ class GatewayStreamConsumer:
                         elif (
                             current_update_visible
                             and not self._adapter_requires_finalize
+                            and not self._fallback_final_send
+                            and self._accumulated == self._last_sent_text
                         ):
                             # Mid-stream edit above already delivered the
                             # final accumulated content.  Skip the redundant
                             # final edit — but only for adapters that don't
-                            # need an explicit finalize signal.
+                            # need an explicit finalize signal AND only when
+                            # the accumulated text exactly matches what was
+                            # last delivered (no new content grew since the
+                            # last successful edit).  This prevents marking
+                            # content as delivered when only a partial preview
+                            # was sent and the full response has since grown
+                            # (issue #51828).
                             self._final_response_sent = True
                             self._final_content_delivered = True
                         elif self._message_id:
@@ -588,6 +596,16 @@ class GatewayStreamConsumer:
                             )
                             if self._final_response_sent:
                                 self._final_content_delivered = True
+                            elif self._fallback_final_send:
+                                # The final edit attempt itself may be the one
+                                # that exhausts flood-control strikes and
+                                # promotes the consumer into fallback mode.
+                                # Do not return to the gateway with a full-
+                                # response fallback still pending; send only
+                                # the unsent tail here so the normal gateway
+                                # send path does not re-generate and deliver a
+                                # duplicate response (issue #51828).
+                                await self._send_fallback_final(self._accumulated)
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
                             if self._final_response_sent:
@@ -791,8 +809,15 @@ class GatewayStreamConsumer:
                     except Exception:
                         pass
                 self._already_sent = True
-                self._final_response_sent = True
-                self._final_content_delivered = True
+                # When the adapter requires explicit finalize (e.g. Telegram),
+                # do not mark content as delivered just because the visible
+                # prefix matches the final text. The finalize edit (cursor
+                # strip, rich-text markup) may have failed, and marking
+                # delivered here would suppress the gateway's fallback send
+                # that could retry or re-deliver properly (#51828).
+                if not self._adapter_requires_finalize:
+                    self._final_response_sent = True
+                    self._final_content_delivered = True
                 return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)

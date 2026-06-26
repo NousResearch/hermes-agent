@@ -1003,12 +1003,36 @@ function rememberLog(chunk) {
   scheduleDesktopLogFlush()
 }
 
+// Archive/compressed file extensions that Windows/Electron mishandles
+// when passed to shell.openPath(), triggering an infinite download loop
+// that writes .tmp files to ~/Downloads/ until the system freezes.
+// These should be revealed in folder instead of opened.
+const ARCHIVE_EXTENSIONS = new Set([
+  '.gz', '.tar', '.tgz', '.zip', '.bz2', '.xz', '.7z', '.rar',
+  '.zst', '.lz', '.lzma'
+])
+
+// Debounce tracker for openExternal to prevent rapid re-triggering
+// (e.g. when a failed openPath triggers a Chromium download that
+// re-fires the IPC call in a loop).
+let openExternalLastCall = 0
+const OPEN_EXTERNAL_DEBOUNCE_MS = 1000
+
 function openExternalUrl(rawUrl) {
   const raw = String(rawUrl || '').trim()
 
   if (!raw) {
     return false
   }
+
+  // Debounce: ignore calls within 1s of the last one. This prevents
+  // rapid re-triggering loops (e.g. Chromium re-downloading a file
+  // that shell.openPath mishandled on Windows).
+  const now = Date.now()
+  if (now - openExternalLastCall < OPEN_EXTERNAL_DEBOUNCE_MS) {
+    return true
+  }
+  openExternalLastCall = now
 
   let parsed
 
@@ -1030,6 +1054,19 @@ function openExternalUrl(rawUrl) {
       localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open external file' })
     } catch {
       return false
+    }
+
+    // Archive/compressed files (npm tarballs, etc.) trigger an infinite
+    // download loop on Windows when passed to shell.openPath(). Skip
+    // openPath entirely and reveal in folder instead.
+    const ext = path.extname(localPath).toLowerCase()
+    if (ARCHIVE_EXTENSIONS.has(ext)) {
+      try {
+        shell.showItemInFolder(localPath)
+      } catch (revealError) {
+        rememberLog(`[file] showItemInFolder failed for archive: ${revealError.message}`)
+      }
+      return true
     }
 
     void shell

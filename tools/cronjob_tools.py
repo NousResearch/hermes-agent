@@ -1023,7 +1023,7 @@ from tools.registry import registry, tool_error
 # present (we prefer canonical over alias).
 _CRONJOB_ARG_ALIASES: dict[str, tuple[str, ...]] = {
     "schedule": ("cron", "cron_expression", "cron_schedule", "when", "time", "frequency", "interval"),
-    "prompt": ("instruction", "task", "message"),
+    "prompt": ("instruction", "task"),
     "job_id": ("id", "jobId", "cron_id"),
     "deliver": ("delivery", "deliver_to", "destination", "target"),
     "skills": ("skill_list", "skill_names"),

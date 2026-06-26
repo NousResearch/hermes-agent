@@ -534,11 +534,8 @@ function getTitleBarOverlayOptions() {
     return { height: TITLEBAR_HEIGHT }
   }
 
-  // Windows + WSLg paint WCO natively; plain Linux disables it (frameless hidden
-  // titlebar still applies).
-  if (!IS_WINDOWS && !IS_WSL) {
-    return false
-  }
+  // Linux (KDE Plasma / GNOME) gets the same native overlay as Windows/WSLg.
+  // Electron 40+ supports titleBarOverlay natively on all platforms.
 
   return {
     color: TITLEBAR_OVERLAY_COLOR,
@@ -3788,7 +3785,9 @@ function getWindowButtonPosition() {
 }
 
 function getNativeOverlayWidth() {
-  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS, isWsl: IS_WSL })
+  // Linux has the same titleBarOverlay as Windows since Electron 28+.
+  const isLinux = !IS_MAC && !IS_WINDOWS && !IS_WSL
+  return computeNativeOverlayWidth({ isWindows: IS_WINDOWS || isLinux, isWsl: IS_WSL })
 }
 
 function getWindowState() {

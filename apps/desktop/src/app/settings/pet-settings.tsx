@@ -10,10 +10,11 @@ import { Input } from '@/components/ui/input'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Download, Loader2, PawPrint, Pencil, Trash2 } from '@/lib/icons'
+import { Download, Egg, Loader2, PawPrint, Pencil, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
 import { $petInfo } from '@/store/pet'
+import { openPetGenerate } from '@/store/pet-generate'
 import {
   $petBusy,
   $petGallery,
@@ -127,13 +128,19 @@ export function PetSettings() {
         <ListRow
           below={
             <>
-              <input
-                className="mt-3 w-full rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)"
-                onChange={event => setQuery(event.target.value)}
-                placeholder={copy.searchPlaceholder}
-                spellCheck={false}
-                value={query}
-              />
+              <div className="mt-3 flex gap-2">
+                <input
+                  className="flex-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)"
+                  onChange={event => setQuery(event.target.value)}
+                  placeholder={copy.searchPlaceholder}
+                  spellCheck={false}
+                  value={query}
+                />
+                <Button className="shrink-0 flex gap-1.5 items-center px-4" variant="outline" onClick={() => openPetGenerate()}>
+                  <Egg className="size-4 text-primary" />
+                  <span>{t.commandCenter.generatePet.title}</span>
+                </Button>
+              </div>
               {/* Fixed-height scroll area so filtering never grows/shrinks the
                   page (no layout thrash); the grid scrolls inside it. */}
               <div className="mt-3 h-72 overflow-y-auto pr-1">

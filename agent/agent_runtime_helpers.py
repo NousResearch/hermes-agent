@@ -1335,6 +1335,23 @@ def anthropic_prompt_cache_policy(
         if is_minimax_provider or is_minimax_host:
             return True, True
 
+    # Volcengine Ark (火山引擎) on its Anthropic-compatible /api/coding
+    # endpoint serves non-Claude model families (deepseek-v4, glm-5.2,
+    # doubao-seed, kimi-k2, minimax-m3), so the blanket is_claude gate above
+    # excludes them. Ark honors Anthropic cache_control on /api/coding and
+    # reports hits via cache_read_input_tokens. Opt these in explicitly via
+    # provider id or host so users get the same cost reduction as Claude
+    # traffic; without this branch Ark serves 0% cache hits and re-bills the
+    # full prompt + history on every turn, burning the subscription quota.
+    # Caching is per-model (empirically ~8/11 models, prefix-size thresholds
+    # ~4k–48k) and probabilistic — emitting markers is always safe; models
+    # that don't cache simply ignore them.
+    if is_anthropic_wire:
+        is_ark_provider = provider_lower in {"volcengine-ark", "ark", "volcengine"}
+        is_ark_host = base_url_host_matches(eff_base_url, "ark.cn-beijing.volces.com")
+        if is_ark_provider or is_ark_host:
+            return True, True
+
     # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
     # transport that accepts Anthropic-style cache_control markers and
     # rewards them with real cache hits.  Without this branch

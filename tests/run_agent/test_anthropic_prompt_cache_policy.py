@@ -161,6 +161,56 @@ class TestMiniMaxAnthropicWire:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+class TestVolcengineArkAnthropicWire:
+    """Volcengine Ark (火山引擎) on its Anthropic-compatible /api/coding endpoint.
+
+    Ark serves non-Claude model families (deepseek-v4, glm-5.2, doubao-seed,
+    kimi-k2, minimax-m3), so the blanket ``is_claude`` gate on the
+    third-party-gateway branch excludes them — same shape as the MiniMax gap.
+    Ark honors cache_control on /api/coding (hits via
+    cache_read_input_tokens); allowlist it explicitly via provider id or host.
+    """
+
+    def test_ark_deepseek_on_provider_caches_native_layout(self):
+        agent = _make_agent(
+            provider="volcengine-ark",
+            base_url="https://ark.cn-beijing.volces.com/api/coding",
+            api_mode="anthropic_messages",
+            model="deepseek-v4-pro",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_ark_glm_on_short_alias_caches(self):
+        agent = _make_agent(
+            provider="ark",
+            base_url="https://ark.cn-beijing.volces.com/api/coding",
+            api_mode="anthropic_messages",
+            model="glm-5.2",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_custom_provider_pointed_at_ark_host_caches(self):
+        # Host match alone should be sufficient (e.g. custom:ark wiring).
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://ark.cn-beijing.volces.com/api/coding",
+            api_mode="anthropic_messages",
+            model="doubao-seed-2.0-lite",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_ark_provider_on_openai_wire_does_not_cache(self):
+        # chat_completions transport — Ark's cache_control caching applies to
+        # the Anthropic /api/coding route. Stay off for OpenAI-wire.
+        agent = _make_agent(
+            provider="volcengine-ark",
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+            api_mode="chat_completions",
+            model="deepseek-v4-pro",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 class TestOpenAIWireFormatOnCustomProvider:
     """A custom provider using chat_completions (OpenAI wire) should NOT get caching."""
 

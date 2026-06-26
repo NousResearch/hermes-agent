@@ -10,7 +10,30 @@ from acp.schema import (
     TextResourceContents,
 )
 
-from acp_adapter.server import HermesACPAgent, _content_blocks_to_openai_user_content
+from acp_adapter.server import (
+    HermesACPAgent,
+    _content_blocks_to_openai_user_content,
+    _path_from_file_uri,
+)
+
+
+def test_file_uri_windows_drive_path_stays_native_on_windows(monkeypatch):
+    monkeypatch.setattr("acp_adapter.server.sys.platform", "win32")
+
+    assert str(_path_from_file_uri("file:///C:/Users/alice/notes.md")) == (
+        "C:\\Users\\alice\\notes.md"
+    )
+    assert str(_path_from_file_uri("C:\\Users\\alice\\notes.md")) == (
+        "C:\\Users\\alice\\notes.md"
+    )
+
+
+def test_file_uri_windows_drive_path_maps_to_wsl_on_posix(monkeypatch):
+    monkeypatch.setattr("acp_adapter.server.sys.platform", "linux")
+
+    assert str(_path_from_file_uri("file:///C:/Users/alice/notes.md")).replace(
+        "\\", "/"
+    ) == "/mnt/c/Users/alice/notes.md"
 
 
 def test_acp_image_blocks_convert_to_openai_multimodal_content():
@@ -38,7 +61,7 @@ def test_text_only_acp_blocks_stay_string_for_legacy_prompt_path():
 
 def test_acp_resource_link_file_is_inlined_as_text(tmp_path):
     attached = tmp_path / "notes.md"
-    attached.write_text("# Notes\n\nAttached file body", encoding="utf-8")
+    attached.write_text("# Notes\n\nAttached file body", encoding="utf-8", newline="\n")
 
     content = _content_blocks_to_openai_user_content([
         TextContentBlock(type="text", text="Please read this file"),

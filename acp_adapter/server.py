@@ -9,6 +9,7 @@ import contextvars
 import json
 import logging
 import os
+import sys
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -150,31 +151,41 @@ def _image_data_url(data: bytes, mime_type: str) -> str:
 def _path_from_file_uri(uri: str) -> Path | None:
     """Convert local file URIs/paths from ACP clients into a readable Path.
 
-    Zed may send POSIX file URIs from Linux/WSL workspaces or Windows-ish paths
-    when launched through wsl.exe. Translate the common Windows drive form to
-    /mnt/<drive>/... so Hermes running in WSL can read it.
+    Zed may send POSIX file URIs from Linux/WSL workspaces or Windows drive
+    paths from native Windows clients. Preserve the native ``C:/...`` form when
+    Hermes is running on Windows; translate to ``/mnt/<drive>/...`` only for
+    POSIX/WSL-style runtimes.
     """
     raw = (uri or "").strip()
     if not raw:
         return None
 
-    parsed = urlparse(raw)
-    if parsed.scheme and parsed.scheme != "file":
-        return None
-
-    if parsed.scheme == "file":
-        if parsed.netloc and parsed.netloc not in {"", "localhost"}:
-            return None
-        path_text = unquote(parsed.path or "")
-    else:
+    # Raw Windows drive paths (``C:\Users\...`` / ``C:/Users/...``) look like
+    # URL schemes to urlparse (scheme="c"), so detect them before parsing.
+    if len(raw) >= 2 and raw[1] == ":" and raw[0].isalpha():
         path_text = unquote(raw)
+    else:
+        parsed = urlparse(raw)
+        if parsed.scheme and parsed.scheme != "file":
+            return None
+
+        if parsed.scheme == "file":
+            if parsed.netloc and parsed.netloc not in {"", "localhost"}:
+                return None
+            path_text = unquote(parsed.path or "")
+        else:
+            path_text = unquote(raw)
 
     # file:///C:/Users/... or C:\Users\...
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
+        if sys.platform.startswith("win"):
+            return Path(path_text[1:])
         drive = path_text[1].lower()
         rest = path_text[3:].lstrip("/\\").replace("\\", "/")
         return Path("/mnt") / drive / rest
     if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
+        if sys.platform.startswith("win"):
+            return Path(path_text)
         drive = path_text[0].lower()
         rest = path_text[2:].lstrip("/\\").replace("\\", "/")
         return Path("/mnt") / drive / rest

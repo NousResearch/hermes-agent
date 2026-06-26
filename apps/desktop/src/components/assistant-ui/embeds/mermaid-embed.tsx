@@ -3,6 +3,8 @@
 import mermaid from 'mermaid'
 import { useEffect, useState } from 'react'
 
+import { Zoomable } from '@/components/ui/zoomable'
+import { copySvgAsPng } from '@/lib/svg-image'
 import { cn } from '@/lib/utils'
 
 import type { RichFenceProps } from './types'
@@ -88,10 +90,24 @@ export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
     return <SourcePreview code={code} muted />
   }
 
+  // Click to open the diagram full-screen with pan/zoom + copy-as-PNG. The
+  // overlay keeps the diagram's natural width (capped to the viewport) so it
+  // renders before any zoom; the inline version stays capped at 33dvh.
   return (
-    <div
-      className="overflow-auto p-3 [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-h-[33dvh] [&_svg]:max-w-full"
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
+    <Zoomable
+      label="Open diagram"
+      onCopy={() => copySvgAsPng(svg)}
+      overlay={
+        <div
+          className="[&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-h-[80vh] [&_svg]:max-w-[85vw]"
+          dangerouslySetInnerHTML={{ __html: svg }}
+        />
+      }
+    >
+      <div
+        className="overflow-hidden p-3 [&_svg]:mx-auto [&_svg]:h-auto [&_svg]:max-h-[33dvh] [&_svg]:max-w-full"
+        dangerouslySetInnerHTML={{ __html: svg }}
+      />
+    </Zoomable>
   )
 }

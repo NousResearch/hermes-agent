@@ -1,0 +1,7 @@
+name: web-google-cse
+version: 1.0.0
+description: "Google Custom Search JSON API — requires GCP project + API key + SE ID. NOTE: blocked by GFW in China."
+author: Hermes Community
+kind: backend
+provides_web_providers:
+  - google-cse

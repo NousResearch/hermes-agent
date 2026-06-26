@@ -1,0 +1,7 @@
+name: web-baidu
+version: 1.0.0
+description: "Baidu AI Search API — 100 queries/day free. Requires BAIDU_API_KEY from https://ai.baidu.com."
+author: Hermes Community
+kind: backend
+provides_web_providers:
+  - baidu

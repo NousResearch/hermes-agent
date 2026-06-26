@@ -2966,6 +2966,136 @@ def _get_usage(agent) -> dict:
     return usage
 
 
+def _get_account_usage_lines(agent) -> list[str]:
+    """Return provider account-limit lines for the active agent.
+
+    This mirrors the classic CLI ``/usage`` provider block. Keep it outside
+    ``_get_usage`` because it can do network I/O and is only needed for the
+    explicit TUI ``/usage`` RPC, not for every session-info/status update.
+    """
+    if agent is None:
+        return []
+    provider = getattr(agent, "provider", None)
+    if not provider:
+        return []
+    try:
+        import concurrent.futures
+
+        from agent.account_usage import fetch_account_usage, render_account_usage_lines
+
+        base_url = getattr(agent, "base_url", None)
+        api_key = getattr(agent, "api_key", None)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            snapshot = pool.submit(
+                fetch_account_usage,
+                provider,
+                base_url=base_url,
+                api_key=api_key,
+            ).result(timeout=10.0)
+        return render_account_usage_lines(snapshot)
+    except Exception:
+        return []
+
+
+_ACCOUNT_LIMIT_STATUS_CACHE: dict[str, object] = {}
+_ACCOUNT_LIMIT_STATUS_FETCHING = False
+_ACCOUNT_LIMIT_STATUS_LOCK = threading.Lock()
+
+
+def _format_account_limit_status(snapshot) -> str:
+    if not snapshot or not getattr(snapshot, "available", False):
+        return ""
+    provider = str(getattr(snapshot, "provider", "") or "").strip()
+    if provider.startswith("openai-codex"):
+        provider_label = "Codex"
+    elif provider:
+        provider_label = provider.split("/", 1)[0].replace("-", " ").title()
+    else:
+        provider_label = "Acct"
+
+    try:
+        from agent.account_usage import format_reset_remaining_compact
+    except Exception:
+        format_reset_remaining_compact = None
+
+    segments: list[str] = []
+    for window in getattr(snapshot, "windows", ()) or ():
+        used_percent = getattr(window, "used_percent", None)
+        if used_percent is None:
+            continue
+        try:
+            remaining = max(0, min(100, round(100 - float(used_percent))))
+        except Exception:
+            continue
+        label = str(getattr(window, "label", "") or "").strip().lower()
+        if label.startswith("session"):
+            prefix = "5h"
+        elif label.startswith("week"):
+            prefix = "W"
+        elif label.startswith("day"):
+            prefix = "D"
+        else:
+            prefix = label[:1].upper() if label else "L"
+        segment = f"{prefix} {remaining}%"
+        if format_reset_remaining_compact is not None:
+            reset_remaining = format_reset_remaining_compact(getattr(window, "reset_at", None))
+            if reset_remaining:
+                segment = f"{segment} · {reset_remaining}"
+        segments.append(segment)
+        if len(segments) >= 2:
+            break
+    return f"{provider_label} {' | '.join(segments)}" if segments else ""
+
+
+def _get_account_limit_status(agent, *, ttl_seconds: float = 300.0) -> str:
+    """Return cached compact account-limit status and refresh in background.
+
+    ``session.info`` feeds the live Ink status bar, so never block it on a
+    provider limits request.
+    """
+    global _ACCOUNT_LIMIT_STATUS_FETCHING
+    if agent is None:
+        return ""
+    provider = str(getattr(agent, "provider", "") or "").strip()
+    if not provider:
+        return ""
+    base_url = getattr(agent, "base_url", None)
+    api_key = getattr(agent, "api_key", None)
+    cache_key = f"{provider}\0{base_url or ''}"
+    now = time.monotonic()
+    with _ACCOUNT_LIMIT_STATUS_LOCK:
+        cached = dict(_ACCOUNT_LIMIT_STATUS_CACHE)
+        fetched_raw = cached.get("fetched_monotonic", 0.0)
+        try:
+            fetched_monotonic = float(fetched_raw)  # type: ignore[arg-type]
+        except Exception:
+            fetched_monotonic = 0.0
+        if cached.get("key") == cache_key and now - fetched_monotonic < ttl_seconds:
+            return str(cached.get("label") or "")
+        label = str(cached.get("label") or "") if cached.get("key") == cache_key else ""
+        if _ACCOUNT_LIMIT_STATUS_FETCHING:
+            return label
+        _ACCOUNT_LIMIT_STATUS_FETCHING = True
+
+    def _worker() -> None:
+        label = ""
+        try:
+            from agent.account_usage import fetch_account_usage
+
+            label = _format_account_limit_status(fetch_account_usage(provider, base_url=base_url, api_key=api_key))
+        except Exception:
+            logger.debug("Failed to refresh TUI account-limit status", exc_info=True)
+        finally:
+            global _ACCOUNT_LIMIT_STATUS_FETCHING
+            with _ACCOUNT_LIMIT_STATUS_LOCK:
+                _ACCOUNT_LIMIT_STATUS_CACHE.clear()
+                _ACCOUNT_LIMIT_STATUS_CACHE.update({"key": cache_key, "label": label, "fetched_monotonic": time.monotonic()})
+                _ACCOUNT_LIMIT_STATUS_FETCHING = False
+
+    threading.Thread(target=_worker, name="tui-account-limit-status", daemon=True).start()
+    return label
+
+
 def _probe_credentials(agent) -> str:
     """Light credential check at session creation — returns warning or ''."""
     try:
@@ -3074,6 +3204,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
+        "account_limit_status": _get_account_limit_status(agent),
         "yolo": yolo,
         "tools": {},
         "skills": {},
@@ -6071,6 +6202,9 @@ def _(rid, params: dict) -> dict:
             usage["credits_lines"] = credits
     except Exception:
         pass
+    account_lines = _get_account_usage_lines(agent)
+    if account_lines:
+        usage["account_lines"] = account_lines
     return _ok(rid, usage)
 
 

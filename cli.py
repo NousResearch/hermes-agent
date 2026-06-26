@@ -3822,6 +3822,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # clear) from a rows-only change (no reflow). None until the first
         # resize fires.
         self._last_resize_width = None
+        # Provider OAuth/account-limit status for the TUI status bar. Fetching
+        # this can hit the network (e.g. Codex limits), so render from a cached
+        # value and refresh in a daemon thread at low frequency instead of
+        # blocking prompt redraws.
+        self._account_limit_status_cache: dict[str, Any] = {}
+        self._account_limit_status_fetching = False
+        self._account_limit_status_lock = threading.Lock()
 
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
@@ -4144,6 +4151,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return "class:status-bar-warn"
         return "class:status-bar-dim"
 
+    @staticmethod
+    def _reasoning_status_label(reasoning_config: Any) -> str:
+        """Compact status label for configured reasoning effort.
+
+        Match the Ink TUI behaviour: default/medium reasoning is quiet; explicit
+        non-default values are visible. Disabled reasoning renders as ``none``.
+        """
+        if not isinstance(reasoning_config, dict):
+            return "medium"
+        if reasoning_config.get("enabled") is False:
+            return "none"
+        effort = str(reasoning_config.get("effort") or "").strip().lower()
+        return effort or "medium"
+
+    @staticmethod
+    def _speed_status_label(service_tier: Any) -> str:
+        value = str(service_tier or "").strip().lower()
+        return "fast" if value == "priority" else "normal"
+
+    def _status_model_label(self, model_short: str, reasoning_config: Any, service_tier: Any) -> str:
+        bits = [model_short]
+        reasoning = self._reasoning_status_label(reasoning_config)
+        speed = self._speed_status_label(service_tier)
+        if reasoning:
+            bits.append(reasoning)
+        if speed:
+            bits.append(speed)
+        return " ".join(bits)
+
     def _build_context_bar(self, percent_used: Optional[int], width: int = 10) -> str:
         safe_percent = max(0, min(100, percent_used or 0))
         filled = round((safe_percent / 100) * width)
@@ -4200,6 +4236,127 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         idle = max(0.0, time.time() - last_finished_at)
         return f"✓ {format_duration_compact(idle)}"
 
+    @staticmethod
+    def _format_account_limit_status(snapshot: Any) -> tuple[str, Optional[int]]:
+        """Return a compact status-bar label for provider account limits.
+
+        The detailed multi-line view remains `/usage`; the status bar gets a
+        terse reminder such as ``Codex 5h 81% · W 59%``. The second return
+        value is the lowest remaining percentage, used to pick warning colors.
+        """
+        if not snapshot or not getattr(snapshot, "available", False):
+            return "", None
+
+        provider = str(getattr(snapshot, "provider", "") or "").strip()
+        if provider.startswith("openai-codex"):
+            provider_label = "Codex"
+        elif provider:
+            provider_label = provider.split("/", 1)[0].replace("-", " ").title()
+        else:
+            provider_label = "Acct"
+
+        try:
+            from agent.account_usage import format_reset_remaining_compact
+        except Exception:
+            format_reset_remaining_compact = None
+
+        segments: list[str] = []
+        lowest_remaining: Optional[int] = None
+        for window in getattr(snapshot, "windows", ()) or ():
+            used_percent = getattr(window, "used_percent", None)
+            if used_percent is None:
+                continue
+            try:
+                remaining = max(0, min(100, round(100 - float(used_percent))))
+            except Exception:
+                continue
+            lowest_remaining = remaining if lowest_remaining is None else min(lowest_remaining, remaining)
+            label = str(getattr(window, "label", "") or "").strip().lower()
+            if label.startswith("session"):
+                prefix = "5h"
+            elif label.startswith("week"):
+                prefix = "W"
+            elif label.startswith("day"):
+                prefix = "D"
+            else:
+                prefix = label[:1].upper() if label else "L"
+            segment = f"{prefix} {remaining}%"
+            if format_reset_remaining_compact is not None:
+                reset_remaining = format_reset_remaining_compact(getattr(window, "reset_at", None))
+                if reset_remaining:
+                    segment = f"{segment} · {reset_remaining}"
+            segments.append(segment)
+            if len(segments) >= 2:
+                break
+
+        if not segments:
+            return "", lowest_remaining
+        return f"{provider_label} {' | '.join(segments)}", lowest_remaining
+
+    @staticmethod
+    def _account_limit_status_style(remaining_percent: Optional[int]) -> str:
+        if remaining_percent is None:
+            return "class:status-bar-dim"
+        if remaining_percent <= 5:
+            return "class:status-bar-critical"
+        if remaining_percent <= 20:
+            return "class:status-bar-bad"
+        if remaining_percent <= 50:
+            return "class:status-bar-warn"
+        return "class:status-bar-good"
+
+    def _maybe_refresh_account_limit_status(self, provider: str, *, ttl_seconds: float = 300.0) -> None:
+        provider = (provider or "").strip()
+        if not provider:
+            return
+        now = time.monotonic()
+        with self._account_limit_status_lock:
+            cached = self._account_limit_status_cache
+            if cached.get("provider") == provider and now - float(cached.get("fetched_monotonic", 0.0) or 0.0) < ttl_seconds:
+                return
+            if self._account_limit_status_fetching:
+                return
+            self._account_limit_status_fetching = True
+
+        def _worker() -> None:
+            label = ""
+            remaining: Optional[int] = None
+            try:
+                from agent.account_usage import fetch_account_usage
+
+                snapshot = fetch_account_usage(provider)
+                label, remaining = self._format_account_limit_status(snapshot)
+            except Exception as exc:
+                logger.debug("Failed to refresh account-limit status: %s", exc)
+            finally:
+                with self._account_limit_status_lock:
+                    self._account_limit_status_cache = {
+                        "provider": provider,
+                        "label": label,
+                        "remaining": remaining,
+                        "fetched_monotonic": time.monotonic(),
+                    }
+                    self._account_limit_status_fetching = False
+                try:
+                    self._invalidate(min_interval=0.0)
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=_worker, name="account-limit-status", daemon=True)
+        thread.start()
+
+    def _get_account_limit_status(self) -> tuple[str, Optional[int]]:
+        agent = getattr(self, "agent", None)
+        provider = (getattr(agent, "provider", None) or getattr(self, "provider", None) or "").strip()
+        if provider:
+            self._maybe_refresh_account_limit_status(provider)
+        with self._account_limit_status_lock:
+            cached = dict(self._account_limit_status_cache)
+        if cached.get("provider") != provider:
+            return "", None
+        remaining = cached.get("remaining")
+        return str(cached.get("label") or ""), remaining if isinstance(remaining, int) else None
+
     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
         # Prefer the agent's model name — it updates on fallback.
         # self.model reflects the originally configured model and never
@@ -4212,11 +4369,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             model_short = model_short[:-5]
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
+        reasoning_config = getattr(agent, "reasoning_config", None) if agent else getattr(self, "reasoning_config", None)
+        service_tier = getattr(agent, "service_tier", None) if agent else getattr(self, "service_tier", None)
+        model_display = self._status_model_label(model_short, reasoning_config, service_tier)
 
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "model_display": model_display,
+            "reasoning_effort": self._reasoning_status_label(reasoning_config),
+            "speed": self._speed_status_label(service_tier),
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -4241,7 +4404,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             "compressions": 0,
             "active_background_tasks": 0,
             "active_background_processes": 0,
+
             "active_background_subagents": 0,
+            "account_limit_status": "",
+            "account_limit_remaining": None,
         }
 
         # Count live /background tasks. The dict entry is removed in the
@@ -4262,6 +4428,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
+
         # Count live background/async subagents (delegate_task batches and
         # background single delegations tracked by tools.async_delegation).
         # active_count() iterates an in-memory records dict under a lock —
@@ -4269,6 +4436,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         try:
             from tools.async_delegation import active_count as _async_active_count
             snapshot["active_background_subagents"] = _async_active_count()
+        except Exception:
+            pass
+
+        try:
+            account_label, account_remaining = self._get_account_limit_status()
+            snapshot["account_limit_status"] = account_label
+            snapshot["account_limit_remaining"] = account_remaining
         except Exception:
             pass
 
@@ -4720,12 +4894,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {snapshot.get('model_display') or snapshot['model_short']} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {snapshot.get('model_display') or snapshot['model_short']}", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -4735,9 +4909,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 bg_proc_count = snapshot.get("active_background_processes", 0)
                 if bg_proc_count:
                     parts.append(f"⚙ {bg_proc_count}")
+
                 bg_subagent_count = snapshot.get("active_background_subagents", 0)
                 if bg_subagent_count:
                     parts.append(f"⛓ {bg_subagent_count}")
+                account_status = snapshot.get("account_limit_status")
+                if account_status:
+                    parts.append(str(account_status))
                 parts.append(duration_label)
                 if yolo_active:
                     parts.append("⚠ YOLO")
@@ -4751,7 +4929,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {snapshot.get('model_display') or snapshot['model_short']}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -4760,9 +4938,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             bg_proc_count = snapshot.get("active_background_processes", 0)
             if bg_proc_count:
                 parts.append(f"⚙ {bg_proc_count}")
+
             bg_subagent_count = snapshot.get("active_background_subagents", 0)
             if bg_subagent_count:
                 parts.append(f"⛓ {bg_subagent_count}")
+            account_status = snapshot.get("account_limit_status")
+            if account_status:
+                parts.append(str(account_status))
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
@@ -4793,7 +4975,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
-                    ("class:status-bar-strong", snapshot["model_short"]),
+                    ("class:status-bar-strong", snapshot.get("model_display") or snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
                 ]
@@ -4811,7 +4993,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     bg_subagent_count = snapshot.get("active_background_subagents", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", snapshot.get("model_display") or snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
                         (self._status_bar_context_style(percent), percent_label),
                     ]
@@ -4824,9 +5006,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if bg_proc_count:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+
                     if bg_subagent_count:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
+                    account_status = snapshot.get("account_limit_status")
+                    if account_status:
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append((self._account_limit_status_style(snapshot.get("account_limit_remaining")), str(account_status)))
                     frags.extend([
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
@@ -4850,7 +5037,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     bg_subagent_count = snapshot.get("active_background_subagents", 0)
                     frags = [
                         ("class:status-bar", " ⚕ "),
-                        ("class:status-bar-strong", snapshot["model_short"]),
+                        ("class:status-bar-strong", snapshot.get("model_display") or snapshot["model_short"]),
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
@@ -4867,9 +5054,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if bg_proc_count:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-strong", f"⚙ {bg_proc_count}"))
+
                     if bg_subagent_count:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
+                    account_status = snapshot.get("account_limit_status")
+                    if account_status:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((self._account_limit_status_style(snapshot.get("account_limit_remaining")), str(account_status)))
                     frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),
@@ -12237,12 +12429,26 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         symbol = (symbol or "❯ ").rstrip() + " "
 
-        # Prepend profile name when not default
+        # Prepend profile name when not default. For the default profile, keep
+        # the legacy bare prompt for the built-in default skin, but use the
+        # active skin brand for named/user skins such as ``hermes`` so the
+        # composer reads ``Hermes ›`` rather than a context-free ``›``.
         try:
             from hermes_cli.profiles import get_active_profile_name
             profile = get_active_profile_name()
             if profile not in {"default", "custom"}:
                 symbol = f"{profile} {symbol}"
+            else:
+                try:
+                    from hermes_cli.skin_engine import get_active_skin, get_active_skin_name
+                    skin_name = get_active_skin_name()
+                    if skin_name and skin_name != "default":
+                        brand = get_active_skin().get_branding("agent_name", "").strip()
+                        if brand:
+                            brand = re.sub(r"\s+Agent$", "", brand, flags=re.IGNORECASE)
+                            symbol = f"{brand} {symbol}"
+                except Exception:
+                    pass
         except Exception:
             pass
         stripped = symbol.rstrip()
@@ -12252,6 +12458,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         parts = stripped.split()
         candidate = parts[-1] if parts else ""
         arrow_chars = ("❯", ">", "$", "#", "›", "»", "→")
+        if len(parts) > 1 and candidate:
+            return symbol, candidate.rstrip() + " "
         if any(ch in candidate for ch in arrow_chars):
             return symbol, candidate.rstrip() + " "
 

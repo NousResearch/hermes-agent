@@ -5,7 +5,8 @@ export function composerPromptText(
   profileName?: null | string,
   shellMode = false,
   termuxMode = false,
-  totalCols?: number
+  totalCols?: number,
+  brandName?: null | string
 ): string {
   if (shellMode) {
     return '$'
@@ -20,16 +21,30 @@ export function composerPromptText(
     // On very wide panes we can still include profile context. On narrow/mobile
     // panes this burns precious columns and increases wrap/clipping risk.
     const wideEnoughForProfile = typeof totalCols === 'number' ? totalCols >= 90 : false
-    if (wideEnoughForProfile && profileName && !['default', 'custom'].includes(profileName)) {
-      return `${profileName} ${basePrompt}`
+    const prefix = promptPrefix(profileName, brandName)
+    if (wideEnoughForProfile && prefix) {
+      return `${prefix} ${basePrompt}`
     }
 
     return basePrompt
   }
 
-  if (profileName && !['default', 'custom'].includes(profileName)) {
-    return `${profileName} ${prompt}`
+  const prefix = promptPrefix(profileName, brandName)
+  if (prefix) {
+    return `${prefix} ${prompt}`
   }
 
   return prompt
+}
+
+function promptPrefix(profileName?: null | string, brandName?: null | string): string {
+  const profile = (profileName ?? '').trim()
+  if (profile && !['custom', 'default'].includes(profile)) {
+    return profile
+  }
+  const brand = (brandName ?? '').trim()
+  if (brand && profile !== 'custom') {
+    return brand.replace(/\s+Agent$/i, '')
+  }
+  return ''
 }

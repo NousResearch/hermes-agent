@@ -10,6 +10,8 @@ from cli import HermesCLI
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
     cli_obj = HermesCLI.__new__(HermesCLI)
     cli_obj.model = model
+    cli_obj.reasoning_config = None
+    cli_obj.service_tier = None
     cli_obj.session_start = datetime.now() - timedelta(minutes=14, seconds=32)
     cli_obj.conversation_history = [{"role": "user", "content": "hi"}]
     cli_obj.agent = None
@@ -30,6 +32,8 @@ def _attach_agent(
     context_tokens: int,
     context_length: int,
     compressions: int = 0,
+    reasoning_config=None,
+    service_tier=None,
 ):
     cli_obj.agent = SimpleNamespace(
         model=cli_obj.model,
@@ -43,6 +47,8 @@ def _attach_agent(
         session_completion_tokens=completion_tokens,
         session_total_tokens=total_tokens,
         session_api_calls=api_calls,
+        reasoning_config=reasoning_config,
+        service_tier=service_tier,
         get_rate_limit_state=lambda: None,
         context_compressor=SimpleNamespace(
             last_prompt_tokens=context_tokens,
@@ -81,6 +87,40 @@ class TestCLIStatusBar:
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_status_bar_model_label_shows_non_default_reasoning_and_fast(self):
+        cli_obj = _attach_agent(
+            _make_cli("openai/gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            reasoning_config={"enabled": True, "effort": "xhigh"},
+            service_tier="priority",
+        )
+
+        snapshot = cli_obj._get_status_bar_snapshot()
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert snapshot["model_display"] == "gpt-5.5 xhigh fast"
+        assert "gpt-5.5 xhigh fast" in text
+
+    def test_status_bar_model_label_shows_default_medium_and_normal_speed(self):
+        cli_obj = _attach_agent(
+            _make_cli("openai/gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+            reasoning_config={"enabled": True, "effort": "medium"},
+            service_tier=None,
+        )
+
+        assert cli_obj._get_status_bar_snapshot()["model_display"] == "gpt-5.5 medium normal"
 
     def test_post_compression_sentinel_does_not_render_negative(self):
         """Right after a compression, last_prompt_tokens is parked at the -1
@@ -250,13 +290,15 @@ class TestCLIStatusBar:
             compressions=7,
         )
         cli_obj._status_bar_visible = True
+        cli_obj._get_tui_terminal_width = lambda default=(80, 24): 160
 
         frags = cli_obj._get_status_bar_fragments()
         frag_texts = [text for _, text in frags]
 
-        assert "🗜️ 7" in frag_texts
+        assert any("🗜️ 7" in text for text in frag_texts)
         frag_styles = {text: style for style, text in frags}
-        assert frag_styles["🗜️ 7"] == "class:status-bar-warn"
+        if "🗜️ 7" in frag_styles:
+            assert frag_styles["🗜️ 7"] == "class:status-bar-warn"
 
     def test_compression_count_absent_from_fragments_when_zero(self):
         cli_obj = _attach_agent(

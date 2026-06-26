@@ -5,13 +5,36 @@ import sys
 import threading
 import time
 import types
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
+
+
+def test_tui_account_limit_status_compacts_codex_session_and_weekly():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="test",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(
+                label="Session",
+                used_percent=23,
+                reset_at=datetime.now(timezone.utc) + timedelta(hours=2, minutes=14),
+            ),
+            AccountUsageWindow(
+                label="Weekly",
+                used_percent=41,
+                reset_at=datetime.now(timezone.utc) + timedelta(days=4),
+            ),
+        ),
+    )
+
+    assert server._format_account_limit_status(snapshot) == "Codex 5h 77% · 2h14m | W 59% · 4d"
 
 
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
@@ -1678,6 +1701,26 @@ def _session(agent=None, **extra):
         "tool_progress_mode": "all",
         **extra,
     }
+
+
+def test_session_usage_includes_provider_account_lines(monkeypatch):
+    agent = types.SimpleNamespace(provider="openai-codex", base_url="https://example", api_key="tok")
+    server._sessions["sid"] = _session(agent=agent)
+    try:
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {"calls": 0, "input": 0, "output": 0, "total": 0})
+        monkeypatch.setattr(server, "_get_account_usage_lines", lambda _a: ["Session: 80% remaining", "Weekly: 90% remaining"])
+        monkeypatch.setattr("agent.account_usage.nous_credits_lines", lambda: [])
+
+        resp = server.handle_request(
+            {"id": "1", "method": "session.usage", "params": {"session_id": "sid"}}
+        )
+
+        assert resp["result"]["account_lines"] == [
+            "Session: 80% remaining",
+            "Weekly: 90% remaining",
+        ]
+    finally:
+        server._sessions.pop("sid", None)
 
 
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):

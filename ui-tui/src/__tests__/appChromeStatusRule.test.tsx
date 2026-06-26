@@ -232,6 +232,27 @@ describe('StatusRule session count click target', () => {
     // … while the low-value tail (session count) is dropped, not truncated.
     expect(rendered).not.toContain('3 sessions')
   })
+
+  it('shows reasoning level and speed in the model segment, including defaults', () => {
+    const element = StatusRule({
+      ...baseProps,
+      model: 'openai/gpt-5.5',
+      modelFast: false,
+      modelReasoningEffort: 'medium'
+    })
+
+    expect(textContent(element)).toContain('gpt 5.5 medium normal')
+  })
+
+  it('shows account limits as a status-bar tail segment when available', () => {
+    const element = StatusRule({
+      ...baseProps,
+      accountLimitStatus: 'Codex 5h 77% · W 59%',
+      cols: 140
+    })
+
+    expect(textContent(element)).toContain('Codex 5h 77% · W 59%')
+  })
 })
 
 describe('StatusRule credits notice render priority', () => {

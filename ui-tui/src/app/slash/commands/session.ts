@@ -584,8 +584,13 @@ export const sessionCommands: SlashCommand[] = [
           ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
         }
 
+        const accountLines = r?.account_lines ?? []
+        if (accountLines.length) {
+          ctx.transcript.panel('Account limits', [{ text: accountLines.join('\n') }])
+        }
+
         if (!r?.calls) {
-          if (!creditsLines.length) {
+          if (!creditsLines.length && !accountLines.length) {
             ctx.transcript.sys('no API calls yet')
           }
 

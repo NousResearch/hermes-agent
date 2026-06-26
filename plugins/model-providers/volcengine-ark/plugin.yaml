@@ -1,0 +1,5 @@
+name: volcengine-ark-provider
+kind: model-provider
+version: 1.0.0
+description: Volcengine Ark (火山引擎) — ByteDance unified model platform with doubao-seed, deepseek-v4, glm-5.2, kimi-k2, minimax-m3
+author: hermes-agent contributors

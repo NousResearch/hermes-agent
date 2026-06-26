@@ -1846,6 +1846,14 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0
+        # Tag this fork as autonomous background curation so skill_manage's
+        # background-review write guard fires. Without this the fork inherits
+        # the default "assistant_tool" origin, is_background_review() is False,
+        # and the external/bundled/hub-installed skill_manage guards never
+        # trigger during the curation pass they exist to protect against.
+        # turn_context.py binds this onto the write-origin ContextVar at turn
+        # start (see agent/turn_context.py).
+        review_agent._memory_write_origin = "background_review"
 
         # Redirect the forked agent's stdout/stderr to /dev/null while it
         # runs so its tool-call chatter doesn't pollute the foreground

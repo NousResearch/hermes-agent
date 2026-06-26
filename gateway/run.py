@@ -9159,10 +9159,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     message_text,
                     audio_paths,
                 )
-                # Echo each successful transcript back to the user immediately,
-                # before the agent loop runs. Lets the user verify STT quality
-                # in real-time and see the raw whisper output verbatim.
-                if _successful_transcripts:
+                # Do not echo transcripts by default. The transcript is already
+                # prepended to the agent input, so if the assistant repeats it
+                # (e.g. user asks "just translate/transcribe it") an automatic
+                # gateway echo causes duplicate Telegram messages. Keep an opt-in
+                # escape hatch for users who explicitly want raw STT echoes.
+                if _successful_transcripts and getattr(self.config, "stt_echo_transcripts", False):
                     _echo_adapter = self.adapters.get(source.platform)
                     _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _echo_adapter:
@@ -13586,9 +13588,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enriched_text, successful_transcripts = await self._enrich_message_with_transcription(
                 text, audio_paths,
             )
-            # Echo raw transcripts back to the user so voice interrupts
-            # feel identical to fresh voice messages.
-            if successful_transcripts:
+            # Match fresh-message behavior: no raw transcript echo unless
+            # explicitly enabled. Otherwise voice messages that ask for a
+            # transcription/translation can appear twice in chat.
+            if successful_transcripts and getattr(self.config, "stt_echo_transcripts", False):
                 echo_adapter = self.adapters.get(source.platform)
                 echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
                 if echo_adapter:

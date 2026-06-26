@@ -215,3 +215,48 @@ class TestWebSocketHostOriginGuard:
             },
         ):
             pass
+
+    def test_gated_reverse_proxy_origin_can_match_forwarded_host(self, monkeypatch):
+        """A public dashboard behind a reverse proxy may bind internally.
+
+        The backend Host header can legitimately be the private bind address
+        while the browser Origin is the public URL.  In gated mode, accept the
+        Origin when it matches the proxy-populated forwarded host.
+        """
+        from types import SimpleNamespace
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "172.18.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "auth_required", True, raising=False)
+
+        fake_ws = SimpleNamespace(
+            headers={
+                "host": "172.18.0.1:9119",
+                "origin": "https://xgerrit.xnova-os.info",
+                "x-forwarded-host": "xgerrit.xnova-os.info",
+            }
+        )
+
+        assert ws._ws_host_origin_reason(fake_ws) is None  # type: ignore[arg-type]
+
+    def test_forwarded_host_does_not_bypass_origin_guard_without_gate(self, monkeypatch):
+        """Forwarded-host fallback is limited to the cookie-gated public mode."""
+        from types import SimpleNamespace
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "172.18.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "auth_required", False, raising=False)
+
+        fake_ws = SimpleNamespace(
+            headers={
+                "host": "172.18.0.1:9119",
+                "origin": "https://xgerrit.xnova-os.info",
+                "x-forwarded-host": "xgerrit.xnova-os.info",
+            }
+        )
+
+        reason = ws._ws_host_origin_reason(fake_ws)  # type: ignore[arg-type]
+        assert reason is not None
+        assert reason.startswith("origin_mismatch")

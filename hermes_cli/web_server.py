@@ -348,6 +348,19 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     return host_only == bound_lc
 
 
+def _host_without_port(value: str) -> str:
+    """Return a lower-case host name without an optional port suffix."""
+    h = (value or "").strip()
+    if not h:
+        return ""
+    if h.startswith("["):
+        close = h.find("]")
+        if close != -1:
+            return h[1:close].lower()
+        return h.strip("[]").lower()
+    return (h.rsplit(":", 1)[0] if ":" in h else h).lower()
+
+
 @app.middleware("http")
 async def host_header_middleware(request: Request, call_next):
     """Reject requests whose Host header doesn't match the bound interface.
@@ -9913,9 +9926,26 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
-        return f"origin_mismatch origin={origin} bound={bound_host}"
-    return None
+    if _is_accepted_host(parsed.netloc, bound_host):
+        return None
+
+    # Reverse-proxy deployments commonly bind the app to an internal address
+    # (for example a Docker bridge IP) while browsers legitimately originate
+    # from the public dashboard host. HTTP middleware sees the proxy's Host
+    # header, but WS Origin contains the browser-facing host. Trust only the
+    # proxy-populated forwarded host headers, and only in gated mode where the
+    # OAuth/session-cookie gate plus single-use WS ticket is the auth boundary.
+    # Browser JavaScript cannot forge X-Forwarded-Host on the upgrade request;
+    # non-browser clients still need a valid cookie-minted ticket.
+    if getattr(app.state, "auth_required", False):
+        for header_name in ("x-forwarded-host", "x-original-host"):
+            forwarded_hosts = ws.headers.get(header_name, "")
+            for forwarded_host in forwarded_hosts.split(","):
+                forwarded_bound = _host_without_port(forwarded_host)
+                if forwarded_bound and _is_accepted_host(parsed.netloc, forwarded_bound):
+                    return None
+
+    return f"origin_mismatch origin={origin} bound={bound_host}"
 
 
 def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:

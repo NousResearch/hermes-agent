@@ -63,7 +63,7 @@ class _FakeGateway:
     async def _drain_active_agents(self, timeout):
         return {}, False
 
-    def _finalize_shutdown_agents(self, agents):
+    async def _finalize_shutdown_agents(self, agents):
         for agent in agents.values():
             self._cleanup_agent_resources(agent)
 
@@ -80,6 +80,10 @@ class _FakeGateway:
                 agent.close()
         except Exception:
             pass
+
+    async def _run_in_executor_with_context(self, fn, *args, **_kwargs):
+        """Minimal stub — runs synchronously since tests don't need threading."""
+        return fn(*args)
 
     def _evict_cached_agent(self, key):
         pass

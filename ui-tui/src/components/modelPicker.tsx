@@ -17,6 +17,16 @@ const MAX_WIDTH = 90
 
 type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
+type ProviderRow = { name: string; provider: ModelOptionProvider }
+
+export function providerIndexAfterClearingFilter(providerRows: ProviderRow[], provider: ModelOptionProvider | undefined) {
+  if (!provider) {
+    return -1
+  }
+
+  return providerRows.findIndex(row => row.provider.slug === provider.slug)
+}
+
 export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
   const [currentModel, setCurrentModel] = useState('')
@@ -307,6 +317,12 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
         if (provider.authenticated === false) {
           // api_key providers: prompt for key inline
           if (provider.auth_type === 'api_key' && provider.key_env) {
+            const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+            if (fullProviderIdx >= 0) {
+              setProviderIdx(fullProviderIdx)
+            }
+
             setStage('key')
             setKeyInput('')
             setKeyError('')
@@ -315,6 +331,12 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 
           // Other auth types: no-op (warning shown tells them to run hermes model)
           return
+        }
+
+        const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+        if (fullProviderIdx >= 0) {
+          setProviderIdx(fullProviderIdx)
         }
 
         setStage('model')
@@ -365,7 +387,14 @@ export function ModelPicker({ allowPersistGlobal = true, gw, onCancel, onSelect,
 
     // Disconnect (Ctrl+D): only in provider stage, only for authenticated providers.
     if (key.ctrl && ch === 'd' && stage === 'provider' && provider?.authenticated !== false) {
+      const fullProviderIdx = providerIndexAfterClearingFilter(providerRows, provider)
+
+      if (fullProviderIdx >= 0) {
+        setProviderIdx(fullProviderIdx)
+      }
+
       setStage('disconnect')
+      setFilter('')
 
       return
     }

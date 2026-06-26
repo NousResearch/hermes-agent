@@ -1196,6 +1196,10 @@ pip install hermes-plugin-calculator
 
 ## Distribute for NixOS
 
+:::warning Nix is no longer explicitly supported
+Nix/NixOS is no longer an explicitly supported install path (best-effort only) — see [Nix Setup](/getting-started/nix-setup). This section is kept for users already deploying on NixOS.
+:::
+
 NixOS users can install your plugin declaratively if you provide a `pyproject.toml` with entry points:
 
 **Entry-point plugins** (recommended for distribution):

@@ -575,6 +575,23 @@ class TestLoadGatewayConfig:
 
         assert config.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
 
+    def test_slack_disable_dms_config_sets_env_bridge(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "slack:\n"
+            "  disable_dms: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("SLACK_DISABLE_DMS", raising=False)
+
+        load_gateway_config()
+
+        assert os.getenv("SLACK_DISABLE_DMS") == "true"
+
     def test_typing_status_text_from_toplevel_platform_block(self, tmp_path, monkeypatch):
         """A top-level ``slack:`` block reaches PlatformConfig via the
         shared-key bridge (bridged into extra, then the from_dict extra

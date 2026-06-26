@@ -528,6 +528,69 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     return _build_codex_usage_snapshot(creds=creds, payload=payload)
 
 
+def fetch_codex_usage_for_token(
+    access_token: str,
+    base_url: Optional[str] = None,
+    account_id: Optional[str] = None,
+    *,
+    timeout: float = 8.0,
+) -> Optional[AccountUsageSnapshot]:
+    """Fetch the codex usage snapshot for a SPECIFIC OAuth access token (e.g. a
+    credential-pool entry) instead of the active runtime credential.
+
+    Returns a snapshot carrying the ``Session`` (primary) and ``Weekly``
+    (secondary) windows, or one with ``unavailable_reason`` (or ``None``) on
+    failure.  Used by the credential pool for usage-aware selection so rotation
+    can prefer credentials that still have Weekly + Session quota.  ``account_id``
+    is derived from the token's ``chatgpt_account_id`` claim when not supplied.
+    """
+    if not isinstance(access_token, str) or not access_token.strip():
+        return None
+    if not account_id:
+        try:
+            import base64 as _b64
+            import json as _json
+            payload_b64 = access_token.split(".")[1]
+            payload_b64 += "=" * (-len(payload_b64) % 4)
+            claims = _json.loads(_b64.urlsafe_b64decode(payload_b64))
+            account_id = (
+                claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id")
+                or None
+            )
+        except Exception:
+            account_id = None
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "User-Agent": "codex-cli",
+    }
+    if account_id:
+        headers["ChatGPT-Account-Id"] = account_id
+    url = _resolve_codex_usage_url(base_url or "")
+    try:
+        with httpx.Client(timeout=timeout) as client:
+            response = client.get(url, headers=headers)
+            body = getattr(response, "text", "")
+            try:
+                response.raise_for_status()
+            except Exception:
+                return AccountUsageSnapshot(
+                    provider="openai-codex",
+                    source="pool_usage_api",
+                    fetched_at=_utc_now(),
+                    unavailable_reason=_codex_usage_unavailable_reason(
+                        response.status_code, body
+                    ),
+                )
+            payload = response.json() or {}
+    except Exception as exc:
+        logger.debug("fetch_codex_usage_for_token failed: %s", exc)
+        return None
+    return _build_codex_usage_snapshot(
+        creds={"source": "pool_usage_api"}, payload=payload
+    )
+
+
 def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
     token = (resolve_anthropic_token() or "").strip()
     if not token:

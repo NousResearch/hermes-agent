@@ -119,6 +119,20 @@ EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 # custom_providers name: 'custom:<normalized_name>'.
 CUSTOM_POOL_PREFIX = "custom:"
 
+# ── Usage-aware selection (openai-codex) ──────────────────────────────────
+# ChatGPT codex bills two independent quota windows (Session ~hours, Weekly
+# ~days).  The pool consults the per-credential usage API so rotation prefers
+# credentials with Weekly *and* Session room, deprioritises Session-exhausted
+# ones (short cooldown) and skips Weekly-exhausted ones (long cooldown).
+# Snapshots are cached per credential to keep selection off the network hot
+# path; refresh runs outside the pool lock with a bounded budget.
+USAGE_CACHE_TTL_SECONDS = 90.0
+USAGE_FETCH_TIMEOUT_SECONDS = 6.0
+USAGE_FETCH_BUDGET_PER_SELECT = 2
+USAGE_EXHAUSTED_PCT = 99.0
+_usage_cache: Dict[str, Tuple[Any, float]] = {}
+_usage_cache_lock = threading.Lock()
+
 
 # Fields that are only round-tripped through JSON — never used for logic as attributes.
 _EXTRA_KEYS = frozenset({
@@ -344,6 +358,28 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if entry.last_status_at:
         return entry.last_status_at + _exhausted_ttl(entry.last_error_code)
     return None
+
+
+def _codex_usage_window_used(snapshot: Any, label: str) -> Optional[float]:
+    """Return used_percent for a named usage window ("Session"/"Weekly")."""
+    if snapshot is None:
+        return None
+    for window in getattr(snapshot, "windows", ()) or ():
+        if getattr(window, "label", None) == label:
+            return getattr(window, "used_percent", None)
+    return None
+
+
+def _cached_codex_usage(cred_id: str) -> Any:
+    """Return a within-TTL cached usage snapshot for a credential, else None."""
+    with _usage_cache_lock:
+        item = _usage_cache.get(cred_id)
+    if not item:
+        return None
+    snapshot, fetched_at = item
+    if (time.monotonic() - fetched_at) > USAGE_CACHE_TTL_SECONDS:
+        return None
+    return snapshot
 
 
 def _normalize_custom_pool_name(name: str) -> str:
@@ -1305,7 +1341,82 @@ class CredentialPool:
             return False
         return False
 
+    def _refresh_codex_usage_cache(self) -> None:
+        """Refresh stale per-credential usage snapshots OUTSIDE the pool lock.
+
+        Only for openai-codex with >1 credential.  Bounded by
+        ``USAGE_FETCH_BUDGET_PER_SELECT`` and a short timeout so selection never
+        blocks on more than a couple of network calls; fully cached on the happy
+        path.  Best-effort — any failure leaves the entry "unknown" so selection
+        falls back to the existing reactive behaviour.
+        """
+        if self.provider != "openai-codex":
+            return
+        with self._lock:
+            entries = list(self._entries)
+        if len(entries) < 2:
+            return
+        try:
+            from agent.account_usage import fetch_codex_usage_for_token
+        except Exception:
+            return
+        budget = USAGE_FETCH_BUDGET_PER_SELECT
+        for entry in entries:
+            if budget <= 0:
+                break
+            if entry.last_status == STATUS_DEAD:
+                continue
+            if _cached_codex_usage(entry.id) is not None:
+                continue  # still fresh
+            token = entry.access_token or ""
+            if not token:
+                continue
+            snapshot = fetch_codex_usage_for_token(
+                token, entry.runtime_base_url, timeout=USAGE_FETCH_TIMEOUT_SECONDS
+            )
+            budget -= 1
+            if snapshot is not None and getattr(snapshot, "available", False):
+                with _usage_cache_lock:
+                    _usage_cache[entry.id] = (snapshot, time.monotonic())
+
+    def _usage_prioritized(
+        self, available: List[PooledCredential]
+    ) -> List[PooledCredential]:
+        """Rank cooldown-available openai-codex entries by cached usage windows.
+
+        Returns Weekly+Session-room entries (and entries with no usage data)
+        first, then Session-exhausted (short reset), then Weekly-exhausted (long
+        reset), preserving priority order within each group.  Cache-only (no I/O)
+        so it is safe under the pool lock.
+        """
+        has_room: List[PooledCredential] = []
+        unknown: List[PooledCredential] = []
+        session_dead: List[PooledCredential] = []
+        weekly_dead: List[PooledCredential] = []
+        for entry in available:
+            snapshot = _cached_codex_usage(entry.id)
+            if snapshot is None:
+                unknown.append(entry)
+                continue
+            weekly_used = _codex_usage_window_used(snapshot, "Weekly")
+            session_used = _codex_usage_window_used(snapshot, "Session")
+            if weekly_used is not None and weekly_used >= USAGE_EXHAUSTED_PCT:
+                weekly_dead.append(entry)
+            elif session_used is not None and session_used >= USAGE_EXHAUSTED_PCT:
+                session_dead.append(entry)
+            else:
+                has_room.append(entry)
+        primary = has_room + unknown
+        if primary:
+            return primary
+        if session_dead:
+            return session_dead
+        if weekly_dead:
+            return weekly_dead
+        return available
+
     def select(self) -> Optional[PooledCredential]:
+        self._refresh_codex_usage_cache()
         with self._lock:
             return self._select_unlocked()
 
@@ -1430,6 +1541,9 @@ class CredentialPool:
             self._current_id = None
             logger.info("credential pool: no available entries (all exhausted or empty)")
             return None
+
+        if self.provider == "openai-codex" and len(available) > 1:
+            available = self._usage_prioritized(available)
 
         if self._strategy == STRATEGY_RANDOM:
             entry = random.choice(available)

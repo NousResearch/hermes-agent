@@ -1,10 +1,10 @@
 """Regression for #36908: the repeated-compression warning must reach the
 TUI / gateway, not just CLI stdout.
 
-When a session is compressed >= 2 times, ``compress_context`` warns that
-accuracy may degrade. That warning used to go through ``_vprint`` (stdout
-only), so the Ink TUI / Telegram / Discord never saw it — unlike the two
-other compression warnings in the same module, which route through
+When a session is compressed >= 2 times, ``compress_context`` emits a repeated
+compaction warning. That warning used to go through ``_vprint`` (stdout only),
+so the Ink TUI / Telegram / Discord never saw it — unlike the two other
+compression warnings in the same module, which route through
 ``_emit_status`` (and store ``_compression_warning`` for late-bound
 gateway replay). This pins the warning onto the gateway-aware channel.
 """
@@ -54,7 +54,7 @@ def test_repeated_compression_warning_routed_through_emit_status(tmp_path: Path)
     sid = "PARENT_36908"
     db.create_session(sid, source="cli")
 
-    # compression_count == 2 → the "compressed N times" warning should fire.
+    # compression_count == 2 → the repeated-compaction warning should fire.
     agent = _build_agent_with_db(db, sid, compression_count=2)
 
     emitted: list[str] = []
@@ -64,11 +64,16 @@ def test_repeated_compression_warning_routed_through_emit_status(tmp_path: Path)
     agent._compress_context(messages, "sys", approx_tokens=120_000)
 
     # The warning reached the gateway-aware channel...
-    assert any("compressed 2 times" in m.lower() for m in emitted), (
+    assert any("compacted 2 times" in m.lower() for m in emitted), (
         f"repeated-compression warning not emitted via _emit_status: {emitted}"
     )
+    assert all("accuracy may degrade" not in m.lower() for m in emitted)
+    assert any("/new" in m for m in emitted)
     # ...and was stored for late-bound gateway status_callback replay.
-    assert "compressed 2 times" in (getattr(agent, "_compression_warning", "") or "").lower()
+    stored_warning = getattr(agent, "_compression_warning", "") or ""
+    assert "compacted 2 times" in stored_warning.lower()
+    assert "accuracy may degrade" not in stored_warning.lower()
+    assert "/new" in stored_warning
 
 
 def test_no_warning_below_threshold(tmp_path: Path) -> None:
@@ -84,4 +89,4 @@ def test_no_warning_below_threshold(tmp_path: Path) -> None:
     messages = [{"role": "user", "content": f"m{i}"} for i in range(20)]
     agent._compress_context(messages, "sys", approx_tokens=120_000)
 
-    assert not any("compressed" in m.lower() and "times" in m.lower() for m in emitted)
+    assert not any("compacted" in m.lower() and "times" in m.lower() for m in emitted)

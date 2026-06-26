@@ -820,12 +820,6 @@ def compress_context(
         _is_boundary = bool(_old_sid) or in_place
         _boundary_parent = _old_sid or agent.session_id or ""
 
-        # Notify the context engine that a compaction boundary occurred. Plugin
-        # engines (e.g. hermes-lcm) use boundary_reason="compression" to preserve
-        # DAG lineage / checkpoint per-session state across the boundary instead of
-        # re-initializing fresh. See hermes-lcm#68. Built-in ContextCompressor
-        # ignores kwargs. Fires in BOTH modes: rotation passes old→new ids; in-place
-        # passes the SAME id (the boundary is real even though the id didn't move).
         try:
             if _is_boundary and hasattr(agent.context_compressor, "on_session_start"):
                 agent.context_compressor.on_session_start(
@@ -855,7 +849,9 @@ def compress_context(
         except Exception as _me_err:
             logger.debug("memory manager on_session_switch (compression): %s", _me_err)
 
-        # Warn on repeated compressions (quality degrades with each pass).
+        # Warn on repeated compactions without assuming the active context engine is
+        # lossy. LCM-style backends preserve originals durably, so avoid implying
+        # cumulative accuracy loss here (#53000).
         # Route through _emit_status (like the other compression warnings above)
         # so the warning reaches the TUI / Telegram / Discord via status_callback,
         # not just CLI stdout. _emit_status still _vprints for the CLI, and
@@ -864,8 +860,8 @@ def compress_context(
         _cc = agent.context_compressor.compression_count
         if _cc >= 2:
             _cc_msg = (
-                f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
-                f"accuracy may degrade. Consider /new to start fresh."
+                f"{agent.log_prefix}⚠️  Session compacted {_cc} times. "
+                f"Consider /new to start fresh."
             )
             agent._compression_warning = _cc_msg
             agent._emit_status(_cc_msg)

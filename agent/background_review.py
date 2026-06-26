@@ -156,8 +156,18 @@ def _digest_history(messages_snapshot: List[Dict], tail: int = 24) -> List[Dict]
 # the user-message that the forked review agent receives.  AIAgent exposes
 # them as class attributes (``_MEMORY_REVIEW_PROMPT`` etc.) for back-compat;
 # the actual text lives here so future edits are one-place.
+_BG_REVIEW_SYSTEM_DISCLAIMER = (
+    "[System Note: This instruction is generated automatically by the Hermes Agent "
+    "System for background self-improvement, NOT by the user. Do NOT save any "
+    "guidelines, rules, preferences, or expectations from this prompt as user "
+    "preferences or expectations in memory. Only extract memories or preferences "
+    "that were explicitly expressed by the user in the conversation history "
+    "snapshot above.]\n\n"
+)
+
 _MEMORY_REVIEW_PROMPT = (
-    "Review the conversation above and consider saving to memory if appropriate.\n\n"
+    _BG_REVIEW_SYSTEM_DISCLAIMER
+    + "Review the conversation above and consider saving to memory if appropriate.\n\n"
     "Focus on:\n"
     "1. Has the user revealed things about themselves — their persona, desires, "
     "preferences, or personal details worth remembering?\n"
@@ -168,7 +178,8 @@ _MEMORY_REVIEW_PROMPT = (
 )
 
 _SKILL_REVIEW_PROMPT = (
-    "Review the conversation above and update the skill library. Be "
+    _BG_REVIEW_SYSTEM_DISCLAIMER
+    + "Review the conversation above and update the skill library. Be "
     "ACTIVE — most sessions produce at least one skill update, even if "
     "small. A pass that does nothing is a missed learning opportunity, "
     "not a neutral outcome.\n\n"
@@ -273,7 +284,8 @@ _SKILL_REVIEW_PROMPT = (
 )
 
 _COMBINED_REVIEW_PROMPT = (
-    "Review the conversation above and update two things:\n\n"
+    _BG_REVIEW_SYSTEM_DISCLAIMER
+    + "Review the conversation above and update two things:\n\n"
     "**Memory**: who the user is. Did the user reveal persona, "
     "desires, preferences, personal details, or expectations about "
     "how you should behave? Save facts about the user and durable "
@@ -865,6 +877,7 @@ def spawn_background_review_thread(
 
 
 __all__ = [
+    "_BG_REVIEW_SYSTEM_DISCLAIMER",
     "_MEMORY_REVIEW_PROMPT",
     "_SKILL_REVIEW_PROMPT",
     "_COMBINED_REVIEW_PROMPT",

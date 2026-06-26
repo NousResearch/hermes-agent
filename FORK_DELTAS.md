@@ -183,6 +183,8 @@ the *Retired* section at the bottom with the upstream PR/commit reference.
     privilege drop.
   - `docker/hermes-exec-shim.sh` — same pattern, mirroring `main-wrapper.sh`.
   - `docker/s6-rc.d/dashboard/run` — same pattern in the dashboard service.
+  - `tests/test_docker_home_override_scripts.py` — the regression test that
+    guards the HOME-reset contract (reconciled in PR #17; see note below).
 - **Why:** All three container entrypoints unconditionally `export
   HOME=/opt/data` before dropping privileges, to keep `HOME`-anchored writes
   (XDG caches, lockfiles, `.config`) from landing under `/root` when
@@ -196,9 +198,24 @@ the *Retired* section at the bottom with the upstream PR/commit reference.
   to `/opt/data` when the lookup fails, so the stock Hermes image (which
   sets the hermes user's passwd home to `/opt/data`) behaves identically
   and embedders get the home dir they declared.
+- **Test reconciliation (PR #17, forge-witt3rd):** the original passwd-home
+  change (commit `361da380b`, merged as PR #15) edited
+  `docker/s6-rc.d/dashboard/run` from `export HOME=/opt/data` to
+  `export HOME="${_hermes_passwd_home:-/opt/data}"` but left
+  `test_dashboard_run_resets_home_before_dropping_privileges` asserting the
+  old literal substring `"export HOME=/opt/data"`, which no longer appears
+  verbatim. That broke the test on `main`, so every PR opened afterward
+  inherited the red regardless of what it touched. PR #17 reconciles the
+  test to a behavior contract (per AGENTS.md "behavior contracts over
+  snapshots"): assert that HOME is exported, anchored to the `/opt/data`
+  default (directly or as the `${...:-/opt/data}` fallback), and reset
+  *before* the `s6-setuidgid` privilege drop (verified via index ordering).
+  The test edit should have ridden along with the original D9 script change;
+  PR #17 is the catch-up.
 - **Upstream disposition:** clean candidate for extraction; the fix is
   general (honoring passwd over hardcoded paths is the obviously-correct
-  shape) and not coupled to any other fork-local feature.
+  shape) and not coupled to any other fork-local feature. If extracted
+  upstream, the script change and the reconciled test ship together.
 
 ## Retired
 

@@ -4304,6 +4304,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if context_length:
                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
 
+
+        # Cron ticker heartbeat — cross-process liveness check using the
+        # same heartbeat file that ``hermes cron status`` consults.  None
+        # means "unknown" (never run, or can't read the file); we skip the
+        # indicator entirely in that case to avoid false alarms.
+        try:
+            from cron.jobs import get_ticker_heartbeat_age
+            _hb_age = get_ticker_heartbeat_age()
+            if _hb_age is None:
+                snapshot["cron_running"] = None
+            else:
+                # 200s stale threshold matches hermes_cli/cron.py (~3× 60s tick)
+                snapshot["cron_running"] = _hb_age <= 200.0
+                snapshot["cron_heartbeat_age"] = _hb_age
+        except Exception:
+            snapshot["cron_running"] = None
+
         return snapshot
 
     @staticmethod
@@ -4738,6 +4755,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 bg_subagent_count = snapshot.get("active_background_subagents", 0)
                 if bg_subagent_count:
                     parts.append(f"⛓ {bg_subagent_count}")
+                _cron_running = snapshot.get("cron_running")
+                if _cron_running is not None:
+                    parts.append("⏱ cron" if _cron_running else "⚠ cron")
                 parts.append(duration_label)
                 if yolo_active:
                     parts.append("⚠ YOLO")
@@ -4763,6 +4783,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             bg_subagent_count = snapshot.get("active_background_subagents", 0)
             if bg_subagent_count:
                 parts.append(f"⛓ {bg_subagent_count}")
+            _cron_running = snapshot.get("cron_running")
+            if _cron_running is not None:
+                parts.append("⏱ cron" if _cron_running else "⚠ cron")
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
@@ -4827,6 +4850,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if bg_subagent_count:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
+                    _cron_running = snapshot.get("cron_running")
+                    if _cron_running is not None:
+                        _cron_label = "⏱ cron" if _cron_running else "⚠ cron"
+                        _cron_class = "class:status-bar-strong" if _cron_running else "class:status-bar-yolo"
+                        frags.append(("class:status-bar-dim", " · "))
+                        frags.append((_cron_class, _cron_label))
                     frags.extend([
                         ("class:status-bar-dim", " · "),
                         ("class:status-bar-dim", duration_label),
@@ -4870,6 +4899,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     if bg_subagent_count:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-strong", f"⛓ {bg_subagent_count}"))
+                    _cron_running = snapshot.get("cron_running")
+                    if _cron_running is not None:
+                        _cron_label = "⏱ cron" if _cron_running else "⚠ cron"
+                        _cron_class = "class:status-bar-strong" if _cron_running else "class:status-bar-yolo"
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append((_cron_class, _cron_label))
                     frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", duration_label),

@@ -10,7 +10,20 @@ const { execFile } = require('node:child_process')
 const fs = require('node:fs/promises')
 const path = require('node:path')
 
-const simpleGit = require('simple-git')
+// Lazy require so the module loads even when simple-git is unavailable
+// (e.g. bundling failed, or the packaged asar doesn't include it).
+// All callers already handle null/empty returns gracefully.
+let _simpleGit = null
+function loadSimpleGit() {
+  if (_simpleGit === null) {
+    try {
+      _simpleGit = require('simple-git')
+    } catch {
+      _simpleGit = false
+    }
+  }
+  return _simpleGit || false
+}
 
 const { resolveRequestedPathForIpc } = require('./hardening.cjs')
 
@@ -45,7 +58,11 @@ function runGh(args, cwd, ghBin) {
 }
 
 function gitFor(cwd, gitBin) {
-  return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
+  const sg = loadSimpleGit()
+  if (!sg) {
+    return null
+  }
+  return sg({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve

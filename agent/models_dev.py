@@ -723,3 +723,30 @@ def get_model_info(
             return _parse_model_info(mid, mdata, mdev_id)
 
     return None
+
+
+def get_supported_reasoning_efforts(provider: str, model_id: str) -> list[str]:
+    """Return the exact supported reasoning efforts for a provider/model combo."""
+    slug = (provider or "").strip().lower()
+    mid = (model_id or "").strip().lower()
+
+    # Anthropic Claude 3 Opus
+    if slug == "anthropic" and "opus" in mid:
+        return ["low", "medium", "high", "extra_high", "max"]
+    # Anthropic Sonnet 4.6
+    if slug == "anthropic" and "sonnet" in mid and ("4.6" in mid or "4-6" in mid):
+        return ["low", "medium", "high", "max"]
+    # Default Anthropic / General
+    if slug == "anthropic":
+        return ["low", "medium", "high"]
+
+    # OpenAI / Codex / GPT-5.5
+    if slug in ("openai", "openai-codex") or "gpt-5.5" in mid:
+        return ["low", "medium", "high", "extra_high"]
+
+    # Google Gemini
+    if slug == "gemini" or "gemini" in mid:
+        return ["low", "high", "extra_high"]
+
+    # Default fallback (OpenAI/Copilot standard)
+    return ["low", "medium", "high"]

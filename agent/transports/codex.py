@@ -165,7 +165,7 @@ class ResponsesApiTransport(ProviderTransport):
         from hermes_constants import canonicalize_reasoning_effort
 
         reasoning_effort = canonicalize_reasoning_effort(reasoning_effort) or "medium"
-        if is_xai_responses and reasoning_effort == "extra_high":
+        if is_xai_responses and reasoning_effort in ("extra_high", "max"):
             # xAI's current Responses effort dial is low/medium/high. Keep
             # Hermes' canonical GPT-5.5 "Extra High" selection from leaking
             # into xAI requests where it would be rejected.

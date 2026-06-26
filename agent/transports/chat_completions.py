@@ -64,13 +64,13 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         if "flash" in normalized_model:
             if canonical_effort == "low":
                 thinking_config["thinkingLevel"] = "low"
-            elif canonical_effort in {"high", "extra_high"}:
+            elif canonical_effort in {"high", "extra_high", "max"}:
                 thinking_config["thinkingLevel"] = "high"
             else:
                 thinking_config["thinkingLevel"] = "medium"
         elif "pro" in normalized_model:
             thinking_config["thinkingLevel"] = (
-                "high" if canonical_effort in {"high", "extra_high"} else "low"
+                "high" if canonical_effort in {"high", "extra_high", "max"} else "low"
             )
 
     return thinking_config
@@ -349,7 +349,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 _kimi_effort = "medium"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = canonicalize_reasoning_effort(reasoning_config.get("effort") or "")
-                    if _e == "extra_high":
+                    if _e in ("extra_high", "max"):
                         _kimi_effort = "high"
                     elif _e in {"low", "medium", "high"}:
                         _kimi_effort = _e
@@ -368,7 +368,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 _tokenhub_effort = "high"
                 if reasoning_config and isinstance(reasoning_config, dict):
                     _e = canonicalize_reasoning_effort(reasoning_config.get("effort") or "")
-                    if _e == "extra_high":
+                    if _e in ("extra_high", "max"):
                         _tokenhub_effort = "high"
                     elif _e in {"low", "medium", "high"}:
                         _tokenhub_effort = _e

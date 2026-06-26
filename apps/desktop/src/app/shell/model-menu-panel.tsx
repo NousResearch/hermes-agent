@@ -306,6 +306,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                       provider={group.provider.slug}
                       reasoning={caps?.reasoning ?? true}
                       requestGateway={requestGateway}
+                      supportedReasoningEfforts={caps?.supported_reasoning_efforts}
                     />
                   </DropdownMenuSub>
                 )

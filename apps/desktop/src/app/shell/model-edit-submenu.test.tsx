@@ -25,7 +25,7 @@ afterEach(() => {
 })
 
 // Render the submenu inside an open menu/sub so its content (switches) mounts.
-function renderSubmenu(opts: { fastControl: FastControl; reasoning: boolean; requestGateway: () => Promise<unknown> }) {
+function renderSubmenu(opts: { fastControl: FastControl; reasoning: boolean; requestGateway: () => Promise<unknown>; supportedReasoningEfforts?: string[] }) {
   return render(
     <DropdownMenu open>
       <DropdownMenuContent>
@@ -34,12 +34,13 @@ function renderSubmenu(opts: { fastControl: FastControl; reasoning: boolean; req
           <ModelEditSubmenu
             effort="medium"
             fastControl={opts.fastControl}
-            isActive
+            isActive={true}
             model="m1"
             onSelectModel={vi.fn()}
             provider="p1"
             reasoning={opts.reasoning}
-            requestGateway={opts.requestGateway as never}
+            requestGateway={opts.requestGateway as <T>() => Promise<T>}
+            supportedReasoningEfforts={opts.supportedReasoningEfforts}
           />
         </DropdownMenuSub>
       </DropdownMenuContent>
@@ -53,7 +54,7 @@ function renderSubmenu(opts: { fastControl: FastControl; reasoning: boolean; req
 describe('ModelEditSubmenu no-session guard', () => {
   it('reasoning: shows only the official GPT-5.5 effort levels', () => {
     const requestGateway = vi.fn().mockResolvedValue({})
-    renderSubmenu({ fastControl: { kind: 'none' }, reasoning: true, requestGateway })
+    renderSubmenu({ fastControl: { kind: 'none' }, reasoning: true, requestGateway, supportedReasoningEfforts: ['low', 'medium', 'high', 'extra_high'] })
 
     expect(screen.queryByText('Minimal')).toBeNull()
     expect(screen.queryByText('Max')).toBeNull()

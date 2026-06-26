@@ -34,7 +34,7 @@ Substrate facts (verified May 2026):
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Optional
+from typing import Optional, Any
 
 
 # ─── Public types ───────────────────────────────────────────────────────
@@ -242,13 +242,14 @@ def _apply_capabilities(rows: list[dict]) -> None:
     from hermes_cli.models import model_supports_fast_mode
 
     try:
-        from agent.models_dev import get_model_capabilities
+        from agent.models_dev import get_model_capabilities, get_supported_reasoning_efforts
     except Exception:
         get_model_capabilities = None  # type: ignore[assignment]
+        get_supported_reasoning_efforts = None
 
     for row in rows:
         slug = row.get("slug") or ""
-        caps: dict[str, dict[str, bool]] = {}
+        caps: dict[str, dict[str, Any]] = {}
 
         for model in row.get("models") or []:
             reasoning = True
@@ -260,9 +261,17 @@ def _apply_capabilities(rows: list[dict]) -> None:
                 except Exception:
                     reasoning = True
 
+            supported_efforts = []
+            if get_supported_reasoning_efforts is not None and reasoning:
+                try:
+                    supported_efforts = get_supported_reasoning_efforts(slug, model)
+                except Exception:
+                    pass
+
             caps[model] = {
                 "fast": bool(model_supports_fast_mode(model)),
                 "reasoning": reasoning,
+                "supported_reasoning_efforts": supported_efforts,
             }
 
         row["capabilities"] = caps

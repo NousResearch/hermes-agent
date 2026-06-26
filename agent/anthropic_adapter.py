@@ -67,6 +67,7 @@ THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 ADAPTIVE_EFFORT_MAP = {
     "max":     "max",
     "xhigh":   "xhigh",
+    "extra_high": "xhigh",
     "high":    "high",
     "medium":  "medium",
     "low":     "low",

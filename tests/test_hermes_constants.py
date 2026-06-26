@@ -309,7 +309,8 @@ class TestParseReasoningEffort:
             ("\tXHIGH\n", "extra_high"),
             ("Extra High", "extra_high"),
             ("minimal", "low"),
-            ("max", "extra_high"),
+            ("max", "max"),
+            ("Maximum", "max"),
             ("None", False),
         ],
     )
@@ -335,7 +336,7 @@ class TestParseReasoningEffort:
         The official GPT-5.5/Codex effort set is Low, Medium, High, Extra High.
         Legacy aliases may parse, but must not be part of the canonical enum.
         """
-        assert VALID_REASONING_EFFORTS == ("low", "medium", "high", "extra_high")
+        assert VALID_REASONING_EFFORTS == ("low", "medium", "high", "extra_high", "max")
 
 
 class TestSecureParentDir:

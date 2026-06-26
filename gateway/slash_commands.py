@@ -2370,9 +2370,20 @@ class GatewaySlashCommandsMixin:
                 if has_session_override
                 else t("gateway.reasoning.scope_global")
             )
-            
+
             from hermes_constants import VALID_REASONING_EFFORTS, reasoning_effort_display_label
-            valid_levels = ", ".join(reasoning_effort_display_label(e) for e in VALID_REASONING_EFFORTS)
+
+            try:
+                from agent.models_dev import get_supported_reasoning_efforts
+                from gateway.run import _load_gateway_runtime_config
+                _cfg = _load_gateway_runtime_config()
+                _m = _cfg.get("model", {})
+                _slug = _m.get("provider", "")
+                _mid = _m.get("default", "")
+                supported = get_supported_reasoning_efforts(_slug, _mid)
+                valid_levels = ", ".join(reasoning_effort_display_label(e) for e in supported)
+            except Exception:
+                valid_levels = ", ".join(reasoning_effort_display_label(e) for e in VALID_REASONING_EFFORTS)
 
             return t(
                 "gateway.reasoning.status",

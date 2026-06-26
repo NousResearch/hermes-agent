@@ -10,7 +10,7 @@ import pytest
 def test_core_reasoning_efforts_are_official_gpt55_modes_only():
     from hermes_constants import VALID_REASONING_EFFORTS
 
-    assert VALID_REASONING_EFFORTS == ("low", "medium", "high", "extra_high")
+    assert VALID_REASONING_EFFORTS == ("low", "medium", "high", "extra_high", "max")
 
 
 @pytest.mark.parametrize(
@@ -24,7 +24,7 @@ def test_core_reasoning_efforts_are_official_gpt55_modes_only():
         ("Extra High", "extra_high"),
         ("extra-high", "extra_high"),
         ("xhigh", "extra_high"),
-        ("max", "extra_high"),
+        ("max", "max"),
         ("minimal", "low"),
     ],
 )
@@ -124,8 +124,8 @@ def test_reasoning_command_suggestions_surface_only_official_efforts():
     from hermes_cli.commands import COMMAND_REGISTRY, SUBCOMMANDS
 
     reasoning = next(command for command in COMMAND_REGISTRY if command.name == "reasoning")
-    assert reasoning.args_hint == "[low|medium|high|extra_high|show|hide|full|clamp]"
-    assert {"low", "medium", "high", "extra_high"}.issubset(reasoning.subcommands)
+    assert reasoning.args_hint == "[low|medium|high|extra_high|max|show|hide|full|clamp]"
+    assert {"low", "medium", "high", "extra_high", "max"}.issubset(reasoning.subcommands)
     assert "minimal" not in reasoning.subcommands
     assert "xhigh" not in reasoning.subcommands
     assert "none" not in reasoning.subcommands

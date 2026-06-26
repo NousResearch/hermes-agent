@@ -283,6 +283,7 @@ export interface ModelOptionProvider {
 export interface ModelCapabilities {
   fast: boolean
   reasoning: boolean
+  supported_reasoning_efforts?: string[]
 }
 
 export interface ModelOptionsResponse {

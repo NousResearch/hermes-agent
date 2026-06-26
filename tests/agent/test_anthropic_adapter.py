@@ -316,6 +316,7 @@ class TestResolveAnthropicToken:
         assert resolve_anthropic_token() == "sk-ant-oat01-test-token"
 
     def test_falls_back_to_claude_code_credentials(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("agent.anthropic_adapter._read_claude_code_credentials_from_keychain", lambda: None)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -457,6 +458,7 @@ class TestResolveAnthropicToken:
         assert captured == {"clear_expired": False, "refresh": False}
 
     def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("agent.anthropic_adapter._read_claude_code_credentials_from_keychain", lambda: None)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-static-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -600,6 +602,7 @@ class TestResolveWithRefresh:
         assert result == "refreshed-token"
 
     def test_static_env_oauth_token_does_not_block_refreshable_claude_creds(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("agent.anthropic_adapter._read_claude_code_credentials_from_keychain", lambda: None)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("ANTHROPIC_TOKEN", "sk-ant-oat01-expired-env-token")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -628,6 +631,7 @@ class TestRunOauthSetupToken:
             run_oauth_setup_token()
 
     def test_returns_token_from_credential_files(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("agent.anthropic_adapter._read_claude_code_credentials_from_keychain", lambda: None)
         """After subprocess completes, reads credentials from Claude Code files."""
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
@@ -657,6 +661,7 @@ class TestRunOauthSetupToken:
         assert mock_run.called
 
     def test_returns_token_from_env_var(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("agent.anthropic_adapter._read_claude_code_credentials_from_keychain", lambda: None)
         """Falls back to CLAUDE_CODE_OAUTH_TOKEN env var when no cred files."""
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
         monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "from-env-var")
@@ -670,6 +675,7 @@ class TestRunOauthSetupToken:
         assert token == "from-env-var"
 
     def test_returns_none_when_no_creds_found(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("agent.anthropic_adapter._read_claude_code_credentials_from_keychain", lambda: None)
         """Returns None when subprocess completes but no credentials are found."""
         monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/claude")
         monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)

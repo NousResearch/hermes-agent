@@ -1434,6 +1434,7 @@ export interface Translations {
       medium: string
       high: string
       extraHigh: string
+      max: string
       updateFailed: string
       fastFailed: string
     }

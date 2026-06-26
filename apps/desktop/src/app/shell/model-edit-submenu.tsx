@@ -22,7 +22,8 @@ const EFFORT_OPTIONS = [
   { value: 'low', labelKey: 'low' },
   { value: 'medium', labelKey: 'medium' },
   { value: 'high', labelKey: 'high' },
-  { value: 'extra_high', labelKey: 'extraHigh' }
+  { value: 'extra_high', labelKey: 'extraHigh' },
+  { value: 'max', labelKey: 'max' }
 ] as const
 
 /** How "fast" is achieved for a given model — two different mechanisms:
@@ -87,6 +88,7 @@ interface ModelEditSubmenuProps {
   /** Whether this model supports reasoning effort. */
   reasoning: boolean
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  supportedReasoningEfforts?: string[]
 }
 
 export function ModelEditSubmenu({
@@ -97,11 +99,13 @@ export function ModelEditSubmenu({
   onSelectModel,
   provider,
   reasoning,
-  requestGateway
+  requestGateway,
+  supportedReasoningEfforts
 }: ModelEditSubmenuProps) {
   const { t } = useI18n()
   const copy = t.shell.modelOptions
   const activeSessionId = useStore($activeSessionId)
+  const activeOptions = supportedReasoningEfforts && supportedReasoningEfforts.length > 0 ? EFFORT_OPTIONS.filter(o => supportedReasoningEfforts.includes(o.value)) : EFFORT_OPTIONS
 
   const effortValue = normalizeEffort(effort)
   const thinkingOn = isThinkingEnabled(effort)
@@ -207,7 +211,7 @@ export function ModelEditSubmenu({
               <DropdownMenuSeparator className="mx-0" />
               <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
               <DropdownMenuRadioGroup onValueChange={value => void patchReasoning(value)} value={effortValue}>
-                {EFFORT_OPTIONS.map(option => (
+                {activeOptions.map(option => (
                   <DropdownMenuRadioItem
                     className={dropdownMenuRow}
                     key={option.value}

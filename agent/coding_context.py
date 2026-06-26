@@ -83,6 +83,59 @@ _PROJECT_MARKERS = (
 # Agent-instruction files surfaced separately from manifests in the snapshot.
 _CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md", ".cursorrules")
 
+# Source-file extensions that make a git repo a *code* workspace even with no
+# manifest. Without this, `git init` on a notes/writing/research folder (a huge
+# non-coding use case) would flip the whole session into the coding posture just
+# for having a `.git`. A manifest still wins on its own (see `_PROJECT_MARKERS`).
+_CODE_EXTENSIONS = frozenset({
+    ".py", ".pyi", ".ipynb", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+    ".go", ".rs", ".java", ".kt", ".kts", ".scala", ".rb", ".php", ".c", ".h",
+    ".cc", ".cpp", ".hpp", ".cs", ".swift", ".m", ".mm", ".dart", ".ex", ".exs",
+    ".lua", ".sh", ".bash", ".zsh", ".sql", ".vue", ".svelte", ".r", ".jl",
+    ".hs", ".clj", ".erl", ".pl",
+})
+
+# Dirs never worth scanning for the code check (deps/build/vcs/venv noise).
+_CODE_SCAN_SKIP_DIRS = frozenset({
+    ".git", "node_modules", "venv", ".venv", "__pycache__", "dist", "build",
+    "target", ".next", ".turbo", "vendor",
+})
+
+# Bounded sweep: a code workspace reveals itself in the first handful of entries.
+_CODE_SCAN_MAX_ENTRIES = 500
+
+
+def _has_code_files(root: Path) -> bool:
+    """Cheap, bounded check for source files in a repo's top two levels.
+
+    Lets a git repo of loose scripts (no manifest) still read as a code
+    workspace while a bare notes/writing repo does not. Scans the root and its
+    immediate subdirectories only, capped at ``_CODE_SCAN_MAX_ENTRIES`` stats —
+    a handful of readdirs at session start, not a full walk.
+    """
+    seen = 0
+    stack = [(root, True)]
+    while stack:
+        directory, is_root = stack.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    seen += 1
+                    if seen > _CODE_SCAN_MAX_ENTRIES:
+                        return False
+                    name = entry.name
+                    try:
+                        if entry.is_file():
+                            if os.path.splitext(name)[1].lower() in _CODE_EXTENSIONS:
+                                return True
+                        elif is_root and entry.is_dir() and name not in _CODE_SCAN_SKIP_DIRS and not name.startswith("."):
+                            stack.append((Path(entry.path), False))
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return False
+
 # Lockfile → package manager, checked in priority order.
 _PY_LOCKFILES = (("uv.lock", "uv"), ("poetry.lock", "poetry"), ("Pipfile.lock", "pipenv"))
 _JS_LOCKFILES = (
@@ -368,10 +421,16 @@ def _detect_profile_name(mode: str, platform: str, cwd_str: str) -> str:
     if platform and platform.strip().lower() not in INTERACTIVE_CODING_PLATFORMS:
         return GENERAL_PROFILE.name
     cwd = Path(cwd_str)
+    # A recognized project root (manifest / AGENTS.md / .cursorrules) is a code
+    # workspace on its own — cheap stat checks, no scan.
+    if _marker_root(cwd) is not None:
+        return CODING_PROFILE.name
     git_root = _git_root(cwd)
     if git_root is not None and git_root == _home():
         git_root = None  # dotfiles repo at $HOME — not a code workspace
-    if git_root is not None or _marker_root(cwd) is not None:
+    # A bare git repo only counts when it actually holds code, so `git init` on a
+    # notes/writing/research folder stays in the general posture.
+    if git_root is not None and _has_code_files(git_root):
         return CODING_PROFILE.name
     return GENERAL_PROFILE.name
 

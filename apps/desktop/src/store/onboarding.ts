@@ -169,8 +169,7 @@ const errMessage = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const patch = (update: Partial<DesktopOnboardingState>) =>
   $desktopOnboarding.set({ ...$desktopOnboarding.get(), ...update })
 
-const setFlow = (flow: OnboardingFlow) =>
-  patch(flow.status === 'idle' ? { flow } : { flow, reason: null })
+const setFlow = (flow: OnboardingFlow) => patch(flow.status === 'idle' ? { flow } : { flow, reason: null })
 
 const sessionIdFor = (flow: OnboardingFlow) => ('start' in flow && flow.start ? flow.start.session_id : undefined)
 
@@ -181,10 +180,7 @@ function clearPoll() {
   }
 }
 
-async function checkRuntime(
-  ctx: OnboardingContext,
-  requestedProvider?: string
-): Promise<RuntimeReadinessResult> {
+async function checkRuntime(ctx: OnboardingContext, requestedProvider?: string): Promise<RuntimeReadinessResult> {
   return evaluateRuntimeReadiness(ctx.requestGateway, {
     defaultReason: DEFAULT_ONBOARDING_REASON,
     requestedProvider,
@@ -192,10 +188,7 @@ async function checkRuntime(
   })
 }
 
-function shouldPreserveConfiguredOnFallback(
-  runtime: RuntimeReadinessResult,
-  state: DesktopOnboardingState
-): boolean {
+function shouldPreserveConfiguredOnFallback(runtime: RuntimeReadinessResult, state: DesktopOnboardingState): boolean {
   // A fallback result means both runtime probes were non-authoritative
   // (transport timeout/disconnect). Keep a previously verified configured
   // state instead of forcing the blocking onboarding overlay.
@@ -527,6 +520,7 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
   }
 
   const state = $desktopOnboarding.get()
+
   if (shouldPreserveConfiguredOnFallback(runtime, state)) {
     // Gateway probes timed out but the user was already configured — don't
     // downgrade to the blocking onboarding overlay. Surface a non-blocking
@@ -536,7 +530,8 @@ export async function refreshOnboarding(ctx: OnboardingContext) {
       id: 'runtime-not-ready',
       kind: 'error',
       title: 'Runtime not ready',
-      message: 'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
+      message:
+        'Hermes Desktop could not verify the running backend on startup. Some features may be unavailable until the gateway is reachable.'
     })
 
     return false

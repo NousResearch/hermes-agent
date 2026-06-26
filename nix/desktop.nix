@@ -54,6 +54,14 @@ let
           
           npm exec tsc -b
           npm exec vite build
+
+          # Bundle the electron main into a single self-contained file so
+          # the nix output doesn't need node_modules/.  simple-git (the only
+          # external runtime dep of the electron main) gets inlined; electron
+          # and node-pty are external (provided by the runtime / native-deps).
+          # preload.cjs stays separate — Electron loads it via __dirname, not
+          # require(), so it must remain a standalone file.
+          node scripts/bundle-electron-main.mjs
         popd
 
         runHook postBuild

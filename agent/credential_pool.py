@@ -11,6 +11,7 @@ import uuid
 import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
@@ -447,6 +448,63 @@ def get_pool_strategy(provider: str) -> str:
 DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL = 1
 
 
+def _write_through_provider_state_to_global_root(
+    provider_id: str, state: Dict[str, Any]
+) -> None:
+    """Persist a rotated OAuth ``state`` into the global-root auth.json.
+
+    Best-effort write-through for the multi-profile rotation hazard
+    (#48415 / #43589): nous, openai-codex, and xai-oauth rotate the
+    refresh_token on refresh, so when a profile pool refresh rotates a grant
+    it resolved from the root fallback, the rotated chain must land back in
+    root. Otherwise root keeps a now-revoked refresh token and every other
+    profile reading the stale root grant dies with ``refresh_token_reused`` /
+    ``invalid_grant`` once its access token expires.
+
+    Only updates ``providers.<provider_id>`` in the root store; never touches
+    the profile store (the caller already saved that). Swallows all errors — a
+    failed write-through degrades to the pre-existing behavior (root stale), it
+    must never break the profile's own successful save. Mirrors
+    ``hermes_cli.auth._write_through_xai_oauth_to_global_root`` (which covers
+    the non-pool xAI refresh path) for the credential-pool refresh path.
+    """
+    try:
+        global_path = auth_mod._global_auth_file_path()
+    except Exception:
+        return
+    if global_path is None:
+        # Classic mode (profile == root); the profile save already hit root.
+        return
+    # Seat belt: under pytest, refuse to write the real user's
+    # ~/.hermes/auth.json even when HERMES_HOME points at a profile path
+    # (mirrors the read-side guard in _load_global_auth_store). Uses the
+    # unmodified HOME env, not Path.home() which fixtures may monkeypatch.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env:
+            real_root = Path(real_home_env) / ".hermes" / "auth.json"
+            try:
+                if global_path.resolve(strict=False) == real_root.resolve(strict=False):
+                    return
+            except Exception:
+                return
+    try:
+        if global_path.exists():
+            global_store = _load_auth_store(global_path)
+        else:
+            global_store = {}
+        if not isinstance(global_store, dict):
+            return
+        _store_provider_state(global_store, provider_id, dict(state), set_active=False)
+        auth_mod._save_auth_store(global_store, global_path)
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.debug(
+            "%s pool refresh: write-through to global root failed: %s",
+            provider_id,
+            exc,
+        )
+
+
 class CredentialPool:
     def __init__(self, provider: str, entries: List[PooledCredential]):
         self.provider = provider
@@ -800,6 +858,28 @@ class CredentialPool:
         try:
             with _auth_store_lock():
                 auth_store = _load_auth_store()
+                # Decide BEFORE writing whether this profile is reading the
+                # grant from the global root (no own providers.<id> block) vs.
+                # genuinely shadowing it. A pool refresh rotates single-use
+                # OAuth refresh tokens, so a profile that resolved the grant
+                # from root MUST write the rotated chain back to root too —
+                # otherwise root keeps a revoked refresh token and every other
+                # profile reading the stale root grant dies with
+                # refresh_token_reused / invalid_grant once its access token
+                # expires. This mirrors the xAI write-through in
+                # hermes_cli.auth._save_xai_oauth_tokens (#43589); the pool
+                # refresh path is the Codex/xAI analog reported in #48415.
+                _wt_provider_id = {
+                    "nous": "nous",
+                    "openai-codex": "openai-codex",
+                    "xai-oauth": "xai-oauth",
+                }.get(self.provider)
+                write_through_to_root = bool(_wt_provider_id) and not (
+                    isinstance(auth_store.get("providers"), dict)
+                    and isinstance(
+                        auth_store["providers"].get(_wt_provider_id), dict
+                    )
+                )
                 if self.provider == "nous":
                     state = _load_provider_state(auth_store, "nous")
                     if state is None:
@@ -855,6 +935,10 @@ class CredentialPool:
                     return
 
                 _save_auth_store(auth_store)
+                if write_through_to_root and _wt_provider_id:
+                    _write_through_provider_state_to_global_root(
+                        _wt_provider_id, state
+                    )
         except Exception as exc:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 

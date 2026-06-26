@@ -121,11 +121,17 @@ describe('heapdump retention guard (#21767)', () => {
   })
 
   afterEach(() => {
-    if (savedDir === undefined) {delete process.env.HERMES_HEAPDUMP_DIR}
-    else {process.env.HERMES_HEAPDUMP_DIR = savedDir}
+    if (savedDir === undefined) {
+      delete process.env.HERMES_HEAPDUMP_DIR
+    } else {
+      process.env.HERMES_HEAPDUMP_DIR = savedDir
+    }
 
-    if (savedMax === undefined) {delete process.env.HERMES_HEAPDUMP_MAX_BYTES}
-    else {process.env.HERMES_HEAPDUMP_MAX_BYTES = savedMax}
+    if (savedMax === undefined) {
+      delete process.env.HERMES_HEAPDUMP_MAX_BYTES
+    } else {
+      process.env.HERMES_HEAPDUMP_MAX_BYTES = savedMax
+    }
 
     rmSync(dir, { force: true, recursive: true })
   })

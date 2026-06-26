@@ -70,11 +70,19 @@ class RelayTransport(Protocol):
         """
         ...
 
-    async def send_outbound(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_outbound(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Carry an outbound action (send/edit/typing) to the connector.
 
         Returns a result dict; for ``op == "send"`` it carries
         ``success`` and optionally ``message_id`` / ``error``.
+
+        ``platform`` (Phase 1.5) tags WHICH fronted platform this reply targets,
+        carried on the OutboundFrame envelope so a gateway fronting N platforms
+        egresses each reply through the right sender (the transport resolves the
+        matching advertised botId). Omitted ⇒ the connector falls back to the
+        session's default platform (single-platform deploys unchanged).
         """
         ...
 
@@ -106,7 +114,9 @@ class RelayTransport(Protocol):
         """
         ...
 
-    async def send_follow_up(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    async def send_follow_up(
+        self, action: Dict[str, Any], *, platform: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Act on a shared-identity capability bound to a session (A2 outbound).
 
         Some platforms hand the connector a credential that acts on the SHARED

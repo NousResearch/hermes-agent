@@ -1000,6 +1000,88 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
+    def test_run_job_suppresses_empty_turn_explainer(self, tmp_path):
+        """An empty model turn becomes the '⚠️ No reply…' explainer (#34452).
+        For cron, that abnormal-empty explainer must be treated as empty so it
+        is suppressed instead of delivered (Manfredi's Telegram symptom)."""
+        from run_agent import AIAgent
+        explainer = AIAgent._format_turn_completion_explanation("empty_response_exhausted")
+        assert explainer  # sanity: the explainer text exists
+        job = {"id": "test-job", "name": "test", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent._format_turn_completion_explanation = (
+                AIAgent._format_turn_completion_explanation
+            )
+            mock_agent.run_conversation.return_value = {
+                "final_response": explainer,
+                "turn_exit_reason": "empty_response_exhausted",
+            }
+            mock_agent_cls.return_value = mock_agent
+            # Patch the class staticmethod the scheduler calls.
+            mock_agent_cls._format_turn_completion_explanation = (
+                AIAgent._format_turn_completion_explanation
+            )
+
+            success, output, final_response, error = run_job(job)
+
+        # The explainer is stripped to empty inside run_job; the downstream
+        # firing body (process_job) then suppresses delivery and marks the run
+        # a soft failure via its empty-response guard.  Here we assert the
+        # load-bearing transform: the "⚠️ No reply…" text never reaches delivery.
+        assert final_response == ""
+
+    def test_run_job_real_report_on_empty_reason_still_delivers(self, tmp_path):
+        """Defensive: a real report must NOT be suppressed even if the result
+        carries an abnormal turn_exit_reason — only the exact explainer text is."""
+        from run_agent import AIAgent
+        job = {"id": "test-job", "name": "test", "prompt": "hello"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {
+                "final_response": "Daily report: 4 PRs merged.",
+                "turn_exit_reason": "empty_response_exhausted",
+            }
+            mock_agent_cls.return_value = mock_agent
+            mock_agent_cls._format_turn_completion_explanation = (
+                AIAgent._format_turn_completion_explanation
+            )
+
+            success, output, final_response, error = run_job(job)
+
+        assert final_response == "Daily report: 4 PRs merged."
+        assert success is True
+
     def test_run_job_titles_cron_session_from_job_not_important_hint(self, tmp_path):
         # The cron session's first message is the injected "[IMPORTANT: …]"
         # hint, which used to surface as the sidebar/history row label. run_job
@@ -2295,6 +2377,52 @@ class TestSilentDelivery:
             from cron.scheduler import tick
             tick(verbose=False)
         deliver_mock.assert_not_called()
+
+    def test_bracketless_silent_variants_suppress(self):
+        """Bracketless near-markers the model emits when it drops brackets
+        must still suppress delivery (#51438, #46917)."""
+        from cron.scheduler import tick
+        for marker in ("SILENT", "NO_REPLY", "NO REPLY", "no_reply"):
+            with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+                 patch("cron.scheduler.run_job", return_value=(True, "# output", marker, None)), \
+                 patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+                 patch("cron.scheduler._deliver_result") as deliver_mock, \
+                 patch("cron.scheduler.mark_job_run"):
+                tick(verbose=False)
+            deliver_mock.assert_not_called()
+
+    def test_report_quoting_marker_mid_sentence_still_delivers(self):
+        """A genuine report that merely mentions the token mid-sentence must
+        be delivered — the old substring check wrongly swallowed it."""
+        response = "I considered staying [SILENT] but here is the summary: 3 items merged."
+        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run"):
+            from cron.scheduler import tick
+            tick(verbose=False)
+        deliver_mock.assert_called_once()
+
+    def test_is_cron_silence_response_contract(self):
+        """Direct behavior contract for the cron silence matcher."""
+        from cron.scheduler import _is_cron_silence_response as sil
+        # Suppress: bare/bracketed/bracketless tokens, prefix, trailing-line.
+        assert sil("[SILENT]")
+        assert sil("[silent] nothing new")
+        assert sil("[SILENT] No changes detected")
+        assert sil("2 deals filtered.\n\n[SILENT]")
+        assert sil("SILENT")
+        assert sil("NO_REPLY")
+        assert sil("NO REPLY")
+        assert sil("Summary.\nSILENT")
+        # Deliver: real content, mid-sentence quotes, bare words, junk.
+        assert not sil("Daily report: 4 PRs merged.")
+        assert not sil("I stayed [SILENT] but here is the report: 3 items.")
+        assert not sil("Silent retry succeeded after 2 attempts.")
+        assert not sil("[SILENT")  # malformed open-bracket is not the sentinel
+        assert not sil("")
+        assert not sil("   \n\t ")
 
     def test_failed_job_always_delivers(self):
         """Failed jobs deliver regardless of [SILENT] in output."""

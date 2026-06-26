@@ -36,9 +36,7 @@ describe('model visibility', () => {
   it('does not re-add models from a provider that already has stored choices', () => {
     const stored = new Set([modelVisibilityKey('local-ollama', 'qwen3:latest')])
 
-    const visible = effectiveVisibleKeys(stored, [
-      provider('local-ollama', ['qwen3:latest', 'llama3.2:latest'])
-    ])
+    const visible = effectiveVisibleKeys(stored, [provider('local-ollama', ['qwen3:latest', 'llama3.2:latest'])])
 
     expect(visible.has(modelVisibilityKey('local-ollama', 'qwen3:latest'))).toBe(true)
     expect(visible.has(modelVisibilityKey('local-ollama', 'llama3.2:latest'))).toBe(false)
@@ -63,10 +61,7 @@ describe('model visibility', () => {
 
   it('restores model when toggling on after hiding all', () => {
     // Simulates: user hid all "nous" models, then toggles one back on.
-    const stored = new Set([
-      emptyProviderSentinelKey('nous'),
-      modelVisibilityKey('ollama', 'qwen3:latest')
-    ])
+    const stored = new Set([emptyProviderSentinelKey('nous'), modelVisibilityKey('ollama', 'qwen3:latest')])
 
     // After toggle: sentinel removed, one model added.
     const afterToggle = new Set(stored)

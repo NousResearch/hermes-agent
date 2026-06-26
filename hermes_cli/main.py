@@ -4249,6 +4249,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_project(args):
+    """Manage projects (named, multi-folder workspaces)."""
+    from hermes_cli.projects_cmd import projects_command
+
+    return projects_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -8317,13 +8324,12 @@ def _run_pre_update_backup(args) -> None:
         cfg = {}
 
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
-    # The default config ships with ``pre_update_backup: true`` (see
-    # ``hermes_cli/config.py``). Fall back to true if the key is missing
-    # (e.g. a user has an older custom config without the field). The
-    # ``False`` default from before #48200 caused silent data loss when
-    # an update step computed a wrong path — the cost of a few minutes
-    # of zip time per update is negligible compared to the alternative.
-    enabled = updates_cfg.get("pre_update_backup", True)
+    # The default config ships with ``pre_update_backup: false`` (see
+    # ``hermes_cli/config.py``). Fall back to false if the key is missing
+    # so the default behaviour matches the shipped config: zipping a large
+    # HERMES_HOME can add minutes to every update. Users who want the
+    # #48200 safety net opt in via the config knob or ``--backup``.
+    enabled = updates_cfg.get("pre_update_backup", False)
     keep = updates_cfg.get("backup_keep", 5)
 
     if not enabled and not force_backup:
@@ -9594,8 +9600,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Safety net: config-version migrations have been observed to leave
         # cron/jobs.json valid-but-empty, silently dropping every scheduled
-        # job (issue #34600). If the live file is now empty while the
-        # pre-update snapshot held jobs, restore it and warn loudly.
+        # job (issue #34600). The desktop scheduler can also overwrite with
+        # its own small set, causing partial loss (issue #52144). If the
+        # live file now has fewer jobs than the pre-update snapshot, restore
+        # it and warn loudly.
         try:
             from hermes_cli.backup import restore_cron_jobs_if_emptied
 
@@ -9603,7 +9611,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if cron_restore:
                 print()
                 print(
-                    "  ⚠️  cron/jobs.json was emptied during this update — "
+                    "  ⚠️  cron/jobs.json lost jobs during this update — "
                     f"restored {cron_restore['job_count']} job(s) from "
                     f"pre-update snapshot {cron_restore['snapshot_id']}."
                 )
@@ -11579,8 +11587,9 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile", "proxy",
+        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
+        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
+        "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -12104,6 +12113,21 @@ def main():
     # =========================================================================
     build_model_parser(subparsers, cmd_model=cmd_model)
 
+    from hermes_cli.moa_cmd import cmd_moa
+
+    moa_parser = subparsers.add_parser(
+        "moa",
+        help="Configure Mixture of Agents provider/model slots",
+        description="Configure the provider/model set used by /moa <prompt>.",
+    )
+    moa_subparsers = moa_parser.add_subparsers(dest="moa_command")
+    moa_subparsers.add_parser("list", aliases=["ls"], help="Show current MoA model slots")
+    moa_configure = moa_subparsers.add_parser("configure", aliases=["config"], help="Interactively pick MoA models")
+    moa_configure.add_argument("name", nargs="?", help="Preset name to create or update")
+    moa_delete = moa_subparsers.add_parser("delete", aliases=["rm"], help="Delete a MoA preset")
+    moa_delete.add_argument("name", help="Preset name to delete")
+    moa_parser.set_defaults(func=cmd_moa)
+
     # =========================================================================
     # fallback command — manage the fallback provider chain
     # =========================================================================
@@ -12316,6 +12340,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # project command — named, multi-folder workspaces
+    # =========================================================================
+    from hermes_cli.projects_cmd import build_parser as _build_project_parser
+
+    project_parser = _build_project_parser(subparsers)
+    project_parser.set_defaults(func=cmd_project)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

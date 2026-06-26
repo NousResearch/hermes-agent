@@ -1,0 +1,25 @@
+name: ai-partner-os
+version: 0.2.0
+description: "Hermes GUI bridge for AI Partner OS — avatar UI, Hermes LLM/TTS (VOICEVOX/irodori), LAN actions."
+author: "Hermes local plugin"
+kind: standalone
+platforms:
+  - windows
+provides_tools:
+  - ai_partner_os_status
+  - ai_partner_os_configure
+  - ai_partner_os_connect_gui
+  - ai_partner_os_start
+  - ai_partner_os_stop
+  - ai_partner_os_enable_lan
+  - ai_partner_os_discover_lan
+  - ai_partner_os_tts_status
+  - ai_partner_os_start_tts
+  - ai_partner_os_chat
+  - ai_partner_os_gui_say
+  - ai_partner_os_speak
+  - ai_partner_os_action
+  - ai_partner_os_bridge_start
+  - ai_partner_os_bridge_stop
+provides_cli:
+  - ai-partner-os

@@ -49,6 +49,13 @@ def _clean_slot(slot: Any) -> dict[str, str] | None:
     model = str(slot.get("model") or "").strip()
     if not provider or not model:
         return None
+    # MoA is a virtual provider whose presets are themselves MoA runs. Allowing
+    # one as a reference or aggregator slot would create a recursive MoA tree
+    # (the runtime guards in moa_loop.py skip references / raise on aggregators,
+    # but that surfaces only mid-turn). Reject it here so it can never be saved:
+    # an invalid slot is dropped, falling back to the preset's defaults.
+    if provider.lower() == "moa":
+        return None
     return {"provider": provider, "model": model}
 
 

@@ -134,3 +134,54 @@ def test_build_moa_turn_prompt_encodes_one_shot_default_preset():
     assert decoded_prompt == "write a file then inspect it"
     assert cfg is not None
     assert cfg["reference_models"] == DEFAULT_MOA_REFERENCE_MODELS
+
+
+def test_moa_provider_rejected_as_reference_slot():
+    """A reference slot pointing at the moa virtual provider is dropped, so a
+    preset cannot recursively reference another MoA run."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [
+                        {"provider": "moa", "model": "default"},
+                        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+                    ],
+                    "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                }
+            }
+        }
+    )
+
+    refs = cfg["presets"]["p"]["reference_models"]
+    assert {"provider": "moa", "model": "default"} not in refs
+    assert refs == [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}]
+
+
+def test_moa_provider_rejected_as_aggregator_slot():
+    """An aggregator slot pointing at the moa virtual provider is dropped and
+    falls back to the default aggregator, never a recursive MoA aggregator."""
+    cfg = normalize_moa_config(
+        {
+            "presets": {
+                "p": {
+                    "reference_models": [{"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"}],
+                    "aggregator": {"provider": "moa", "model": "default"},
+                }
+            }
+        }
+    )
+
+    agg = cfg["presets"]["p"]["aggregator"]
+    assert agg["provider"] != "moa"
+    assert agg == DEFAULT_MOA_AGGREGATOR
+
+
+def test_moa_provider_rejected_case_insensitive():
+    """Case variants like ``MoA`` are also blocked."""
+    cfg = normalize_moa_config(
+        {"presets": {"p": {"aggregator": {"provider": "MoA", "model": "default"}}}}
+    )
+
+    assert cfg["presets"]["p"]["aggregator"]["provider"] != "moa"
+    assert cfg["presets"]["p"]["aggregator"] == DEFAULT_MOA_AGGREGATOR

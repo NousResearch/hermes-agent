@@ -4507,3 +4507,111 @@ class TestCompressionFallbackContextFilter:
         # Empty / unknown tasks have no minimum
         assert _task_minimum_context_length("") is None
         assert _task_minimum_context_length(None) is None
+
+    # ── L6: payment fallback chain (auto path terminal layer) ─────────
+
+    def test_payment_fallback_skips_too_small_for_compression(self, monkeypatch):
+        """_try_payment_fallback must skip candidates whose context window
+        is below the task minimum, mirroring the screening in
+        _try_configured_fallback_chain and _try_main_fallback_chain."""
+        from agent.auxiliary_client import _try_payment_fallback
+
+        small_client = MagicMock(name="small_client")
+        large_client = MagicMock(name="large_client")
+
+        chain_calls = iter([
+            (small_client, "tiny-8k"),
+            (large_client, "huge-1m"),
+        ])
+
+        def fake_ctx(provider, model, base_url="", api_key=""):
+            return {"tiny-8k": 8192, "huge-1m": 1_048_576}.get(model, 256_000)
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_provider_chain",
+            lambda: [("small-prov", lambda: next(chain_calls)),
+                     ("large-prov", lambda: next(chain_calls))],
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._is_provider_unhealthy",
+            lambda label: False,
+        )
+
+        with patch("agent.auxiliary_client._candidate_context_window",
+                   side_effect=fake_ctx):
+            client, model, label = _try_payment_fallback(
+                "failed-prov", task="compression")
+
+        assert client is large_client, (
+            f"Expected large_client (1M context), got {client}. "
+            "Payment fallback returned an undersized candidate without "
+            "screening by context window.")
+        assert model == "huge-1m"
+        assert "large-prov" in label
+
+    # ── L7: main-agent model fallback (explicit-provider terminal layer) ─
+
+    def test_main_agent_fallback_skips_too_small_for_compression(self, monkeypatch):
+        """_try_main_agent_model_fallback must reject the main model when
+        its context window is below the task minimum."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        small_client = MagicMock(name="small_main")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider",
+            lambda: "local-ollama",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model",
+            lambda: "small-32k",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._is_provider_unhealthy",
+            lambda label: False,
+        )
+
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(small_client, "small-32k")), \
+             patch("agent.auxiliary_client._candidate_context_window",
+                   return_value=32_000):
+            client, model, label = _try_main_agent_model_fallback(
+                "openrouter", task="compression")
+
+        assert client is None, (
+            f"Expected None (32K < 64K minimum), got {client}. "
+            "Main-agent fallback returned an undersized model without "
+            "screening by context window.")
+        assert model is None
+        assert label == ""
+
+    def test_main_agent_fallback_accepts_large_model_for_compression(self, monkeypatch):
+        """_try_main_agent_model_fallback should return the main model
+        when its context window meets the task minimum."""
+        from agent.auxiliary_client import _try_main_agent_model_fallback
+
+        large_client = MagicMock(name="large_main")
+
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_provider",
+            lambda: "anthropic",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._read_main_model",
+            lambda: "claude-sonnet-4-6",
+        )
+        monkeypatch.setattr(
+            "agent.auxiliary_client._is_provider_unhealthy",
+            lambda label: False,
+        )
+
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                   return_value=(large_client, "claude-sonnet-4-6")), \
+             patch("agent.auxiliary_client._candidate_context_window",
+                   return_value=200_000):
+            client, model, label = _try_main_agent_model_fallback(
+                "openrouter", task="compression")
+
+        assert client is large_client
+        assert model == "claude-sonnet-4-6"
+        assert "main-agent" in label

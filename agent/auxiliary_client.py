@@ -3132,6 +3132,7 @@ def _try_payment_fallback(
     skip_chain_labels = {_alias_to_label.get(s, s) for s in skip_labels}
 
     tried = []
+    min_ctx = _task_minimum_context_length(task)
     for label, try_fn in _get_provider_chain():
         if label in skip_chain_labels:
             continue
@@ -3141,6 +3142,15 @@ def _try_payment_fallback(
             continue
         client, model = try_fn()
         if client is not None:
+            if min_ctx is not None and model:
+                fb_ctx = _candidate_context_window(label, model)
+                if fb_ctx is not None and fb_ctx < min_ctx:
+                    logger.info(
+                        "Auxiliary %s: skipping %s (%s context=%d < min=%d), continuing chain",
+                        task, label, model, fb_ctx, min_ctx,
+                    )
+                    tried.append(f"{label} (context too small: {fb_ctx}<{min_ctx})")
+                    continue
             logger.info(
                 "Auxiliary %s: %s on %s — falling back to %s (%s)",
                 task or "call", reason, failed_provider, label, model or "default",
@@ -3197,11 +3207,21 @@ def _try_main_agent_model_fallback(
         return None, None, ""
 
     label = f"main-agent({main_provider})"
+    effective_model = resolved_model or main_model
+    min_ctx = _task_minimum_context_length(task)
+    if min_ctx is not None and effective_model:
+        fb_ctx = _candidate_context_window(main_provider, effective_model)
+        if fb_ctx is not None and fb_ctx < min_ctx:
+            logger.info(
+                "Auxiliary %s: skipping %s (%s context=%d < min=%d)",
+                task or "call", label, effective_model, fb_ctx, min_ctx,
+            )
+            return None, None, ""
     logger.info(
         "Auxiliary %s: %s on %s — falling back to main agent model %s (%s)",
-        task or "call", reason, failed_provider, label, resolved_model or main_model,
+        task or "call", reason, failed_provider, label, effective_model,
     )
-    return client, resolved_model or main_model, label
+    return client, effective_model, label
 
 
 # ── Context-window screening for runtime fallback chains (issue #52392) ──

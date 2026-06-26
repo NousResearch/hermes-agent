@@ -6484,8 +6484,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Keys that can safely live-apply without restart
         _LIVE_PREFIXES = ("display.", "compression.", "timezone")
         # Everything else needs a restart (conservative)
-        _RESTART_PREFIXES = ("terminal.", "model.", "mcp_servers.",
-                             "browser.", "memory.", "delegation.", "approvals.")
+        _RESTART_PREFIXES = ("terminal.", "model.", "agent.", "mcp_servers.",
+                             "browser.", "memory.", "delegation.", "approvals.",
+                             "auxiliary.")
 
         needs_restart = any(key_path.startswith(p) for p in _RESTART_PREFIXES)
         can_live = any(key_path.startswith(p) for p in _LIVE_PREFIXES)

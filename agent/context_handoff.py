@@ -148,6 +148,30 @@ def _render_markdown(payload: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def load_latest_context_handoff_prompt(*, max_chars: int = 12_000) -> str:
+    """Return the latest handoff markdown block for prompt injection, if present."""
+    try:
+        path = get_hermes_home() / "handoffs" / "latest.md"
+        if not path.is_file():
+            return ""
+        content = path.read_text(encoding="utf-8", errors="replace").strip()
+        if not content:
+            return ""
+        if len(content) > max_chars:
+            content = content[:max_chars] + "\n…[handoff truncated]"
+        return (
+            "# Previous-session handoff\n\n"
+            "A local compression handoff exists from a previous session. Treat it "
+            "as recovery context, not as proof of completion. Before continuing "
+            "work from it, verify current git / PR / CI / deployment state with "
+            "tools. Do not trust lossy compression summaries alone.\n\n"
+            f"{content}"
+        )
+    except Exception as exc:
+        logger.debug("latest context handoff load failed: %s", exc)
+        return ""
+
+
 def write_context_handoff(
     agent: Any,
     messages: list[dict[str, Any]] | list[Any],

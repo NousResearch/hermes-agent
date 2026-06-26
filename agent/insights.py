@@ -181,7 +181,7 @@ class InsightsEngine:
         }
 
     # =========================================================================
-    # Telemetry (observability) — from the tel_* tables (local plane)
+    # Telemetry (observability) — from the tel_* tables (local telemetry)
     # =========================================================================
 
     def _compute_telemetry(self, cutoff: float) -> Dict[str, Any]:
@@ -1067,7 +1067,7 @@ class InsightsEngine:
                 lines.append(f"  {ts['label']:<20} {ts['value']:<18} ({ts['date']}, {ts['session_id']})")
             lines.append("")
 
-        # Telemetry / observability (local plane) — only when data exists
+        # Telemetry / observability (local telemetry) — only when data exists
         tel = report.get("telemetry") or {}
         if tel:
             self._append_telemetry_section(lines, tel)

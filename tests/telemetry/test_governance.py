@@ -62,7 +62,7 @@ def test_export_block_reflects_trajectories_gate(home, capsys):
     c.setdefault("telemetry", {})["trajectories"] = {"enabled": True}
     save_config(c)
     out = _status(capsys)
-    assert "Content export: on (trajectories plane)" in out
+    assert "Content export: on (trajectories enabled)" in out
 
 
 def test_token_env_not_set_shows_not_set(home, capsys):

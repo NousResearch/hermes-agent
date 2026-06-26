@@ -6,7 +6,7 @@ Two independent controls:
     disables this. Wraps ``agent/redact.py::redact_sensitive_text(force=True)``.
 
   * Whether message bodies, reasoning, and raw tool arguments are exportable at all is
-    governed by the trajectories plane (``telemetry.trajectories.enabled``, default
+    governed by the trajectories setting (``telemetry.trajectories.enabled``, default
     off, admin-pinnable), not by a redaction mode. With trajectories off, content is
     dropped. With it on, content is exportable and ``content_redaction`` (none|pii)
     controls how much is scrubbed; secrets are still always stripped.
@@ -62,7 +62,7 @@ def redact_for_export(
     """Redact a single content string for export.
 
     Secrets are ALWAYS stripped. Then PII is stripped when content_mode is 'pii'.
-    Callers gate *whether content is exported at all* via the trajectories plane
+    Callers gate *whether content is exported at all* via telemetry.trajectories
     (see ``content_export_enabled``); this function only scrubs content that the
     caller has already decided to export.
     """
@@ -75,7 +75,7 @@ def redact_for_export(
 
 
 def content_export_enabled(config: Optional[Dict[str, Any]]) -> bool:
-    """True only when the trajectories plane is explicitly enabled.
+    """True only when telemetry.trajectories is explicitly enabled.
 
     This is the consent gate for exporting message bodies / reasoning / raw tool
     args. Default off. Admin-pinnable via managed scope (telemetry.trajectories.enabled).

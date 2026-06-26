@@ -1,4 +1,4 @@
-"""Local-plane telemetry emitter: fire-and-forget queue + background writer.
+"""Local telemetry emitter: fire-and-forget queue + background writer.
 
 The emitter is the single seam between instrumentation (the telemetry plugin's hook
 callbacks) and durable storage. Its contract is the hot-path invariant:
@@ -16,7 +16,7 @@ Mechanism:
   * The writer uses its own sqlite connection to state.db, separate from SessionDB,
     so telemetry writes never contend with or corrupt session writes.
 
-Local plane only. Nothing here uploads anywhere.
+Local telemetry only. Nothing here uploads anywhere.
 """
 
 from __future__ import annotations

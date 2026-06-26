@@ -1,13 +1,13 @@
-"""Telemetry plugin — wires Hermes lifecycle hooks to the local-plane emitter.
+"""Telemetry plugin — wires Hermes lifecycle hooks to the local telemetry emitter.
 
 This is the *only* instrumentation seam. It registers observational hooks (which core
-already invokes fail-open) and translates each into a typed local-plane telemetry
-event handed to ``agent.telemetry.emitter``. There are zero edits to core call sites:
+already invokes fail-open) and translates each into a typed local telemetry event
+handed to ``agent.telemetry.emitter``. There are zero edits to core call sites:
 the hooks already carry model/provider/usage/duration/tool data.
 
 Everything here is best-effort and fail-open — a raised exception in a hook callback is
 swallowed by core, and we additionally guard each callback so a telemetry bug can never
-disturb a session. No content, no network: local plane only.
+disturb a session. No content, no network: local telemetry only.
 
 Hooks consumed:
   on_session_start    -> begin a run context (trace_id/run_id), buffer a run row

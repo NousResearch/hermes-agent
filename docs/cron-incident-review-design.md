@@ -29,14 +29,14 @@
 
 **File:** `cron/jobs.py`
 
-- `CRON_DIR = get_hermes_home() / "cron"` (line 48) — always uses `get_hermes_home()`, never raw `HERMES_HOME` env. Required for profile isolation.
-- `JOBS_FILE = CRON_DIR / "jobs.json"` (line 49) — single-file JSON store; cross-process locking via `_jobs_lock()` (line 113) which combines `fcntl.flock` on Unix / `msvcrt.locking` on Windows with a threading `RLock` for in-process safety.
-- `OUTPUT_DIR = CRON_DIR / "output"` (line 50) — per-run output stored at `OUTPUT_DIR/{job_id}/{timestamp}.md`.
-- `save_job_output(job_id, output)` (line ~598) — atomic write + fsync, permissions 0600, validates `job_id` has no path traversal.
-- `mark_job_run(job_id, success, error, delivery_error)` (line ~504) — independently tracks `last_error` (job execution failure) and `last_delivery_error` (channel delivery failure). These are already separate fields.
-- `create_job()` (line ~167) — job fields include `last_error`, `last_delivery_error`, `last_status` ("ok"/"error"), `state` ("scheduled"/"paused"/"completed"/"error"), `repeat`, `deliver`, `no_agent`, `script`, `enabled_toolsets`.
-- `advance_next_run(job_id)` (line ~435) — pre-advances before execution for at-most-once semantics on recurring jobs.
-- `get_due_jobs()` (line ~395) — grace window handling; fast-forwards stale missed runs.
+- `HERMES_DIR = get_hermes_home().resolve()` and `CRON_DIR = HERMES_DIR / "cron"` (lines 52–53) — always uses the profile-resolved Hermes home, never a raw cron path. Required for profile isolation.
+- `JOBS_FILE = CRON_DIR / "jobs.json"` (line 54) — single-file JSON store; cross-process locking via `_jobs_lock()` (line 119) which combines `fcntl.flock` on Unix / `msvcrt.locking` on Windows with a threading `RLock` for in-process safety.
+- `OUTPUT_DIR = CRON_DIR / "output"` (line 75) — per-run output stored at `OUTPUT_DIR/{job_id}/{timestamp}.md`.
+- `save_job_output(job_id, output)` (line 1548) — atomic write + fsync, permissions 0600, validates `job_id` has no path traversal.
+- `mark_job_run(job_id, success, error, delivery_error)` (line 1173) — independently tracks `last_error` (job execution failure) and `last_delivery_error` (channel delivery failure). These are already separate fields.
+- `create_job()` (line 774) — job fields include `last_error`, `last_delivery_error`, `last_status` ("ok"/"error"), `state` ("scheduled"/"paused"/"completed"/"error"), `repeat`, `deliver`, `no_agent`, `script`, `enabled_toolsets`.
+- `advance_next_run(job_id)` (line 1249) — pre-advances before execution for at-most-once semantics on recurring jobs.
+- `get_due_jobs()` (line 1343) — grace window handling; fast-forwards stale missed runs.
 
 **Key invariant for CIR:** `last_error` and `last_delivery_error` are already tracked independently. CIR adds `last_incident_id` and `last_incident_at` to the job dict — no schema collision.
 
@@ -50,22 +50,23 @@
 tick()
   └─ get_due_jobs()         → jobs.py
   └─ advance_next_run()     → jobs.py
-  └─ _process_job(job)      → scheduler.py (end-to-end wrapper)
+  └─ _process_job(job)      → scheduler.py thin wrapper
+       └─ run_one_job(job)  → scheduler.py end-to-end pipeline
        ├─ run_job(job)       → (success, output_doc, final_response, error_msg)
        ├─ save_job_output()  → jobs.py
        ├─ _deliver_result()  → None (success) | str (error)
        └─ mark_job_run()     → jobs.py
 ```
 
-`tick()` (line ~1847): file-locked, partitions due jobs into parallel pool (ThreadPoolExecutor, for non-workdir jobs) and sequential pool (single thread, for workdir jobs — because `os.environ` mutation is not thread-safe).
+`tick()` (line 2830): file-locked, partitions due jobs into parallel pool (ThreadPoolExecutor, for non-workdir jobs) and sequential pool (single thread, for workdir jobs — because `os.environ` mutation is not thread-safe).
 
-`run_job(job) → tuple[bool, str, str, Optional[str]]` (line ~1334):
+`run_job(job) → tuple[bool, str, str, Optional[str]]` (line 1962):
 - Returns `(success, full_output_doc, final_response, error_message)`
 - `full_output_doc` is what gets stored; `final_response` is what gets delivered
 
-`_process_job(job)` (line ~1780): calls `run_job()`, then `save_job_output()`, then `_deliver_result()`, then `mark_job_run()`. CIR hooks **after** `run_job()` returns and **before** `mark_job_run()` persists state.
+`_process_job(job)` (line 2907) is only a thin wrapper that calls `run_one_job(job)`. `run_one_job(job)` (line 2748) owns the execute → save → deliver → mark pipeline: it calls `run_job()` (line 2764), `save_job_output()`, `_deliver_result()`, and `mark_job_run()` (line 2803). CIR hooks in `run_one_job()` **after** `run_job()` returns and **before** `mark_job_run()` persists state, so it can see both job execution errors and delivery errors.
 
-`_deliver_result(job, content, adapters=None, loop=None) → Optional[str]` (line ~864):
+`_deliver_result(job, content, adapters=None, loop=None) → Optional[str]` (line 1060):
 - Returns `None` on success, error string on failure
 - Resolves delivery targets via `_resolve_delivery_targets(job)` → list of `{platform, chat_id, thread_id}` dicts
 - Prefers live adapter (dispatches via asyncio event loop); falls back to standalone HTTP adapter
@@ -74,7 +75,7 @@ tick()
 ### 2.3 Script / No-Agent Boundary
 
 `run_job()` checks `job.get("no_agent")` near the top of the function. If `True`:
-- Calls `_run_job_script(script_path)` directly (line ~1360)
+- Calls `_run_job_script(script_path)` directly
 - `_run_job_script()`: validates script is under `get_hermes_home() / "scripts"` only; runs bash for `.sh`/`.bash`, Python otherwise; applies `redact_sensitive_text()` to stdout/stderr
 - **No AIAgent is constructed** — this path produces a raw script output string, not an LLM-generated summary
 - CIR must handle `no_agent=True` jobs: the failure incident still gets captured, but the "agent review" trigger (dv9.6) should be skipped or made opt-in
@@ -82,14 +83,14 @@ tick()
 ### 2.4 Agent-Run Boundary
 
 When `no_agent` is false/absent, `run_job()`:
-1. Assembles prompt via `_build_job_prompt(job, prerun_script)` (line ~740)
+1. Assembles prompt via `_build_job_prompt(job, prerun_script)`
 2. `_build_job_prompt()` calls `_scan_assembled_cron_prompt()` — raises `CronPromptInjectionBlocked` on hit; this is a failure CIR must catch and classify
 3. Constructs `from run_agent import AIAgent` (lazy import inside `run_job`)
 4. Instantiates `AIAgent` with `platform="cron"`, `skip_memory=True`, `quiet_mode=True`
-5. Sets `HERMES_CRON_SESSION=1` env var for the subprocess
+5. Sets `os.environ["HERMES_CRON_SESSION"] = "1"` process-wide for the lifetime of the scheduler process, as the current scheduler comment states
 6. Runs `agent.run_conversation(prompt)` in a thread with inactivity timeout (default 600s, polls every 5s, raises `TimeoutError`)
 7. Agent failure detection: `result.get("failed") is True` or `result.get("completed") is False`
-8. `SILENT_MARKER = "[SILENT]"` (line ~52): agent can suppress delivery by prepending this to its response; CIR must recognize `[SILENT]` responses as success, not as incidents
+8. `SILENT_MARKER = "[SILENT]"` (line 244): agent can suppress delivery by prepending this to its response; CIR must recognize `[SILENT]` responses as success, not as incidents
 
 ### 2.5 Delivery Pipeline
 
@@ -111,16 +112,16 @@ CIR alerts use the same `_deliver_result()` path. The only extension needed is a
 `async def send(chat_id, content, reply_to=None, metadata=None) → SendResult` — text-only, splits on `MAX_MESSAGE_LENGTH`, supports thread_id via metadata.
 
 **Discord UI Views exist and are already used:** The adapter has full `discord.ui` infrastructure:
-- `ExecApprovalView` (line 5459): `Allow Once`, `Allow Session`, `Always Allow`, `Deny` buttons → sent via `channel.send(embed=embed, view=view)` in `send_exec_approval()` (line ~4497)
-- `SlashConfirmView` (line 5570): `Approve Once`, `Always Approve`, `Cancel` → sent via `send_slash_confirm()` (line 4510)
-- `UpdatePromptView` (line 5685): `Yes` / `No` buttons
-- `ModelPickerView` (line 5781): Select dropdown
+- `ExecApprovalView` (line 5797): `Allow Once`, `Allow Session`, `Always Allow`, `Deny` buttons → sent via `channel.send(embed=embed, view=view)` in `send_exec_approval()` (line 4692)
+- `SlashConfirmView` (line 5908): `Approve Once`, `Always Approve`, `Cancel` → sent via `send_slash_confirm()`
+- `UpdatePromptView` (line 6023): `Yes` / `No` buttons
+- `ModelPickerView` (line 6119): Select dropdown
 
 These are **separate methods** that call `channel.send(embed=embed, view=view)` directly — outside the plain `send()` path. This means a new `send_cron_review(chat_id, incident, token, metadata)` method following the same pattern is feasible without touching the main `send()` contract.
 
-Authorization: `_allowed_user_ids: set` (line ~630) and `_allowed_role_ids: set` — the existing button authorization gates are reusable for CIR action buttons.
+Authorization: `_allowed_user_ids: set` and `_allowed_role_ids: set` — the existing button authorization gates are reusable for CIR action buttons.
 
-Slash commands: `/ask`, `/reset`, `/status`, `/stop` are registered via `app_commands`. A `/cron-review <token>` slash command follows the same `_run_simple_slash()` dispatch pattern — this is the cross-platform fallback.
+Slash commands such as `/reset`, `/status`, `/stop`, `/new`, and `/model` are registered via `app_commands`. A `/cron-review <token>` slash command follows the same slash-command dispatch pattern — this is the cross-platform fallback. `/ask` appears in adapter docs but is not currently registered as an `app_commands` slash command, so CIR should not model itself on `/ask`.
 
 ### 2.7 Command Fallback Feasibility
 
@@ -194,13 +195,12 @@ CIR action delivery has two paths (bot transport):
   "state_history": [         # append-only list of lifecycle transitions
     {"from": str, "to": str, "at": float, "by": str | null}
   ],
-  "review_session_id": str | null,  # set if owner-agent review spawned (dv9.6)
   "dedup_key": str,          # normalized signature used for window suppression (§7)
   "suppressed_count": int    # how many duplicate incidents were absorbed
 }
 ```
 
-**Storage:** `{HERMES_HOME}/cron/incidents/` directory (new, parallel to `output/`). File locking follows same pattern as `_jobs_lock()`. Index at `{HERMES_HOME}/cron/incidents/.index.json` for fast dedup lookup.
+**Storage decision:** Use one JSON file per incident under `{HERMES_HOME}/cron/incidents/{incident_id}.json`, with a lightweight `{HERMES_HOME}/cron/incidents/.index.json` for dedup key → incident id lookups. This avoids rewriting a global `incidents.json` file on every failure, keeps individual incident writes atomic, and follows the existing profile-local cron storage pattern. File locking follows the same pattern as `_jobs_lock()`.
 
 **Redaction:** `raw_error` and `stack_top` MUST pass through `redact_sensitive_text()` from `agent/redact.py` before storage. The `_REDACT_ENABLED` flag is snapshot at import — this is on by default and must not be bypassed.
 
@@ -229,7 +229,11 @@ CIR action delivery has two paths (bot transport):
 
 **Scope:** One ActionToken per action per incident. Tokens are invalidated when an incident transitions to terminal state (acknowledged, resolved).
 
-### 4.3 CronReviewRequest v1
+**Token-secret decision:** The per-profile HMAC key lives at `{HERMES_HOME}/cron/.token_secret` with 0600 permissions, generated on first use, and never included in logs, incident payloads, or cron listing output.
+
+### 4.3 CronReviewRequest v1 (dv9.6 extension)
+
+This contract is **not** part of the dv9.2 base incident schema. It is introduced by dv9.6 when owner-agent review is implemented. dv9.6 may also extend `CronIncident` with an optional `review_session_id` field or store that relation in a separate review-session record.
 
 ```python
 # Passed to owner-agent subprocess (dv9.6) via stdin or temp file
@@ -273,10 +277,12 @@ Appended to `state_history` on each transition (see §5). Also emitted as struct
                       ┌────────────────────────────────────────┐
                       │                                        │
   [failure detected]  ▼                                        │
-  ────────────────► OPEN ──── dedupe window ──────────────► SUPPRESSED
-                      │       (absorbed into existing           │
-                      │        incident, increments             │
-                      │        suppressed_count)                │
+  ────────────────► OPEN                                       │
+                      │                                        │
+                      │  duplicate within dedup window         │
+                      │  updates occurred_at +                 │
+                      │  suppressed_count in place             │
+                      │  (no new incident/state transition)    │
                       │                                        │
                owner action                                    │
                       │                                        │
@@ -298,18 +304,18 @@ Appended to `state_history` on each transition (see §5). Also emitted as struct
 | State | Meaning |
 |---|---|
 | `OPEN` | Incident captured; alert delivered or pending delivery |
-| `SUPPRESSED` | Duplicate absorbed into an open incident (dedup hit) |
 | `ACKNOWLEDGED` | Owner confirmed receipt; no further alerting |
 | `PAUSED` | Owner paused the job; incident stays open until manually resumed |
 | `SNOOZED` | Alert suppressed until `snooze_until` timestamp |
 | `CLOSED` | Terminal — resolved, retried successfully, or manually dismissed |
 
+`SUPPRESSED` is intentionally **not** a lifecycle state. A duplicate within the dedup window is an absorption event on the existing `OPEN` incident: it increments `suppressed_count`, updates `occurred_at`, and skips alert delivery. No new incident record is created.
+
 **Transitions:**
 
 | From | To | Trigger |
 |---|---|---|
-| — | `OPEN` | `_process_job()` detects failure |
-| `OPEN` | `SUPPRESSED` | New failure within dedup window matches signature |
+| — | `OPEN` | `run_one_job()` detects failure after `run_job()` returns |
 | `OPEN` | `ACKNOWLEDGED` | `acknowledge` ActionToken redeemed |
 | `OPEN` | `PAUSED` | `pause` ActionToken redeemed |
 | `OPEN` | `SNOOZED` | `snooze` ActionToken redeemed |
@@ -329,7 +335,7 @@ Appended to `state_history` on each transition (see §5). Also emitted as struct
 Failure output (stderr, agent error text) is included in CIR alerts and possibly in the owner-agent review prompt. The `_scan_assembled_cron_prompt()` scanner (already in `_build_job_prompt()`) does not cover CIR review prompts. Required: CIR review prompt must also pass through injection scanning before being sent to the review agent (dv9.6).
 
 **Secret leakage in incident storage**
-`raw_error` and `stack_top` may contain credentials from tracebacks. All fields derived from error output must go through `redact_sensitive_text()` from `agent/redact.py` before being written to `incidents/*.json` or logged. `_REDACT_ENABLED` is set at import time — this cannot be disabled at runtime.
+`raw_error` and `stack_top` may contain credentials from tracebacks. All fields derived from error output must go through `redact_sensitive_text()` from `agent/redact.py` before being written to `incidents/*.json` or logged. `_REDACT_ENABLED` is set at import time from `HERMES_REDACT_SECRETS`; if an operator starts Hermes with redaction disabled, CIR must still redact incident fields with a force-redaction path or a dedicated CIR redactor rather than trusting the global opt-out.
 
 **ActionToken forgery**
 Tokens are HMAC-signed with a per-profile secret key (never shared across profiles). Key stored at `{HERMES_HOME}/cron/.token_secret` (0600, generated on first use). Token expiry is enforced; replay prevention via nonce store. Token scope is bound to `(incident_id, action)` — a `pause` token cannot be used to `retry`.
@@ -354,7 +360,7 @@ Owner-agent review (dv9.6) runs as a subprocess. If the review subprocess itself
 - No mutation of `jobs.json` except via `mark_job_run()` / `pause_job()` / `resume_job()` from `cron/jobs.py` (existing lock-protected functions)
 - No mutation of live gateway config or credentials
 - No cross-profile data access without explicit allowlist
-- `HERMES_REDACT_SECRETS` override is not possible at runtime — CIR cannot bypass redaction
+- `HERMES_REDACT_SECRETS` is read at module import time, but CIR incident storage still treats redaction as mandatory even if the wider runtime was started with redaction disabled
 
 ---
 
@@ -416,7 +422,7 @@ The Bead chain is correct as-seeded. No reorders or splits are recommended. Depe
 |---|---|---|---|
 | **dv9.2** | CronIncident model + storage | `cron/incidents.py` (new) | Unit: create/read/update incident; file lock; 0600 perms; path traversal rejection |
 | **dv9.3** | Redaction + normalization + dedup | `cron/incidents.py` extended | Unit: normalization idempotency; secret-containing errors are redacted before storage; dedup key stability across re-runs |
-| **dv9.4** | Scheduler integration — capture hook | `cron/scheduler.py`: hook in `_process_job()` | Integration: fake-job run that fails → incident written; `[SILENT]` runs → no incident; `no_agent=True` failures → incident with correct stage |
+| **dv9.4** | Scheduler integration — capture hook | `cron/scheduler.py`: hook in `run_one_job()` after `run_job()` returns and before `mark_job_run()` | Integration: fake-job run that fails → incident written; `[SILENT]` runs → no incident; `no_agent=True` failures → incident with correct stage |
 | **dv9.5** | ActionToken generation + validation | `cron/action_token.py` (new) | Unit: token roundtrip; expired token rejected; wrong action rejected; replayed nonce rejected; forged HMAC rejected |
 | **dv9.6** | Owner-agent review session | `cron/review_agent.py` (new); subprocess launch | Integration: `HERMES_CIR_REVIEW=1` blocks recursive CIR; subprocess env isolation; `CronReviewRequest` schema validation |
 | **dv9.7** | CLI surface — `hermes cron incidents` | `hermes_cli/commands.py` + new subcommand | CLI: `incidents list`, `incidents show <id>`, `cron-review <token>` command; token redemption flow |
@@ -438,7 +444,7 @@ The Bead chain is correct as-seeded. No reorders or splits are recommended. Depe
 - `cron/review_agent.py` — owner-agent subprocess orchestration (dv9.6)
 
 **Files to extend (targeted changes only):**
-- `cron/scheduler.py` — add `_maybe_capture_incident()` call in `_process_job()` after `run_job()` (dv9.4)
+- `cron/scheduler.py` — add `_maybe_capture_incident()` call in `run_one_job()` after `run_job()` and before `mark_job_run()` (dv9.4)
 - `cron/jobs.py` — add `last_incident_id`, `last_incident_at` fields to `mark_job_run()` (dv9.4)
 - `plugins/platforms/discord/adapter.py` — add `send_cron_review()` and `CronReviewView` (dv9.8)
 - `hermes_cli/commands.py` — add `cron incidents` subcommand (dv9.7)
@@ -478,16 +484,12 @@ The Bead chain is correct as-seeded. No reorders or splits are recommended. Depe
 
 ### Blockers (must resolve before dv9.2 implementation starts)
 
-**B1: CronIncident storage location — incidents/ vs incidents.json**
-One file per incident (e.g., `incidents/{incident_id}.json`) vs. a single `incidents.json` store parallel to `jobs.json`. One-file-per-incident is safer for concurrent writes without global lock and easier to delete atomically. Downside: directory listing overhead at dedup scan time. **Recommendation:** one file per incident, with a lightweight `.index.json` for dedup key → incident_id mapping under the existing `_jobs_lock()`.
-
-**B2: Token secret generation and storage path**
-Token HMAC key path proposed: `{HERMES_HOME}/cron/.token_secret`. This file must be generated on first use and must never appear in logs, config dumps, or `hermes cron list` output. Need confirmation that the CLI config command does not enumerate hidden dot-files under `CRON_DIR`.
-
-**B3: Snooze duration options**
-ActionToken for snooze needs to encode a duration. Proposed fixed options: 1h, 4h, 24h, 7d. Discord button approach: separate buttons or a Select dropdown (following `ModelPickerView` pattern). CLI approach: `hermes cron-review <token> --snooze 4h`. Need owner input on which snooze durations are useful.
+No open blockers. The incident storage layout and token secret path are decided in §4.1 and §4.2. Snooze-duration UX is intentionally deferred because it does not affect the dv9.2 incident model or storage contract.
 
 ### Open Questions (non-blocking for dv9.2–dv9.5)
+
+**Q0: Snooze duration options (must resolve before dv9.7/dv9.8)**
+ActionToken for snooze ultimately needs a duration. Proposed fixed options: 1h, 4h, 24h, 7d. Discord button approach: separate buttons or a Select dropdown (following `ModelPickerView` pattern). CLI approach: `hermes cron-review <token> --snooze 4h`. This does not block dv9.2 because the base incident model, dedup engine, and token signing contract do not encode a duration decision.
 
 **Q1: Cross-profile owner review (dv9.6)**
 If the failing job belongs to profile `work` but the owner's home channel is in profile `personal`, the review subprocess must launch in `work` context. The allowlist in `config.yaml` must be explicit. Is there a case where the review session should run in a different profile from the failing job? If yes, the `CronReviewRequest` needs a `review_profile` field.

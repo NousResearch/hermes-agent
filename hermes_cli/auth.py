@@ -143,6 +143,7 @@ SERVICE_PROVIDER_NAMES: Dict[str, str] = {
 # provider as configured. This sentinel is sent only to LM Studio, never to
 # any remote service.
 LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"
+ATOMIC_CHAT_NOAUTH_PLACEHOLDER = "atomic-chat-local"
 
 
 # =============================================================================
@@ -209,6 +210,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="http://127.0.0.1:1234/v1",
         api_key_env_vars=("LM_API_KEY",),
         base_url_env_var="LM_BASE_URL",
+    ),
+    "atomic-chat": ProviderConfig(
+        id="atomic-chat",
+        name="Atomic Chat",
+        auth_type="api_key",
+        inference_base_url="http://127.0.0.1:1337/v1",
+        api_key_env_vars=("ATOMIC_CHAT_API_KEY",),
+        base_url_env_var="ATOMIC_CHAT_BASE_URL",
     ),
     "copilot": ProviderConfig(
         id="copilot",
@@ -1528,6 +1537,7 @@ def resolve_provider(
         "go": "opencode-go", "opencode-go-sub": "opencode-go",
         "kilo": "kilocode", "kilo-code": "kilocode", "kilo-gateway": "kilocode",
         "lmstudio": "lmstudio", "lm-studio": "lmstudio", "lm_studio": "lmstudio",
+        "atomic-chat": "atomic-chat", "atomicchat": "atomic-chat", "atomic_chat": "atomic-chat",
         # Local server aliases — route through the generic custom provider
         "ollama": "custom", "ollama_cloud": "ollama-cloud",
         "vllm": "custom", "llamacpp": "custom",
@@ -1605,7 +1615,7 @@ def resolve_provider(
         # whose availability isn't implied by LM_API_KEY presence (it may be
         # offline, and the no-auth setup uses a placeholder value), so it
         # also requires explicit selection.
-        if pid in {"copilot", "lmstudio"}:
+        if pid in {"copilot", "lmstudio", "atomic-chat"}:
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
@@ -6241,6 +6251,9 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     # because get_api_key_provider_status uses the raw secret resolver.
     if not api_key and provider_id == "lmstudio":
         api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
+        key_source = key_source or "default"
+    if not api_key and provider_id == "atomic-chat":
+        api_key = ATOMIC_CHAT_NOAUTH_PLACEHOLDER
         key_source = key_source or "default"
 
     env_url = ""

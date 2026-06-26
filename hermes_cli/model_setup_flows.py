@@ -2438,6 +2438,15 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             model_list = []
         if model_list:
             print(f"  Found {len(model_list)} model(s) from LM Studio")
+    elif provider_id == "atomic-chat":
+        from hermes_cli.models import fetch_atomic_chat_models
+
+        api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        model_list = fetch_atomic_chat_models(
+            api_key=api_key_for_probe, base_url=effective_base
+        )
+        if model_list:
+            print(f"  Found {len(model_list)} model(s) from Atomic Chat")
     elif provider_id == "ollama-cloud":
         from hermes_cli.models import fetch_ollama_cloud_models
 

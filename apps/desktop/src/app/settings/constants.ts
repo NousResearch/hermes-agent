@@ -158,11 +158,18 @@ export const PROVIDER_GROUPS: ProviderPrefix[] = [
     priority: 17
   },
   {
+    prefix: 'ATOMIC_CHAT_',
+    name: 'Atomic Chat',
+    description: 'Local Atomic Chat OpenAI-compatible API (port 1337)',
+    docsUrl: 'https://atomic.chat',
+    priority: 18
+  },
+  {
     prefix: 'STEPFUN_',
     name: 'StepFun',
     description: 'StepFun Step Plan coding models',
     docsUrl: 'https://platform.stepfun.com/',
-    priority: 18
+    priority: 19
   },
   {
     prefix: 'XIAOMI_',

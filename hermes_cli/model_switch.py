@@ -1584,6 +1584,28 @@ def list_authenticated_providers(
             live = [current_model]
         curated["lmstudio"] = live
 
+    if "atomic-chat" not in curated and (
+        os.environ.get("ATOMIC_CHAT_API_KEY")
+        or os.environ.get("ATOMIC_CHAT_BASE_URL")
+        or current_provider.strip().lower() == "atomic-chat"
+    ):
+        from hermes_cli.models import fetch_atomic_chat_models
+
+        is_current_atomic = current_provider.strip().lower() == "atomic-chat"
+        atomic_base = (
+            os.environ.get("ATOMIC_CHAT_BASE_URL")
+            or (current_base_url if is_current_atomic and current_base_url else None)
+            or "http://127.0.0.1:1337/v1"
+        )
+        live = fetch_atomic_chat_models(
+            api_key=os.environ.get("ATOMIC_CHAT_API_KEY", ""),
+            base_url=atomic_base,
+            timeout=1.5,
+        )
+        if not live and is_current_atomic and current_model:
+            live = [current_model]
+        curated["atomic-chat"] = live
+
     # --- 1. Check Hermes-mapped providers ---
     from hermes_cli.models import _AGGREGATOR_PROVIDERS as _AGG_PROVIDERS
     from hermes_cli.providers import ALIASES as _PROVIDER_ALIAS_TABLE

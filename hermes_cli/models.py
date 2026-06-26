@@ -1007,6 +1007,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("moa",            "Mixture of Agents",        "Mixture of Agents (named presets; aggregator acts after reference models)"),
     ProviderEntry("novita",         "NovitaAI",                 "NovitaAI (Cloud: Model API, Agent Sandbox, GPU Cloud)"),
     ProviderEntry("lmstudio",       "LM Studio",                "LM Studio (Local desktop app with built-in model server)"),
+    ProviderEntry("atomic-chat",    "Atomic Chat",              "Atomic Chat (Local desktop app with OpenAI-compatible API on port 1337)"),
     ProviderEntry("anthropic",      "Anthropic",                "Anthropic (Claude models via API key or Claude Code)"),
     ProviderEntry("openai-codex",   "OpenAI Codex",             "OpenAI Codex (Codex CLI via ChatGPT subscription or API key)"),
     ProviderEntry("openai-api",     "OpenAI API",               "OpenAI API (api.openai.com, API key)"),
@@ -1239,6 +1240,9 @@ _PROVIDER_ALIASES = {
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
     "lm_studio": "lmstudio",
+    "atomic-chat": "atomic-chat",
+    "atomicchat": "atomic-chat",
+    "atomic_chat": "atomic-chat",
     "ollama": "custom",  # bare "ollama" = local; use "ollama-cloud" for cloud
     "ollama_cloud": "ollama-cloud",
 }
@@ -2990,6 +2994,33 @@ def fetch_lmstudio_models(
     return models or []
 
 
+def probe_atomic_chat_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Probe Atomic Chat's OpenAI-compatible ``/v1/models`` endpoint."""
+    from hermes_cli.auth import ATOMIC_CHAT_NOAUTH_PLACEHOLDER
+
+    resolved_base = (base_url or "http://127.0.0.1:1337/v1").strip().rstrip("/")
+    token = (api_key or "").strip() or ATOMIC_CHAT_NOAUTH_PLACEHOLDER
+    probe = probe_api_models(token, resolved_base, timeout=timeout)
+    models = probe.get("models")
+    if models is None:
+        return None
+    return [str(model_id).strip() for model_id in models if str(model_id).strip()]
+
+
+def fetch_atomic_chat_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> list[str]:
+    """Fetch model ids from Atomic Chat's local OpenAI-compatible API."""
+    models = probe_atomic_chat_models(api_key=api_key, base_url=base_url, timeout=timeout)
+    return models or []
+
+
 def ensure_lmstudio_model_loaded(
     model: str,
     base_url: Optional[str],
@@ -3723,6 +3754,31 @@ def validate_requested_model(
         return {
             "accepted": False, "persist": False, "recognized": False,
             "message": f"Model `{requested}` was not found in LM Studio's model listing.",
+        }
+
+    if normalized == "atomic-chat":
+        models = probe_atomic_chat_models(api_key=api_key, base_url=base_url)
+        if models is None:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": (
+                    "Could not reach Atomic Chat's `/v1/models` endpoint. "
+                    "Enable Settings → Local API Server in Atomic Chat."
+                ),
+            }
+        if not models:
+            return {
+                "accepted": False, "persist": False, "recognized": False,
+                "message": (
+                    "Atomic Chat is reachable but returned no models. "
+                    "Download a model and ensure the Local API Server is running."
+                ),
+            }
+        if requested_for_lookup in set(models):
+            return {"accepted": True, "persist": True, "recognized": True, "message": None}
+        return {
+            "accepted": False, "persist": False, "recognized": False,
+            "message": f"Model `{requested}` was not found in Atomic Chat's model listing.",
         }
 
     if normalized == "custom" or normalized.startswith("custom:"):

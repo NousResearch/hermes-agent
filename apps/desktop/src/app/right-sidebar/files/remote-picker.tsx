@@ -60,6 +60,7 @@ export function RemoteFolderPicker() {
           setPending({ defaultPath, resolve, title: options?.title || r.remotePickerTitle })
         })
     })
+
     return () => setDesktopFsRemotePicker(null)
   }, [r.remotePickerTitle])
 
@@ -77,12 +78,17 @@ export function RemoteFolderPicker() {
         if (!active) {
           return
         }
+
         if (result.error) {
           setError(result.error)
           setEntries([])
+
           return
         }
-        setEntries(result.entries.filter(entry => entry.isDirectory).map(entry => ({ name: entry.name, path: entry.path })))
+
+        setEntries(
+          result.entries.filter(entry => entry.isDirectory).map(entry => ({ name: entry.name, path: entry.path }))
+        )
       })
       .catch(err => {
         if (active) {
@@ -133,7 +139,10 @@ export function RemoteFolderPicker() {
           <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border/50 px-3 py-2 text-xs text-muted-foreground">
             {crumbs.map((crumb, index) => (
               <button
-                className={cn('rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground', index === crumbs.length - 1 && 'text-foreground')}
+                className={cn(
+                  'rounded px-1.5 py-0.5 hover:bg-muted hover:text-foreground',
+                  index === crumbs.length - 1 && 'text-foreground'
+                )}
                 key={crumb.path}
                 onClick={() => setCurrentPath(crumb.path)}
                 type="button"
@@ -159,7 +168,9 @@ export function RemoteFolderPicker() {
             ) : entries.length === 0 ? (
               <div className="px-2 py-3 text-xs text-muted-foreground">{r.emptyBody}</div>
             ) : (
-              entries.map(entry => <FolderRow key={entry.path} name={pathName(entry.path)} onClick={() => setCurrentPath(entry.path)} />)
+              entries.map(entry => (
+                <FolderRow key={entry.path} name={pathName(entry.path)} onClick={() => setCurrentPath(entry.path)} />
+              ))
             )}
           </div>
         </div>

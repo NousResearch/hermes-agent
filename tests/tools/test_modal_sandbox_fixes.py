@@ -274,17 +274,30 @@ class TestEnsurepipFix:
 # =========================================================================
 
 class TestHostPrefixList:
-    """Verify the host prefix list catches common host-only paths."""
+    """Verify the host prefix list catches common host-only paths.
 
-    def test_all_common_host_prefixes_caught(self):
-        """The host prefix check should catch /Users/, /home/, C:\\, C:/."""
-        # Read the actual source to verify the prefixes
-        import inspect
-        source = inspect.getsource(_tt_mod._get_env_config)
-        for prefix in ["/Users/", "/home/", 'C:\\\\"', "C:/"]:
-            # Normalize for source comparison
-            check = prefix.rstrip('"')
-            assert check in source or prefix in source, (
-                f"Host prefix {prefix!r} not found in _get_env_config. "
+    The prefixes used to live as an inline literal inside ``_get_env_config``;
+    they now live in the module-level ``_HOST_CWD_PREFIXES`` constant shared by
+    both the ``_get_env_config`` sanitizer and the override-resolution guard
+    (``_is_unusable_container_cwd``). Assert the *behavior* (each common host
+    prefix is flagged as unusable inside a container) rather than grepping a
+    function's source — the latter is a change-detector that breaks on any
+    refactor that moves the constant.
+    """
+
+    def test_all_common_host_prefixes_present_in_constant(self):
+        """The shared prefix constant must list the common host-only roots."""
+        for prefix in ("/Users/", "/home/", "C:\\", "C:/"):
+            assert prefix in _tt_mod._HOST_CWD_PREFIXES, (
+                f"Host prefix {prefix!r} missing from _HOST_CWD_PREFIXES. "
                 "Container backends need this to avoid using host paths."
+            )
+
+    def test_all_common_host_paths_flagged_unusable(self):
+        """A host path under each prefix must be rejected as a container cwd."""
+        for host_path in ("/Users/me/proj", "/home/me/proj",
+                           "C:\\Users\\me", "C:/Users/me"):
+            assert _tt_mod._is_unusable_container_cwd(host_path) is True, (
+                f"Host path {host_path!r} should be rejected as a container "
+                "cwd but was accepted."
             )

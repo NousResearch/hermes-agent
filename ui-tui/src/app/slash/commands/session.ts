@@ -1,4 +1,5 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
+import { writeActiveSessionFile } from '../../useSessionLifecycle.js'
 import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
@@ -250,6 +251,7 @@ export const sessionCommands: SlashCommand[] = [
           }
 
           void ctx.session.closeSession(prevSid)
+          writeActiveSessionFile(r.session_key ?? r.session_id)
           patchUiState({ sid: r.session_id })
           ctx.session.setSessionStartedAt(Date.now())
           ctx.transcript.sys(`branched → ${r.title ?? ''}`)

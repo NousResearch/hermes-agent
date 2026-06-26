@@ -22,11 +22,21 @@ vi.mock('../config/env.js', async importActual => {
   }
 })
 
+const mockWriteActiveSessionFile = vi.fn()
+vi.mock('../app/useSessionLifecycle.js', async importActual => {
+  const actual = await importActual<Record<string, unknown>>()
+  return {
+    ...actual,
+    writeActiveSessionFile: (...args: unknown[]) => mockWriteActiveSessionFile(...args),
+  }
+})
+
 describe('createSlashHandler', () => {
   beforeEach(() => {
     resetOverlayState()
     resetUiState()
     envState.dashboardTuiMode = false
+    mockWriteActiveSessionFile.mockReset()
   })
 
   it('opens the unified sessions overlay for /resume', () => {
@@ -360,7 +370,7 @@ describe('createSlashHandler', () => {
 
   it('keeps visible scrollback when branching a TUI session', async () => {
     patchUiState({ sid: 'sid-parent' })
-    const rpc = vi.fn(() => Promise.resolve({ session_id: 'sid-branch', title: 'branch title' }))
+    const rpc = vi.fn(() => Promise.resolve({ session_id: 'sid-branch', session_key: 'key-branch', title: 'branch title' }))
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     expect(createSlashHandler(ctx)('/branch branch title')).toBe(true)
@@ -371,6 +381,7 @@ describe('createSlashHandler', () => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith('branched → branch title')
     })
     expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+    expect(mockWriteActiveSessionFile).toHaveBeenCalledWith('key-branch')
   })
 
   it('reloads skills in the live gateway and refreshes the catalog', async () => {

@@ -355,6 +355,7 @@ export interface SessionCompressResponse {
 
 export interface SessionBranchResponse {
   session_id?: string
+  session_key?: string
   title?: string
 }
 

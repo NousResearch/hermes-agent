@@ -1131,6 +1131,7 @@ def init_agent(
         "max_iterations": agent.max_iterations,
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
+        "provider": getattr(agent, "provider", None),
     }
     
     # In-memory todo list for task planning (one per agent/session)

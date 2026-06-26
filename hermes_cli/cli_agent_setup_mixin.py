@@ -328,6 +328,27 @@ class CLIAgentSetupMixin:
                 self._session_db._conn.commit()
             except Exception:
                 pass
+            # Warn if the session's original provider is no longer the
+            # current default — the user may not realise the session
+            # silently switched providers on resume.  See #52943.
+            try:
+                import json as _json
+                _mc = session_meta.get("model_config")
+                if _mc:
+                    _mc_dict = _json.loads(_mc) if isinstance(_mc, str) else _mc
+                    _orig_prov = _mc_dict.get("provider")
+                    if _orig_prov and _orig_prov != self.provider:
+                        _warn = (
+                            f"Session was created with provider '{_orig_prov}' "
+                            f"which differs from the current default "
+                            f"'{self.provider}'. Resuming with the current provider."
+                        )
+                        if _quiet_mode:
+                            print(f"Warning: {_warn}", file=sys.stderr)
+                        else:
+                            ChatConsole().print(f"[bold yellow]Warning:[/] {_warn}")
+            except Exception:
+                pass
         
         try:
             runtime = runtime_override or {

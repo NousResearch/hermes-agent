@@ -2090,6 +2090,10 @@ export const ja = defineLocale({
       loadingSession: 'セッションを読み込み中',
       showEarlier: '以前のメッセージを表示',
       loadingResponse: 'Hermes が応答を読み込み中',
+      resumeWhenBackgroundDone: count =>
+        count === 1
+          ? 'バックグラウンドタスクの完了後に再開します'
+          : `${count} 件のバックグラウンドタスクの完了後に再開します`,
       thinking: '考え中',
       today: time => `今日 ${time}`,
       yesterday: time => `昨日 ${time}`,

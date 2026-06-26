@@ -129,6 +129,41 @@ describe('StatusRule background-subagent indicator', () => {
     expect(textContent(element)).not.toContain('⛓')
   })
 
+  it('spells out the auto-resume hint when idle with subagents in flight', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 1 }
+    })
+
+    expect(textContent(element)).toContain('resumes when subagent finishes')
+  })
+
+  it('pluralizes the resume hint for multiple in-flight subagents', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, active_subagents: 3 }
+    })
+
+    expect(textContent(element)).toContain('resumes when 3 subagents finish')
+  })
+
+  it('hides the resume hint mid-turn (a busy turn owns the indicator)', () => {
+    const element = StatusRule({
+      ...baseProps,
+      busy: true,
+      turnStartedAt: Date.now(),
+      usage: { ...baseProps.usage, active_subagents: 2 }
+    })
+
+    expect(textContent(element)).not.toContain('resumes when')
+  })
+
+  it('omits the resume hint when no subagents are running', () => {
+    const element = StatusRule({ ...baseProps })
+
+    expect(textContent(element)).not.toContain('resumes when')
+  })
+
   it('drops the subagent segment before the bg segment on a narrow terminal', () => {
     // cols=44 is below the subagents breakpoint (92) but the bg breakpoint
     // (88) too — both gone. Assert the lower-priority subagent indicator is

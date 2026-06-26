@@ -1993,10 +1993,14 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> None:
         """Append clickable choice buttons when ``content`` poses a choice.
 
-        Parses the just-sent message for a question + option list (numbered,
-        circled, lettered, bulleted, or inline ``A or B?``). If 2+ options are
-        found, posts a small follow-up embed carrying an :class:`AutoChoiceView`
-        — picking a button injects that option as a new user message.
+        Parses the just-sent message for an explicit choice prefix — ``? `` for
+        a single-choice prompt or ``?? `` for a multi-select one — plus an
+        option list (numbered, circled, lettered, or bulleted). If 2+ options
+        are found, posts a small follow-up embed carrying an
+        :class:`AutoChoiceView`. The embed's description echoes the question
+        text (prefix stripped). Single-select injects the picked option
+        immediately; multi-select collects toggles until ``✅ Confirm`` injects
+        the joined answer.
 
         Best-effort: any failure is swallowed (logged at debug) so a parsing
         or send hiccup never breaks the primary message delivery.
@@ -2006,7 +2010,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client or not DISCORD_AVAILABLE:
             return
         try:
-            choices = _detect_inline_choices(content)
+            choices, multi_select = _detect_inline_choices(content)
             if len(choices) < 2:
                 return
 
@@ -2025,9 +2029,19 @@ class DiscordAdapter(BasePlatformAdapter):
                 choices=choices,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                multi_select=multi_select,
             )
+            question = _extract_choice_question(content)
+            if multi_select:
+                title = "❓ Hermes asks (multi-select)"
+                hint = "Select any number, then ✅ Confirm — or ✏️ Other to type your own."
+            else:
+                title = "❓ Hermes asks"
+                hint = "Tap a choice below, or ✏️ Other to type your own."
+            description = f"{question}\n\n{hint}" if question else hint
             embed = discord.Embed(
-                description="Tap a choice below, or ✏️ Other to type your own.",
+                title=title,
+                description=description,
                 color=discord.Color.blue(),
             )
             msg = await channel.send(embed=embed, view=view)
@@ -6370,53 +6384,72 @@ def _clean_choice_text(text: str) -> str:
     return opt.strip()
 
 
-def _detect_or_choices(text: str) -> List[str]:
-    """Detect inline ``A or B or C?`` style options on the question clause.
+# Explicit format prefixes the agent uses to opt a reply into clickable
+# buttons. A line starting with ``? `` (one question mark + space) marks a
+# single-choice prompt; ``?? `` (two question marks + space) marks a
+# multi-select prompt. Without one of these prefixes the reply is left alone,
+# so incidental numbered/bulleted lists (deploy steps, citations, guesses)
+# never sprout buttons.
+_SINGLE_CHOICE_PREFIX = "? "
+_MULTI_CHOICE_PREFIX = "?? "
 
-    Conservative by design — only fires when the whole question clause splits
-    cleanly into 2–5 short options, otherwise returns ``[]`` to avoid turning
-    arbitrary prose into buttons.
+
+def _detect_choice_prefix(text: str) -> Optional[bool]:
+    """Return the choice mode declared by a leading prefix line, or ``None``.
+
+    Scans lines for the first ``?? ``/``? `` prefix. Returns ``True`` for
+    multi-select, ``False`` for single-select, ``None`` when neither prefix is
+    present (i.e. the reply is not opting into buttons).
     """
-    m = re.search(r"([^?？\n]*[?？])", text)
-    if not m:
-        return []
-    clause = m.group(1).rstrip("?？").strip()
-    parts = re.split(r"\s+or\s+|，?\s*還是\s*|，?\s*或是?\s*", clause)
-    parts = [_clean_choice_text(p) for p in parts]
-    parts = [p for p in parts if p]
-    if not (2 <= len(parts) <= 5 and all(len(p) <= 60 for p in parts)):
-        return []
-    # The first option usually carries the question lead-in
-    # ("Do you want X", "你想要X") — strip it so the button reads as the bare
-    # option, matching the others.
-    parts[0] = re.sub(
-        r"(?i)^.*\b(?:want|like|prefer|choose|need)\s+",
-        "",
-        parts[0],
-    ).strip() or parts[0]
-    parts[0] = re.sub(r"^.*?(?:想要|想|要|選擇|選|偏好)\s*", "", parts[0]).strip() or parts[0]
-    return _dedupe_keep_order([p for p in parts if p])
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        if stripped.startswith(_MULTI_CHOICE_PREFIX):
+            return True
+        if stripped.startswith(_SINGLE_CHOICE_PREFIX):
+            return False
+    return None
 
 
-def _detect_inline_choices(content: str, *, max_choices: int = 24) -> List[str]:
-    """Extract clickable choices from an outbound message, or ``[]`` if none.
+def _extract_choice_question(content: str) -> str:
+    """Pull the question text off the prefix line, sans ``? ``/``?? `` marker.
 
-    Detection is gated on the message reading like a prompt to choose — it
-    must contain a question mark OR a line ending in a colon that introduces
-    the list. This keeps incidental numbered lists (step-by-step
-    instructions, citations, changelog entries) from sprouting buttons.
+    ``"? 你想要什麼服務？"`` → ``"你想要什麼服務？"``. Returns ``""`` if no
+    prefix line is found.
+    """
+    if not content:
+        return ""
+    for line in content.strip().splitlines():
+        stripped = line.strip()
+        if stripped.startswith(_MULTI_CHOICE_PREFIX):
+            return stripped[len(_MULTI_CHOICE_PREFIX):].strip()
+        if stripped.startswith(_SINGLE_CHOICE_PREFIX):
+            return stripped[len(_SINGLE_CHOICE_PREFIX):].strip()
+    return ""
 
-    Returns clean option bodies WITHOUT their leading markers (the view adds
-    its own ``1.``/``2.`` numbering), capped at ``max_choices``.
+
+def _detect_inline_choices(
+    content: str, *, max_choices: int = 24,
+) -> "tuple[List[str], bool]":
+    """Extract clickable choices from an outbound message.
+
+    Detection is gated on an explicit prefix line — ``? `` for single-select
+    or ``?? `` for multi-select. Without a prefix nothing is returned, so
+    incidental numbered lists (step-by-step instructions, citations, guesses)
+    don't sprout buttons.
+
+    Returns ``(choices, multi_select)``: clean option bodies WITHOUT their
+    leading markers (the view adds its own ``1.``/``2.`` numbering), capped at
+    ``max_choices``, and a flag indicating multi-select mode. ``([], False)``
+    when no prefix is present or fewer than two options parse out.
     """
     if not content or not content.strip():
-        return []
+        return [], False
     text = content.strip()
 
-    has_question = bool(re.search(r"[?？]", text))
-    has_colon_intro = bool(re.search(r"[:：]\s*\n", text))
-    if not (has_question or has_colon_intro):
-        return []
+    mode = _detect_choice_prefix(text)
+    if mode is None:
+        return [], False
+    multi_select = mode
 
     lines = text.splitlines()
     for pattern in _CHOICE_LINE_PATTERNS:
@@ -6429,12 +6462,9 @@ def _detect_inline_choices(content: str, *, max_choices: int = 24) -> List[str]:
                     items.append(opt)
         items = _dedupe_keep_order(items)
         if len(items) >= 2:
-            return items[:max_choices]
+            return items[:max_choices], multi_select
 
-    inline = _detect_or_choices(text)
-    if len(inline) >= 2:
-        return inline[:max_choices]
-    return []
+    return [], multi_select
 
 
 def _fit_button_label(prefix: str, choice: str, *, limit: int = 80) -> str:
@@ -7365,7 +7395,9 @@ def _define_discord_view_classes() -> None:
         already handles.
 
         Auth gating mirrors the clarify view — only allowlisted users/roles
-        may click. Single-use: the first valid click disables all buttons.
+        may click. Single-select is single-use: the first valid click disables
+        all buttons. Multi-select toggles selections (green = picked) and stays
+        live until ``✅ Confirm`` injects the joined answer.
         """
 
         def __init__(
@@ -7374,6 +7406,7 @@ def _define_discord_view_classes() -> None:
             choices: List[str],
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            multi_select: bool = False,
         ):
             super().__init__(timeout=600)  # 10-minute window
             self._adapter = adapter
@@ -7382,6 +7415,10 @@ def _define_discord_view_classes() -> None:
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
             self._message = None
+            self.multi_select = multi_select
+            self._selected: "set[int]" = set()
+            self._choice_buttons: List[Any] = []
+            self._confirm_btn = None
 
             for index, choice in enumerate(self.choices):
                 button = discord.ui.Button(
@@ -7389,8 +7426,19 @@ def _define_discord_view_classes() -> None:
                     style=discord.ButtonStyle.primary,
                     custom_id=f"autochoice:{index}",
                 )
-                button.callback = self._make_choice_callback(choice)
+                button.callback = self._make_choice_callback(index, choice)
                 self.add_item(button)
+                self._choice_buttons.append(button)
+
+            if self.multi_select:
+                confirm_btn = discord.ui.Button(
+                    label=self._confirm_label(),
+                    style=discord.ButtonStyle.success,
+                    custom_id="autochoice:confirm",
+                )
+                confirm_btn.callback = self._on_confirm
+                self.add_item(confirm_btn)
+                self._confirm_btn = confirm_btn
 
             other_btn = discord.ui.Button(
                 label="✏️ Other (type answer)",
@@ -7400,14 +7448,17 @@ def _define_discord_view_classes() -> None:
             other_btn.callback = self._on_other
             self.add_item(other_btn)
 
+        def _confirm_label(self) -> str:
+            return f"✅ Confirm ({len(self._selected)} selected)"
+
         def _check_auth(self, interaction: "discord.Interaction") -> bool:
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids,
             )
 
-        def _make_choice_callback(self, choice: str):
+        def _make_choice_callback(self, index: int, choice: str):
             async def _callback(interaction: "discord.Interaction"):
-                await self._resolve_choice(interaction, choice)
+                await self._resolve_choice(interaction, index, choice)
             return _callback
 
         async def _disable_and_ack(self, interaction: "discord.Interaction") -> None:
@@ -7423,7 +7474,7 @@ def _define_discord_view_classes() -> None:
                     pass
 
         async def _resolve_choice(
-            self, interaction: "discord.Interaction", choice: str,
+            self, interaction: "discord.Interaction", index: int, choice: str,
         ) -> None:
             if self.resolved:
                 await interaction.response.send_message(
@@ -7436,12 +7487,78 @@ def _define_discord_view_classes() -> None:
                 )
                 return
 
+            if self.multi_select:
+                # Toggle the selection and keep the view live — nothing is
+                # injected until ✅ Confirm.
+                await self._toggle_choice(interaction, index)
+                return
+
             await self._disable_and_ack(interaction)
 
             # Inject the chosen option as a brand-new user turn. No clarify
             # entry to resolve — this is a plain "user typed this" flow.
             try:
                 await self._adapter._inject_user_choice(interaction, choice)
+            except Exception:
+                logger.error(
+                    "Discord auto-choice injection failed", exc_info=True,
+                )
+
+        async def _toggle_choice(
+            self, interaction: "discord.Interaction", index: int,
+        ) -> None:
+            """Flip option ``index`` on/off and repaint the buttons."""
+            if index in self._selected:
+                self._selected.discard(index)
+            else:
+                self._selected.add(index)
+
+            for i, button in enumerate(self._choice_buttons):
+                button.style = (
+                    discord.ButtonStyle.success
+                    if i in self._selected
+                    else discord.ButtonStyle.primary
+                )
+            if self._confirm_btn is not None:
+                self._confirm_btn.label = self._confirm_label()
+
+            try:
+                await interaction.response.edit_message(view=self)
+            except Exception:
+                try:
+                    await interaction.response.defer()
+                except Exception:
+                    pass
+
+        async def _on_confirm(self, interaction: "discord.Interaction") -> None:
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This prompt has already been answered~", ephemeral=True,
+                )
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorized to answer this prompt~", ephemeral=True,
+                )
+                return
+            if not self._selected:
+                await interaction.response.send_message(
+                    "Pick at least one option first~", ephemeral=True,
+                )
+                return
+
+            # Join the picked options into one user turn, in display order,
+            # separated by the ideographic comma (、).
+            picked = [
+                self.choices[i]
+                for i in sorted(self._selected)
+                if i < len(self.choices)
+            ]
+            answer = "、".join(picked)
+
+            await self._disable_and_ack(interaction)
+            try:
+                await self._adapter._inject_user_choice(interaction, answer)
             except Exception:
                 logger.error(
                     "Discord auto-choice injection failed", exc_info=True,

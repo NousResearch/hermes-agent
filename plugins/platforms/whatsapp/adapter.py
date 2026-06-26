@@ -1270,6 +1270,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 source=source,
                 raw_message=data,
                 message_id=data.get("messageId"),
+                reply_to_id=data.get("quotedMessageId") or None,
                 media_urls=cached_urls,
                 media_types=media_types,
             )

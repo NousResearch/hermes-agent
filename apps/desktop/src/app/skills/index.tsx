@@ -9,6 +9,7 @@ import { Switch } from '@/components/ui/switch'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { getSkills, getToolsets, toggleSkill, toggleToolset } from '@/hermes'
 import { useI18n } from '@/i18n'
+import { isDesktopToolsetVisible } from '@/lib/desktop-toolsets'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
@@ -52,6 +53,10 @@ function filteredToolsets(toolsets: ToolsetInfo[], query: string): ToolsetInfo[]
 
   return toolsets
     .filter(toolset => {
+      if (!isDesktopToolsetVisible(toolset.name)) {
+        return false
+      }
+
       if (!q) {
         return true
       }

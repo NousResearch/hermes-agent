@@ -33,6 +33,8 @@ import threading
 import time
 import urllib.error
 import urllib.parse
+
+from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -165,6 +167,7 @@ def _resolve_restart_drain_timeout() -> float:
 async def _lifespan(app: "FastAPI"):
     app.state.event_channels = {}  # dict[str, set]
     app.state.event_lock = asyncio.Lock()
+    app.state.pty_active_session_files = {}  # dict[str, Path]
     # Serializes chat-argv resolution so concurrent /api/pty connections
     # don't trigger overlapping ``npm install`` / ``npm run build`` work.
     # On app.state (not a module global) so the Lock binds to the running
@@ -230,6 +233,15 @@ def _get_chat_argv_lock(app: "FastAPI") -> asyncio.Lock:
     except AttributeError:
         app.state.chat_argv_lock = asyncio.Lock()
         return app.state.chat_argv_lock
+
+
+def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
+    """Return channel -> active-session-file state for dashboard PTYs."""
+    try:
+        return app.state.pty_active_session_files
+    except AttributeError:
+        app.state.pty_active_session_files = {}
+        return app.state.pty_active_session_files
 
 
 app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
@@ -480,6 +492,11 @@ async def _dashboard_auth_gate(request: Request, call_next):
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
     """Require the session token on all /api/ routes except the public list."""
+    # A request already authenticated by the token-auth seam (a service caller
+    # presenting a bearer token on a registered token route) carries
+    # ``token_authenticated`` — never bounce it through the cookie/session gate.
+    if getattr(request.state, "token_authenticated", False):
+        return await call_next(request)
     # When the OAuth gate is active, cookie-based auth (gated_auth_middleware
     # above) is authoritative.  The legacy _SESSION_TOKEN path is loopback-only
     # and is skipped here so the gate's session attachment isn't overridden.
@@ -493,6 +510,20 @@ async def auth_middleware(request: Request, call_next):
                 content={"detail": "Unauthorized"},
             )
     return await call_next(request)
+
+
+@app.middleware("http")
+async def _token_auth_seam(request: Request, call_next):
+    """Outermost auth seam: non-interactive bearer-token auth for opted-in routes.
+
+    Registered LAST so it runs FIRST (Starlette middleware is outermost-last).
+    A registered token route is fully owned here — authenticate by token,
+    attach the principal + ``token_authenticated`` flag, and let the downstream
+    cookie/session gates skip enforcement. Non-token routes pass straight
+    through untouched.
+    """
+    from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
+    return await token_auth_middleware(request, call_next)
 
 
 # ---------------------------------------------------------------------------
@@ -831,6 +862,35 @@ class ModelAssignment(BaseModel):
     profile: Optional[str] = None
 
 
+class MoaModelSlot(BaseModel):
+    provider: str = ""
+    model: str = ""
+
+
+class MoaPresetPayload(BaseModel):
+    reference_models: list[MoaModelSlot] = []
+    aggregator: MoaModelSlot = MoaModelSlot()
+    reference_temperature: float = 0.6
+    aggregator_temperature: float = 0.4
+    max_tokens: int = 4096
+    enabled: bool = True
+
+
+class MoaConfigPayload(BaseModel):
+    default_preset: str = "default"
+    active_preset: str = ""
+    presets: dict[str, MoaPresetPayload] = {}
+    # Backward-compatible flat payload fields used by older dashboard/desktop
+    # clients during this PR's transition window.
+    reference_models: list[MoaModelSlot] = []
+    aggregator: MoaModelSlot = MoaModelSlot()
+    reference_temperature: float = 0.6
+    aggregator_temperature: float = 0.4
+    max_tokens: int = 4096
+    enabled: bool = True
+    profile: Optional[str] = None
+
+
 def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, str]:
     """Normalize a main-slot (provider, model) pair before persisting.
 
@@ -1057,6 +1117,10 @@ _FS_READDIR_HIDDEN = {
 _FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
+# Upper bound for the in-app spot editor's save. The editor only opens
+# non-truncated text (<= the preview cap), so this is a safety ceiling against
+# a pasted-in megablob, not the expected payload size.
+_FS_TEXT_WRITE_MAX_BYTES = 8 * 1024 * 1024
 _FS_PREVIEW_LANGUAGE_BY_EXT = {
     ".c": "c",
     ".conf": "ini",
@@ -1199,12 +1263,17 @@ def _fs_default_cwd() -> str:
 
 def _fs_git_branch(cwd: str) -> str:
     try:
+        run_kwargs: Dict[str, Any] = {
+            "capture_output": True,
+            "text": True,
+            "timeout": 2,
+            "check": False,
+        }
+        if sys.platform == "win32":
+            run_kwargs["creationflags"] = windows_hide_flags()
         result = subprocess.run(
             ["git", "-C", cwd, "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            timeout=2,
-            check=False,
+            **run_kwargs,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:
@@ -1754,6 +1823,58 @@ async def fs_read_text(path: str):
         "text": data.decode("utf-8", errors="replace"),
         "truncated": st.st_size > _FS_TEXT_PREVIEW_MAX_BYTES,
     }
+
+
+class FsWriteText(BaseModel):
+    path: str
+    content: str
+
+
+@app.post("/api/fs/write-text")
+async def fs_write_text(payload: FsWriteText):
+    """Overwrite (or create) a UTF-8 text file for the in-app spot editor.
+
+    Mirrors the local Electron ``hermes:fs:writeText`` hardening: the path is
+    resolved + validated by ``_fs_path``, the parent directory must already
+    exist (we never build directory trees), only regular files may be replaced,
+    and the payload is size-capped. The write is staged to a sibling temp file
+    and ``os.replace``-d into place so a crash mid-write can't truncate the
+    original. Stale-on-disk detection is the client's job (re-read before save),
+    so both transports behave identically.
+    """
+    target = _fs_path(payload.path)
+    text = payload.content or ""
+    if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Content too large")
+
+    try:
+        st: Optional[os.stat_result] = target.stat()
+    except FileNotFoundError:
+        st = None
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="File is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid path")
+
+    if st is not None and stat.S_ISDIR(st.st_mode):
+        raise HTTPException(status_code=400, detail="Path points to a directory")
+    if st is not None and not stat.S_ISREG(st.st_mode):
+        raise HTTPException(status_code=400, detail="Only regular files can be written")
+    if not target.parent.is_dir():
+        raise HTTPException(status_code=400, detail="Parent directory does not exist")
+
+    tmp = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, target)
+    except PermissionError:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status_code=403, detail="File is not writable")
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+
+    return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
 
 @app.get("/api/fs/read-data-url")
@@ -2358,6 +2479,18 @@ def _record_completed_action(name: str, message: str, exit_code: int = 1) -> Non
     _ACTION_RESULTS[name] = {"exit_code": exit_code, "pid": None}
 
 
+def _dashboard_spawn_executable() -> str:
+    """Prefer pythonw.exe for detached dashboard actions on Windows."""
+    if sys.platform != "win32":
+        return sys.executable
+    exe = sys.executable
+    if exe.lower().endswith("python.exe"):
+        pythonw = os.path.join(os.path.dirname(exe), "pythonw.exe")
+        if os.path.isfile(pythonw):
+            return pythonw
+    return exe
+
+
 def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
 
@@ -2372,7 +2505,7 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         f"\n=== {name} started {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n".encode()
     )
 
-    cmd = [sys.executable, "-m", "hermes_cli.main", *subcommand]
+    cmd = [_dashboard_spawn_executable(), "-m", "hermes_cli.main", *subcommand]
 
     popen_kwargs: Dict[str, Any] = {
         "cwd": str(PROJECT_ROOT),
@@ -2382,10 +2515,7 @@ def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
         "env": {**os.environ, "HERMES_NONINTERACTIVE": "1"},
     }
     if sys.platform == "win32":
-        popen_kwargs["creationflags"] = (
-            subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
-            | getattr(subprocess, "DETACHED_PROCESS", 0)
-        )
+        popen_kwargs["creationflags"] = windows_detach_flags()
     else:
         popen_kwargs["start_new_session"] = True
 
@@ -2516,6 +2646,71 @@ async def restart_gateway(profile: Optional[str] = None):
         "ok": True,
         "pid": proc.pid,
         "name": "gateway-restart",
+    }
+
+
+@app.post("/api/gateway/drain")
+async def gateway_drain(request: Request):
+    """Begin or cancel an external (NAS-driven) gateway drain.
+
+    Authenticated by the non-interactive token-auth seam: the
+    ``dashboard_auth/drain`` plugin registers this exact path as a token route
+    and verifies the ``Authorization`` bearer secret. If that plugin isn't
+    active (no ``HERMES_DASHBOARD_DRAIN_SECRET``), the route is NOT a token
+    route, so on a gated bind the cookie gate handles it (a browser session can
+    still drive it from the dashboard) and on a loopback bind the legacy
+    session-token gate applies — either way it is never unauthenticated on a
+    network-exposed bind.
+
+    Body: ``{"action": "drain"}`` (begin) or ``{"action": "cancel"}`` (cancel).
+    Begin writes the ``.drain_request.json`` marker the gateway's
+    ``_drain_control_watcher`` observes (flip to ``draining`` + refuse new
+    turns); cancel removes it (revert to ``running`` + re-accept). Idempotent
+    on both sides. This endpoint only writes/removes the marker — the gateway
+    process owns the actual state transition (there is no HTTP control channel
+    into the running gateway; the marker IS the channel, decisions.md Q-B).
+
+    The force-override (D6: "unless a user commands it") is NOT here — an
+    immediate, drain-skipping action maps onto the existing
+    ``POST /api/gateway/restart`` force path, which supersedes a drain.
+    """
+    from gateway.drain_control import (
+        clear_drain_request,
+        drain_requested,
+        write_drain_request,
+    )
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    action = str((body or {}).get("action", "drain")).strip().lower()
+
+    # Attribute the request to the verified token principal when present
+    # (token-auth seam attaches it); fall back to a generic label otherwise.
+    principal_obj = getattr(request.state, "token_principal", None)
+    principal = getattr(principal_obj, "principal", None) or "dashboard"
+
+    if action == "cancel":
+        existed = clear_drain_request()
+        _log.info("Gateway drain CANCEL requested by %s (existed=%s)", principal, existed)
+        return {"ok": True, "action": "cancel", "was_draining": existed}
+
+    if action != "drain":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown drain action {action!r}; expected 'drain' or 'cancel'",
+        )
+
+    payload = write_drain_request(principal=str(principal))
+    _log.info("Gateway drain BEGIN requested by %s", principal)
+    return {
+        "ok": True,
+        "action": "drain",
+        "requested_at": payload["requested_at"],
+        # Echo so a caller polling /api/status knows the marker is now set;
+        # the gateway watcher flips gateway_state -> draining within ~1s.
+        "draining": drain_requested(),
     }
 
 
@@ -2948,6 +3143,7 @@ async def get_sessions(
     order: str = "created",
     source: str = None,
     exclude_sources: str = None,
+    cwd_prefix: str = None,
     profile: Optional[str] = None,
 ):
     """List sessions.
@@ -2989,6 +3185,7 @@ async def get_sessions(
             sessions = db.list_sessions_rich(
                 source=source or None,
                 exclude_sources=exclude_list or None,
+                cwd_prefix=(cwd_prefix or None),
                 limit=limit,
                 offset=offset,
                 min_message_count=min_message_count,
@@ -2998,6 +3195,7 @@ async def get_sessions(
             )
             total = db.session_count(
                 source=source or None,
+                cwd_prefix=(cwd_prefix or None),
                 exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
@@ -3784,6 +3982,66 @@ def get_auxiliary_models(profile: Optional[str] = None):
     except Exception:
         _log.exception("GET /api/model/auxiliary failed")
         raise HTTPException(status_code=500, detail="Failed to read auxiliary config")
+
+
+@app.get("/api/model/moa")
+def get_moa_models(profile: Optional[str] = None):
+    """Return the configured Mixture-of-Agents provider/model slots."""
+    try:
+        from hermes_cli.moa_config import normalize_moa_config
+
+        with _profile_scope(profile):
+            cfg = load_config()
+            return normalize_moa_config(cfg.get("moa") if isinstance(cfg, dict) else {})
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/model/moa failed")
+        raise HTTPException(status_code=500, detail="Failed to read MoA config")
+
+
+@app.put("/api/model/moa")
+def set_moa_models(body: MoaConfigPayload, profile: Optional[str] = None):
+    """Persist the Mixture-of-Agents provider/model slots."""
+    try:
+        from hermes_cli.moa_config import normalize_moa_config
+
+        with _profile_scope(body.profile or profile):
+            cfg = load_config()
+            if body.presets:
+                raw = {
+                    "default_preset": body.default_preset,
+                    "active_preset": body.active_preset,
+                    "presets": {
+                        name: {
+                            "reference_models": [slot.dict() for slot in preset.reference_models],
+                            "aggregator": preset.aggregator.dict(),
+                            "reference_temperature": preset.reference_temperature,
+                            "aggregator_temperature": preset.aggregator_temperature,
+                            "max_tokens": preset.max_tokens,
+                            "enabled": preset.enabled,
+                        }
+                        for name, preset in body.presets.items()
+                    },
+                }
+            else:
+                raw = {
+                    "reference_models": [slot.dict() for slot in body.reference_models],
+                    "aggregator": body.aggregator.dict(),
+                    "reference_temperature": body.reference_temperature,
+                    "aggregator_temperature": body.aggregator_temperature,
+                    "max_tokens": body.max_tokens,
+                    "enabled": body.enabled,
+                }
+            normalized = normalize_moa_config(raw)
+            cfg["moa"] = normalized
+            save_config(cfg)
+            return {"ok": True, **normalized}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/model/moa failed")
+        raise HTTPException(status_code=500, detail="Failed to save MoA config")
 
 
 @app.post("/api/model/set")
@@ -11296,6 +11554,7 @@ def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
+    active_session_file: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -11315,6 +11574,12 @@ def _resolve_chat_argv(
     `sidecar_url` (when set) is forwarded as ``HERMES_TUI_SIDECAR_URL`` so
     the spawned ``tui_gateway.entry`` can mirror dispatcher emits to the
     dashboard's ``/api/pub`` endpoint (see :func:`pub_ws`).
+
+    `active_session_file` (when set) is forwarded as
+    ``HERMES_TUI_ACTIVE_SESSION_FILE``. The TUI writes the current session id
+    there whenever it creates/resumes/switches sessions, giving the dashboard a
+    small cross-process breadcrumb for reconnecting after an unexpected browser
+    WebSocket close.
 
     `profile` (when set) scopes the ENTIRE chat to that profile by pointing
     ``HERMES_HOME`` at the profile dir in the child env. Every spawned
@@ -11362,6 +11627,9 @@ def _resolve_chat_argv(
 
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
+
+    if active_session_file:
+        env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
 
     # Profile-scoped chats must NOT attach to the dashboard's in-memory
     # gateway — it runs under the dashboard's own profile. Without the
@@ -11411,6 +11679,7 @@ async def _resolve_chat_argv_async(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
     profile: Optional[str] = None,
+    active_session_file: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve chat argv without blocking the dashboard event loop.
 
@@ -11422,12 +11691,18 @@ async def _resolve_chat_argv_async(
     multiple browser tabs connect at once without occupying worker threads
     while queued connections wait.
     """
+    kwargs = {
+        "resume": resume,
+        "sidecar_url": sidecar_url,
+        "profile": profile,
+    }
+    if active_session_file is not None:
+        kwargs["active_session_file"] = active_session_file
+
     async with _get_chat_argv_lock(app):
         return await asyncio.to_thread(
             _resolve_chat_argv,
-            resume=resume,
-            sidecar_url=sidecar_url,
-            profile=profile,
+            **kwargs,
         )
 
 
@@ -11487,6 +11762,37 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     channel = ws.query_params.get("channel", "")
 
     return channel if _VALID_CHANNEL_RE.match(channel) else None
+
+
+def _active_session_file_for_channel(app: "FastAPI", channel: str) -> Path:
+    """Return the per-channel file where a dashboard TUI writes its active sid."""
+    files = _get_pty_active_session_files(app)
+    existing = files.get(channel)
+    if existing is not None:
+        return existing
+
+    fd, raw_path = tempfile.mkstemp(prefix="hermes-pty-active-", suffix=".json")
+    os.close(fd)
+    path = Path(raw_path)
+    files[channel] = path
+    return path
+
+
+def _read_active_session_file(path: Path) -> Optional[str]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+    session_id = str(data.get("session_id") or "").strip()
+    return session_id or None
+
+
+def _forget_active_session_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _ws_close_reason(text: str) -> str:
@@ -11559,11 +11865,32 @@ async def pty_ws(ws: WebSocket) -> None:
     profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
+    force_fresh = (ws.query_params.get("fresh") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    active_session_file: Optional[Path] = None
+
+    if channel:
+        active_session_file = _active_session_file_for_channel(ws.app, channel)
+        if force_fresh:
+            resume = None
+            _forget_active_session_file(active_session_file)
+        elif not resume:
+            resume = _read_active_session_file(active_session_file)
+
+    resolve_kwargs = {
+        "resume": resume,
+        "sidecar_url": sidecar_url,
+        "profile": profile,
+    }
+    if active_session_file is not None:
+        resolve_kwargs["active_session_file"] = str(active_session_file)
 
     try:
-        argv, cwd, env = await _resolve_chat_argv_async(
-            resume=resume, sidecar_url=sidecar_url, profile=profile
-        )
+        argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
     except HTTPException as exc:
         # Unknown/invalid profile from _resolve_profile_dir.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
@@ -12854,6 +13181,45 @@ def _read_bound_port(server: "uvicorn.Server", fallback: int) -> int:
     return fallback
 
 
+def _write_dashboard_ready_file(actual_port: int) -> None:
+    """Optionally publish the dashboard port through an atomic ready file.
+
+    Windows Desktop can launch dashboard backends with ``pythonw.exe`` to avoid
+    console flashes. That path cannot rely on stdout for the port announcement,
+    so Electron passes ``HERMES_DESKTOP_READY_FILE`` and waits for this JSON.
+    Normal CLI/dashboard launches still use the stdout READY line below.
+    """
+    target = os.environ.get("HERMES_DESKTOP_READY_FILE")
+    if not target:
+        return
+
+    tmp_name = ""
+    try:
+        path = Path(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"port": int(actual_port)}, separators=(",", ":"))
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=str(path.parent),
+            prefix=f"{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+            tmp_name = fh.name
+        os.replace(tmp_name, path)
+    except Exception as exc:
+        if tmp_name:
+            try:
+                Path(tmp_name).unlink(missing_ok=True)
+            except Exception:
+                pass
+        _log.warning("Failed to write dashboard ready file %r: %s", target, exc)
+
+
 def _maybe_open_browser(
     host: str, actual_port: int, open_browser: bool, initial_profile: str
 ) -> None:
@@ -13045,6 +13411,7 @@ def start_server(
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port
 
+            _write_dashboard_ready_file(actual_port)
             print(f"HERMES_DASHBOARD_READY port={actual_port}", flush=True)
             print(f"  Hermes Web UI → http://{host}:{actual_port}")
             _maybe_open_browser(host, actual_port, open_browser, initial_profile)

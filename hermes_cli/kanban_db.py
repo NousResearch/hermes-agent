@@ -88,6 +88,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -99,6 +100,37 @@ _log = logging.getLogger(__name__)
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
+
+# Typed block reasons. Distinguishes the two fundamentally different things a
+# worker (or human) means by "blocked", so each can be routed differently
+# instead of all landing in one undifferentiated ``blocked`` bucket that a cron
+# unblocks → worker re-blocks → cron unblocks … forever.
+#
+#   * ``dependency``   — can't proceed until another task finishes. Routed to
+#                        ``todo`` (NOT ``blocked``) so the existing
+#                        parent-gating / ``recompute_ready`` machinery promotes
+#                        it automatically once parents are done. No human, no
+#                        cron, no retry storm.
+#   * ``needs_input``  — needs a human decision/answer it cannot derive.
+#   * ``capability``   — hit a hard wall (no access, missing creds, an action no
+#                        AI agent can perform). Genuinely human-only.
+#   * ``transient``    — a flaky/temporary failure that may clear on retry.
+#
+# ``needs_input`` and ``capability`` are "truly blocked": they go to ``blocked``
+# for a human, and the unblock-loop breaker (see ``block_task`` /
+# ``BLOCK_RECURRENCE_LIMIT``) escalates them to ``triage`` if a cron keeps
+# unblocking them only to have the worker re-block for the same reason.
+# ``None`` = legacy/un-typed block (treated as a generic human blocker).
+VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
+
+# After a task has been blocked, unblocked, and re-blocked this many times for
+# the same (truly-blocked) reason, the unblock-loop breaker stops trusting the
+# unblocker (usually a cron) and routes the task to ``triage`` instead of back
+# to ``blocked`` — breaking the infinite unblock↔re-block loop and forcing a
+# human-in-the-loop decision. Mirrors the dispatcher's ``DEFAULT_FAILURE_LIMIT``
+# spirit (default 2) but counts a different signal: manual unblock recurrences,
+# not dispatcher spawn/crash/timeout failures.
+BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
@@ -785,6 +817,7 @@ class Task:
     claim_expires: Optional[int]
     tenant: Optional[str]
     branch_name: Optional[str] = None
+    project_id: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
     # Unified non-success counter. Incremented on any of:
@@ -836,6 +869,13 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # Typed block reason (one of VALID_BLOCK_KINDS) or None for legacy/un-typed
+    # blocks. Set by ``block_task``; preserved across unblock so a re-block for
+    # the same kind is recognisable as an unblock↔re-block loop.
+    block_kind: Optional[str] = None
+    # Unblock-loop counter. See the column comment in SCHEMA_SQL and
+    # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
+    block_recurrences: int = 0
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -863,6 +903,7 @@ class Task:
             workspace_kind=row["workspace_kind"],
             workspace_path=row["workspace_path"],
             branch_name=row["branch_name"] if "branch_name" in keys else None,
+            project_id=row["project_id"] if "project_id" in keys else None,
             claim_lock=row["claim_lock"],
             claim_expires=row["claim_expires"],
             tenant=row["tenant"] if "tenant" in keys else None,
@@ -910,6 +951,14 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            block_kind=(
+                row["block_kind"] if "block_kind" in keys and row["block_kind"] else None
+            ),
+            block_recurrences=(
+                int(row["block_recurrences"])
+                if "block_recurrences" in keys and row["block_recurrences"] is not None
+                else 0
             ),
         )
 
@@ -1020,6 +1069,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
     workspace_path       TEXT,
     branch_name          TEXT,
+    -- Optional link to a first-class Project (hermes_cli/projects_db). When set,
+    -- the task's worktree is anchored under the project's primary repo with a
+    -- deterministic branch name instead of a random wt/<task-id> fallback.
+    project_id           TEXT,
     claim_lock           TEXT,
     claim_expires        INTEGER,
     tenant               TEXT,
@@ -1071,7 +1124,20 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
+    -- Typed block reason set by ``block_task`` (one of VALID_BLOCK_KINDS, or
+    -- NULL for legacy/un-typed blocks). Drives routing: ``dependency`` never
+    -- sits in ``blocked`` (goes to ``todo`` for parent-gating); the others go
+    -- to ``blocked`` for a human. Preserved across unblock so a re-block for
+    -- the SAME kind can be recognised as a loop.
+    block_kind           TEXT,
+    -- Unblock-loop counter. Incremented each time a task is re-blocked for the
+    -- same truly-blocked reason after having been unblocked. When it reaches
+    -- BLOCK_RECURRENCE_LIMIT the task is routed to ``triage`` instead of
+    -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
+    -- successful completion — NOT on unblock (resetting on unblock is exactly
+    -- the amnesia that let the loop run unbounded).
+    block_recurrences    INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1745,25 +1811,6 @@ def init_db(
     return path
 
 
-def _add_column_if_missing(
-    conn: sqlite3.Connection, table: str, column: str, ddl: str
-) -> bool:
-    """Run ``ALTER TABLE <table> ADD COLUMN <ddl>``, idempotent across races.
-
-    Returns ``True`` when the column was actually added by this call.
-    Swallows ``duplicate column name`` errors so a concurrent connection
-    that ran the same migration first does not crash the dispatcher tick
-    (issue #21708).
-    """
-    try:
-        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
-        return True
-    except sqlite3.OperationalError as exc:
-        if "duplicate column name" in str(exc).lower():
-            return False
-        raise
-
-
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -1776,6 +1823,8 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         _add_column_if_missing(conn, "tasks", "result", "result TEXT")
     if "branch_name" not in cols:
         _add_column_if_missing(conn, "tasks", "branch_name", "branch_name TEXT")
+    if "project_id" not in cols:
+        _add_column_if_missing(conn, "tasks", "project_id", "project_id TEXT")
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
@@ -1881,6 +1930,22 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         # creation path that doesn't set the env var (CLI, dashboard).
         _add_column_if_missing(
             conn, "tasks", "session_id", "session_id TEXT"
+        )
+
+    if "block_kind" not in cols:
+        # Typed block reason (VALID_BLOCK_KINDS) or NULL for legacy/un-typed
+        # blocks. Existing blocked rows get NULL, which is treated as a
+        # generic human blocker — same behaviour they had before the column.
+        _add_column_if_missing(conn, "tasks", "block_kind", "block_kind TEXT")
+
+    if "block_recurrences" not in cols:
+        # Unblock-loop counter. Existing rows start at 0, so the loop breaker
+        # only begins counting from the first re-block after this migration.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "block_recurrences",
+            "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -2262,6 +2327,7 @@ def create_task(
     initial_status: str = "running",
     session_id: Optional[str] = None,
     board: Optional[str] = None,
+    project_id: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2302,6 +2368,48 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+
+    # Resolve an optional first-class Project link. A project-linked task is
+    # anchored to the project's primary repo as a git worktree, so its branch
+    # can be named deterministically (project slug + task id) instead of the
+    # random ``wt/<task-id>`` fallback the worker skill applies when no branch
+    # is set. Projects live in the creator's per-profile projects.db; the repo
+    # path is absolute (profile-independent) and the branch name is pure, so the
+    # cross-profile dispatcher needs no projects.db access at dispatch time.
+    project_obj = None
+    # Primary repo of a project-linked worktree task whose path we still need to
+    # derive (a fresh worktree dir under the repo, computed once task_id exists).
+    project_repo: Optional[str] = None
+    if project_id is not None:
+        project_id = str(project_id).strip() or None
+    if project_id:
+        try:
+            from hermes_cli import projects_db as _pdb
+
+            with _pdb.connect_closing() as _pconn:
+                project_obj = _pdb.get_project(_pconn, project_id)
+        except Exception:
+            project_obj = None
+        if project_obj is None:
+            # A project id/slug that doesn't resolve must not crash task
+            # creation or persist a dangling reference — drop the link and
+            # create the task as an ordinary (scratch) task.
+            project_id = None
+        else:
+            # Canonicalise (a slug may have been passed) and anchor the
+            # worktree under the project's primary repo.
+            project_id = project_obj.id
+            if workspace_kind == "scratch" and project_obj.primary_path:
+                workspace_kind = "worktree"
+            if (
+                workspace_kind == "worktree"
+                and workspace_path is None
+                and project_obj.primary_path
+            ):
+                # Defer the concrete path to the insert loop: it's a fresh
+                # ``<repo>/.worktrees/<task-id>`` dir keyed on the new task id.
+                project_repo = str(project_obj.primary_path)
+
     parents = tuple(p for p in parents if p)
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
@@ -2375,7 +2483,11 @@ def create_task(
     # task would point cleanup at the user's source tree (#28818). The
     # containment guard in ``_cleanup_workspace`` is the safety rail, but
     # we also stop the bad state from being created in the first place.
-    if workspace_path is None and workspace_kind in {"dir", "worktree"}:
+    if (
+        workspace_path is None
+        and project_repo is None
+        and workspace_kind in {"dir", "worktree"}
+    ):
         board_slug = board if board else get_current_board()
         board_meta = read_board_metadata(board_slug)
         board_default = board_meta.get("default_workdir")
@@ -2419,14 +2531,33 @@ def create_task(
                     if missing:
                         raise ValueError(f"unknown parent task(s): {', '.join(missing)}")
 
+                # Project-linked worktree: a fresh worktree dir under the repo
+                # plus a deterministic branch (project slug + task id). Together
+                # these kill the random ``wt/<task-id>`` worker fallback and the
+                # unanchored ``.worktrees/<id>`` under the dispatcher's cwd.
+                if project_obj is not None and workspace_kind == "worktree":
+                    if project_repo and not workspace_path:
+                        workspace_path = os.path.join(
+                            project_repo, ".worktrees", task_id
+                        )
+                    if not branch_name:
+                        # _pdb was imported above when project_obj was resolved.
+                        try:
+                            branch_name = _pdb.branch_name_for(
+                                project_obj, task_id, title=title or ""
+                            )
+                        except Exception:
+                            branch_name = None
+
                 conn.execute(
                     """
                     INSERT INTO tasks (
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
-                        branch_name, tenant, idempotency_key, max_runtime_seconds,
+                        branch_name, project_id, tenant, idempotency_key,
+                        max_runtime_seconds,
                         skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2440,6 +2571,7 @@ def create_task(
                         workspace_kind,
                         workspace_path,
                         branch_name,
+                        project_id,
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
@@ -3841,7 +3973,9 @@ def complete_task(
                        completed_at = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
-                       worker_pid   = NULL
+                       worker_pid   = NULL,
+                       block_kind   = NULL,
+                       block_recurrences = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                 """,
@@ -3856,7 +3990,9 @@ def complete_task(
                        completed_at = ?,
                        claim_lock   = NULL,
                        claim_expires= NULL,
-                       worker_pid   = NULL
+                       worker_pid   = NULL,
+                       block_kind   = NULL,
+                       block_recurrences = 0
                  WHERE id = ?
                    AND status IN ('running', 'ready', 'blocked')
                    AND current_run_id = ?
@@ -4328,53 +4464,204 @@ def block_task(
     task_id: str,
     *,
     reason: Optional[str] = None,
+    kind: Optional[str] = None,
     expected_run_id: Optional[int] = None,
 ) -> bool:
-    """Transition ``running -> blocked``."""
-    with write_txn(conn):
-        if expected_run_id is None:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status       = 'blocked',
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
-                 WHERE id = ?
-                   AND status IN ('running', 'ready')
-                """,
-                (task_id,),
-            )
-        else:
-            cur = conn.execute(
-                """
-                UPDATE tasks
-                   SET status       = 'blocked',
-                       claim_lock   = NULL,
-                       claim_expires= NULL,
-                       worker_pid   = NULL
-                 WHERE id = ?
-                   AND status IN ('running', 'ready')
-                   AND current_run_id = ?
-                """,
-                (task_id, int(expected_run_id)),
-            )
-        if cur.rowcount != 1:
-            return False
-        run_id = _end_run(
-            conn, task_id,
-            outcome="blocked", status="blocked",
-            summary=reason,
+    """Transition ``running``/``ready`` → ``blocked`` (or route elsewhere).
+
+    ``kind`` (one of :data:`VALID_BLOCK_KINDS`, or ``None`` for a legacy
+    un-typed block) drives routing instead of every block landing in one
+    undifferentiated ``blocked`` bucket:
+
+    * ``dependency`` — the task is only waiting on another task. It does NOT
+      sit in ``blocked`` (where a cron would keep "unblocking" it); it goes to
+      ``todo`` so the existing parent-gating / ``recompute_ready`` machinery
+      promotes it automatically once its parents finish. No human, no cron, no
+      retry storm. This is Dale's "Type 2 — dependency blocked".
+
+    * ``needs_input`` / ``capability`` / ``None`` — "truly blocked" (Dale's
+      "Type 1"). Lands in ``blocked`` for a human. BUT: each time such a task
+      is re-blocked for the SAME kind after having been unblocked, the
+      unblock-loop counter (``block_recurrences``) increments. When it reaches
+      :data:`BLOCK_RECURRENCE_LIMIT`, the task is routed to ``triage`` instead
+      of ``blocked`` — breaking the cron-unblock ↔ worker-re-block loop and
+      forcing a human-in-the-loop triage decision.
+
+    * ``transient`` — treated like a generic block for routing, but a worker
+      can use it to signal "this might clear on its own"; it still participates
+      in the loop breaker so a forever-flaky task eventually escalates.
+
+    Returns True on any successful transition (to ``blocked``, ``todo``, or
+    ``triage``), False when the task wasn't in a blockable state.
+    """
+    if kind is not None and kind not in VALID_BLOCK_KINDS:
+        raise ValueError(
+            f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
-        # Synthesize a run when blocking a never-claimed task so the
-        # reason is preserved in attempt history.
-        if run_id is None and reason:
-            run_id = _synthesize_ended_run(
+    routed_to = "blocked"
+    recurrences = 0
+    with write_txn(conn):
+        cur_row = conn.execute(
+            "SELECT status, block_kind, block_recurrences FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if cur_row is None:
+            return False
+        prev_kind = cur_row["block_kind"] if "block_kind" in cur_row.keys() else None
+        prev_recurrences = (
+            int(cur_row["block_recurrences"])
+            if "block_recurrences" in cur_row.keys()
+            and cur_row["block_recurrences"] is not None
+            else 0
+        )
+
+        # Dependency blocks never enter the human ``blocked`` bucket — they
+        # wait in ``todo`` and let ``recompute_ready`` gate on parents. Routing
+        # here (rather than ``blocked``) is what keeps a cron from ever seeing
+        # a dependency-wait as something to "unblock".
+        if kind == "dependency":
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status        = 'todo',
+                       claim_lock    = NULL,
+                       claim_expires = NULL,
+                       worker_pid    = NULL,
+                       block_kind    = ?
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
+                (kind, task_id) if expected_run_id is None
+                else (kind, task_id, int(expected_run_id)),
+            )
+            if cur.rowcount != 1:
+                return False
+            run_id = _end_run(
                 conn, task_id,
-                outcome="blocked",
+                outcome="blocked", status="blocked",
                 summary=reason,
             )
-        _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
+            if run_id is None and reason:
+                run_id = _synthesize_ended_run(
+                    conn, task_id, outcome="blocked", summary=reason,
+                )
+            _append_event(
+                conn, task_id, "dependency_wait",
+                {"reason": reason, "kind": kind}, run_id=run_id,
+            )
+            routed_to = "todo"
+            _blocked_task = get_task(conn, task_id)
+            _fire_kanban_lifecycle_hook(
+                "kanban_task_blocked",
+                task_id,
+                board=get_current_board(),
+                assignee=_blocked_task.assignee if _blocked_task else None,
+                run_id=run_id,
+                reason=reason,
+            )
+            return True
+
+        # Truly-blocked kinds. Increment the unblock-loop counter when this is a
+        # re-block for the SAME reason after a prior unblock. block_task only
+        # fires from running/ready (i.e. AFTER an unblock returned the task to
+        # the work pool), so a stored block_kind that matches the incoming kind
+        # means: blocked → unblocked → about-to-re-block for the same cause.
+        # An un-typed (None) block compares as "same" to a prior un-typed block.
+        same_cause = prev_kind == kind
+        recurrences = prev_recurrences + 1 if same_cause else 1
+
+        if recurrences >= BLOCK_RECURRENCE_LIMIT:
+            # Loop detected — stop letting the unblocker spin this task. Route
+            # to triage for a human-in-the-loop decision instead of blocked.
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status        = 'triage',
+                       claim_lock    = NULL,
+                       claim_expires = NULL,
+                       worker_pid    = NULL,
+                       block_kind    = ?,
+                       block_recurrences = ?
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                """ + ("" if expected_run_id is None else " AND current_run_id = ?"),
+                (kind, recurrences, task_id) if expected_run_id is None
+                else (kind, recurrences, task_id, int(expected_run_id)),
+            )
+            if cur.rowcount != 1:
+                return False
+            run_id = _end_run(
+                conn, task_id,
+                outcome="blocked", status="blocked",
+                summary=reason,
+            )
+            if run_id is None and reason:
+                run_id = _synthesize_ended_run(
+                    conn, task_id, outcome="blocked", summary=reason,
+                )
+            _append_event(
+                conn, task_id, "block_loop_detected",
+                {
+                    "reason": reason,
+                    "kind": kind,
+                    "recurrences": recurrences,
+                    "limit": BLOCK_RECURRENCE_LIMIT,
+                },
+                run_id=run_id,
+            )
+            routed_to = "triage"
+        else:
+            if expected_run_id is None:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status        = 'blocked',
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL,
+                           block_kind    = ?,
+                           block_recurrences = ?
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                    """,
+                    (kind, recurrences, task_id),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                       SET status        = 'blocked',
+                           claim_lock    = NULL,
+                           claim_expires = NULL,
+                           worker_pid    = NULL,
+                           block_kind    = ?,
+                           block_recurrences = ?
+                     WHERE id = ?
+                       AND status IN ('running', 'ready')
+                       AND current_run_id = ?
+                    """,
+                    (kind, recurrences, task_id, int(expected_run_id)),
+                )
+            if cur.rowcount != 1:
+                return False
+            run_id = _end_run(
+                conn, task_id,
+                outcome="blocked", status="blocked",
+                summary=reason,
+            )
+            # Synthesize a run when blocking a never-claimed task so the
+            # reason is preserved in attempt history.
+            if run_id is None and reason:
+                run_id = _synthesize_ended_run(
+                    conn, task_id,
+                    outcome="blocked",
+                    summary=reason,
+                )
+            _append_event(
+                conn, task_id, "blocked",
+                {"reason": reason, "kind": kind, "recurrences": recurrences},
+                run_id=run_id,
+            )
         _blocked_task = get_task(conn, task_id)
     _fire_kanban_lifecycle_hook(
         "kanban_task_blocked",
@@ -4499,6 +4786,16 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             (task_id,),
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"
+        # NOTE: deliberately does NOT touch ``block_recurrences`` or
+        # ``block_kind``. Resetting the recurrence counter on unblock is exactly
+        # the amnesia that let a cron unblock → worker re-block loop run
+        # unbounded (Dale's report). The counter survives the unblock so that a
+        # subsequent same-cause ``block_task`` can detect the loop and route to
+        # triage at ``BLOCK_RECURRENCE_LIMIT``. It is reset to 0 only on a
+        # successful completion (see ``complete_task``). ``consecutive_failures``
+        # (the *dispatcher* spawn/crash/timeout counter — a different signal) is
+        # still reset here, which is correct: a deliberate unblock is a fresh
+        # start for the dispatcher's retry budget.
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "

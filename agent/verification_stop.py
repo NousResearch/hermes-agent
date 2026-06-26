@@ -15,9 +15,77 @@ from typing import Any, Iterable
 
 _MAX_CHANGED_PATHS_IN_NUDGE = 8
 
+# Session identities (platform or source) that are NOT human conversational
+# messaging surfaces: interactive coding surfaces (CLI, TUI, desktop, codex,
+# local, gateway) and programmatic callers (API server, webhooks, tools).
+# Verify-on-stop stays ON by default for these. Any other resolved gateway
+# platform is a conversational messaging surface (Telegram, Discord, WhatsApp,
+# Signal, Slack, etc.) where the verification narrative would reach a human as
+# chat noise, so it defaults OFF. Mirrors LOCAL_SESSION_SOURCE_IDS in
+# apps/desktop/src/lib/session-source.ts; keep roughly in sync when adding a
+# local or programmatic surface. Default-deny by design: an unrecognized
+# identity is treated as messaging (OFF) so a new chat platform never leaks the
+# verification receipt before this set is updated.
+_NON_MESSAGING_SESSION_SURFACES = frozenset(
+    {
+        "",
+        "cli",
+        "codex",
+        "desktop",
+        "gateway",
+        "local",
+        "tui",
+        "tool",
+        "api_server",
+        "webhook",
+        "msgraph_webhook",
+    }
+)
+
+
+def _session_is_messaging_surface() -> bool:
+    """Return whether this turn is delivered over a human messaging channel.
+
+    The gateway binds the platform value (e.g. ``telegram``) to
+    ``HERMES_SESSION_PLATFORM``; the CLI and TUI set ``HERMES_SESSION_SOURCE``
+    (e.g. ``cli``, ``tui``) instead. Both are consulted via the session-context
+    helper (with an ``os.environ`` fallback), alongside the ``HERMES_PLATFORM``
+    override, matching the sibling platform resolution in
+    ``agent/skill_commands.py`` and ``agent/prompt_builder.py``. A turn is a
+    messaging surface when a resolved identity is present and is not a known
+    non-messaging surface.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        platform = (
+            os.getenv("HERMES_PLATFORM")
+            or get_session_env("HERMES_SESSION_PLATFORM", "")
+        )
+        source = get_session_env("HERMES_SESSION_SOURCE", "")
+    except Exception:
+        platform = os.getenv("HERMES_PLATFORM", "") or os.environ.get(
+            "HERMES_SESSION_PLATFORM", ""
+        )
+        source = os.environ.get("HERMES_SESSION_SOURCE", "")
+    for identity in (platform, source):
+        identity = str(identity or "").strip().lower()
+        if identity and identity not in _NON_MESSAGING_SESSION_SURFACES:
+            return True
+    return False
+
 
 def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
-    """Return whether edit -> verify-before-finish behavior is enabled."""
+    """Return whether edit -> verify-before-finish behavior is enabled.
+
+    Precedence: an explicit ``HERMES_VERIFY_ON_STOP`` env var wins, then an
+    explicit boolean ``agent.verify_on_stop`` config value, then a surface-aware
+    default. The config default is the sentinel ``"auto"`` (see
+    ``DEFAULT_CONFIG``), which resolves to ON for interactive coding surfaces
+    (CLI, TUI, desktop) and programmatic callers, and OFF for conversational
+    messaging surfaces (Telegram, Discord, etc.) where the verification
+    narrative would otherwise reach a human as chat noise.
+    """
     env = os.environ.get("HERMES_VERIFY_ON_STOP")
     if env is not None:
         return env.strip().lower() not in {"0", "false", "no", "off"}
@@ -29,9 +97,17 @@ def verify_on_stop_enabled(config: dict[str, Any] | None = None) -> bool:
         except Exception:
             config = {}
     agent_cfg = (config or {}).get("agent") if isinstance(config, dict) else None
-    if isinstance(agent_cfg, dict) and "verify_on_stop" in agent_cfg:
-        return bool(agent_cfg.get("verify_on_stop"))
-    return True
+    cfg_val = agent_cfg.get("verify_on_stop") if isinstance(agent_cfg, dict) else None
+    if isinstance(cfg_val, bool):
+        return cfg_val
+    if isinstance(cfg_val, str):
+        token = cfg_val.strip().lower()
+        if token in {"1", "true", "yes", "on"}:
+            return True
+        if token in {"0", "false", "no", "off"}:
+            return False
+    # "auto", missing, or any other value -> surface-aware default.
+    return not _session_is_messaging_surface()
 
 
 def _candidate_cwds(paths: Iterable[str]) -> list[Path]:

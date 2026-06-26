@@ -239,7 +239,7 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     # -- Connection lifecycle -----------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to DingTalk via Stream Mode."""
         if not DINGTALK_STREAM_AVAILABLE:
             logger.warning(

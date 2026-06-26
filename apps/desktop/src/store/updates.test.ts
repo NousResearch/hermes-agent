@@ -53,6 +53,7 @@ const {
   $updateOverlayOpen,
   resetUpdateApplyState
 } = await import('./updates')
+
 const { setConnection } = await import('./session')
 
 const status = (over: Partial<DesktopUpdateStatus> = {}): DesktopUpdateStatus => ({
@@ -348,7 +349,15 @@ describe('applyBackendUpdate recovery', () => {
     checkHermesUpdateSpy.mockReset()
     updateHermesSpy.mockReset()
     getActionStatusSpy.mockReset()
-    $backendUpdateApply.set({ applying: false, stage: 'idle', message: '', percent: null, error: null, command: null, log: [] })
+    $backendUpdateApply.set({
+      applying: false,
+      stage: 'idle',
+      message: '',
+      percent: null,
+      error: null,
+      command: null,
+      log: []
+    })
     vi.useFakeTimers()
   })
 
@@ -359,7 +368,15 @@ describe('applyBackendUpdate recovery', () => {
   it('waits for the backend to return after the restart drops the connection, then clears the overlay', async () => {
     updateHermesSpy.mockResolvedValue({ ok: true, name: 'update', pid: 1 })
     getActionStatusSpy.mockRejectedValue(new Error('ECONNREFUSED'))
-    checkHermesUpdateSpy.mockResolvedValue({ install_method: 'git', current_version: '0.16.0', behind: 0, update_available: false, can_apply: true, update_command: 'hermes update', message: null })
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'git',
+      current_version: '0.16.0',
+      behind: 0,
+      update_available: false,
+      can_apply: true,
+      update_command: 'hermes update',
+      message: null
+    })
 
     const promise = applyBackendUpdate()
     await vi.advanceTimersByTimeAsync(5000)

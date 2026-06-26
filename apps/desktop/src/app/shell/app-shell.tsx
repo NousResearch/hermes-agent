@@ -21,6 +21,7 @@ import { isSecondaryWindow } from '@/store/windows'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 
+import { useWindowControlsOverlayWidth } from './hooks/use-window-controls-overlay-width'
 import { KeybindPanel } from './keybind-panel'
 import { StatusbarControls, type StatusbarItem } from './statusbar-controls'
 import { TITLEBAR_HEIGHT, titlebarControlsPosition } from './titlebar'
@@ -86,11 +87,25 @@ export function AppShell({
   // tool cluster. Gate on isSecondaryWindow, never the narrower new-session flag.
   const hideTitlebarControls = isSecondaryWindow()
   const titlebarControls = titlebarControlsPosition(connection?.windowButtonPosition, isFullscreen)
-  // Width Windows/Linux reserve for the OS-painted min/max/close overlay (zero
-  // on macOS, where window controls sit on the left and are reported via
+  // Width Windows/WSLg reserve for the native min/max/close overlay (zero on
+  // macOS, where window controls sit on the left and are reported via
   // windowButtonPosition instead). The right tool cluster has to clear them.
-  const nativeOverlayWidth = connection?.nativeOverlayWidth ?? 0
+  // Prefer the EXACT width measured from the live Window Controls Overlay
+  // (precise + self-correcting across DPI/host themes); fall back to the static
+  // reservation the main process sends when the WCO API isn't available.
+  const measuredOverlayWidth = useWindowControlsOverlayWidth()
+  const staticOverlayWidth = connection?.nativeOverlayWidth ?? 0
+  const nativeOverlayWidth = measuredOverlayWidth ?? staticOverlayWidth
   const titlebarToolsRight = nativeOverlayWidth > 0 ? `${nativeOverlayWidth}px` : '0.75rem'
+
+  // When the native window controls overlay our titlebar band — Windows and
+  // WSLg both paint Electron's Window Controls Overlay and report
+  // nativeOverlayWidth > 0 — the right rail's editor-style tab strip (which
+  // normally lives IN that band) would render at y=0 under the fixed titlebar
+  // tool cluster and collide with it. Drop the right rail one titlebar-height so
+  // it opens BELOW the band. macOS / plain Linux paint no overlay → 0 inset,
+  // layout byte-for-byte unchanged. Consumed as --right-rail-top-inset.
+  const rightRailTopInset = nativeOverlayWidth > 0 ? 'var(--titlebar-height)' : '0px'
 
   // The inset clears the top-left titlebar buttons when nothing covers the
   // window's left edge. Default layout: the sessions sidebar sits there.
@@ -159,6 +174,9 @@ export function AppShell({
           '--titlebar-controls-top': `${titlebarControls.top}px`,
           '--titlebar-tools-right': titlebarToolsRight,
           '--titlebar-tools-width': titlebarToolsWidth,
+          // Drops the right rail below the titlebar band when the OS/host paints
+          // window controls over it (Windows/WSLg); 0px elsewhere.
+          '--right-rail-top-inset': rightRailTopInset,
           // Anchor for the pane-tool cluster's right edge in TitlebarControls.
           // Sourced from the layout store rather than the PaneShell-emitted
           // --pane-*-width vars because the titlebar is a sibling of PaneShell
@@ -169,6 +187,13 @@ export function AppShell({
     >
       {!hideTitlebarControls && (
         <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
+      )}
+
+      {nativeOverlayWidth > 0 && (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed inset-x-0 top-0 z-[4] h-(--titlebar-height) border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background)"
+        />
       )}
 
       <main className="relative z-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden transition-none">

@@ -4,7 +4,6 @@ import { type FC, useCallback, useEffect, useMemo, useRef, useState } from 'reac
 import { composerPanelCard } from '@/components/chat/composer-dock'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { setPaneHoverRevealSuppressed } from '@/store/panes'
 
 import {
   activeTimelineIndex,
@@ -60,6 +59,51 @@ function userPromptText(content: unknown): string {
   return out
 }
 
+/** Index-keyed ref-array setter — `ref={listRef(refs, i)}`. */
+const listRef =
+  <T,>(refs: React.RefObject<(T | null)[]>, index: number) =>
+  (node: T | null) => {
+    refs.current[index] = node
+  }
+
+/** Mouse enter/leave pair forwarding `on` to the shared paint(). */
+const hoverProps = (index: number, paint: (index: number, on: boolean) => void) => ({
+  onMouseEnter: () => paint(index, true),
+  onMouseLeave: () => paint(index, false)
+})
+
+// Constant-duration jump (eased), NOT native `behavior:'smooth'` — Chromium's
+// smooth scroll animates proportional to distance, so jumping across a long
+// thread crawls for seconds. A fixed ~260ms feels instant near or far. A
+// shared rAF handle cancels a prior jump so rapid tick clicks don't fight.
+let jumpRaf = 0
+
+function jumpScroll(viewport: HTMLElement, top: number, duration = 170): void {
+  cancelAnimationFrame(jumpRaf)
+  const start = viewport.scrollTop
+  const delta = top - start
+
+  if (Math.abs(delta) < 2) {
+    viewport.scrollTop = top
+
+    return
+  }
+
+  const t0 = performance.now()
+  const ease = (t: number) => 1 - (1 - t) ** 3 // easeOutCubic
+
+  const step = (now: number) => {
+    const p = Math.min(1, (now - t0) / duration)
+    viewport.scrollTop = start + delta * ease(p)
+
+    if (p < 1) {
+      jumpRaf = requestAnimationFrame(step)
+    }
+  }
+
+  jumpRaf = requestAnimationFrame(step)
+}
+
 function scrollToPrompt(id: string) {
   const viewport = document.querySelector<HTMLElement>(VIEWPORT)
   const node = viewport?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(id)}"]`)
@@ -71,7 +115,7 @@ function scrollToPrompt(id: string) {
   const top = viewport.scrollTop + (node.getBoundingClientRect().top - viewport.getBoundingClientRect().top) - 8
 
   triggerHaptic('selection')
-  viewport.scrollTo({ behavior: 'smooth', top: Math.max(0, top) })
+  jumpScroll(viewport, Math.max(0, top))
 }
 
 /** Right-edge prompt rail — hover previews, click to jump. ≥4 user turns only. */
@@ -96,36 +140,36 @@ export const ThreadTimeline: FC = () => {
   )
 
   const [activeIndex, setActiveIndex] = useState(0)
-  const [hoverIndex, setHoverIndex] = useState<number | null>(null)
   const [open, setOpen] = useState(false)
   const closeTimerRef = useRef<number | undefined>(undefined)
 
+  // Hover sync lives on the DOM, not in React state — the tick and its popover
+  // row are siblings in different subtrees, so a shared index-keyed paint() lights
+  // both without a re-render (and without coupling them through a parent atom).
+  const tickRefs = useRef<(HTMLSpanElement | null)[]>([])
+  const rowRefs = useRef<(HTMLButtonElement | null)[]>([])
+
+  const paint = useCallback((index: number, on: boolean) => {
+    const tick = tickRefs.current[index]
+
+    if (tick) {
+      tick.style.opacity = on ? '1' : ''
+    }
+
+    rowRefs.current[index]?.classList.toggle('bg-(--ui-row-hover-background)', on)
+  }, [])
+
   const keepOpen = useCallback(() => {
     window.clearTimeout(closeTimerRef.current)
-    setPaneHoverRevealSuppressed(true)
     setOpen(true)
   }, [])
 
   const closeSoon = useCallback(() => {
     window.clearTimeout(closeTimerRef.current)
-    setHoverIndex(null)
-    setPaneHoverRevealSuppressed(false)
     closeTimerRef.current = window.setTimeout(() => setOpen(false), HOVER_CLOSE_MS)
   }, [])
 
-  useEffect(
-    () => () => {
-      window.clearTimeout(closeTimerRef.current)
-      setPaneHoverRevealSuppressed(false)
-    },
-    []
-  )
-
-  useEffect(() => {
-    if (entries.length < MIN_ENTRIES) {
-      setPaneHoverRevealSuppressed(false)
-    }
-  }, [entries.length])
+  useEffect(() => () => window.clearTimeout(closeTimerRef.current), [])
 
   useEffect(() => {
     const viewport = document.querySelector<HTMLElement>(VIEWPORT)
@@ -179,6 +223,7 @@ export const ThreadTimeline: FC = () => {
       aria-label="Conversation timeline"
       className="group/timeline pointer-events-auto absolute right-0 top-1/2 z-40 flex -translate-y-1/2 flex-col items-end"
       data-slot="thread-timeline"
+      data-suppress-pane-reveal=""
       onMouseEnter={keepOpen}
       onMouseLeave={closeSoon}
       role="navigation"
@@ -186,16 +231,17 @@ export const ThreadTimeline: FC = () => {
       <TimelineTicks
         activeIndex={activeIndex}
         entries={entries}
-        onHover={setHoverIndex}
+        onHover={paint}
         onJump={scrollToPrompt}
+        tickRefs={tickRefs}
       />
       <TimelinePopover
         activeIndex={activeIndex}
         entries={entries}
-        hoverIndex={hoverIndex}
-        onHover={setHoverIndex}
+        onHover={paint}
         onJump={scrollToPrompt}
         open={open}
+        rowRefs={rowRefs}
       />
     </div>
   )
@@ -204,11 +250,11 @@ export const ThreadTimeline: FC = () => {
 const TimelinePopover: FC<{
   activeIndex: number
   entries: TimelineEntry[]
-  hoverIndex: number | null
-  onHover: (index: number) => void
+  onHover: (index: number, on: boolean) => void
   onJump: (id: string) => void
   open: boolean
-}> = ({ activeIndex, entries, hoverIndex, onHover, onJump, open }) => (
+  rowRefs: React.RefObject<(HTMLButtonElement | null)[]>
+}> = ({ activeIndex, entries, onHover, onJump, open, rowRefs }) => (
   <div
     className={cn(
       POPOVER_SHELL,
@@ -216,55 +262,45 @@ const TimelinePopover: FC<{
     )}
     data-slot="thread-timeline-popover"
   >
-    {entries.map((entry, index) => {
-      const hovered = index === hoverIndex
-      const active = index === activeIndex
-
-      return (
-        <button
-          aria-label={entry.preview}
-          className={cn(
-            ROW_CLASS,
-            active && 'bg-(--ui-row-active-background) text-foreground',
-            hovered && 'bg-(--ui-row-hover-background) text-foreground transition-none'
-          )}
-          key={entry.id}
-          onClick={() => onJump(entry.id)}
-          onMouseEnter={() => onHover(index)}
-          type="button"
-        >
-          <span className="block w-full min-w-0 truncate font-medium leading-snug text-foreground">
-            {entry.preview}
-          </span>
-        </button>
-      )
-    })}
+    {entries.map((entry, index) => (
+      <button
+        aria-label={entry.preview}
+        className={cn(ROW_CLASS, index === activeIndex && 'bg-(--ui-row-active-background) text-foreground')}
+        key={entry.id}
+        onClick={() => onJump(entry.id)}
+        ref={listRef(rowRefs, index)}
+        type="button"
+        {...hoverProps(index, onHover)}
+      >
+        <span className="block w-full min-w-0 truncate font-medium leading-snug text-foreground">{entry.preview}</span>
+      </button>
+    ))}
   </div>
 )
 
 const TimelineTicks: FC<{
   activeIndex: number
   entries: TimelineEntry[]
-  onHover: (index: number) => void
+  onHover: (index: number, on: boolean) => void
   onJump: (id: string) => void
-}> = ({ activeIndex, entries, onHover, onJump }) => (
+  tickRefs: React.RefObject<(HTMLSpanElement | null)[]>
+}> = ({ activeIndex, entries, onHover, onJump, tickRefs }) => (
   <div className="flex flex-col items-end py-1" data-slot="thread-timeline-ticks">
     {entries.map((entry, index) => (
       <button
         aria-label={entry.preview}
-        className="group/tick flex h-2 w-7 cursor-pointer items-center justify-end pr-1"
+        className="flex h-2 w-7 cursor-pointer items-center justify-end pr-1"
         key={entry.id}
         onClick={() => onJump(entry.id)}
-        onMouseEnter={() => onHover(index)}
         type="button"
+        {...hoverProps(index, onHover)}
       >
         <span
           className={cn(
             'block h-px w-3 transition-opacity duration-100 ease-out',
-            index === activeIndex
-              ? 'bg-(--theme-primary)'
-              : 'dither text-(--ui-text-quaternary) opacity-70 group-hover/tick:opacity-100 group-hover/tick:transition-none'
+            index === activeIndex ? 'bg-(--theme-primary)' : 'dither text-(--ui-text-quaternary) opacity-70'
           )}
+          ref={listRef(tickRefs, index)}
         />
       </button>
     ))}

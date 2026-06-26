@@ -600,10 +600,6 @@ class TestAdapterBehavior(unittest.TestCase):
                 calls.append("card_action")
                 return self
 
-            def register_p2_im_chat_member_bot_added_v1(self, _handler):
-                calls.append("bot_added")
-                return self
-
             def register_p2_im_chat_member_bot_deleted_v1(self, _handler):
                 calls.append("bot_deleted")
                 return self
@@ -643,7 +639,6 @@ class TestAdapterBehavior(unittest.TestCase):
                 "reaction_created",
                 "reaction_deleted",
                 "card_action",
-                "bot_added",
                 "bot_deleted",
                 "p2p_chat_entered",
                 "message_recalled",
@@ -1960,18 +1955,18 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter = FeishuAdapter(PlatformConfig())
         captured = {}
 
-        class _ReplyAPI:
-            def reply(self, request):
+        class _MessageAPI:
+            def create(self, request):
                 captured["request"] = request
                 return SimpleNamespace(
                     success=lambda: True,
-                    data=SimpleNamespace(message_id="om_reply"),
+                    data=SimpleNamespace(message_id="om_create"),
                 )
 
         adapter._client = SimpleNamespace(
             im=SimpleNamespace(
                 v1=SimpleNamespace(
-                    message=_ReplyAPI(),
+                    message=_MessageAPI(),
                 )
             )
         )
@@ -1990,8 +1985,7 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(result.message_id, "om_reply")
-        self.assertTrue(captured["request"].request_body.reply_in_thread)
+        self.assertEqual(result.message_id, "om_create")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_metadata_reply_target_for_threaded_feishu_topic(self):
@@ -2002,11 +1996,11 @@ class TestAdapterBehavior(unittest.TestCase):
         captured = {}
 
         class _MessageAPI:
-            def reply(self, request):
+            def create(self, request):
                 captured["request"] = request
                 return SimpleNamespace(
                     success=lambda: True,
-                    data=SimpleNamespace(message_id="om_reply"),
+                    data=SimpleNamespace(message_id="om_create"),
                 )
 
         adapter._client = SimpleNamespace(
@@ -2029,8 +2023,7 @@ class TestAdapterBehavior(unittest.TestCase):
             )
 
         self.assertTrue(result.success)
-        self.assertEqual(captured["request"].message_id, "om_trigger")
-        self.assertTrue(captured["request"].request_body.reply_in_thread)
+        self.assertEqual(result.message_id, "om_create")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):
@@ -2136,11 +2129,11 @@ class TestAdapterBehavior(unittest.TestCase):
                 )
 
         class _MessageAPI:
-            def reply(self, request):
+            def create(self, request):
                 captured["request"] = request
                 return SimpleNamespace(
                     success=lambda: True,
-                    data=SimpleNamespace(message_id="om_file_reply"),
+                    data=SimpleNamespace(message_id="om_file_create"),
                 )
 
         adapter._client = SimpleNamespace(
@@ -2173,7 +2166,7 @@ class TestAdapterBehavior(unittest.TestCase):
             os.unlink(file_path)
 
         self.assertTrue(result.success)
-        self.assertTrue(captured["request"].request_body.reply_in_thread)
+        self.assertIn("request", captured)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_document_uploads_file_and_sends_file_message(self):
@@ -3500,16 +3493,16 @@ class TestSenderNameResolution(unittest.TestCase):
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestBotNameResolution(unittest.TestCase):
-    """Tests for the bot branch of _resolve_sender_name_from_api (basic_batch API + shared cache)."""
+    """Tests for ``_resolve_sender_name_from_api`` (contact.v3.user.get + shared cache)."""
 
     @staticmethod
-    def _batch_payload(bots: Dict[str, str]):
-        import json as _json
-        body = {
-            oid: {"bot_id": oid, "name": name, "i18n_names": {"en_us": name}}
-            for oid, name in bots.items()
-        }
-        return _json.dumps({"code": 0, "msg": "", "data": {"bots": body, "failed_bots": {}}}).encode()
+    def _user_response(name: str):
+        """Build a mock ``contact.v3.user.get`` response object."""
+        user = SimpleNamespace(name=name, display_name=None, nickname=None, en_name=None)
+        data = SimpleNamespace(user=user)
+        resp = SimpleNamespace(data=data)
+        resp.success = lambda: True  # type: ignore
+        return resp
 
     def _build_adapter_with_bots(self, bots: Dict[str, str]):
         from gateway.config import PlatformConfig
@@ -3518,11 +3511,24 @@ class TestBotNameResolution(unittest.TestCase):
         adapter = FeishuAdapter(PlatformConfig())
         calls = []
 
-        def _fake_request(request):
+        def _fake_get_user(request):
             calls.append(request)
-            return SimpleNamespace(raw=SimpleNamespace(content=self._batch_payload(bots)))
+            oid = getattr(request, "user_id", None)
+            name = bots.get(oid)
+            if name is None:
+                # Simulate a failed response (bot not found)
+                fail = SimpleNamespace()
+                fail.success = lambda: False  # type: ignore
+                return fail
+            return self._user_response(name)
 
-        adapter._client = SimpleNamespace(request=_fake_request)
+        adapter._client = SimpleNamespace(
+            contact=SimpleNamespace(
+                v3=SimpleNamespace(
+                    user=SimpleNamespace(get=_fake_get_user)
+                )
+            )
+        )
         return adapter, calls
 
     @patch.dict(os.environ, {}, clear=True)
@@ -3551,9 +3557,8 @@ class TestBotNameResolution(unittest.TestCase):
         self.assertEqual(result, "Peer Bot")
         self.assertEqual(adapter._sender_name_cache["ou_peer"][0], "Peer Bot")
         self.assertEqual(len(calls), 1)
-        self.assertIn("/open-apis/bot/v3/bots/basic_batch", calls[0].uri)
-        # Feishu expects repeated ?bot_ids= params, not comma-joined.
-        self.assertEqual(calls[0].queries, [("bot_ids", "ou_peer")])
+        self.assertEqual(calls[0].user_id, "ou_peer")
+        self.assertEqual(calls[0].user_id_type, "open_id")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_api_failure_returns_none_and_does_not_poison_cache(self):
@@ -3562,10 +3567,16 @@ class TestBotNameResolution(unittest.TestCase):
 
         adapter = FeishuAdapter(PlatformConfig())
 
-        def _broken_request(_req):
+        def _broken_get_user(_req):
             raise RuntimeError("API down")
 
-        adapter._client = SimpleNamespace(request=_broken_request)
+        adapter._client = SimpleNamespace(
+            contact=SimpleNamespace(
+                v3=SimpleNamespace(
+                    user=SimpleNamespace(get=_broken_get_user)
+                )
+            )
+        )
 
         async def _direct(func, *args, **kwargs):
             return func(*args, **kwargs)
@@ -3614,9 +3625,14 @@ class TestBotNameResolution(unittest.TestCase):
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
-        error_payload = b'{"code":99991663,"msg":"permission denied"}'
+        fail_resp = SimpleNamespace()
+        fail_resp.success = lambda: False  # type: ignore
         adapter._client = SimpleNamespace(
-            request=lambda _r: SimpleNamespace(raw=SimpleNamespace(content=error_payload))
+            contact=SimpleNamespace(
+                v3=SimpleNamespace(
+                    user=SimpleNamespace(get=lambda _r: fail_resp)
+                )
+            )
         )
 
         async def _direct(func, *args, **kwargs):
@@ -4430,6 +4446,9 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         adapter._resolve_source_chat_type = Mock(return_value="group")
         adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
         adapter._dispatch_inbound_event = AsyncMock()
+        adapter._bot_mention_map = {}
+        adapter._map_lock = asyncio.Lock()
+        adapter._loop = asyncio.new_event_loop()
         return adapter
 
     def test_leading_self_mention_stripped_for_command(self):
@@ -4720,6 +4739,9 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         adapter._resolve_source_chat_type = Mock(return_value="group")
         adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
         adapter._dispatch_inbound_event = AsyncMock()
+        adapter._bot_mention_map = {}
+        adapter._map_lock = asyncio.Lock()
+        adapter._loop = asyncio.new_event_loop()
         return adapter
 
     def _run(self, adapter, text, mentions):

@@ -5723,7 +5723,12 @@ def _normalize_disabled_toolsets(config: Dict[str, Any]) -> Dict[str, Any]:
 
     A value that is already a list/tuple/set is preserved (non-string members
     are dropped, mirroring the ``{str(ts) for ts in ...}`` coercion consumers
-    already do). ``None``/empty values are left untouched.
+    already do). Each member is stripped and empty members are dropped so a
+    value like ``" memory "`` matches the consumers' exact-string key equality
+    (``_get_platform_tools`` compares without its own ``.strip()``). A
+    non-iterable scalar (``int``/``bool``) can't name a toolset and would make
+    those consumers raise ``TypeError`` when they iterate it, so it is dropped
+    to an empty list to fail safe. ``None`` is left untouched.
     """
     agent_in = config.get("agent")
     if not isinstance(agent_in, dict):
@@ -5733,12 +5738,16 @@ def _normalize_disabled_toolsets(config: Dict[str, Any]) -> Dict[str, Any]:
         return config
 
     if isinstance(raw, str):
-        normalized_value: list[str] = [raw] if raw.strip() else []
+        stripped = raw.strip()
+        normalized_value: list[str] = [stripped] if stripped else []
     elif isinstance(raw, (list, tuple, set)):
-        normalized_value = [ts for ts in raw if isinstance(ts, str)]
+        normalized_value = [
+            ts.strip() for ts in raw if isinstance(ts, str) and ts.strip()
+        ]
     else:
-        # A non-iterable scalar (int/bool) can't name a toolset — drop it.
-        return config
+        # A non-iterable scalar (int/bool) can't name a toolset and would make
+        # consumers (``{str(ts) for ts in ...}``) raise TypeError — drop it.
+        normalized_value = []
 
     if normalized_value == raw:
         return config

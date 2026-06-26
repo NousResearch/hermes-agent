@@ -80,9 +80,10 @@ def test_scalar_agent_disabled_toolsets_disables_after_normalization():
     assert "terminal" in enabled
 
 
-def test_normalize_disabled_toolsets_preserves_list_and_ignores_junk():
-    """List form is preserved; a non-string/non-iterable scalar is dropped and
-    an empty/whitespace scalar normalizes to an empty list (no-op)."""
+def test_normalize_disabled_toolsets_preserves_list_and_drops_junk():
+    """List form is preserved; a non-string/non-iterable scalar is dropped to
+    an empty list (fail-safe, not preserved) and an empty/whitespace scalar
+    normalizes to an empty list (no-op)."""
     from hermes_cli.config import _normalize_disabled_toolsets
 
     # Already a list → unchanged.
@@ -91,12 +92,23 @@ def test_normalize_disabled_toolsets_preserves_list_and_ignores_junk():
         "memory",
         "web",
     ]
-    # Non-string scalar can't name a toolset → left untouched (consumers ignore).
+    # Non-string scalar can't name a toolset and would make consumers
+    # ``{str(ts) for ts in ...}`` raise TypeError → drop to [] to fail safe.
     cfg_int = {"agent": {"disabled_toolsets": 5}}
-    assert _normalize_disabled_toolsets(cfg_int)["agent"]["disabled_toolsets"] == 5
+    assert _normalize_disabled_toolsets(cfg_int)["agent"]["disabled_toolsets"] == []
+    # After normalization, _get_platform_tools must not raise (un-normalized,
+    # the int would make ``{str(ts) for ts in 5}`` raise TypeError).
+    enabled = _get_platform_tools(_normalize_disabled_toolsets(cfg_int), "cli")
+    assert isinstance(enabled, set)
     # Empty/whitespace scalar → empty list, not a 1-element [" "].
     cfg_blank = {"agent": {"disabled_toolsets": "   "}}
     assert _normalize_disabled_toolsets(cfg_blank)["agent"]["disabled_toolsets"] == []
+    # Whitespace-padded members are stripped so they match exact-string keys.
+    cfg_padded = {"agent": {"disabled_toolsets": [" memory ", "", "web"]}}
+    assert _normalize_disabled_toolsets(cfg_padded)["agent"]["disabled_toolsets"] == [
+        "memory",
+        "web",
+    ]
 
 
 def test_cron_resolver_coerces_scalar_disabled_toolsets():
@@ -114,6 +126,20 @@ def test_cron_resolver_coerces_scalar_disabled_toolsets():
     assert "m" not in resolved
     assert "e" not in resolved
     # The always-on cron-protected toolsets remain.
+    assert {"cronjob", "messaging", "clarify"}.issubset(set(resolved))
+
+
+def test_cron_resolver_coerces_non_iterable_scalar_disabled_toolsets():
+    """A non-string scalar hand-edit (``disabled_toolsets: 5``) reaches the cron
+    resolver un-normalized; it must be coerced to ``[]`` rather than crashing
+    ``for name in user_disabled`` with ``TypeError: 'int' object is not
+    iterable`` and taking the scheduler down."""
+    from cron.scheduler import _resolve_cron_disabled_toolsets
+
+    scalar_cfg = {"agent": {"disabled_toolsets": 5}}
+    resolved = _resolve_cron_disabled_toolsets(scalar_cfg)
+
+    # No crash; the always-on cron-protected toolsets are still present.
     assert {"cronjob", "messaging", "clarify"}.issubset(set(resolved))
 
 

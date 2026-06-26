@@ -135,6 +135,11 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     # the scalar form behaves identically to the list form.
     if isinstance(user_disabled, str):
         user_disabled = [user_disabled]
+    elif not isinstance(user_disabled, (list, tuple, set)):
+        # A non-iterable scalar hand-edit (e.g. ``disabled_toolsets: 5``) would
+        # crash ``for name in user_disabled`` with a TypeError and take the
+        # scheduler down — it can't name a toolset, so drop it defensively.
+        user_disabled = []
     for name in user_disabled:
         name = str(name).strip()
         if name and name not in disabled:

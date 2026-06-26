@@ -18511,8 +18511,16 @@ def main():
     # Run the gateway - exit with code 1 if no platforms connected,
     # so systemd Restart=on-failure will retry on transient errors (e.g. DNS)
     success = asyncio.run(start_gateway(config))
-    if not success:
-        sys.exit(1)
+    # Graceful shutdown already completed inside start_gateway() (adapters
+    # disconnected, sessions saved, cron stopped). A stuck non-daemon worker
+    # thread (e.g. a ThreadPoolExecutor tool/LLM call blocked with no timeout)
+    # must not be able to block interpreter finalization (Py_FinalizeEx joins
+    # all non-daemon threads) and hang the process with the api_server + cron
+    # already down. Flush logs, then hard-exit. Exit codes are preserved: 0 on
+    # success, 1 on failure (so systemd Restart=on-failure still retries).
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0 if success else 1)
 
 
 if __name__ == "__main__":

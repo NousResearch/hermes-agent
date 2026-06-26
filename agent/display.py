@@ -351,13 +351,17 @@ def redact_browser_typed_text_for_display(value: Any, typed_text: Any) -> Any:
 
     Normal typed text (search queries, addresses, form fields) matches no
     secret pattern, so it passes through unchanged and stays readable.
+
+    Redaction is forced here regardless of the global ``security.redact_secrets``
+    preference: a typed credential leaking into chat history is a security
+    boundary, not mere log hygiene.
     """
     if typed_text is None:
         return value
     needle = str(typed_text)
     if needle == "":
         return value
-    redacted = redact_sensitive_text(needle)
+    redacted = redact_sensitive_text(needle, force=True)
     if redacted == needle:
         # Nothing secret-looking in the typed text; leave payload untouched.
         return value
@@ -387,7 +391,7 @@ def redact_tool_args_for_display(tool_name: str, args: dict | None) -> dict | No
         return args
     if tool_name == "browser_type" and isinstance(args.get("text"), str):
         safe_args = dict(args)
-        safe_args["text"] = redact_sensitive_text(args["text"])
+        safe_args["text"] = redact_sensitive_text(args["text"], force=True)
         return safe_args
     return args
 

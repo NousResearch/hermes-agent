@@ -60,7 +60,7 @@ describe('ModelEditSubmenu no-session guard', () => {
     expect(screen.queryByText('Low')).not.toBeNull()
     expect(screen.queryByText('Medium')).not.toBeNull()
     expect(screen.queryByText('High')).not.toBeNull()
-    expect(screen.queryByText('xhigh')).not.toBeNull()
+    expect(screen.queryByText('Extra High')).not.toBeNull()
   })
 
   it('param fast: records the preset but skips the gateway without a session', () => {

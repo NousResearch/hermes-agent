@@ -571,7 +571,7 @@ _REASONING_EFFORT_LABELS = {
     "low": "Low",
     "medium": "Medium",
     "high": "High",
-    "extra_high": "xhigh",
+    "extra_high": "Extra High",
 }
 
 

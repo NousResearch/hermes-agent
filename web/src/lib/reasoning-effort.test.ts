@@ -28,7 +28,7 @@ describe("normalizeEffort", () => {
 
   it("is case- and whitespace-insensitive", () => {
     expect(normalizeEffort("HIGH")).toBe("high");
-    expect(normalizeEffort("  xhigh  ")).toBe("extra_high");
+    expect(normalizeEffort("  Extra High  ")).toBe("extra_high");
   });
 
   it("falls back to medium for unknown values", () => {
@@ -50,7 +50,7 @@ describe("EFFORT_OPTIONS", () => {
       { value: "low", label: "Low" },
       { value: "medium", label: "Medium" },
       { value: "high", label: "High" },
-      { value: "extra_high", label: "xhigh" },
+      { value: "extra_high", label: "Extra High" },
     ]);
   });
 });

@@ -185,7 +185,7 @@ gateway:
     level_disabled:            "none (disabled)"
     scope_session:             "session override"
     scope_global:              "global config"
-    status:                    "🧠 Reasoning Settings\n\nEffort: {level}\nScope: {scope}\nDisplay: {display}\nValid for current model: {valid_levels}\n\n_Usage:_ /reasoning <level|reset|show|hide> [--global]"
+    status:                    "🧠 **Reasoning Settings**\n\n**Effort:** `{level}`\n**Scope:** {scope}\n**Display:** {display}\n\n_Usage:_ `/reasoning <low|medium|high|extra high|reset|show|hide> [--global]`"
     display_on:                "on ✓"
     display_off:               "off"
     display_set_on:            "🧠 ✓ Reasoning display: **ON**\nModel thinking will be shown before each response on **{platform}**."

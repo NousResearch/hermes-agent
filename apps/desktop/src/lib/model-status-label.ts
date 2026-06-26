@@ -4,12 +4,12 @@ const REASONING_LABELS: Record<string, string> = {
   low: 'Low',
   medium: 'Med',
   high: 'High',
-  xhigh: 'xhigh',
-  'x high': 'xhigh',
-  'extra high': 'xhigh',
-  extra_high: 'xhigh',
-  'extra-high': 'xhigh',
-  max: 'xhigh'
+  xhigh: 'Extra High',
+  'x high': 'Extra High',
+  'extra high': 'Extra High',
+  extra_high: 'Extra High',
+  'extra-high': 'Extra High',
+  max: 'Extra High'
 }
 
 export function reasoningEffortLabel(effort: string): string {

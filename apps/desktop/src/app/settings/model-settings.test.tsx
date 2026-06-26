@@ -106,7 +106,7 @@ describe('ModelSettings', () => {
     expect((await screen.findAllByText('Low')).length).toBeGreaterThan(0)
     expect((await screen.findAllByText('Medium')).length).toBeGreaterThan(0)
     expect((await screen.findAllByText('High')).length).toBeGreaterThan(0)
-    expect((await screen.findAllByText('xhigh')).length).toBeGreaterThan(0)
+    expect((await screen.findAllByText('Extra High')).length).toBeGreaterThan(0)
     expect(screen.queryByText('Minimal')).toBeNull()
     expect(screen.queryByText('Max')).toBeNull()
     expect(screen.queryByText('Reasoning off')).toBeNull()

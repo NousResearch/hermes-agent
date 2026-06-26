@@ -21,7 +21,7 @@ def test_core_reasoning_efforts_are_official_gpt55_modes_only():
         ("medium", "medium"),
         ("high", "high"),
         ("extra_high", "extra_high"),
-        ("xhigh", "extra_high"),
+        ("Extra High", "extra_high"),
         ("extra-high", "extra_high"),
         ("xhigh", "extra_high"),
         ("max", "extra_high"),
@@ -46,9 +46,9 @@ def test_parse_reasoning_effort_none_remains_disable_alias_not_effort_level():
         ("low", "Low"),
         ("medium", "Medium"),
         ("high", "High"),
-        ("extra_high", "xhigh"),
-        ("xhigh", "xhigh"),
-        ("extra high", "xhigh"),
+        ("extra_high", "Extra High"),
+        ("xhigh", "Extra High"),
+        ("extra high", "Extra High"),
         ("minimal", "Low"),
     ],
 )
@@ -142,4 +142,4 @@ def test_gateway_locale_reasoning_usage_does_not_advertise_legacy_efforts():
 
     en = (locales_dir / "en.yaml").read_text(encoding="utf-8")
     assert "**Valid levels:** low, medium, high, extra high" in en
-    assert "/reasoning <level|reset|show|hide> [--global]" in en
+    assert "/reasoning <low|medium|high|extra high|reset|show|hide> [--global]" in en

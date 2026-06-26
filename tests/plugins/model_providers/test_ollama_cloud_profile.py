@@ -39,7 +39,7 @@ class TestOllamaCloudReasoningEffort:
 
     # ── extra_high / legacy aliases → max ──────────────────────────
 
-    @pytest.mark.parametrize("effort", ["extra_high", "xhigh", "xhigh", "max", "MAX", "  Max  "])
+    @pytest.mark.parametrize("effort", ["extra_high", "Extra High", "xhigh", "max", "MAX", "  Max  "])
     def test_xhigh_and_max_normalize_to_max(self, ollama_cloud_profile, effort):
         extra_body, top_level = ollama_cloud_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": effort},

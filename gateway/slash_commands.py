@@ -2370,15 +2370,11 @@ class GatewaySlashCommandsMixin:
                 if has_session_override
                 else t("gateway.reasoning.scope_global")
             )
-            from hermes_constants import VALID_REASONING_EFFORTS, reasoning_effort_display_label
-            valid_levels = ", ".join(reasoning_effort_display_label(e) for e in VALID_REASONING_EFFORTS)
-
             return t(
                 "gateway.reasoning.status",
                 level=level,
                 scope=scope,
                 display=display_state,
-                valid_levels=valid_levels,
             )
 
         # Display toggle (per-platform)

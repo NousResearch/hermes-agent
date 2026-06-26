@@ -1,0 +1,11 @@
+name: hermes_otel
+version: "0.1.0"
+description: "Optional Hermes OpenTelemetry observability plugin — collects per-API-call spans (model, provider, tokens, cost, credits, rate limits, errors) and writes them as JSONL to ~/.hermes/logs/otel-spans.jsonl. Opt-in via `hermes plugins enable observability/hermes_otel`."
+author: NousResearch
+requires_env: []
+hooks:
+  - on_session_start
+  - on_session_end
+  - pre_api_request
+  - post_api_request
+  - api_request_error

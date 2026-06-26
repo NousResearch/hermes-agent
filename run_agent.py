@@ -45,6 +45,7 @@ import tempfile
 import time
 import threading
 import uuid
+from dataclasses import asdict
 from typing import List, Dict, Any, Optional, Callable
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -398,6 +399,34 @@ class _StreamErrorEvent(Exception):
                 "type": "error",
             }
         }
+
+
+def _serialize_rate_limits_for_error_hook(state: Any) -> Optional[Dict[str, Any]]:
+    """Serialize a RateLimitState to a JSON-ready flat dict for hook payloads.
+
+    Mirrors the helper in agent/conversation_loop.py so both hook sites emit
+    the same shape.
+    """
+    if state is None:
+        return None
+    if not getattr(state, "has_data", True):
+        return None
+
+    def _bucket(bucket: Any) -> Dict[str, Any]:
+        return {
+            "limit": int(getattr(bucket, "limit", 0)),
+            "remaining": int(getattr(bucket, "remaining", 0)),
+            "reset_seconds": float(getattr(bucket, "reset_seconds", 0.0)),
+        }
+
+    return {
+        "requests_min": _bucket(state.requests_min),
+        "requests_hour": _bucket(state.requests_hour),
+        "tokens_min": _bucket(state.tokens_min),
+        "tokens_hour": _bucket(state.tokens_hour),
+        "captured_at": float(getattr(state, "captured_at", 0.0)),
+        "provider": getattr(state, "provider", "") or "",
+    }
 
 
 class AIAgent:
@@ -2441,6 +2470,8 @@ class AIAgent:
             if not _plugins.has_hook("api_request_error"):
                 return
             ended_at = time.time()
+            _credits = getattr(self, "_credits_state", None)
+            _rate_limits = getattr(self, "_rate_limit_state", None)
             _plugins.invoke_hook(
                 "api_request_error",
                 task_id=task_id,
@@ -2466,6 +2497,8 @@ class AIAgent:
                     "message": error_message,
                 },
                 request=self._api_request_payload_for_hook(api_kwargs),
+                credits_state=(asdict(_credits) if _credits and _credits.has_data else None),
+                rate_limit_state=(_serialize_rate_limits_for_error_hook(_rate_limits) if _rate_limits else None),
             )
         except Exception:
             pass

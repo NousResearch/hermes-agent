@@ -25,10 +25,12 @@ import ssl
 import threading
 import time
 import uuid
+from dataclasses import asdict
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
+from agent.rate_limit_tracker import RateLimitState
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -513,6 +515,33 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
             effective = (effective + "\n\n" + agent.ephemeral_system_prompt).strip()
         api_messages[0]["content"] = effective
     return sp
+
+def _serialize_rate_limits(state: Optional[RateLimitState]) -> Optional[Dict[str, Any]]:
+    """Serialize a RateLimitState to a JSON-ready flat dict.
+
+    The hook payload is sanitized before reaching plugins, but the raw
+    dataclass fields serialize cleanly via dataclasses.asdict.
+    """
+    if state is None:
+        return None
+    if not getattr(state, "has_data", True):
+        return None
+
+    def _bucket(bucket: Any) -> Dict[str, Any]:
+        return {
+            "limit": int(getattr(bucket, "limit", 0)),
+            "remaining": int(getattr(bucket, "remaining", 0)),
+            "reset_seconds": float(getattr(bucket, "reset_seconds", 0.0)),
+        }
+
+    return {
+        "requests_min": _bucket(state.requests_min),
+        "requests_hour": _bucket(state.requests_hour),
+        "tokens_min": _bucket(state.tokens_min),
+        "tokens_hour": _bucket(state.tokens_hour),
+        "captured_at": float(getattr(state, "captured_at", 0.0)),
+        "provider": getattr(state, "provider", "") or "",
+    }
 
 
 def run_conversation(
@@ -4107,6 +4136,8 @@ def run_conversation(
                     )
                     _assistant_text = assistant_message.content or ""
                     _api_ended_at = api_start_time + api_duration
+                    _credits = getattr(agent, "_credits_state", None)
+                    _rate_limits = getattr(agent, "_rate_limit_state", None)
                     _invoke_hook(
                         "post_api_request",
                         task_id=effective_task_id,
@@ -4134,6 +4165,8 @@ def run_conversation(
                         assistant_message=assistant_message,
                         assistant_content_chars=len(_assistant_text),
                         assistant_tool_call_count=len(_assistant_tool_calls),
+                        credits_state=(asdict(_credits) if _credits and _credits.has_data else None),
+                        rate_limit_state=(_serialize_rate_limits(_rate_limits) if _rate_limits else None),
                     )
             except Exception:
                 pass

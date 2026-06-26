@@ -1834,6 +1834,10 @@ AUTHOR_MAP = {
     "max.petrusenko.agent@gmail.com": "maxpetrusenko",  # PR #54128 co-author
     "poli.koltsova@gmail.com": "wnuuee1",  # commit 9fd2b2cb PR author
     "yosapol@jitrak.dev": "Eji4h",  # direct email match
+    "hermes-tmw@github.com": "hermes-tmw",  # Hermes AI agent account
+    "mail@tomwhipple.com": "tomwhipple",  # Tom Whipple (repo owner)
+    "hermes@tomwhipple.com": "hermes-tmw",  # Hermes AI agent account (alternate)
+    "claw@localhost": "claw",  # local dev user; appears in PR history
 }
 
 

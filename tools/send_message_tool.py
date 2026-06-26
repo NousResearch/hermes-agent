@@ -791,6 +791,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
                 force_document=force_document,
+                pconfig_extra=getattr(pconfig, "extra", None) or {},
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -971,6 +972,75 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     return last_result
 
 
+def _coerce_rich_extra_bool(extra, key, default=False):
+    """Mirror of TelegramAdapter._coerce_bool_extra without an adapter instance.
+
+    Accepts bool, int/float (0/1), or string "true"/"false"/"yes"/"no"/"1"/
+    "0"/"on"/"off" (case-insensitive, whitespace tolerant). Anything else
+    returns ``default``. Mirrors gateway/platforms/telegram.py::
+    TelegramAdapter._coerce_bool_extra so the standalone tool path honors
+    the same per-chat extras shapes as the live adapter.
+    """
+    if extra is None:
+        return default
+    try:
+        raw = extra.get(key, default)
+    except AttributeError:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, (int, float)):
+        return bool(raw)
+    if isinstance(raw, str):
+        norm = raw.strip().lower()
+        if norm in {"true", "yes", "1", "on"}:
+            return True
+        if norm in {"false", "no", "0", "off", ""}:
+            return False
+    return default
+
+
+def _should_attempt_rich_for_tool(message, extra, has_html):
+    """Tool-side mirror of TelegramAdapter._should_attempt_rich.
+
+    Excludes the runtime ``_rich_send_disabled`` latch (tool sends are
+    one-shot — no second send to optimize away) and the
+    ``_bot_supports_rich`` check (the standalone path always builds a real
+    PTB ``telegram.Bot`` whose ``do_api_request`` is an async coroutine
+    function — capability is guaranteed by construction).
+
+    Returns False when:
+    - HTML tags were detected (HTML stays on the legacy ``parse_mode=HTML``
+      path; rich is markdown-only by design — PR #1568).
+    - ``message`` is empty/whitespace (tool falls through to the media-only
+      send loop).
+    - ``rich_messages`` is not opted-in via ``pconfig.extra``.
+    - ``message`` exceeds ``TelegramAdapter.RICH_MESSAGE_MAX_CHARS``.
+    - ``message`` matches the TDesktop ``<details>+math`` crash shape.
+    """
+    if has_html:
+        return False
+    if not message or not message.strip():
+        return False
+    if not _coerce_rich_extra_bool(extra, "rich_messages", False):
+        return False
+    try:
+        from gateway.platforms.telegram import TelegramAdapter
+    except Exception:
+        return False
+    if len(message) > TelegramAdapter.RICH_MESSAGE_MAX_CHARS:
+        return False
+    # The crash-shape helper reads no instance state; calling it through a
+    # throwaway shell mirrors the precedent at _send_telegram L979–984.
+    try:
+        _shell = TelegramAdapter.__new__(TelegramAdapter)
+        if _shell._has_telegram_desktop_details_math_crash_shape(message):
+            return False
+    except Exception:
+        return False
+    return True
+
+
 def _is_telegram_thread_not_found(error: Exception) -> bool:
     """Check if a Telegram error is a thread-not-found failure.
 
@@ -980,7 +1050,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, *, pconfig_extra=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1034,6 +1104,90 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 bot = Bot(token=token)
         else:
             bot = Bot(token=token)
+        # ``last_msg`` and ``warnings`` are initialized here (before the
+        # rich block) so a successful rich send can populate ``last_msg``
+        # without being clobbered by a later re-initialization. The legacy
+        # MarkdownV2 / HTML and media blocks below append to these in
+        # place (each branch reads/writes ``last_msg``; the media loop
+        # appends to ``warnings``). FR-9 / FR-11 require the rich-success
+        # ``last_msg`` to survive into the envelope-assembly path.
+        last_msg = None
+        warnings = []
+        # --- Bot API 10.1 rich-message path -----------------------------
+        # When the per-chat config opts in via ``extra.rich_messages``, try
+        # ``sendRichMessage`` with the RAW agent markdown (table pipes,
+        # headings, <details>, task lists, etc. survive). On permanent /
+        # capability errors the adapter coroutine returns ``None`` and we
+        # fall through to the existing MarkdownV2 block unchanged. On
+        # transient errors we return a failure envelope WITHOUT a legacy
+        # resend so we cannot double-deliver. Reusing the adapter's
+        # ``_try_send_rich`` via a throwaway shell (precedent at L979–984)
+        # keeps the rich payload and routing logic in a single source of
+        # truth — see gateway/platforms/telegram.py::_try_send_rich.
+        if _should_attempt_rich_for_tool(message, pconfig_extra, _has_html):
+            try:
+                from gateway.config import Platform as _RichPlatform
+                from gateway.platforms.telegram import TelegramAdapter as _RichTelegramAdapter
+                _shell = _RichTelegramAdapter.__new__(_RichTelegramAdapter)
+                _shell._bot = bot
+                _shell._rich_messages_enabled = True
+                _shell._rich_send_disabled = False
+                _shell._disable_link_previews = bool(disable_link_previews)
+                # Tool sends are explicit user actions, not background pings.
+                _shell._notifications_mode = "all"
+                # The tool has no reply anchor of its own.
+                _shell._reply_to_mode = "off"
+                # ``name`` is a read-only property derived from
+                # ``self.platform`` on BasePlatformAdapter; assigning it
+                # raises AttributeError. Setting ``platform`` keeps the
+                # logging path inside _try_send_rich working.
+                _shell.platform = _RichPlatform.TELEGRAM
+                _rich_metadata = (
+                    {"thread_id": str(thread_id)} if thread_id is not None else None
+                )
+                logger.debug(
+                    "send_message: attempting Telegram rich send (raw markdown, %d chars)",
+                    len(message),
+                )
+                _rich_result = await _shell._try_send_rich(
+                    str(chat_id),
+                    message,
+                    reply_to=None,
+                    metadata=_rich_metadata,
+                )
+            except Exception as _rich_setup_err:
+                # Anything that breaks shell construction (e.g. adapter
+                # import failed in a stripped-down environment) MUST fall
+                # through to the legacy MarkdownV2 path, not abort the
+                # whole send.
+                logger.debug(
+                    "send_message: rich-send setup failed (%s); falling back to MarkdownV2",
+                    _rich_setup_err,
+                )
+                _rich_result = None
+            if _rich_result is not None:
+                if _rich_result.success:
+                    # Successful rich send. Skip the legacy MarkdownV2 / HTML
+                    # text send by short-circuiting the ``if formatted.strip():``
+                    # guard below. Any accompanying media still uploads, and
+                    # ``last_msg`` is overwritten by the final media send so
+                    # the envelope's ``message_id`` matches today's semantics
+                    # (FR-9, FR-11).
+                    class _RichMsgShim:
+                        __slots__ = ("message_id",)
+
+                        def __init__(self, mid):
+                            self.message_id = mid if mid is not None else ""
+
+                    last_msg = _RichMsgShim(_rich_result.message_id)
+                    formatted = ""
+                else:
+                    # Transient — DO NOT legacy-resend (the rich request may
+                    # have reached Telegram; resending would duplicate).
+                    return _error(f"Telegram send failed: {_rich_result.error}")
+            # _rich_result is None → permanent / capability fallback; drop
+            # through to the existing MarkdownV2 / HTML block unchanged.
+        # --- end rich block ---------------------------------------------
         int_chat_id = int(chat_id)
         media_files = media_files or []
         thread_kwargs = {}
@@ -1065,9 +1219,6 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
-
-        last_msg = None
-        warnings = []
 
         if formatted.strip():
             try:

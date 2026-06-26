@@ -787,7 +787,7 @@ class TestSendToPlatformChunking:
 
         sent_calls = []
 
-        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+        async def fake_send(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, **kwargs):
             sent_calls.append(media_files or [])
             return {"success": True, "platform": "telegram", "chat_id": chat_id, "message_id": str(len(sent_calls))}
 
@@ -1067,6 +1067,395 @@ class TestSendTelegramHtmlDetection:
         assert result["success"] is True
         assert bot.send_message.await_count == 2
         sleep_mock.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Telegram rich-message (sendRichMessage) parity with the gateway adapter
+# ---------------------------------------------------------------------------
+
+
+# Shared rich-content fixtures. Tables with pipes and headings exercise the
+# rich-only constructs that the legacy MarkdownV2 path escapes/destroys.
+RICH_CONTENT = (
+    "## Results\n\n"
+    "| Case | Status |\n|---|---|\n| rich | ✅ |\n\n"
+    "- [x] table renders"
+)
+DANGEROUS_DETAILS_MATH = (
+    "<details><summary>x</summary>\n\n$$E = mc^2$$\n\n</details>"
+)
+HTML_BODY = "Hello <b>world</b>"
+
+
+class TestSendTelegramRichMessages:
+    """Parity tests for the standalone Telegram path's rich-message support.
+
+    Pins behaviour symmetric with ``gateway/platforms/telegram.py``'s
+    ``_try_send_rich`` (24 reference tests in
+    ``tests/gateway/test_telegram_rich_messages.py``): when the per-chat
+    ``extra.rich_messages`` opt-in is on, the tool must reuse the adapter's
+    rich path via a throwaway shell rather than re-implementing it. When the
+    opt-in is off, the tool must behave byte-identically to today (legacy
+    MarkdownV2 / HTML) — the regression-guard tests in
+    ``TestSendTelegramHtmlDetection`` above cover that contract.
+    """
+
+    def _make_bot(self):
+        bot = MagicMock()
+        bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=1))
+        bot.send_photo = AsyncMock()
+        bot.send_video = AsyncMock()
+        bot.send_voice = AsyncMock()
+        bot.send_audio = AsyncMock()
+        bot.send_document = AsyncMock()
+        # do_api_request as AsyncMock makes
+        # ``inspect.iscoroutinefunction(bot.do_api_request)`` True (real
+        # PTB Bot.do_api_request is async too), so any
+        # ``_bot_supports_rich`` check inside the adapter helpers passes.
+        bot.do_api_request = AsyncMock(return_value={"message_id": 99})
+        return bot
+
+    @staticmethod
+    def _rich_payload(bot):
+        """Extract the api_kwargs payload from the single
+        ``sendRichMessage`` call. Tolerates both call-shapes PTB versions
+        may produce: ``await_args.kwargs[\"api_kwargs\"]`` (preferred /
+        current) and ``await_args.args[1]`` (older positional shape).
+        """
+        call = bot.do_api_request.await_args
+        assert call is not None, "sendRichMessage was never called"
+        assert call.args[0] == "sendRichMessage"
+        payload = call.kwargs.get("api_kwargs")
+        if payload is None:
+            payload = call.args[1]
+        return payload
+
+    # -- AC-T-1 -----------------------------------------------------------
+    def test_rich_off_uses_markdown_v2(self, monkeypatch):
+        """``rich_messages`` absent ⇒ legacy MarkdownV2 path unchanged.
+
+        This is the regression guard: the rich block must not affect any
+        existing caller that did not opt in. ``do_api_request`` is never
+        awaited; ``send_message`` is awaited once with ``parse_mode=
+        "MarkdownV2"`` and the format_message-escaped text.
+        """
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "tok", "123", RICH_CONTENT,
+                pconfig_extra={},  # rich_messages absent
+            )
+        )
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["parse_mode"] == "MarkdownV2"
+        # The legacy path escapes via TelegramAdapter.format_message.
+        from gateway.platforms.telegram import TelegramAdapter
+        expected_text = TelegramAdapter.__new__(TelegramAdapter).format_message(
+            RICH_CONTENT
+        )
+        assert kwargs["text"] == expected_text
+        assert result["success"] is True
+        assert result["platform"] == "telegram"
+        assert result["chat_id"] == "123"
+
+    # -- AC-T-2 -----------------------------------------------------------
+    def test_rich_on_calls_send_rich_message(self, monkeypatch):
+        """``rich_messages=True`` ⇒ ``do_api_request("sendRichMessage", ...)``
+        with the RAW markdown.
+
+        Asserts the payload preserves pipes / headings / brackets exactly
+        (no ``format_message`` escaping), that ``send_message`` is NOT
+        awaited (the rich path replaces, not augments, the text send), and
+        that the envelope reports the rich ``message_id``.
+        """
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "tok", "123", RICH_CONTENT,
+                pconfig_extra={"rich_messages": True},
+            )
+        )
+
+        assert bot.do_api_request.await_count == 1
+        bot.send_message.assert_not_awaited()
+        payload = self._rich_payload(bot)
+        # Raw markdown preserved exactly — pipes / brackets intact.
+        assert payload["rich_message"]["markdown"] == RICH_CONTENT
+        assert payload["chat_id"] == 123
+        assert result == {
+            "success": True,
+            "platform": "telegram",
+            "chat_id": "123",
+            "message_id": "99",
+        }
+
+    # -- AC-T-3 -----------------------------------------------------------
+    def test_thread_id_in_rich_routing(self, monkeypatch):
+        """``thread_id=\"5\"`` ⇒ ``payload[\"message_thread_id\"] == 5`` (int).
+
+        Pins parity with the adapter's
+        ``_compute_single_send_routing`` → ``_thread_kwargs_for_send``
+        chain that the standalone shell inherits.
+        """
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram(
+                "tok", "-1001234567890", RICH_CONTENT,
+                thread_id="5",
+                pconfig_extra={"rich_messages": True},
+            )
+        )
+
+        payload = self._rich_payload(bot)
+        assert payload["message_thread_id"] == 5
+        assert payload["rich_message"]["markdown"] == RICH_CONTENT
+
+    # -- AC-T-4 -----------------------------------------------------------
+    def test_general_topic_thread_id_omitted(self, monkeypatch):
+        """``thread_id=\"1\"`` ⇒ ``message_thread_id`` not in payload.
+
+        Telegram's General topic is addressed as
+        ``message_thread_id=\"1\"`` on incoming updates but Bot API sends
+        reject it. The adapter's ``_message_thread_id_for_send`` maps
+        ``\"1\" → None``; the shell inherits that mapping.
+        """
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram(
+                "tok", "-1001234567890", RICH_CONTENT,
+                thread_id="1",
+                pconfig_extra={"rich_messages": True},
+            )
+        )
+
+        payload = self._rich_payload(bot)
+        assert "message_thread_id" not in payload
+
+    # -- AC-T-5 -----------------------------------------------------------
+    def test_permanent_error_falls_back_to_markdown_v2(self, monkeypatch):
+        """BadRequest from rich endpoint ⇒ silent fallback to MarkdownV2.
+
+        ``_is_rich_fallback_error`` classifies BadRequest as permanent;
+        ``_try_send_rich`` returns ``None``; the standalone path drops
+        through to the legacy MarkdownV2 block and the user still gets
+        their message (best-effort delivery contract).
+        """
+        from telegram.error import BadRequest
+        bot = self._make_bot()
+        bot.do_api_request = AsyncMock(
+            side_effect=BadRequest("can't parse rich message")
+        )
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "tok", "123", RICH_CONTENT,
+                pconfig_extra={"rich_messages": True},
+            )
+        )
+
+        assert bot.do_api_request.await_count == 1
+        # Legacy MarkdownV2 send happened exactly once.
+        assert bot.send_message.await_count == 1
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["parse_mode"] == "MarkdownV2"
+        from gateway.platforms.telegram import TelegramAdapter
+        expected_text = TelegramAdapter.__new__(TelegramAdapter).format_message(
+            RICH_CONTENT
+        )
+        assert kwargs["text"] == expected_text
+        assert result["success"] is True
+
+    # -- AC-T-6 -----------------------------------------------------------
+    def test_transient_failure_does_not_resend_via_legacy(self, monkeypatch):
+        """TimedOut ⇒ fail-closed; do NOT call ``send_message``.
+
+        The rich request may have reached Telegram. Falling back to a
+        legacy ``send_message`` here would duplicate-deliver — the whole
+        point of FR-8 / adapter L1178–1196. The tool returns an error
+        envelope without a second send.
+        """
+        from telegram.error import TimedOut
+        bot = self._make_bot()
+        bot.do_api_request = AsyncMock(side_effect=TimedOut("timed out"))
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "tok", "123", RICH_CONTENT,
+                pconfig_extra={"rich_messages": True},
+            )
+        )
+
+        assert bot.do_api_request.await_count == 1
+        # Critical: no legacy resend → no duplicate.
+        bot.send_message.assert_not_awaited()
+        assert "error" in result
+        assert "timed out" in result["error"].lower()
+
+    # -- AC-T-7 -----------------------------------------------------------
+    def test_oversize_skips_rich(self, monkeypatch):
+        """Body over ``RICH_MESSAGE_MAX_CHARS`` ⇒ predicate False ⇒ MarkdownV2.
+
+        Mirrors the adapter's ``_content_fits_rich_limits`` gate so the
+        tool path matches the adapter's content-size contract.
+        """
+        from gateway.platforms.telegram import TelegramAdapter
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        oversize = "x" * (TelegramAdapter.RICH_MESSAGE_MAX_CHARS + 1)
+        asyncio.run(
+            _send_telegram(
+                "tok", "123", oversize,
+                pconfig_extra={"rich_messages": True},
+            )
+        )
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+    # -- AC-T-8 -----------------------------------------------------------
+    def test_html_keeps_html_parse_mode(self, monkeypatch):
+        """HTML content + ``rich_messages=True`` ⇒ HTML parse_mode preserved.
+
+        HTML stays on the legacy ``parse_mode=HTML`` branch by contract
+        (PR #1568) — rich is markdown-only. The predicate's
+        ``has_html`` short-circuit enforces this so an HTML-emitting
+        skill (e.g. one that emits ``<b>``) isn't silently converted.
+        """
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram(
+                "tok", "123", HTML_BODY,
+                pconfig_extra={"rich_messages": True},
+            )
+        )
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+        kwargs = bot.send_message.await_args.kwargs
+        assert kwargs["parse_mode"] == "HTML"
+        assert kwargs["text"] == HTML_BODY
+
+    # -- AC-T-9 -----------------------------------------------------------
+    def test_details_math_skips_rich(self, monkeypatch):
+        """``<details>+math`` ⇒ predicate False (TDesktop crash guard).
+
+        Mirrors adapter
+        ``_has_telegram_desktop_details_math_crash_shape``. The check is
+        defensive: a ``<details>`` block containing ``$$...$$`` or
+        ``\\(...\\)`` math crashes the Telegram Desktop client when
+        rendered as rich. Falling back to MarkdownV2 is safe.
+        """
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram(
+                "tok", "123", DANGEROUS_DETAILS_MATH,
+                pconfig_extra={"rich_messages": True},
+            )
+        )
+
+        bot.do_api_request.assert_not_awaited()
+        bot.send_message.assert_awaited_once()
+
+    # -- AC-T-10 ----------------------------------------------------------
+    def test_string_true_in_extra_is_honored(self, monkeypatch):
+        """``\"true\"`` (string) coerces to True (YAML-load parity).
+
+        YAML may load ``rich_messages: \"true\"`` as a string when a user
+        quotes the value. Pins parity with adapter
+        ``_coerce_bool_extra``. Protects against a future regression
+        where someone replaces the coercion helper with raw
+        ``bool(extra.get(...))`` (which would be True for ANY non-empty
+        string — including ``\"false\"``).
+        """
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram(
+                "tok", "123", RICH_CONTENT,
+                pconfig_extra={"rich_messages": "true"},
+            )
+        )
+
+        assert bot.do_api_request.await_count == 1
+
+    # -- AC-T-11 ----------------------------------------------------------
+    @pytest.mark.parametrize(
+        "raw_return",
+        [
+            {"message_id": 42},
+            {"result": {"message_id": 42}},
+            SimpleNamespace(message_id=42),
+        ],
+    )
+    def test_success_envelope_shape(self, monkeypatch, raw_return):
+        """All three Bot API response shapes yield the same envelope.
+
+        ``_try_send_rich`` already normalizes ``msg.message_id``,
+        ``msg['message_id']``, and ``msg['result']['message_id']`` into
+        ``SendResult.message_id`` (stringified). Pins FR-9 — the tool
+        envelope's ``message_id`` is a string, not a SimpleNamespace
+        repr or a dict.
+        """
+        bot = self._make_bot()
+        bot.do_api_request = AsyncMock(return_value=raw_return)
+        _install_telegram_mock(monkeypatch, bot)
+
+        result = asyncio.run(
+            _send_telegram(
+                "tok", "555", RICH_CONTENT,
+                pconfig_extra={"rich_messages": True},
+            )
+        )
+
+        assert result == {
+            "success": True,
+            "platform": "telegram",
+            "chat_id": "555",
+            "message_id": "42",
+        }
+
+    # -- Additional explicit coverage required by the task ----------------
+    def test_disable_link_previews_maps_to_rich_payload(self, monkeypatch):
+        """``disable_link_previews=True`` ⇒ rich payload carries
+        ``link_preview_options={\"is_disabled\": True}``.
+
+        Pins FR-6 parity with the adapter (gateway L1150–1151). Without
+        this, callers that explicitly disabled link previews in
+        ``pconfig.extra`` would silently regain previews when their
+        message went through the rich path.
+        """
+        bot = self._make_bot()
+        _install_telegram_mock(monkeypatch, bot)
+
+        asyncio.run(
+            _send_telegram(
+                "tok", "123", RICH_CONTENT,
+                disable_link_previews=True,
+                pconfig_extra={"rich_messages": True},
+            )
+        )
+
+        payload = self._rich_payload(bot)
+        assert payload.get("link_preview_options") == {"is_disabled": True}
 
 
 class TestSendTelegramThreadIdMapping:

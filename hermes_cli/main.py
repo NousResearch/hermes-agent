@@ -14322,25 +14322,32 @@ def cmd_telemetry(args):
 
     action = getattr(args, "telemetry_action", None) or "status"
     config = load_config()
-    decision = policy.resolve(config)
+    tel = config.get("telemetry") if isinstance(config.get("telemetry"), dict) else {}
+    local_enabled = bool(tel.get("local", True))
+    allow_aggregate = bool(tel.get("allow_aggregate", True))
+    consent_state = tel.get("consent_state", policy.CONSENT_UNKNOWN)
+    if consent_state not in policy.VALID_CONSENT_STATES:
+        consent_state = policy.CONSENT_UNKNOWN
+    aggregate_enabled = allow_aggregate and consent_state == policy.CONSENT_AGGREGATE
+    install_id = policy.ensure_install_id(config)
 
     def _persist_install_id():
         # Make sure a minted id is written back so it stays stable.
-        config.setdefault("telemetry", {})["install_id"] = decision.install_id
+        config.setdefault("telemetry", {})["install_id"] = install_id
         save_config(config)
 
     if action == "status":
         print("Telemetry status")
         print("─" * 56)
-        print(f"  Local plane:     {'on' if decision.local_enabled else 'off'} "
+        print(f"  Local plane:     {'on' if local_enabled else 'off'} "
               f"(telemetry.local)")
-        print(f"  Aggregate plane: {'on' if decision.aggregate_enabled else 'off'} "
-              f"(opt-in; consent_state={decision.consent_state})")
-        if decision.consent_state != policy.CONSENT_AGGREGATE and decision.allow_aggregate:
+        print(f"  Aggregate plane: {'on' if aggregate_enabled else 'off'} "
+              f"(opt-in; consent_state={consent_state})")
+        if consent_state != policy.CONSENT_AGGREGATE and allow_aggregate:
             print("                   opt in: hermes config set telemetry.consent_state aggregate")
-        if not decision.allow_aggregate:
+        if not allow_aggregate:
             print("                   ⚠ allow_aggregate is false (egress hard-disabled)")
-        print(f"  Install id:      {decision.install_id}")
+        print(f"  Install id:      {install_id}")
         print("  Upload:          DISABLED — no server yet. Aggregate is computed "
               "locally only.")
         print()
@@ -14393,7 +14400,7 @@ def cmd_telemetry(args):
         _persist_install_id()
         since_ns = int((time.time() - args.days * 86400) * 1e9)
         events = rollup.build_aggregate_events(
-            install_id=decision.install_id, since_ns=since_ns
+            install_id=install_id, since_ns=since_ns
         )
         summary = rollup.summarize(events)
         print("Telemetry preview — computed locally, NOT uploaded")

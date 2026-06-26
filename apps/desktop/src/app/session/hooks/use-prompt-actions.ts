@@ -38,11 +38,11 @@ import {
   updateComposerAttachment
 } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
-import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
+import { clearPreviewArtifacts } from '@/store/preview-status'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
@@ -156,6 +156,13 @@ async function withSessionBusyRetry<T>(call: () => Promise<T>): Promise<T> {
     }
   }
 }
+
+// Hard guard: at most one prompt.submit in flight per session. Every submit
+// path — user Enter, queue drain, busy-retry, slash fallthrough — funnels
+// through submitPromptText. Without this, a stalled turn (e.g. a context-bloated
+// session whose first call hangs) let the SAME prompt launch several real turns
+// at once (the "message stacked 5×" bug). Keyed by stored/active session id.
+const _submitInFlight = new Set<string>()
 
 function base64FromDataUrl(dataUrl: string): string {
   const comma = dataUrl.indexOf(',')
@@ -384,6 +391,31 @@ function visibleUserOrdinal(messages: readonly ChatMessage[], end: number): numb
   return messages.slice(0, end).filter(m => m.role === 'user' && !m.hidden).length
 }
 
+function visibleUserIndexAtOrdinal(messages: readonly ChatMessage[], targetOrdinal: number): number {
+  let ordinal = 0
+
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index]
+
+    if (message.role !== 'user' || message.hidden) {
+      continue
+    }
+
+    if (ordinal === targetOrdinal) {
+      return index
+    }
+
+    ordinal += 1
+  }
+
+  return -1
+}
+
+interface RestoreMessageTarget {
+  text?: string
+  userOrdinal?: number | null
+}
+
 export function usePromptActions({
   activeSessionId,
   activeSessionIdRef,
@@ -599,6 +631,23 @@ export function usePromptActions({
         return false
       }
 
+      // One submit in flight per session — drop any concurrent re-fire so a
+      // stalled turn can't stack the same prompt into multiple real turns.
+      const submitLockKey = selectedStoredSessionIdRef.current || activeSessionId || '__pending_new__'
+
+      if (_submitInFlight.has(submitLockKey)) {
+        return false
+      }
+
+      _submitInFlight.add(submitLockKey)
+      let submitLockReleased = false
+      const releaseSubmitLock = () => {
+        if (!submitLockReleased) {
+          submitLockReleased = true
+          _submitInFlight.delete(submitLockKey)
+        }
+      }
+
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
       const buildUserMessage = (): ChatMessage => ({
@@ -609,6 +658,7 @@ export function usePromptActions({
       })
 
       const releaseBusy = () => {
+        releaseSubmitLock()
         setMutableRef(busyRef, false)
         setBusy(false)
         setAwaitingResponse(false)
@@ -749,6 +799,10 @@ export function usePromptActions({
         if (usingComposerAttachments) {
           clearComposerAttachments()
         }
+
+        // Submit landed — the turn now runs (busy stays true), but the submit
+        // window is closed, so release the lock for the next (sequential) send.
+        releaseSubmitLock()
 
         return true
       } catch (err) {
@@ -1644,55 +1698,78 @@ export function usePromptActions({
   // mechanism — `prompt.submit` with `truncate_before_user_ordinal` drops that
   // user turn and everything after it from the session history, then the same
   // text is submitted as a fresh turn. Callers confirm before invoking; errors
-  // are rethrown so the confirmation dialog can surface them inline.
-  // Submit a rewind (truncate-before-ordinal + resubmit). Because edit/restore
-  // can fire while a turn is streaming, interrupt the live turn first — the
-  // cooperative interrupt takes a beat, so the shared busy-retry rides it out.
+  // are rethrown so callers can surface failures. Idle rewinds submit directly:
+  // interrupting an idle agent can leave a stale interrupt flag that cancels the
+  // fresh turn. Live/stuck turns interrupt first, and a raced "session busy"
+  // response interrupts + retries through the shared busy gate.
   const submitRewindPrompt = useCallback(
-    async (sessionId: string, text: string, truncateOrdinal: number | undefined, wasRunning: boolean) => {
-      if (wasRunning) {
+    async (sessionId: string, text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) => {
+      const interrupt = async () => {
         try {
           await requestGateway('session.interrupt', { session_id: sessionId })
         } catch {
-          // Best-effort — the busy-retry below still gates the submit.
+          // Best-effort. The submit path still gates on the gateway state.
         }
       }
 
-      await withSessionBusyRetry(() =>
+      const submit = () =>
         requestGateway('prompt.submit', {
           session_id: sessionId,
           text,
           ...(truncateOrdinal !== undefined && { truncate_before_user_ordinal: truncateOrdinal })
         })
-      )
+
+      if (interruptFirst) {
+        await interrupt()
+      }
+
+      try {
+        await submit()
+      } catch (err) {
+        if (!isSessionBusyError(err)) {
+          throw err
+        }
+
+        await interrupt()
+        await withSessionBusyRetry(submit)
+      }
     },
     [requestGateway]
   )
 
   const restoreToMessage = useCallback(
-    async (messageId: string) => {
+    async (messageId: string, target?: RestoreMessageTarget) => {
       const sessionId = activeSessionId || activeSessionIdRef.current
 
       if (!sessionId) {
-        return
+        throw new Error('No active session to restore.')
       }
 
       const messages = $messages.get()
-      const sourceIndex = messages.findIndex(m => m.id === messageId)
+      const idIndex = messages.findIndex(m => m.id === messageId && m.role === 'user')
+
+      const fallbackIndex =
+        target?.userOrdinal === null || target?.userOrdinal === undefined
+          ? -1
+          : visibleUserIndexAtOrdinal(messages, target.userOrdinal)
+
+      const sourceIndex = idIndex >= 0 ? idIndex : fallbackIndex
       const source = messages[sourceIndex]
 
       if (!source || source.role !== 'user') {
-        return
+        throw new Error('Could not find the message to restore.')
       }
 
-      const text = chatMessageText(source).trim()
+      const text = (chatMessageText(source).trim() || target?.text?.trim() || '').trim()
 
       if (!text) {
-        return
+        throw new Error('Cannot restore an empty message.')
       }
 
-      const wasRunning = $busy.get()
-      const truncateBeforeUserOrdinal = visibleUserOrdinal(messages, sourceIndex)
+      const truncateBeforeUserOrdinal =
+        target?.userOrdinal === null || target?.userOrdinal === undefined
+          ? visibleUserOrdinal(messages, sourceIndex)
+          : target.userOrdinal
 
       // The turns we're discarding may have spawned todos and background
       // processes; they belong to the abandoned timeline, so wipe their status
@@ -1716,12 +1793,21 @@ export function usePromptActions({
       }))
 
       try {
-        await submitRewindPrompt(sessionId, text, truncateBeforeUserOrdinal, wasRunning)
+        await submitRewindPrompt(sessionId, text, truncateBeforeUserOrdinal, busyRef.current || $busy.get())
       } catch (err) {
+        // The rewind never landed (e.g. the gateway stayed busy past the retry
+        // deadline). Roll the optimistic truncation back to the full original
+        // history so the UI doesn't desync from what's persisted — leaving it
+        // truncated is what made subsequent sends look duplicative.
         setMutableRef(busyRef, false)
         setBusy(false)
         setAwaitingResponse(false)
-        updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))
+        updateSessionState(sessionId, state => ({
+          ...state,
+          busy: false,
+          awaitingResponse: false,
+          messages
+        }))
         throw err
       }
     },
@@ -1747,9 +1833,8 @@ export function usePromptActions({
       }
 
       // Sending an edit is a revert: rewind to this prompt and re-run with the
-      // new text. It can fire mid-turn, so capture the live state — the submit
-      // helper interrupts first when a turn is running.
-      const wasRunning = $busy.get()
+      // new text. It can fire mid-turn; submitRewindPrompt always interrupts
+      // first, so a live turn is wound down before the resubmit.
 
       // Failed turn: optimistic user msg never reached the gateway, so truncating
       // by ordinal would 422. Submit as a plain resend instead.
@@ -1782,7 +1867,12 @@ export function usePromptActions({
         /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
 
       try {
-        await submitRewindPrompt(sessionId, text, isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex), wasRunning)
+        await submitRewindPrompt(
+          sessionId,
+          text,
+          isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex),
+          busyRef.current || $busy.get()
+        )
       } catch (err) {
         let surfaced = err
 
@@ -1797,10 +1887,13 @@ export function usePromptActions({
           }
         }
 
+        // Roll the optimistic edit/truncation back to the original history so the
+        // UI stays in sync with what's persisted instead of stranding a partial
+        // timeline.
         setMutableRef(busyRef, false)
         setBusy(false)
         setAwaitingResponse(false)
-        updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))
+        updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false, messages }))
         notifyError(surfaced, copy.editFailed)
       }
     },

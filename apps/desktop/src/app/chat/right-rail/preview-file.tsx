@@ -6,7 +6,7 @@ import type {
   MouseEvent as ReactMouseEvent,
   ReactNode
 } from 'react'
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
@@ -14,15 +14,21 @@ import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/comp
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
+import { FileDiffPanel } from '@/components/chat/diff-lines'
+import { chunkTextLines, useFixedRowWindow } from '@/components/chat/fixed-row-window'
 import { PageLoader } from '@/components/page-loader'
 import { translateNow, useI18n } from '@/i18n'
-import { readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
+import { desktopFileDiff, desktopGitRoot, readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
+import { shikiLanguageForFilename } from '@/lib/markdown-code'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
+const SOURCE_CHUNK_LINES = 200
+const SOURCE_LINE_PX = 20
+const SOURCE_OVERSCAN_LINES = 400
 
 type EmptyStateTone = 'neutral' | 'warning'
 
@@ -126,6 +132,8 @@ interface LocalPreviewState {
   binary?: boolean
   byteSize?: number
   dataUrl?: string
+  /** Working-tree-vs-HEAD unified diff, when the file has uncommitted changes. */
+  diff?: string
   error?: string
   language?: string
   loading: boolean
@@ -299,27 +307,43 @@ function MarkdownPreview({ text }: { text: string }) {
   )
 }
 
-function PreviewToggle({ asSource, onToggle }: { asSource: boolean; onToggle: () => void }) {
+function PreviewModeSwitcher({
+  active,
+  modes,
+  onSelect
+}: {
+  active: PreviewViewMode
+  modes: PreviewViewMode[]
+  onSelect: (mode: PreviewViewMode) => void
+}) {
   const { t } = useI18n()
 
+  const label: Record<PreviewViewMode, string> = {
+    diff: t.preview.diff,
+    rendered: t.preview.renderedPreview,
+    source: t.preview.source
+  }
+
   return (
-    <div className="sticky top-0 z-10 flex justify-end border-b border-border/40 bg-transparent px-3 py-1 backdrop-blur">
-      <button
-        className="text-[0.625rem] font-bold text-muted-foreground underline decoration-current/20 underline-offset-4 transition-colors hover:text-foreground"
-        onClick={onToggle}
-        type="button"
-      >
-        {asSource ? t.preview.renderedPreview : t.preview.source}
-      </button>
+    <div className="flex shrink-0 justify-end gap-3 border-b border-border/40 px-3 py-1">
+      {modes.map(mode => (
+        <button
+          className={cn(
+            'text-[0.625rem] font-bold underline-offset-4 transition-colors',
+            mode === active
+              ? 'text-foreground underline decoration-current/30'
+              : 'text-muted-foreground hover:text-foreground'
+          )}
+          key={mode}
+          onClick={() => onSelect(mode)}
+          type="button"
+        >
+          {label[mode]}
+        </button>
+      ))}
     </div>
   )
 }
-
-// Gutter and Shiki output share `font-mono text-xs leading-relaxed py-3` so
-// each line aligns vertically. The selection overlay relies on the same
-// `text-xs * leading-relaxed = 1.21875rem` line-height to position itself.
-const SOURCE_LINE_HEIGHT_REM = 1.21875
-const SOURCE_PAD_Y_REM = 0.75
 
 interface LineSelection {
   end: number
@@ -337,7 +361,18 @@ function startLineDrag(event: ReactDragEvent<HTMLElement>, filePath: string, { e
 
 function SourceView({ filePath, language, text }: { filePath: string; language: string; text: string }) {
   const { t } = useI18n()
-  const lineCount = useMemo(() => Math.max(1, text.split('\n').length), [text])
+  const chunks = useMemo(() => chunkTextLines(text, SOURCE_CHUNK_LINES), [text])
+  const lastChunk = chunks.at(-1)
+  const totalLines = lastChunk ? lastChunk.start + lastChunk.lines.length : 0
+
+  const { afterRows, beforeRows, endChunk, onScroll, scrollerRef, startChunk } = useFixedRowWindow({
+    overscanRows: SOURCE_OVERSCAN_LINES,
+    rowPx: SOURCE_LINE_PX,
+    rowsPerChunk: SOURCE_CHUNK_LINES,
+    totalRows: totalLines
+  })
+
+  const visibleChunks = chunks.slice(startChunk, endChunk + 1)
   const [selection, setSelection] = useState<LineSelection | null>(null)
   const inSelection = (line: number) => selection != null && line >= selection.start && line <= selection.end
 
@@ -394,68 +429,75 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   }, [filePath, selection])
 
   return (
-    <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-xs leading-relaxed">
-      <div className="select-none py-3 text-right text-muted-foreground/55">
-        {Array.from({ length: lineCount }, (_, index) => {
-          const line = index + 1
-          const selected = inSelection(line)
-
-          return (
-            <div
-              className={cn(
-                'cursor-pointer px-3 tabular-nums transition-colors',
-                selected
-                  ? 'bg-amber-200/45 text-amber-900 dark:bg-amber-300/20 dark:text-amber-100'
-                  : 'hover:text-foreground'
-              )}
-              draggable
-              key={line}
-              onClick={event => handleLineClick(event, line)}
-              onDragStart={event => handleDragStart(event, line)}
-              title={t.preview.sourceLineTitle}
-            >
-              {line}
-            </div>
-          )
-        })}
-      </div>
-      <div
-        className="relative [&_pre]:m-0 [&_pre]:px-3 [&_pre]:py-3 [&_pre]:bg-transparent!"
-        data-selectable-text="true"
-      >
-        {selection && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute inset-x-0 bg-amber-200/35 dark:bg-amber-300/10"
-            style={{
-              top: `calc(${SOURCE_PAD_Y_REM}rem + ${selection.start - 1} * ${SOURCE_LINE_HEIGHT_REM}rem)`,
-              height: `calc(${selection.end - selection.start + 1} * ${SOURCE_LINE_HEIGHT_REM}rem)`
-            }}
-          />
+    <div className="h-full overflow-auto" onScroll={onScroll} ref={scrollerRef}>
+      <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-[0.7rem] leading-relaxed">
+        {beforeRows > 0 && (
+          <div aria-hidden className="col-span-2" style={{ height: beforeRows * SOURCE_LINE_PX }} />
         )}
-        <ShikiHighlighter
-          addDefaultStyles={false}
-          as="div"
-          defaultColor="light-dark()"
-          delay={80}
-          language={language || 'text'}
-          showLanguage={false}
-          theme={SHIKI_THEME}
-        >
-          {text}
-        </ShikiHighlighter>
+        {visibleChunks.map(chunk => (
+          <Fragment key={chunk.start}>
+            <div className="select-none text-right text-muted-foreground/55">
+              {chunk.lines.map((_lineText, offset) => {
+                const line = chunk.start + offset + 1
+                const selected = inSelection(line)
+
+                return (
+                  <div
+                    className={cn(
+                      'h-5 w-9 cursor-pointer pr-2 leading-5 tabular-nums transition-colors',
+                      selected
+                        ? 'bg-amber-200/45 text-amber-900 dark:bg-amber-300/20 dark:text-amber-100'
+                        : 'hover:text-foreground'
+                    )}
+                    draggable
+                    key={line}
+                    onClick={event => handleLineClick(event, line)}
+                    onDragStart={event => handleDragStart(event, line)}
+                    title={t.preview.sourceLineTitle}
+                  >
+                    {line}
+                  </div>
+                )
+              })}
+            </div>
+            <div className="preview-source-code min-w-0 [&_pre]:m-0" data-selectable-text="true">
+              <ShikiHighlighter
+                addDefaultStyles={false}
+                as="div"
+                defaultColor="light-dark()"
+                delay={80}
+                language={language || 'text'}
+                showLanguage={false}
+                theme={SHIKI_THEME}
+              >
+                {chunk.text}
+              </ShikiHighlighter>
+            </div>
+          </Fragment>
+        ))}
+        {afterRows > 0 && (
+          <div aria-hidden className="col-span-2" style={{ height: afterRows * SOURCE_LINE_PX }} />
+        )}
       </div>
     </div>
   )
 }
 
+type PreviewViewMode = 'diff' | 'rendered' | 'source'
+
 export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; target: PreviewTarget }) {
   const { t } = useI18n()
   const [state, setState] = useState<LocalPreviewState>({ loading: true })
   const [forcePreview, setForcePreview] = useState(false)
-  const [renderMarkdownAsSource, setRenderMarkdownAsSource] = useState(false)
+  // User-picked view; null = auto (diff when changed, else rendered markdown,
+  // else source). Reset when the previewed file changes.
+  const [userMode, setUserMode] = useState<null | PreviewViewMode>(null)
   const filePath = filePathForTarget(target)
   const isImage = target.previewKind === 'image'
+
+  useEffect(() => {
+    setUserMode(null)
+  }, [filePath, reloadKey])
 
   // HTML files are rendered as source code, not in a webview - so they take
   // the same path as plain text files. `previewKind === 'binary'` arrives
@@ -508,6 +550,22 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
             text: shouldBlock ? undefined : result.text,
             truncated: result.truncated
           })
+
+          // Best-effort: fetch the file's working-tree-vs-HEAD diff so the
+          // preview can offer a DIFF view when there are uncommitted changes.
+          // Empty (clean file / not a repo / remote) just hides the option.
+          if (!shouldBlock) {
+            try {
+              const root = await desktopGitRoot(filePath)
+              const diff = root ? await desktopFileDiff(root, filePath) : ''
+
+              if (active && diff.trim()) {
+                setState(prev => (prev.text === result.text ? { ...prev, diff } : prev))
+              }
+            } catch {
+              // No diff available; the preview just shows source.
+            }
+          }
         }
       } catch (error) {
         if (active) {
@@ -571,21 +629,50 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
 
   if (isText && state.text !== undefined) {
     const isMarkdown = (state.language || target.language) === 'markdown'
-    const showRendered = isMarkdown && !renderMarkdownAsSource
+    const hasDiff = Boolean(state.diff && state.diff.trim())
+    // Order the toggle reads left→right; default lands on the most useful view.
+    const modes: PreviewViewMode[] = []
+
+    if (isMarkdown) {
+      modes.push('rendered')
+    }
+
+    modes.push('source')
+
+    if (hasDiff) {
+      modes.push('diff')
+    }
+
+    const autoMode: PreviewViewMode = hasDiff ? 'diff' : isMarkdown ? 'rendered' : 'source'
+    const mode = userMode && modes.includes(userMode) ? userMode : autoMode
 
     return (
-      <div className="h-full overflow-auto bg-transparent">
+      <div className="flex h-full flex-col overflow-hidden bg-transparent">
         {state.truncated && (
           <div className="border-b border-border/60 bg-muted/35 px-3 py-1.5 text-[0.68rem] text-muted-foreground">
             {t.preview.truncated}
           </div>
         )}
-        {isMarkdown && <PreviewToggle asSource={!showRendered} onToggle={() => setRenderMarkdownAsSource(s => !s)} />}
-        {showRendered ? (
-          <MarkdownPreview text={state.text} />
-        ) : (
-          <SourceView filePath={filePath} language={state.language || 'text'} text={state.text} />
-        )}
+        {modes.length > 1 && <PreviewModeSwitcher active={mode} modes={modes} onSelect={setUserMode} />}
+        <div className="min-h-0 flex-1 overflow-auto">
+          {mode === 'rendered' ? (
+            <MarkdownPreview text={state.text} />
+          ) : mode === 'diff' ? (
+            <FileDiffPanel
+              className="mx-0 mb-0 h-full max-h-none"
+              diff={state.diff ?? ''}
+              fullText={state.text}
+              path={filePath}
+              showLineNumbers
+            />
+          ) : (
+            <SourceView
+              filePath={filePath}
+              language={shikiLanguageForFilename(filePath) || state.language || 'text'}
+              text={state.text}
+            />
+          )}
+        </div>
       </div>
     )
   }

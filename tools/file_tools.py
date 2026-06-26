@@ -166,6 +166,30 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     return _sentinel_free_abs_cwd(overrides.get("cwd"))
 
 
+def _live_cwd_if_owned(env, task_id: str) -> str | None:
+    """The env's live cwd, but only when THIS session owns it.
+
+    The terminal env is shared (collapsed to the ``"default"`` container), so its
+    ``cwd`` tracks the LAST session that ran a command. With two worktree
+    sessions open, trusting it blindly routes one session's edits into the other
+    session's checkout (the wrong-worktree-patch bug). ``terminal_tool`` stamps
+    ``env.cwd_owner`` with the session that last drove the env; return its cwd
+    only when that owner matches the resolving session, else ``None`` so the
+    caller falls through to this session's own registered cwd override. Unknown
+    owner / ``default`` keys keep the prior behavior (single-session / CLI).
+    """
+    if env is None:
+        return None
+    live = getattr(env, "cwd", None)
+    if not live:
+        return None
+    owner = str(getattr(env, "cwd_owner", "") or "")
+    tid = str(task_id or "")
+    if owner and tid and owner != "default" and tid != "default" and owner != tid:
+        return None
+    return live
+
+
 def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     """Return the task's live terminal cwd for bookkeeping when available."""
     try:
@@ -177,18 +201,20 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     with _file_ops_lock:
         cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
     if cached is not None:
-        live_cwd = getattr(getattr(cached, "env", None), "cwd", None) or getattr(
-            cached, "cwd", None
-        )
+        env = getattr(cached, "env", None)
+        live_cwd = _live_cwd_if_owned(env, task_id)
         if live_cwd:
             return live_cwd
+        # Legacy: a cache entry carrying its own cwd with no env to own it.
+        if env is None and getattr(cached, "cwd", None):
+            return getattr(cached, "cwd", None)
 
     try:
         from tools.terminal_tool import _active_environments, _env_lock
 
         with _env_lock:
             env = _active_environments.get(container_key) or _active_environments.get(task_id)
-            live_cwd = getattr(env, "cwd", None) if env is not None else None
+        live_cwd = _live_cwd_if_owned(env, task_id)
         if live_cwd:
             return live_cwd
     except Exception:

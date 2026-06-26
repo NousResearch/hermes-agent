@@ -56,27 +56,20 @@ function load(): Record<string, PaneStateSnapshot> {
   return {}
 }
 
-// widthOverride is in-memory only — phase 2 can add per-pane persistWidth opt-in.
+// Persists both open state and resize width; load() validates each snapshot.
 function persist(states: Record<string, PaneStateSnapshot>) {
   if (typeof window === 'undefined') {
     return
   }
 
-  const minimal: Record<string, { open: boolean }> = {}
-
-  for (const [id, s] of Object.entries(states)) {
-    minimal[id] = { open: s.open }
-  }
-
   try {
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(minimal))
+    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(states))
   } catch {
     // Storage failures are nonfatal.
   }
 }
 
 export const $paneStates = atom<Record<string, PaneStateSnapshot>>(load())
-export const $paneHoverRevealSuppressed = atom(false)
 
 $paneStates.subscribe(persist)
 
@@ -144,4 +137,3 @@ export function setPaneWidthOverride(id: string, width: number | undefined) {
 
 export const clearPaneWidthOverride = (id: string) => setPaneWidthOverride(id, undefined)
 export const getPaneStateSnapshot = (id: string) => $paneStates.get()[id]
-export const setPaneHoverRevealSuppressed = (suppressed: boolean) => $paneHoverRevealSuppressed.set(suppressed)

@@ -1576,6 +1576,22 @@ DEFAULT_CONFIG = {
             "timeout": 120,
             "extra_body": {},
         },
+        "moa_reference": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 600,
+            "extra_body": {},
+        },
+        "moa_aggregator": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 600,
+            "extra_body": {},
+        },
     },
     
     "display": {
@@ -2054,6 +2070,27 @@ DEFAULT_CONFIG = {
         "max_turns": 20,
     },
 
+    # Mixture of Agents — named presets used by /moa. A preset is an execution
+    # mode around the main model, not a provider/model itself: references +
+    # aggregator synthesize private guidance before each main-model iteration.
+    "moa": {
+        "default_preset": "default",
+        "active_preset": "",
+        "presets": {
+            "default": {
+                "reference_models": [
+                    {"provider": "openai-codex", "model": "gpt-5.5"},
+                    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+                ],
+                "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+                "reference_temperature": 0.6,
+                "aggregator_temperature": 0.4,
+                "max_tokens": 4096,
+                "enabled": True,
+            }
+        },
+    },
+
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
@@ -2417,6 +2454,10 @@ DEFAULT_CONFIG = {
         # 1 = serial (pre-v0.9 behaviour).
         # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
         "max_parallel_jobs": None,
+        # Per-job output-file retention: save_job_output keeps the N most
+        # recent .md files and prunes older ones. 0 or negative disables
+        # pruning (for operators who manage cleanup externally). Default 50.
+        "output_retention": 50,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that
@@ -2743,14 +2784,14 @@ DEFAULT_CONFIG = {
     "updates": {
         # Run a full ``hermes backup``-style zip of HERMES_HOME before every
         # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
-        # can be restored with ``hermes import <path>``.  Defaults to true
-        # after the #48200 incident: a ``hermes update --yes`` run that
-        # computed a wrong path silently wiped the user's ``.env``,
-        # ``MEMORY.md``, ``kanban.db``, custom skills, and scripts in one
-        # go.  The cost of a few minutes of zip time per update is
-        # negligible compared to the alternative.  Set to false to opt
-        # out, or pass ``--no-backup`` for a single update run.
-        "pre_update_backup": True,
+        # can be restored with ``hermes import <path>``.  Off by default:
+        # zipping a large HERMES_HOME (sessions DB, caches, skills) can add
+        # minutes to every update.  The #48200 incident — a ``hermes update
+        # --yes`` run that computed a wrong path and silently wiped the
+        # user's ``.env``, ``MEMORY.md``, ``kanban.db``, custom skills, and
+        # scripts — is the reason this knob exists; enable it (here, or via
+        # ``--backup`` for a single run) if you want that safety net.
+        "pre_update_backup": False,
         # How many pre-update backup zips to retain.  Older ones are pruned
         # automatically after each successful backup.  Values below 1 are
         # floored to 1 — the backup just created is always preserved.  To
@@ -2953,7 +2994,7 @@ OPTIONAL_ENV_VARS = {
         "prompt": "OpenRouter API key",
         "url": "https://openrouter.ai/keys",
         "password": True,
-        "tools": ["vision_analyze", "mixture_of_agents"],
+        "tools": ["vision_analyze"],
         "category": "provider",
         "advanced": True,
     },
@@ -4503,7 +4544,7 @@ _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
-    "auxiliary", "custom_providers", "context", "memory", "gateway",
+    "auxiliary", "moa", "custom_providers", "context", "memory", "gateway",
     "sessions", "streaming", "updates", "mcp_servers",
 }
 

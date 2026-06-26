@@ -15829,6 +15829,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 except Exception:
                     pass
 
+            _xproc_evicted_agent = None
             if _cache_lock and _cache is not None:
                 with _cache_lock:
                     cached = _cache.get(session_key)
@@ -15852,7 +15853,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             evicted = self._agent_cache.pop(session_key, None)
                             _ev_agent = evicted[0] if isinstance(evicted, tuple) and evicted else None
                             if _ev_agent and _ev_agent is not _AGENT_PENDING_SENTINEL:
-                                self._cleanup_agent_resources(_ev_agent)
+                                # Defer cleanup until AFTER the lock is
+                                # released — _cleanup_agent_resources /
+                                # release_clients can block on memory-provider
+                                # shutdown and socket teardown, and running it
+                                # here would stall the gateway event loop while
+                                # _sweep_idle_cached_agents (session-expiry
+                                # watcher) waits on the same lock, blocking
+                                # Discord heartbeats (#52197).  The same session
+                                # rebuilds a fresh agent immediately below, so
+                                # use the SOFT release that preserves the
+                                # session's terminal sandbox / browser / bg
+                                # processes for the rebuilt agent to inherit —
+                                # mirrors _evict_cached_agent / idle-sweep.
+                                _xproc_evicted_agent = _ev_agent
                         else:
                             agent = cached[0]
                             # Refresh LRU order so the cap enforcement evicts
@@ -15867,6 +15881,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             # (cached agent may have been created with old config)
                             agent.max_iterations = max_iterations
                             logger.debug("Reusing cached agent for session %s", session_key)
+
+            # Lock released — now schedule cleanup of any cross-process-evicted
+            # agent on a daemon thread so memory-provider shutdown / socket
+            # teardown never blocks the gateway event loop or the cache lock
+            # the session-expiry watcher needs (#52197).
+            if _xproc_evicted_agent is not None:
+                try:
+                    threading.Thread(
+                        target=self._release_evicted_agent_soft,
+                        args=(_xproc_evicted_agent,),
+                        daemon=True,
+                        name=f"agent-xproc-evict-{str(session_key)[:24]}",
+                    ).start()
+                except Exception:
+                    # Interpreter shutdown or thread-spawn failure — release
+                    # inline as a best-effort fallback.
+                    try:
+                        self._release_evicted_agent_soft(_xproc_evicted_agent)
+                    except Exception:
+                        pass
 
             if agent is None:
                 # Config changed or first message — create fresh agent

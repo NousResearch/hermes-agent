@@ -1,0 +1,10 @@
+name: eitaa
+label: Eitaa (ایتا)
+kind: platform
+version: 1.0.0
+description: Eitaa (ایتا) adapter.
+author: Hermes Core Team
+requires_env:
+  - name: EITAA_BOT_TOKEN\n    description: "EITAA_BOT_TOKEN"\n    prompt: "EITAA_BOT_TOKEN"\n    password: true\n
+optional_env:
+

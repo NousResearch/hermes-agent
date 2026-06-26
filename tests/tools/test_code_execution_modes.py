@@ -236,6 +236,12 @@ class TestModeAwareSchema(unittest.TestCase):
         self.assertIn("session", desc)
         self.assertIn("venv", desc)
 
+    def test_description_discourages_terminal_wrappers(self):
+        desc = build_execute_code_schema(mode="project")["description"]
+        self.assertIn("Do not wrap a single terminal command", desc)
+        self.assertIn("script approval guard", desc)
+        self.assertIn("Call terminal directly", desc)
+
     def test_neither_description_uses_sandbox_language(self):
         """REGRESSION GUARD for commit 39b83f34.
 

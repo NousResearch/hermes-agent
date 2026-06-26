@@ -18,6 +18,7 @@ import os
 import stat
 import time
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -414,6 +415,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
+    app.router.add_get("/api/memory/providers/{provider}/config", adapter._handle_memory_provider_config)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -672,9 +674,14 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
+            assert data["features"]["memory_provider_config"] is True
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+            assert data["endpoints"]["memory_provider_config"] == {
+                "method": "GET",
+                "path": "/api/memory/providers/{provider}/config",
+            }
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
@@ -690,6 +697,97 @@ class TestCapabilitiesEndpoint:
             assert authed.status == 200
             data = await authed.json()
             assert data["auth"]["required"] is True
+
+
+# ---------------------------------------------------------------------------
+# /api/memory/providers/{provider}/config endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestMemoryProviderConfigEndpoint:
+    def _fake_honcho_config(self):
+        return SimpleNamespace(
+            host="hermes",
+            workspace_id="test-workspace",
+            api_key="sk-test-secret",
+            environment="production",
+            base_url="http://honcho.local",
+            peer_name="gerrit",
+            ai_peer="hermes",
+            pin_peer_name=True,
+            enabled=True,
+            save_messages=True,
+            write_frequency="async",
+            context_tokens=1200,
+            dialectic_reasoning_level="low",
+            dialectic_dynamic=True,
+            dialectic_max_chars=600,
+            dialectic_depth=1,
+            dialectic_depth_levels=None,
+            reasoning_heuristic=True,
+            reasoning_level_cap="high",
+            message_max_chars=25000,
+            dialectic_max_input_chars=10000,
+            recall_mode="hybrid",
+            init_on_session_start=False,
+            observation_mode="directional",
+            user_observe_me=True,
+            user_observe_others=True,
+            ai_observe_me=True,
+            ai_observe_others=True,
+            session_strategy="per-directory",
+            session_peer_prefix=False,
+            runtime_peer_prefix="telegram_",
+            user_peer_aliases={"123": "gerrit"},
+            explicitly_configured=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_honcho_config_returns_safe_metadata(self, adapter):
+        provider = MagicMock()
+        provider.is_available.return_value = True
+        provider.get_config_schema.return_value = [
+            {"key": "api_key", "secret": True},
+            {"key": "baseUrl"},
+        ]
+
+        with patch(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            return_value=self._fake_honcho_config(),
+        ), patch("plugins.memory.honcho.HonchoMemoryProvider", return_value=provider):
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/api/memory/providers/honcho/config")
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["object"] == "hermes.memory_provider.config"
+        assert data["provider"] == "honcho"
+        assert data["configured"] is True
+        assert data["available"] is True
+        assert data["enabled"] is True
+        assert data["config"]["apiKeyConfigured"] is True
+        assert data["config"]["baseUrl"] == "http://honcho.local"
+        assert data["config"]["userPeerAliasesConfigured"] == ["123"]
+        assert "api_key" not in data["config"]
+        assert "apiKey" not in data["config"]
+        assert "sk-test-secret" not in json.dumps(data)
+
+    @pytest.mark.asyncio
+    async def test_honcho_config_requires_auth_when_key_configured(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/memory/providers/honcho/config")
+            assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_unknown_memory_provider_returns_404(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/memory/providers/unknown/config")
+            assert resp.status == 404
+            data = await resp.json()
+            assert data["error"]["code"] == "memory_provider_not_found"
 
 
 # ---------------------------------------------------------------------------

@@ -1117,6 +1117,90 @@ class APIServerAdapter(BasePlatformAdapter):
             ],
         })
 
+    async def _handle_memory_provider_config(self, request: "web.Request") -> "web.Response":
+        """GET /api/memory/providers/{provider}/config — safe provider metadata.
+
+        Workspace settings panels use this endpoint to discover whether a
+        provider is configured and which non-secret options are active. The
+        response intentionally never includes API keys, tokens, or raw config
+        files; secret fields are represented only as booleans.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        provider = (request.match_info.get("provider") or "").strip().lower()
+        if provider != "honcho":
+            return web.json_response(
+                _openai_error(
+                    f"Unknown memory provider: {provider}",
+                    code="memory_provider_not_found",
+                ),
+                status=404,
+            )
+
+        try:
+            from plugins.memory.honcho import HonchoMemoryProvider
+            from plugins.memory.honcho.client import HonchoClientConfig
+
+            cfg = HonchoClientConfig.from_global_config()
+            provider_impl = HonchoMemoryProvider()
+            available = provider_impl.is_available()
+        except Exception as exc:
+            logger.exception("GET /api/memory/providers/%s/config failed", provider)
+            return web.json_response(
+                _openai_error(
+                    f"Failed to load memory provider config: {exc}",
+                    err_type="server_error",
+                    code="memory_provider_config_failed",
+                ),
+                status=500,
+            )
+
+        return web.json_response({
+            "object": "hermes.memory_provider.config",
+            "provider": "honcho",
+            "configured": bool(cfg.explicitly_configured or cfg.api_key or cfg.base_url),
+            "available": bool(available),
+            "enabled": bool(cfg.enabled),
+            "schema": provider_impl.get_config_schema(),
+            "config": {
+                "host": cfg.host,
+                "workspace": cfg.workspace_id,
+                "environment": cfg.environment,
+                "baseUrl": cfg.base_url,
+                "apiKeyConfigured": bool(cfg.api_key),
+                "peerName": cfg.peer_name,
+                "aiPeer": cfg.ai_peer,
+                "pinUserPeer": cfg.pin_peer_name,
+                "recallMode": cfg.recall_mode,
+                "saveMessages": cfg.save_messages,
+                "writeFrequency": cfg.write_frequency,
+                "contextTokens": cfg.context_tokens,
+                "dialecticReasoningLevel": cfg.dialectic_reasoning_level,
+                "dialecticDynamic": cfg.dialectic_dynamic,
+                "dialecticMaxChars": cfg.dialectic_max_chars,
+                "dialecticDepth": cfg.dialectic_depth,
+                "dialecticDepthLevels": cfg.dialectic_depth_levels,
+                "reasoningHeuristic": cfg.reasoning_heuristic,
+                "reasoningLevelCap": cfg.reasoning_level_cap,
+                "messageMaxChars": cfg.message_max_chars,
+                "dialecticMaxInputChars": cfg.dialectic_max_input_chars,
+                "initOnSessionStart": cfg.init_on_session_start,
+                "observationMode": cfg.observation_mode,
+                "observation": {
+                    "userObserveMe": cfg.user_observe_me,
+                    "userObserveOthers": cfg.user_observe_others,
+                    "aiObserveMe": cfg.ai_observe_me,
+                    "aiObserveOthers": cfg.ai_observe_others,
+                },
+                "sessionStrategy": cfg.session_strategy,
+                "sessionPeerPrefix": cfg.session_peer_prefix,
+                "runtimePeerPrefix": cfg.runtime_peer_prefix,
+                "userPeerAliasesConfigured": sorted(cfg.user_peer_aliases.keys()),
+            },
+        })
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -1165,6 +1249,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
+                "memory_provider_config": True,
                 "skills_api": True,
                 "audio_api": False,
                 "realtime_voice": False,
@@ -1186,6 +1271,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
+                "memory_provider_config": {"method": "GET", "path": "/api/memory/providers/{provider}/config"},
                 "session_create": {"method": "POST", "path": "/api/sessions"},
                 "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
                 "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
@@ -4177,6 +4263,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
+            self._app.router.add_get("/api/memory/providers/{provider}/config", self._handle_memory_provider_config)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

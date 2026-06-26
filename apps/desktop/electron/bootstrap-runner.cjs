@@ -378,13 +378,13 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
 
 function spawnBash(scriptPath, args, { emit, stageName, abortSignal, hermesHome } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn('bash', [scriptPath, ...args], {
+    const child = spawn('bash', [scriptPath, ...args], hiddenWindowsChildOptions({
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
         HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
       }
-    })
+    }))
 
     let stdout = ''
     let stderr = ''

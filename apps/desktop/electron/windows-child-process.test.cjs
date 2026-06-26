@@ -64,9 +64,10 @@ test('intentional or interactive desktop child processes stay documented', () =>
   assert.match(source, /spawn\('cmd\.exe', \['\/c', 'start'/)
 })
 
-test('bootstrap PowerShell runner hides Windows console children', () => {
+test('bootstrap shell runners hide Windows console children', () => {
   const source = readElectronFile('bootstrap-runner.cjs')
 
   assert.match(source, /function hiddenWindowsChildOptions\(options = \{\}\)/)
-  requireHiddenChildOptions(source, 'spawn(ps, fullArgs')
+  requireHiddenChildOptions(source, 'const child = spawn(\n      ps,\n      fullArgs')
+  requireHiddenChildOptions(source, "spawn('bash'")
 })

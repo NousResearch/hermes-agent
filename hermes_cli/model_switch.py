@@ -744,6 +744,52 @@ def _configured_provider_matches(
     return matches
 
 
+def _canonicalize_against_catalog(
+    raw_input: str,
+    provider: str,
+    catalog: list | None,
+) -> Optional[str]:
+    """Return the catalog-spelled model id for *raw_input*, or ``None``.
+
+    Used by :func:`switch_model` PATH B as a safety net before any provider
+    detection, validation, or routing step: if the user typed a shorthand
+    or wrong-case variant (e.g. ``m3`` or ``M3`` for ``MiniMax-M3``), and
+    exactly one entry in *provider*'s catalog matches case-insensitively,
+    rewrite the input to that canonical id so the next API call carries
+    a name the provider actually recognises.
+
+    Returns:
+        The catalog id (canonical spelling) when the input matches exactly
+        one entry.  Returns the input verbatim when it already matches an
+        entry exactly (idempotent).  Returns ``None`` when:
+
+        - the input matches no catalog entry (downstream steps will see
+          the original name and can produce a proper error);
+        - the input matches multiple entries ambiguously (e.g. ``m2.7``
+          matches both ``MiniMax-M2.7`` and ``MiniMax-M2.7-highspeed`` —
+          silently picking one would re-introduce the bug class we are
+          fixing, so we fall through instead).
+
+    A ``None`` catalog is treated as "no candidates" and also returns
+    ``None`` — callers should not pass an empty catalog when they mean
+    "no catalog available", but we defend against it regardless.
+    """
+    if not catalog:
+        return None
+    raw_lower = raw_input.strip().lower()
+    if not raw_lower:
+        return None
+    matches: list[str] = []
+    for entry in catalog:
+        if not isinstance(entry, str) or not entry:
+            continue
+        if entry.lower() == raw_lower:
+            matches.append(entry)
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
@@ -1004,6 +1050,37 @@ def switch_model(
                             "Converted vendor:model '%s' to aggregator slug '%s'",
                             raw_input, new_model,
                         )
+
+        # --- Step c.5: Canonical-slug normalization against the current
+        # provider's static catalog ---
+        # Without this, typing ``/model m3`` or ``/model M3`` while on
+        # ``minimax-oauth`` (catalog: ['MiniMax-M3', 'MiniMax-M2.7',
+        # 'MiniMax-M2.7-highspeed']) leaves ``new_model='m3'`` literally,
+        # because no alias matches and aggregator slash-conversion does
+        # not apply.  The next API call then hits ``api.minimax.io`` with
+        # an unknown model id and the provider either errors out or
+        # silently remaps the request — both are wrong for a paying user.
+        #
+        # We rewrite only when the input matches exactly one catalog
+        # entry case-insensitively; ambiguous matches (e.g. ``m2.7``
+        # against both ``MiniMax-M2.7`` and ``MiniMax-M2.7-highspeed``)
+        # fall through to downstream steps so the user can disambiguate.
+        # Aggregators already canonicalize via step d (next block), so we
+        # skip them here to avoid double-processing the slug.
+        if not resolved_alias and not is_aggregator(target_provider):
+            try:
+                current_catalog = list_provider_models(target_provider)
+            except Exception:
+                current_catalog = None
+            canonical = _canonicalize_against_catalog(
+                new_model, target_provider, current_catalog
+            )
+            if canonical is not None and canonical != new_model:
+                logger.debug(
+                    "Canonical-slug normalization: '%s' -> '%s' on %s",
+                    new_model, canonical, target_provider,
+                )
+                new_model = canonical
 
         # --- Step d: Aggregator catalog search ---
         # Track whether the live catalog of the CURRENT provider resolved the

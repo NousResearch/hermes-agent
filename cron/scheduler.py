@@ -980,6 +980,31 @@ _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
 
+def _write_cron_delivery_event(job: dict, event: str, **fields) -> None:
+    """Append a structured cron delivery audit event.
+
+    Gateway logs are useful but can be noisy and rotated by systemd.  Cron
+    delivery bugs need a small durable breadcrumb trail that answers: did the
+    job run, what target did we resolve, did we try Slack/Telegram/etc, did the
+    platform return a message id, and what error (if any) was persisted on the
+    job.  Best-effort only: delivery must never fail because auditing failed.
+    """
+    try:
+        log_dir = _get_hermes_home() / "cron"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "ts": _hermes_now().isoformat(),
+            "event": event,
+            "job_id": job.get("id"),
+            "job_name": job.get("name"),
+            **fields,
+        }
+        with (log_dir / "delivery.log").open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+    except Exception as exc:  # pragma: no cover - audit logging must be non-fatal
+        logger.debug("Job '%s': failed to write cron delivery audit event: %s", job.get("id", "?"), exc)
+
+
 def _send_media_via_adapter(
     adapter,
     chat_id: str,
@@ -1069,9 +1094,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     Returns None on success, or an error string on failure.
     """
     targets = _resolve_delivery_targets(job)
+    _write_cron_delivery_event(
+        job,
+        "targets_resolved",
+        deliver=job.get("deliver", "local"),
+        targets=targets,
+        content_chars=len(content or ""),
+    )
     if not targets:
         deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
         if deliver_value == "local":
+            _write_cron_delivery_event(job, "delivery_skipped", reason="local_only")
             return None  # local-only jobs don't deliver — not a failure
         # deliver=origin with no resolvable origin and no configured home
         # channels: treat as local rather than reporting an error.  CLI-created
@@ -1085,9 +1118,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 "skipping delivery (output saved in last_output)",
                 job.get("name", job.get("id", "?")),
             )
+            _write_cron_delivery_event(job, "delivery_skipped", reason="origin_without_target")
             return None
         msg = f"no delivery target resolved for deliver={deliver_value}"
         logger.warning("Job '%s': %s", job["id"], msg)
+        _write_cron_delivery_event(job, "delivery_skipped", reason=msg)
         return msg
 
     from tools.send_message_tool import _send_to_platform
@@ -1188,6 +1223,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         if not pconfig or not pconfig.enabled:
             msg = f"platform '{platform_name}' not configured/enabled"
             logger.warning("Job '%s': %s", job["id"], msg)
+            _write_cron_delivery_event(
+                job,
+                "delivery_target_invalid",
+                platform=platform_name,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                error=msg,
+            )
             delivery_errors.append(msg)
             continue
 
@@ -1262,6 +1305,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 route_metadata = {"job_id": job["id"]}
                 media_metadata = {"thread_id": thread_id} if thread_id else None
 
+            _write_cron_delivery_event(
+                job,
+                "live_adapter_attempt",
+                platform=platform_name,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                media_count=len(media_files),
+                text_chars=len(cleaned_delivery_content.strip()),
+            )
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content.
                 # Route through the gateway's DeliveryRouter so the live send
@@ -1351,7 +1403,6 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             # still delivered.
                             target_errors.append(f"live adapter send failed: {ex}")
                             raise
-
                         if timeout_handled:
                             # The timeout branch above already decided the
                             # outcome (assume-delivered if in flight, or
@@ -1436,6 +1487,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    _write_cron_delivery_event(
+                        job,
+                        "live_adapter_delivered",
+                        platform=platform_name,
+                        chat_id=chat_id,
+                        thread_id=thread_id,
+                        message_id=(getattr(send_result, "message_id", None) if text_to_send else None),
+                    )
                     delivered = True
                     # Seed the thread session only now that delivery into it
                     # succeeded (deferred from thread-open above).
@@ -1459,9 +1518,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     "Job '%s': %s, falling back to standalone",
                     job["id"], err_msg,
                 )
+                _write_cron_delivery_event(
+                    job,
+                    "live_adapter_exception",
+                    platform=platform_name,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    error=str(e),
+                )
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
+            _write_cron_delivery_event(
+                job,
+                "standalone_attempt",
+                platform=platform_name,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                media_count=len(media_files),
+                text_chars=len(cleaned_delivery_content.strip()),
+            )
             coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
             try:
                 result = asyncio.run(coro)
@@ -1477,6 +1553,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                 logger.error("Job '%s': %s", job["id"], msg)
+                _write_cron_delivery_event(
+                    job,
+                    "standalone_exception",
+                    platform=platform_name,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    error=str(e),
+                )
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
                 continue
@@ -1484,11 +1568,28 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             if result and result.get("error"):
                 msg = f"delivery error: {result['error']}"
                 logger.error("Job '%s': %s", job["id"], msg)
+                _write_cron_delivery_event(
+                    job,
+                    "standalone_failed",
+                    platform=platform_name,
+                    chat_id=chat_id,
+                    thread_id=thread_id,
+                    error=result.get("error"),
+                    result=result,
+                )
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            _write_cron_delivery_event(
+                job,
+                "standalone_delivered",
+                platform=platform_name,
+                chat_id=chat_id,
+                thread_id=thread_id,
+                result=result,
+            )
             _maybe_mirror_cron_delivery(
                 job, platform_name, chat_id, mirror_text,
                 thread_id=thread_id, user_id=origin_user_id,
@@ -1496,7 +1597,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             )
 
     if delivery_errors:
-        return "; ".join(delivery_errors)
+        error_text = "; ".join(delivery_errors)
+        _write_cron_delivery_event(job, "delivery_complete", success=False, error=error_text)
+        return error_text
+    _write_cron_delivery_event(job, "delivery_complete", success=True)
     return None
 
 
@@ -2788,10 +2892,24 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         delivery_error = None
         if should_deliver:
             try:
+                _write_cron_delivery_event(
+                    job,
+                    "delivery_requested",
+                    success=success,
+                    content_chars=len(deliver_content),
+                )
                 delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
             except Exception as de:
                 delivery_error = str(de)
                 logger.error("Delivery failed for job %s: %s", job["id"], de)
+                _write_cron_delivery_event(job, "delivery_exception", error=delivery_error)
+        else:
+            _write_cron_delivery_event(
+                job,
+                "delivery_not_requested",
+                success=success,
+                reason="silent_or_empty",
+            )
 
         # Treat empty final_response as a soft failure so last_status
         # is not "ok" — the agent ran but produced nothing useful.
@@ -2801,6 +2919,13 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        _write_cron_delivery_event(
+            job,
+            "job_marked",
+            success=success,
+            error=error,
+            delivery_error=delivery_error,
+        )
         return True
 
     except Exception as e:

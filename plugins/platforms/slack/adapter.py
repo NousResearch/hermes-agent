@@ -1256,6 +1256,14 @@ class SlackAdapter(BasePlatformAdapter):
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
 
+            logger.info(
+                "[Slack] Sending message to channel=%s thread_ts=%s chunks=%d chars=%d",
+                chat_id,
+                thread_ts or "none",
+                len(chunks),
+                len(formatted),
+            )
+
             # reply_broadcast: also post thread replies to the main channel.
             # Controlled via platform config: gateway.slack.reply_broadcast
             broadcast = self.config.extra.get("reply_broadcast", False)
@@ -1290,6 +1298,14 @@ class SlackAdapter(BasePlatformAdapter):
                     excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
                     for old_ts in list(self._bot_message_ts)[:excess]:
                         self._bot_message_ts.discard(old_ts)
+
+            logger.info(
+                "[Slack] Send succeeded channel=%s thread_ts=%s message_ts=%s chunks=%d",
+                chat_id,
+                thread_ts or "none",
+                sent_ts or "unknown",
+                len(chunks),
+            )
 
             return SendResult(
                 success=True,

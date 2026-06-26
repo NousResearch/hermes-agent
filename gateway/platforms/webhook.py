@@ -549,6 +549,39 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"status": "ignored", "event": event_type}
             )
 
+        # Sender blocklist — short-circuits before agent dispatch to prevent
+        # self-comment loops. payload.user.login is intentionally omitted: its
+        # semantics vary by provider and risk matching the wrong identity.
+        sender_blocklist = route_config.get("sender_blocklist", [])
+        if sender_blocklist:
+            def _login(field: object) -> str:
+                """Extract login string safely regardless of payload shape."""
+                if isinstance(field, dict):
+                    return field.get("login") or ""
+                if isinstance(field, str):
+                    return field
+                return ""
+
+            sender = (
+                _login(payload.get("sender"))
+                or _login(payload.get("actor"))
+                or ""
+            )
+            if sender in sender_blocklist:
+                logger.info(
+                    "[webhook] Ignoring event from blocked sender %s route=%s "
+                    "(sender_blocklist). Check config if events are unexpectedly silent.",
+                    sender,
+                    route_name,
+                )
+                return web.json_response(
+                    {
+                        "status": "ignored",
+                        "reason": "sender_blocklist",
+                        "sender": sender,
+                    }
+                )
+
         # Format prompt from template
         prompt_template = route_config.get("prompt", "")
         prompt = self._render_prompt(

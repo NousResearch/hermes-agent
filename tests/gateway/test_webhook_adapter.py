@@ -467,6 +467,128 @@ class TestEventFilter:
             )
             assert resp.status == 202
 
+    @pytest.mark.asyncio
+    async def test_sender_blocklist_rejects_blocked_sender(self):
+        """Payload from a sender in sender_blocklist returns 200 status=ignored."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "test",
+                "sender_blocklist": ["my-bot"],
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "created", "sender": {"login": "my-bot"}},
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+            assert data["reason"] == "sender_blocklist"
+            assert data["sender"] == "my-bot"
+            adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_sender_blocklist_allows_other_senders(self):
+        """Payload from a sender NOT in sender_blocklist proceeds normally."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "test",
+                "sender_blocklist": ["my-bot"],
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "created", "sender": {"login": "human-user"}},
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 202
+            adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sender_blocklist_empty_allows_all(self):
+        """No sender_blocklist → no filtering, all senders pass through."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "test",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "created", "sender": {"login": "anyone"}},
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 202
+            adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_sender_blocklist_checks_actor_field(self):
+        """Falls back to payload.actor.login when sender is absent (GitHub alternate)."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "test",
+                "sender_blocklist": ["my-bot"],
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "created", "actor": {"login": "my-bot"}},
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+            assert data["sender"] == "my-bot"
+
+    @pytest.mark.asyncio
+    async def test_sender_blocklist_handles_string_sender_field(self):
+        """sender field as a plain string (not a dict) does not raise AttributeError."""
+        routes = {
+            "gh": {
+                "secret": _INSECURE_NO_AUTH,
+                "prompt": "test",
+                "sender_blocklist": ["my-bot"],
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/gh",
+                json={"action": "created", "sender": "my-bot"},
+                headers={"X-GitHub-Event": "issue_comment"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ignored"
+            assert data["sender"] == "my-bot"
+
 
 # ===================================================================
 # HTTP handling

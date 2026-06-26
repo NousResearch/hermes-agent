@@ -110,9 +110,23 @@ python -m pip install -e "$REPO_DIR[$EXTRAS]"
 if [[ "$PROFILE" == "rag" ]]; then
   echo "==> [Pi2] Installing lightweight RAG document helpers"
   python -m pip install pypdf beautifulsoup4
-  # sqlite-vec may not have wheels for every ARMv7 Python build. Treat it as
-  # opportunistic: FTS5/built-in memory still works without it.
-  python -m pip install sqlite-vec || echo "==> [Pi2] sqlite-vec not available for this platform; continuing without local vector index"
+  # sqlite-vec does not publish wheels for Raspberry Pi 2 / ARMv7 Python builds
+  # on PyPI/piwheels. Treat it as opportunistic and avoid printing a scary pip
+  # ERROR on platforms where we already know it is unavailable. FTS5/built-in
+  # memory and remote embeddings still work without a local vector extension.
+  MACHINE="$(python - <<'PY'
+import platform
+print(platform.machine().lower())
+PY
+)"
+  if [[ "${HERMES_PI2_TRY_SQLITE_VEC:-0}" == "1" ]]; then
+    python -m pip install sqlite-vec || echo "==> [Pi2] sqlite-vec install failed; continuing without local vector index"
+  elif [[ "$MACHINE" == armv7l || "$MACHINE" == armv6l ]]; then
+    echo "==> [Pi2] sqlite-vec wheels are unavailable for $MACHINE; using FTS5/remote embeddings instead"
+    echo "    To try a source/manual install anyway: HERMES_PI2_TRY_SQLITE_VEC=1 bash setup-pi2-minimal.sh --profile rag"
+  else
+    python -m pip install sqlite-vec || echo "==> [Pi2] sqlite-vec not available for this platform; continuing without local vector index"
+  fi
 fi
 
 install -d "$HERMES_HOME_DIR"

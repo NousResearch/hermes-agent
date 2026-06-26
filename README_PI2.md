@@ -102,7 +102,7 @@ Optional RAG:
 bash setup-pi2-minimal.sh --profile rag
 ```
 
-The RAG profile intentionally avoids installing `torch`, `sentence-transformers`, and `chromadb` by default. For Pi2, prefer remote embeddings or cloud memory providers. If you explicitly want local embeddings, install them manually and expect high RAM/compile cost.
+The RAG profile intentionally avoids installing `torch`, `sentence-transformers`, and `chromadb` by default. For Pi2, prefer remote embeddings or cloud memory providers. `sqlite-vec` is optional; Raspberry Pi 2 / ARMv7 wheels are not currently available from PyPI/piwheels, so the installer skips it and falls back to SQLite FTS5/remote embeddings. If you explicitly want local embeddings/vector indexing, install them manually and expect high RAM/compile cost.
 
 ## Config templates
 

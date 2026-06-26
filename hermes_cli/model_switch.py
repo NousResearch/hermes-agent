@@ -1720,7 +1720,6 @@ def list_authenticated_providers(
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
-    seen_mdev_ids: set = set()  # prevent duplicate entries for aliases (e.g. kimi-coding + kimi-coding-cn)
     _current_provider_norm = str(current_provider or "").strip().lower()
     _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
 
@@ -1867,10 +1866,30 @@ def list_authenticated_providers(
             and _alias_target in _AGG_PROVIDERS
         ):
             continue
-        # Skip aliases that map to the same models.dev provider (e.g.
-        # kimi-coding and kimi-coding-cn both → kimi-for-coding).
-        # The first one with valid credentials wins (#10526).
-        if mdev_id in seen_mdev_ids:
+        # Resolve the canonical provider profile name.  Skip hermes_ids
+        # that are mere aliases resolving to a different canonical profile
+        # (e.g. "kimi" and "moonshot" both → "kimi-coding").  Only process
+        # entries whose hermes_id matches the canonical profile name so
+        # distinct profiles (e.g. kimi-coding, kimi-coding-cn) each get
+        # their own picker row.
+        _canonical = hermes_id
+        try:
+            from providers import get_provider_profile as _gpp
+            _prof = _gpp(hermes_id)
+            if _prof is not None:
+                _canonical = _prof.name
+        except Exception:
+            pass
+        if _canonical != hermes_id:
+            continue
+
+        # Skip duplicates: another entry with the same slug was already
+        # emitted (e.g. two PROVIDER_TO_MODELS_DEV entries routing to the
+        # same hermes_id).  Distinct canonical profiles that share a
+        # models.dev ID (e.g. kimi-coding and kimi-coding-cn → kimi-for-coding)
+        # are both allowed through since they have different slugs.
+        slug = hermes_id
+        if slug.lower() in seen_slugs:
             continue
         if hermes_id.lower() in _excluded or mdev_id.lower() in _excluded:
             continue
@@ -1941,25 +1960,8 @@ def list_authenticated_providers(
         else:
             top = model_ids[:max_models] if max_models is not None else model_ids
 
-        # Emit under the CANONICAL Hermes slug, not the bare alias. A single
-        # credential can be reachable under several PROVIDER_TO_MODELS_DEV keys
-        # that all share one models.dev id (e.g. "kimi", "moonshot" and the
-        # canonical "kimi-coding" all map to "kimi-for-coding"). The
-        # seen_mdev_ids guard above already collapses them to the first key —
-        # but that first key is usually the bare alias ("kimi"), so emitting it
-        # verbatim leaves section 2b free to re-emit the canonical "kimi-coding"
-        # from CANONICAL_PROVIDERS: one key, two picker rows (#49439). Resolving
-        # to the canonical slug here lets 2b's seen_slugs check collapse the
-        # pair, matches the picker's other alias rows (copilot, gemini, …), and
-        # keeps the row resolvable to the real provider.
-        slug = _CANON_ALIASES.get(hermes_id.lower(), hermes_id)
-        if slug.lower() in seen_slugs:
-            # Canonical already emitted by an earlier alias in this pass; don't
-            # add a second row for the same provider.
-            seen_mdev_ids.add(mdev_id)
-            continue
         pinfo = _mdev_pinfo(mdev_id)
-        display_name = pinfo.name if pinfo else mdev_id
+        display_name = pconfig.name if pconfig and pconfig.name else (pinfo.name if pinfo else mdev_id)
 
         results.append({
             "slug": slug,
@@ -1975,7 +1977,6 @@ def list_authenticated_providers(
             "source": "built-in",
         })
         seen_slugs.add(slug.lower())
-        seen_mdev_ids.add(mdev_id)
         _record_builtin_endpoint(slug)
 
     # --- 2. Check Hermes-only providers (nous, openai-codex, copilot, opencode-go) ---

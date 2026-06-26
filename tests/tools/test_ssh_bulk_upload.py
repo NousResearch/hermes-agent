@@ -454,6 +454,75 @@ class TestSSHBulkUpload:
         mock_ssh.kill.assert_called_once()
 
 
+class TestSSHBulkDownload:
+    """Unit tests for SSH sync-back tar download preflight."""
+
+    def test_refuses_oversized_remote_before_tar_stream(self, mock_env, tmp_path, monkeypatch):
+        monkeypatch.setattr(ssh_env, "_SYNC_BACK_MAX_BYTES", 100)
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="101\n", stderr="")
+
+        with patch.object(subprocess, "run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="SSH sync-back skipped"):
+                mock_env._ssh_bulk_download(tmp_path / "remote.tar")
+
+        assert len(run_calls) == 1
+        assert "du -sb" in run_calls[0][-1]
+        assert "tar cf -" not in run_calls[0][-1]
+
+    def test_invalid_remote_size_output_fails_before_tar_stream(self, mock_env, tmp_path):
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="not-a-size\n", stderr="")
+
+        with patch.object(subprocess, "run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="invalid output"):
+                mock_env._ssh_bulk_download(tmp_path / "remote.tar")
+
+        assert len(run_calls) == 1
+
+    def test_download_streams_tar_after_size_preflight_passes(self, mock_env, tmp_path, monkeypatch):
+        monkeypatch.setattr(ssh_env, "_SYNC_BACK_MAX_BYTES", 100)
+        run_calls = []
+
+        def fake_run(cmd, **kwargs):
+            run_calls.append(cmd)
+            if len(run_calls) == 1:
+                return subprocess.CompletedProcess(cmd, 0, stdout="99\n", stderr="")
+            kwargs["stdout"].write(b"tar-bytes")
+            return subprocess.CompletedProcess(cmd, 0, stderr=b"")
+
+        dest = tmp_path / "remote.tar"
+        with patch.object(subprocess, "run", side_effect=fake_run):
+            mock_env._ssh_bulk_download(dest)
+
+        assert dest.read_bytes() == b"tar-bytes"
+        assert len(run_calls) == 2
+        assert "du -sb" in run_calls[0][-1]
+        assert "du -sk" in run_calls[0][-1]
+        assert "tar cf - -C / home/testuser/.hermes" in run_calls[1][-1]
+
+    def test_size_preflight_failure_raises_clear_error(self, mock_env, tmp_path):
+        def fake_run(cmd, **kwargs):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="du failed")
+
+        with patch.object(subprocess, "run", side_effect=fake_run):
+            with pytest.raises(RuntimeError, match="size check failed: du failed"):
+                mock_env._ssh_bulk_download(tmp_path / "remote.tar")
+
+    def test_remote_size_command_has_bsd_du_fallback(self):
+        cmd = ssh_env._remote_size_bytes_command("/home/test user/.hermes")
+        assert "du -sb" in cmd
+        assert "du -sk" in cmd
+        assert "awk" in cmd
+        assert "'/home/test user/.hermes'" in cmd
+
+
 class TestSSHBulkUploadWiring:
     """Verify bulk_upload_fn is wired into FileSyncManager."""
 

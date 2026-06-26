@@ -12,6 +12,7 @@ from pathlib import Path
 from tools.environments.base import BaseEnvironment, _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager,
+    _SYNC_BACK_MAX_BYTES,
     iter_sync_files,
     quoted_mkdir_command,
     quoted_rm_command,
@@ -19,6 +20,23 @@ from tools.environments.file_sync import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _remote_size_bytes_command(remote_path: str) -> str:
+    """Return a portable-ish shell command that prints a remote path size in bytes.
+
+    GNU ``du -sb`` is preferred. BSD/macOS ``du`` does not support ``-b``,
+    so fall back to KiB blocks and convert to bytes. Both branches exit
+    non-zero when no size can be read, which lets callers fail before
+    starting a potentially huge tar stream.
+    """
+    quoted = shlex.quote(remote_path)
+    return (
+        f"du -sb {quoted} 2>/dev/null | "
+        "awk 'NR==1 {print $1; ok=1} END {exit ok?0:1}' || "
+        f"du -sk {quoted} 2>/dev/null | "
+        "awk 'NR==1 {print $1 * 1024; ok=1} END {exit ok?0:1}'"
+    )
 
 
 def _ensure_ssh_available() -> None:
@@ -302,9 +320,38 @@ class SSHEnvironment(BaseEnvironment):
 
     def _ssh_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive."""
+        # Refuse before streaming: FileSyncManager also enforces a 2 GiB
+        # tar cap after download, but checking only after download can still
+        # fill local /tmp with an archive that will never be extracted.
+        remote_hermes = f"{self._remote_home}/.hermes"
+        size_cmd = self._build_ssh_command()
+        size_cmd.append(_remote_size_bytes_command(remote_hermes))
+        size_result = subprocess.run(
+            size_cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            stdin=subprocess.DEVNULL,
+        )
+        if size_result.returncode != 0:
+            raise RuntimeError(
+                f"SSH bulk download size check failed: {size_result.stderr.strip()}"
+            )
+        try:
+            remote_size = int((size_result.stdout or "0").strip().splitlines()[0])
+        except (IndexError, ValueError) as exc:
+            raise RuntimeError(
+                f"SSH bulk download size check returned invalid output: {size_result.stdout!r}"
+            ) from exc
+        if remote_size > _SYNC_BACK_MAX_BYTES:
+            raise RuntimeError(
+                f"SSH sync-back skipped: remote {remote_hermes} is {remote_size} bytes, "
+                f"over cap {_SYNC_BACK_MAX_BYTES}"
+            )
+
         # Tar from / with the full path so archive entries preserve absolute
         # paths (e.g. home/user/.hermes/skills/f.py), matching _pushed_hashes keys.
-        rel_base = f"{self._remote_home}/.hermes".lstrip("/")
+        rel_base = remote_hermes.lstrip("/")
         ssh_cmd = self._build_ssh_command()
         ssh_cmd.append(f"tar cf - -C / {shlex.quote(rel_base)}")
         with open(dest, "wb") as f:

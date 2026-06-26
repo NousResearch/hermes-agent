@@ -27,6 +27,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 # OAuth device code flow constants (same client ID as opencode/Copilot CLI)
@@ -141,6 +143,11 @@ def _try_gh_cli_token() -> Optional[str]:
                 text=True,
                 timeout=5,
                 env=clean_env,
+                # The desktop GUI polls Copilot auth status from the windowless
+                # gateway (pythonw.exe); without CREATE_NO_WINDOW each gh spawn
+                # flashes a console window. windows_hide_flags() is 0 on POSIX.
+                # See #52310.
+                creationflags=windows_hide_flags(),
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
             logger.debug("gh CLI token lookup failed (%s): %s", gh_path, exc)

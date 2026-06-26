@@ -33,6 +33,7 @@ from urllib.parse import urljoin, urlparse, urlunparse
 import httpx
 import yaml
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.skills_guard import (
     ScanResult, content_hash, TRUSTED_REPOS,
 )
@@ -302,6 +303,10 @@ class GitHubAuth:
                 ["gh", "auth", "token"],
                 capture_output=True, text=True, timeout=5,
                 stdin=subprocess.DEVNULL,
+                # On Windows this runs from the windowless desktop gateway
+                # (pythonw.exe); without CREATE_NO_WINDOW each spawn flashes a
+                # console window. windows_hide_flags() is 0 on POSIX. See #52310.
+                creationflags=windows_hide_flags(),
             )
             if result.returncode == 0 and result.stdout.strip():
                 return result.stdout.strip()

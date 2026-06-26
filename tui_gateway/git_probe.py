@@ -31,6 +31,8 @@ import time
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 _GIT_TIMEOUT = 1.5
 _WARM_WORKERS = 8
 
@@ -53,6 +55,10 @@ def run_git(cwd: str, *args: str) -> str:
             timeout=_GIT_TIMEOUT,
             check=False,
             stdin=subprocess.DEVNULL,
+            # The desktop polls git branch/root for the UI from the windowless
+            # gateway (pythonw); without CREATE_NO_WINDOW each probe flashes a
+            # console window. windows_hide_flags() is 0 on POSIX. See #52310.
+            creationflags=windows_hide_flags(),
         )
         return result.stdout.strip() if result.returncode == 0 else ""
     except Exception:

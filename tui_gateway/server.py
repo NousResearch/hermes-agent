@@ -23,6 +23,7 @@ from hermes_constants import (
     reset_hermes_home_override,
     set_hermes_home_override,
 )
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.env_loader import load_hermes_dotenv
 from utils import is_truthy_value
 from tui_gateway import git_probe
@@ -11577,6 +11578,7 @@ def _list_repo_files(root: str) -> list[str]:
             timeout=2.0,
             check=False,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),  # no console flash on Windows (#52310)
         )
         if top_result.returncode == 0:
             top = top_result.stdout.decode("utf-8", "replace").strip()
@@ -11595,6 +11597,7 @@ def _list_repo_files(root: str) -> list[str]:
                 timeout=2.0,
                 check=False,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),  # no console flash on Windows (#52310)
             )
             if list_result.returncode == 0:
                 for p in list_result.stdout.decode("utf-8", "replace").split("\0"):

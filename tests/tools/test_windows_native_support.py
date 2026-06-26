@@ -1122,3 +1122,125 @@ class TestWindowlessGatewayRestartSpec:
         assert env["VIRTUAL_ENV"] == str(Path("C:/venv"))
         assert "PYTHONPATH" in env
         assert "site-packages" in env["PYTHONPATH"]
+
+
+# ---------------------------------------------------------------------------
+# `gh auth token` console-flash suppression (#52310)
+# ---------------------------------------------------------------------------
+
+
+class TestGhAuthTokenNoConsoleFlash:
+    """`gh auth token` probes must pass creationflags=windows_hide_flags().
+
+    The desktop GUI runs the gateway under windowless pythonw.exe and polls
+    GitHub/Copilot auth status, so every un-hidden ``gh`` spawn flashes a
+    console window (#52310). Both probe sites must forward the hide flag;
+    windows_hide_flags() is 0 on POSIX so the call is unchanged off-Windows.
+    """
+
+    def test_skills_hub_gh_cli_passes_hide_flag(self, monkeypatch):
+        from tools import skills_hub
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "ghs_dummy\n"
+            return result
+
+        monkeypatch.setattr(skills_hub.subprocess, "run", fake_run)
+        skills_hub.GitHubAuth()._try_gh_cli()
+
+        assert captured["args"] == ["gh", "auth", "token"]
+        assert "creationflags" in captured["kwargs"], (
+            "skills_hub._try_gh_cli must pass creationflags so the desktop "
+            "gateway doesn't flash a console window on every gh spawn (#52310)"
+        )
+        assert captured["kwargs"]["creationflags"] == windows_hide_flags()
+
+    def test_copilot_auth_gh_cli_passes_hide_flag(self, monkeypatch):
+        from hermes_cli import copilot_auth
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "gho_dummy\n"
+            return result
+
+        monkeypatch.setattr(copilot_auth, "_gh_cli_candidates", lambda: ["gh"])
+        monkeypatch.setattr(copilot_auth.subprocess, "run", fake_run)
+        copilot_auth._try_gh_cli_token()
+
+        assert captured["cmd"][:3] == ["gh", "auth", "token"]
+        assert "creationflags" in captured["kwargs"], (
+            "copilot_auth._try_gh_cli_token must pass creationflags so the "
+            "desktop gateway doesn't flash a console window on every gh spawn (#52310)"
+        )
+        assert captured["kwargs"]["creationflags"] == windows_hide_flags()
+
+
+class TestGitProbeNoConsoleFlash:
+    """`git` probes run from the gateway must pass creationflags=windows_hide_flags().
+
+    During active work the desktop polls git (branch/root) for the UI from the
+    windowless gateway (pythonw); each un-hidden git spawn flashes a console
+    window (#52310). windows_hide_flags() is 0 on POSIX so off-Windows is a no-op.
+    """
+
+    def test_git_probe_run_git_passes_hide_flag(self, monkeypatch):
+        from tui_gateway import git_probe
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "main\n"
+            return result
+
+        monkeypatch.setattr(git_probe.subprocess, "run", fake_run)
+        git_probe.run_git("C:/proj", "branch", "--show-current")
+
+        assert captured["args"][:3] == ["git", "-C", "C:/proj"]
+        assert "creationflags" in captured["kwargs"], (
+            "git_probe.run_git must pass creationflags so the desktop gateway "
+            "doesn't flash a console window on every git probe (#52310)"
+        )
+        assert captured["kwargs"]["creationflags"] == windows_hide_flags()
+
+    def test_kanban_git_current_branch_passes_hide_flag(self, monkeypatch):
+        from pathlib import Path
+        from hermes_cli import kanban_db
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        captured = {}
+
+        def fake_run(args, **kwargs):
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = "main\n"
+            return result
+
+        monkeypatch.setattr(kanban_db.subprocess, "run", fake_run)
+        kanban_db._git_current_branch(Path("C:/proj"))
+
+        assert captured["args"][:2] == ["git", "-C"]
+        assert "creationflags" in captured["kwargs"], (
+            "kanban_db git helpers must pass creationflags so the desktop "
+            "gateway doesn't flash a console window on git probes (#52310)"
+        )
+        assert captured["kwargs"]["creationflags"] == windows_hide_flags()

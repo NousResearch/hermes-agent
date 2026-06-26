@@ -154,6 +154,67 @@ def test_branch_name_for_is_deterministic():
     assert pdb.branch_name_for(proj, "t_abc") == pdb.branch_name_for(proj, "t_abc")
 
 
+def test_branch_name_for_sanitizes_git_refname():
+    """branch_name_for must produce valid git refnames for all title inputs."""
+    proj = pdb.Project(id="p_1", slug="myproj", name="My Project", created_at=0)
+
+    # Double-dot collapsed to single dot
+    branch = pdb.branch_name_for(proj, "t_1", title="fix 2.0..rc1")
+    assert ".." not in branch
+    assert branch == "myproj/t_1-fix-2.0.rc1"
+
+    # Trailing .lock stripped
+    branch = pdb.branch_name_for(proj, "t_2", title="update yarn.lock")
+    assert not branch.endswith(".lock")
+    assert branch == "myproj/t_2-update-yarn"
+
+    # Triple dot collapsed
+    branch = pdb.branch_name_for(proj, "t_3", title="v3...beta")
+    assert ".." not in branch
+    assert branch == "myproj/t_3-v3.beta"
+
+    # Leading dot stripped
+    branch = pdb.branch_name_for(proj, "t_4", title=".hidden config")
+    assert branch == "myproj/t_4-hidden-config"
+
+    # .lock in the middle is preserved (only trailing .lock is invalid)
+    branch = pdb.branch_name_for(proj, "t_5", title="cleanup v2.0.lock.bak")
+    assert "lock" in branch
+
+    # Single dots preserved for version numbers
+    branch = pdb.branch_name_for(proj, "t_6", title="v2.0.0 release")
+    assert branch == "myproj/t_6-v2.0.0-release"
+
+    # Degenerate title (only dots) → no slug appended
+    branch = pdb.branch_name_for(proj, "t_7", title="....")
+    assert branch == "myproj/t_7"
+
+    # Just ".lock" → no slug appended
+    branch = pdb.branch_name_for(proj, "t_8", title=".lock")
+    assert branch == "myproj/t_8"
+
+
+def test_branch_name_for_passes_git_check_ref_format():
+    """Every branch name must pass git check-ref-format --branch."""
+    import subprocess
+
+    proj = pdb.Project(id="p_1", slug="app", name="App", created_at=0)
+    titles = [
+        "fix 2.0..rc1", "update yarn.lock", "v3...beta",
+        ".hidden", "trailing.", "normal title", "v1.2.3",
+        "....", ".lock", "", "a" * 100,
+    ]
+    for title in titles:
+        branch = pdb.branch_name_for(proj, "t_x", title=title)
+        result = subprocess.run(
+            ["git", "check-ref-format", "--branch", branch],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, (
+            f"git check-ref-format rejected {branch!r} (title={title!r})"
+        )
+
+
 def test_per_profile_isolation(tmp_path):
     # Two distinct DB paths stand in for two profiles' HERMES_HOME.
     a = pdb.connect(db_path=tmp_path / "a" / "projects.db")

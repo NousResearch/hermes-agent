@@ -709,6 +709,17 @@ def project_for_path(
 
 # Deterministic branch slug: lowercase, separators collapsed, capped.
 _BRANCH_SAFE_RE = re.compile(r"[^a-z0-9._-]+")
+_DOTDOT_RE = re.compile(r"\.{2,}")
+_LOCK_SUFFIX_RE = re.compile(r"\.lock$")
+
+
+def _sanitize_refname_component(s: str) -> str:
+    """Sanitize a string so it is safe inside a git branch refname."""
+    s = _BRANCH_SAFE_RE.sub("-", s)
+    s = _DOTDOT_RE.sub(".", s)
+    s = _LOCK_SUFFIX_RE.sub("", s)
+    s = s.strip("-.")
+    return s
 
 
 def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:
@@ -720,8 +731,8 @@ def branch_name_for(project: Project, task_id: str, *, title: str = "") -> str:
     slug = project.slug or _slugify(project.name)
     base = f"{slug}/{task_id}"
     if title:
-        tslug = _BRANCH_SAFE_RE.sub("-", str(title).strip().lower()).strip("-")
-        tslug = tslug[:40].strip("-")
+        tslug = _sanitize_refname_component(str(title).strip().lower())
+        tslug = tslug[:40].strip("-.")
         if tslug:
             base = f"{base}-{tslug}"
     return base

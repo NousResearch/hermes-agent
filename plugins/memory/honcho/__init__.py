@@ -44,10 +44,15 @@ _OBS_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 _THREAD_ID_RE = re.compile(r"^[0-9]{10,}\.[0-9]+$")
 # Context names must match the backend's ContextCreate pattern.
 _CONTEXT_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+# Peer IDs may contain colons (configured peer_name, workspace-scoped IDs)
+# but MUST NOT contain path-traversal characters, query strings, or whitespace.
+_PEER_ID_RE = re.compile(r"^[a-zA-Z0-9_:-]{1,128}$")
 
 # Default HTTP timeout for graph-memory direct calls. Mirrors the SDK
 # timeout default in client.py so unconfigured installs can't hang forever.
 _DEFAULT_GRAPH_MEMORY_TIMEOUT = 30.0
+# Cache duration for the lightweight liveness probe used by graph-memory tools.
+_GRAPH_MEMORY_AVAILABLE_TTL = 30.0
 
 # ---------------------------------------------------------------------------
 # Tool schemas (moved from tools/honcho_tools.py)
@@ -439,11 +444,17 @@ class HonchoMemoryProvider(MemoryProvider):
         Lightweight HEAD-style check: fetch the cold-storage list (read-only,
         no body required). Avoids firing a heavy recall query.
         """
+        now = time.monotonic()
+        if self._liveness_checked_at and (now - self._liveness_checked_at) < _GRAPH_MEMORY_AVAILABLE_TTL:
+            return self._liveness_cached
         try:
             self._graph_memory_call("GET", "cold", timeout=5.0)
-            return True
-        except Exception:
-            return False
+            ok = True
+        except (httpx.RequestError, RuntimeError, ValueError):
+            ok = False
+        self._liveness_cached = ok
+        self._liveness_checked_at = now
+        return ok
 
     def __init__(self):
         self._manager = None   # HonchoSessionManager
@@ -488,6 +499,10 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Port #4053: cron guard — when True, plugin is fully inactive
         self._cron_skipped = False
+
+        # Graph-memory liveness probe cache (see _graph_memory_available).
+        self._liveness_checked_at: float = 0.0
+        self._liveness_cached: bool = False
 
     @property
     def name(self) -> str:
@@ -1656,6 +1671,8 @@ class HonchoMemoryProvider(MemoryProvider):
                 query = (args.get("query") or "").strip()
                 if not query:
                     return tool_error("Missing required parameter: query")
+                if len(query) > 8192:
+                    return tool_error("query exceeds 8KB limit")
 
                 collection_name = (args.get("collection_name") or "").strip()
                 if not collection_name:
@@ -1692,6 +1709,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
                 context_name = (args.get("context_name") or "").strip() or None
                 peer = self._resolve_peer_id(args.get("peer", "user"))
+                if not _PEER_ID_RE.match(peer):
+                    return tool_error("Invalid peer format.")
 
                 if action in {"switch", "activate", "create", "list_members"} and not context_name:
                     return tool_error("Missing required parameter: context_name")

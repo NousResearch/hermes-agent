@@ -630,6 +630,7 @@ hermes egress setup --rotate-tokens    # mint fresh proxy tokens (default preser
 
 hermes egress start                    # spawn the managed proxy daemon
 hermes egress stop                     # SIGTERM (then SIGKILL after 5s grace)
+hermes egress restart                  # stop (if running) then start — apply config/token changes
 
 hermes egress status                   # binary + config + pid + listening + mappings
 hermes egress status --show-tokens     # print proxy tokens in full (default: redacted)
@@ -652,14 +653,13 @@ hermes egress setup --no-bitwarden         # bitwarden → env
 # (just `setup` without either flag preserves the existing mode)
 
 # Rotating all tokens (e.g. after a suspected token leak)
-hermes egress setup --rotate-tokens
-hermes egress start                    # setup stops a stale daemon; start it again
+hermes egress setup --rotate-tokens    # setup offers to restart the running daemon for you
 # (running sandboxes still hold old tokens; restart them too)
 
 # Adding a new upstream
 # Edit ~/.hermes/config.yaml proxy.extra_allowed_hosts: [api.example.com]
 hermes egress setup
-hermes egress start
+hermes egress restart                  # one-command apply (stop + start)
 ```
 
 ### Diagnostic shortcuts

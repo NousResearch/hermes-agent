@@ -38,6 +38,10 @@ hermes egress start
 hermes egress status
 ```
 
+`hermes egress setup` discovers provider keys from your environment. If your keys live only in `~/.hermes/.env` (not exported into your shell), setup reads that file automatically — you don't have to `export` them first.
+
+When you re-run `setup` later (new allowlist host, rotated tokens, switched credential source), it stops the running daemon because its config is held in memory, then **offers to restart it for you** so the change takes effect immediately. On a tty it asks; pass `--restart` to always restart or `--no-restart` to leave it down. To apply changes any other time, `hermes egress restart` is the one-command stop-then-start.
+
 Once running, the Docker terminal backend automatically:
 
 - Mounts `~/.hermes/proxy/ca.crt` into the sandbox at `/etc/ssl/certs/hermes-egress-ca.crt`
@@ -254,6 +258,8 @@ hermes egress setup --rotate-tokens    # mint fresh tokens for every provider
 
 hermes egress start                    # spawn the managed proxy daemon
 hermes egress stop                     # SIGTERM (then SIGKILL after 5s grace)
+hermes egress restart                  # stop (if running) then start — the one-command
+                                       #   way to apply config / token changes
 
 hermes egress status                   # binary + config + pid + listening state + mappings
 hermes egress status --show-tokens     # print proxy tokens in full

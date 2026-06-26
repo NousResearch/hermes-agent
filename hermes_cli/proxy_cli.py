@@ -83,6 +83,17 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
              "preserve tokens for providers that already had one — avoids "
              "401-ing already-running sandboxes on re-setup).",
     )
+    setup.add_argument(
+        "--restart", dest="restart", action="store_true", default=None,
+        help="If a daemon is already running, restart it automatically after "
+             "writing the new config/tokens (non-interactive default on a tty "
+             "is to ask).",
+    )
+    setup.add_argument(
+        "--no-restart", dest="restart", action="store_false",
+        help="Do not restart a running daemon after setup; you'll need to run "
+             "`hermes egress restart` yourself for changes to take effect.",
+    )
     setup.set_defaults(func=cmd_setup)
 
     start = sub.add_parser("start", help="Start the managed iron-proxy")
@@ -90,6 +101,12 @@ def register_cli(parent_parser: argparse.ArgumentParser) -> None:
 
     stop = sub.add_parser("stop", help="Stop the managed iron-proxy")
     stop.set_defaults(func=cmd_stop)
+
+    restart = sub.add_parser(
+        "restart",
+        help="Restart the managed iron-proxy (stop if running, then start)",
+    )
+    restart.set_defaults(func=cmd_restart)
 
     status = sub.add_parser("status", help="Show proxy state and mappings")
     status.add_argument(
@@ -217,6 +234,19 @@ def cmd_setup(args: argparse.Namespace) -> int:
                 "the host process env at start time)."
             )
             return 1
+    else:
+        # Env-based discovery reads os.environ.  Operators commonly keep their
+        # provider keys only in ~/.hermes/.env (loaded automatically when the
+        # agent runs, but NOT exported into an interactive shell).  Fall back
+        # to loading that file so `hermes egress setup` finds the same keys the
+        # agent would — otherwise a user with keys solely in .env sees a
+        # confusing "no provider keys found" when the keys clearly "exist".
+        loaded = _load_env_file_into_environ()
+        if loaded:
+            console.print(
+                f"  [dim]Loaded {loaded} provider key name(s) from "
+                f"~/.hermes/.env for discovery.[/dim]"
+            )
 
     discovered = ip.discover_provider_mappings(
         available_env_names=available_env_names or None,
@@ -423,12 +453,65 @@ def cmd_setup(args: argparse.Namespace) -> int:
     save_config(cfg)
 
     live_status = ip.get_status()
-    if live_status.pid is not None:
+    was_running = live_status.pid is not None
+    if was_running:
         ip.stop_proxy()
+
+    # Decide whether to (re)start the daemon so the new config/tokens take
+    # effect, rather than leaving the operator to remember a manual restart
+    # (the #1 UX papercut for this feature).
+    #   --restart      → always (re)start, even if nothing was running
+    #   --no-restart   → never; leave it as-is and print the manual hint
+    #   neither + tty  → ask (only when a daemon was running)
+    #   neither + !tty → restart when a daemon was running; otherwise no-op
+    #                    (first-time setup never auto-starts — matches the
+    #                    "configured, now run start" flow)
+    import sys as _sys
+    restart_pref = getattr(args, "restart", None)
+    if restart_pref is True:
+        do_restart = True
+    elif restart_pref is False:
+        do_restart = False
+    elif was_running:
+        if _sys.stdin.isatty():
+            try:
+                ans = input(
+                    "  Restart the running proxy now with the new config? [Y/n] "
+                ).strip().lower()
+            except EOFError:
+                ans = ""
+            do_restart = ans in ("", "y", "yes")
+        else:
+            do_restart = True
+    else:
+        do_restart = False
+
+    if do_restart:
+        try:
+            new_status = ip.start_proxy(
+                install_if_missing=bool(proxy_cfg.get("auto_install", True)),
+            )
+        except Exception as exc:  # noqa: BLE001 — user-facing funnel
+            console.print(
+                f"  [yellow]⚠ could not start iron-proxy with the new "
+                f"config: {exc}[/yellow]"
+            )
+            console.print(
+                "  Run [cyan]hermes egress start[/cyan] manually before "
+                "launching new Docker sandboxes."
+            )
+        else:
+            listening = "listening" if new_status.listening else "not yet listening"
+            verb = "restarted" if was_running else "started"
+            console.print(
+                f"  [green]✓[/green] {verb} iron-proxy with the new config "
+                f"(pid={new_status.pid}, port={new_status.tunnel_port}, {listening})"
+            )
+    elif was_running:
         console.print(
-            "  [yellow]⚠ stopped the running iron-proxy; config or tokens changed, "
-            "so restart it with `hermes egress start` before launching new "
-            "Docker sandboxes.[/yellow]"
+            "  [yellow]⚠ stopped the running iron-proxy; config or tokens "
+            "changed.  Run [cyan]hermes egress restart[/cyan] (or "
+            "[cyan]start[/cyan]) before launching new Docker sandboxes.[/yellow]"
         )
 
     console.print()
@@ -438,6 +521,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     )
     console.print(
         "  Start:   [cyan]hermes egress start[/cyan]\n"
+        "  Restart: [cyan]hermes egress restart[/cyan]  (after any re-setup)\n"
         "  Status:  [cyan]hermes egress status[/cyan]\n"
         "  Stop:    [cyan]hermes egress stop[/cyan]\n"
         "  Disable: [cyan]hermes egress disable[/cyan]"
@@ -593,6 +677,21 @@ def cmd_stop(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_restart(args: argparse.Namespace) -> int:
+    """Stop the running daemon (if any) and start it with the current config.
+
+    The one-command way to apply config changes (new allowlist hosts, rotated
+    tokens, a Bitwarden key rotation) without making the operator remember the
+    stop/start dance.  Delegates to ``cmd_start`` so all the credential-source
+    and fail-on-uncovered-provider guards run exactly as they do for ``start``.
+    """
+    console = Console()
+    was_running = ip.stop_proxy()
+    if was_running:
+        console.print("[dim]stopped the running iron-proxy[/dim]")
+    return cmd_start(args)
+
+
 def format_status_text(*, show_tokens: bool = False) -> str:
     """Plain-text egress status for slash commands, Dashboard, and Desktop."""
     cfg = load_config()
@@ -735,6 +834,39 @@ def cmd_config(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _load_env_file_into_environ() -> int:
+    """Backfill provider keys from ``~/.hermes/.env`` into ``os.environ``.
+
+    ``hermes egress setup`` discovers providers by reading ``os.environ``, but
+    many operators keep their keys ONLY in ``~/.hermes/.env`` (which the agent
+    loads at runtime but which is NOT exported into an interactive shell).
+    Without this, ``setup`` reports "no provider keys found" even though the
+    keys plainly exist — a confusing first-run papercut.
+
+    Only fills names that aren't already set in the process env (an exported
+    value always wins), and only for known bearer-provider names so we don't
+    slurp unrelated secrets into the process. Returns the count of names added.
+    """
+    try:
+        from hermes_cli.config import load_env
+    except ImportError:
+        return 0
+    try:
+        file_env = load_env()
+    except Exception:  # noqa: BLE001 — best-effort convenience, never fatal
+        return 0
+    added = 0
+    known = set(ip._BEARER_PROVIDERS) | set(ip._NON_BEARER_PROVIDERS)
+    for name in known:
+        if name in os.environ and os.environ[name].strip():
+            continue
+        val = (file_env.get(name) or "").strip()
+        if val:
+            os.environ[name] = val
+            added += 1
+    return added
 
 
 def _yn(value: bool) -> str:

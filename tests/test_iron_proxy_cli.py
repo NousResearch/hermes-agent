@@ -43,7 +43,9 @@ def _args(**overrides):
         force=False,
         tunnel_port=None,
         from_bitwarden=False,
+        no_bitwarden=False,
         rotate_tokens=False,
+        restart=None,
         show_tokens=False,
     )
     for k, v in overrides.items():
@@ -359,6 +361,73 @@ def test_cmd_stop_returns_0_when_already_stopped(hermes_home, monkeypatch):
     monkeypatch.setattr(ip, "stop_proxy", lambda: False)
     rc = proxy_cli.cmd_stop(_args())
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# cmd_restart
+# ---------------------------------------------------------------------------
+
+
+def test_cmd_restart_stops_then_starts(hermes_home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ip, "stop_proxy", lambda: (calls.append("stop"), True)[1])
+    monkeypatch.setattr(
+        proxy_cli, "cmd_start",
+        lambda args: (calls.append("start"), 0)[1],
+    )
+    rc = proxy_cli.cmd_restart(_args())
+    assert rc == 0
+    # stop must precede start, and both must run
+    assert calls == ["stop", "start"]
+
+
+def test_cmd_restart_starts_even_when_not_previously_running(hermes_home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(ip, "stop_proxy", lambda: (calls.append("stop"), False)[1])
+    monkeypatch.setattr(
+        proxy_cli, "cmd_start",
+        lambda args: (calls.append("start"), 0)[1],
+    )
+    rc = proxy_cli.cmd_restart(_args())
+    assert rc == 0
+    assert calls == ["stop", "start"]
+
+
+def test_cmd_restart_propagates_start_failure(hermes_home, monkeypatch):
+    monkeypatch.setattr(ip, "stop_proxy", lambda: True)
+    monkeypatch.setattr(proxy_cli, "cmd_start", lambda args: 1)
+    rc = proxy_cli.cmd_restart(_args())
+    assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# _load_env_file_into_environ — setup discovers keys kept only in ~/.hermes/.env
+# ---------------------------------------------------------------------------
+
+
+def test_load_env_file_backfills_provider_keys(hermes_home, monkeypatch):
+    # Key present in .env but NOT exported in the process env.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env",
+        lambda: {"OPENROUTER_API_KEY": "sk-or-from-dotenv", "UNRELATED": "x"},
+    )
+    added = proxy_cli._load_env_file_into_environ()
+    assert added >= 1
+    assert os.environ.get("OPENROUTER_API_KEY") == "sk-or-from-dotenv"
+    # Only known provider names are backfilled, not arbitrary secrets.
+    assert "UNRELATED" not in os.environ
+
+
+def test_load_env_file_does_not_override_exported_value(hermes_home, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-exported-wins")
+    monkeypatch.setattr(
+        "hermes_cli.config.load_env",
+        lambda: {"OPENROUTER_API_KEY": "sk-or-from-dotenv"},
+    )
+    proxy_cli._load_env_file_into_environ()
+    # An exported value always wins over the .env file.
+    assert os.environ["OPENROUTER_API_KEY"] == "sk-or-exported-wins"
 
 
 def test_cmd_status_returns_0(hermes_home, monkeypatch):

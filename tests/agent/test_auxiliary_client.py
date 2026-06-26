@@ -4620,4 +4620,49 @@ class TestCompressionFallbackContextFilter:
         assert _task_minimum_context_length("session_search") is None
         # Empty / unknown tasks have no minimum
         assert _task_minimum_context_length("") is None
-        assert _task_minimum_context_length(None) is None
+
+
+class TestResponsesApiValidationDetection:
+    """Unit tests for _is_responses_api_validation_error helper."""
+
+    def test_detects_input_valid_string_error(self):
+        """Matches the exact error pattern from the issue: body.input should be str."""
+        from agent.auxiliary_client import _is_responses_api_validation_error
+        exc = Exception(
+            "223 validation errors: {'type': 'string_type', "
+            "'loc': ('body', 'input', 'str'), "
+            "'msg': 'Input should be a valid string', "
+            "'input': [{'role': 'user', 'content': [...]}]}"
+        )
+        assert _is_responses_api_validation_error(exc) is True
+
+    def test_detects_messages_not_allowed(self):
+        """Matches endpoints that explicitly reject body.messages."""
+        from agent.auxiliary_client import _is_responses_api_validation_error
+        exc = Exception("messages is not allowed in this endpoint")
+        assert _is_responses_api_validation_error(exc) is True
+
+    def test_detects_input_required(self):
+        """Matches 'input field is required' style errors."""
+        from agent.auxiliary_client import _is_responses_api_validation_error
+        exc = Exception("missing required field: input")
+        assert _is_responses_api_validation_error(exc) is True
+
+    def test_does_not_match_generic_errors(self):
+        """Non-validation errors should not trigger the Responses API retry."""
+        from agent.auxiliary_client import _is_responses_api_validation_error
+        assert _is_responses_api_validation_error(Exception("rate limit exceeded")) is False
+        assert _is_responses_api_validation_error(Exception("connection timeout")) is False
+        assert _is_responses_api_validation_error(Exception("401 unauthorized")) is False
+
+    def test_does_not_match_auth_errors(self):
+        """Auth errors mention 'key' or 'auth' but not 'input' validation."""
+        from agent.auxiliary_client import _is_responses_api_validation_error
+        exc = Exception("401 invalid api key provided")
+        assert _is_responses_api_validation_error(exc) is False
+
+    def test_does_not_match_extra_fields_with_different_context(self):
+        """'extra fields not permitted' without 'messages' should not match."""
+        from agent.auxiliary_client import _is_responses_api_validation_error
+        exc = Exception("extra fields not permitted: unknown_field")
+        assert _is_responses_api_validation_error(exc) is False

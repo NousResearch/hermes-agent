@@ -2689,6 +2689,38 @@ def _is_unsupported_temperature_error(exc: Exception) -> bool:
     return _is_unsupported_parameter_error(exc, "temperature")
 
 
+def _is_responses_api_validation_error(exc: Exception) -> bool:
+    """Detect 400 validation errors indicating the endpoint expects Responses API format.
+
+    Some OpenAI-compatible gateways reject the Chat Completions wire format
+    (``body.messages`` as array) with validation errors pointing at the
+    expected field — typically ``body.input`` should be a ``str``, or
+    ``body.messages`` / ``input`` is not accepted. When this pattern is
+    detected, the caller can retry by wrapping the client in
+    :class:`CodexAuxiliaryClient` which translates the call to Responses API.
+    """
+    err_lower = str(exc).lower()
+    # Pattern 1: endpoint expects body.input as string (Responses API)
+    # Seen as: "input should be a valid string", "body.input.str"
+    if "input" in err_lower and "valid string" in err_lower:
+        return True
+    # Pattern 2: endpoint rejects body.messages field directly
+    # Seen as: "messages is not allowed", "messages" in validation error context
+    if "messages" in err_lower and (
+        "not allowed" in err_lower
+        or "extra fields not permitted" in err_lower
+        or "unexpected field" in err_lower
+    ):
+        return True
+    # Pattern 3: generic Responses API format mismatch
+    # Seen as: "the input field is required", "missing required field: input"
+    if "input" in err_lower and (
+        "required" in err_lower or "missing" in err_lower
+    ):
+        return True
+    return False
+
+
 def _is_model_not_found_error(exc: Exception) -> bool:
     """Detect "the requested model doesn't exist" errors (404 / invalid model).
 
@@ -5752,6 +5784,33 @@ def call_llm(
                 first_err = retry_err
                 kwargs = retry_kwargs
 
+        # ── Responses API retry for custom providers ───────────────────────
+        # Some OpenAI-compatible endpoints (e.g. certain custom gateways)
+        # expect the Responses API wire format (body.input as string) instead
+        # of Chat Completions (body.messages as array). When the initial call
+        # fails with a validation error about body.input or body.messages, and
+        # we're using a plain OpenAI client (not already wrapped in
+        # CodexAuxiliaryClient), retry by wrapping the client in
+        # CodexAuxiliaryClient which transparently translates the call.
+        if (
+            resolved_provider == "custom"
+            and not isinstance(client, CodexAuxiliaryClient)
+            and _is_responses_api_validation_error(first_err)
+        ):
+            err_detail = str(first_err)
+            logger.info(
+                "Auxiliary %s: custom endpoint rejected chat_completions "
+                "format (validation error: %s); retrying with Responses API wrapping",
+                task or "call",
+                err_detail[:200],
+            )
+            try:
+                wrapped_client = CodexAuxiliaryClient(client, final_model or "gpt-4o-mini")
+                return _validate_llm_response(
+                    wrapped_client.chat.completions.create(**kwargs), task)
+            except Exception as retry_err:
+                first_err = retry_err
+
         err_str = str(first_err)
         # ZAI vision models (glm-4v-flash etc.) return error code 1210
         # ("API 调用参数有误") when max_tokens is passed on multimodal
@@ -6261,6 +6320,33 @@ async def async_call_llm(
                     raise
                 first_err = retry_err
                 kwargs = retry_kwargs
+
+        # ── Responses API retry for custom providers ───────────────────────
+        # Some OpenAI-compatible endpoints (e.g. certain custom gateways)
+        # expect the Responses API wire format (body.input as string) instead
+        # of Chat Completions (body.messages as array). When the initial call
+        # fails with a validation error about body.input or body.messages, and
+        # we're using a plain OpenAI client (not already wrapped in
+        # CodexAuxiliaryClient), retry by wrapping the client in
+        # CodexAuxiliaryClient which transparently translates the call.
+        if (
+            resolved_provider == "custom"
+            and not isinstance(client, CodexAuxiliaryClient)
+            and _is_responses_api_validation_error(first_err)
+        ):
+            err_detail = str(first_err)
+            logger.info(
+                "Auxiliary %s (async): custom endpoint rejected chat_completions "
+                "format (validation error: %s); retrying with Responses API wrapping",
+                task or "call",
+                err_detail[:200],
+            )
+            try:
+                wrapped_client = CodexAuxiliaryClient(client, final_model or "gpt-4o-mini")
+                return _validate_llm_response(
+                    await wrapped_client.chat.completions.create(**kwargs), task)
+            except Exception as retry_err:
+                first_err = retry_err
 
         err_str = str(first_err)
         # ZAI vision models (glm-4v-flash etc.) return error code 1210

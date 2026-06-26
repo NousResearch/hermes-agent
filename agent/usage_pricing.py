@@ -589,6 +589,17 @@ def resolve_billing_route(
         return BillingRoute(provider=provider_name, model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
+
+    # Profiled aggregator fallback: any provider with a registered ProviderProfile
+    # (Polza, Novita, etc.) gets official_models_api billing and keeps the
+    # full model name intact so fetch_endpoint_model_metadata can find it.
+    try:
+        from providers import get_provider_profile as _get_pp
+        if provider_name and _get_pp(provider_name) is not None:
+            return BillingRoute(provider=provider_name, model=model, base_url=base_url or "", billing_mode="official_models_api")
+    except Exception:
+        pass
+
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")
 
 

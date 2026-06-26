@@ -50,9 +50,9 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help=(
             "Path to a script under ~/.hermes/scripts/. Default mode: "
             "script stdout is injected into the agent's prompt each run. "
-            "With --no-agent: the script IS the job and its stdout is "
-            "delivered verbatim. .sh/.bash files run via bash, everything "
-            "else via Python."
+            "With --no-agent: the script file must already exist, the script "
+            "IS the job, and its stdout is delivered verbatim. .sh/.bash files "
+            "run via bash, everything else via Python."
         ),
     )
     cron_create.add_argument(
@@ -108,8 +108,8 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         "--script",
         help=(
             "Path to a script under ~/.hermes/scripts/. Pass empty string to clear. "
-            "With --no-agent the script IS the job; otherwise its stdout is "
-            "injected into the agent's prompt each run."
+            "With --no-agent the script file must already exist and IS the job; "
+            "otherwise its stdout is injected into the agent's prompt each run."
         ),
     )
     cron_edit.add_argument(

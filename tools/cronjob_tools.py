@@ -32,6 +32,7 @@ from cron.jobs import (
     resolve_job_ref,
     resume_job,
     update_job,
+    validate_cron_script_path as validate_stored_cron_script_path,
 )
 
 
@@ -525,42 +526,41 @@ def _validate_cron_base_url(
     )
 
 
-def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
+def _validate_cron_script_path(
+    script: Optional[str],
+    *,
+    require_exists: bool = False,
+    relative_only: bool = True,
+) -> Optional[str]:
     """Validate a cron job script path at the API boundary.
 
-    Scripts must be relative paths that resolve within HERMES_HOME/scripts/.
-    Absolute paths and ~ expansion are rejected to prevent arbitrary script
-    execution via prompt injection.
+    Model-facing script paths must be relative to HERMES_HOME/scripts/. Persisted
+    jobs may already contain absolute paths accepted by the scheduler, so callers
+    that validate stored job data can set ``relative_only=False``.
+    If require_exists is True, the path must already point to a regular file.
 
     Returns an error string if blocked, else None (valid).
     """
     if not script or not script.strip():
         return None  # empty/None = clearing the field, always OK
 
-    from hermes_constants import get_hermes_home
-
+    scripts_display = f"{display_hermes_home()}/scripts"
     raw = script.strip()
-
-    # Reject absolute paths and ~ expansion at the API boundary.
-    # Only relative paths within ~/.hermes/scripts/ are allowed.
-    if raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":"):
+    if relative_only and (raw.startswith(("/", "~")) or (len(raw) >= 2 and raw[1] == ":")):
         return (
-            f"Script path must be relative to ~/.hermes/scripts/. "
+            f"Script path must be relative to {scripts_display}/. "
             f"Got absolute or home-relative path: {raw!r}. "
-            f"Place scripts in ~/.hermes/scripts/ and use just the filename."
+            f"Place scripts in {scripts_display}/ and use just the filename."
         )
-
-    # Validate containment after resolution
-    from tools.path_security import validate_within_dir
-
-    scripts_dir = get_hermes_home() / "scripts"
-    scripts_dir.mkdir(parents=True, exist_ok=True)
-    containment_error = validate_within_dir(scripts_dir / raw, scripts_dir)
-    if containment_error:
-        return (
-            f"Script path escapes the scripts directory via traversal: {raw!r}"
+    try:
+        validate_stored_cron_script_path(
+            script,
+            require_exists=require_exists,
+            allow_empty=True,
+            scripts_display=scripts_display,
         )
-
+    except ValueError as exc:
+        return str(exc)
     return None
 
 
@@ -711,7 +711,7 @@ def cronjob(
 
             # Validate script path before storing
             if script:
-                script_error = _validate_cron_script_path(script)
+                script_error = _validate_cron_script_path(script, require_exists=_no_agent)
                 if script_error:
                     return tool_error(script_error, success=False)
 
@@ -831,11 +831,35 @@ def cronjob(
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized == "resume":
+            if job.get("no_agent"):
+                effective_script = job.get("script")
+                if not effective_script:
+                    return tool_error(
+                        "Cannot resume no_agent=True cron job without a script.",
+                        success=False,
+                    )
+                script_error = _validate_cron_script_path(
+                    effective_script, require_exists=True, relative_only=False
+                )
+                if script_error:
+                    return tool_error(script_error, success=False)
             updated = resume_job(job_id)
             _notify_provider_jobs_changed_safe()
             return json.dumps({"success": True, "job": _format_job(updated)}, indent=2)
 
         if normalized in {"run", "run_now", "trigger"}:
+            if job.get("no_agent"):
+                effective_script = job.get("script")
+                if not effective_script:
+                    return tool_error(
+                        "Cannot run no_agent=True cron job without a script.",
+                        success=False,
+                    )
+                script_error = _validate_cron_script_path(
+                    effective_script, require_exists=True, relative_only=False
+                )
+                if script_error:
+                    return tool_error(script_error, success=False)
             # Execute the job immediately rather than only scheduling it for the
             # next scheduler tick — a manual `run` should actually run, even when
             # no gateway/ticker is active (the #41037 case). The claim inside
@@ -856,6 +880,7 @@ def cronjob(
 
         if normalized == "update":
             updates: Dict[str, Any] = {}
+            target_no_agent = bool(no_agent) if no_agent is not None else bool(job.get("no_agent"))
             if prompt is not None:
                 scan_error = _scan_cron_prompt(prompt)
                 if scan_error:
@@ -897,9 +922,15 @@ def cronjob(
             if script is not None:
                 # Pass empty string to clear an existing script
                 if script:
-                    script_error = _validate_cron_script_path(script)
+                    script_error = _validate_cron_script_path(script, require_exists=target_no_agent)
                     if script_error:
                         return tool_error(script_error, success=False)
+                elif target_no_agent:
+                    return tool_error(
+                        "Cannot clear script while no_agent=True. "
+                        "Set no_agent=False in the same update, or keep a valid script.",
+                        success=False,
+                    )
                 updates["script"] = _normalize_optional_job_value(script) if script else None
             if context_from is not None:
                 # Empty string / empty list clears the field; otherwise validate
@@ -931,7 +962,6 @@ def cronjob(
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
                 # the same update) — otherwise the next tick would error out.
-                target_no_agent = bool(no_agent)
                 if target_no_agent:
                     effective_script = updates.get("script") if "script" in updates else job.get("script")
                     if not effective_script:
@@ -940,6 +970,13 @@ def cronjob(
                             "Set `script` in the same update, or on the job first.",
                             success=False,
                         )
+                    script_error = _validate_cron_script_path(
+                        effective_script,
+                        require_exists=True,
+                        relative_only=("script" in updates),
+                    )
+                    if script_error:
+                        return tool_error(script_error, success=False)
                 updates["no_agent"] = target_no_agent
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
@@ -991,7 +1028,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, the 'schedule' and 'prompt' fields are REQUIRED."
+                "description": "One of: create, list, update, pause, resume, remove, run. When action=create, 'schedule' is REQUIRED. 'prompt' is required unless no_agent=True with a valid script."
             },
             "job_id": {
                 "type": "string",
@@ -1039,7 +1076,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "script": {
                 "type": "string",
-                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
+                "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and must already exist under {display_hermes_home()}/scripts/ before the job is created or enabled. Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear only when the job is not no_agent=True, or when setting no_agent=False in the same update."
             },
             "no_agent": {
                 "type": "boolean",

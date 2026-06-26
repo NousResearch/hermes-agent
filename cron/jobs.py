@@ -32,7 +32,7 @@ try:
 except ImportError:  # pragma: no cover - non-Windows
     msvcrt = None
 from datetime import datetime, timedelta
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Set, Tuple, Union
 
@@ -100,6 +100,7 @@ _jobs_lock_state = threading.local()
 _JOBS_LOCK_TIMEOUT_SECONDS = 30.0
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
+_MAX_CRON_SCRIPT_PATH_CHARS = 4096
 
 
 @dataclass(frozen=True)
@@ -927,6 +928,103 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def validate_cron_script_path(
+    script: Optional[str],
+    *,
+    require_exists: bool = False,
+    allow_empty: bool = True,
+    scripts_display: Optional[str] = None,
+) -> Optional[Path]:
+    """Validate a cron script path under ``HERMES_HOME/scripts``.
+
+    The scheduler already defines the runtime path policy: relative paths
+    resolve inside the scripts directory, while absolute or ``~`` paths are
+    allowed only when they also resolve inside that directory.  Keep creation
+    validation aligned with that policy so existing filenames with spaces or
+    non-ASCII characters remain valid.
+    """
+    raw = str(script or "").strip()
+    if not raw:
+        if allow_empty:
+            return None
+        raise ValueError(
+            "no_agent=True requires a script — with no agent and no script "
+            "there is nothing for the job to run."
+        )
+
+    # Resolve the scripts root at validation time so callers that establish a
+    # profile after this module was imported (CLI/tests) do not validate
+    # against the default profile.  Explicit cross-profile cron-store scopes
+    # remain authoritative when present.
+    store_override = _cron_store_override.get()
+    scripts_home = (
+        store_override.cron_dir.parent
+        if store_override is not None
+        else get_hermes_home().resolve()
+    )
+    scripts_dir = scripts_home / "scripts"
+    scripts_label = scripts_display or str(scripts_dir)
+
+    if "\n" in raw or "\r" in raw:
+        raise ValueError(
+            "Script must be a path under "
+            f"{scripts_label}/, not inline script content. "
+            "Write the script file first, then pass its filename."
+        )
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        raise ValueError("Script filename must not contain control characters.")
+    if len(raw) > _MAX_CRON_SCRIPT_PATH_CHARS:
+        raise ValueError(
+            f"Script path is too long ({len(raw)} characters). "
+            f"Use a path under {_MAX_CRON_SCRIPT_PATH_CHARS} characters."
+        )
+    windows_path = PureWindowsPath(raw)
+    if windows_path.drive and not windows_path.is_absolute():
+        raise ValueError(
+            f"Script path must resolve inside {scripts_label}/. "
+            f"Windows drive-relative paths are not supported: {raw!r}."
+        )
+
+    scripts_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        raw_path = Path(raw).expanduser()
+    except RuntimeError as exc:
+        raise ValueError(f"Invalid script path {raw!r}: {exc}") from exc
+    script_path = raw_path if raw_path.is_absolute() else scripts_dir / raw_path
+    try:
+        scripts_root = scripts_dir.resolve()
+        resolved_path = script_path.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"Invalid script path {raw!r}: {exc}") from exc
+    if not resolved_path.is_relative_to(scripts_root):
+        raise ValueError(
+            "Script path escapes the scripts directory via traversal, absolute, "
+            f"or home-relative path: {raw!r}"
+        )
+
+    if require_exists:
+        try:
+            exists = script_path.exists()
+            is_file = script_path.is_file()
+        except (OSError, RuntimeError) as exc:
+            raise ValueError(f"Invalid script path {raw!r}: {exc}") from exc
+        if exists and not is_file:
+            raise ValueError(f"Script path is not a regular file: {script_path}")
+        if not is_file:
+            raise ValueError(
+                f"Script file not found: {script_path}. "
+                "Write the script under the scripts directory first, then create "
+                "the no_agent cron job with that filename."
+            )
+
+    return script_path
+
+
+def _validate_no_agent_script_file(script: Optional[str]) -> None:
+    """Validate the persisted no-agent script target."""
+    validate_cron_script_path(script, require_exists=True, allow_empty=False)
+
+
 def _resolve_default_model_snapshot() -> Optional[str]:
     """Resolve the global default model the same way the cron ticker does.
 
@@ -1133,6 +1231,8 @@ def create_job(
             "no_agent=True requires a script — with no agent and no script "
             "there is nothing for the job to run."
         )
+    if normalized_no_agent:
+        _validate_no_agent_script_file(normalized_script)
 
     # Normalize context_from: accept str or list of str, store as list or None
     if isinstance(context_from, str):
@@ -1377,6 +1477,13 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                         f"(grace window: {ONESHOT_GRACE_SECONDS}s) and cannot be scheduled."
                     )
                 updated["next_run_at"] = next_run
+
+            if (
+                updated.get("no_agent")
+                and updated.get("enabled", True)
+                and updated.get("state") != "paused"
+            ):
+                _validate_no_agent_script_file(updated.get("script"))
 
             jobs[i] = updated
             save_jobs(jobs)

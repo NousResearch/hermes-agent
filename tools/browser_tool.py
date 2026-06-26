@@ -1743,6 +1743,28 @@ BROWSER_TOOL_SCHEMAS = [
             "required": []
         }
     },
+    {
+        "name": "browser_list_downloads",
+        "description": "List captured downloads for the current Camofox tab. Returns download IDs, filenames, sizes, URLs, status/failure metadata, and total count.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "browser_save_download",
+        "description": "Save a captured download to a local file. Accepts parameters: download_id, optional output_path, optional max_bytes.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "download_id": {"type": "string", "description": "The download ID from browser_list_downloads"},
+                "output_path": {"type": "string", "description": "Optional local file path to write the download to. If omitted, a tempfile path is used."},
+                "max_bytes": {"type": "integer", "description": "Maximum download bytes to fetch (default: 52428800 = 50MB)"}
+            },
+            "required": ["download_id"]
+        }
+    },
 ]
 
 
@@ -3202,6 +3224,48 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
+def browser_list_downloads(task_id: Optional[str] = None) -> str:
+    """
+    List captured downloads for the current Camofox tab.
+
+    Only supported when the browser backend is Camofox. Returns an
+    unsupported-backend error for other backends.
+    """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_list_downloads
+        return camofox_list_downloads(task_id=task_id)
+    return json.dumps({
+        "success": False,
+        "error": "browser_list_downloads is only supported with the Camofox backend.",
+    })
+
+
+def browser_save_download(
+    download_id: str,
+    output_path: Optional[str] = None,
+    task_id: Optional[str] = None,
+    max_bytes: int = 50 * 1024 * 1024,
+) -> str:
+    """
+    Save a captured download to a local file.
+
+    Only supported when the browser backend is Camofox. Returns an
+    unsupported-backend error for other backends.
+    """
+    if _is_camofox_mode():
+        from tools.browser_camofox import camofox_get_download_content
+        return camofox_get_download_content(
+            download_id=download_id,
+            output_path=output_path,
+            task_id=task_id,
+            max_bytes=max_bytes,
+        )
+    return json.dumps({
+        "success": False,
+        "error": "browser_save_download is only supported with the Camofox backend.",
+    })
+
+
 def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> Union[str, Dict[str, Any]]:
     """
     Take a screenshot of the current page for visual inspection.
@@ -4002,4 +4066,25 @@ registry.register(
     handler=lambda args, **kw: browser_console(clear=args.get("clear", False), expression=args.get("expression"), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="🖥️",
+)
+registry.register(
+    name="browser_list_downloads",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_list_downloads"],
+    handler=lambda args, **kw: browser_list_downloads(task_id=kw.get("task_id")),
+    check_fn=check_browser_requirements,
+    emoji="📦",
+)
+registry.register(
+    name="browser_save_download",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_save_download"],
+    handler=lambda args, **kw: browser_save_download(
+        download_id=args.get("download_id", ""),
+        output_path=args.get("output_path"),
+        task_id=kw.get("task_id"),
+        max_bytes=int(args.get("max_bytes", 50 * 1024 * 1024)),
+    ),
+    check_fn=check_browser_requirements,
+    emoji="💾",
 )

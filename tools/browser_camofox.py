@@ -791,4 +791,74 @@ def camofox_console(clear: bool = False, task_id: Optional[str] = None) -> str:
     })
 
 
+def camofox_list_downloads(
+    task_id: Optional[str] = None,
+    include_data: bool = False,
+    max_bytes: Optional[int] = None,
+) -> str:
+    """List captured downloads for the current Camofox tab."""
+    session = _get_session(task_id)
+    params: Dict[str, Any] = {
+        "userId": session["user_id"],
+        "includeData": "true" if include_data else "false",
+    }
+    if max_bytes is not None:
+        params["maxBytes"] = int(max_bytes)
+
+    data = _get(f"/tabs/{session['tab_id']}/downloads", params=params)
+    downloads = data.get("downloads", []) if isinstance(data, dict) else []
+    return json.dumps({
+        "success": True,
+        "downloads": downloads,
+        "count": len(downloads),
+        "tab_id": session["tab_id"],
+    })
+
+
+def camofox_get_download_content(
+    download_id: str,
+    output_path: Optional[str] = None,
+    task_id: Optional[str] = None,
+    max_bytes: int = 50 * 1024 * 1024,
+) -> str:
+    """Fetch a captured download and write it to disk."""
+    import tempfile
+    listing = json.loads(camofox_list_downloads(
+        task_id=task_id,
+        include_data=True,
+        max_bytes=max_bytes,
+    ))
+    match = next(
+        (item for item in listing.get("downloads", []) if item.get("id") == download_id),
+        None,
+    )
+    if match is None:
+        return tool_error(
+            f"download {download_id!r} not found in tab {listing.get('tab_id')}",
+            success=False,
+        )
+
+    raw = base64.b64decode(match.get("dataBase64", ""))
+    if not output_path:
+        filename = os.path.basename(
+            str(match.get("suggestedFilename") or f"{download_id}.bin")
+        )
+        output_path = os.path.join(tempfile.gettempdir(), filename)
+
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    with open(output_path, "wb") as f:
+        f.write(raw)
+
+    return json.dumps({
+        "success": True,
+        "download_id": download_id,
+        "output_path": output_path,
+        "suggested_filename": match.get("suggestedFilename"),
+        "mime_type": match.get("mimeType"),
+        "bytes": len(raw),
+        "tab_id": listing.get("tab_id"),
+    })
+
+
+
 

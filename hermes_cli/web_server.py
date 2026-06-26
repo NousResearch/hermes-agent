@@ -13420,11 +13420,14 @@ def start_server(
             if server.started:
                 await server.shutdown()
 
-    # On POSIX, keep the long-standing ``asyncio.run(_serve())`` behavior
-    # unchanged — Python's default loop there is already a SelectorEventLoop
-    # (or uvloop when uvicorn[standard] installs it), which is exactly what
-    # uvicorn serves on. Touching that path would only widen the blast radius
-    # for no benefit.
+    # On POSIX, keep the long-standing ``asyncio.run(_serve())`` runner —
+    # Python's default loop there is already a SelectorEventLoop (or uvloop when
+    # uvicorn[standard] installs it), which is exactly what uvicorn serves on.
+    # Uvicorn's ``capture_signals()`` restores the original SIGINT handler and
+    # re-raises the captured signal after a graceful shutdown, which otherwise
+    # leaks a noisy KeyboardInterrupt traceback for the normal foreground
+    # dashboard Ctrl+C path. Treat that one signal as a clean user-requested
+    # shutdown; other serve-time errors still propagate.
     #
     # On Windows it is broken: ``asyncio.run`` defaults to a ProactorEventLoop,
     # but uvicorn's socket-serving stack assumes a SelectorEventLoop on win32
@@ -13436,7 +13439,10 @@ def start_server(
     # no TCP handshake completing (#50641). So *only on Windows* we mirror
     # uvicorn's own machinery and run on the loop factory it picks.
     if sys.platform != "win32":
-        asyncio.run(_serve())
+        try:
+            asyncio.run(_serve())
+        except KeyboardInterrupt:
+            return
         return
 
     # Windows-only path. Resolve the runner + loop factory FIRST (and fall back

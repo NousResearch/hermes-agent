@@ -141,12 +141,12 @@ def test_start_server_runs_on_uvicorns_loop_factory(monkeypatch):
 
 
 def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
-    """POSIX behavior must be byte-for-byte unchanged: serve via the plain
-    ``asyncio.run(_serve())`` path, never the Windows loop-factory branch.
+    """POSIX continues to serve via the plain ``asyncio.run(_serve())`` path,
+    never the Windows loop-factory branch.
 
-    The #50641 fix is intentionally win32-scoped to keep the blast radius
-    minimal — Python's default loop on POSIX is already a SelectorEventLoop
-    (or uvloop), which is what uvicorn serves on, so there is nothing to fix.
+    The #50641 fix is intentionally win32-scoped to keep the loop selection
+    unchanged — Python's default loop on POSIX is already a SelectorEventLoop
+    (or uvloop), which is what uvicorn serves on.
     """
     _stub_uvicorn(monkeypatch)
     monkeypatch.setattr(web_server.sys, "platform", "linux")
@@ -175,3 +175,22 @@ def test_start_server_keeps_bare_asyncio_run_on_posix(monkeypatch):
     assert runner_called["hit"] is False, (
         "POSIX must not take the Windows loop-factory branch"
     )
+
+
+def test_start_server_treats_posix_keyboardinterrupt_as_clean_shutdown(monkeypatch):
+    """Ctrl+C is the normal foreground-dashboard shutdown path.
+
+    Uvicorn re-raises captured SIGINT as ``KeyboardInterrupt`` after it has
+    restored the original signal handlers.  The dashboard should treat that as a
+    clean user-requested shutdown instead of leaking a traceback to the terminal.
+    """
+    _stub_uvicorn(monkeypatch)
+    monkeypatch.setattr(web_server.sys, "platform", "darwin")
+
+    def _raise_keyboard_interrupt(coro):
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(asyncio, "run", _raise_keyboard_interrupt)
+
+    web_server.start_server(host="127.0.0.1", port=0, open_browser=False)

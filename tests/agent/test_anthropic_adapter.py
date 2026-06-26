@@ -113,6 +113,15 @@ class TestBuildAnthropicClient:
                 "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
             }
 
+    def test_custom_base_url_strips_trailing_v1(self):
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client(
+                "sk-ant-api03-x",
+                base_url="https://proxy.example.com/anthropic/v1",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["base_url"] == "https://proxy.example.com/anthropic"
+
     def test_azure_anthropic_endpoint_keeps_context_1m_beta(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
             build_anthropic_client(
@@ -321,6 +330,131 @@ class TestResolveAnthropicToken:
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
         assert resolve_anthropic_token() == "cc-auto-token"
+
+    def test_falls_back_to_anthropic_credential_pool_oauth(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        # Isolate source #4 (credential_pool): ensure source #3 (Claude Code
+        # creds, incl. the macOS keychain read which Path.home does not cover)
+        # returns nothing, mirroring a Hermes-PKCE-only setup.
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        pool_entry = SimpleNamespace(
+            auth_type="oauth",
+            access_token="pool-oauth-token",
+        )
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [pool_entry],
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        assert resolve_anthropic_token() == "pool-oauth-token"
+
+    def test_prefers_anthropic_credential_pool_oauth_over_api_key(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        # Pool (source #4) must win over ANTHROPIC_API_KEY (source #5); also
+        # isolate source #3 so a machine-local Claude Code creds / keychain
+        # entry can't short-circuit before the pool.
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        pool_entry = SimpleNamespace(
+            auth_type="oauth",
+            access_token="pool-oauth-token",
+        )
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [pool_entry],
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        assert resolve_anthropic_token() == "pool-oauth-token"
+
+    def test_pool_entry_with_null_access_token_does_not_crash(self, monkeypatch, tmp_path):
+        """A persisted OAuth entry with access_token=None must not crash the
+        resolver (None.strip() would escape the helper's try/excepts and take
+        down the whole resolver incl. the ANTHROPIC_API_KEY fallback). It should
+        be skipped and the api-key fallback (source #5) should win."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant...ykey")
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        broken_entry = SimpleNamespace(auth_type="oauth", access_token=None)
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [broken_entry],
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        # Must fall through to source #5 (ANTHROPIC_API_KEY), not raise.
+        assert resolve_anthropic_token() == "sk-ant...ykey"
+
+    def test_pool_api_key_only_entry_is_not_returned_as_token(self, monkeypatch, tmp_path):
+        """resolve_anthropic_token() returns an OAuth bearer token; a pool entry
+        whose auth_type is api_key (not oauth) must NOT be returned from the pool
+        path — those are consumed via the aux client's _pool_runtime_api_key
+        lane, a different resolution concern."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        api_key_entry = SimpleNamespace(auth_type="api_key", access_token="sk-pool-apikey")
+        pool = SimpleNamespace(
+            _available_entries=lambda **_kwargs: [api_key_entry],
+        )
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        # No OAuth entry and no other source → None (the api_key entry is ignored here).
+        assert resolve_anthropic_token() is None
+
+    def test_pool_is_not_consulted_when_env_token_present(self, monkeypatch, tmp_path):
+        """Source #1 (ANTHROPIC_TOKEN) must short-circuit before the pool: when
+        it is set, load_pool must never be called (ordering contract #1 → #4)."""
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "env-token")
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        pool_calls = []
+
+        def _tracking_load_pool(provider):
+            pool_calls.append(provider)
+            raise AssertionError("load_pool must not be called when source #1 wins")
+
+        monkeypatch.setattr("agent.credential_pool.load_pool", _tracking_load_pool)
+
+        assert resolve_anthropic_token() == "env-token"
+        assert pool_calls == []
+
+    def test_pool_resolution_is_read_only(self, monkeypatch, tmp_path):
+        """The resolver must enumerate the pool read-only — clear_expired and
+        refresh must both be False so a bare resolve never writes auth.json or
+        triggers a network refresh from diagnostic call sites (#50108 MED)."""
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("ANTHROPIC_TOKEN", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+        monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
+        monkeypatch.setattr("agent.anthropic_adapter.read_claude_code_credentials", lambda: None)
+
+        captured = {}
+        pool_entry = SimpleNamespace(auth_type="oauth", access_token="pool-oauth-token")
+
+        def _available_entries(**kwargs):
+            captured.update(kwargs)
+            return [pool_entry]
+
+        pool = SimpleNamespace(_available_entries=_available_entries)
+        monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: pool)
+
+        assert resolve_anthropic_token() == "pool-oauth-token"
+        assert captured == {"clear_expired": False, "refresh": False}
 
     def test_prefers_refreshable_claude_code_credentials_over_static_anthropic_token(self, monkeypatch, tmp_path):
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
@@ -1212,6 +1346,73 @@ class TestBuildAnthropicKwargs:
         assert _supports_fast_mode("claude-sonnet-4-6") is False
         assert _supports_fast_mode("claude-haiku-4-5") is False
         assert _supports_fast_mode("") is False
+
+    def test_fable_class_models_route_as_adaptive_thinking(self):
+        """Invariant: unknown/new Claude models default to the modern (4.7+)
+        contract — adaptive thinking, xhigh-capable, sampling-params-forbidden —
+        without any per-model code change. Named models (claude-fable-5) and
+        hypothetical future ones must all classify modern; only the explicit
+        legacy list stays on the manual path.
+        """
+        from agent.anthropic_adapter import (
+            _supports_adaptive_thinking,
+            _supports_xhigh_effort,
+            _forbids_sampling_params,
+            _get_anthropic_max_output,
+        )
+        # New / unknown Claude models → modern contract by default.
+        for m in (
+            "claude-fable-5",
+            "anthropic/claude-fable-5",
+            "claude-saga-2",            # hypothetical future named model
+            "anthropic/claude-opus-9",  # hypothetical future numbered model
+        ):
+            assert _supports_adaptive_thinking(m) is True, m
+            assert _supports_xhigh_effort(m) is True, m
+            assert _forbids_sampling_params(m) is True, m
+        # 1M-context reasoning model → highest output ceiling.
+        assert _get_anthropic_max_output("anthropic/claude-fable-5") == 128_000
+
+    def test_legacy_claude_stays_on_manual_thinking(self):
+        """Older Claude families keep the legacy manual-thinking contract."""
+        from agent.anthropic_adapter import (
+            _supports_adaptive_thinking,
+            _forbids_sampling_params,
+        )
+        for m in (
+            "claude-3-5-sonnet",
+            "claude-3-7-sonnet",
+            "anthropic/claude-opus-4.5",
+            "anthropic/claude-sonnet-4.5",
+            "claude-haiku-4-5",
+        ):
+            assert _supports_adaptive_thinking(m) is False, m
+            assert _forbids_sampling_params(m) is False, m
+
+    def test_claude_46_is_adaptive_but_not_xhigh_or_no_sampling(self):
+        """4.6 is adaptive, but predates xhigh and still accepts sampling."""
+        from agent.anthropic_adapter import (
+            _supports_adaptive_thinking,
+            _supports_xhigh_effort,
+            _forbids_sampling_params,
+        )
+        for m in ("claude-opus-4.6", "claude-sonnet-4-6"):
+            assert _supports_adaptive_thinking(m) is True, m
+            assert _supports_xhigh_effort(m) is False, m
+            assert _forbids_sampling_params(m) is False, m
+
+    def test_non_claude_anthropic_models_use_manual_path(self):
+        """Non-Claude Anthropic-Messages models (minimax, qwen3, kimi) must not
+        be misclassified as adaptive by the default-to-modern rule."""
+        from agent.anthropic_adapter import (
+            _supports_adaptive_thinking,
+            _supports_xhigh_effort,
+            _forbids_sampling_params,
+        )
+        for m in ("minimax-m2", "qwen3-max", "moonshotai/kimi-k2.5", "glm-4.6"):
+            assert _supports_adaptive_thinking(m) is False, m
+            assert _supports_xhigh_effort(m) is False, m
+            assert _forbids_sampling_params(m) is False, m
 
     def test_fast_mode_omitted_for_unsupported_model(self):
         """fast_mode=True on Opus 4.7 must NOT inject speed=fast (API 400s)."""

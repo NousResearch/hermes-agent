@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { TERMINAL_BG } from './selection'
+import { $terminalTakeover } from '../store'
 
 import { TerminalTab } from './index'
 
@@ -56,6 +56,7 @@ const sameRect = (a: Rect | null, b: Rect) =>
 
 export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerminalProps) {
   const slot = useStore($slot)
+  const terminalTakeover = useStore($terminalTakeover)
   const [rect, setRect] = useState<Rect | null>(null)
   const [ready, setReady] = useState(false)
 
@@ -107,16 +108,18 @@ export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerm
     visibility: visible ? 'visible' : 'hidden',
     pointerEvents: visible ? 'auto' : 'none',
     zIndex: 4,
-    backgroundColor: TERMINAL_BG,
+    // Match the live skin surface so the header strip (transparent) and body
+    // read as one cohesive pane instead of revealing a near-black slab behind.
+    backgroundColor: 'var(--ui-editor-surface-background)',
     contain: 'layout size paint'
   }
 
-  // Defer mount until real dims — booting xterm at 0×0 starts the shell at
-  // 80×24, then the first ResizeObserver SIGWINCH redraws the prompt on a
-  // new line. After first measurement we keep it mounted forever.
+  // Defer mount until the terminal sidebar is open and the slot has real dims.
+  // Booting xterm/node-pty at 0×0 starts the shell at 80×24 and spawns a
+  // visible conhost on Windows even when the pane is collapsed.
   return (
     <div aria-hidden={!visible} style={style}>
-      {ready && <TerminalTab cwd={cwd} onAddSelectionToChat={onAddSelectionToChat} />}
+      {terminalTakeover && ready && <TerminalTab cwd={cwd} onAddSelectionToChat={onAddSelectionToChat} />}
     </div>
   )
 }

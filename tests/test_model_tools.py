@@ -64,6 +64,7 @@ class TestHandleFunctionCall:
                 tool_call_id="call-1",
                 turn_id="",
                 api_request_id="",
+                middleware_trace=[],
             ),
             call(
                 "post_tool_call",
@@ -79,6 +80,7 @@ class TestHandleFunctionCall:
                 status="ok",
                 error_type=None,
                 error_message=None,
+                middleware_trace=[],
             ),
             call(
                 "transform_tool_result",
@@ -144,6 +146,60 @@ class TestHandleFunctionCall:
         fired = {c.args[0] for c in mock_invoke_hook.call_args_list}
         assert "post_tool_call" not in fired
         assert "transform_tool_result" not in fired
+
+    def test_tool_request_and_execution_middleware_wrap_registry_dispatch(self, monkeypatch):
+        seen = {}
+
+        def fake_invoke_middleware(kind, **kwargs):
+            if kind == "tool_request":
+                return [{
+                    "args": {**kwargs["args"], "rewritten": True},
+                    "source": "test-middleware",
+                    "reason": "rewrite",
+                }]
+            return []
+
+        def execution_middleware(**kwargs):
+            seen["execution_args"] = kwargs["args"]
+            return kwargs["next_call"]({**kwargs["args"], "wrapped": True})
+
+        def fake_dispatch(tool_name, args, **kwargs):
+            seen["dispatch"] = (tool_name, args, kwargs)
+            return json.dumps({"ok": True, "args": args})
+
+        manager = type(
+            "Manager",
+            (),
+            {"_middleware": {"tool_request": [fake_invoke_middleware], "tool_execution": [execution_middleware]}},
+        )()
+        monkeypatch.setattr("hermes_cli.plugins.invoke_middleware", fake_invoke_middleware)
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        hook_calls = []
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda name: True)
+        monkeypatch.setattr("model_tools.registry.dispatch", fake_dispatch)
+
+        result = json.loads(
+            handle_function_call(
+                "web_search",
+                {"q": "test"},
+                task_id="task-1",
+                tool_call_id="tool-1",
+                session_id="session-1",
+            )
+        )
+
+        assert seen["execution_args"] == {"q": "test", "rewritten": True}
+        assert seen["dispatch"][1] == {"q": "test", "rewritten": True, "wrapped": True}
+        assert result["args"] == {"q": "test", "rewritten": True, "wrapped": True}
+        expected_trace = [{"source": "test-middleware", "reason": "rewrite"}]
+        pre_call = next(call for call in hook_calls if call[0] == "pre_tool_call")
+        post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
+        assert pre_call[1]["middleware_trace"] == expected_trace
+        assert post_call[1]["middleware_trace"] == expected_trace
 
 
 # =========================================================================
@@ -319,7 +375,7 @@ class TestPreToolCallBlocking:
 class TestLegacyToolsetMap:
     def test_expected_legacy_names(self):
         expected = [
-            "web_tools", "terminal_tools", "vision_tools", "moa_tools",
+            "web_tools", "terminal_tools", "vision_tools",
             "image_tools", "skills_tools", "browser_tools", "cronjob_tools",
             "file_tools", "tts_tools",
         ]
@@ -401,3 +457,82 @@ class TestCoerceNumberInfNan:
         assert _coerce_number("42") == 42
         assert _coerce_number("3.14") == 3.14
         assert _coerce_number("1e3") == 1000
+
+class TestDisabledToolsetsPlatformBundle:
+    """Regression test for #33924: disabling a platform bundle (hermes-*)
+    must not remove core tools from other enabled toolsets."""
+
+    def test_disabling_platform_bundle_preserves_core_tools(self):
+        """Disabling hermes-yuanbao should not strip core tools from hermes-telegram."""
+        from model_tools import get_tool_definitions
+
+        tools_telegram = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            quiet_mode=True,
+        )
+        tools_telegram_no_yuanbao = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            disabled_toolsets=["hermes-yuanbao"],
+            quiet_mode=True,
+        )
+        names_telegram = {t["function"]["name"] for t in tools_telegram}
+        names_no_yuanbao = {t["function"]["name"] for t in tools_telegram_no_yuanbao}
+
+        # Disabling a *different* platform bundle must not remove any tools
+        assert names_telegram == names_no_yuanbao, (
+            f"Tools lost after disabling hermes-yuanbao: "
+            f"{names_telegram - names_no_yuanbao}"
+        )
+
+    def test_disabling_platform_bundle_removes_own_tools(self):
+        """Disabling hermes-discord should remove discord-specific tools."""
+        from model_tools import get_tool_definitions
+
+        tools = get_tool_definitions(
+            enabled_toolsets=["hermes-discord"],
+            disabled_toolsets=["hermes-discord"],
+            quiet_mode=True,
+        )
+        names = {t["function"]["name"] for t in tools}
+        assert "discord" not in names
+
+    def test_disabling_non_platform_toolset_still_works(self):
+        """Disabling a regular (non-hermes-) toolset still subtracts all tools."""
+        from model_tools import get_tool_definitions
+
+        tools_normal = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            quiet_mode=True,
+        )
+        tools_no_web = get_tool_definitions(
+            enabled_toolsets=["hermes-telegram"],
+            disabled_toolsets=["web"],
+            quiet_mode=True,
+        )
+        names_normal = {t["function"]["name"] for t in tools_normal}
+        names_no_web = {t["function"]["name"] for t in tools_no_web}
+
+        web_tools = {"web_search", "web_extract"}
+        removed = names_normal - names_no_web
+        # web tools should be removed (if they were present)
+        present_web = web_tools & names_normal
+        assert present_web <= removed, (
+            f"Web tools not removed: {present_web - removed}"
+        )
+
+
+    def test_disabling_bundle_removes_platform_tools_but_keeps_core(self):
+        """Disabling hermes-discord (when enabled) removes discord/discord_admin
+        from the resolved delta but keeps core tools — via bundle_non_core_tools."""
+        from toolsets import bundle_non_core_tools, _HERMES_CORE_TOOLS
+
+        delta = bundle_non_core_tools("hermes-yuanbao")
+        # The delta is the bundle's platform-specific tools, NOT core.
+        assert "yb_send_dm" in delta
+        assert not (delta & set(_HERMES_CORE_TOOLS)), "core tools must not be in the removal delta"
+
+    def test_bundle_non_core_tools_unknown_falls_back(self):
+        """An unknown/garbage bundle name falls back to full resolution (best effort)."""
+        from toolsets import bundle_non_core_tools
+        # A non-existent bundle resolves to an empty set (no tools), not a crash.
+        assert bundle_non_core_tools("hermes-does-not-exist") == set()

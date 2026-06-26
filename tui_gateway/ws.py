@@ -24,8 +24,10 @@ Mounting
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import json
 import logging
+import socket
 from typing import Any
 
 from tui_gateway import server
@@ -98,6 +100,19 @@ class WSTransport:
                 return False
             fut.result(timeout=_WS_WRITE_TIMEOUT_S)
             return not self._closed
+        except concurrent.futures.TimeoutError:  # builtin TimeoutError on 3.11+
+            # The event loop is stalled (GIL-heavy agent turn, delegation
+            # running N children), NOT the socket dead. The send coroutine is
+            # already scheduled and will flush once the loop breathes — latching
+            # _closed here permanently silenced live windows after one slow
+            # write (the "subagent window shows zero streaming" bug). Unblock
+            # the worker thread and keep the transport alive; _safe_send latches
+            # on a real socket error when the frame actually fails.
+            _log.warning(
+                "ws write slow (loop stalled >%ss) peer=%s — frame left in flight",
+                _WS_WRITE_TIMEOUT_S, self._peer,
+            )
+            return not self._closed
         except Exception as exc:
             self._closed = True
             _log.warning(
@@ -137,6 +152,24 @@ def _ws_peer_label(ws: Any) -> str:
     return f"{host}:{port}" if port is not None else host
 
 
+def _disable_nagle(ws: Any) -> None:
+    """Disable Nagle so streamed JSON-RPC frames go out individually.
+
+    Without it the kernel coalesces the small per-token frames, so a burst after
+    the model's think-pause lands on the client in one tick and no client-side
+    smoothing can recover the cadence. GUI/WS only; chat platforms don't hit
+    this path. Best-effort — skip silently if the socket isn't reachable.
+    """
+    try:
+        scope = getattr(ws, "scope", None) or {}
+        transport = (scope.get("extensions") or {}).get("transport") or getattr(ws, "transport", None)
+        sock = transport.get_extra_info("socket") if transport is not None else None
+        if sock is not None:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    except Exception as exc:  # pragma: no cover - best-effort tuning
+        _log.debug("ws TCP_NODELAY skip: %s", exc)
+
+
 async def handle_ws(ws: Any) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
     peer = _ws_peer_label(ws)
@@ -150,6 +183,9 @@ async def handle_ws(ws: Any) -> None:
     try:
         await ws.accept()
         disconnect_reason = "connected"
+        # Push small streamed frames out immediately instead of letting Nagle
+        # batch them — keeps the live token cadence intact for GUI clients.
+        _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
 
         transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
@@ -261,28 +297,44 @@ async def handle_ws(ws: Any) -> None:
                 )
                 break
     finally:
+        reaped_sessions = 0
         detached_sessions = 0
         if transport is not None:
             transport.close()
 
-            # Detach the transport from any sessions it owned so later emits
-            # fall back to stdio instead of crashing into a closed socket.
-            for _, sess in list(server._sessions.items()):
-                if sess.get("transport") is transport:
-                    sess["transport"] = server._stdio_transport
-                    detached_sessions += 1
+            # Reap sessions this transport owned (close_on_disconnect sidecar
+            # sessions) or detach the rest to the drop sentinel so later emits
+            # don't crash into a closed socket or fall through to desktop stdout
+            # logs. Detached sessions are handed to the grace-windowed WS-orphan
+            # reaper inside _close_sessions_for_transport (a quick reconnect /
+            # session.resume cancels it). This is the single WS-disconnect
+            # teardown path.
+            #
+            # Offloaded: _close_session_by_id does a blocking worker.close()
+            # (terminate + waits) plus a synchronous DB write — inline that
+            # would freeze the uvicorn event loop for every other live
+            # connection.
+            try:
+                reaped_sessions, detached_sessions = await asyncio.to_thread(
+                    server._close_sessions_for_transport,
+                    transport,
+                    end_reason="ws_disconnect",
+                )
+            except Exception:
+                _log.exception("ws transport teardown failed peer=%s", peer)
         try:
             await ws.close()
         except Exception as exc:
             _log.debug("ws close failed peer=%s error=%s", peer, exc)
         _log.info(
             "ws closed peer=%s reason=%s messages=%d parse_errors=%d "
-            "dispatch_crashes=%d send_failures=%d detached_sessions=%d",
+            "dispatch_crashes=%d send_failures=%d reaped_sessions=%d detached_sessions=%d",
             peer,
             disconnect_reason,
             messages,
             parse_errors,
             dispatch_crashes,
             send_failures,
+            reaped_sessions,
             detached_sessions,
         )

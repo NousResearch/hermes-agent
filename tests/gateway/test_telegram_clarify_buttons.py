@@ -47,7 +47,7 @@ def _ensure_telegram_mock():
 
 _ensure_telegram_mock()
 
-from gateway.platforms.telegram import TelegramAdapter
+from plugins.platforms.telegram.adapter import TelegramAdapter
 from gateway.config import PlatformConfig
 
 
@@ -403,7 +403,7 @@ class TestBaseAdapterClarifyFallback:
                 # Skip base __init__ — we're not exercising it
                 self.sent: list = []
 
-            async def connect(self): pass
+            async def connect(self, *, is_reconnect: bool = False): pass
             async def disconnect(self): pass
             async def send(self, chat_id, content, **kw):
                 self.sent.append({"chat_id": chat_id, "content": content})
@@ -436,7 +436,7 @@ class TestBaseAdapterClarifyFallback:
             name = "stub"
             def __init__(self):
                 self.sent: list = []
-            async def connect(self): pass
+            async def connect(self, *, is_reconnect: bool = False): pass
             async def disconnect(self): pass
             async def send(self, chat_id, content, **kw):
                 self.sent.append(content)

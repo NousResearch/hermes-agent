@@ -32,7 +32,14 @@ from typing import Any
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
+    "tool_progress_grouping": "accumulate",  # "accumulate" = edit one bubble; "separate" = one msg per tool
     "show_reasoning": False,
+    # How a reasoning/thinking summary is rendered when show_reasoning is on.
+    #   "code"      -> 💭 **Reasoning:** + fenced code block (legacy default)
+    #   "blockquote"-> each line prefixed with "> "
+    #   "subtext"   -> each line prefixed with "-# " (Discord small grey subtext)
+    # Discord defaults to "subtext"; everywhere else defaults to "code".
+    "reasoning_style": "code",
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
     # Gateway-only assistant/status chatter controls. These default on for
@@ -110,7 +117,10 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
         "tool_progress": "off",
         "busy_ack_detail": False,
     },
-    "discord":     _TIER_HIGH,
+    # Discord has a native "subtext" primitive (-# small grey text) that reads
+    # as metadata rather than content, so reasoning summaries default to it
+    # here instead of the fenced code block used elsewhere.
+    "discord":     {**_TIER_HIGH, "reasoning_style": "subtext"},
 
     # Tier 2 — edit support, often customer/workspace channels
     # Slack: tool_progress off by default — Bolt posts cannot be edited like CLI;
@@ -123,6 +133,12 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 3 — no edit support, progress messages are permanent
     "signal":          _TIER_LOW,
     "whatsapp":        _TIER_MEDIUM,  # Baileys bridge supports /edit
+    # WhatsApp Cloud API: Meta added message editing in 2023 but the
+    # Hermes Cloud adapter doesn't implement edit_message yet, so we
+    # stay on TIER_LOW (tool_progress off) to avoid spamming each
+    # status update as a separate message. Promote to TIER_MEDIUM once
+    # Cloud's edit_message lands.
+    "whatsapp_cloud":  _TIER_LOW,
     "bluebubbles":     _TIER_LOW,
     "weixin":          _TIER_LOW,
     "wecom":           _TIER_LOW,
@@ -232,6 +248,12 @@ def _normalise(setting: str, value: Any) -> Any:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
+    if setting == "tool_progress_grouping":
+        val = str(value).lower()
+        return val if val in ("accumulate", "separate") else "accumulate"
+    if setting == "reasoning_style":
+        val = str(value).lower()
+        return val if val in ("code", "blockquote", "subtext") else "code"
     if setting == "tool_preview_length":
         try:
             return int(value)

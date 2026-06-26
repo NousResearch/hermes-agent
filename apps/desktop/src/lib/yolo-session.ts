@@ -24,3 +24,24 @@ export async function setSessionYolo(
 
   return active
 }
+
+/**
+ * Toggle GLOBAL YOLO (approval bypass) via gateway `config.set` with
+ * `scope: 'global'`. This flips the persistent `approvals.mode` in config.yaml
+ * between `off` (bypass on) and `manual` (bypass off), affecting every session,
+ * the CLI, the TUI, and cron — and it survives restarts. Triggered by
+ * Shift+clicking the status-bar zap.
+ */
+export async function setGlobalYolo(requestGateway: GatewayRequester, enabled: boolean): Promise<boolean> {
+  const result = await requestGateway<{ value?: string }>('config.set', {
+    key: 'yolo',
+    scope: 'global',
+    value: enabled ? '1' : '0'
+  })
+
+  const active = result?.value === '1'
+
+  setYoloActive(active)
+
+  return active
+}

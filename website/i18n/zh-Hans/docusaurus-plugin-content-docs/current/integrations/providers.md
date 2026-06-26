@@ -40,7 +40,6 @@ sidebar_position: 1
 | **DeepSeek** | `~/.hermes/.env` 中的 `DEEPSEEK_API_KEY`（provider: `deepseek`） |
 | **Hugging Face** | `~/.hermes/.env` 中的 `HF_TOKEN`（provider: `huggingface`，别名：`hf`） |
 | **Google / Gemini** | `~/.hermes/.env` 中的 `GOOGLE_API_KEY`（或 `GEMINI_API_KEY`）（provider: `gemini`） |
-| **Google Gemini（OAuth）** | `hermes model` → "Google Gemini (OAuth)"（provider: `google-gemini-cli`，支持免费层，浏览器 PKCE 登录） |
 | **LM Studio** | `hermes model` → "LM Studio"（provider: `lmstudio`，可选 `LM_API_KEY`） |
 | **自定义端点** | `hermes model` → 选择"Custom endpoint"（保存在 `config.yaml`） |
 
@@ -473,7 +472,7 @@ model:
 
 ```bash
 # StepFun
-hermes chat --provider stepfun --model step-3-mini
+hermes chat --provider stepfun --model step-3.5-flash
 # 需要：~/.hermes/.env 中的 STEPFUN_API_KEY
 ```
 
@@ -481,7 +480,7 @@ hermes chat --provider stepfun --model step-3-mini
 ```yaml
 model:
   provider: "stepfun"
-  default: "step-3-mini"
+  default: "step-3.5-flash"
 ```
 
 基础 URL 可通过 `STEPFUN_BASE_URL` 覆盖（默认：`https://api.stepfun.com/v1`）。
@@ -511,79 +510,6 @@ model:
 可在模型名称后附加路由后缀：`:fastest`（默认）、`:cheapest`，或 `:provider_name` 强制指定后端。
 
 基础 URL 可通过 `HF_BASE_URL` 覆盖。
-
-### 通过 OAuth 使用 Google Gemini（`google-gemini-cli`）
-
-`google-gemini-cli` 提供商使用 Google 的 Cloud Code Assist 后端——与 Google 自己的 `gemini-cli` 工具使用的 API 相同。支持**免费层**（个人账户每日配额充足）和**付费层**（通过 GCP 项目的 Standard/Enterprise）。
-
-**快速开始：**
-
-```bash
-hermes model
-# → 选择"Google Gemini (OAuth)"
-# → 查看政策警告，确认
-# → 浏览器打开 accounts.google.com，登录
-# → 完成——Hermes 在首次请求时自动开通免费层
-```
-
-Hermes 默认使用 Google 的**公开** `gemini-cli` 桌面 OAuth 客户端——与 Google 在其开源 `gemini-cli` 中包含的凭据相同。桌面 OAuth 客户端不是机密客户端（PKCE 提供安全保障）。你无需安装 `gemini-cli` 或注册自己的 GCP OAuth 客户端。
-
-**认证工作原理：**
-- 针对 `accounts.google.com` 的 PKCE 授权码流程
-- 浏览器回调地址 `http://127.0.0.1:8085/oauth2callback`（端口占用时自动回退到临时端口）
-- Token 存储在 `~/.hermes/auth/google_oauth.json`（chmod 0600，原子写入，跨进程 `fcntl` 锁）
-- 到期前 60 秒自动刷新
-- 无头环境（SSH、`HERMES_HEADLESS=1`）→ 粘贴模式回退
-- 并发刷新去重——两个并发请求不会触发双重刷新
-- `invalid_grant`（刷新 token 被撤销）→ 凭据文件被清除，提示用户重新登录
-
-**推理工作原理：**
-- 流量发送到 `https://cloudcode-pa.googleapis.com/v1internal:generateContent`
-  （流式传输为 `:streamGenerateContent?alt=sse`），而非付费的 `v1beta/openai` 端点
-- 请求体封装为 `{project, model, user_prompt_id, request}`
-- OpenAI 格式的 `messages[]`、`tools[]`、`tool_choice` 被转换为 Gemini 原生的
-  `contents[]`、`tools[].functionDeclarations`、`toolConfig` 格式
-- 响应转换回 OpenAI 格式，Hermes 其余部分无感知
-
-**层级与项目 ID：**
-
-| 你的情况 | 操作 |
-|---|---|
-| 个人 Google 账户，使用免费层 | 无需操作——登录即可开始聊天 |
-| Workspace / Standard / Enterprise 账户 | 将 `HERMES_GEMINI_PROJECT_ID` 或 `GOOGLE_CLOUD_PROJECT` 设置为你的 GCP 项目 ID |
-| VPC-SC 保护的组织 | Hermes 检测到 `SECURITY_POLICY_VIOLATED` 后自动强制使用 `standard-tier` |
-
-免费层在首次使用时自动开通 Google 托管项目。无需 GCP 配置。
-
-**配额监控：**
-
-```
-/gquota
-```
-
-以进度条显示每个模型的剩余 Code Assist 配额：
-
-```
-Gemini Code Assist quota  (project: 123-abc)
-
-  gemini-2.5-pro                      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░   85%
-  gemini-2.5-flash [input]            ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░   92%
-```
-
-:::warning 政策风险
-Google 认为将 Gemini CLI OAuth 客户端用于第三方软件违反政策。部分用户反映账户受到限制。为降低风险，建议改用 `gemini` 提供商并通过 API key 访问。Hermes 会在 OAuth 开始前显示警告并要求明确确认。
-:::
-
-**自定义 OAuth 客户端（可选）：**
-
-如果你希望注册自己的 Google OAuth 客户端——例如将配额和授权范围限定在自己的 GCP 项目内——请设置：
-
-```bash
-HERMES_GEMINI_CLIENT_ID=your-client.apps.googleusercontent.com
-HERMES_GEMINI_CLIENT_SECRET=...   # 桌面客户端可选
-```
-
-在 [console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials) 注册一个**桌面应用** OAuth 客户端，并启用 Generative Language API。
 
 ## 自定义与自托管 LLM 提供商
 
@@ -1477,7 +1403,7 @@ fallback_model:
 
 激活时，故障转移在不丢失对话的情况下中途切换模型和提供商。链按条目逐一尝试；每个会话激活一次。
 
-支持的提供商：`openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`google-gemini-cli`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
+支持的提供商：`openrouter`、`nous`、`openai-codex`、`copilot`、`copilot-acp`、`anthropic`、`gemini`、`qwen-oauth`、`huggingface`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`deepseek`、`nvidia`、`xai`、`xai-oauth`、`ollama-cloud`、`bedrock`、`azure-foundry`、`opencode-zen`、`opencode-go`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`stepfun`、`lmstudio`、`alibaba`、`alibaba-coding-plan`、`tencent-tokenhub`、`custom`。
 
 :::tip
 故障转移仅通过 `config.yaml` 配置——或通过 `hermes fallback` 交互式配置。有关触发时机、链推进方式以及与辅助任务和委托的交互，参见[故障转移提供商](/user-guide/features/fallback-providers)。

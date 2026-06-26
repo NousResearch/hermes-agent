@@ -549,14 +549,32 @@ def classify_api_error(
             should_fallback=True,
         )
 
-    # Anthropic thinking block signature invalid (400).
+    # Anthropic thinking block recovery (400).  Two distinct failure modes,
+    # same recovery (strip all reasoning_details and retry without thinking
+    # blocks — see the thinking_signature handler in conversation_loop.py):
+    #   1. Signature mismatch: a thinking block is signed against the full
+    #      turn content; any upstream mutation (context compression, session
+    #      truncation, message merging) invalidates the signature.
+    #      Pattern: "signature" + "thinking".
+    #   2. Frozen-block mutation: Anthropic rejects any change to the
+    #      thinking/redacted_thinking blocks in the *latest* assistant
+    #      message — "`thinking` or `redacted_thinking` blocks in the latest
+    #      assistant message cannot be modified. These blocks must remain as
+    #      they were in the original response."  This carries no "signature"
+    #      token, so the original pattern missed it and the turn hard-aborted
+    #      as a non-retryable client error instead of self-healing.
+    #      Pattern: "thinking" + ("cannot be modified" | "must remain as they were").
     # Don't gate on provider — OpenRouter proxies Anthropic errors, so the
     # provider may be "openrouter" even though the error is Anthropic-specific.
-    # The message pattern ("signature" + "thinking") is unique enough.
+    # The combined patterns are unique enough.
     if (
         status_code == 400
-        and "signature" in error_msg
         and "thinking" in error_msg
+        and (
+            "signature" in error_msg
+            or "cannot be modified" in error_msg
+            or "must remain as they were" in error_msg
+        )
     ):
         return _result(
             FailoverReason.thinking_signature,
@@ -699,6 +717,26 @@ def classify_api_error(
 
     is_disconnect = any(p in error_msg for p in _SERVER_DISCONNECT_PATTERNS)
     if is_disconnect and not status_code:
+        # Reasoning-model override: a transport disconnect on a reasoning
+        # model is much more likely the upstream proxy idle-killing a
+        # long thinking stream than a true context overflow — even on
+        # large sessions.  The default disconnect+large-session routing
+        # below would otherwise send the user into the compression
+        # branch (should_compress=True) and silently delete
+        # conversation history on a phantom context-length error.
+        # Reasoning models have multi-minute thinking phases that
+        # routinely exceed the cloud gateway's idle window (NVIDIA
+        # NIM ~120s — first-party repro at NVIDIA/NemoClaw#4846;
+        # OpenAI worker / Anthropic stream-idle similar).  The
+        # per-reasoning-model stale-timeout floor in
+        # agent/reasoning_timeouts.py raises the stale-detector
+        # threshold to tolerate long thinking, so a true
+        # transport-layer failure here is recoverable via the retry
+        # path — not via context compression.  Reclassify as timeout.
+        # (Part 1 of Fixes #52310.)
+        from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+        if get_reasoning_stale_timeout_floor(model) is not None:
+            return _result(FailoverReason.timeout, retryable=True)
         # Absolute token/message-count thresholds are only a proxy for smaller
         # context windows.  Large-context sessions can have hundreds of
         # messages while still being far below their actual token budget.
@@ -964,6 +1002,34 @@ def _classify_400(
             FailoverReason.invalid_encrypted_content,
             retryable=True,
             should_fallback=False,
+        )
+
+    # Request-validation errors (unsupported / unknown parameter) MUST be
+    # checked BEFORE context_overflow.  A GPT-5 model rejecting max_tokens
+    # returns:
+    #   "Unsupported parameter: 'max_tokens' is not supported with this model.
+    #    Use 'max_completion_tokens' instead."
+    # That string contains the literal substring "max_tokens", which is one of
+    # the _CONTEXT_OVERFLOW_PATTERNS — so without this guard the 400 is
+    # misclassified as context_overflow, routed into the compression loop,
+    # re-sent with the same bad parameter, and ends in "Cannot compress
+    # further".  These errors are deterministic (every retry gets the identical
+    # rejection), so classify as a non-retryable format_error and fall back.
+    #
+    # NOTE: we deliberately do NOT key off the generic ``invalid_request_error``
+    # code here — OpenAI stamps that same code on genuine context-overflow 400s,
+    # so matching it would mis-route real overflows away from compression. The
+    # unambiguous signals are the explicit "unsupported/unknown parameter"
+    # message text and the specific parameter-level error codes.
+    if (
+        any(p in error_msg for p in _REQUEST_VALIDATION_PATTERNS
+            if p != "invalid_request_error")
+        or error_code_lower in {"unknown_parameter", "unsupported_parameter"}
+    ):
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
         )
 
     # Context overflow from 400

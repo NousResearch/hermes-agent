@@ -100,6 +100,109 @@ def test_whatsapp_lid_user_matches_phone_allowlist_via_session_mapping(monkeypat
     assert runner._is_user_authorized(source) is True
 
 
+def test_simplex_allowlist_accepts_display_name(monkeypatch):
+    """SIMPLEX_ALLOWED_USERS should match the contact's display name as well
+    as the numeric contactId. The SimpleX UI surfaces only display names, so
+    operators naturally put those in the env var — and the adapter sets
+    user_id=contactId for stability. Both forms must work. (#TBD)"""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("SIMPLEX_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "hujikuji")
+
+    # Register the simplex plugin so the env-var lookup resolves.
+    from gateway.platform_registry import platform_registry, PlatformEntry
+    platform_registry.register(PlatformEntry(
+        name="simplex",
+        label="SimpleX Chat",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="SIMPLEX_ALLOWED_USERS",
+        allow_all_env="SIMPLEX_ALLOW_ALL_USERS",
+    ))
+
+    simplex = Platform("simplex")
+    runner, _adapter = _make_runner(
+        simplex,
+        GatewayConfig(platforms={simplex: PlatformConfig(enabled=True)}),
+    )
+
+    # contactId in the allowlist would still work — but the operator chose
+    # the display name. Verify the gateway honors it.
+    source = SessionSource(
+        platform=simplex,
+        user_id="4",            # adapter sets this to the numeric contactId
+        chat_id="hujikuji",
+        user_name="hujikuji",   # adapter sets this to displayName
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is True
+
+
+def test_simplex_allowlist_accepts_numeric_contact_id(monkeypatch):
+    """The numeric contactId form must still work — the new display-name
+    matching must not regress existing setups."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("SIMPLEX_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "4")
+
+    from gateway.platform_registry import platform_registry, PlatformEntry
+    platform_registry.register(PlatformEntry(
+        name="simplex",
+        label="SimpleX Chat",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="SIMPLEX_ALLOWED_USERS",
+        allow_all_env="SIMPLEX_ALLOW_ALL_USERS",
+    ))
+
+    simplex = Platform("simplex")
+    runner, _adapter = _make_runner(
+        simplex,
+        GatewayConfig(platforms={simplex: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=simplex,
+        user_id="4",
+        chat_id="hujikuji",
+        user_name="hujikuji",
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is True
+
+
+def test_simplex_allowlist_denies_unlisted(monkeypatch):
+    """Sanity check: an unrelated SimpleX user is still rejected."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("SIMPLEX_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "hujikuji")
+
+    from gateway.platform_registry import platform_registry, PlatformEntry
+    platform_registry.register(PlatformEntry(
+        name="simplex",
+        label="SimpleX Chat",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="SIMPLEX_ALLOWED_USERS",
+        allow_all_env="SIMPLEX_ALLOW_ALL_USERS",
+    ))
+
+    simplex = Platform("simplex")
+    runner, _adapter = _make_runner(
+        simplex,
+        GatewayConfig(platforms={simplex: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=simplex,
+        user_id="7",
+        chat_id="stranger",
+        user_name="stranger",
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is False
+
+
 def test_star_wildcard_in_allowlist_authorizes_any_user(monkeypatch):
     """WHATSAPP_ALLOWED_USERS=* should act as allow-all wildcard."""
     _clear_auth_env(monkeypatch)
@@ -698,6 +801,55 @@ async def test_no_allowlist_still_pairs_by_default(monkeypatch):
     assert "PAIR1234" in adapter.send.await_args.args[1]
 
 
+@pytest.mark.asyncio
+async def test_email_no_allowlist_ignores_unknown_senders_by_default(monkeypatch):
+    """Email should not send pairing codes to arbitrary unread inbox senders."""
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={Platform.EMAIL: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.EMAIL, config)
+    runner.pairing_store.generate_code.return_value = "EMAIL123"
+
+    result = await runner._handle_message(
+        _make_event(Platform.EMAIL, "stranger@example.com", "stranger@example.com")
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_email_pairing_requires_explicit_platform_opt_in(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={
+            Platform.EMAIL: PlatformConfig(
+                enabled=True,
+                extra={"unauthorized_dm_behavior": "pair"},
+            ),
+        },
+    )
+    runner, adapter = _make_runner(Platform.EMAIL, config)
+    runner.pairing_store.generate_code.return_value = "EMAIL123"
+
+    result = await runner._handle_message(
+        _make_event(Platform.EMAIL, "stranger@example.com", "stranger@example.com")
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_called_once_with(
+        "email",
+        "stranger@example.com",
+        "tester",
+    )
+    adapter.send.assert_awaited_once()
+    assert "EMAIL123" in adapter.send.await_args.args[1]
+
+
 def test_explicit_pair_config_overrides_allowlist_default(monkeypatch):
     """Explicit unauthorized_dm_behavior='pair' overrides the allowlist default.
 
@@ -753,6 +905,18 @@ def test_get_unauthorized_dm_behavior_no_allowlist_returns_pair(monkeypatch):
 
     behavior = runner._get_unauthorized_dm_behavior(Platform.SIGNAL)
     assert behavior == "pair"
+
+
+def test_get_unauthorized_dm_behavior_email_no_allowlist_returns_ignore(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={Platform.EMAIL: PlatformConfig(enabled=True)},
+    )
+    runner, _adapter = _make_runner(Platform.EMAIL, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.EMAIL)
+    assert behavior == "ignore"
 
 
 def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):

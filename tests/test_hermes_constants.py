@@ -16,6 +16,7 @@ from hermes_constants import (
     get_hermes_home,
     iter_hermes_node_dirs,
     is_container,
+    node_tool_runnable,
     parse_reasoning_effort,
     secure_parent_dir,
     with_hermes_node_path,
@@ -131,6 +132,7 @@ class TestHermesManagedNode:
         npm_cmd.write_text("@echo off\n")
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
         monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(hermes_constants, "node_tool_runnable", lambda path: True)
 
         assert find_hermes_node_executable("npm") == str(npm_cmd)
 
@@ -163,6 +165,26 @@ class TestHermesManagedNode:
 
         assert find_node_executable("npm") == str(npm_cmd)
 
+    def test_windows_skips_broken_managed_npm_for_path_fallback(self, tmp_path, monkeypatch):
+        home = tmp_path / "hermes"
+        managed_npm = home / "node" / "npm.cmd"
+        managed_npm.parent.mkdir(parents=True)
+        managed_npm.write_text("@echo off\n")
+        bin_dir = tmp_path / "nodejs"
+        bin_dir.mkdir()
+        path_npm = bin_dir / "npm.cmd"
+        path_npm.write_text("@echo off\n")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PATH", str(bin_dir))
+        monkeypatch.setattr(
+            hermes_constants,
+            "node_tool_runnable",
+            lambda path: path == str(path_npm),
+        )
+
+        assert find_node_executable("npm") == str(path_npm)
+
     def test_with_hermes_node_path_prepends_existing_managed_dirs(self, tmp_path, monkeypatch):
         home = tmp_path / "hermes"
         node_dir = home / "node"
@@ -177,6 +199,61 @@ class TestHermesManagedNode:
 
         assert parts[:2] == [str(node_dir), str(bin_dir)]
         assert parts[-1] == "system-node"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell stubs; Windows uses .cmd shims")
+class TestNodeToolRunnable:
+    """node_tool_runnable() rejects broken Hermes-managed npm/node wrappers."""
+
+    def _stub(self, tmp_path, name, body, mode=0o755):
+        path = tmp_path / name
+        path.write_text(body)
+        path.chmod(mode)
+        return path
+
+    def test_none_and_empty_rejected(self):
+        assert node_tool_runnable(None) is False
+        assert node_tool_runnable("") is False
+
+    def test_runnable_stub_accepted(self, tmp_path):
+        good = self._stub(tmp_path, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
+        assert node_tool_runnable(str(good)) is True
+
+    def test_nonzero_exit_rejected(self, tmp_path):
+        bad = self._stub(tmp_path, "npm", "#!/bin/sh\nexit 1\n")
+        assert node_tool_runnable(str(bad)) is False
+
+    def test_broken_managed_npm_falls_back_to_system_path(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        broken_npm = self._stub(managed_bin, "npm", "#!/bin/sh\nexit 1\n")
+
+        system_bin = tmp_path / "system-bin"
+        system_bin.mkdir()
+        good_npm = self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", str(system_bin))
+
+        assert find_hermes_node_executable("npm") is None
+        assert find_node_executable("npm") == str(good_npm)
+        assert find_node_executable("npm") != str(broken_npm)
+
+    def test_healthy_managed_npm_still_preferred(self, tmp_path, monkeypatch):
+        profile_home = tmp_path / "profiles" / "assistant"
+        managed_bin = profile_home / "node" / "bin"
+        managed_bin.mkdir(parents=True)
+        managed_npm = self._stub(managed_bin, "npm", "#!/bin/sh\necho '22.0.0'\nexit 0\n")
+
+        system_bin = tmp_path / "system-bin"
+        system_bin.mkdir()
+        self._stub(system_bin, "npm", "#!/bin/sh\necho '11.10.0'\nexit 0\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_home))
+        monkeypatch.setenv("PATH", str(system_bin))
+
+        assert find_node_executable("npm") == str(managed_npm)
 
 
 class TestIsContainer:

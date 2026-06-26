@@ -416,6 +416,32 @@ def test_resolve_runtime_provider_lmstudio_saved_base_url_wins_over_env(monkeypa
     assert resolved["api_key"] == "dummy-lm-api-key"
 
 
+def test_resolve_runtime_provider_lmstudio_normalizes_native_api_saved_base_url(monkeypatch):
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "lmstudio")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "lmstudio",
+            "base_url": "http://192.168.1.10:1234/api/v1",
+            "default": "qwen/qwen3-coder-30b",
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "load_pool",
+        lambda provider: type("Pool", (), {"has_credentials": lambda self: False})(),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="lmstudio")
+
+    assert resolved["provider"] == "lmstudio"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "http://192.168.1.10:1234/v1"
+
+
 def test_resolve_runtime_provider_openrouter_explicit(monkeypatch):
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})

@@ -478,6 +478,16 @@ def _infer_provider_from_url(base_url: str) -> Optional[str]:
     return None
 
 
+def _lmstudio_server_root(base_url: str) -> str:
+    """Return the LM Studio server root for native ``/api/v1`` endpoints."""
+    root = _normalize_base_url(base_url).rstrip("/")
+    for suffix in ("/api/v1", "/api", "/v1"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+            break
+    return root
+
+
 def _is_known_provider_base_url(base_url: str) -> bool:
     return _infer_provider_from_url(base_url) is not None
 
@@ -549,6 +559,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     server_url = normalized
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
+    lmstudio_url = _lmstudio_server_root(base_url)
 
     headers = _auth_headers(api_key)
 
@@ -556,7 +567,7 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
         with httpx.Client(timeout=2.0, headers=headers) as client:
             # LM Studio exposes /api/v1/models — check first (most specific)
             try:
-                r = client.get(f"{server_url}/api/v1/models")
+                r = client.get(f"{lmstudio_url}/api/v1/models")
                 if r.status_code == 200:
                     return "lm-studio"
             except Exception:
@@ -774,7 +785,7 @@ def fetch_endpoint_model_metadata(
     if is_local_endpoint(normalized):
         try:
             if detect_local_server_type(normalized, api_key=api_key) == "lm-studio":
-                server_url = normalized[:-3].rstrip("/") if normalized.endswith("/v1") else normalized
+                server_url = _lmstudio_server_root(normalized)
                 response = requests.get(
                     server_url.rstrip("/") + "/api/v1/models",
                     headers=headers,
@@ -1297,6 +1308,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
     server_url = base_url.rstrip("/")
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
+    lmstudio_url = _lmstudio_server_root(base_url)
 
     headers = _auth_headers(api_key)
 
@@ -1340,7 +1352,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
             # Use _model_id_matches for fuzzy matching: LM Studio stores models as
             # "publisher/slug" but users configure only "slug" after "local:" prefix.
             if server_type == "lm-studio":
-                resp = client.get(f"{server_url}/api/v1/models")
+                resp = client.get(f"{lmstudio_url}/api/v1/models")
                 if resp.status_code == 200:
                     data = resp.json()
                     for m in data.get("models", []):

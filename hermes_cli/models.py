@@ -2902,13 +2902,19 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
 
 
 def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
-    """Strip ``/v1`` suffix from an LM Studio base URL to get the native API root.
+    """Return the LM Studio server root for native ``/api/v1`` endpoints.
 
+    Users commonly copy either the OpenAI-compatible runtime URL
+    (``.../v1``) or the native API prefix (``.../api`` / ``.../api/v1``).
+    Native probes append ``/api/v1/...`` themselves, so normalize all accepted
+    forms back to the bare server root to avoid ``/api/api/v1`` requests.
     Returns ``None`` when the base URL is empty/invalid.
     """
     root = (base_url or "").strip().rstrip("/")
-    if root.endswith("/v1"):
-        root = root[:-3].rstrip("/")
+    for suffix in ("/api/v1", "/api", "/v1"):
+        if root.endswith(suffix):
+            root = root[: -len(suffix)].rstrip("/")
+            break
     return root or None
 
 

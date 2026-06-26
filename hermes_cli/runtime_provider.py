@@ -463,6 +463,9 @@ def _resolve_runtime_from_pool_entry(
         provider=provider, api_mode=api_mode, model_cfg=model_cfg
     )
 
+    if provider == "lmstudio":
+        base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
+
     return {
         "provider": provider,
         "api_mode": api_mode,
@@ -1914,6 +1917,8 @@ def resolve_runtime_provider(
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
             base_url = re.sub(r"/v1/?$", "", base_url)
+        if provider == "lmstudio":
+            base_url = auth_mod._normalize_lmstudio_runtime_base_url(base_url)
         return {
             "provider": provider,
             "api_mode": api_mode,

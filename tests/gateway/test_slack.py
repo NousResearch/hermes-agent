@@ -20,6 +20,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
+    SUPPORTED_VIDEO_TYPES,
     is_host_excluded_by_no_proxy,
 )
 
@@ -63,11 +64,11 @@ def _ensure_slack_mock():
 _ensure_slack_mock()
 
 # Patch SLACK_AVAILABLE before importing the adapter
-import gateway.platforms.slack as _slack_mod
+import plugins.platforms.slack.adapter as _slack_mod
 
 _slack_mod.SLACK_AVAILABLE = True
 
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
+from plugins.platforms.slack.adapter import SlackAdapter  # noqa: E402
 
 
 async def _pending_for_fake_task():
@@ -119,6 +120,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     """Point document cache to tmp_path so tests don't touch ~/.hermes."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
 
 
@@ -234,6 +238,8 @@ class TestAppMentionHandler:
 
         assert "message" in registered_events
         assert "app_mention" in registered_events
+        assert "reaction_added" in registered_events
+        assert "reaction_removed" in registered_events
         assert "assistant_thread_started" in registered_events
         assert "assistant_thread_context_changed" in registered_events
         # Slack slash commands are registered via a single regex matcher
@@ -1442,6 +1448,84 @@ class TestIncomingDocumentHandling:
         assert msg_event.message_type == MessageType.PHOTO
 
     @pytest.mark.asyncio
+    async def test_video_attachment_cached(self, adapter):
+        """Video attachments should be downloaded into the video cache."""
+        video_bytes = b"\x00\x00\x00\x18ftypmp42fake-mp4"
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = video_bytes
+            event = self._make_event(
+                text="what happens in this?",
+                files=[
+                    {
+                        "mimetype": "video/mp4",
+                        "name": "clip.mp4",
+                        "url_private_download": "https://files.slack.com/clip.mp4",
+                        "size": len(video_bytes),
+                    }
+                ],
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.VIDEO
+        assert len(msg_event.media_urls) == 1
+        assert os.path.exists(msg_event.media_urls[0])
+        assert msg_event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+        dl.assert_awaited_once_with("https://files.slack.com/clip.mp4", team_id="")
+
+    @pytest.mark.asyncio
+    async def test_file_shared_video_fallback_fetches_file_info(self, adapter):
+        """file_shared-only video events should still reach the agent."""
+        video_bytes = b"\x00\x00\x00\x18ftypmp42fake-mp4"
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": "FVIDEO",
+                    "mimetype": "video/mp4",
+                    "name": "clip.mp4",
+                    "url_private_download": "https://files.slack.com/clip.mp4",
+                    "size": len(video_bytes),
+                    "user": "U_USER",
+                    "shares": {
+                        "private": {
+                            "D123": [
+                                {"ts": "1234567890.000001"},
+                            ]
+                        }
+                    },
+                },
+            }
+        )
+
+        with (
+            patch.object(
+                adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+            ) as dl,
+            patch("asyncio.sleep", new_callable=AsyncMock),
+        ):
+            dl.return_value = video_bytes
+            await adapter._handle_slack_file_shared(
+                {
+                    "type": "file_shared",
+                    "channel_id": "D123",
+                    "file_id": "FVIDEO",
+                    "user_id": "U_USER",
+                    "event_ts": "1234567890.000002",
+                }
+            )
+
+        adapter._app.client.files_info.assert_awaited_once_with(file="FVIDEO")
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.VIDEO
+        assert len(msg_event.media_urls) == 1
+        assert os.path.exists(msg_event.media_urls[0])
+        assert msg_event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    @pytest.mark.asyncio
     async def test_download_failure_is_surfaced_in_message_text(self, adapter):
         """Attachment download failures (401/403/HTML-body/etc.) should be
         translated into a user-facing `[Slack attachment notice]` block so
@@ -1668,6 +1752,193 @@ class TestIncomingDocumentHandling:
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.message_type == MessageType.TEXT
         assert "> /deploy now" in msg_event.text
+
+
+# ---------------------------------------------------------------------------
+# TestIncomingAudioHandling — Slack voice messages (regression)
+# ---------------------------------------------------------------------------
+
+
+class TestSlackAudioExtResolution:
+    """Unit coverage for the inbound-audio extension resolver.
+
+    Regression for: Slack in-app voice messages are MP4/AAC containers
+    (``audio/mp4``, filename ``audio_message*.mp4``) that the old code cached
+    as ``.ogg`` (the catch-all fallback), so OpenAI STT — which sniffs the
+    container from the filename extension — rejected them. WhatsApp ``.ogg``
+    and uploaded ``.m4a`` worked because their extension happened to match.
+    """
+
+    def test_slack_voice_message_mp4_keeps_real_extension(self):
+        """The core bug: audio/mp4 voice message must NOT become .ogg."""
+        f = {"name": "audio_message.mp4", "mimetype": "audio/mp4"}
+        ext = _slack_mod._resolve_slack_audio_ext(f, f["mimetype"])
+        assert ext != ".ogg", "regression: MP4 voice message mislabeled as .ogg"
+        assert ext in {".mp4", ".m4a"}
+        assert ext in _slack_mod._SLACK_STT_SUPPORTED_EXTS
+
+    def test_whatsapp_ogg_preserved(self):
+        f = {"name": "voice.ogg", "mimetype": "audio/ogg"}
+        assert _slack_mod._resolve_slack_audio_ext(f, f["mimetype"]) == ".ogg"
+
+    def test_m4a_upload_preserved(self):
+        f = {"name": "clip.m4a", "mimetype": "audio/x-m4a"}
+        assert _slack_mod._resolve_slack_audio_ext(f, f["mimetype"]) == ".m4a"
+
+    def test_mp3_upload_preserved(self):
+        f = {"name": "song.mp3", "mimetype": "audio/mpeg"}
+        assert _slack_mod._resolve_slack_audio_ext(f, f["mimetype"]) == ".mp3"
+
+    def test_mimetype_used_when_filename_extension_missing(self):
+        """No usable filename ext → fall back to the mime map, not .ogg."""
+        f = {"name": "", "mimetype": "audio/mp4"}
+        assert _slack_mod._resolve_slack_audio_ext(f, f["mimetype"]) == ".m4a"
+
+    def test_unknown_audio_defaults_to_m4a_not_ogg(self):
+        """A truly unknown audio type defaults to the broadly-decodable .m4a."""
+        f = {"name": "weird", "mimetype": "audio/x-some-future-codec"}
+        ext = _slack_mod._resolve_slack_audio_ext(f, f["mimetype"])
+        assert ext == ".m4a"
+        assert ext != ".ogg"
+
+
+class TestSlackVoiceClipDetection:
+    """Unit coverage for the video/mp4-mislabeled voice-clip detector."""
+
+    def test_audio_message_filename_detected(self):
+        assert _slack_mod._is_slack_voice_clip(
+            {"name": "audio_message.mp4", "mimetype": "video/mp4"}
+        )
+
+    def test_slack_audio_subtype_detected(self):
+        assert _slack_mod._is_slack_voice_clip(
+            {"name": "clip.mp4", "subtype": "slack_audio", "mimetype": "video/mp4"}
+        )
+
+    def test_real_video_not_detected(self):
+        """A genuine uploaded video must NOT be hijacked into the audio path."""
+        assert not _slack_mod._is_slack_voice_clip(
+            {"name": "vacation.mp4", "mimetype": "video/mp4"}
+        )
+
+    def test_slack_video_clip_not_detected(self):
+        """slack_video clips carry a real video track — leave them as video."""
+        assert not _slack_mod._is_slack_voice_clip(
+            {"name": "screen_recording.mp4", "subtype": "slack_video"}
+        )
+
+
+class TestIncomingAudioHandling:
+    def _make_event(self, files=None, text="hello"):
+        return {
+            "text": text,
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1234567890.000001",
+            "files": files or [],
+            "blocks": [],
+            "attachments": [],
+        }
+
+    @pytest.mark.asyncio
+    async def test_voice_message_cached_with_correct_extension(self, adapter, tmp_path):
+        """audio/mp4 voice message is cached with an STT-acceptable extension,
+        not the old .ogg fallback, and routed as audio."""
+        captured = {}
+
+        async def _fake_download(url, ext, audio=False, team_id=""):
+            captured["ext"] = ext
+            captured["audio"] = audio
+            path = tmp_path / f"cached{ext}"
+            path.write_bytes(b"\x00\x00\x00\x18ftypmp42fake mp4 bytes")
+            return str(path)
+
+        with patch.object(adapter, "_download_slack_file", side_effect=_fake_download):
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "audio/mp4",
+                        "name": "audio_message.mp4",
+                        "subtype": "slack_audio",
+                        "url_private_download": "https://files.slack.com/audio_message.mp4",
+                        "size": 2048,
+                    }
+                ]
+            )
+            await adapter._handle_slack_message(event)
+
+        assert captured.get("audio") is True
+        assert captured["ext"] != ".ogg", "regression: voice message cached as .ogg"
+        assert captured["ext"] in {".mp4", ".m4a"}
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert len(msg_event.media_urls) == 1
+        # media_type stays audio/* so the gateway routes it to STT
+        assert msg_event.media_types[0].startswith("audio/")
+
+    @pytest.mark.asyncio
+    async def test_video_mp4_voice_clip_rerouted_to_audio(self, adapter, tmp_path):
+        """A voice clip mislabeled video/mp4 is rerouted to the audio path
+        (cached as audio, reported as audio/*) instead of video understanding."""
+        captured = {}
+
+        async def _fake_download(url, ext, audio=False, team_id=""):
+            captured["ext"] = ext
+            captured["audio"] = audio
+            path = tmp_path / f"cached{ext}"
+            path.write_bytes(b"\x00\x00\x00\x18ftypmp42fake mp4 bytes")
+            return str(path)
+
+        with patch.object(adapter, "_download_slack_file", side_effect=_fake_download):
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "video/mp4",
+                        "name": "audio_message.mp4",
+                        "subtype": "slack_audio",
+                        "url_private_download": "https://files.slack.com/audio_message.mp4",
+                        "size": 2048,
+                    }
+                ]
+            )
+            await adapter._handle_slack_message(event)
+
+        assert captured.get("audio") is True
+        assert captured["ext"] in {".mp4", ".m4a"}
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert len(msg_event.media_urls) == 1
+        assert msg_event.media_types[0].startswith("audio/"), (
+            "voice clip should route to STT, not video understanding"
+        )
+
+    @pytest.mark.asyncio
+    async def test_real_video_still_routed_as_video(self, adapter, tmp_path):
+        """A genuine uploaded video must remain on the video path."""
+
+        async def _fake_download_bytes(url, team_id=""):
+            return b"\x00\x00\x00\x18ftypisomfake real video"
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", side_effect=_fake_download_bytes
+        ):
+            event = self._make_event(
+                files=[
+                    {
+                        "mimetype": "video/mp4",
+                        "name": "vacation.mp4",
+                        "url_private_download": "https://files.slack.com/vacation.mp4",
+                        "size": 4096,
+                    }
+                ]
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert len(msg_event.media_urls) == 1
+        assert msg_event.media_types[0].startswith("video/"), (
+            "a real video must not be hijacked into the audio path"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -3543,7 +3814,7 @@ class TestSlashEphemeralAck:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch(
-            "gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session
+            "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
         ):
             result = await adapter.send("C_SLASH", "Queued for the next turn.")
 
@@ -3593,7 +3864,7 @@ class TestSlashEphemeralAck:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch(
-            "gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session
+            "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
         ):
             result = await adapter.send("C1", "Some response")
 
@@ -3616,7 +3887,7 @@ class TestSlashEphemeralAck:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch(
-            "gateway.platforms.slack.aiohttp.ClientSession", return_value=mock_session
+            "plugins.platforms.slack.adapter.aiohttp.ClientSession", return_value=mock_session
         ):
             result = await adapter.send("C1", "Some response")
 
@@ -3682,7 +3953,7 @@ class TestSlashEphemeralAck:
     async def test_concurrent_users_same_channel_isolates_contexts(self, adapter):
         """Two users slash on the same channel — each gets their own context."""
         import time
-        from gateway.platforms.slack import _slash_user_id
+        from plugins.platforms.slack.adapter import _slash_user_id
 
         # Simulate two users stashing contexts on the same channel.
         adapter._slash_command_contexts[("C_SHARED", "U_ALICE")] = {
@@ -3722,7 +3993,7 @@ class TestSlashEphemeralAck:
     async def test_no_contextvar_does_not_match_any_context(self, adapter):
         """send() without ContextVar (non-slash path) must not steal contexts."""
         import time
-        from gateway.platforms.slack import _slash_user_id
+        from plugins.platforms.slack.adapter import _slash_user_id
 
         adapter._slash_command_contexts[("C1", "U1")] = {
             "response_url": "https://hooks.slack.com/test",

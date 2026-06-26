@@ -98,6 +98,14 @@ class TestSchema:
         desc = SESSION_SEARCH_SCHEMA["description"].lower()
         assert "no llm" in desc
 
+    def test_schema_description_enforces_source_first_limit(self):
+        desc = SESSION_SEARCH_SCHEMA["description"].lower()
+        assert "source-first limit" in desc
+        assert "conversation history only" in desc
+        assert "direct source" in desc
+        assert "session_search as secondary" in desc
+        assert "not found" in desc
+
 
 class TestHiddenSources:
     def test_tool_source_hidden(self):
@@ -177,6 +185,48 @@ class TestDiscoveryShape:
     def test_no_results_returns_empty_list(self, db):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(query="zzz_no_such_term_zzz", db=db))
+        assert result["success"] is True
+        assert result["results"] == []
+        assert result["count"] == 0
+
+    def test_query_can_match_session_title_without_message_hit(self, db):
+        db.create_session("s_fingerprint", source="cli")
+        db.set_session_title("s_fingerprint", "fingerprint-login")
+        db.append_message("s_fingerprint", role="user", content="Let's configure PAM for biometric auth")
+        db.append_message("s_fingerprint", role="assistant", content="Checking Linux auth settings.")
+
+        result = json.loads(session_search(query="fingerprint-login", db=db))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        hit = result["results"][0]
+        assert hit["session_id"] == "s_fingerprint"
+        assert hit["title"] == "fingerprint-login"
+        assert hit["matched_role"] == "session_title"
+        assert "Session title matched" in hit["snippet"]
+
+    def test_title_query_strips_common_model_quoting(self, db):
+        db.create_session("s_fingerprint", source="cli")
+        db.set_session_title("s_fingerprint", "fingerprint-login")
+        db.append_message("s_fingerprint", role="user", content="PAM auth setup")
+
+        result = json.loads(session_search(query="`fingerprint-login`", db=db))
+
+        assert result["success"] is True
+        assert result["results"][0]["session_id"] == "s_fingerprint"
+        assert result["results"][0]["matched_role"] == "session_title"
+
+    def test_title_match_respects_current_session_filter(self, db):
+        db.create_session("s_current", source="cli")
+        db.set_session_title("s_current", "fingerprint-login")
+        db.append_message("s_current", role="user", content="PAM auth setup")
+
+        result = json.loads(session_search(
+            query="fingerprint-login",
+            current_session_id="s_current",
+            db=db,
+        ))
+
         assert result["success"] is True
         assert result["results"] == []
         assert result["count"] == 0

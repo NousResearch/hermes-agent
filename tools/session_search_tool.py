@@ -34,9 +34,10 @@ import logging
 from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
-# Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool
-# so they don't clutter the user's session history.
-_HIDDEN_SESSION_SOURCES = ("tool",)
+# Third-party integrations tag their sessions with HERMES_SESSION_SOURCE=tool;
+# delegate subagent runs are tagged "subagent" — neither belongs in the
+# user's session history.
+_HIDDEN_SESSION_SOURCES = ("subagent", "tool")
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -390,6 +391,78 @@ def _scroll(
     return json.dumps(response, ensure_ascii=False)
 
 
+def _normalize_title_query(query: str) -> str:
+    """Strip common quoting the model may include around a remembered title."""
+    return query.strip().strip("`'\"")
+
+
+def _title_match_result(
+    db,
+    query: str,
+    current_lineage_root: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Return a discovery-shaped result when the query matches a session title."""
+    title_query = _normalize_title_query(query)
+    if not title_query:
+        return None
+
+    try:
+        session_id = db.resolve_session_by_title(title_query)
+    except Exception:
+        logging.debug("resolve_session_by_title failed for %r", title_query, exc_info=True)
+        return None
+    if not session_id:
+        return None
+
+    lineage_root = _resolve_to_parent(db, session_id)
+    if current_lineage_root and lineage_root == current_lineage_root:
+        return None
+
+    try:
+        session_meta = db.get_session(lineage_root) or db.get_session(session_id) or {}
+    except Exception:
+        logging.debug("get_session failed for title match %s", session_id, exc_info=True)
+        session_meta = {}
+    if session_meta.get("source") in _HIDDEN_SESSION_SOURCES:
+        return None
+
+    try:
+        messages = db.get_messages(session_id)
+    except Exception:
+        logging.debug("get_messages failed for title match %s", session_id, exc_info=True)
+        messages = []
+
+    anchor_id = messages[0].get("id") if messages else None
+    if anchor_id is not None:
+        try:
+            view = db.get_anchored_view(session_id, anchor_id, window=5, bookend=3)
+        except Exception:
+            logging.debug("get_anchored_view failed for title match %s/%s", session_id, anchor_id, exc_info=True)
+            view = {}
+    else:
+        view = {}
+
+    entry = {
+        "session_id": session_id,
+        "when": _format_timestamp(session_meta.get("started_at")),
+        "source": session_meta.get("source", "unknown"),
+        "model": session_meta.get("model") or "unknown",
+        "title": session_meta.get("title") or title_query,
+        "matched_role": "session_title",
+        "match_message_id": anchor_id,
+        "snippet": f"Session title matched: {session_meta.get('title') or title_query}",
+        "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or messages[:3])],
+        "messages": [_shape_message(m, anchor_id=anchor_id) for m in (view.get("window") or messages[:5])],
+        "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or messages[-3:])],
+        "messages_before": view.get("messages_before", 0),
+        "messages_after": view.get("messages_after", max(len(messages) - 5, 0)),
+        "_lineage_root": lineage_root,
+    }
+    if lineage_root and lineage_root != session_id:
+        entry["parent_session_id"] = lineage_root
+    return entry
+
+
 def _discover(
     db,
     query: str,
@@ -400,6 +473,8 @@ def _discover(
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
+    current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+    title_result = _title_match_result(db, query, current_lineage_root)
 
     try:
         raw_results = db.search_messages(
@@ -414,7 +489,7 @@ def _discover(
         logging.error("FTS5 search failed: %s", e, exc_info=True)
         return tool_error(f"Search failed: {e}", success=False)
 
-    if not raw_results:
+    if not raw_results and not title_result:
         return json.dumps({
             "success": True,
             "mode": "discover",
@@ -424,13 +499,21 @@ def _discover(
             "message": "No matching sessions found.",
         }, ensure_ascii=False)
 
-    current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
-
     # Dedupe by lineage. Keep the raw owning session_id on the surviving
     # row — only that pairs validly with the FTS5 match id for the anchored
     # window. parent_session_id is exposed separately when different.
     seen_sessions = {}
+    results = []
+
+    if title_result:
+        title_lineage = title_result.pop("_lineage_root", None)
+        if title_lineage:
+            seen_sessions[title_lineage] = {"_title_only": True}
+        results.append(title_result)
+
     for r in raw_results:
+        if len(seen_sessions) >= limit:
+            break
         raw_sid = r["session_id"]
         resolved_sid = _resolve_to_parent(db, raw_sid)
         # Skip the current session lineage
@@ -445,8 +528,9 @@ def _discover(
         if len(seen_sessions) >= limit:
             break
 
-    results = []
     for lineage_root, match_info in seen_sessions.items():
+        if match_info.get("_title_only"):
+            continue
         hit_sid = match_info.get("session_id") or lineage_root
         msg_id = match_info.get("id")
         try:
@@ -630,6 +714,17 @@ SESSION_SEARCH_SCHEMA = {
         "Search past sessions stored in the local session DB, or scroll inside one. "
         "FTS5-backed retrieval over the SQLite message store. No LLM calls — every "
         "shape returns actual messages from the DB.\n\n"
+        "SOURCE-FIRST LIMIT\n\n"
+        "  This tool searches Hermes conversation history only. It is not evidence "
+        "about the current contents of external sources. If the user provided a "
+        "direct source such as a URL, phone number/contact, app/thread, file path, "
+        "account, website, or live system, inspect that original source before or "
+        "instead of session_search when accessible. Use session_search as secondary "
+        "context for what was previously said, not as primary proof of what the "
+        "source currently contains. If the original source is inaccessible, say so "
+        "and why before falling back to session history. Do not conclude 'not found' "
+        "or 'no prior correspondence' from session_search alone when a direct source "
+        "was provided.\n\n"
         "FOUR CALLING SHAPES\n\n"
         "  1) DISCOVERY — pass `query`:\n"
         "     session_search(query=\"auth refactor\", limit=3)\n"
@@ -672,10 +767,12 @@ SESSION_SEARCH_SCHEMA = {
         "(`\"docker networking\"`), boolean (`python NOT java`), or prefix wildcards "
         "(`deploy*`).\n\n"
         "WHEN TO USE\n\n"
-        "  Reach for this on any \"what did we do about X\" / \"where did we leave Y\" / "
-        "\"find the session where Z\" question — before gh, web search, or filesystem "
-        "inspection. The session DB carries what was said when; external tools show "
-        "current world state."
+        "  Reach for this on questions about Hermes conversation history itself, such "
+        "as \"what did we do about X\", \"where did we leave Y\", or \"find the "
+        "session where Z\". If the user provided a direct source identifier, inspect "
+        "that source first when accessible; session_search can then supply historical "
+        "context. The session DB carries what was said when; external tools show "
+        "current source/world state."
     ),
     "parameters": {
         "type": "object",

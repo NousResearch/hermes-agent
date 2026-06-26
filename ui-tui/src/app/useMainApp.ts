@@ -173,6 +173,7 @@ export function useMainApp(gw: GatewayClient) {
   const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
+  const [lastTurnEndedAt, setLastTurnEndedAt] = useState<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
@@ -475,11 +476,14 @@ export function useMainApp(gw: GatewayClient) {
     process.exit(0)
   }, [exit, gw])
 
-  const dieWithCode = useCallback((code: number) => {
-    gw.kill(`app.dieWithCode:${code}`)
-    exit()
-    process.exit(code)
-  }, [exit, gw])
+  const dieWithCode = useCallback(
+    (code: number) => {
+      gw.kill(`app.dieWithCode:${code}`)
+      exit()
+      process.exit(code)
+    },
+    [exit, gw]
+  )
 
   const session = useSessionLifecycle({
     colsRef,
@@ -500,10 +504,14 @@ export function useMainApp(gw: GatewayClient) {
   useEffect(() => {
     if (ui.busy) {
       setTurnStartedAt(prev => prev ?? Date.now())
-    } else {
+    } else if (turnStartedAt != null) {
+      // Only stamp the idle marker when a turn was actually live — busy is
+      // also false on mount and we don't want a phantom "done" timestamp
+      // before the first turn has completed.
+      setLastTurnEndedAt(Date.now())
       setTurnStartedAt(null)
     }
-  }, [ui.busy])
+  }, [ui.busy, turnStartedAt])
 
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, setVoiceRecordKey, sid: ui.sid })
 
@@ -529,8 +537,7 @@ export function useMainApp(gw: GatewayClient) {
             // round-trip is needed.
             const currentSid = getUiState().sid
 
-            const sessionTitle =
-              result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
+            const sessionTitle = result.sessions.find(s => s.current || s.id === currentSid)?.title?.trim() ?? ''
 
             // Only patch when something actually changed. patchUiState always
             // produces a new state object, which notifies every $uiState
@@ -754,7 +761,6 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
-      clearSelection,
       composerActions.setInput,
       gateway,
       panel,
@@ -828,6 +834,7 @@ export function useMainApp(gw: GatewayClient) {
         composer: {
           enqueue: composerActions.enqueue,
           hasSelection,
+          openEditor: composerActions.openEditor,
           paste,
           queueRef: composerRefs.queueRef,
           selection,
@@ -861,6 +868,7 @@ export function useMainApp(gw: GatewayClient) {
       composerActions,
       composerRefs,
       die,
+      dieWithCode,
       gateway,
       hasSelection,
       maybeWarn,
@@ -1049,10 +1057,7 @@ export function useMainApp(gw: GatewayClient) {
       closeLiveSession,
       newPromptSession,
       onModelSelect,
-      session.activateLiveSession,
-      session.guardBusySessionSwitch,
-      session.newLiveSession,
-      session.resumeById
+      session
     ]
   )
 
@@ -1090,6 +1095,7 @@ export function useMainApp(gw: GatewayClient) {
       // essentials and truncates this further on narrow terminals.
       cwdLabel: fmtCwdBranch(cwd, gitBranch, 28),
       goodVibesTick,
+      lastTurnEndedAt: ui.sid ? lastTurnEndedAt : null,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
@@ -1097,12 +1103,17 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
+      voiceLabel: voiceRecording
+        ? '● REC'
+        : voiceProcessing
+          ? '◉ STT'
+          : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
     }),
     [
       cwd,
       gitBranch,
       goodVibesTick,
+      lastTurnEndedAt,
       sessionStartedAt,
       stickyPrompt,
       turnStartedAt,

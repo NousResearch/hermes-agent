@@ -1,192 +1,106 @@
 /**
- * Pure helpers for persisting and restoring the main window's size, position,
- * and maximized state across launches (see window-state.json in userData).
- *
- * Kept dependency-free and side-effect-free so the validation logic — which is
- * the part that actually matters (rejecting garbage, dropping off-screen
- * positions) — can be unit-tested with `node --test` without spinning up
- * Electron. main.cjs supplies the real file I/O and the live `screen` displays.
+ * Pure geometry helpers for window-state.json — restoring the main window's
+ * size, position, and maximized flag across launches. Side-effect-free so the
+ * part that actually matters (rejecting garbage + off-screen bounds) is
+ * unit-testable without booting Electron; main.cjs owns the file I/O and the
+ * live `screen` displays.
  */
 
-// Defaults match the historical hardcoded BrowserWindow size, so a fresh
-// install (no saved state) behaves exactly as before.
+// Defaults mirror the historical hardcoded BrowserWindow size; MIN_* mirror its
+// minWidth/minHeight so a restored size never undershoots what the live window
+// allows. A fresh install (no saved state) is byte-identical to before.
 const DEFAULT_WIDTH = 1220
 const DEFAULT_HEIGHT = 800
-// Mirror the BrowserWindow minWidth/minHeight in main.cjs (400 since the
-// hover-reveal sidebar work allowed much narrower windows) so a persisted
-// size is never clamped above what the live window itself permits.
 const MIN_WIDTH = 400
 const MIN_HEIGHT = 620
 
-// Require this much of the window to overlap a display work area before we
-// trust a saved position — enough that the title bar stays grabbable. Guards
-// against restoring onto a monitor that has since been unplugged.
-const MIN_VISIBLE_PX = 48
+// Keep at least this much of the window over a display work area before we trust
+// a saved position, so the title bar stays grabbable after a monitor unplugs.
+const MIN_VISIBLE = 48
 
-function isFiniteNumber(value) {
-  return typeof value === 'number' && Number.isFinite(value)
-}
+const finite = v => typeof v === 'number' && Number.isFinite(v)
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(v, hi))
 
-/**
- * Parse a raw persisted object into a clean window-state, or null if it is
- * missing/garbage. width/height are required and clamped to the minimums;
- * x/y are optional and only kept when both are present and finite.
- */
+// Parse raw JSON → clean state, or null if garbage. width/height are required
+// and floored; x/y survive only as a finite pair; isMaximized is strict.
 function sanitizeWindowState(raw) {
-  if (!raw || typeof raw !== 'object') {
-    return null
-  }
-
-  if (!isFiniteNumber(raw.width) || !isFiniteNumber(raw.height)) {
-    return null
-  }
+  if (!raw || typeof raw !== 'object' || !finite(raw.width) || !finite(raw.height)) return null
 
   const state = {
     width: Math.max(MIN_WIDTH, Math.round(raw.width)),
     height: Math.max(MIN_HEIGHT, Math.round(raw.height)),
     isMaximized: raw.isMaximized === true
   }
-
-  if (isFiniteNumber(raw.x) && isFiniteNumber(raw.y)) {
+  if (finite(raw.x) && finite(raw.y)) {
     state.x = Math.round(raw.x)
     state.y = Math.round(raw.y)
   }
-
   return state
 }
 
-/**
- * True when `bounds` overlaps at least one display's work area by more than
- * MIN_VISIBLE_PX in both axes. `displays` is Electron's screen.getAllDisplays()
- * shape: an array of objects each with a `workArea` {x, y, width, height}.
- */
-function boundsVisibleOnDisplays(bounds, displays) {
-  if (
-    !bounds ||
-    !isFiniteNumber(bounds.x) ||
-    !isFiniteNumber(bounds.y) ||
-    !isFiniteNumber(bounds.width) ||
-    !isFiniteNumber(bounds.height)
-  ) {
-    return false
-  }
-
-  if (!Array.isArray(displays) || displays.length === 0) {
-    return false
-  }
-
-  return displays.some(display => {
-    const area = display && display.workArea
-    if (!area) {
-      return false
-    }
-
-    const overlapX = Math.min(bounds.x + bounds.width, area.x + area.width) - Math.max(bounds.x, area.x)
-    const overlapY = Math.min(bounds.y + bounds.height, area.y + area.height) - Math.max(bounds.y, area.y)
-
-    return overlapX >= MIN_VISIBLE_PX && overlapY >= MIN_VISIBLE_PX
+// True when `bounds` overlaps some display's work area by ≥ MIN_VISIBLE on both
+// axes. `displays` is Electron's screen.getAllDisplays() shape.
+function onScreen(bounds, displays) {
+  if (!Array.isArray(displays)) return false
+  return displays.some(({ workArea: a } = {}) => {
+    if (!a) return false
+    const x = Math.min(bounds.x + bounds.width, a.x + a.width) - Math.max(bounds.x, a.x)
+    const y = Math.min(bounds.y + bounds.height, a.y + a.height) - Math.max(bounds.y, a.y)
+    return x >= MIN_VISIBLE && y >= MIN_VISIBLE
   })
 }
 
-/**
- * Largest work-area width/height across all displays, or null if none are
- * usable. Used as a cap so a window saved on a since-disconnected larger
- * monitor can't reopen bigger than any screen the user currently has.
- */
-function largestWorkArea(displays) {
-  if (!Array.isArray(displays) || displays.length === 0) {
-    return null
+// Sanitized state (or null) → BrowserWindow size/position options. Always sets
+// width/height, capped to the largest current display so a size saved on a
+// since-disconnected bigger monitor can't exceed any screen the user now has.
+// Sets x/y only when still on-screen; otherwise Electron centers the window.
+function computeWindowOptions(state, displays) {
+  const opts = {
+    width: finite(state?.width) ? state.width : DEFAULT_WIDTH,
+    height: finite(state?.height) ? state.height : DEFAULT_HEIGHT
   }
 
-  let width = 0
-  let height = 0
-  for (const display of displays) {
-    const area = display && display.workArea
-    if (area && isFiniteNumber(area.width) && isFiniteNumber(area.height)) {
-      if (area.width > width) width = area.width
-      if (area.height > height) height = area.height
-    }
-  }
-
-  return width > 0 && height > 0 ? { width, height } : null
-}
-
-/**
- * Turn a sanitized saved state (or null) into BrowserWindow size/position
- * options. Always returns width/height; only returns x/y when the saved
- * position is still visible on a current display, so an off-screen window
- * falls back to Electron's default centering instead of opening out of reach.
- */
-function computeWindowOptions(savedState, displays) {
-  const options = {
-    width: savedState && isFiniteNumber(savedState.width) ? savedState.width : DEFAULT_WIDTH,
-    height: savedState && isFiniteNumber(savedState.height) ? savedState.height : DEFAULT_HEIGHT
-  }
-
-  // Cap to the largest current work area (keeping MIN_* as hard floors) so a
-  // size saved on a bigger, now-disconnected monitor doesn't open larger than
-  // the screen the user actually has. Done before the visibility check so the
-  // position test uses the final dimensions.
-  const cap = largestWorkArea(displays)
-  if (cap) {
-    options.width = Math.max(MIN_WIDTH, Math.min(options.width, cap.width))
-    options.height = Math.max(MIN_HEIGHT, Math.min(options.height, cap.height))
+  const cap = (Array.isArray(displays) ? displays : []).reduce(
+    (m, { workArea: a } = {}) =>
+      a && finite(a.width) && finite(a.height)
+        ? { width: Math.max(m.width, a.width), height: Math.max(m.height, a.height) }
+        : m,
+    { width: 0, height: 0 }
+  )
+  if (cap.width && cap.height) {
+    opts.width = clamp(opts.width, MIN_WIDTH, cap.width)
+    opts.height = clamp(opts.height, MIN_HEIGHT, cap.height)
   }
 
   if (
-    savedState &&
-    isFiniteNumber(savedState.x) &&
-    isFiniteNumber(savedState.y) &&
-    boundsVisibleOnDisplays(
-      { x: savedState.x, y: savedState.y, width: options.width, height: options.height },
-      displays
-    )
+    state &&
+    finite(state.x) &&
+    finite(state.y) &&
+    onScreen({ x: state.x, y: state.y, width: opts.width, height: opts.height }, displays)
   ) {
-    options.x = savedState.x
-    options.y = savedState.y
+    opts.x = state.x
+    opts.y = state.y
   }
-
-  return options
+  return opts
 }
 
-/**
- * Trailing-edge debounce: coalesce a burst of calls into a single invocation
- * `delayMs` after the last one. On Linux, `resized`/`moved` can fire many times
- * mid-drag, so persisting on every event means a synchronous file write per
- * event; debouncing collapses that to one write when the drag settles.
- *
- * The returned function carries `.flush()` (run immediately, cancelling any
- * pending timer — used on `close`, where the write must happen before the
- * window is gone) and `.cancel()` (drop a pending run).
- */
-function createTrailingDebounce(fn, delayMs) {
+// Trailing debounce: collapse a burst of resize/move events (Linux fires many
+// mid-drag) into a single run `delayMs` after the last. `.flush()` runs now and
+// cancels the pending timer — used on close, before the window is gone.
+function debounce(fn, delayMs) {
   let timer = null
-
-  const debounced = (...args) => {
-    if (timer) {
-      clearTimeout(timer)
-    }
+  const debounced = () => {
+    clearTimeout(timer)
     timer = setTimeout(() => {
       timer = null
-      fn(...args)
+      fn()
     }, delayMs)
   }
-
-  debounced.flush = (...args) => {
-    if (timer) {
-      clearTimeout(timer)
-      timer = null
-    }
-    fn(...args)
+  debounced.flush = () => {
+    clearTimeout(timer)
+    timer = null
+    fn()
   }
-
-  debounced.cancel = () => {
-    if (timer) {
-      clearTimeout(timer)
-      timer = null
-    }
-  }
-
   return debounced
 }
 
@@ -195,10 +109,9 @@ module.exports = {
   DEFAULT_HEIGHT,
   MIN_WIDTH,
   MIN_HEIGHT,
-  MIN_VISIBLE_PX,
+  MIN_VISIBLE,
   sanitizeWindowState,
-  boundsVisibleOnDisplays,
-  largestWorkArea,
+  onScreen,
   computeWindowOptions,
-  createTrailingDebounce
+  debounce
 }

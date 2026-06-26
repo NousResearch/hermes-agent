@@ -219,6 +219,14 @@ gateway:
 
   resume:
     db_unavailable:        "工作階段資料庫無法使用。"
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.
+Use quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.
+Use `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.
+Future messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "找不到已命名的工作階段。\n使用 `/title 我的工作階段` 為目前工作階段命名，然後使用 `/resume 我的工作階段` 返回。"
     list_header:           "📋 **已命名工作階段**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -251,10 +259,20 @@ gateway:
 
   status:
     header:                "📊 **Hermes 閘道狀態**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**工作階段 ID：** `{session_id}`"
     title:                 "**標題：** {title}"
     created:               "**建立時間：** {timestamp}"
     last_activity:         "**最近活動：** {timestamp}"
+    model:                 "**Model:** `{model}`"
+    model_provider:        "**Model:** `{model}` ({provider})"
+    context:               "**Context:** {used} / {total} ({pct}%)"
+    context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Token 數：** {tokens}"
     agent_running:         "**代理執行中：** {state}"
     state_yes:             "是 ⚡"
@@ -319,6 +337,9 @@ gateway:
     label_estimated_context:  "預估上下文：~{count} 個 token"
     detailed_after_first:     "_（首次代理回應後可檢視詳細使用情況）_"
     no_data:                  "此工作階段沒有可用的使用資料。"
+
+  credits:
+    not_logged_in:            "未登入 Nous Portal。登入後即可查看額度餘額並儲值。"
 
   verbose:
     not_enabled:           "`/verbose` 指令未在訊息平台上啟用。\n\n請在 `config.yaml` 中啟用：\n```yaml\ndisplay:\n  tool_progress_command: true\n```"

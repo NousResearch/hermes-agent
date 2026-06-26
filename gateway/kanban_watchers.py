@@ -16,11 +16,95 @@ import os
 import sqlite3
 import time
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 # Match the logger run.py uses (logging.getLogger(__name__) where __name__ ==
 # "gateway.run") so extracted log records keep their original logger name.
 logger = logging.getLogger("gateway.run")
+
+
+def _resolve_auto_decompose_settings(
+    load_config: Callable[[], Any],
+) -> "tuple[bool, int]":
+    """Resolve the live (enabled, per_tick) auto-decompose settings.
+
+    Read fresh from config on every dispatcher tick (#49638) so that flipping
+    ``kanban.auto_decompose: false`` to STOP runaway fan-out takes effect on the
+    next tick instead of requiring a gateway restart. Auto-decompose is a
+    safety toggle — a user who sees it create and launch tasks they didn't
+    intend reaches for this flag to halt it, and a stale boot-captured value
+    silently ignoring that change is the bug reported in #49638.
+
+    Fails **safe**: if the config read raises, return ``(False, 3)`` — a
+    transient read error must never re-enable a feature the user turned off,
+    nor fall back to the burst-prone default-on behaviour. ``per_tick`` is
+    clamped to ``>= 1``.
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        return False, 3
+    kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    enabled = bool(kcfg.get("auto_decompose", True))
+    try:
+        per_tick = int(kcfg.get("auto_decompose_per_tick", 3) or 3)
+    except (TypeError, ValueError):
+        per_tick = 3
+    if per_tick < 1:
+        per_tick = 1
+    return enabled, per_tick
+
+
+def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
+    """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
+
+    Only one gateway process machine-wide may run the embedded kanban
+    dispatcher: concurrent dispatchers double the reclaim frequency (each
+    runs its own ``release_stale_claims`` → promote → dispatch loop), double
+    claim-attempt events in the event log, and — with ``wal_autocheckpoint=0`` —
+    concurrent manual WAL checkpoints can corrupt index pages. The
+    ``dispatch_in_gateway`` config flag is the primary control; this lock is the
+    backstop that survives config drift and same-profile restart races.
+
+    Delegates to :func:`gateway.status._try_acquire_file_lock` (``fcntl`` on
+    POSIX, ``msvcrt`` on Windows) so the guard is cross-platform.
+
+    Returns ``(handle, "held")`` on success — the caller keeps the file handle
+    for the process lifetime and **must** release it via
+    :func:`_release_singleton_lock` when done. ``(None, "contended")`` when
+    another process holds the lock (caller must NOT dispatch). ``(None,
+    "unavailable")`` when locking cannot be performed (non-POSIX filesystem
+    without flock, or the status.py helpers are unimportable) — caller falls
+    back to config-only control.
+    """
+    try:
+        from gateway.status import _try_acquire_file_lock  # deferred; same package
+    except ImportError:
+        return None, "unavailable"
+    try:
+        Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+        handle = open(str(lock_path), "a+", encoding="utf-8")
+    except OSError:
+        return None, "unavailable"
+    if not _try_acquire_file_lock(handle):
+        handle.close()
+        return None, "contended"
+    return handle, "held"
+
+
+def _release_singleton_lock(handle) -> None:
+    """Release a dispatcher singleton lock acquired via :func:`_acquire_singleton_lock`."""
+    if handle is None:
+        return
+    try:
+        from gateway.status import _release_file_lock
+        _release_file_lock(handle)
+    except Exception:
+        pass
+    try:
+        handle.close()
+    except Exception:
+        pass
 
 
 class GatewayKanbanWatchersMixin:
@@ -606,6 +690,31 @@ class GatewayKanbanWatchersMixin:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return
 
+        # Single-dispatcher backstop. dispatch_in_gateway defaults to true, so a
+        # new profile gateway (or a same-profile restart race) can silently
+        # start a second dispatcher; concurrent dispatchers double reclaim
+        # frequency, double claim-attempt events, and — with
+        # wal_autocheckpoint=0 — concurrent manual WAL checkpoints can corrupt
+        # index pages. The lock lives at the machine-global kanban root
+        # (shared across profiles by design), so it serialises ALL gateways.
+        self._kanban_dispatcher_lock_handle = None
+        _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
+        _lock_handle, _lock_state = _acquire_singleton_lock(_lock_path)
+        if _lock_state == "contended":
+            logger.info(
+                "kanban dispatcher: another gateway already holds the dispatcher "
+                "lock (%s); this gateway will NOT dispatch.", _lock_path,
+            )
+            return
+        if _lock_state == "held":
+            self._kanban_dispatcher_lock_handle = _lock_handle  # hold for process lifetime
+            logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
+        else:
+            logger.warning(
+                "kanban dispatcher: advisory lock unavailable at %s; proceeding "
+                "on config control alone.", _lock_path,
+            )
+
         try:
             interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
         except (ValueError, TypeError):
@@ -908,17 +1017,20 @@ class GatewayKanbanWatchersMixin:
         # ``kanban.auto_decompose_per_tick`` (default 3) so a bulk-load
         # of triage tasks doesn't burst-spend the aux LLM in one tick;
         # remainder defers to subsequent ticks.
-        auto_decompose_enabled = bool(kanban_cfg.get("auto_decompose", True))
-        try:
-            auto_decompose_per_tick = int(
-                kanban_cfg.get("auto_decompose_per_tick", 3) or 3
-            )
-        except (TypeError, ValueError):
-            auto_decompose_per_tick = 3
-        if auto_decompose_per_tick < 1:
-            auto_decompose_per_tick = 1
+        #
+        # The flag is re-read from config EVERY tick (#49638) rather than
+        # captured once at boot. Auto-decompose is a safety toggle: a user who
+        # sees it fan out and run tasks they didn't intend reaches for
+        # ``kanban.auto_decompose: false`` to STOP it — and that must take
+        # effect on the next tick, not require a gateway restart. (Reported:
+        # auto-decompose created and launched destructive tasks while the user
+        # was still typing the task description, and the flag "couldn't be
+        # disabled" because the gateway had captured its boot-time value.)
+        def _read_auto_decompose_settings() -> tuple[bool, int]:
+            """Re-resolve (enabled, per_tick) from current config each tick."""
+            return _resolve_auto_decompose_settings(_load_config)
 
-        def _auto_decompose_tick() -> int:
+        def _auto_decompose_tick(auto_decompose_per_tick: int) -> int:
             """Run the auto-decomposer for up to N triage tasks across all
             boards. Returns the number of triage tasks that were
             successfully decomposed or specified this tick.
@@ -1013,8 +1125,12 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 
             try:
-                if auto_decompose_enabled:
-                    await asyncio.to_thread(_auto_decompose_tick)
+                # Re-read the auto-decompose toggle live each tick so a user
+                # flipping kanban.auto_decompose=false to STOP runaway fan-out
+                # takes effect on the next tick, not on gateway restart (#49638).
+                _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
+                if _ad_enabled:
+                    await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
@@ -1052,6 +1168,8 @@ class GatewayKanbanWatchersMixin:
                         last_warn_at = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
+                _release_singleton_lock(self._kanban_dispatcher_lock_handle)
+                self._kanban_dispatcher_lock_handle = None
                 raise
             except Exception:
                 logger.exception("kanban dispatcher: unexpected watcher error")
@@ -1062,3 +1180,6 @@ class GatewayKanbanWatchersMixin:
             while slept < interval and self._running:
                 await asyncio.sleep(min(1.0, interval - slept))
                 slept += 1.0
+
+        _release_singleton_lock(self._kanban_dispatcher_lock_handle)
+        self._kanban_dispatcher_lock_handle = None

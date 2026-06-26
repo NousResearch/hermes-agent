@@ -29,6 +29,55 @@ These providers collectively serve **tens of millions of users** across China an
 
 This skill provides the canonical configuration guide for any custom provider, plus a **battle-tested reference implementation** for Volcengine Ark — the most common entry point for Chinese users who want to use Hermes with domestic models.
 
+## How to Discover and Use This Skill
+
+> ⚠️ **This is an optional skill, not a built-in provider.** You won't find "Volcengine" or "Ark" in the Settings → Providers dropdown. Instead, follow these steps:
+
+### Step 1: Discover the Skill
+
+Once this skill is merged into the Hermes repository, users can find it via:
+
+```bash
+# Search for Ark-related skills
+hermes skills search volcengine
+hermes skills search ark
+hermes skills search 火山
+
+# Or browse all official optional skills
+hermes skills browse --source official
+```
+
+### Step 2: Install the Skill
+
+```bash
+hermes skills install hermes-custom-providers
+```
+
+This copies the skill (including the Volcengine Ark reference) to `~/.hermes/skills/`.
+
+### Step 3: Load the Skill in a Hermes Session
+
+Once installed, the skill is available in any Hermes session. Simply ask Hermes to help you configure Ark:
+
+> "Help me set up Volcengine Ark as a custom provider"
+
+Hermes will load this skill, read the reference file, and guide you through editing `~/.hermes/config.yaml`.
+
+### Step 4: Restart Hermes
+
+After editing `config.yaml`:
+
+```bash
+/quit          # Exit Hermes completely
+hermes          # Relaunch
+```
+
+You'll now see `ark-custom` in the model provider picker with all 11 models.
+
+### Why Not a Built-in Provider?
+
+If you're wondering why Ark isn't a first-class provider you can select from Settings → Providers → API Key, see the [FAQ](#faq-why-is-this-a-skill-instead-of-a-built-in-provider) at the bottom.
+
 ## When to Use
 
 - Your API provider has a custom endpoint (e.g., Chinese providers like Volcengine Ark, Alibaba DashScope, Z.AI/GLM, MiniMax, Kimi/Moonshot)
@@ -255,6 +304,42 @@ After updating:
 3. In the model picker, you should see your custom provider with its models
 4. Try a simple prompt to verify API connectivity
 
+## FAQ: Why Is This a Skill Instead of a Built-in Provider?
+
+Several feature requests (#29331, #40195, #51319) asked for Volcengine Ark as a first-class provider in the Settings → Providers menu. Here's why a skill + `custom_providers` approach was chosen instead:
+
+### 1. Model lists change per subscription
+
+Ark has **two subscription plans** (Agent Plan / Coding Plan), each with different model availability. Even within the same plan, models differ by tier (Small/Medium/Large/Max for Agent Plan, Lite/Pro for Coding Plan). A hardcoded provider list would either be incomplete or show models the user can't access.
+
+### 2. Endpoint paths vary between plans
+
+Some users access Ark via the Coding Plan endpoint, others via the standard Ark endpoint. The correct `base_url` depends on the user's subscription.
+
+### 3. Users control model activation
+
+Models are activated/deactivated per-user from the Ark console. A built-in provider would list models that are not activated for the current user.
+
+### 4. Same pattern helps ALL Chinese providers
+
+The `custom_providers` approach documented in this skill works identically for Alibaba DashScope, Zhipu GLM, Moonshot Kimi, MiniMax standalone, and any other provider with OpenAI/Anthropic-compatible endpoints. One skill covers them all.
+
+### 5. Config changes are explicit and auditable
+
+With a `custom_providers` entry, you can see exactly what's configured in `config.yaml`, back it up, sync it across machines, and version-control it. A built-in provider's model list is hidden in Hermes internals.
+
+### The tradeoff
+
+| Aspect | Built-in Provider | Skill + custom_providers |
+|--------|:-----------------:|:------------------------:|
+| Setup speed | ⚡ Pick from dropdown | 🐢 Install skill → edit YAML → restart |
+| Discoverability | ✅ "Ark" in Providers menu | ⚠️ Need to know `hermes skills search` exists |
+| Model accuracy | ❌ May list unavailable models | ✅ Exactly your activated models |
+| Config portability | ❌ Hidden in Hermes internals | ✅ Visible in `config.yaml` |
+| Works across providers | ❌ One provider per integration | ✅ Same pattern for all providers |
+
+We believe the accuracy and portability advantages outweigh the slightly higher setup friction — especially since the setup only happens once.
+
 ## Provider-Specific References
 
-- `references/volcengine-ark-models.md` — Complete guide for Volcengine Ark (火山引擎), including model list, context lengths, subscription types, and working config templates.
+- `references/volcengine-ark-models.md` — Complete guide for Volcengine Ark (火山引擎), including Agent Plan vs Coding Plan comparison, model list, context lengths, working config templates, and troubleshooting.

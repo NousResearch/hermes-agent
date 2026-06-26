@@ -1,0 +1,10 @@
+name: najva
+label: Najva (نجوا)
+kind: platform
+version: 1.0.0
+description: Najva (نجوا) adapter.
+author: Hermes Core Team
+requires_env:
+  - name: NAJVA_API_TOKEN\n    description: "NAJVA_API_TOKEN"\n    prompt: "NAJVA_API_TOKEN"\n    password: true\n
+optional_env:
+

@@ -182,6 +182,13 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
 
   const providerOptions = providers.length ? providers : NO_PROVIDERS
 
+  // MoA reference/aggregator slots must never be the moa virtual provider —
+  // that would create a recursive MoA tree (the backend rejects it on save).
+  // Hide it from the slot selectors so it isn't offered as a dead choice.
+  const moaSlotProviderOptions = providerOptions.filter(
+    provider => (provider.slug || '').toLowerCase() !== 'moa'
+  )
+
   const selectedProviderRow = useMemo(
     () => providers.find(provider => provider.slug === selectedProvider),
     [providers, selectedProvider]
@@ -851,7 +858,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                         <SelectValue placeholder={m.provider} />
                       </SelectTrigger>
                       <SelectContent>
-                        {providerOptions.map(provider => (
+                        {moaSlotProviderOptions.map(provider => (
                           <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
                             {provider.name}
                           </SelectItem>
@@ -930,7 +937,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
                       <SelectValue placeholder={m.provider} />
                     </SelectTrigger>
                     <SelectContent>
-                      {providerOptions.map(provider => (
+                      {moaSlotProviderOptions.map(provider => (
                         <SelectItem key={provider.slug || 'none'} value={provider.slug || 'none'}>
                           {provider.name}
                         </SelectItem>

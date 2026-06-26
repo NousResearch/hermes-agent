@@ -6850,6 +6850,58 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _get_worker_lane(assignee: Optional[str]):
+    """Return the registered WorkerLane for ``assignee``, or None.
+
+    Local import keeps the worker-lane registry an optional dependency: if the
+    module is unavailable the dispatcher simply behaves as before (Hermes
+    profile lanes only).
+    """
+    if not assignee:
+        return None
+    try:
+        from hermes_cli.worker_lanes import get_worker_lane
+    except Exception:
+        return None
+    return get_worker_lane(assignee)
+
+
+def _assignee_is_spawnable(assignee: Optional[str]) -> bool:
+    """True if ``assignee`` names a Hermes profile (default lane) or a
+    registered external worker lane (plugin lane).
+
+    Unresolvable assignees (e.g. interactive terminal lanes pulled via
+    ``claim_task``) are NOT spawnable: auto-spawning ``hermes -p <assignee>``
+    for them would crash on startup and loop the task back to ``ready`` forever
+    (#kanban-dispatcher-crash-loop 2026-05-05).
+    """
+    if not assignee:
+        return False
+    try:
+        from hermes_cli.profiles import profile_exists  # local import: avoids cycle
+    except Exception:
+        # profiles module unavailable — preserve legacy behavior (don't block).
+        return True
+    if profile_exists(assignee):
+        return True
+    return _get_worker_lane(assignee) is not None
+
+
+def _resolve_spawn_fn(assignee: Optional[str], spawn_fn):
+    """Pick the spawn callable: explicit override > registered lane > default.
+
+    An explicit ``spawn_fn`` (passed by tests / callers) always wins. Otherwise
+    a registered worker lane's ``spawn_fn`` is used when the assignee resolves
+    to one; profile assignees fall back to ``_default_spawn`` (``hermes -p``).
+    """
+    if spawn_fn is not None:
+        return spawn_fn
+    lane = _get_worker_lane(assignee)
+    if lane is not None:
+        return lane.spawn_fn
+    return _default_spawn
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -7105,27 +7157,17 @@ def _dispatch_once_locked(
             else:
                 result.skipped_unassigned.append(row["id"])
                 continue
-        # Skip ready tasks whose assignee is not a real Hermes profile.
-        # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
-        # with "Profile 'X' does not exist" when the assignee names a
-        # control-plane lane (e.g. an interactive Claude Code terminal
-        # like ``orion-cc`` / ``orion-research``) rather than a Hermes
-        # profile. Those task lanes are pulled by terminals via
-        # ``claim_task`` directly and should NEVER auto-spawn — the
-        # subprocess would crash on startup, get reaped as a zombie,
-        # the task would loop back to ``ready`` on next tick, and we'd
-        # burn CPU forever (#kanban-dispatcher-crash-loop 2026-05-05).
-        try:
-            from hermes_cli.profiles import profile_exists  # local import: avoids cycle
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row_assignee):
-            # Bucket separately from skipped_unassigned: the operator
-            # cannot fix this by assigning a profile (the assignee IS the
-            # intended owner — a terminal lane). Health telemetry uses
-            # this distinction to suppress spurious "stuck" warnings on
-            # multi-lane setups where the ready queue is steadily full
-            # of human-pulled work.
+        # An assignee is spawnable if it names a Hermes profile (the default
+        # lane shape) OR a registered external worker lane (the plugin lane
+        # shape — a non-Hermes runner like a Junie/Codex CLI). Everything else
+        # (e.g. a control-plane terminal lane like ``orion-cc`` pulled via
+        # ``claim_task``) must NEVER auto-spawn: ``hermes -p <assignee>`` would
+        # crash on startup, get reaped as a zombie, the task would loop back to
+        # ``ready`` next tick, and we'd burn CPU forever
+        # (#kanban-dispatcher-crash-loop 2026-05-05). Bucket those as
+        # skipped_nonspawnable so health telemetry can tell them apart from
+        # genuinely unassigned work.
+        if not _assignee_is_spawnable(row_assignee):
             result.skipped_nonspawnable.append(row["id"])
             continue
         # Per-profile concurrency cap (#21582): even if there's global
@@ -7134,9 +7176,17 @@ def _dispatch_once_locked(
         # quota / browser pool from being overwhelmed by a fan-out
         # while the global max_in_progress / max_spawn caps still allow
         # work on OTHER profiles.
-        if _per_profile_cap is not None:
+        # A worker lane may declare its own max_concurrency (e.g. one Junie run
+        # at a time); otherwise the global per-profile cap applies.
+        _lane = _get_worker_lane(row_assignee)
+        _eff_cap = (
+            _lane.max_concurrency
+            if _lane is not None and _lane.max_concurrency is not None
+            else _per_profile_cap
+        )
+        if _eff_cap is not None:
             current = _per_profile_running.get(row_assignee, 0)
-            if current >= _per_profile_cap:
+            if current >= _eff_cap:
                 result.skipped_per_profile_capped.append(
                     (row["id"], row_assignee, current)
                 )
@@ -7164,11 +7214,12 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
-            # Increment per-profile counter even in dry_run so the cap
+            # Increment per-assignee counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
-            # under-reports the capped subset (#21582).
-            if _per_profile_cap is not None and row_assignee:
+            # under-reports the capped subset (#21582). Track whenever an
+            # effective cap applies — global per-profile OR a per-lane cap.
+            if _eff_cap is not None and row_assignee:
                 _per_profile_running[row_assignee] = (
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
@@ -7195,7 +7246,9 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        # Route to the assignee's worker lane when no explicit spawn_fn override
+        # is supplied; profile assignees fall back to _default_spawn (hermes -p).
+        _spawn = _resolve_spawn_fn(row_assignee, spawn_fn)
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
@@ -7255,11 +7308,7 @@ def _dispatch_once_locked(
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
-        try:
-            from hermes_cli.profiles import profile_exists
-        except Exception:
-            profile_exists = None  # type: ignore[assignment]
-        if profile_exists is not None and not profile_exists(row["assignee"]):
+        if not _assignee_is_spawnable(row["assignee"]):
             result.skipped_nonspawnable.append(row["id"])
             continue
         if dry_run:
@@ -7293,7 +7342,7 @@ def _dispatch_once_locked(
         # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
         # review agent needs.
         claimed.skills = ["sdlc-review"]
-        _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        _spawn = _resolve_spawn_fn(row["assignee"], spawn_fn)
         try:
             import inspect
             try:

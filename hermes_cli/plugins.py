@@ -576,6 +576,44 @@ class PluginContext:
             self.manifest.name, engine.name,
         )
 
+    # -- kanban worker lane registration ------------------------------------
+
+    def register_worker_lane(self, lane, *, replace: bool = False):
+        """Register a kanban worker lane (see :mod:`hermes_cli.worker_lanes`).
+
+        A worker lane tells the kanban dispatcher how to spawn a worker for a
+        given task assignee — e.g. an external CLI runner (Junie / Codex)
+        instead of a Hermes profile. The dispatcher calls the lane's
+        ``spawn_fn(task, workspace, board=...)`` when it resolves a ready task
+        whose assignee matches the lane name.
+
+        Registration is process-local, so the plugin must be loaded in the
+        process that owns kanban dispatch (the gateway) for the lane to take
+        effect.
+        """
+        from hermes_cli.worker_lanes import WorkerLane, register_worker_lane
+
+        if not isinstance(lane, WorkerLane):
+            logger.warning(
+                "Plugin '%s' tried to register a worker lane that is not a "
+                "WorkerLane instance. Ignoring.",
+                self.manifest.name,
+            )
+            return None
+        try:
+            registered = register_worker_lane(lane, replace=replace)
+        except ValueError as exc:
+            logger.warning(
+                "Plugin '%s' worker lane registration rejected: %s",
+                self.manifest.name, exc,
+            )
+            return None
+        logger.info(
+            "Plugin '%s' registered worker lane: %s (kind=%s)",
+            self.manifest.name, registered.name, registered.kind,
+        )
+        return registered
+
     # -- image gen provider registration ------------------------------------
 
     def register_image_gen_provider(self, provider) -> None:

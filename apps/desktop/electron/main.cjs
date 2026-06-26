@@ -527,34 +527,30 @@ function getWindowBackgroundColor() {
   return nativeTheme.shouldUseDarkColors ? '#111111' : '#f7f7f7'
 }
 
+// Transparent WCO — renderer chrome shows through. rgba(0,0,0,0) can fall back
+// to GetFrameColor() on some Electron builds; rgba(1,0,0,0) is the escape hatch.
+const TITLEBAR_OVERLAY_COLOR = 'rgba(1, 0, 0, 0)'
+
 function getTitleBarOverlayOptions() {
   if (IS_MAC) {
     return { height: TITLEBAR_HEIGHT }
   }
 
-  // Window Controls Overlay: Windows paints it natively, and WSLg honors it too
-  // (it renders through a real compositor), so keep it enabled there — disabling
-  // it removes the min/max/close buttons entirely. Only plain (non-WSL) Linux,
-  // where some WMs/builds don't support WCO, falls through to no overlay; the
-  // frameless titleBarStyle 'hidden' still applies.
+  // Windows + WSLg paint WCO natively; plain Linux disables it (frameless hidden
+  // titlebar still applies).
   if (!IS_WINDOWS && !IS_WSL) {
     return false
   }
 
-  if (rendererTitleBarTheme) {
-    return {
-      color: rendererTitleBarTheme.background,
-      height: TITLEBAR_HEIGHT,
-      symbolColor: rendererTitleBarTheme.foreground
-    }
-  }
-
-  const useDarkColors = nativeTheme.shouldUseDarkColors
-
   return {
-    color: useDarkColors ? '#111111' : '#f7f7f7',
+    color: TITLEBAR_OVERLAY_COLOR,
     height: TITLEBAR_HEIGHT,
-    symbolColor: useDarkColors ? '#f7f7f7' : '#242424'
+    symbolColor:
+      rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.foreground)
+        ? rendererTitleBarTheme.foreground
+        : nativeTheme.shouldUseDarkColors
+          ? '#f7f7f7'
+          : '#242424'
   }
 }
 

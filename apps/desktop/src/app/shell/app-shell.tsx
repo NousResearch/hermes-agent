@@ -189,6 +189,13 @@ export function AppShell({
         <TitlebarControls leftTools={leftTitlebarTools} onOpenSettings={onOpenSettings} tools={titlebarTools} />
       )}
 
+      {nativeOverlayWidth > 0 && (
+        <div
+          aria-hidden
+          className="pointer-events-none fixed inset-x-0 top-0 z-[4] h-(--titlebar-height) border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background)"
+        />
+      )}
+
       <main className="relative z-3 flex min-h-0 w-full flex-1 flex-col overflow-hidden transition-none">
         <PaneShell className="min-h-0 flex-1">
           <div

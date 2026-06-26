@@ -1561,6 +1561,14 @@ export interface Translations {
     truncated: string
     noInlineTitle: string
     noInlineBody: (mimeType: string) => string
+    edit: string
+    editing: string
+    unsavedChanges: string
+    saveFailed: (message: string) => string
+    diskChangedTitle: string
+    diskChangedBody: string
+    overwrite: string
+    discardReload: string
     console: {
       deselect: string
       select: string

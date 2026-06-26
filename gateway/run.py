@@ -12371,6 +12371,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         queue_depth = self._queue_depth(session_key, adapter=adapter)
 
         title = None
+        row = None
         # Pull token totals from the SQLite session DB rather than the
         # in-memory SessionStore.  The agent's per-turn token deltas are
         # persisted into sessions_db (run_agent.py), not into SessionEntry,
@@ -12396,6 +12397,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 db_total_tokens = 0
 
+        model_name = ""
+        model_provider = ""
+        context_tokens = 0
+        context_length = 0
+
+        live_agent = self._running_agents.get(session_key)
+        if live_agent is not None and live_agent is not _AGENT_PENDING_SENTINEL:
+            model_name = str(getattr(live_agent, "model", "") or "")
+            model_provider = str(getattr(live_agent, "provider", "") or "")
+            compressor = getattr(live_agent, "context_compressor", None)
+            context_tokens = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+            context_length = int(getattr(compressor, "context_length", 0) or 0)
+        else:
+            cached = getattr(self, "_agent_cache", {}).get(session_key)
+            cached_agent = cached[0] if isinstance(cached, tuple) and cached else cached
+            if cached_agent is not None:
+                model_name = str(getattr(cached_agent, "model", "") or "")
+                model_provider = str(getattr(cached_agent, "provider", "") or "")
+                compressor = getattr(cached_agent, "context_compressor", None)
+                context_tokens = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+                context_length = int(getattr(compressor, "context_length", 0) or 0)
+
+        if not model_name and row:
+            model_name = str(row.get("model") or "")
+            model_provider = str(row.get("billing_provider") or row.get("provider") or "")
+            context_tokens = int(getattr(session_entry, "last_prompt_tokens", 0) or 0)
+            if context_tokens:
+                try:
+                    cfg = _load_gateway_config() or {}
+                    context_length = int((cfg.get("model") or {}).get("context_length") or 0)
+                except Exception:
+                    context_length = 0
+
         lines = [
             t("gateway.status.header"),
             "",
@@ -12407,8 +12441,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             t("gateway.status.created", timestamp=session_entry.created_at.strftime('%Y-%m-%d %H:%M')),
             t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime('%Y-%m-%d %H:%M')),
             t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
-            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
         ])
+        if model_name:
+            provider_suffix = f" ({model_provider})" if model_provider else ""
+            lines.append(f"**Model:** `{model_name}`{provider_suffix}")
+        if context_tokens and context_length:
+            pct = round((context_tokens / context_length) * 100)
+            lines.append(
+                f"**Context:** {context_tokens:,} / {context_length:,} ({pct}%)"
+            )
+        lines.append(
+            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no"))
+        )
         workspace = getattr(session_entry, "current_workspace", "") or ""
         if not workspace:
             try:

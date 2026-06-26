@@ -359,7 +359,7 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     live = _get_live_tracking_cwd(task_id)
     registered = _registered_task_cwd_override(task_id)
     configured = _configured_terminal_cwd()
-    if live and task_id not in ("", "default"):
+    if live:
         return live
     # A session-specific registered override (TUI/Desktop/ACP workspace cwd)
     # is more authoritative than the shared last-known/default anchor: it is
@@ -380,8 +380,6 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
         return preserved
     if configured:
         return configured
-    if live:
-        return live
     return None
 
 

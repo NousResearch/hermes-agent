@@ -77,6 +77,15 @@
       "prompt": ""
     },
     {
+      "name": "torben-finance-radar",
+      "schedule_display": "every 30m",
+      "enabled": true,
+      "no_agent": true,
+      "deliver": "signal",
+      "script": "torben_finance_radar.py",
+      "prompt": ""
+    },
+    {
       "name": "torben-gmail-pubsub-pull",
       "schedule_display": "every 1m",
       "enabled": true,
@@ -102,6 +111,15 @@
       "deliver": "signal",
       "script": "torben_live_profile_verify.py",
       "prompt": ""
+    },
+    {
+      "name": "torben-live-profile-investigate",
+      "schedule_display": "every 15m",
+      "enabled": true,
+      "no_agent": false,
+      "deliver": "signal",
+      "script": "torben_live_profile_investigate.py",
+      "prompt": "You are Torben's live-profile incident investigator. The script output is a bounded investigation request created only after a new live-profile verifier failure fingerprint.\n\nRules:\n- If wakeAgent is false, respond exactly [SILENT].\n- Treat this as a read-only debug and QA loop. Identify likely root cause, operational risk, affected jobs/sources, and the smallest safe fix plan.\n- Use supplied evidence first. If tools are available, only run read-only checks. Do not edit files, change cron config, restart services, mutate email/calendar data, post, trade, archive, delete, or call external mutation tools.\n- Do not claim the issue is fixed. Produce a concise investigation result with: risk, likely cause, evidence, read-only verification commands, proposed patch/test plan, and the exact approval question for Eric.\n- If confidence is low, say what evidence is missing and propose the next read-only check.\n- Keep the Signal output actionable and short. The desired end state is: Eric can approve or reject a patch after seeing the risk and QA plan."
     }
   ]
 }

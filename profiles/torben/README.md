@@ -28,6 +28,13 @@ uses the latest GTM radar findings as topics, invokes Grok with X Search, stages
 draft-only reply ideas with the public X algorithm lens, and stays silent when
 there is no fresh opportunity. It does not post or reply publicly.
 
+The `torben-finance-radar` cron is the Ratatosk stage-only finance loop. It
+calls Robinhood v0.1 analysis under `/Users/ericfreeman/ratatosk`, lets Ratatosk
+mint a bounded no-tools LLM run when a market phase is due, and adapts only
+fresh above-threshold candidates into Torben `FIN-*` review handles. It stays
+silent on no due tick, below-threshold watchlist output, and duplicate
+candidates. It does not place, cancel, modify, or approve broker orders.
+
 Realtime Gmail is Pub/Sub-backed. `torben_gmail_watch_register.py` registers or
 renews Gmail watches for the enabled OAuth accounts, and
 `torben_gmail_pubsub_pull.py` pulls only Gmail change notifications, advances

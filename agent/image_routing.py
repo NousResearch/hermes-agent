@@ -300,6 +300,9 @@ def _lookup_supports_vision(
     override = _supports_vision_override(cfg, provider, model)
     if override is not None:
         return override
+    known = _known_model_supports_vision(provider, model)
+    if known is not None:
+        return known
     if not provider or not model:
         return None
     try:
@@ -311,6 +314,25 @@ def _lookup_supports_vision(
     if caps is None:
         return None
     return bool(caps.supports_vision)
+
+
+def _known_model_supports_vision(provider: str, model: str) -> Optional[bool]:
+    """Return stable built-in vision capability for provider families we know.
+
+    This is a fallback after user config overrides, not a replacement for
+    models.dev. It keeps auto image routing stable if the external model
+    metadata cache is missing, stale, or polluted in a long-running test
+    process.
+    """
+
+    provider_norm = str(provider or "").strip().lower()
+    model_norm = str(model or "").strip().lower()
+    if provider_norm == "anthropic":
+        if model_norm.startswith("claude-3") or model_norm.startswith("claude-sonnet-4"):
+            return True
+        if model_norm.startswith("claude-opus-4") or model_norm.startswith("claude-haiku-4"):
+            return True
+    return None
 
 
 def decide_image_input_mode(

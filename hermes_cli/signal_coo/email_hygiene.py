@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+import requests
 
 from .action_ledger import ActionLedger, ActionRecord, parse_time
 from .google_auth import account_for_alias
@@ -19,6 +22,9 @@ from .google_evidence import GMAIL_API_ROOT, _read_token
 HYGIENE_POLICY_VERSION = 1
 HYGIENE_OPEN_STATUSES = {"staged", "approval_required", "approved", "executing"}
 ACTION_PREFIX = "email_hygiene"
+DEFAULT_LLM_PROVIDER = "openai-codex"
+DEFAULT_LLM_MODEL = "gpt-5.5"
+DEFAULT_LLM_TIMEOUT_SECONDS = 120
 
 MFA_TERMS = (
     "one time passcode",
@@ -65,12 +71,13 @@ class HygieneGroup:
     risk_class: str
     rationale: str
     items: list[dict[str, Any]] = field(default_factory=list)
+    llm_review: dict[str, Any] = field(default_factory=dict)
 
     def to_action_summary(self) -> str:
         return f"{self.title} ({len(self.items)} item{'s' if len(self.items) != 1 else ''})"
 
     def to_payload(self) -> dict[str, Any]:
-        return {
+        payload = {
             "key": self.key,
             "title": self.title,
             "operation": self.operation,
@@ -78,6 +85,9 @@ class HygieneGroup:
             "rationale": self.rationale,
             "items": self.items,
         }
+        if self.llm_review:
+            payload["llm_review"] = self.llm_review
+        return payload
 
 
 def _now() -> datetime:
@@ -109,6 +119,13 @@ def _contains_any(text: str, terms: tuple[str, ...]) -> bool:
     return any(term in text for term in terms)
 
 
+def _labels(record: dict[str, Any]) -> list[str]:
+    labels = record.get("labels")
+    if not isinstance(labels, list):
+        return []
+    return [str(label or "").strip() for label in labels if str(label or "").strip()]
+
+
 def _compact_item(record: dict[str, Any], *, reason: str) -> dict[str, Any]:
     return {
         "account_alias": record.get("account_alias"),
@@ -120,6 +137,8 @@ def _compact_item(record: dict[str, Any], *, reason: str) -> dict[str, Any]:
         "juno_bucket": record.get("juno_bucket"),
         "reason": reason,
         "age_hours": round(float(record.get("age_hours") or 0), 1),
+        "labels": _labels(record),
+        "snippet": record.get("snippet"),
         "evidence_ids": list(record.get("evidence_ids") or []),
     }
 
@@ -147,6 +166,20 @@ def _group_candidate_records(records: list[dict[str, Any]], *, now: datetime) ->
             risk_class="low",
             rationale="Old receipts and confirmations should be searchable, not inbox-visible.",
         ),
+        "archive_stale_low_signal_info": HygieneGroup(
+            key="archive_stale_low_signal_info",
+            title="Archive stale low-signal info mail",
+            operation="archive",
+            risk_class="low",
+            rationale="Old low-signal info/newsletter/promotional mail can leave the inbox after review.",
+        ),
+        "trash_existing_spam": HygieneGroup(
+            key="trash_existing_spam",
+            title="Trash messages already marked spam",
+            operation="trash",
+            risk_class="low",
+            rationale="Gmail already classed these as spam; Torben still stages the action for approval first.",
+        ),
         "nudge_stale_replies": HygieneGroup(
             key="nudge_stale_replies",
             title="Re-bump stale threads that may still matter",
@@ -162,6 +195,12 @@ def _group_candidate_records(records: list[dict[str, Any]], *, now: datetime) ->
         text = _text(record)
         age_hours = _age_hours(record, now)
         enriched = {**record, "age_hours": age_hours}
+        label_set = {label.upper() for label in _labels(record)}
+        if "SPAM" in label_set and age_hours >= 24:
+            groups["trash_existing_spam"].items.append(
+                _compact_item(enriched, reason="already marked spam and older than one day")
+            )
+            continue
         if category == "account_security" and age_hours >= 1 and _contains_any(text, MFA_TERMS):
             groups["trash_mfa_codes"].items.append(
                 _compact_item(enriched, reason="account-security code older than one hour")
@@ -177,6 +216,11 @@ def _group_candidate_records(records: list[dict[str, Any]], *, now: datetime) ->
                 _compact_item(enriched, reason="receipt/vendor confirmation older than two weeks")
             )
             continue
+        if category in ARCHIVABLE_CATEGORIES and age_hours >= 30 * 24 and juno_bucket == "info":
+            groups["archive_stale_low_signal_info"].items.append(
+                _compact_item(enriched, reason="low-signal info mail older than thirty days")
+            )
+            continue
         if category in ACTIONABLE_CATEGORIES and juno_bucket in {"reply", "deadline", "flag"} and age_hours >= 7 * 24:
             groups["nudge_stale_replies"].items.append(
                 _compact_item(enriched, reason="action-shaped thread older than one week")
@@ -185,6 +229,239 @@ def _group_candidate_records(records: list[dict[str, Any]], *, now: datetime) ->
     for group in groups.values():
         group.items = group.items[:50]
     return [group for group in groups.values() if group.items]
+
+
+def _extract_response_text(payload: dict[str, Any]) -> str:
+    output_text = str(payload.get("output_text") or "").strip()
+    if output_text:
+        return output_text
+    parts: list[str] = []
+    for item in payload.get("output", []) or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content", []) or []:
+            if not isinstance(content, dict):
+                continue
+            if content.get("type") in {"output_text", "text"}:
+                text = str(content.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+    return "\n\n".join(parts).strip()
+
+
+def _parse_json_object(raw_text: str) -> dict[str, Any]:
+    text = str(raw_text or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, dict) else {}
+    except json.JSONDecodeError:
+        pass
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return {}
+    try:
+        payload = json.loads(match.group(0))
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        parsed = int(str(value or "").strip())
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _llm_review_request(groups: list[HygieneGroup]) -> dict[str, Any]:
+    compact_groups = []
+    for group in groups:
+        compact_groups.append(
+            {
+                "key": group.key,
+                "operation": group.operation,
+                "rationale": group.rationale,
+                "risk_class": group.risk_class,
+                "items": [
+                    {
+                        "message_id": item.get("message_id"),
+                        "thread_id": item.get("thread_id"),
+                        "account_alias": item.get("account_alias"),
+                        "sender": item.get("sender"),
+                        "subject": item.get("subject"),
+                        "category": item.get("category"),
+                        "juno_bucket": item.get("juno_bucket"),
+                        "reason": item.get("reason"),
+                        "age_hours": item.get("age_hours"),
+                        "labels": item.get("labels"),
+                        "snippet": item.get("snippet"),
+                    }
+                    for item in group.items[:12]
+                ],
+            }
+        )
+    return {"candidate_groups": compact_groups}
+
+
+def _hygiene_review_prompt(groups: list[HygieneGroup]) -> str:
+    return (
+        "Review these Gmail cleanup candidates for Eric's Torben COO agent.\n"
+        "This is an inbox hygiene review, not an apply step. You may keep or drop candidates. "
+        "Do not invent messages. Treat sender identity, category, labels, reason, and snippet as evidence.\n\n"
+        "Hard rules:\n"
+        "- Keep important relationship, funding, customer, legal, admin, family, school, health, finance, or scheduling mail out of archive/trash.\n"
+        "- If a stale thread may still matter, prefer the nudge_only group instead of archive/trash.\n"
+        "- Trash means Gmail Trash, never permanent delete.\n"
+        "- Trash existing spam only when labels include SPAM and the item already looks non-actionable.\n"
+        "- Trash MFA/password-code mail only when it is a stale account-security code.\n"
+        "- Archive only low-signal info, receipt/vendor ops, policy/rewards/rebrand noise, or general newsletter/promotional mail.\n"
+        "- If unsure, drop the cleanup candidate and leave it for review.\n\n"
+        "Return one JSON object with this schema only:\n"
+        "{\n"
+        '  "recommendations": [\n'
+        '    {"key": "group key", "decision": "keep|drop", "reason": "short reason", "items": [\n'
+        '      {"message_id": "id", "decision": "keep|drop", "reason": "short reason"}\n'
+        "    ]}\n"
+        "  ],\n"
+        '  "global_notes": ["short note"]\n'
+        "}\n\n"
+        f"Candidates:\n{json.dumps(_llm_review_request(groups), ensure_ascii=False, sort_keys=True)}"
+    )
+
+
+def _call_hygiene_llm(groups: list[HygieneGroup]) -> tuple[dict[str, Any], dict[str, Any]]:
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    provider = str(os.getenv("TORBEN_EMAIL_HYGIENE_LLM_PROVIDER") or DEFAULT_LLM_PROVIDER).strip()
+    runtime = resolve_runtime_provider(requested=provider)
+    api_key = str(runtime.get("api_key") or "").strip()
+    if not api_key:
+        raise RuntimeError(f"{provider} credentials unavailable")
+    base_url = str(runtime.get("base_url") or "https://api.openai.com/v1").strip().rstrip("/")
+    model = str(
+        os.getenv("TORBEN_EMAIL_HYGIENE_LLM_MODEL")
+        or runtime.get("model")
+        or runtime.get("default_model")
+        or DEFAULT_LLM_MODEL
+    ).strip()
+    timeout = _positive_int(os.getenv("TORBEN_EMAIL_HYGIENE_LLM_TIMEOUT_SECONDS"), DEFAULT_LLM_TIMEOUT_SECONDS)
+    request_payload = {
+        "model": model,
+        "input": [
+            {
+                "role": "system",
+                "content": (
+                    "You are Torben, Eric Freeman's operational COO. "
+                    "Review inbox cleanup candidates conservatively. Return JSON only."
+                ),
+            },
+            {"role": "user", "content": _hygiene_review_prompt(groups)},
+        ],
+        "store": False,
+        "max_output_tokens": 1600,
+    }
+    response = requests.post(
+        f"{base_url}/responses",
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        json=request_payload,
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    response_payload = response.json()
+    generated = _parse_json_object(_extract_response_text(response_payload))
+    return generated, {"provider": provider, "model": model, "base_url_host": base_url.split("//")[-1].split("/")[0]}
+
+
+def _apply_llm_review(
+    groups: list[HygieneGroup],
+    generated: dict[str, Any],
+    *,
+    meta: dict[str, Any],
+) -> list[HygieneGroup]:
+    recommendations = generated.get("recommendations")
+    if not isinstance(recommendations, list):
+        raise ValueError("LLM hygiene review returned no recommendations list")
+    by_key = {
+        str(item.get("key") or ""): item
+        for item in recommendations
+        if isinstance(item, dict) and str(item.get("key") or "").strip()
+    }
+    reviewed: list[HygieneGroup] = []
+    for group in groups:
+        group_decision = by_key.get(group.key) or {}
+        decision = str(group_decision.get("decision") or "keep").strip().lower()
+        if decision == "drop":
+            continue
+        item_decisions = {
+            str(item.get("message_id") or ""): item
+            for item in group_decision.get("items", []) or []
+            if isinstance(item, dict)
+        }
+        kept_items: list[dict[str, Any]] = []
+        for item in group.items:
+            item_decision = item_decisions.get(str(item.get("message_id") or "")) or {}
+            if str(item_decision.get("decision") or "keep").strip().lower() == "drop":
+                continue
+            kept = dict(item)
+            kept["llm_decision"] = str(item_decision.get("decision") or decision or "keep")
+            kept["llm_reason"] = str(item_decision.get("reason") or group_decision.get("reason") or "").strip()
+            kept_items.append(kept)
+        if not kept_items:
+            continue
+        reviewed.append(
+            HygieneGroup(
+                key=group.key,
+                title=group.title,
+                operation=group.operation,
+                risk_class=group.risk_class,
+                rationale=group.rationale,
+                items=kept_items,
+                llm_review={
+                    **meta,
+                    "decision": decision or "keep",
+                    "reason": str(group_decision.get("reason") or "").strip(),
+                },
+            )
+        )
+    return reviewed
+
+
+def _review_hygiene_groups_with_llm(
+    groups: list[HygieneGroup],
+    *,
+    enabled: bool,
+) -> tuple[list[HygieneGroup], dict[str, Any]]:
+    if not groups:
+        return groups, {"invoked": False, "status": "no_candidates"}
+    if not enabled:
+        return groups, {"invoked": False, "status": "disabled"}
+    try:
+        generated, runtime_meta = _call_hygiene_llm(groups)
+        meta = {
+            "invoked": True,
+            "status": "accepted",
+            "fallback": False,
+            "global_notes": list(generated.get("global_notes") or [])[:5],
+            **runtime_meta,
+        }
+        reviewed = _apply_llm_review(groups, generated, meta=meta)
+        return reviewed, {**meta, "groups_before": len(groups), "groups_after": len(reviewed)}
+    except Exception as exc:  # noqa: BLE001 - cleanup must fail closed and keep review visible.
+        meta = {
+            "invoked": True,
+            "status": "failed_deterministic_fallback",
+            "fallback": True,
+            "error_type": type(exc).__name__,
+            "error": str(exc)[:240],
+            "groups_before": len(groups),
+            "groups_after": len(groups),
+        }
+        for group in groups:
+            group.llm_review = meta
+        return groups, meta
 
 
 def _existing_hygiene_actions(ledger: ActionLedger) -> dict[str, ActionRecord]:
@@ -207,40 +484,72 @@ def stage_hygiene_actions(
     ledger: ActionLedger,
     records: list[dict[str, Any]],
     now: datetime | None = None,
+    enable_llm_review: bool = False,
+    review_metadata_out: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     now = (now or _now()).astimezone(timezone.utc)
     existing = _existing_hygiene_actions(ledger)
+    groups, review_meta = _review_hygiene_groups_with_llm(
+        _group_candidate_records(records, now=now),
+        enabled=enable_llm_review,
+    )
+    if review_metadata_out is not None:
+        review_metadata_out.update(review_meta)
     staged: list[dict[str, Any]] = []
-    for group in _group_candidate_records(records, now=now):
+    records_to_save: list[ActionRecord] | None = None
+    for group in groups:
         action_key = f"{ACTION_PREFIX}:{group.key}:{now:%Y-%m-%d}"
         record = existing.get(action_key)
+        evidence_ids = [
+            evidence
+            for item in group.items[:10]
+            for evidence in (item.get("evidence_ids") or [])
+        ]
+        executor_state = {
+            "mutation_type": "gmail_hygiene",
+            "provider": "gmail",
+            "mutation_status": "not_applied",
+            "hygiene_policy_version": HYGIENE_POLICY_VERSION,
+            "hygiene_action_key": action_key,
+            "operation": group.operation,
+            "rationale": group.rationale,
+            "items": group.items,
+            "llm_review": group.llm_review or review_meta,
+            "approval_required": True,
+        }
         if record is None:
             record = ledger.add_action(
                 scope="EA",
                 summary=group.to_action_summary(),
-                evidence_ids=[
-                    evidence
-                    for item in group.items[:10]
-                    for evidence in (item.get("evidence_ids") or [])
-                ],
+                evidence_ids=evidence_ids,
                 allowed_next_actions=["approve_hygiene_apply", "revise", "discard"],
                 status="approval_required",
                 risk_class=group.risk_class,
                 ttl_hours=14 * 24,
                 now=now,
-                executor_state={
-                    "mutation_type": "gmail_hygiene",
-                    "provider": "gmail",
-                    "mutation_status": "not_applied",
-                    "hygiene_policy_version": HYGIENE_POLICY_VERSION,
-                    "hygiene_action_key": action_key,
-                    "operation": group.operation,
-                    "rationale": group.rationale,
-                    "items": group.items,
-                    "approval_required": True,
-                },
+                executor_state=executor_state,
             )
             existing[action_key] = record
+        else:
+            if records_to_save is None:
+                records_to_save = ledger.load()
+            for candidate in records_to_save:
+                if candidate.handle != record.handle:
+                    continue
+                candidate.summary = group.to_action_summary()
+                candidate.evidence_ids = evidence_ids
+                candidate.risk_class = group.risk_class
+                candidate.executor_state.update(executor_state)
+                candidate.resolution_history.append(
+                    {
+                        "at": now.isoformat().replace("+00:00", "Z"),
+                        "status": "recommendation_refreshed",
+                        "reason": "Weekly email hygiene recommendation refreshed with current inbox evidence.",
+                    }
+                )
+                record = candidate
+                existing[action_key] = candidate
+                break
         staged.append(
             {
                 "handle": record.handle,
@@ -248,6 +557,8 @@ def stage_hygiene_actions(
                 **group.to_payload(),
             }
         )
+    if records_to_save is not None:
+        ledger.save(records_to_save)
     return staged
 
 
@@ -267,12 +578,13 @@ def _gmail_post(url: str, token: str, payload: dict[str, Any] | None = None) -> 
 def _validate_item_for_operation(operation: str, item: dict[str, Any]) -> None:
     category = str(item.get("category") or "")
     reason = str(item.get("reason") or "").lower()
-    if operation == "trash" and category != "account_security":
-        raise ValueError(f"Refusing to trash non-account-security item: {item.get('message_id')}")
+    labels = {str(label or "").upper() for label in item.get("labels") or []}
+    stale_account_code = category == "account_security" and "older than one hour" in reason
+    existing_spam = "SPAM" in labels and "already marked spam" in reason
+    if operation == "trash" and not (stale_account_code or existing_spam):
+        raise ValueError(f"Refusing to trash item outside approved stale-code/spam classes: {item.get('message_id')}")
     if operation == "archive" and category not in ARCHIVABLE_CATEGORIES:
         raise ValueError(f"Refusing to archive actionable category {category}: {item.get('message_id')}")
-    if operation == "trash" and "older than one hour" not in reason:
-        raise ValueError(f"Refusing to trash without stale-code reason: {item.get('message_id')}")
 
 
 def apply_hygiene_action(

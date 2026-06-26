@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import py_compile
 from dataclasses import dataclass, field
@@ -9,8 +10,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from .submanager_contracts import validate_torben_submanager_contracts
+
 GMAIL_WATCH_RENEWAL_FLOOR = timedelta(hours=48)
 GMAIL_PUBSUB_PULL_FRESHNESS = timedelta(minutes=10)
+ALERT_STATE_VERSION = 1
+INVESTIGATION_REQUEST_VERSION = 1
+BACKEND_ARTIFACT_HEALTH = {
+    "torben_gtm_radar.py": "torben-gtm-radar-latest.json",
+    "torben_gtm_engagement_radar.py": "torben-gtm-engagement-radar-latest.json",
+    "torben_finance_radar.py": "torben-finance-radar-latest.json",
+}
 
 
 def _utc_now() -> str:
@@ -38,6 +48,275 @@ def _load_json(path: Path) -> dict[str, Any] | None:
     except Exception:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def live_profile_failure_fingerprint(payload: dict[str, Any]) -> str:
+    """Stable fingerprint for one unresolved verifier failure."""
+
+    material = {
+        "status": payload.get("status"),
+        "errors": list(payload.get("errors") or []),
+    }
+    encoded = json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def update_live_profile_alert_state(
+    *,
+    payload: dict[str, Any],
+    state_path: str | Path,
+    now: datetime | None = None,
+) -> bool:
+    """Persist verifier alert state and return True when this failure is duplicate.
+
+    A verifier failure is an operational alert, not a script crash. The first
+    occurrence of a fingerprint should alert. Repeated occurrences of the same
+    unresolved fingerprint should stay silent until the verifier passes or the
+    failure changes.
+    """
+
+    path = Path(state_path)
+    now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    now_text = now_utc.isoformat().replace("+00:00", "Z")
+    existing = _load_json(path) or {}
+
+    if payload.get("status") == "pass":
+        state = {
+            "version": ALERT_STATE_VERSION,
+            "status": "pass",
+            "active_fingerprint": None,
+            "cleared_at": now_text,
+            "previous_fingerprint": existing.get("active_fingerprint"),
+        }
+        payload["alert_dedupe"] = {
+            "suppressed": False,
+            "status": "cleared",
+            "state_path": str(path),
+        }
+        _write_json(path, state)
+        return False
+
+    fingerprint = live_profile_failure_fingerprint(payload)
+    same_unresolved = (
+        existing.get("status") == "fail"
+        and existing.get("active_fingerprint") == fingerprint
+    )
+    duplicate_count = int(existing.get("duplicate_count") or 0)
+    if same_unresolved:
+        duplicate_count += 1
+        state = {
+            **existing,
+            "version": ALERT_STATE_VERSION,
+            "status": "fail",
+            "active_fingerprint": fingerprint,
+            "last_seen_at": now_text,
+            "duplicate_count": duplicate_count,
+            "errors": list(payload.get("errors") or []),
+        }
+        payload["alert_dedupe"] = {
+            "suppressed": True,
+            "status": "duplicate_failure_suppressed",
+            "fingerprint": fingerprint,
+            "duplicate_count": duplicate_count,
+            "state_path": str(path),
+        }
+        _write_json(path, state)
+        return True
+
+    state = {
+        "version": ALERT_STATE_VERSION,
+        "status": "fail",
+        "active_fingerprint": fingerprint,
+        "first_alerted_at": now_text,
+        "last_seen_at": now_text,
+        "duplicate_count": 0,
+        "errors": list(payload.get("errors") or []),
+    }
+    payload["alert_dedupe"] = {
+        "suppressed": False,
+        "status": "new_failure",
+        "fingerprint": fingerprint,
+        "state_path": str(path),
+    }
+    _write_json(path, state)
+    return False
+
+
+def stage_live_profile_investigation_request(
+    *,
+    payload: dict[str, Any],
+    request_path: str | Path,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Stage a bounded LLM investigation request for a new verifier failure."""
+
+    path = Path(request_path)
+    now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    fingerprint = live_profile_failure_fingerprint(payload)
+    failing_checks = [
+        check
+        for check in payload.get("script_checks") or []
+        if isinstance(check, dict) and (check.get("errors") or check.get("last_error") or check.get("last_delivery_error"))
+    ]
+    request = {
+        "version": INVESTIGATION_REQUEST_VERSION,
+        "task": "torben_live_profile_investigation_request",
+        "wakeAgent": True,
+        "status": "pending",
+        "created_at": now_utc.isoformat().replace("+00:00", "Z"),
+        "failure_fingerprint": fingerprint,
+        "failure_generated_at": payload.get("generated_at"),
+        "profile_home": payload.get("profile_home"),
+        "jobs_path": payload.get("jobs_path"),
+        "repo_snapshot_home": payload.get("repo_snapshot_home"),
+        "errors": list(payload.get("errors") or []),
+        "warnings": list(payload.get("warnings") or []),
+        "failing_script_checks": failing_checks,
+        "gmail_realtime_health": payload.get("gmail_realtime_health"),
+        "investigation_contract": {
+            "mode": "read_only_root_cause_and_qa_plan",
+            "must_identify": [
+                "likely_root_cause",
+                "operational_risk",
+                "affected_jobs_or_sources",
+                "read_only_verification_commands",
+                "candidate_fix_plan",
+                "tests_to_run",
+            ],
+            "must_not": [
+                "patch_files",
+                "change_cron_jobs",
+                "mutate_email_or_calendar",
+                "send_email",
+                "post_publicly",
+                "trade",
+                "delete_or_archive_data",
+            ],
+            "approval_required_before_fix": True,
+        },
+    }
+    _write_json(path, request)
+    payload["investigation_request"] = {
+        "status": "staged",
+        "path": str(path),
+        "failure_fingerprint": fingerprint,
+    }
+    return request
+
+
+def clear_live_profile_investigation_request(
+    *,
+    request_path: str | Path,
+    payload: dict[str, Any] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Clear any pending investigation request once the live verifier passes."""
+
+    path = Path(request_path)
+    now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    request = {
+        "version": INVESTIGATION_REQUEST_VERSION,
+        "task": "torben_live_profile_investigation_request",
+        "wakeAgent": False,
+        "status": "cleared",
+        "cleared_at": now_utc.isoformat().replace("+00:00", "Z"),
+    }
+    _write_json(path, request)
+    if payload is not None:
+        payload["investigation_request"] = {
+            "status": "cleared",
+            "path": str(path),
+        }
+    return request
+
+
+def consume_live_profile_investigation_request(
+    *,
+    request_path: str | Path,
+    state_path: str | Path,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """Return the next LLM investigation handoff, suppressing duplicates."""
+
+    request_file = Path(request_path)
+    state_file = Path(state_path)
+    request = _load_json(request_file)
+    if not request or request.get("status") != "pending" or not request.get("failure_fingerprint"):
+        return {
+            "task": "torben_live_profile_investigate",
+            "wakeAgent": False,
+            "status": "idle",
+            "reason": "no pending live-profile investigation request",
+            "request_path": str(request_file),
+        }
+
+    now_utc = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    now_text = now_utc.isoformat().replace("+00:00", "Z")
+    existing = _load_json(state_file) or {}
+    fingerprint = str(request.get("failure_fingerprint"))
+    if existing.get("last_handed_to_llm_fingerprint") == fingerprint:
+        duplicate_count = int(existing.get("duplicate_count") or 0) + 1
+        _write_json(
+            state_file,
+            {
+                **existing,
+                "version": INVESTIGATION_REQUEST_VERSION,
+                "status": "duplicate_suppressed",
+                "last_seen_at": now_text,
+                "duplicate_count": duplicate_count,
+            },
+        )
+        return {
+            "task": "torben_live_profile_investigate",
+            "wakeAgent": False,
+            "status": "duplicate_investigation_suppressed",
+            "reason": "same live-profile failure fingerprint already handed to LLM",
+            "failure_fingerprint": fingerprint,
+            "duplicate_count": duplicate_count,
+            "request_path": str(request_file),
+        }
+
+    state = {
+        "version": INVESTIGATION_REQUEST_VERSION,
+        "status": "handed_to_llm",
+        "last_handed_to_llm_at": now_text,
+        "last_handed_to_llm_fingerprint": fingerprint,
+        "duplicate_count": 0,
+        "request_path": str(request_file),
+    }
+    _write_json(state_file, state)
+    return {
+        "task": "torben_live_profile_investigate",
+        "wakeAgent": True,
+        "status": "investigation_requested",
+        "generated_at": now_text,
+        "failure_fingerprint": fingerprint,
+        "request_path": str(request_file),
+        "state_path": str(state_file),
+        "request": request,
+        "operator_boundary": {
+            "llm_may": [
+                "inspect supplied evidence",
+                "run read-only verification commands if tools are available",
+                "propose root cause and tests",
+                "ask Eric to approve any patch",
+            ],
+            "llm_must_not": [
+                "edit files",
+                "change cron config",
+                "restart services",
+                "mutate external systems",
+                "claim a fix was applied",
+            ],
+        },
+    }
 
 
 @dataclass
@@ -174,6 +453,94 @@ def _verify_gmail_realtime_health(profile: Path, jobs: list[dict[str, Any]], now
     }
 
 
+def _int_count(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _verify_backend_artifact_health(profile: Path, jobs: list[dict[str, Any]]) -> dict[str, Any]:
+    """Verify latest stage-only backend artifacts do not hide error payloads."""
+
+    enabled = _enabled_scripts(jobs)
+    state_dir = profile / "state"
+    errors: list[str] = []
+    warnings: list[str] = []
+    artifacts: list[dict[str, Any]] = []
+
+    for script, artifact_name in sorted(BACKEND_ARTIFACT_HEALTH.items()):
+        if script not in enabled:
+            continue
+        path = state_dir / artifact_name
+        payload = _load_json(path)
+        artifact: dict[str, Any] = {
+            "script": script,
+            "path": str(path),
+            "exists": path.exists(),
+        }
+        if not payload:
+            artifact["status"] = "missing"
+            warnings.append(f"{script}: latest artifact missing or unreadable: {path}")
+            artifacts.append(artifact)
+            continue
+
+        public_actions = _int_count(payload.get("public_actions_taken"))
+        external_mutations = _int_count(payload.get("external_mutations"))
+        broker_orders = _int_count(payload.get("broker_orders_submitted"))
+        artifact.update(
+            {
+                "status": "pass",
+                "generated_at": payload.get("generated_at"),
+                "wakeAgent": payload.get("wakeAgent"),
+                "public_actions_taken": public_actions,
+                "external_mutations": external_mutations,
+                "broker_orders_submitted": broker_orders,
+            }
+        )
+
+        payload_error = payload.get("error")
+        if payload_error:
+            artifact["status"] = "fail"
+            if isinstance(payload_error, dict):
+                error_type = str(payload_error.get("type") or "error")
+                message = str(payload_error.get("message") or "")[:180]
+                errors.append(f"{script}: latest artifact has error: {error_type}: {message}")
+            else:
+                errors.append(f"{script}: latest artifact has error: {str(payload_error)[:180]}")
+
+        source_refresh = payload.get("source_refresh")
+        if isinstance(source_refresh, dict) and str(source_refresh.get("status") or "").lower() == "failed":
+            artifact["status"] = "fail"
+            errors.append(f"{script}: source refresh failed")
+
+        llm_judge = payload.get("llm_judge")
+        if isinstance(llm_judge, dict) and str(llm_judge.get("status") or "").lower() == "failed":
+            artifact["status"] = "fail"
+            message = str(llm_judge.get("error") or "")[:180]
+            errors.append(f"{script}: LLM judge failed: {message}")
+
+        if public_actions:
+            artifact["status"] = "fail"
+            errors.append(f"{script}: public_actions_taken is nonzero: {public_actions}")
+        if external_mutations:
+            artifact["status"] = "fail"
+            errors.append(f"{script}: external_mutations is nonzero: {external_mutations}")
+        if broker_orders:
+            artifact["status"] = "fail"
+            errors.append(f"{script}: broker_orders_submitted is nonzero: {broker_orders}")
+
+        artifacts.append(artifact)
+
+    return {
+        "enabled": bool(artifacts),
+        "status": "pass" if not errors else "fail",
+        "artifacts": artifacts,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
 def _script_path(profile_home: Path, script: str | None) -> Path | None:
     if not script:
         return None
@@ -295,6 +662,14 @@ def verify_torben_live_profile(
     gmail_realtime_health = _verify_gmail_realtime_health(profile, jobs, now_utc)
     errors.extend(f"gmail_realtime: {error}" for error in gmail_realtime_health.get("errors") or [])
     warnings.extend(f"gmail_realtime: {warning}" for warning in gmail_realtime_health.get("warnings") or [])
+    backend_artifact_health = _verify_backend_artifact_health(profile, jobs)
+    errors.extend(f"backend_artifacts: {error}" for error in backend_artifact_health.get("errors") or [])
+    warnings.extend(f"backend_artifacts: {warning}" for warning in backend_artifact_health.get("warnings") or [])
+    submanager_contract_health = validate_torben_submanager_contracts()
+    errors.extend(f"submanager_contracts: {error}" for error in submanager_contract_health.get("errors") or [])
+    warnings.extend(
+        f"submanager_contracts: {warning}" for warning in submanager_contract_health.get("warnings") or []
+    )
 
     status = "pass" if not errors else "fail"
     return {
@@ -308,6 +683,8 @@ def verify_torben_live_profile(
         "enabled_jobs_checked": sum(1 for job in jobs if bool(job.get("enabled", True))),
         "script_checks": [check.to_dict() for check in checks],
         "gmail_realtime_health": gmail_realtime_health,
+        "backend_artifact_health": backend_artifact_health,
+        "submanager_contract_health": submanager_contract_health,
         "errors": errors,
         "warnings": warnings,
     }

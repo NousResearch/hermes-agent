@@ -1,0 +1,1240 @@
+{
+  "version": "1.0.0",
+  "adlc_mode": "decompose_only",
+  "brief_id": "TORBEN-BACKEND-CAPABILITY-COMPLETION",
+  "prd_id": "TORBEN-COO-OPERATOR-PRD",
+  "applicability_manifest": {
+    "version": "1.0.0",
+    "task_classification": "feature",
+    "task_classification_confidence": 0.93,
+    "classification_evidence": [
+      "Torben is now the active Signal-facing operator profile and owns EA/GTM runtime delivery.",
+      "Magnus and Ratatosk should remain backend capability modules rather than separate user-facing chat profiles.",
+      "Public posting, email send, calendar edit/delete, Gmail cleanup, Monarch mutations, and broker orders require explicit policy gates and canaries."
+    ],
+    "change_surface": {
+      "new_attack_surface": true,
+      "runtime_path_change": true,
+      "service_boundary_change": true,
+      "external_integration": true,
+      "persistent_storage": true,
+      "api_change": true,
+      "data_format_change": true,
+      "auth_change": true,
+      "perf_sensitive": true,
+      "user_facing_operation": true
+    },
+    "claim_provenance": {
+      "supported": [
+        {
+          "claim": "Torben cron list shows active EA, GTM, Gmail Pub/Sub, live-profile verification, and investigation jobs.",
+          "source_ref": "live:hermes -p torben cron list",
+          "extracted_from": "2026-06-25 live runtime refresh"
+        },
+        {
+          "claim": "Torben SOUL.md defines one Signal-facing COO operator with hidden EA, GTM, and Finance scopes.",
+          "source_ref": "profiles/torben/SOUL.md",
+          "extracted_from": "Torben profile contract"
+        },
+        {
+          "claim": "Magnus GTM radar output shows Grok judging, X algorithm lens, public_actions_taken=0, and GTM handles.",
+          "source_ref": "state/torben-gtm-radar-latest.json",
+          "extracted_from": "Torben GTM radar latest artifact"
+        },
+        {
+          "claim": "Ratatosk v0.1 validator passes staged candidate and live-order-blocked checks.",
+          "source_ref": "/Users/ericfreeman/ratatosk/scripts/robinhood_v01_validate.py --json",
+          "extracted_from": "Ratatosk validator output"
+        },
+        {
+          "claim": "Current Ratatosk live trading remains blocked by live consent, live env gates, circuit breaker, and trading halt.",
+          "source_ref": "/Users/ericfreeman/ratatosk/state",
+          "extracted_from": "Ratatosk live state and validator output"
+        }
+      ],
+      "unsupported": [
+        {
+          "claim": "No active Hermes ratatosk profile exists on this host.",
+          "source_ref": "hermes -p ratatosk cron list",
+          "extracted_from": "Hermes CLI returned missing profile"
+        },
+        {
+          "claim": "The old magnus Hermes profile has no scheduled jobs on this host.",
+          "source_ref": "hermes -p magnus cron list",
+          "extracted_from": "Hermes CLI returned no scheduled jobs"
+        },
+        {
+          "claim": "Public X/LinkedIn posting is not proven through a live approval-gated adapter.",
+          "source_ref": "Torben GTM artifacts and tests",
+          "extracted_from": "GTM radar public_actions_taken=0"
+        },
+        {
+          "claim": "Email send, real calendar edit/delete, Monarch mutation, and broker order execution are not cleared as Torben-owned mutations.",
+          "source_ref": "profiles/torben/SOUL.md",
+          "extracted_from": "Torben mutation boundary"
+        }
+      ],
+      "contradicted": [
+        {
+          "claim": "Treating Magnus or Ratatosk as separate Signal-facing operators contradicts the current Torben single-interface decision.",
+          "source_ref": "profiles/torben/SOUL.md",
+          "extracted_from": "Torben operating spine"
+        }
+      ]
+    },
+    "contamination": {
+      "flags": [
+        "scope_creep",
+        "ambiguous_term",
+        "unsupported_claim"
+      ],
+      "supported_claims": [
+        "Torben should own user-facing orchestration.",
+        "Magnus can remain GTM submanager behind Torben.",
+        "Ratatosk can remain Finance submanager behind Torben."
+      ],
+      "unsupported_claims": [
+        "All remaining backend capabilities are production-ready.",
+        "Ratatosk is live-trading ready.",
+        "LinkedIn/X posting is ready for unattended automation."
+      ],
+      "contradicted_claims": [
+        "Static crons should decide what matters without LLM review."
+      ],
+      "needs_clarification": [
+        "Whether Eric wants public posting enabled after approval only, or later unattended under hard caps.",
+        "Whether Ratatosk should become a separate hidden Hermes profile or remain a Torben-owned script package.",
+        "Whether email send and calendar edit/delete should stay approval-only beyond the first 30 days."
+      ],
+      "suspect_phrases": [
+        "fully automated",
+        "ready on all",
+        "public-write capable"
+      ]
+    },
+    "section_policy": [
+      {
+        "section_name": "5_security_review",
+        "status": "active",
+        "reason": "The remaining scope includes email send, calendar edit/delete, public posting, financial data, and broker orders."
+      },
+      {
+        "section_name": "6_observability_slo",
+        "status": "active",
+        "reason": "Torben must prove submanager health, canaries, dedupe, and debug loops."
+      },
+      {
+        "section_name": "9_risks",
+        "status": "active",
+        "reason": "The main risk is unsafe mutation under a single conversational operator."
+      },
+      {
+        "section_name": "11_validation_plan",
+        "status": "active",
+        "reason": "End-to-end profile, Signal, API, canary, and fail-closed tests are required."
+      }
+    ],
+    "verification_spec": {
+      "primary_verifier": {
+        "type": "command",
+        "target": "/Users/ericfreeman/Downloads/adlc/bin/adlc validate-artifact --schema build-brief --input /Users/ericfreeman/.hermes/hermes-agent/docs/build-briefs/torben-backend-capability-completion.json --json",
+        "expected_pre_change": "fail",
+        "expected_post_change": "pass",
+        "target_files": [
+          "docs/build-briefs/torben-backend-capability-completion.json"
+        ],
+        "expected_failure_mode": "brief missing or schema-invalid before this planning slice"
+      },
+      "must_fail_before_change": true,
+      "must_be_deterministic": true,
+      "scope_note": "Validate the decomposition artifact before turning it into a /goal execution loop."
+    }
+  },
+  "enterprise_readiness_contract": {
+    "production_grade_target": "Torben is the only user-facing Signal operator and can safely coordinate EA, GTM, and Finance backend capabilities with approval-gated mutations, canaries, debug loops, and clear submanager ownership.",
+    "backward_compatibility": "Preserve current Torben EA/GTM jobs, action handles, Signal reply routing, Gmail Pub/Sub realtime triage, calendar busy-block alignment, and no-noise cron policy.",
+    "forward_compatibility": "Allow Magnus and Ratatosk to stay as hidden submanagers behind Torben, with typed capability contracts that can later be replaced without changing the Signal surface.",
+    "failure_mode_coverage": [
+      "Submanager output bypasses Torben and creates multiple user-facing chat surfaces.",
+      "A cron posts, sends, edits, deletes, or trades without an action-ledger approval.",
+      "A public-write or broker-order path succeeds without audit evidence and rollback/reconciliation metadata.",
+      "Successful maintenance jobs create Signal noise instead of staying silent.",
+      "A live-profile failure repeats alerts without investigation and dedupe."
+    ],
+    "definition_of_done": [
+      "Torben owns the EA/GTM/Finance action ledger and submanager health view.",
+      "Magnus GTM and Grok/X algorithm capabilities run behind Torben with draft/source/hold reply loops and public_actions_taken=0 until approval.",
+      "Ratatosk finance capabilities run behind Torben with research, staging, mandate, consent, guard, reconciliation, and fail-closed live order checks.",
+      "Email send, calendar edit/delete, Gmail cleanup, X/LinkedIn posting, Monarch mutation, and broker orders have explicit approval gates, canaries, and audit artifacts before enablement.",
+      "The validation task proves happy path, failure path, no-noise path, duplicate suppression, and live-profile LLM investigation behavior."
+    ],
+    "validation_tasks": [
+      "TBC-VAL-CANARY"
+    ],
+    "compliance_posture": "High-risk personal automation. Treat email, calendar, finance, public posting, and trading as approval-gated external mutations with least-privilege OAuth/MCP tokens, audit logs, and revocation paths.",
+    "construct_map_refs": [
+      "profiles/torben/SOUL.md",
+      "profiles/torben/scripts/torben_gtm_radar.py",
+      "hermes_cli/signal_coo/gtm_reply_router.py",
+      "ratatosk/docs/build-briefs/hermes-robinhood-cron-v0_1.json",
+      "ratatosk/config/robinhood_v01_mandate.template.yaml"
+    ],
+    "paved_road_refs": [
+      "Google Gmail API users.messages.send and users.messages.trash",
+      "Google Calendar API events.insert and events.patch/delete",
+      "X API v2 create post endpoint",
+      "LinkedIn Posts API",
+      "Robinhood Agentic Trading MCP",
+      "Monarch MCP connector"
+    ],
+    "production_invariant_coverage": [
+      "external_mutations=0 unless explicit action-ledger approval exists",
+      "public_actions_taken=0 unless explicit public-write approval exists",
+      "broker_orders_submitted=0 unless live finance decision, mandate, consent, kill-switch, active halt state, and guard pass",
+      "successful background maintenance stays silent",
+      "every visible action has EA/GTM/FIN handle and evidence links"
+    ]
+  },
+  "sections": {
+    "1_context": "Torben is now the active single Signal-facing COO operator. The current live profile owns the morning brief, calendar alignment, meeting prep, Gmail Pub/Sub realtime triage, Gmail watch renewal, Boardy brief, email hygiene recommendations, GTM radar, GTM engagement radar, live-profile verification, and live-profile LLM investigation. The old magnus Hermes profile has no scheduled jobs, while Torben calls Magnus-backed GTM logic and writes GTM handles. Ratatosk has Robinhood v0.1 repo work and a passing v0.1 validator, but there is no active Hermes ratatosk profile and live trading remains blocked.",
+    "2_scope_and_constraints": "Scope: finish backend capabilities so Torben can coordinate EA, GTM, and Finance through one Signal thread. Keep Magnus as hidden GTM submanager if useful; keep Ratatosk as hidden Finance submanager if useful. Constraints: no OpenClaw dependency, no duplicate user-facing agents, no static cron decision-making, no unattended public posting/sending/deleting/trading, no secrets in repo/logs, no clearing finance halts or live gates inside the implementation goal without separate current risk evidence and explicit approval.",
+    "3_repo_findings": "Hermes/Torben: active cron jobs prove Torben is the live operator and profile verification is green. Torben SOUL.md defines the intended one-operator pattern and mutation boundaries. GTM artifacts show Grok/xAI judging, X algorithm lens from xai-org/x-algorithm, action handles, and public_actions_taken=0. Magnus: content intelligence exists and can produce article recommendations, GTM signals, and draft/source/hold reply loops, but the magnus Hermes profile itself is empty on this host. Ratatosk: docs/build-briefs/hermes-robinhood-cron-v0_1.json and scripts/robinhood_v01_validate.py show staged trading workflow readiness. The testing-scope live finance decision is approved, but a consent/env preflight still blocks live trading on the active circuit breaker/trading halt.",
+    "4_architecture": "Torben remains the facade and policy owner. Backend submanagers expose typed capabilities: EA, GTM/Magnus, and Finance/Ratatosk. Each capability must produce EvidencePacket, CandidateAction, ApprovalRequest, ExecutionReport, and ReconciliationReport artifacts. Torben owns dedupe, action handles, Signal copy, approval resolution, live-profile health, and failure investigation. Submanagers own source collection, domain scoring, draft generation, adapters, and reconciliation, but may not talk directly to Eric or mutate externally without Torben policy clearance.",
+    "5_security_review": [
+      {
+        "risk": "Public posting, email sending, calendar edits, Gmail cleanup, Monarch writes, and broker orders are external mutations.",
+        "control": "Require action-ledger approval, policy guard, provider response capture, and rollback or reconciliation metadata before any mutation."
+      },
+      {
+        "risk": "LLM prompted by untrusted email, calendar, social, or market inputs could call unsafe tools.",
+        "control": "Keep LLMs on bounded JSON contracts; tool adapters enforce action classes independent of model output."
+      },
+      {
+        "risk": "Finance live trading can lose money quickly, especially margin/options.",
+        "control": "Keep live trading blocked until mandate, consent, limits, circuit breaker, kill switch, account discovery, and reconciliation pass."
+      },
+      {
+        "risk": "Secrets and OAuth tokens can leak through logs or repo files.",
+        "control": "Use OAuth or MCP token stores and 1Password/runtime injection where applicable; never print secret values."
+      }
+    ],
+    "6_observability_slo": "Torben backend completion must expose: per-submanager health, last successful source refresh, last LLM decision status, dedupe counts, pending action handles, external_mutations count, public_actions_taken count, broker_orders_submitted count, delivery status, and live-profile investigation state. SLO: healthy background no-op jobs stay silent; actionable failures alert once per fingerprint and create an investigation request; duplicate failures suppress repeat Signal noise.",
+    "7_execution_plan": "Phase A: normalize Torben submanager contracts and live-profile health for EA/GTM/Finance. Phase B: finish Magnus as hidden GTM submanager with source refresh, Grok/X algorithm lens, reply routing, content packages, and approval-only X/LinkedIn publishing adapters. Phase C: finish EA mutation backends for Gmail send, Gmail cleanup, and real calendar edits/deletes behind explicit approvals. Phase D: finish Ratatosk as hidden Finance submanager with Robinhood and Monarch adapters, mandate/consent, research candidates, staged reviews, and fail-closed live gates. Phase E: run full canary suite: no-noise, failure investigation, approval apply, public-write dry-run, finance stage-only, live-order-blocked, and rollback/reconciliation.",
+    "8_task_tickets": [
+      {
+        "artifact_type": "scope_lock_epic",
+        "task_id": "TBC-EPIC",
+        "title": "Lock Torben single-operator backend completion scope",
+        "objective": "Define the target architecture where Torben owns the Signal interface and policy surface while Magnus and Ratatosk operate as hidden backend submanagers.",
+        "task_classification": "feature",
+        "decision_contract": {
+          "type1_decision": false,
+          "status": "not_applicable",
+          "owner": "eric",
+          "deadline": "2026-06-26",
+          "blocks_implementation": false,
+          "resolution": "Torben is the user-facing operator; submanagers are hidden capability modules."
+        },
+        "scope": [
+          "One Signal-facing Torben profile",
+          "Hidden EA, GTM/Magnus, and Finance/Ratatosk capability boundaries",
+          "Consistent action-ledger and approval semantics"
+        ],
+        "out_of_scope": [
+          "OpenClaw resurrection",
+          "Separate user-facing Magnus or Ratatosk chat profiles",
+          "Unattended public or financial mutations"
+        ],
+        "dependencies": [],
+        "acceptance_criteria": [
+          "Torben is documented as the only user-facing operator.",
+          "Magnus and Ratatosk backend roles are documented as hidden submanager contracts.",
+          "All remaining mutation classes are mapped to approval gates."
+        ],
+        "anti_slop_rules": [
+          "Do not describe submanagers as separate people Eric must talk to.",
+          "Do not call draft/stage readiness production mutation readiness.",
+          "Do not create a scope that depends on OpenClaw."
+        ],
+        "tech_debt_boundaries": {
+          "prerequisite_debt": "Existing old profile artifacts may remain on disk.",
+          "deferred_debt": "Physical deletion of old stacks can happen after Torben contracts are proven.",
+          "deferral_safety": "Live-profile verification must ignore retired profiles and check only active Torben-owned jobs."
+        },
+        "compatibility_contract": {
+          "backward": "Do not break current Torben EA/GTM cron jobs or Signal replies.",
+          "forward": "Allow additional submanager capabilities without changing the user-facing interface.",
+          "migration_or_rollout": "Document before changing runtime behavior."
+        },
+        "implementation_notes": [
+          "Update Torben operating docs and build goal before code changes."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "command",
+            "target": "hermes -p torben cron list",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "target_files": [
+              "profiles/torben/SOUL.md",
+              "docs/operations/torben-operating-model-snapshot.md"
+            ],
+            "expected_failure_mode": "ownership boundary undocumented or stale"
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": false,
+          "must_be_deterministic": true,
+          "scope_note": "Validate against live Torben profile state."
+        },
+        "evidence_responsibilities": [
+          "Capture live Torben cron list and live-profile verifier artifact."
+        ],
+        "definition_of_done": [
+          "Single-operator scope is explicit and referenced by the goal."
+        ],
+        "failure_modes": [
+          "HIGH: Team implements backend capability as a new user-facing profile instead of Torben-owned module."
+        ],
+        "bpe_classification": "type_2",
+        "owner": "torben",
+        "files_to_modify": [],
+        "files_to_create": [],
+        "reference_impl": "profiles/torben/SOUL.md"
+      },
+      {
+        "artifact_type": "decision_gate",
+        "task_id": "TBC-DECIDE-PUBLIC-MUTATION",
+        "title": "Decide public and personal external mutation policy",
+        "objective": "Resolve whether the next build may enable approval-gated public posting, email sending, real calendar edits/deletes, and Gmail cleanup mutations.",
+        "task_classification": "security",
+        "decision_contract": {
+          "type1_decision": true,
+          "status": "unresolved",
+          "owner": "eric",
+          "deadline": "2026-06-26",
+          "blocks_implementation": true,
+          "resolution": "ADLC planning gate remains unresolved by schema; execution-time testing approval is recorded in docs/operations/torben-backend-capability-canary-report.md."
+        },
+        "scope": [
+          "X and LinkedIn post/reply/schedule approval policy",
+          "Gmail send and cleanup approval policy",
+          "Real calendar edit/delete approval policy"
+        ],
+        "out_of_scope": [
+          "Broker orders",
+          "Monarch financial mutations",
+          "Unattended posting or sending"
+        ],
+        "dependencies": [
+          "TBC-EPIC"
+        ],
+        "acceptance_criteria": [
+          "Each public/personal mutation class is set to blocked, approval-only, or later-autonomy.",
+          "The approval command syntax is documented for each enabled class.",
+          "The rollback/reconciliation requirement is documented for each enabled class."
+        ],
+        "anti_slop_rules": [
+          "Do not bundle all mutation classes under one vague yes.",
+          "Do not enable browser automation as a fallback without audit evidence.",
+          "Do not use a cron success message as approval."
+        ],
+        "tech_debt_boundaries": {
+          "prerequisite_debt": "Current Gmail cleanup and GTM package paths are approval-gated but not all public/personal mutations exist.",
+          "deferred_debt": "Later autonomy can be added after 30 days of approval telemetry.",
+          "deferral_safety": "Testing autonomy does not permit unattended public writes; adapters must still prove action-ledger approval and provider results."
+        },
+        "compatibility_contract": {
+          "backward": "Preserve current draft/stage behavior.",
+          "forward": "Mutation policy can be widened later without changing evidence contracts.",
+          "migration_or_rollout": "Start with approval-only canaries before any autonomy."
+        },
+        "implementation_notes": [
+          "Use this as the gate for public write adapters and personal mutation resolvers."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "command",
+            "target": "rg -n \"public_actions_taken|external_mutations|publishing_blocked_until|approval\" profiles/torben hermes_cli/signal_coo tests",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "target_files": [
+              "profiles/torben/SOUL.md",
+              "hermes_cli/signal_coo"
+            ],
+            "expected_failure_mode": "mutation policy missing or ambiguous"
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": false,
+          "must_be_deterministic": true,
+          "scope_note": "Policy decision blocks mutation-enabling tasks."
+        },
+        "evidence_responsibilities": [
+          "Record Eric's decision in the goal closeout and action policy."
+        ],
+        "definition_of_done": [
+          "Decision resolved before public/personal mutation adapters are enabled."
+        ],
+        "failure_modes": [
+          "CRITICAL: Public post, email send, calendar edit, or Gmail delete happens without explicit approval."
+        ],
+        "bpe_classification": "type_1",
+        "owner": "eric",
+        "files_to_modify": [
+          "profiles/torben/SOUL.md",
+          "docs/operations/torben-operating-model-snapshot.md"
+        ],
+        "files_to_create": [],
+        "reference_impl": "hermes_cli/signal_coo/action_ledger.py"
+      },
+      {
+        "artifact_type": "decision_gate",
+        "task_id": "TBC-DECIDE-LIVE-FINANCE",
+        "title": "Decide live finance and trading mandate",
+        "objective": "Resolve whether Ratatosk/Torben may enable approval-gated Robinhood live trading, margin/options, Monarch finance actions, and broker order execution under a written mandate.",
+        "task_classification": "security",
+        "decision_contract": {
+          "type1_decision": true,
+          "status": "unresolved",
+          "owner": "eric",
+          "deadline": "2026-06-26",
+          "blocks_implementation": true,
+          "resolution": "ADLC planning gate remains unresolved by schema; execution-time testing approval is recorded in docs/operations/torben-backend-capability-canary-report.md."
+        },
+        "scope": [
+          "Robinhood Agentic MCP live order policy",
+          "Margin and options eligibility and caps",
+          "Monarch read/write finance policy",
+          "Kill switch and reconciliation expectations"
+        ],
+        "out_of_scope": [
+          "Clearing the circuit breaker without explicit approval",
+          "Raising limits automatically",
+          "Unattended broker order placement"
+        ],
+        "dependencies": [
+          "TBC-EPIC"
+        ],
+        "acceptance_criteria": [
+          "Mandate file defines capital base, per-trade caps, daily/weekly loss limits, margin/options boundaries, and kill switch.",
+          "Consent artifact exists before live order code can submit.",
+          "No live order path can bypass guard, review, reconciliation, and audit ledger."
+        ],
+        "anti_slop_rules": [
+          "Do not describe paper/staged trading as live readiness.",
+          "Do not clear circuit breaker or trading halt inside the build without decision evidence.",
+          "Do not claim options support until Robinhood tool discovery proves it."
+        ],
+        "tech_debt_boundaries": {
+          "prerequisite_debt": "Ratatosk executor tests need cleanup around live gates and submitted order position recording.",
+          "deferred_debt": "Gemini and non-Robinhood broker support remain out of v0.1.",
+          "deferral_safety": "Live trading remains blocked while the active Ratatosk circuit-breaker/trading halt is present, even though the testing-scope decision is resolved."
+        },
+        "compatibility_contract": {
+          "backward": "Keep current fail-closed live trading behavior.",
+          "forward": "Mandate can later widen after measured performance and explicit approval.",
+          "migration_or_rollout": "Start with read-only and stage-only finance canaries, then approval-only live canary."
+        },
+        "implementation_notes": [
+          "Use Ratatosk v0.1 Robinhood brief as research input but validate against current local ADLC schema."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "command",
+            "target": "cd /Users/ericfreeman/ratatosk && uv run python scripts/robinhood_v01_validate.py --json",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "target_files": [
+              "config/robinhood_v01_mandate.template.yaml",
+              "scripts/robinhood_v01_validate.py",
+              "src/ratatosk/robinhood_v01/mandate.py"
+            ],
+            "expected_failure_mode": "live order blocked without consent or live gates"
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": false,
+          "must_be_deterministic": true,
+          "scope_note": "Decision must not be inferred from tests passing."
+        },
+        "evidence_responsibilities": [
+          "Capture mandate, consent, guard, circuit breaker, and live validator outputs."
+        ],
+        "definition_of_done": [
+          "Live finance decision resolved before broker order execution is enabled."
+        ],
+        "failure_modes": [
+          "CRITICAL: Broker order submitted without written mandate and consent.",
+          "CRITICAL: Margin/options trade bypasses caps or eligibility checks."
+        ],
+        "bpe_classification": "type_1",
+        "owner": "eric",
+        "files_to_modify": [
+          "/Users/ericfreeman/ratatosk/config/robinhood_v01_mandate.template.yaml",
+          "/Users/ericfreeman/ratatosk/docs/robinhood-v01-runbook.md"
+        ],
+        "files_to_create": [
+          "/Users/ericfreeman/ratatosk/docs/torben-finance-live-mandate.md"
+        ],
+        "reference_impl": "/Users/ericfreeman/ratatosk/docs/build-briefs/hermes-robinhood-cron-v0_1.json"
+      },
+      {
+        "artifact_type": "implementation_task",
+        "task_id": "TBC-CONTRACTS",
+        "title": "Implement Torben submanager capability contracts",
+        "objective": "Create one contract layer for hidden EA, GTM/Magnus, and Finance/Ratatosk capabilities so Torben can route evidence, actions, approvals, health, and investigations consistently.",
+        "task_classification": "infra",
+        "decision_contract": {
+          "type1_decision": false,
+          "status": "not_applicable",
+          "owner": "torben",
+          "deadline": "2026-06-27",
+          "blocks_implementation": false,
+          "resolution": "No Type 1 decision required for read/stage/health contracts."
+        },
+        "scope": [
+          "Submanager registry",
+          "EvidencePacket and CandidateAction shape",
+          "ApprovalRequest, ExecutionReport, and ReconciliationReport shape",
+          "Health and live-profile integration"
+        ],
+        "out_of_scope": [
+          "External mutation enablement",
+          "Provider-specific OAuth onboarding",
+          "Broker order execution"
+        ],
+        "dependencies": [
+          "TBC-EPIC"
+        ],
+        "acceptance_criteria": [
+          "Torben can list EA, GTM, and Finance backend health in one artifact.",
+          "Every backend candidate action includes scope, handle prefix, evidence ids, risk class, allowed next actions, and mutation status.",
+          "Duplicate/no-op backend runs stay silent."
+        ],
+        "anti_slop_rules": [
+          "Do not create three separate action ledgers.",
+          "Do not let submanager scripts print raw reports directly to Signal.",
+          "Do not store secrets or raw OAuth tokens in the contract artifacts."
+        ],
+        "tech_debt_boundaries": {
+          "prerequisite_debt": "Current GTM and EA artifacts have adjacent but not fully unified shapes.",
+          "deferred_debt": "Historical artifacts do not need migration unless they are still active.",
+          "deferral_safety": "New contracts can wrap old artifacts with adapters."
+        },
+        "compatibility_contract": {
+          "backward": "Current Torben scripts and tests keep passing.",
+          "forward": "Future hidden submanagers can plug into the same contract.",
+          "migration_or_rollout": "Add contract adapters before changing cron behavior."
+        },
+        "implementation_notes": [
+          "Prefer hermes_cli/signal_coo modules over profile-local one-off logic.",
+          "Integrate with live-profile verifier and investigation request state."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "command",
+            "target": "cd /Users/ericfreeman/.hermes/hermes-agent && venv/bin/python -m pytest tests/test_signal_coo.py tests/test_signal_coo_live_profile_verify.py -q",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "target_files": [
+              "hermes_cli/signal_coo",
+              "profiles/torben/scripts",
+              "tests/test_signal_coo.py"
+            ],
+            "expected_failure_mode": "submanager contract missing or inconsistent"
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": false,
+          "must_be_deterministic": true,
+          "scope_note": "Contract tests should not need network access."
+        },
+        "evidence_responsibilities": [
+          "Capture test output and live-profile verifier output."
+        ],
+        "definition_of_done": [
+          "EA, GTM, and Finance can be represented in one Torben-owned capability registry."
+        ],
+        "failure_modes": [
+          "HIGH: Hidden capability emits unstructured text that bypasses Torben policy."
+        ],
+        "bpe_classification": "type_2",
+        "owner": "torben",
+        "files_to_modify": [
+          "hermes_cli/signal_coo",
+          "profiles/torben/scripts/torben_live_profile_verify.py",
+          "tests/test_signal_coo.py"
+        ],
+        "files_to_create": [
+          "docs/operations/torben-submanager-contracts.md"
+        ],
+        "reference_impl": "hermes_cli/signal_coo/gtm_radar_adapter.py"
+      },
+      {
+        "artifact_type": "implementation_task",
+        "task_id": "TBC-GTM-MAGNUS",
+        "title": "Finish Magnus as hidden GTM content intelligence submanager",
+        "objective": "Complete the Torben-owned GTM loop so Magnus/Grok source intelligence, X algorithm pressure tests, article packages, visuals, and reply recommendations operate through Signal handles with no unattended public action.",
+        "task_classification": "feature",
+        "decision_contract": {
+          "type1_decision": false,
+          "status": "not_applicable",
+          "owner": "torben",
+          "deadline": "2026-06-27",
+          "blocks_implementation": false,
+          "resolution": "Read/stage GTM intelligence and drafts can proceed without public mutation enablement."
+        },
+        "scope": [
+          "Refresh Magnus GTM sources from Torben",
+          "Use Grok/xAI and X search for GTM judgment",
+          "Use xai-org/x-algorithm as a pressure-test lens",
+          "Stage longform, LinkedIn, X post, X thread, reply, and visual packages"
+        ],
+        "out_of_scope": [
+          "Public posting without approval",
+          "Unattended likes/reposts/follows/DMs",
+          "Static keyword-only topic selection"
+        ],
+        "dependencies": [
+          "TBC-CONTRACTS"
+        ],
+        "acceptance_criteria": [
+          "Torben GTM radar can refresh sources and emit 1-3 actionable findings with links and handles.",
+          "GTM engagement radar can stage reply recommendations with context, exact draft, and source evidence.",
+          "Content packages include thesis, source notes, platform-specific copy, visual plan, X algorithm pressure-test, and approval actions."
+        ],
+        "anti_slop_rules": [
+          "Do not open articles with a paper summary unless requested.",
+          "Do not emit draft in backlog without useful summary and next action.",
+          "Do not claim X algorithm guarantees private ranking outcomes."
+        ],
+        "tech_debt_boundaries": {
+          "prerequisite_debt": "Old magnus profile cron state is empty; Torben is the active scheduler.",
+          "deferred_debt": "Legacy Magnus-local queues can remain as backend caches if Torben owns delivery.",
+          "deferral_safety": "All visible GTM output must pass through Torben action handles."
+        },
+        "compatibility_contract": {
+          "backward": "Existing torben-gtm-radar and torben-gtm-engagement-radar keep their schedules and no-agent delivery.",
+          "forward": "Public-write adapters can attach after TBC-DECIDE-PUBLIC-MUTATION resolves.",
+          "migration_or_rollout": "Start with preview and local package canaries before Signal delivery."
+        },
+        "implementation_notes": [
+          "Use Grok for Magnus review and X integration; use Codex/OpenAI only for longform/code work if explicitly needed.",
+          "Use EA newsletter extraction as an additional GTM source but keep realtime email separate from GTM radar."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "command",
+            "target": "cd /Users/ericfreeman/.hermes/hermes-agent && venv/bin/python -m pytest tests/test_torben_gtm_engagement_radar.py tests/test_torben_gtm_radar_script.py tests/gateway/test_torben_gtm_reply_router.py -q",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "target_files": [
+              "profiles/torben/scripts/torben_gtm_radar.py",
+              "profiles/torben/scripts/torben_gtm_engagement_radar.py",
+              "hermes_cli/signal_coo/gtm_reply_router.py"
+            ],
+            "expected_failure_mode": "GTM package or reply router not fully Torben-owned"
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": false,
+          "must_be_deterministic": true,
+          "scope_note": "Network canaries run separately from deterministic unit tests."
+        },
+        "evidence_responsibilities": [
+          "Capture preview output, Signal-safe text, and public_actions_taken=0."
+        ],
+        "definition_of_done": [
+          "Torben can stage GTM intelligence and content packages through Signal with no public mutation."
+        ],
+        "failure_modes": [
+          "MEDIUM: GTM radar is technically running but produces low-signal or duplicate findings.",
+          "HIGH: Public write adapter is reachable before approval."
+        ],
+        "bpe_classification": "type_2",
+        "owner": "torben-magnus",
+        "files_to_modify": [
+          "profiles/torben/scripts/torben_gtm_radar.py",
+          "profiles/torben/scripts/torben_gtm_engagement_radar.py",
+          "hermes_cli/signal_coo/gtm_reply_router.py",
+          "/Users/ericfreeman/magnus/src/magnus"
+        ],
+        "files_to_create": [
+          "docs/operations/torben-gtm-public-write-runbook.md"
+        ],
+        "reference_impl": "docs/build-briefs/torben-magnus-gtm-operating-loop.json"
+      },
+      {
+        "artifact_type": "implementation_task",
+        "task_id": "TBC-EA-MUTATION",
+        "title": "Finish EA mutation backends behind Torben approvals",
+        "objective": "Complete approval-gated Gmail send, Gmail cleanup, and real calendar edit/delete backends while preserving current auto busy-block calendar alignment and no-noise realtime triage.",
+        "task_classification": "feature",
+        "decision_contract": {
+          "type1_decision": false,
+          "status": "not_applicable",
+          "owner": "torben",
+          "deadline": "2026-06-27",
+          "blocks_implementation": false,
+          "resolution": "Guarded stage/apply code can be implemented without enabling broad autonomy."
+        },
+        "scope": [
+          "Gmail send draft approval path",
+          "Gmail trash/archive/label cleanup approval path",
+          "Calendar edit/delete approval path",
+          "Relationship learning and action memory integration"
+        ],
+        "out_of_scope": [
+          "Unattended email send",
+          "Unattended real calendar edits/deletes",
+          "Permanent Gmail delete",
+          "Static keyword-only cleanup"
+        ],
+        "dependencies": [
+          "TBC-CONTRACTS"
+        ],
+        "acceptance_criteria": [
+          "Every staged email response includes thread context and what the draft is trying to say.",
+          "Cleanup recommendations can be approved by handle and apply only guarded trash/archive actions.",
+          "Calendar mutation proposals include source event, target calendar, rollback metadata, and approval handle."
+        ],
+        "anti_slop_rules": [
+          "Do not classify email importance from body keywords alone.",
+          "Do not permanently delete Gmail messages.",
+          "Do not edit attendee-bearing events without explicit approval and audit."
+        ],
+        "tech_debt_boundaries": {
+          "prerequisite_debt": "Realtime triage and weekly hygiene already exist but not all send/edit paths exist.",
+          "deferred_debt": "Later autonomy can be learned from 30 days of approvals.",
+          "deferral_safety": "Approval-only apply paths prevent accidental mutation."
+        },
+        "compatibility_contract": {
+          "backward": "Keep Gmail Pub/Sub realtime, morning brief, calendar alignment, and meeting prep behavior.",
+          "forward": "Same action-ledger resolver can later support limited autonomy.",
+          "migration_or_rollout": "Canary each Gmail/calendar mutation class on a synthetic or explicitly approved target first."
+        },
+        "implementation_notes": [
+          "Google Gmail API send/trash/modify and Calendar events insert/patch/delete are the provider boundaries.",
+          "Calendar busy-block auto-create remains narrowly allowed; real event edit/delete stays approval-only."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "command",
+            "target": "cd /Users/ericfreeman/.hermes/hermes-agent && venv/bin/python -m pytest tests/test_signal_coo.py tests/test_signal_coo_gmail_realtime.py -q",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "target_files": [
+              "hermes_cli/signal_coo/email_hygiene.py",
+              "hermes_cli/signal_coo/gmail_realtime.py",
+              "profiles/torben/scripts"
+            ],
+            "expected_failure_mode": "EA mutation resolver missing approval guard or context"
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": false,
+          "must_be_deterministic": true,
+          "scope_note": "Live Google write canaries require explicit approved handles."
+        },
+        "evidence_responsibilities": [
+          "Capture synthetic apply tests and one approved live canary per mutation class before enabling."
+        ],
+        "definition_of_done": [
+          "Torben can stage and, after approval, apply EA mutations with audit and rollback/reconciliation data."
+        ],
+        "failure_modes": [
+          "HIGH: Gmail cleanup applies from weekly cron without handle approval.",
+          "HIGH: Email send loses thread context and sends generic copy."
+        ],
+        "bpe_classification": "type_2",
+        "owner": "torben-ea",
+        "files_to_modify": [
+          "hermes_cli/signal_coo/email_hygiene.py",
+          "hermes_cli/signal_coo/gmail_realtime.py",
+          "profiles/torben/scripts"
+        ],
+        "files_to_create": [
+          "docs/operations/torben-ea-mutation-runbook.md"
+        ],
+        "reference_impl": "profiles/torben/SOUL.md"
+      },
+      {
+        "artifact_type": "implementation_task",
+        "task_id": "TBC-RATATOSK-FINANCE",
+        "title": "Finish Ratatosk as hidden Finance submanager in stage-only mode",
+        "objective": "Wire Ratatosk finance research, Robinhood candidate staging, Monarch personal finance insight, mandate validation, and fail-closed live order checks behind Torben FIN handles without submitting live orders.",
+        "task_classification": "feature",
+        "decision_contract": {
+          "type1_decision": false,
+          "status": "not_applicable",
+          "owner": "torben-ratatosk",
+          "deadline": "2026-06-27",
+          "blocks_implementation": false,
+          "resolution": "Stage-only finance capability remains the default. The live finance decision is resolved for a tiny testing canary, but the active Ratatosk circuit-breaker/trading halt still blocks broker execution."
+        },
+        "scope": [
+          "Create or emulate hidden Ratatosk submanager under Torben",
+          "Cron-triggered bounded LLM market analysis",
+          "Robinhood MCP discovery and read/candidate staging",
+          "Monarch MCP read insights and approval-gated recommendations",
+          "FIN handles and Signal approval packets"
+        ],
+        "out_of_scope": [
+          "Live broker orders",
+          "Margin/options execution",
+          "Clearing circuit breaker or trading halt",
+          "Gemini exchange support"
+        ],
+        "dependencies": [
+          "TBC-CONTRACTS"
+        ],
+        "acceptance_criteria": [
+          "Torben can emit FIN handles for research, watchlist, candidate trades, risk reviews, and Monarch finance recommendations.",
+          "Robinhood candidate staging proves research_signal_can_trade_directly=false.",
+          "Live order attempts remain blocked without mandate, consent, live env gates, and guard pass.",
+          "No broker order or Monarch mutation occurs during scheduled stage-only jobs."
+        ],
+        "anti_slop_rules": [
+          "Do not say ROI is proven from staged candidates.",
+          "Do not treat account read access as trade permission.",
+          "Do not bypass circuit breaker or trading halt in tests or live profile setup."
+        ],
+        "tech_debt_boundaries": {
+          "prerequisite_debt": "Ratatosk executor tests need live-gate and position-recording cleanup.",
+          "deferred_debt": "Live trading and options execution wait for Type-1 decision.",
+          "deferral_safety": "Stage-only mode preserves finance signal without capital mutation."
+        },
+        "compatibility_contract": {
+          "backward": "Keep current Ratatosk fail-closed behavior and v0.1 validator.",
+          "forward": "Live finance task can enable orders after mandate and consent.",
+          "migration_or_rollout": "Start as Torben FIN handles, then decide whether to create a hidden Hermes ratatosk profile."
+        },
+        "implementation_notes": [
+          "Use Robinhood Agentic MCP for brokerage path and Monarch MCP for personal finance path.",
+          "Stage-only crons mint one bounded LLM run per tick and never expose broker order tools to the LLM."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "command",
+            "target": "cd /Users/ericfreeman/ratatosk && uv run python scripts/robinhood_v01_validate.py --json",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "target_files": [
+              "scripts/robinhood_v01_validate.py",
+              "scripts/robinhood_v01_cron_tick.py",
+              "src/ratatosk/robinhood_v01",
+              "src/ratatosk/connectors/robinhood.py"
+            ],
+            "expected_failure_mode": "finance path can stage candidates but live order is blocked"
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": false,
+          "must_be_deterministic": true,
+          "scope_note": "Live MCP canaries must run read-only or stage-only unless Type-1 decision resolves."
+        },
+        "evidence_responsibilities": [
+          "Capture validator output, circuit breaker state, trading halt state, and FIN action ledger entries."
+        ],
+        "definition_of_done": [
+          "Torben can surface Finance/Ratatosk stage-only signals through FIN handles with live orders blocked."
+        ],
+        "failure_modes": [
+          "CRITICAL: Stage-only finance job places a broker order.",
+          "HIGH: Candidate lacks risk/reward, source evidence, or guard decision."
+        ],
+        "bpe_classification": "type_2",
+        "owner": "torben-ratatosk",
+        "files_to_modify": [
+          "/Users/ericfreeman/ratatosk/scripts/robinhood_v01_cron_tick.py",
+          "/Users/ericfreeman/ratatosk/src/ratatosk/robinhood_v01",
+          "profiles/torben/scripts"
+        ],
+        "files_to_create": [
+          "profiles/torben/scripts/torben_finance_radar.py",
+          "docs/operations/torben-finance-stage-only-runbook.md"
+        ],
+        "reference_impl": "/Users/ericfreeman/ratatosk/HERMES_ROBINHOOD_CRON_V0_1_CODEX_EXECUTION_PROMPT.md"
+      },
+      {
+        "artifact_type": "implementation_task",
+        "task_id": "TBC-PUBLIC-ADAPTERS",
+        "title": "Enable approval-gated public and personal mutation adapters",
+        "objective": "After the public mutation decision resolves, connect approved Torben handles to X/LinkedIn posting, Gmail send, Gmail cleanup, and real calendar edit/delete adapters with provider verification and audit.",
+        "task_classification": "feature",
+        "decision_contract": {
+          "type1_decision": false,
+          "status": "resolved",
+          "owner": "eric",
+          "deadline": "2026-06-28",
+          "blocks_implementation": false,
+          "resolution": "Implementation depends on TBC-DECIDE-PUBLIC-MUTATION being resolved before execution."
+        },
+        "scope": [
+          "X API or browser/Postiz approval-gated publish path",
+          "LinkedIn Posts API or browser/Postiz approval-gated publish path",
+          "Gmail send and cleanup apply path",
+          "Calendar edit/delete apply path"
+        ],
+        "out_of_scope": [
+          "Unattended public posting",
+          "Bulk email send",
+          "Permanent Gmail delete",
+          "Finance actions"
+        ],
+        "dependencies": [
+          "TBC-DECIDE-PUBLIC-MUTATION",
+          "TBC-GTM-MAGNUS",
+          "TBC-EA-MUTATION"
+        ],
+        "acceptance_criteria": [
+          "Approved handle resolves to exact draft/source/evidence before mutation.",
+          "Provider response is stored with mutation id, timestamp, target account, and rollback/reconciliation status.",
+          "Failed provider calls create one actionable failure and no duplicate spam."
+        ],
+        "anti_slop_rules": [
+          "Do not post if the draft has changed since approval.",
+          "Do not use browser automation when API path is available and authorized unless explicitly selected.",
+          "Do not hide platform policy or rate-limit failures."
+        ],
+        "tech_debt_boundaries": {
+          "prerequisite_debt": "OAuth/API access and app approval may vary by platform.",
+          "deferred_debt": "Unattended publishing remains deferred.",
+          "deferral_safety": "Approval-gated public write canary runs one item at a time."
+        },
+        "compatibility_contract": {
+          "backward": "Draft/source/hold replies keep working even if publish adapters are unavailable.",
+          "forward": "Adapters can swap API, Postiz, or browser backend without changing Torben handle semantics.",
+          "migration_or_rollout": "Enable one platform/action at a time with canary evidence."
+        },
+        "implementation_notes": [
+          "X API create post requires user-context write capability.",
+          "LinkedIn Posts API requires appropriate member or organization author permissions.",
+          "Gmail send and Calendar mutation use already authorized Google account scopes only after approval."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "command",
+            "target": "cd /Users/ericfreeman/.hermes/hermes-agent && venv/bin/python -m pytest tests/gateway/test_torben_gtm_reply_router.py tests/test_signal_coo.py -q",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "target_files": [
+              "hermes_cli/signal_coo",
+              "gateway/run.py",
+              "profiles/torben/scripts"
+            ],
+            "expected_failure_mode": "approved handle cannot reach guarded provider adapter"
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": false,
+          "must_be_deterministic": true,
+          "scope_note": "Live platform canaries require explicit approved handles."
+        },
+        "evidence_responsibilities": [
+          "Capture provider response, audit ledger entry, and rollback/reconciliation metadata."
+        ],
+        "definition_of_done": [
+          "One approved canary per enabled mutation class succeeds or fails safely with audit evidence."
+        ],
+        "failure_modes": [
+          "CRITICAL: Public post or email sends without current approved handle.",
+          "HIGH: Provider write succeeds but audit record is missing."
+        ],
+        "bpe_classification": "type_2",
+        "owner": "torben",
+        "files_to_modify": [
+          "hermes_cli/signal_coo",
+          "gateway/run.py",
+          "profiles/torben/scripts"
+        ],
+        "files_to_create": [
+          "docs/operations/torben-public-mutation-canaries.md"
+        ],
+        "reference_impl": "hermes_cli/signal_coo/gtm_reply_router.py"
+      },
+      {
+        "artifact_type": "implementation_task",
+        "task_id": "TBC-LIVE-FINANCE",
+        "title": "Enable approval-gated live finance execution",
+        "objective": "After the live finance decision resolves, enable Ratatosk/Torben live Robinhood and Monarch mutations under mandate, consent, hard limits, kill switch, and reconciliation.",
+        "task_classification": "security",
+        "decision_contract": {
+          "type1_decision": false,
+          "status": "resolved",
+          "owner": "eric",
+          "deadline": "2026-06-28",
+          "blocks_implementation": false,
+          "resolution": "Implementation depends on TBC-DECIDE-LIVE-FINANCE being resolved before execution."
+        },
+        "scope": [
+          "Robinhood equity live order canary",
+          "Robinhood options discovery and long-call/put approval path",
+          "Margin policy guard",
+          "Monarch approval-gated finance actions",
+          "Order and account reconciliation"
+        ],
+        "out_of_scope": [
+          "Unattended live trading",
+          "Short selling",
+          "Naked options",
+          "Spreads",
+          "0DTE",
+          "Limit increases without approval"
+        ],
+        "dependencies": [
+          "TBC-DECIDE-LIVE-FINANCE",
+          "TBC-RATATOSK-FINANCE"
+        ],
+        "acceptance_criteria": [
+          "No live order can submit unless mandate, consent, live env gates, kill switch, and pretrade guard pass.",
+          "Options execution is enabled only if Robinhood discovery proves account/tool support and contract filters pass.",
+          "Every order has pretrade decision, provider response, fill/reject status, position reconciliation, PnL attribution, and halt-on-divergence."
+        ],
+        "anti_slop_rules": [
+          "Do not enable margin borrowing by implication.",
+          "Do not infer options support from account hope; discover tools and approval state.",
+          "Do not mark live finance ready while executor tests fail."
+        ],
+        "tech_debt_boundaries": {
+          "prerequisite_debt": "Executor position-recording tests currently fail for submitted/unfilled mocked orders.",
+          "deferred_debt": "Gemini and broader brokerage support remain out of scope.",
+          "deferral_safety": "Fail-closed live gates remain default until tests and canaries pass."
+        },
+        "compatibility_contract": {
+          "backward": "Stage-only finance remains available if live canary fails.",
+          "forward": "Performance optimizer can change rankings but not widen risk limits.",
+          "migration_or_rollout": "Use one tiny approved live canary before scheduled live trading."
+        },
+        "implementation_notes": [
+          "Fix executor tests before enabling live order canary.",
+          "Use Robinhood Agentic MCP account separation and MCP tool discovery as hard gates."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "command",
+            "target": "cd /Users/ericfreeman/ratatosk && uv run python -m pytest tests/test_robinhood_v01 tests/test_engine/test_executor_robinhood.py -q",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "target_files": [
+              "tests/test_engine/test_executor_robinhood.py",
+              "src/ratatosk/engine/executor.py",
+              "src/ratatosk/robinhood_v01"
+            ],
+            "expected_failure_mode": "executor live gates or position reconciliation fail"
+          },
+          "secondary_verifiers": [],
+          "must_fail_before_change": true,
+          "must_be_deterministic": true,
+          "scope_note": "Live canary itself is separate and requires explicit approval."
+        },
+        "evidence_responsibilities": [
+          "Capture mandate, consent, unit tests, dry-run guard decision, live canary provider response, and reconciliation report."
+        ],
+        "definition_of_done": [
+          "Approval-gated live finance path is proven by tests and one approved canary, or remains explicitly blocked with reason."
+        ],
+        "failure_modes": [
+          "CRITICAL: Live order submitted with missing consent.",
+          "CRITICAL: Reconciliation mismatch does not halt future orders."
+        ],
+        "bpe_classification": "type_2",
+        "owner": "torben-ratatosk",
+        "files_to_modify": [
+          "/Users/ericfreeman/ratatosk/src/ratatosk/engine/executor.py",
+          "/Users/ericfreeman/ratatosk/src/ratatosk/robinhood_v01",
+          "/Users/ericfreeman/ratatosk/tests/test_engine/test_executor_robinhood.py"
+        ],
+        "files_to_create": [
+          "/Users/ericfreeman/ratatosk/docs/torben-live-finance-canary.md"
+        ],
+        "reference_impl": "/Users/ericfreeman/ratatosk/scripts/robinhood_v01_validate.py"
+      },
+      {
+        "artifact_type": "validation_task",
+        "task_id": "TBC-VAL-CANARY",
+        "title": "Validate Torben backend capability completion end to end",
+        "objective": "Prove Torben can coordinate EA, GTM, and Finance submanagers with no-noise background behavior, actionable Signal output, approval-gated mutations, live-profile investigation, and fail-closed finance.",
+        "task_classification": "build_validation",
+        "decision_contract": {
+          "type1_decision": false,
+          "status": "not_applicable",
+          "owner": "torben",
+          "deadline": "2026-06-28",
+          "blocks_implementation": false,
+          "resolution": "Validation task only."
+        },
+        "scope": [
+          "Torben profile health",
+          "EA realtime and approval canaries",
+          "GTM radar, engagement, content package, and public-write blocked canaries",
+          "Finance stage-only and live-order blocked canaries",
+          "Live-profile failure investigation"
+        ],
+        "out_of_scope": [
+          "Unapproved external mutations",
+          "Load testing unrelated Hermes surfaces",
+          "Legacy OpenClaw bridge validation"
+        ],
+        "dependencies": [
+          "TBC-CONTRACTS",
+          "TBC-GTM-MAGNUS",
+          "TBC-EA-MUTATION",
+          "TBC-RATATOSK-FINANCE"
+        ],
+        "acceptance_criteria": [
+          "Torben live-profile verifier passes.",
+          "Healthy background ticks with no actionable items stay silent.",
+          "Synthetic failure wakes one LLM investigation and suppresses duplicate failures.",
+          "GTM can stage content package and keep public_actions_taken=0 without approval.",
+          "EA can stage and apply only approved synthetic or explicitly approved mutations.",
+          "Finance can stage candidates and prove live orders are blocked without mandate/consent/live gates."
+        ],
+        "anti_slop_rules": [
+          "Do not accept green unit tests without live profile proof.",
+          "Do not hide failed canaries behind silence.",
+          "Do not run live mutations as part of validation unless explicitly approved."
+        ],
+        "tech_debt_boundaries": {
+          "prerequisite_debt": "Some live provider auth and external app permissions may require manual approval.",
+          "deferred_debt": "Longer-term autonomy tuning remains a post-canary phase.",
+          "deferral_safety": "Validation reports remaining provider and safety blockers instead of bypassing them."
+        },
+        "compatibility_contract": {
+          "backward": "Existing Torben production jobs remain active and no noisier than before.",
+          "forward": "Validation becomes the reusable preflight before expanding autonomy.",
+          "migration_or_rollout": "Run validation before enabling each mutation class."
+        },
+        "implementation_notes": [
+          "Use current Torben live-profile verification and investigation job as the operational health base.",
+          "Report canary evidence in one closeout artifact."
+        ],
+        "verification_spec": {
+          "primary_verifier": {
+            "type": "command",
+            "target": "cd /Users/ericfreeman/.hermes/hermes-agent && venv/bin/python -m pytest tests/test_signal_coo.py tests/test_signal_coo_gmail_realtime.py tests/test_signal_coo_live_profile_verify.py tests/test_torben_gtm_engagement_radar.py tests/gateway/test_torben_gtm_reply_router.py -q",
+            "expected_pre_change": "fail",
+            "expected_post_change": "pass",
+            "target_files": [
+              "tests/test_signal_coo.py",
+              "tests/test_signal_coo_gmail_realtime.py",
+              "tests/test_signal_coo_live_profile_verify.py",
+              "tests/test_torben_gtm_engagement_radar.py",
+              "tests/gateway/test_torben_gtm_reply_router.py"
+            ],
+            "expected_failure_mode": "Torben backend capability canaries incomplete"
+          },
+          "secondary_verifiers": [
+            {
+              "type": "command",
+              "target": "cd /Users/ericfreeman/ratatosk && uv run python scripts/robinhood_v01_validate.py --json",
+              "expected_pre_change": "fail",
+              "expected_post_change": "pass",
+              "target_files": [
+                "scripts/robinhood_v01_validate.py"
+              ],
+              "expected_failure_mode": "finance stage-only validator missing or unsafe"
+            }
+          ],
+          "must_fail_before_change": false,
+          "must_be_deterministic": true,
+          "scope_note": "Live external canaries require explicit approval and should be reported separately."
+        },
+        "evidence_responsibilities": [
+          "Capture pytest output, live cron list, live-profile verifier JSON, GTM preview output, Gmail realtime latest, and Ratatosk validator output."
+        ],
+        "definition_of_done": [
+          "A single validation closeout proves Torben backend capability completion or lists exact remaining blockers."
+        ],
+        "failure_modes": [
+          "HIGH: Validation passes while live profile is degraded.",
+          "HIGH: A no-op background job sends Signal noise."
+        ],
+        "bpe_classification": "type_2",
+        "owner": "torben",
+        "files_to_modify": [
+          "tests",
+          "profiles/torben/scripts",
+          "hermes_cli/signal_coo"
+        ],
+        "files_to_create": [
+          "docs/operations/torben-backend-capability-canary-report.md"
+        ],
+        "reference_impl": "profiles/torben/scripts/torben_live_profile_verify.py"
+      }
+    ],
+    "9_risks": [
+      "Single-interface convenience can hide dangerous external mutation boundaries unless action classes stay explicit.",
+      "Public platform APIs and app permissions may block direct X/LinkedIn posting even if local code is ready.",
+      "Robinhood Agentic MCP support and options/margin availability must be discovered live and may not match desired scope.",
+      "Monarch MCP may be read-heavy first; write actions need separate approval and provider capability validation.",
+      "LLM-driven crons can become noisy or expensive without wake gates, dedupe, and candidate caps.",
+      "Live finance canary execution remains blocked by the active Ratatosk circuit-breaker/trading halt until Eric separately approves clearing it with current risk evidence."
+    ],
+    "10_rollout": "Roll out in four stages. Stage 1: contract and health only, no new mutations. Stage 2: GTM and EA stage/apply canaries for approved handles, still no public posting without approval. Stage 3: Finance stage-only canaries and Ratatosk profile/submanager wiring, with live orders blocked. Stage 4: after Type-1 decisions, one approved canary per mutation class, then scheduled operation with live-profile verifier and investigation loop watching for drift.",
+    "11_validation_plan": [
+      "Validate this ADLC brief with the local ADLC CLI.",
+      "Run Torben unit and gateway tests for Signal action ledger, Gmail realtime, live-profile verification, GTM radar, and GTM reply routing.",
+      "Run Torben live-profile verifier and confirm status=pass.",
+      "Run GTM preview and confirm Grok/X algorithm lens, handles, useful summaries, public_actions_taken=0.",
+      "Run Gmail realtime latest check and confirm no stale Pub/Sub failures.",
+      "Run Ratatosk Robinhood v0.1 validator and confirm stage allowed, live order blocked without mandate/consent/gates.",
+      "Run synthetic live-profile failure and confirm one investigation request plus duplicate suppression.",
+      "Run approved live canaries only after the relevant Type-1 decision is resolved."
+    ],
+    "12_skill_trigger_configuration": [
+      {
+        "trigger": "debug live-profile or cron failure",
+        "skill_or_loop": "Torben live-profile investigate",
+        "mode": "read-only investigation before patch approval"
+      },
+      {
+        "trigger": "GTM public write path",
+        "skill_or_loop": "Torben GTM approval package",
+        "mode": "draft/source/hold first, publish only after approval"
+      },
+      {
+        "trigger": "Finance live path",
+        "skill_or_loop": "Ratatosk stage-only then live canary",
+        "mode": "fail-closed until mandate and consent"
+      }
+    ],
+    "13_comprehension_context": {
+      "operator_model": "Torben is Eric-facing. Submanagers are hidden capability modules.",
+      "core_rule": "Crons wake bounded LLM workflows; deterministic code collects evidence and enforces policy; neither static cron nor LLM output may mutate externally without a guard and approval.",
+      "handle_prefixes": [
+        "EA",
+        "GTM",
+        "FIN"
+      ]
+    },
+    "14_graph_research_evidence": {
+      "local_evidence": [
+        "hermes -p torben cron list",
+        "profiles/torben/SOUL.md",
+        "state/torben-gtm-radar-latest.json",
+        "ratatosk/scripts/robinhood_v01_validate.py --json",
+        "ratatosk/state/circuit-breaker.json",
+        "ratatosk/state/trading-halt.json"
+      ],
+      "external_evidence": [
+        "https://docs.x.com/x-api/posts/create-post",
+        "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api",
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/send",
+        "https://developers.google.com/workspace/gmail/api/reference/rest/v1/users.messages/trash",
+        "https://developers.google.com/workspace/calendar/api/guides/create-events",
+        "https://robinhood.com/us/en/agentic-trading",
+        "https://robinhood.com/us/en/support/articles/agentic-trading-overview/",
+        "https://help.monarch.com/hc/en-us/articles/50207234679956-Monarch-MCP-Connector"
+      ]
+    },
+    "15_dark_code_risk": {
+      "hotspots": [
+        "gateway/run.py reply routing branches",
+        "profiles/torben/scripts no-agent stdout surfaces",
+        "hermes_cli/signal_coo resolver modules",
+        "ratatosk executor live gates",
+        "Magnus publish and engagement queues"
+      ],
+      "required_checks": [
+        "No duplicate Signal reports on success/no-op",
+        "No external mutation without action-ledger approval",
+        "No broker order tools exposed to LLM cron analysis",
+        "No raw OAuth token or secret values in artifacts"
+      ]
+    }
+  }
+}

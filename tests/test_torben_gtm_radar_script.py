@@ -77,6 +77,15 @@ def test_torben_gtm_newsletter_includes_default_morning_artifact(monkeypatch, tm
     assert script._newsletter_files_from_env() == [default_file]
 
 
+def test_torben_gtm_magnus_refresh_uses_torben_profile_credentials(monkeypatch, tmp_path):
+    script = _load_script_module()
+    home = tmp_path / "profiles" / "torben"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("TORBEN_GTM_MAGNUS_HERMES_HOME", raising=False)
+
+    assert script._default_magnus_credential_home() == home
+
+
 def test_torben_gtm_extracts_json_from_noisy_stdout():
     script = _load_script_module()
 

@@ -14,6 +14,12 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _truthy(value: str | None, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def main() -> int:
     home = get_hermes_home()
     state_dir = home / "state"
@@ -29,9 +35,12 @@ def main() -> int:
     write_json_artifact(payload, state_dir / "torben-email-hygiene-review-latest.json")
     audit = payload.get("email_audit") or {}
     ledger = ActionLedger(state_dir / "torben-action-ledger.json")
+    llm_review: dict = {}
     staged = stage_hygiene_actions(
         ledger=ledger,
         records=list(audit.get("messages") or []),
+        enable_llm_review=_truthy(os.getenv("TORBEN_EMAIL_HYGIENE_LLM_REVIEW"), default=True),
+        review_metadata_out=llm_review,
     )
     output = {
         "task": "torben_email_hygiene_weekly_review",
@@ -61,6 +70,7 @@ def main() -> int:
             "warnings": ((payload.get("source_diagnostics") or {}).get("gmail") or {}).get("audit", {}).get(
                 "warnings", []
             ),
+            "llm_review": llm_review,
         },
     }
     write_json_artifact(output, state_dir / "torben-email-hygiene-review-actions-latest.json")

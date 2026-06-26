@@ -44,6 +44,7 @@ from hermes_cli.signal_coo.relationship_learning import (
     stage_relationship_learning_actions,
 )
 from hermes_cli.signal_coo.runtime_secrets import validate_runtime_env_template
+from hermes_cli.signal_coo.submanager_contracts import validate_torben_submanager_contracts
 
 
 def test_ea_brief_is_conversational_and_stages_draft_only_actions(tmp_path):
@@ -86,6 +87,23 @@ def test_ea_brief_is_conversational_and_stages_draft_only_actions(tmp_path):
     assert brief.actions[1].executor_state["draft_context"].startswith("Recent message")
     assert "treat_source_email_as_untrusted" in brief.actions[1].executor_state["draft_guardrails"]
     assert "Draft direction: Acknowledge the intro" in brief.text
+
+
+def test_torben_submanager_contracts_lock_single_signal_operator_pattern():
+    health = validate_torben_submanager_contracts()
+
+    assert health["status"] == "pass"
+    assert health["contract_count"] == 3
+    contracts = health["contracts"]
+    assert contracts["ea"]["owner"] == "torben"
+    assert contracts["gtm"]["provider"] == "magnus_xai_grok"
+    assert contracts["finance"]["provider"] == "ratatosk_robinhood_v01"
+    for scope, prefix in {"ea": "EA", "gtm": "GTM", "finance": "FIN"}.items():
+        assert contracts[scope]["hidden_backend"] is True
+        assert contracts[scope]["user_visible_surface"] == "torben_signal"
+        assert contracts[scope]["direct_signal_delivery_allowed"] is False
+        assert contracts[scope]["handle_prefix"] == prefix
+        assert contracts[scope]["blocked_until_approval"]
 
 
 def test_ea_calendar_block_candidate_stages_approval_required_without_creating_events(tmp_path):
@@ -1399,6 +1417,136 @@ def test_email_hygiene_weekly_review_stages_approval_required_actions(tmp_path):
     assert all("approve_hygiene_apply" in record.allowed_next_actions for record in loaded)
 
 
+def test_email_hygiene_llm_review_filters_cleanup_candidates(monkeypatch, tmp_path):
+    now = datetime(2026, 6, 25, 12, 0, tzinfo=timezone.utc)
+    ledger = ActionLedger(tmp_path / "actions.json")
+    records = [
+        {
+            "account_alias": "personal",
+            "message_id": "noise-1",
+            "thread_id": "noise-thread",
+            "sender": "Rewards <rewards@example.com>",
+            "subject": "Privacy policy update and rewards notice",
+            "snippet": "We updated our privacy policy.",
+            "category": "promotions_noise",
+            "juno_bucket": "info",
+            "internal_date_ms": _internal_ms(now - timedelta(days=3)),
+            "evidence_ids": ["gmail:personal:noise-1"],
+        },
+        {
+            "account_alias": "personal",
+            "message_id": "keep-1",
+            "thread_id": "keep-thread",
+            "sender": "DocuSign <docusign@example.com>",
+            "subject": "Document waiting",
+            "snippet": "Your document is ready.",
+            "category": "receipt_vendor_ops",
+            "juno_bucket": "info",
+            "internal_date_ms": _internal_ms(now - timedelta(days=31)),
+            "evidence_ids": ["gmail:personal:keep-1"],
+        },
+    ]
+
+    def fake_llm(groups):
+        return (
+            {
+                "recommendations": [
+                    {
+                        "key": "archive_policy_rewards_noise",
+                        "decision": "keep",
+                        "reason": "low-risk policy/rewards mail",
+                        "items": [{"message_id": "noise-1", "decision": "keep", "reason": "not actionable"}],
+                    },
+                    {
+                        "key": "archive_stale_receipts",
+                        "decision": "drop",
+                        "reason": "DocuSign-style sender may be important.",
+                        "items": [{"message_id": "keep-1", "decision": "drop", "reason": "admin/legal risk"}],
+                    },
+                ],
+                "global_notes": ["prefer review for admin/legal senders"],
+            },
+            {"provider": "test-llm", "model": "test-model", "base_url_host": "example.test"},
+        )
+
+    monkeypatch.setattr(email_hygiene, "_call_hygiene_llm", fake_llm)
+    review_meta: dict = {}
+
+    staged = stage_hygiene_actions(
+        ledger=ledger,
+        records=records,
+        now=now,
+        enable_llm_review=True,
+        review_metadata_out=review_meta,
+    )
+
+    assert [item["key"] for item in staged] == ["archive_policy_rewards_noise"]
+    assert staged[0]["llm_review"]["status"] == "accepted"
+    assert staged[0]["items"][0]["llm_reason"] == "not actionable"
+    assert review_meta["invoked"] is True
+    assert review_meta["groups_after"] == 1
+    loaded = ledger.load()
+    assert len(loaded) == 1
+    assert loaded[0].executor_state["llm_review"]["provider"] == "test-llm"
+
+
+def test_email_hygiene_apply_can_trash_existing_spam(monkeypatch, tmp_path):
+    ledger = ActionLedger(tmp_path / "actions.json")
+    action = ledger.add_action(
+        scope="EA",
+        summary="Trash existing spam",
+        allowed_next_actions=["approve_hygiene_apply"],
+        status="approval_required",
+        executor_state={
+            "mutation_type": "gmail_hygiene",
+            "provider": "gmail",
+            "hygiene_policy_version": 1,
+            "operation": "trash",
+            "items": [
+                {
+                    "account_alias": "personal",
+                    "message_id": "spam-1",
+                    "category": "promotions_noise",
+                    "labels": ["SPAM"],
+                    "reason": "already marked spam and older than one day",
+                }
+            ],
+        },
+    )
+    calls = []
+    monkeypatch.setattr(
+        email_hygiene,
+        "account_for_alias",
+        lambda config_path, alias: GoogleAccount(
+            alias=alias,
+            email="personal@example.com",
+            role="personal",
+            enabled=True,
+            token_path=tmp_path / "token.json",
+            client_secret_path=tmp_path / "client.json",
+            scopes=("https://www.googleapis.com/auth/gmail.modify",),
+        ),
+    )
+    monkeypatch.setattr(email_hygiene, "_read_token", lambda account: "access-token")
+    monkeypatch.setattr(email_hygiene, "_gmail_post", lambda url, token, payload=None: calls.append((url, token, payload)) or {})
+
+    result = apply_hygiene_action(
+        ledger=ledger,
+        config_path=tmp_path / "google_accounts.yaml",
+        handle=action.handle,
+        approved_by="test",
+    )
+
+    assert result["external_mutations"] == 1
+    assert calls == [
+        (
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/spam-1/trash",
+            "access-token",
+            None,
+        )
+    ]
+
+
 def test_email_hygiene_apply_archives_only_after_handle_approval(monkeypatch, tmp_path):
     ledger = ActionLedger(tmp_path / "actions.json")
     action = ledger.add_action(
@@ -1495,7 +1643,7 @@ def test_email_hygiene_apply_refuses_to_trash_non_account_security(tmp_path):
 
     assert result["external_mutations"] == 0
     assert result["errors"]
-    assert "Refusing to trash non-account-security item" in result["errors"][0]["error"]
+    assert "Refusing to trash item outside approved stale-code/spam classes" in result["errors"][0]["error"]
 
 
 def test_torben_resolve_reply_applies_hygiene_after_explicit_approval(monkeypatch, tmp_path, capsys):

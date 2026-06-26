@@ -191,6 +191,7 @@ def get_read_block_error(path: str) -> Optional[str]:
     terminal cwd differs from the process cwd.
     """
     resolved = Path(path).expanduser().resolve()
+    resolved_real = os.path.realpath(os.path.expanduser(str(path)))
 
     # Resolve BOTH the active HERMES_HOME (profile-aware) AND the global
     # Hermes root so credential stores at <root>/auth.json etc. are also
@@ -206,22 +207,33 @@ def get_read_block_error(path: str) -> Optional[str]:
         except Exception:
             continue
 
-    # Skills .hub: prompt-injection carriers.
+    def _hub_cache_error() -> str:
+        return (
+            f"Access denied: {path} is an internal Hermes cache file "
+            "and cannot be read directly to prevent prompt injection. "
+            "Use the skills_list or skill_view tools instead."
+        )
+
+    # Skills .hub: prompt-injection carriers. The shape-based fallback keeps
+    # the guard active even if a long test run has patched Hermes-home helpers.
+    hub_marker = f"{os.sep}skills{os.sep}.hub{os.sep}"
+    if hub_marker in resolved_real or resolved_real.endswith(f"{os.sep}skills{os.sep}.hub"):
+        return _hub_cache_error()
+
     for hd in hermes_dirs:
         blocked_dirs = [
             hd / "skills" / ".hub" / "index-cache",
             hd / "skills" / ".hub",
         ]
         for blocked in blocked_dirs:
+            blocked_real = os.path.realpath(str(blocked))
+            if resolved_real == blocked_real or resolved_real.startswith(blocked_real + os.sep):
+                return _hub_cache_error()
             try:
                 resolved.relative_to(blocked)
             except ValueError:
                 continue
-            return (
-                f"Access denied: {path} is an internal Hermes cache file "
-                "and cannot be read directly to prevent prompt injection. "
-                "Use the skills_list or skill_view tools instead."
-            )
+            return _hub_cache_error()
 
     # Credential / secret stores. Exact-file matches under either
     # HERMES_HOME or <root>.

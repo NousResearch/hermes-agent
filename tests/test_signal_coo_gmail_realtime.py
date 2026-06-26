@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -389,6 +390,28 @@ def test_process_pubsub_pull_suppresses_duplicate_message_keys(tmp_path, monkeyp
     assert result["wakeAgent"] is False
     assert result["reason"] == "pubsub notifications processed with no realtime candidates"
     assert acked == ["ack-1"]
+
+
+def test_fresh_realtime_records_suppresses_stale_history_messages() -> None:
+    now = datetime.now(timezone.utc)
+    old_record = {
+        "message_id": "old-1",
+        "internal_date_ms": str(int((now - timedelta(hours=3)).timestamp() * 1000)),
+    }
+    fresh_record = {
+        "message_id": "fresh-1",
+        "internal_date_ms": str(int((now - timedelta(minutes=5)).timestamp() * 1000)),
+    }
+    warnings: list[str] = []
+
+    kept = gmail_realtime._fresh_realtime_records(
+        [old_record, fresh_record],
+        max_age_seconds=3600,
+        warnings=warnings,
+    )
+
+    assert kept == [fresh_record]
+    assert warnings == ["suppressed 1 stale Gmail history message(s) older than realtime max age"]
 
 
 def test_run_gmail_realtime_canary_processes_and_cleans_up(tmp_path, monkeypatch) -> None:

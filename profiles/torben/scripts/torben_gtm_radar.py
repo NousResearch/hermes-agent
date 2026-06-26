@@ -16,7 +16,7 @@ from hermes_cli.signal_coo.gtm_radar_adapter import (
 )
 
 DEFAULT_MAGNUS_ROOT = Path("/Users/ericfreeman/magnus")
-DEFAULT_MAGNUS_HERMES_HOME = Path("/Users/ericfreeman/.hermes/profiles/magnus")
+DEFAULT_TORBEN_HERMES_HOME = Path("/Users/ericfreeman/.hermes/profiles/torben")
 DEFAULT_MAGNUS_REFRESH_TIMEOUT_SECONDS = 480
 
 
@@ -60,6 +60,15 @@ def _newsletter_files_from_env() -> list[Path]:
         if default_path.exists() and default_text not in seen:
             files.append(default_path)
     return files
+
+
+def _default_magnus_credential_home() -> Path:
+    """Use Torben's profile credentials for hidden Magnus refreshes."""
+
+    home = get_hermes_home()
+    if home.name == "torben" and home.parent.name == "profiles":
+        return home
+    return DEFAULT_TORBEN_HERMES_HOME
 
 
 def _magnus_radar_command(
@@ -107,7 +116,7 @@ def _extract_json_object(text: str) -> dict:
 
 def _refresh_magnus_radar(*, preview: bool) -> dict:
     root = Path(os.getenv("TORBEN_GTM_MAGNUS_ROOT") or DEFAULT_MAGNUS_ROOT)
-    hermes_home = Path(os.getenv("TORBEN_GTM_MAGNUS_HERMES_HOME") or DEFAULT_MAGNUS_HERMES_HOME)
+    hermes_home = Path(os.getenv("TORBEN_GTM_MAGNUS_HERMES_HOME") or _default_magnus_credential_home())
     timeout_seconds = _env_int("TORBEN_GTM_MAGNUS_TIMEOUT_SECONDS", DEFAULT_MAGNUS_REFRESH_TIMEOUT_SECONDS)
     dry_run = preview or _truthy(os.getenv("TORBEN_GTM_MAGNUS_DRY_RUN"))
     command = _magnus_radar_command(

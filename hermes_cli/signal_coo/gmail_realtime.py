@@ -79,6 +79,32 @@ def _parse_utc(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
+def _record_age_seconds(record: dict[str, Any], *, now: datetime) -> float | None:
+    raw = record.get("internal_date_ms")
+    try:
+        epoch_ms = int(str(raw or ""))
+    except ValueError:
+        return None
+    return (now - datetime.fromtimestamp(epoch_ms / 1000, timezone.utc)).total_seconds()
+
+
+def _fresh_realtime_records(records: list[dict[str, Any]], *, max_age_seconds: int, warnings: list[str]) -> list[dict[str, Any]]:
+    if max_age_seconds <= 0:
+        return records
+    now = datetime.now(timezone.utc)
+    fresh: list[dict[str, Any]] = []
+    stale_count = 0
+    for record in records:
+        age = _record_age_seconds(record, now=now)
+        if age is not None and age > max_age_seconds:
+            stale_count += 1
+            continue
+        fresh.append(record)
+    if stale_count:
+        warnings.append(f"suppressed {stale_count} stale Gmail history message(s) older than realtime max age")
+    return fresh
+
+
 def load_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
     if not path.exists():
         return fallback
@@ -720,6 +746,7 @@ def process_pubsub_pull(
     max_messages_per_account: int = 40,
     max_body_fetches_per_account: int = 20,
     fetch_workers: int = 6,
+    max_realtime_age_seconds: int = 7200,
     preview: bool = False,
 ) -> dict[str, Any]:
     state_file = Path(state_path)
@@ -777,6 +804,7 @@ def process_pubsub_pull(
                     )
                     gmail_reads += reads
                     warnings.extend(fetch_warnings)
+                    records = _fresh_realtime_records(records, max_age_seconds=max_realtime_age_seconds, warnings=warnings)
                     all_records.extend(records)
                     accounts_seen.add(account.alias)
                 latest_history_id = _latest_history_entry_id(history)
@@ -990,6 +1018,7 @@ def process_pubsub_pull(
             )
             gmail_reads += reads
             warnings.extend(fetch_warnings)
+            records = _fresh_realtime_records(records, max_age_seconds=max_realtime_age_seconds, warnings=warnings)
             all_records.extend(records)
 
         alias_state["history_id"] = notification_history_id

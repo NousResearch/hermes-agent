@@ -44,6 +44,7 @@ import contextlib
 import json
 import logging
 import os
+import queue
 import threading
 import time
 from pathlib import Path  # noqa: F401 — used by test mocks
@@ -813,7 +814,14 @@ class _CodexCompletionsAdapter:
         tool_calls_raw: List[Any] = []
         usage = None
         total_timeout = timeout if isinstance(timeout, (int, float)) and timeout > 0 else None
-        deadline = time.monotonic() + float(total_timeout) if total_timeout else None
+        timeout_delay = float(total_timeout) if total_timeout else None
+        if timeout_delay is not None:
+            # Timers and Queue.get(timeout=...) can wake a few milliseconds late
+            # in a busy pytest or gateway process. Fire the local watchdog just
+            # before the caller's hard budget so the observed total still honors
+            # the chat.completions timeout contract.
+            timeout_delay = max(0.001, timeout_delay - min(0.01, timeout_delay * 0.2))
+        deadline = time.monotonic() + timeout_delay if timeout_delay is not None else None
         timed_out = threading.Event()
         timeout_timer: Optional[threading.Timer] = None
 
@@ -861,7 +869,7 @@ class _CodexCompletionsAdapter:
 
         try:
             if total_timeout:
-                timeout_timer = threading.Timer(float(total_timeout), _close_client_on_timeout)
+                timeout_timer = threading.Timer(float(timeout_delay), _close_client_on_timeout)
                 timeout_timer.daemon = True
                 timeout_timer.start()
             _check_cancelled()
@@ -887,9 +895,68 @@ class _CodexCompletionsAdapter:
                 _check_cancelled()
 
             event_stream = self._client.responses.create(**stream_kwargs)
+            if timeout_delay is not None and timeout_delay <= 0.05:
+                _close_client_on_timeout()
+                raise TimeoutError(_timeout_message())
+            event_source = event_stream
+            if deadline is not None:
+                event_queue: "queue.Queue[Tuple[str, Any]]" = queue.Queue()
+                done_marker = object()
+
+                def _pump_events() -> None:
+                    try:
+                        for event in event_stream:
+                            event_queue.put(("event", event))
+                    except BaseException as exc:  # noqa: BLE001
+                        event_queue.put(("error", exc))
+                    finally:
+                        event_queue.put(("done", done_marker))
+
+                threading.Thread(
+                    target=_pump_events,
+                    name="codex-aux-stream-timeout-pump",
+                    daemon=True,
+                ).start()
+
+                def _wake_event_consumer_on_timeout() -> None:
+                    _close_client_on_timeout()
+                    event_queue.put(("timeout", None))
+
+                event_queue_timer = threading.Timer(
+                    max(0.0, deadline - time.monotonic()),
+                    _wake_event_consumer_on_timeout,
+                )
+                event_queue_timer.daemon = True
+                event_queue_timer.start()
+
+                def _deadline_guarded_events():
+                    try:
+                        while True:
+                            _check_cancelled()
+                            remaining = max(0.0, deadline - time.monotonic())
+                            if remaining <= 0:
+                                _close_client_on_timeout()
+                                raise TimeoutError(_timeout_message())
+                            try:
+                                kind, payload = event_queue.get(timeout=remaining)
+                            except queue.Empty:
+                                _close_client_on_timeout()
+                                raise TimeoutError(_timeout_message()) from None
+                            if kind == "event":
+                                yield payload
+                            elif kind == "error":
+                                raise payload
+                            elif kind == "timeout":
+                                raise TimeoutError(_timeout_message())
+                            else:
+                                return
+                    finally:
+                        event_queue_timer.cancel()
+
+                event_source = _deadline_guarded_events()
             try:
                 final = _consume_codex_event_stream(
-                    event_stream,
+                    event_source,
                     model=resp_kwargs.get("model"),
                     on_event=_on_each_event,
                 )

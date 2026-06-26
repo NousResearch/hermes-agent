@@ -77,6 +77,12 @@ Active jobs at snapshot time:
   topics, asks Grok with X Search for concrete reply opportunities, stages
   draft-only local reply ideas, and stays silent when there are no fresh
   opportunities.
+- `torben-finance-radar`: `every 30m`, Signal, no-agent Ratatosk stage-only
+  finance radar. It calls Robinhood v0.1 analysis, lets Ratatosk mint one
+  bounded no-tools LLM run for each due market phase, stages fresh
+  above-threshold `FIN-*` review handles, and stays silent on no due tick,
+  below-threshold output, or duplicate candidates. It does not submit broker
+  orders.
 
 ## Auth Cutover
 
@@ -123,6 +129,33 @@ Finance MCP servers configured in the live Torben profile:
 connector is missing or disabled. Hosted MCP OAuth login is complete for both
 finance connectors; any finance mutation still needs the scoped risk gates and
 approval policy before use.
+
+## Ratatosk Finance Adapter
+
+Torben's finance radar uses `/Users/ericfreeman/ratatosk` as a hidden backend
+submanager. It runs `scripts/robinhood_v01_cron_tick.py` and adapts the
+Ratatosk result through `hermes_cli.signal_coo.finance`.
+
+Runtime toggles:
+
+- `TORBEN_FINANCE_DISABLE_LLM=1`: run the Ratatosk tick without invoking the
+  bounded LLM analysis.
+- `TORBEN_FINANCE_PHASE`: force a specific Robinhood v0.1 phase for canaries.
+- `TORBEN_FINANCE_RADAR_PREVIEW=1`: do not persist delivered candidate state or
+  ledger actions.
+- `TORBEN_FINANCE_RADAR_FORCE_WAKE=1`: surface the best candidate in preview
+  even if it is below the production score threshold.
+- `TORBEN_FINANCE_MIN_SCORE`: default `0.70`.
+
+The adapter writes:
+
+- `state/torben-finance-radar-latest.json`
+- `state/torben-finance-radar-latest.txt`
+- `state/torben-finance-radar-state.json`
+
+Any visible finance candidate must include `FIN-*`, `stage_only_not_ordered`,
+`orders_submitted=0`, `external_mutations=0`, and an execution block on
+`TBC-DECIDE-LIVE-FINANCE`.
 
 ## Magnus GTM Adapter
 
@@ -228,6 +261,8 @@ UV_PROJECT_ENVIRONMENT=venv uv run --extra dev python -m pytest \
   tests/test_signal_coo_live_profile_verify.py -q
 UV_PROJECT_ENVIRONMENT=venv uv run --extra dev python -m pytest \
   tests/gateway/test_torben_gtm_reply_router.py -q
+UV_PROJECT_ENVIRONMENT=venv uv run --extra dev python -m pytest \
+  tests/test_torben_finance_radar.py -q
 
 git diff --check
 ```
@@ -259,4 +294,11 @@ UV_PROJECT_ENVIRONMENT=venv uv run python \
 HERMES_HOME=/Users/ericfreeman/.hermes/profiles/torben \
 UV_PROJECT_ENVIRONMENT=venv uv run python \
   /Users/ericfreeman/.hermes/profiles/torben/scripts/torben_live_profile_verify.py
+
+HERMES_HOME=/Users/ericfreeman/.hermes/profiles/torben \
+TORBEN_FINANCE_RADAR_PREVIEW=1 \
+TORBEN_FINANCE_RADAR_FORCE_WAKE=1 \
+TORBEN_FINANCE_PHASE=postmarket \
+UV_PROJECT_ENVIRONMENT=venv uv run --extra dev python \
+  /Users/ericfreeman/.hermes/profiles/torben/scripts/torben_finance_radar.py
 ```

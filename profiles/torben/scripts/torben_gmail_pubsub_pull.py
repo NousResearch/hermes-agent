@@ -38,6 +38,7 @@ def main() -> int:
         max_history_pages=int(os.getenv("TORBEN_GMAIL_HISTORY_MAX_PAGES", "10")),
         max_messages_per_account=int(os.getenv("TORBEN_GMAIL_PUBSUB_MAX_MESSAGES", "40")),
         max_body_fetches_per_account=int(os.getenv("TORBEN_GMAIL_PUBSUB_MAX_BODY_FETCHES", "20")),
+        max_realtime_age_seconds=int(os.getenv("TORBEN_GMAIL_PUBSUB_MAX_MESSAGE_AGE_SECONDS", "7200")),
         fetch_workers=int(os.getenv("TORBEN_GMAIL_PUBSUB_WORKERS", "6")),
         preview=_truthy(os.getenv("TORBEN_GMAIL_PUBSUB_PREVIEW")),
     )

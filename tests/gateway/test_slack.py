@@ -1718,6 +1718,60 @@ class TestMessageRouting:
         assert "<@U_BOT>" not in msg_event.text
 
     @pytest.mark.asyncio
+    async def test_manual_vault_evidence_appended_for_mention(self, adapter):
+        """Configured channels can enrich a direct mention with Manual Vault evidence."""
+        adapter.config.extra.update({
+            "manual_vault_auto_search": True,
+            "manual_vault_channels": ["C123"],
+        })
+        adapter._manual_vault_search = AsyncMock(
+            return_value="[Manual Vault Pi検索結果]\n根拠候補"
+        )
+        event = {
+            "text": "<@U_BOT> 電源ランプがオレンジに点滅してる。どうすればいい？",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter._manual_vault_search.assert_awaited_once_with(
+            "電源ランプがオレンジに点滅してる。どうすればいい？"
+        )
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "電源ランプがオレンジに点滅" in msg_event.text
+        assert "[Manual Vault Pi検索結果]" in msg_event.text
+        assert "根拠候補" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_manual_vault_existing_pack_not_searched_again(self, adapter):
+        """Manual Vault root packs should not trigger a recursive search."""
+        adapter.config.extra.update({
+            "allow_bots": "mentions",
+            "allowed_bot_ids": ["B_MANUAL"],
+            "manual_vault_auto_search": True,
+            "manual_vault_channels": ["C123"],
+        })
+        adapter._manual_vault_search = AsyncMock(return_value="unexpected")
+        event = {
+            "text": "<@U_BOT> Manual Vault Pi 根拠パック（回答ではありません）",
+            "bot_id": "B_MANUAL",
+            "user": "U_MANUAL",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+
+        await adapter._handle_slack_message(event)
+
+        adapter._manual_vault_search.assert_not_called()
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "unexpected" not in msg_event.text
+
+    @pytest.mark.asyncio
     async def test_bot_messages_ignored(self, adapter):
         """Messages from bots should be ignored."""
         event = {
@@ -1729,6 +1783,60 @@ class TestMessageRouting:
         }
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allowed_bot_mention_processed(self, adapter):
+        """A trusted bot can hand off to Hermes when it explicitly mentions us."""
+        adapter.config.extra.update({
+            "allow_bots": "mentions",
+            "allowed_bot_ids": ["B_MANUAL"],
+        })
+        event = {
+            "text": "<@U_BOT> Manual Vault Pi 根拠パック",
+            "bot_id": "B_MANUAL",
+            "user": "U_MANUAL",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_unlisted_bot_mention_ignored(self, adapter):
+        """Mention mode still rejects bots that are not explicitly allowlisted."""
+        adapter.config.extra.update({
+            "allow_bots": "mentions",
+            "allowed_bot_ids": ["B_MANUAL"],
+        })
+        event = {
+            "text": "<@U_BOT> Please respond",
+            "bot_id": "B_OTHER",
+            "user": "U_OTHER_BOT",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_allowed_bot_user_id_processed(self, adapter):
+        """Slack may expose a bot user id instead of only the bot_id."""
+        adapter.config.extra.update({
+            "allow_bots": "mentions",
+            "allowed_bot_user_ids": ["U_MANUAL"],
+        })
+        event = {
+            "text": "<@U_BOT> Manual Vault Pi 根拠パック",
+            "bot_id": "B_MANUAL",
+            "bot_profile": {"user_id": "U_MANUAL"},
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_message_edits_ignored(self, adapter):

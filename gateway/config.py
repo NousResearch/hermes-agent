@@ -959,6 +959,51 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["SLACK_STRICT_MENTION"] = str(slack_cfg["strict_mention"]).lower()
                 if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
                     os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
+                abi = slack_cfg.get("allowed_bot_ids")
+                if abi is not None and not os.getenv("SLACK_ALLOWED_BOT_IDS"):
+                    if isinstance(abi, list):
+                        abi = ",".join(str(v) for v in abi)
+                    os.environ["SLACK_ALLOWED_BOT_IDS"] = str(abi)
+                abui = slack_cfg.get("allowed_bot_user_ids")
+                if abui is not None and not os.getenv("SLACK_ALLOWED_BOT_USER_IDS"):
+                    if isinstance(abui, list):
+                        abui = ",".join(str(v) for v in abui)
+                    os.environ["SLACK_ALLOWED_BOT_USER_IDS"] = str(abui)
+                if "manual_vault_auto_search" in slack_cfg and not os.getenv(
+                    "MANUAL_VAULT_AUTO_SEARCH"
+                ):
+                    os.environ["MANUAL_VAULT_AUTO_SEARCH"] = str(
+                        slack_cfg["manual_vault_auto_search"]
+                    ).lower()
+                if "manual_vault_api_url" in slack_cfg and not os.getenv(
+                    "MANUAL_VAULT_API_URL"
+                ):
+                    os.environ["MANUAL_VAULT_API_URL"] = str(
+                        slack_cfg["manual_vault_api_url"]
+                    )
+                mvc = slack_cfg.get("manual_vault_channels")
+                if mvc is not None and not os.getenv("MANUAL_VAULT_CHANNELS"):
+                    if isinstance(mvc, list):
+                        mvc = ",".join(str(v) for v in mvc)
+                    os.environ["MANUAL_VAULT_CHANNELS"] = str(mvc)
+                if "manual_vault_query_limit" in slack_cfg and not os.getenv(
+                    "MANUAL_VAULT_QUERY_LIMIT"
+                ):
+                    os.environ["MANUAL_VAULT_QUERY_LIMIT"] = str(
+                        slack_cfg["manual_vault_query_limit"]
+                    )
+                if "manual_vault_evidence_limit" in slack_cfg and not os.getenv(
+                    "MANUAL_VAULT_EVIDENCE_LIMIT"
+                ):
+                    os.environ["MANUAL_VAULT_EVIDENCE_LIMIT"] = str(
+                        slack_cfg["manual_vault_evidence_limit"]
+                    )
+                if "manual_vault_evidence_chars" in slack_cfg and not os.getenv(
+                    "MANUAL_VAULT_EVIDENCE_CHARS"
+                ):
+                    os.environ["MANUAL_VAULT_EVIDENCE_CHARS"] = str(
+                        slack_cfg["manual_vault_evidence_chars"]
+                    )
                 frc = slack_cfg.get("free_response_channels")
                 if frc is not None and not os.getenv("SLACK_FREE_RESPONSE_CHANNELS"):
                     if isinstance(frc, list):

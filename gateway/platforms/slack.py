@@ -2113,7 +2113,12 @@ class SlackAdapter(BasePlatformAdapter):
         #   "none"     — ignore all bot messages (default, backward-compatible)
         #   "mentions" — accept bot messages only when they @mention us
         #   "all"      — accept all bot messages (except our own)
+        # If allowed_bot_ids / allowed_bot_user_ids is configured, only those
+        # third-party bots can pass this filter. This keeps allow_bots=mentions
+        # useful for trusted integration handoffs without opening every bot.
         if event.get("bot_id") or event.get("subtype") == "bot_message":
+            if not self._slack_is_allowed_bot_sender(event):
+                return
             allow_bots = self.config.extra.get("allow_bots", "")
             if not allow_bots:
                 allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
@@ -2617,6 +2622,14 @@ class SlackAdapter(BasePlatformAdapter):
                 )
             except Exception:  # pragma: no cover - defensive
                 reply_to_text = None
+
+        text = await self._maybe_append_manual_vault_evidence(
+            text=text,
+            channel_id=channel_id,
+            is_dm=is_dm,
+            is_mentioned=is_mentioned,
+            msg_type=msg_type,
+        )
 
         msg_event = MessageEvent(
             text=text,
@@ -3501,6 +3514,250 @@ class SlackAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    def _slack_config_set(self, key: str, env_key: str) -> set:
+        raw = self.config.extra.get(key)
+        if raw is None:
+            raw = os.getenv(env_key, "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
+    def _slack_allowed_bot_ids(self) -> set:
+        return self._slack_config_set("allowed_bot_ids", "SLACK_ALLOWED_BOT_IDS")
+
+    def _slack_allowed_bot_user_ids(self) -> set:
+        return self._slack_config_set(
+            "allowed_bot_user_ids", "SLACK_ALLOWED_BOT_USER_IDS"
+        )
+
+    def _slack_config_bool(self, key: str, env_key: str, default: bool) -> bool:
+        raw = self.config.extra.get(key)
+        if raw is None:
+            raw = os.getenv(env_key)
+        if raw is None:
+            return default
+        if isinstance(raw, str):
+            return raw.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(raw)
+
+    def _slack_config_int(
+        self, key: str, env_key: str, default: int, minimum: int, maximum: int
+    ) -> int:
+        raw = self.config.extra.get(key)
+        if raw is None:
+            raw = os.getenv(env_key)
+        try:
+            value = int(str(raw).strip()) if raw is not None else default
+        except (TypeError, ValueError):
+            value = default
+        return max(minimum, min(maximum, value))
+
+    def _manual_vault_auto_search_enabled(self) -> bool:
+        return self._slack_config_bool(
+            "manual_vault_auto_search", "MANUAL_VAULT_AUTO_SEARCH", False
+        )
+
+    def _manual_vault_api_endpoint(self) -> str:
+        raw = self.config.extra.get("manual_vault_api_url")
+        if raw is None:
+            raw = os.getenv("MANUAL_VAULT_API_URL", "http://127.0.0.1:8010")
+        base = str(raw or "").strip().rstrip("/")
+        if not base:
+            base = "http://127.0.0.1:8010"
+        if base.endswith("/api/manual/search"):
+            return base
+        return f"{base}/api/manual/search"
+
+    def _manual_vault_channels(self) -> set:
+        return self._slack_config_set("manual_vault_channels", "MANUAL_VAULT_CHANNELS")
+
+    def _manual_vault_evidence_limit(self) -> int:
+        return self._slack_config_int(
+            "manual_vault_evidence_limit",
+            "MANUAL_VAULT_EVIDENCE_LIMIT",
+            default=3,
+            minimum=1,
+            maximum=6,
+        )
+
+    def _manual_vault_query_limit(self) -> int:
+        return self._slack_config_int(
+            "manual_vault_query_limit",
+            "MANUAL_VAULT_QUERY_LIMIT",
+            default=4,
+            minimum=1,
+            maximum=8,
+        )
+
+    def _manual_vault_evidence_chars(self) -> int:
+        return self._slack_config_int(
+            "manual_vault_evidence_chars",
+            "MANUAL_VAULT_EVIDENCE_CHARS",
+            default=5000,
+            minimum=1000,
+            maximum=12000,
+        )
+
+    def _manual_vault_timeout_s(self) -> float:
+        raw = self.config.extra.get("manual_vault_timeout_s")
+        if raw is None:
+            raw = os.getenv("MANUAL_VAULT_TIMEOUT_S")
+        try:
+            value = float(str(raw).strip()) if raw is not None else 8.0
+        except (TypeError, ValueError):
+            value = 8.0
+        return max(1.0, min(30.0, value))
+
+    def _manual_vault_should_search(
+        self,
+        text: str,
+        channel_id: str,
+        is_dm: bool,
+        is_mentioned: bool,
+        msg_type: MessageType,
+    ) -> bool:
+        if not self._manual_vault_auto_search_enabled():
+            return False
+        if msg_type == MessageType.COMMAND:
+            return False
+        clean_text = (text or "").strip()
+        if not clean_text:
+            return False
+        # Do not recursively search root packs that Manual Vault Pi already posted.
+        if (
+            "Manual Vault Pi 根拠パック" in clean_text
+            or "Manual Vault Pi検索結果" in clean_text
+        ):
+            return False
+        if clean_text.startswith("/"):
+            return False
+        if not (is_dm or is_mentioned):
+            return False
+        channels = self._manual_vault_channels()
+        if channels and not is_dm and channel_id not in channels:
+            return False
+        return True
+
+    async def _maybe_append_manual_vault_evidence(
+        self,
+        text: str,
+        channel_id: str,
+        is_dm: bool,
+        is_mentioned: bool,
+        msg_type: MessageType,
+    ) -> str:
+        if not self._manual_vault_should_search(
+            text=text,
+            channel_id=channel_id,
+            is_dm=is_dm,
+            is_mentioned=is_mentioned,
+            msg_type=msg_type,
+        ):
+            return text
+
+        evidence = await self._manual_vault_search(text)
+        if not evidence:
+            return text
+        return f"{text}\n\n---\n{evidence}"
+
+    async def _manual_vault_search(self, question: str) -> str:
+        if not SLACK_AVAILABLE:
+            return ""
+
+        endpoint = self._manual_vault_api_endpoint()
+        payload = {
+            "question": question,
+            "mode": "全文",
+            "query_limit": self._manual_vault_query_limit(),
+            "evidence_limit": self._manual_vault_evidence_limit(),
+        }
+        try:
+            timeout = aiohttp.ClientTimeout(total=self._manual_vault_timeout_s())
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(endpoint, json=payload) as response:
+                    body = await response.text()
+                    if response.status >= 400:
+                        logger.warning(
+                            "[Slack] Manual Vault search failed: status=%s body=%s",
+                            response.status,
+                            body[:500],
+                        )
+                        return ""
+            data = json.loads(body)
+        except Exception as exc:  # pragma: no cover - network/config dependent
+            logger.warning("[Slack] Manual Vault search unavailable: %s", exc)
+            return ""
+
+        return self._format_manual_vault_evidence(data)
+
+    def _format_manual_vault_evidence(self, data: dict) -> str:
+        if not isinstance(data, dict):
+            return ""
+
+        preview = str(data.get("slackPreview") or "").strip()
+        if not preview:
+            citations = data.get("citations") or data.get("results") or []
+            if not citations:
+                preview = "根拠候補は見つかりませんでした。"
+            else:
+                lines = ["Manual Vault Pi 根拠候補"]
+                for idx, item in enumerate(
+                    citations[: self._manual_vault_evidence_limit()], 1
+                ):
+                    if not isinstance(item, dict):
+                        continue
+                    title = item.get("title") or item.get("document_title") or "無題"
+                    doc_id = (
+                        item.get("id")
+                        or item.get("doc_id")
+                        or item.get("document_id")
+                        or "不明"
+                    )
+                    link = item.get("link") or item.get("url") or ""
+                    excerpt = item.get("snippet") or item.get("excerpt") or ""
+                    lines.append(f"{idx}. 文書ID {doc_id}「{title}」")
+                    if link:
+                        lines.append(f"   参照: {link}")
+                    if excerpt:
+                        lines.append(f"   抜粋: {excerpt}")
+                preview = "\n".join(lines)
+
+        limit = self._manual_vault_evidence_chars()
+        if len(preview) > limit:
+            preview = (
+                preview[:limit].rstrip() + "\n...（Manual Vault Pi検索結果を省略）"
+            )
+
+        return (
+            "[Manual Vault Pi検索結果]\n"
+            "以下はManual Vault PiがPDF/OCRから取得した根拠候補です。"
+            "回答はこの根拠に書かれている範囲に限定し、"
+            "根拠が弱い場合は「要・原本確認」と明示してください。\n\n"
+            f"{preview}"
+        )
+
+    def _slack_is_allowed_bot_sender(self, event: dict) -> bool:
+        allowed_bot_ids = self._slack_allowed_bot_ids()
+        allowed_bot_user_ids = self._slack_allowed_bot_user_ids()
+        if not allowed_bot_ids and not allowed_bot_user_ids:
+            return True
+
+        bot_id = str(event.get("bot_id") or "").strip()
+        bot_profile = event.get("bot_profile")
+        if not isinstance(bot_profile, dict):
+            bot_profile = {}
+        bot_user_id = str(
+            bot_profile.get("user_id") or event.get("user") or ""
+        ).strip()
+
+        return bool(
+            (bot_id and bot_id in allowed_bot_ids)
+            or (bot_user_id and bot_user_id in allowed_bot_user_ids)
+        )
 
     def _slack_allowed_channels(self) -> set:
         """Return the whitelist of channel IDs the bot will respond in.

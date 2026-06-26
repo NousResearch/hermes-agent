@@ -663,6 +663,88 @@ def resolve_display_context_length(
 
 
 # ---------------------------------------------------------------------------
+# Configured-provider detection for typed model names
+# ---------------------------------------------------------------------------
+
+
+def _configured_provider_matches(
+    model_name: str,
+    user_providers: Optional[dict],
+    custom_providers: Optional[list],
+) -> dict[str, str]:
+    """Return ``{provider_slug: canonical_model_id}`` for every configured
+    provider whose declared models contain an exact (case-insensitive) match
+    for ``model_name``.
+
+    Used by :func:`switch_model` to route a *typed* model name to the provider
+    that actually declares it in user/custom provider config, instead of
+    leaving it on the current provider.  Without this, a model declared under
+    ``providers.<slug>`` / ``custom_providers`` but typed while the current
+    provider is ``openai-codex`` stays on Codex and is soft-accepted as an
+    unknown hidden Codex model (#45006).
+
+    Matching is exact (case-insensitive); the configured spelling is returned
+    so the downstream validation/override path sees the canonical id.  Only the
+    explicitly-declared model collections are scanned (``models``, the singular
+    ``model``, and ``default_model``) — never fuzzy/family matching.
+    """
+    if not model_name or not model_name.strip():
+        return {}
+    target = model_name.strip().lower()
+
+    def _match(value) -> Optional[str]:
+        """Canonical id if ``value`` (a model collection or scalar) declares
+        ``target``, else None."""
+        if isinstance(value, str):
+            return value if value.strip().lower() == target else None
+        if isinstance(value, dict):
+            for mid in value:
+                if isinstance(mid, str) and mid.strip().lower() == target:
+                    return mid
+            return None
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, str) and item.strip().lower() == target:
+                    return item
+                if isinstance(item, dict):
+                    name = item.get("name")
+                    if isinstance(name, str) and name.strip().lower() == target:
+                        return name
+            return None
+        return None
+
+    matches: dict[str, str] = {}
+
+    if isinstance(user_providers, dict):
+        for slug, cfg in user_providers.items():
+            if not isinstance(slug, str) or not isinstance(cfg, dict):
+                continue
+            for key in ("models", "model", "default_model"):
+                hit = _match(cfg.get(key))
+                if hit:
+                    matches[slug] = hit
+                    break
+
+    if isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            name = entry.get("name")
+            if not isinstance(name, str) or not name.strip():
+                continue
+            slug = f"custom:{name}"
+            if slug in matches:
+                continue
+            for key in ("models", "model", "default_model"):
+                hit = _match(entry.get(key))
+                if hit:
+                    matches[slug] = hit
+                    break
+
+    return matches
+
+
+# ---------------------------------------------------------------------------
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
 
@@ -725,6 +807,7 @@ def switch_model(
     resolved_alias = ""
     new_model = raw_input.strip()
     target_provider = current_provider
+    resolved_moa_preset = False
 
     # =================================================================
     # PATH A: Explicit --provider given
@@ -761,6 +844,14 @@ def switch_model(
             )
 
         target_provider = pdef.id
+        if target_provider == "moa" and not new_model:
+            try:
+                from hermes_cli.config import load_config
+                from hermes_cli.moa_config import normalize_moa_config
+
+                new_model = normalize_moa_config(load_config().get("moa") or {})["default_preset"]
+            except Exception:
+                new_model = "default"
 
         # Guard against silent aggregator hops. A vendor name like bare
         # "openai" is an alias that resolves to an aggregator ("openrouter").
@@ -843,10 +934,28 @@ def switch_model(
     # PATH B: No explicit provider — resolve from model input
     # =================================================================
     else:
-        # --- Step a: Try alias resolution on current provider ---
-        alias_result = resolve_alias(raw_input, current_provider)
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.moa_config import exact_moa_preset_name, normalize_moa_config
 
-        if alias_result is not None:
+            _moa_cfg = normalize_moa_config(load_config().get("moa") or {})
+            _moa_match = exact_moa_preset_name(_moa_cfg, raw_input)
+            if _moa_match:
+                target_provider = "moa"
+                new_model = _moa_match
+                resolved_alias = ""
+                resolved_moa_preset = True
+                alias_result = None
+            else:
+                alias_result = resolve_alias(raw_input, current_provider)
+        except Exception:
+            alias_result = resolve_alias(raw_input, current_provider)
+
+        # --- Step a: Try alias resolution on current provider ---
+
+        if resolved_moa_preset:
+            pass
+        elif alias_result is not None:
             target_provider, new_model, resolved_alias = alias_result
             logger.debug(
                 "Alias '%s' resolved to %s on %s",
@@ -879,7 +988,7 @@ def switch_model(
                             f"Try specifying the full model name."
                         ),
                     )
-            else:
+            elif not resolved_moa_preset:
                 # --- Step c: On aggregator, convert vendor:model to vendor/model ---
                 # Only convert when there's no slash — a slash means the name
                 # is already in vendor/model format and the colon is a variant
@@ -921,10 +1030,64 @@ def switch_model(
                                 resolved_in_current_catalog = True
                                 break
 
+        # --- Step d.5: configured-provider exact-match detection (#45006) ---
+        # If the typed model is declared in user/custom provider config, route
+        # to that provider BEFORE detect_provider_for_model() guesses from
+        # static catalogs and BEFORE the common-path validation can let a
+        # soft-accepting current provider (e.g. openai-codex) swallow the name
+        # as an unknown hidden model.  Configured matches beat static-catalog
+        # detection.  Unlike step e this is deliberately NOT gated on
+        # ``not is_custom`` — switching from a local/custom provider A to a
+        # configured provider B that declares the typed model is the point.
+        config_routed = False
+        if (
+            not resolved_alias
+            and not resolved_in_current_catalog
+            and target_provider == current_provider
+        ):
+            cfg_matches = _configured_provider_matches(
+                new_model, user_providers, custom_providers
+            )
+            if cfg_matches:
+                if current_provider in cfg_matches:
+                    # The current provider itself declares it — keep current.
+                    new_model = cfg_matches[current_provider]
+                    config_routed = True
+                else:
+                    match_slugs = sorted(cfg_matches)
+                    if len(match_slugs) > 1:
+                        return ModelSwitchResult(
+                            success=False,
+                            is_global=is_global,
+                            error_message=(
+                                f"'{new_model}' is declared by multiple configured "
+                                f"providers ({', '.join(match_slugs)}). Re-run with "
+                                f"--provider <slug> to choose which one to use."
+                            ),
+                        )
+                    target_provider = match_slugs[0]
+                    new_model = cfg_matches[target_provider]
+                    config_routed = True
+                    logger.debug(
+                        "Configured-provider detection routed '%s' to %s",
+                        new_model, target_provider,
+                    )
+                    # User-config providers (providers.<slug>) are resolved in
+                    # the credential block via resolve_user_provider(), which is
+                    # gated on explicit_provider.  Mirror the picker so the
+                    # rerouted user provider's base_url/key load from the passed
+                    # config rather than a from-scratch runtime re-resolve that
+                    # doesn't know user-config slugs.  custom:* slugs resolve via
+                    # resolve_runtime_provider() directly and need no hint.
+                    if isinstance(user_providers, dict) and target_provider in user_providers:
+                        explicit_provider = target_provider
+
         # --- Step e: detect_provider_for_model() as last resort ---
         _base = current_base_url or ""
-        is_custom = current_provider in {"custom", "local"} or (
-            "localhost" in _base or "127.0.0.1" in _base
+        is_custom = (
+            current_provider in {"custom", "local"}
+            or current_provider.startswith("custom:")
+            or ("localhost" in _base or "127.0.0.1" in _base)
         )
 
         if (
@@ -932,6 +1095,7 @@ def switch_model(
             and not is_custom
             and not resolved_alias
             and not resolved_in_current_catalog
+            and not config_routed
         ):
             detected = detect_provider_for_model(new_model, current_provider)
             if detected:

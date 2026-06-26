@@ -537,6 +537,10 @@ class TestDispatchMessage(unittest.TestCase):
                 "body": "Hello",
                 "attachments": [],
                 "date": "",
+                # Authenticated From: (SPF/DKIM/DMARC passed at the receiving
+                # server). Allowlisted senders must be authenticated to proceed.
+                "sender_authenticated": True,
+                "auth_reason": "dmarc=pass",
             }
 
             asyncio.run(adapter._dispatch_message(msg_data))
@@ -569,6 +573,134 @@ class TestDispatchMessage(unittest.TestCase):
             asyncio.run(adapter._dispatch_message(msg_data))
             # Handler should be called when no allowlist is configured
             adapter._message_handler.assert_called()
+
+    def test_spoofed_from_rejected_when_allowlisted(self):
+        """A forged From: matching the allowlist is dropped when unauthenticated.
+
+        Core of GHSA-rxqh-5572-8m77: an attacker forges From: an-allowlisted
+        address. With an allowlist in effect and no allow-all, an unauthenticated
+        From: must be rejected before it can be matched against the allowlist.
+        """
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"200",
+                "sender_addr": "admin@test.com",  # forged From: matching allowlist
+                "sender_name": "Admin",
+                "subject": "Spoofed",
+                "message_id": "<spoof@evil.com>",
+                "in_reply_to": "",
+                "body": "rm -rf /",
+                "attachments": [],
+                "date": "",
+                "sender_authenticated": False,  # SPF/DKIM/DMARC did not pass
+                "auth_reason": "authentication failed (spf=fail)",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            adapter._message_handler.assert_not_called()
+            self.assertNotIn("admin@test.com", adapter._thread_context)
+
+    def test_unauthenticated_allowed_without_allowlist(self):
+        """No allowlist → no From: auth gate (gateway default-denies anyway)."""
+        import asyncio
+        with patch.dict(os.environ, {}, clear=False):
+            for k in ("EMAIL_ALLOWED_USERS", "GATEWAY_ALLOWED_USERS"):
+                os.environ.pop(k, None)
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"201",
+                "sender_addr": "anyone@test.com",
+                "sender_name": "Anyone",
+                "subject": "Hi",
+                "message_id": "<any@test.com>",
+                "in_reply_to": "",
+                "body": "Hi",
+                "attachments": [],
+                "date": "",
+                "sender_authenticated": False,
+                "auth_reason": "no Authentication-Results header",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # Adapter forwards; the gateway's own default-deny handles authz.
+            adapter._message_handler.assert_called()
+
+    def test_unauthenticated_allowed_with_trust_from_header(self):
+        """EMAIL_TRUST_FROM_HEADER=true disables the gate even with an allowlist."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "admin@test.com",
+            "EMAIL_TRUST_FROM_HEADER": "true",
+        }):
+            adapter = self._make_adapter()
+            captured = []
+
+            async def capture_handle(event):
+                captured.append(event)
+
+            adapter.handle_message = capture_handle
+
+            msg_data = {
+                "uid": b"202",
+                "sender_addr": "admin@test.com",
+                "sender_name": "Admin",
+                "subject": "Trusted",
+                "message_id": "<t@test.com>",
+                "in_reply_to": "",
+                "body": "Hello",
+                "attachments": [],
+                "date": "",
+                "sender_authenticated": False,
+                "auth_reason": "no Authentication-Results header",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured), 1)
+
+    def test_unauthenticated_allowed_with_allow_all(self):
+        """EMAIL_ALLOW_ALL_USERS=true makes sender identity moot — gate skipped.
+
+        With allow-all and no restrictive allowlist, an unauthenticated sender
+        is forwarded: the operator has explicitly chosen to accept anyone.
+        """
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOW_ALL_USERS": "true",
+        }):
+            os.environ.pop("EMAIL_ALLOWED_USERS", None)
+            os.environ.pop("GATEWAY_ALLOWED_USERS", None)
+            adapter = self._make_adapter()
+            captured = []
+
+            async def capture_handle(event):
+                captured.append(event)
+
+            adapter.handle_message = capture_handle
+
+            msg_data = {
+                "uid": b"203",
+                "sender_addr": "stranger@elsewhere.com",
+                "sender_name": "Stranger",
+                "subject": "Hi",
+                "message_id": "<s@elsewhere.com>",
+                "in_reply_to": "",
+                "body": "Hello",
+                "attachments": [],
+                "date": "",
+                "sender_authenticated": False,
+                "auth_reason": "no Authentication-Results header",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured), 1)
 
 
 class TestThreadContext(unittest.TestCase):
@@ -1480,6 +1612,110 @@ class TestConnectionConfigResolution(unittest.TestCase):
             "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com",
         }, clear=False):
             self.assertTrue(check_email_requirements())
+
+
+class TestSenderAuthentication(unittest.TestCase):
+    """Verify _verify_sender_authentication parses Authentication-Results
+    correctly and resists From: spoofing (GHSA-rxqh-5572-8m77)."""
+
+    def _msg(self, from_addr, auth_results=None):
+        """Build an email.message.Message with the given From: and
+        zero or more Authentication-Results headers (first = topmost/trusted)."""
+        msg = MIMEText("body")
+        msg["From"] = from_addr
+        for ar in auth_results or []:
+            msg["Authentication-Results"] = ar
+        return msg
+
+    def _verify(self, from_addr, auth_results=None, authserv_id=""):
+        from plugins.platforms.email.adapter import (
+            _verify_sender_authentication,
+            _extract_email_address,
+        )
+        msg = self._msg(from_addr, auth_results)
+        addr = _extract_email_address(from_addr)
+        return _verify_sender_authentication(msg, addr, authserv_id=authserv_id)
+
+    def test_dmarc_pass_authenticates(self):
+        ok, reason = self._verify(
+            "Admin <admin@example.com>",
+            ["mx.google.com; dmarc=pass header.from=example.com; spf=pass"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_spf_pass_aligned_authenticates(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; spf=pass smtp.mailfrom=admin@example.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_dkim_pass_aligned_authenticates(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dkim=pass header.d=example.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_spf_pass_misaligned_rejected(self):
+        # SPF passes for the envelope domain, but it doesn't match From: domain.
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; spf=pass smtp.mailfrom=bounce@evil.com"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_dkim_pass_misaligned_rejected(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dkim=pass header.d=evil.com"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_all_fail_rejected(self):
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dmarc=fail; spf=fail; dkim=fail"],
+        )
+        self.assertFalse(ok, reason)
+
+    def test_no_authentication_results_rejected(self):
+        ok, reason = self._verify("admin@example.com", [])
+        self.assertFalse(ok)
+        self.assertIn("no Authentication-Results", reason)
+
+    def test_relaxed_alignment_subdomain(self):
+        # mail.example.com (DKIM signer) aligns with example.com (From).
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["mx.google.com; dkim=pass header.d=mail.example.com"],
+        )
+        self.assertTrue(ok, reason)
+
+    def test_injected_header_below_trusted_does_not_authenticate(self):
+        """An attacker-injected Authentication-Results sorts BELOW the receiving
+        server's. With authserv-id pinning, only the trusted (first) header is
+        consulted, so a forged 'dmarc=pass' lower in the stack is ignored."""
+        ok, reason = self._verify(
+            "admin@example.com",
+            [
+                # Trusted: stamped by our server, real verdict = fail
+                "mx.ourserver.com; dmarc=fail header.from=example.com",
+                # Forged by attacker, claims pass
+                "mx.ourserver.com; dmarc=pass header.from=example.com",
+            ],
+            authserv_id="mx.ourserver.com",
+        )
+        self.assertFalse(ok, reason)
+
+    def test_authserv_id_mismatch_skips_untrusted_header(self):
+        """A header from an authserv-id we don't trust is skipped entirely."""
+        ok, reason = self._verify(
+            "admin@example.com",
+            ["attacker.relay.com; dmarc=pass header.from=example.com"],
+            authserv_id="mx.ourserver.com",
+        )
+        self.assertFalse(ok, reason)
 
 
 if __name__ == "__main__":

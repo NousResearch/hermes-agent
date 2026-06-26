@@ -110,6 +110,57 @@ class TestParseSchedule:
         with pytest.raises(ValueError):
             parse_schedule("99 99 99 99 99")
 
+    def test_naive_iso_anchors_to_configured_tz_not_server_local(self, monkeypatch):
+        """A naive ISO timestamp must be interpreted in the CONFIGURED Hermes
+        timezone, NOT the server's local timezone (#51021).
+
+        Regression: when the configured zone differs from the server's local
+        zone (common on cloud hosts running UTC), parse_schedule used
+        ``dt.astimezone()`` (server-local), baking in the wrong offset. The
+        due-check compares against ``_hermes_now()`` (configured zone), so the
+        stored instant landed hours off the user's wall-clock intent — far
+        enough that one-shots never became due. This asserts the parsed offset
+        matches the configured-now offset, the invariant that keeps the stored
+        instant on the same clock the scheduler checks against.
+        """
+        configured_now = datetime(2026, 6, 22, 20, 0, 0, tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: configured_now)
+
+        result = parse_schedule("2026-06-22T20:07:00")  # naive, user wall-clock
+
+        assert result["kind"] == "once"
+        parsed = datetime.fromisoformat(result["run_at"])
+        assert parsed.utcoffset() == configured_now.utcoffset()
+        # Same wall-clock the user typed, on the configured clock.
+        assert parsed.replace(tzinfo=None) == datetime(2026, 6, 22, 20, 7, 0)
+
+
+# =========================================================================
+# Timezone-divergence regression (#51021)
+# =========================================================================
+
+class TestNaiveScheduleTimezoneDivergence:
+    """End-to-end: a one-shot created with a naive recent-past timestamp must
+    become due even when the configured Hermes timezone differs from the
+    server's local timezone. Before #51021 the naive value was anchored to
+    server-local, so the job never fired."""
+
+    def test_recent_past_oneshot_is_due_under_diverging_tz(self, tmp_cron_dir, monkeypatch):
+        # Configured zone: a fixed +05:30 offset. The server's actual local
+        # zone is irrelevant to the parse now — that is the whole point.
+        configured = timezone(timedelta(hours=5, minutes=30))
+        now = datetime(2026, 6, 22, 20, 7, 30, tzinfo=configured)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+
+        # 30s ago in the configured wall clock, supplied as a NAIVE string.
+        naive_str = (now - timedelta(seconds=30)).replace(tzinfo=None).isoformat()
+        job = create_job(prompt="test message", schedule=naive_str, deliver="local")
+
+        due = get_due_jobs()
+        assert any(d["id"] == job["id"] for d in due), (
+            f"one-shot should be due; next_run_at={job['next_run_at']}"
+        )
+
 
 # =========================================================================
 # compute_next_run
@@ -1191,3 +1242,75 @@ class TestSaveJobOutput:
         with pytest.raises(ValueError, match="output path"):
             save_job_output(str(tmp_cron_dir / "outside"), "# Results")
         assert not (tmp_cron_dir / "outside").exists()
+
+
+class TestCronOutputRetention:
+    """Per-run cron output must self-prune so long deploys don't fill the disk (#52383)."""
+
+    @staticmethod
+    def _seed(d, count):
+        d.mkdir(parents=True, exist_ok=True)
+        names = [f"2026-06-25_10-00-{i:02d}.md" for i in range(count)]
+        for n in names:
+            (d / n).write_text("x")
+        return names
+
+    def test_prune_keeps_newest_n(self, tmp_path):
+        from cron.jobs import _prune_job_output
+        d = tmp_path / "job"
+        names = self._seed(d, 10)
+        assert _prune_job_output(d, keep=3) == 7
+        assert sorted(p.name for p in d.glob("*.md")) == names[-3:]
+
+    def test_prune_noop_when_under_cap(self, tmp_path):
+        from cron.jobs import _prune_job_output
+        d = tmp_path / "job"
+        self._seed(d, 3)
+        assert _prune_job_output(d, keep=5) == 0
+        assert len(list(d.glob("*.md"))) == 3
+
+    def test_prune_disabled_when_keep_non_positive(self, tmp_path):
+        from cron.jobs import _prune_job_output
+        d = tmp_path / "job"
+        self._seed(d, 5)
+        assert _prune_job_output(d, keep=0) == 0
+        assert _prune_job_output(d, keep=-1) == 0
+        assert len(list(d.glob("*.md"))) == 5
+
+    def test_prune_ignores_non_md_and_temp_files(self, tmp_path):
+        from cron.jobs import _prune_job_output
+        d = tmp_path / "job"
+        self._seed(d, 4)
+        (d / ".output_abc.tmp").write_text("partial")
+        (d / "manifest.json").write_text("{}")
+        _prune_job_output(d, keep=2)
+        assert (d / ".output_abc.tmp").exists()
+        assert (d / "manifest.json").exists()
+        assert len(list(d.glob("*.md"))) == 2
+
+    def test_save_job_output_prunes_old_runs(self, tmp_cron_dir, monkeypatch):
+        from cron.jobs import save_job_output, _job_output_dir
+        monkeypatch.setattr("cron.jobs._cron_output_keep", lambda: 3)
+        seq = iter(
+            datetime(2026, 6, 25, 10, 0, 0, tzinfo=timezone.utc) + timedelta(seconds=i)
+            for i in range(8)
+        )
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: next(seq))
+        for _ in range(8):
+            save_job_output("job1", "report")
+        files = sorted(_job_output_dir("job1").glob("*.md"))
+        assert len(files) == 3  # only the 3 most-recent runs survive
+
+    def test_cron_output_keep_reads_config(self, monkeypatch):
+        import cron.jobs as jobs
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"cron": {"output_retention": 7}}
+        )
+        assert jobs._cron_output_keep() == 7
+
+    def test_cron_output_keep_defaults_on_bad_config(self, monkeypatch):
+        import cron.jobs as jobs
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"cron": {"output_retention": "oops"}}
+        )
+        assert jobs._cron_output_keep() == jobs._CRON_OUTPUT_DEFAULT_KEEP

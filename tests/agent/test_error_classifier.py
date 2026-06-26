@@ -843,6 +843,19 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.timeout
 
+    def test_anthropic_out_of_extra_usage_is_billing(self):
+        """Anthropic's 2026-04-04 third-party enforcement returns HTTP 400
+        with body 'You're out of extra usage...'. Without classifying it as
+        billing it stays format_error (a generic 400) and the credential
+        rotation / payment-fallback chain never engages — the run just
+        dies on a hard 400. (#13170)"""
+        msg = "You're out of extra usage. Add more at claude.ai/settings/usage and keep going."
+        e = MockAPIError(msg, status_code=400, body={"error": {"message": msg}})
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-4-7")
+        assert result.reason == FailoverReason.billing
+        assert result.should_fallback is True
+        assert result.should_rotate_credential is True
+
     def test_connection_error_builtin(self):
         e = ConnectionError("Connection reset by peer")
         result = classify_api_error(e)

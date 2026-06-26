@@ -64,6 +64,7 @@ def _fresh_modules():
     """Drop cached hermes modules so each test reloads against current env."""
     for mod in list(sys.modules.keys()):
         if mod.startswith(("agent.auxiliary_client", "agent.image_routing",
+                           "agent.models_dev",
                            "tools.vision_tools", "tools.browser_tool",
                            "hermes_cli.config")):
             del sys.modules[mod]

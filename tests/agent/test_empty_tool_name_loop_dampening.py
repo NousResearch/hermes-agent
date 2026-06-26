@@ -28,6 +28,7 @@ import sys
 import tempfile
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from types import ModuleType
 
 import pytest
 
@@ -35,6 +36,24 @@ import pytest
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
+
+
+def _restore_parent_module_attrs(modules: dict[str, ModuleType]) -> None:
+    """Restore parent-package attributes after sys.modules surgery.
+
+    Removing ``agent.*`` from ``sys.modules`` and importing a fresh graph mutates
+    package attributes such as ``agent.file_safety``. Re-inserting the old module
+    objects into ``sys.modules`` is not enough: later imports can otherwise see
+    stale package attributes pointing at the fresh graph. Rebind every restored
+    child to its restored parent package.
+    """
+    for name, module in modules.items():
+        if "." not in name:
+            continue
+        parent_name, child_name = name.rsplit(".", 1)
+        parent = modules.get(parent_name) or sys.modules.get(parent_name)
+        if parent is not None:
+            setattr(parent, child_name, module)
 
 
 class _MockHandler(BaseHTTPRequestHandler):
@@ -119,10 +138,13 @@ def agent_env():
     os.environ["HERMES_HOME"] = os.path.join(test_home, ".hermes")
 
     # Import fresh so the patched conversation_loop is exercised even when the
-    # module was imported earlier in the same worker.
+    # module was imported earlier in the same worker. Preserve the old module
+    # objects so this fixture does not leave stale top-level imports in later
+    # tests pointing at modules whose names were deleted/re-imported.
+    removed_modules = {}
     for mod in list(sys.modules):
         if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("hermes_"):
-            del sys.modules[mod]
+            removed_modules[mod] = sys.modules.pop(mod)
     from run_agent import AIAgent
 
     agent = AIAgent(
@@ -143,6 +165,11 @@ def agent_env():
             os.environ.pop("HERMES_HOME", None)
         else:
             os.environ["HERMES_HOME"] = prev_home
+        for mod in list(sys.modules):
+            if mod == "run_agent" or mod.startswith("agent.") or mod.startswith("tools.") or mod.startswith("hermes_"):
+                sys.modules.pop(mod, None)
+        sys.modules.update(removed_modules)
+        _restore_parent_module_attrs(removed_modules)
 
 
 def _tool_results(handler) -> list[str]:

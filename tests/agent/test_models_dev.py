@@ -1,6 +1,8 @@
 """Tests for agent.models_dev — models.dev registry integration."""
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
@@ -9,6 +11,24 @@ from agent.models_dev import (
     lookup_models_dev_context,
 )
 
+
+
+
+@pytest.fixture(autouse=True)
+def _isolate_models_dev_cache():
+    """Keep models.dev cache mutations from leaking into later test modules.
+
+    Several tests intentionally seed ``agent.models_dev._models_dev_cache`` with
+    tiny synthetic registries. Leaving those globals behind makes later vision
+    routing tests treat real models as unknown and take the permissive path.
+    """
+    import agent.models_dev as md
+
+    md._models_dev_cache = {}
+    md._models_dev_cache_time = 0
+    yield
+    md._models_dev_cache = {}
+    md._models_dev_cache_time = 0
 
 SAMPLE_REGISTRY = {
     "anthropic": {

@@ -79,7 +79,7 @@ def test_write_file_approval_mutates_and_request_includes_diff(tmp_path):
         )
     )
 
-    assert result.get("bytes_written") == len("after\n")
+    assert result.get("bytes_written") == len(target.read_bytes())
     assert target.read_text(encoding="utf-8") == "after\n"
     assert len(proposals) == 1
     proposal = proposals[0]
@@ -103,7 +103,7 @@ def test_write_file_new_file_request_has_empty_old_text(tmp_path):
         )
     )
 
-    assert result.get("bytes_written") == len("created\n")
+    assert result.get("bytes_written") == len(target.read_bytes())
     assert target.read_text(encoding="utf-8") == "created\n"
     assert proposals[0].old_text is None
     assert proposals[0].new_text == "created\n"

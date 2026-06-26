@@ -13,7 +13,7 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 
 class _MinAdapter(BasePlatformAdapter):
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
 
     async def disconnect(self) -> None:

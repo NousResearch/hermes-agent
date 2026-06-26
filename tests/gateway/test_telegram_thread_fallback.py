@@ -1127,7 +1127,7 @@ async def test_base_send_image_fallback_preserves_metadata():
     from gateway.platforms.base import BasePlatformAdapter
 
     class _ConcreteBaseAdapter(BasePlatformAdapter):
-        async def connect(self):
+        async def connect(self, *, is_reconnect: bool = False):
             return True
 
         async def disconnect(self):

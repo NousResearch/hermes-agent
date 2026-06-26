@@ -1276,7 +1276,7 @@ class TestTruncateMessage:
         """Create a minimal adapter instance for testing static/instance methods."""
 
         class StubAdapter(BasePlatformAdapter):
-            async def connect(self):
+            async def connect(self, *, is_reconnect: bool = False):
                 return True
 
             async def disconnect(self):

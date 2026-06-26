@@ -2232,13 +2232,21 @@ class TelegramAdapter(BasePlatformAdapter):
                             self.name, topic_name, seed_err,
                         )
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """Connect to Telegram via polling or webhook.
 
         By default, uses long polling (outbound connection to Telegram).
         If ``TELEGRAM_WEBHOOK_URL`` is set, starts an HTTP webhook server
         instead.  Webhook mode is useful for cloud deployments (Fly.io,
         Railway) where inbound HTTP can wake a suspended machine.
+
+        ``is_reconnect`` distinguishes a cold first boot (False — drop any
+        stale Bot API queue) from a watcher reconnect after a prolonged
+        outage (True — preserve the updates Telegram queued while the bot
+        was offline, otherwise every message sent during the outage is
+        silently lost). The in-process network-error ladder and the
+        409-conflict handler already pass ``drop_pending_updates=False``
+        for the same reason; bootstrap follows suit on the reconnect path.
 
         Env vars for webhook mode::
 
@@ -2476,7 +2484,11 @@ class TelegramAdapter(BasePlatformAdapter):
                     webhook_url=webhook_url,
                     secret_token=webhook_secret,
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    # Webhooks are push-based — Telegram does not hold a
+                    # server-side getUpdates queue, so this flag is a no-op
+                    # in practice. Mirror the polling path's reconnect
+                    # semantics for consistency.
+                    drop_pending_updates=not is_reconnect,
                 )
                 self._webhook_mode = True
                 logger.info(
@@ -2509,7 +2521,10 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True,
+                    # On a cold first boot drop the stale Bot API queue; on a
+                    # watcher reconnect after an outage preserve it so messages
+                    # sent while the bot was offline are delivered (#46621).
+                    drop_pending_updates=not is_reconnect,
                     error_callback=_polling_error_callback,
                 )
             

@@ -153,7 +153,7 @@ class WebhookAdapter(BasePlatformAdapter):
     # Lifecycle
     # ------------------------------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         # Load agent-created subscriptions before validating
         self._reload_dynamic_routes()
 

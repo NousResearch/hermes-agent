@@ -611,7 +611,7 @@ async def test_status_command_bypasses_active_session_guard():
     class _ConcreteAdapter(BasePlatformAdapter):
         platform = Platform.TELEGRAM
 
-        async def connect(self): pass
+        async def connect(self, *, is_reconnect: bool = False): pass
         async def disconnect(self): pass
         async def send(self, chat_id, content, **kwargs): pass
         async def get_chat_info(self, chat_id): return {}
@@ -692,7 +692,7 @@ async def test_post_delivery_callback_generation_snapshot_happens_after_bind():
     class _ConcreteAdapter(BasePlatformAdapter):
         platform = Platform.TELEGRAM
 
-        async def connect(self): pass
+        async def connect(self, *, is_reconnect: bool = False): pass
         async def disconnect(self): pass
         async def send(self, chat_id, content, **kwargs): pass
         async def get_chat_info(self, chat_id): return {}

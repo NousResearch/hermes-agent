@@ -458,7 +458,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Alibaba Coding Plan — same platform as alibaba (DashScope coding-intl),
     # separate provider ID with its own base_url_env_var.
     "alibaba-coding-plan": [
-        "qwen3.7-max",
+        "qwen3.7-plus",
         "qwen3.6-plus",
         "qwen3.5-plus",
         "qwen3-coder-plus",

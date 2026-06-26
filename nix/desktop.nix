@@ -92,9 +92,11 @@ let
         runHook preInstall
         mkdir -p $out
         # vite writes to apps/desktop/dist/ (we cd'd there in buildPhase).
-        # apps/desktop/build was created before the cd.  electron/ is source.
+        # apps/desktop/build was created before the cd.  electron/ is source,
+        # then main.cjs is replaced by the staged self-contained bundle.
         cp -rn apps/desktop/dist $out/
         cp -rn apps/desktop/electron $out/
+        cp -f apps/desktop/build/electron/main.cjs $out/electron/main.cjs
 
         # flatten native-deps and install-stamp.json to the root level, exactly like
         # electron-builder's extraResources does ("from": "build/native-deps", "to": "native-deps")

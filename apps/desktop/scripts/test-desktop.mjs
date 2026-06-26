@@ -2,8 +2,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
+import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
-import { listPackage } from '@electron/asar'
+import { extractFile, listPackage } from '@electron/asar'
+
+const require = createRequire(import.meta.url)
+const { findUnexpectedPackagedMainRequires } = require('./packaged-main-validation.cjs')
 
 const DESKTOP_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const PACKAGE_JSON = JSON.parse(fs.readFileSync(path.join(DESKTOP_ROOT, 'package.json'), 'utf8'))
@@ -341,10 +345,6 @@ function validateBundle() {
     }
   }
 
-  // Renderer payload check (either unpacked or in the asar)
-  if (exists(APP.unpackedDistIndex)) {
-    return { stamp, nodeBinaries }
-  }
   if (!exists(APP.asarPath)) {
     die(`Missing renderer payload: neither ${APP.unpackedDistIndex} nor ${APP.asarPath} exists`)
   }
@@ -353,6 +353,21 @@ function validateBundle() {
   // backslash-prefixed entries on Windows ('\\dist\\index.html') and
   // forward-slash on Unix.
   const normalized = files.map(f => f.replace(/\\/g, '/').replace(/^\/+/, ''))
+  const packagedMain = 'electron/main.cjs'
+  if (!normalized.includes(packagedMain)) {
+    die(`Missing packaged Electron main in app.asar: ${packagedMain}`)
+  }
+  const packagedMainSource = extractFile(APP.asarPath, packagedMain).toString('utf8')
+  const unexpectedMainRequires = findUnexpectedPackagedMainRequires(packagedMainSource)
+  if (unexpectedMainRequires.length > 0) {
+    die(
+      `Packaged electron/main.cjs has unbundled runtime require() calls: ${unexpectedMainRequires.join(', ')}`
+    )
+  }
+  // Renderer payload check (either unpacked or in the asar)
+  if (exists(APP.unpackedDistIndex)) {
+    return { stamp, nodeBinaries }
+  }
   if (!normalized.includes('dist/index.html')) {
     die(`Missing renderer payload file in app.asar: ${APP.asarPath} (expected dist/index.html)`)
   }

@@ -9,12 +9,14 @@
 import { build } from 'esbuild'
 import { resolve, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { renameSync } from 'node:fs'
+import { mkdirSync } from 'node:fs'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const root = resolve(here, '..')
 const entry = resolve(root, 'electron/main.cjs')
-const tmp = resolve(root, 'electron/main.bundled.cjs')
+const outfile = resolve(root, 'build/electron/main.cjs')
+
+mkdirSync(dirname(outfile), { recursive: true })
 
 await build({
   entryPoints: [entry],
@@ -22,12 +24,9 @@ await build({
   platform: 'node',
   format: 'cjs',
   target: 'node20',
-  outfile: tmp,
+  outfile,
   external: ['electron', 'node-pty'],
   logLevel: 'info'
 })
 
-// Overwrite the original with the bundled version.
-renameSync(tmp, entry)
-
-console.log(`bundled ${entry}`)
+console.log(`bundled ${entry} -> ${outfile}`)

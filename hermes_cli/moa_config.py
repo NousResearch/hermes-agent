@@ -42,6 +42,30 @@ def _default_preset() -> dict[str, Any]:
     }
 
 
+def _coerce_float(value: Any, default: float) -> float:
+    """Coerce *value* to ``float``, falling back to *default* on failure."""
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    """Coerce *value* to ``int``, falling back to *default* on failure.
+
+    Tries ``int(float(value))`` as a second attempt so that float-strings
+    like ``"4096.5"`` degrade gracefully instead of raising.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def _normalize_preset(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
@@ -57,9 +81,9 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         "enabled": bool(raw.get("enabled", True)),
         "reference_models": refs,
         "aggregator": aggregator,
-        "reference_temperature": float(raw.get("reference_temperature", 0.6) or 0.6),
-        "aggregator_temperature": float(raw.get("aggregator_temperature", 0.4) or 0.4),
-        "max_tokens": int(raw.get("max_tokens", 4096) or 4096),
+        "reference_temperature": _coerce_float(raw.get("reference_temperature"), 0.6),
+        "aggregator_temperature": _coerce_float(raw.get("aggregator_temperature"), 0.4),
+        "max_tokens": _coerce_int(raw.get("max_tokens"), 4096),
     }
 
 

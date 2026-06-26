@@ -362,6 +362,12 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALL
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
+    # NB: glm-5v-turbo is only reachable on z.ai's standard pay-as-you-go
+    # endpoint (api/paas/v4). A *coding-plan* GLM_API_KEY returns 429
+    # "Insufficient balance" for it, so deployments on a coding-plan key
+    # should pin `auxiliary.vision: {provider: gemini, ...}` in the GLM
+    # profile's config to route image analysis to the official Gemini API
+    # instead of dead-ending here.
 }
 
 # Providers whose endpoint does not accept image input, even though the
@@ -520,6 +526,10 @@ auxiliary_is_nous: bool = False
 # Default auxiliary models per provider
 _OPENROUTER_MODEL = "google/gemini-3-flash-preview"
 _NOUS_MODEL = "google/gemini-3-flash-preview"
+# Official Google Gemini API (native generativelanguage endpoint) used as the
+# preferred vision fallback for text-only main models. Native slug (no
+# "google/" aggregator prefix). Reads GEMINI_API_KEY / GOOGLE_API_KEY.
+_GEMINI_VISION_MODEL = "gemini-3.5-flash"
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _ANTHROPIC_DEFAULT_BASE_URL = "https://api.anthropic.com"
 _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
@@ -4485,6 +4495,10 @@ def get_async_text_auxiliary_client(task: str = "", *, main_runtime: Optional[Di
 
 
 _VISION_AUTO_PROVIDER_ORDER = (
+    # Official Google Gemini API first — preferred vision fallback for
+    # text-only main models (DeepSeek V4, GLM-5.2, …). Falls back to the
+    # aggregators only if no Gemini key is configured.
+    "gemini",
     "openrouter",
     "nous",
 )
@@ -4530,6 +4544,14 @@ def _resolve_strict_vision_backend(
     model: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     provider = _normalize_vision_provider(provider)
+    if provider == "gemini":
+        # Official Google Gemini API (native generativelanguage endpoint).
+        # Preferred vision fallback for text-only main models; reads
+        # GEMINI_API_KEY / GOOGLE_API_KEY. Returns (None, None) when no key
+        # is configured, so the auto-chain continues to OpenRouter/Nous.
+        return resolve_provider_client(
+            "gemini", model or _GEMINI_VISION_MODEL, is_vision=True
+        )
     if provider == "copilot":
         return resolve_provider_client("copilot", model, is_vision=True)
     if provider == "openrouter":

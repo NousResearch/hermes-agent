@@ -3333,6 +3333,11 @@ class TestVisionAutoSkipsKimiCoding:
         )
 
         def fake_strict(provider, model=None):
+            if provider == "gemini":
+                # No Gemini key configured in this scenario → the chain
+                # continues to the next aggregator. (Official Gemini is tried
+                # first as of the Gemini vision-fallback change.)
+                return None, None
             if provider == "openrouter":
                 return fake_or_client, "google/gemini-3-flash-preview"
             if provider == "nous":

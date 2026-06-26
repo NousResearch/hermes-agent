@@ -436,7 +436,8 @@ class TestResolveVisionMainFirst:
         assert "default_headers" not in mock_openai.call_args.kwargs
 
     def test_main_unavailable_vision_falls_through_to_aggregators(self):
-        """Main provider fails → fall back to OpenRouter/Nous strict backends."""
+        """Main provider fails → fall back to a strict vision backend
+        (official Gemini first, then OpenRouter/Nous)."""
         fallback_client = MagicMock()
         with patch(
             "agent.auxiliary_client._read_main_provider", return_value="deepseek",
@@ -457,7 +458,7 @@ class TestResolveVisionMainFirst:
             provider, client, model = resolve_vision_provider_client()
 
         assert client is fallback_client
-        assert provider in {"openrouter", "nous"}
+        assert provider in {"gemini", "openrouter", "nous"}
 
     def test_explicit_provider_override_still_wins(self):
         """Explicit config override bypasses main-first policy."""

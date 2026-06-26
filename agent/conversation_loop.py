@@ -2614,6 +2614,71 @@ def run_conversation(
                     )
                     continue
 
+                # ── Orphaned tool_use recovery ─────────────────────────
+                # Anthropic rejects messages where a tool_use block is not
+                # immediately followed by a matching tool_result.  Two
+                # known causes:
+                #   1. Context compression inserts messages between a
+                #      tool_use and its tool_result (covered by
+                #      _strip_orphaned_tool_blocks in the Anthropic
+                #      adapter, but that mutates the wire payload — not
+                #      the canonical ``messages`` list, so the *next*
+                #      API call re-builds the same broken payload).
+                #   2. A cron/subagent session is interrupted before the
+                #      tool_result is appended (e.g. execute_code blocked
+                #      by the approval guard leaves a tool_use as the
+                #      last assistant block with no following user turn).
+                # Recovery: run _strip_orphaned_tool_blocks against the
+                # canonical ``messages`` list so the cleaned version is
+                # persisted and the retry sees a valid transcript.
+                # One-shot to avoid an infinite strip loop.
+                if (
+                    classified.reason == FailoverReason.orphaned_tool_use
+                    and not _retry.orphaned_tool_use_retry_attempted
+                ):
+                    _retry.orphaned_tool_use_retry_attempted = True
+                    try:
+                        from agent.anthropic_adapter import _strip_orphaned_tool_blocks
+                        _before = sum(
+                            1 for _m in messages
+                            if isinstance(_m, dict)
+                            and _m.get("role") == "assistant"
+                            and isinstance(_m.get("content"), list)
+                            and any(
+                                isinstance(_b, dict) and _b.get("type") == "tool_use"
+                                for _b in _m["content"]
+                            )
+                        )
+                        _strip_orphaned_tool_blocks(messages)
+                        _after = sum(
+                            1 for _m in messages
+                            if isinstance(_m, dict)
+                            and _m.get("role") == "assistant"
+                            and isinstance(_m.get("content"), list)
+                            and any(
+                                isinstance(_b, dict) and _b.get("type") == "tool_use"
+                                for _b in _m["content"]
+                            )
+                        )
+                        _stripped_turns = _before - _after
+                    except Exception as _strip_exc:
+                        logger.warning(
+                            "%sOrphaned tool_use recovery: strip helper failed: %s",
+                            agent.log_prefix, _strip_exc,
+                        )
+                        _stripped_turns = 0
+                    agent._vprint(
+                        f"{agent.log_prefix}⚠️  Orphaned tool_use detected — "
+                        f"stripped {_stripped_turns} turn(s) from canonical messages, retrying...",
+                        force=True,
+                    )
+                    logger.warning(
+                        "%sOrphaned tool_use recovery: stripped %d assistant turn(s) "
+                        "from canonical messages",
+                        agent.log_prefix, _stripped_turns,
+                    )
+                    continue
+
                 # ── llama.cpp grammar-parse recovery ──────────────────
                 # llama.cpp's ``json-schema-to-grammar`` converter rejects
                 # regex escape classes (``\d``, ``\w``, ``\s``) and most

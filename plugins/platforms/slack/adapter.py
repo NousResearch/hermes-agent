@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import time
+import types
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
 
@@ -30,6 +31,10 @@ except ImportError:
     AsyncApp = Any
     AsyncSocketModeHandler = Any
     AsyncWebClient = Any
+    aiohttp = types.SimpleNamespace(
+        ClientSession=None,
+        ClientTimeout=lambda total=None: None,
+    )
 
 import sys
 from pathlib import Path as _Path
@@ -301,6 +306,243 @@ def _resolve_slack_proxy_url() -> Optional[str]:
         return None
 
     return proxy_url
+
+
+_SLACK_SECTION_TEXT_MAX = 3000
+_SLACK_MESSAGE_BLOCK_MAX = 50
+_SLACK_TABLE_ROW_MAX = 100
+_SLACK_TABLE_COLUMN_MAX = 20
+_SLACK_TABLE_CELL_TEXT_TOTAL_MAX = 10_000
+
+
+def _split_markdown_table_row(line: str) -> List[str]:
+    """Split a Markdown table row on unescaped pipes."""
+    row = line.strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|"):
+        row = row[:-1]
+
+    cells: List[str] = []
+    current: List[str] = []
+    escaped = False
+    for ch in row:
+        if escaped:
+            if ch == "|":
+                current.append("|")
+            else:
+                current.append("\\")
+                current.append(ch)
+            escaped = False
+            continue
+        if ch == "\\":
+            escaped = True
+            continue
+        if ch == "|":
+            cells.append("".join(current).strip())
+            current = []
+            continue
+        current.append(ch)
+    if escaped:
+        current.append("\\")
+    cells.append("".join(current).strip())
+    return cells
+
+
+def _parse_markdown_table_alignment(separator_cells: List[str]) -> Optional[List[str]]:
+    """Return Slack column alignments for a Markdown separator row."""
+    if len(separator_cells) < 2:
+        return None
+
+    alignments: List[str] = []
+    for raw in separator_cells:
+        cell = re.sub(r"\s+", "", raw or "")
+        if not re.fullmatch(r":?-{3,}:?", cell):
+            return None
+        starts = cell.startswith(":")
+        ends = cell.endswith(":")
+        if starts and ends:
+            alignments.append("center")
+        elif ends:
+            alignments.append("right")
+        else:
+            alignments.append("left")
+    return alignments
+
+
+def _strip_markdown_for_slack_table_cell(cell: str) -> str:
+    """Convert a Markdown table cell to Slack raw_text cell text."""
+    text = (cell or "").strip()
+
+    # Preserve useful link information in a raw cell.
+    text = re.sub(r"(?<!!)\[([^\]]+)\]\(([^()]*(?:\([^()]*\)[^()]*)*)\)", r"\1 (\2)", text)
+    # If the text has already been through Slack mrkdwn conversion, avoid
+    # showing literal entity syntax inside the native table cell.
+    text = re.sub(r"<([^|>\n]+)\|([^>\n]+)>", r"\2 (\1)", text)
+    # Remove common inline formatting delimiters. Native table cells do not
+    # parse mrkdwn, so raw delimiters are visual noise.
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    text = re.sub(r"\*\*\*(.+?)\*\*\*", r"\1", text)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"(?<!\*)\*(\S(?:[^*\n]*?\S)?)\*(?!\*)", r"\1", text)
+    text = re.sub(r"_([^_\n]+)_", r"\1", text)
+    text = re.sub(r"~~(.+?)~~", r"\1", text)
+    text = re.sub(r"\\([|*_`~\\])", r"\1", text)
+
+    return text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+
+
+def _section_blocks_for_slack_text(text: str, formatter) -> List[Dict[str, Any]]:
+    """Render non-table text as Slack section blocks."""
+    formatted = formatter(text.strip())
+    if not formatted:
+        return []
+
+    blocks: List[Dict[str, Any]] = []
+    remaining = formatted
+    while remaining:
+        if len(remaining) <= _SLACK_SECTION_TEXT_MAX:
+            chunk = remaining
+            remaining = ""
+        else:
+            split_at = remaining.rfind("\n", 0, _SLACK_SECTION_TEXT_MAX)
+            if split_at < _SLACK_SECTION_TEXT_MAX // 2:
+                split_at = remaining.rfind(" ", 0, _SLACK_SECTION_TEXT_MAX)
+            if split_at < 1:
+                split_at = _SLACK_SECTION_TEXT_MAX
+            chunk = remaining[:split_at].rstrip()
+            remaining = remaining[split_at:].lstrip()
+        if chunk:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": chunk}})
+    return blocks
+
+
+def _table_block_from_markdown_rows(
+    rows: List[List[str]],
+    alignments: List[str],
+    *,
+    remaining_cell_chars: int = _SLACK_TABLE_CELL_TEXT_TOTAL_MAX,
+) -> Optional[Tuple[Dict[str, Any], int]]:
+    """Build a Slack native table block and return its cell character count."""
+    if not rows or len(rows) > _SLACK_TABLE_ROW_MAX or remaining_cell_chars <= 0:
+        return None
+    column_count = max(len(row) for row in rows)
+    if column_count < 2 or column_count > _SLACK_TABLE_COLUMN_MAX:
+        return None
+
+    total_chars = 0
+    slack_rows: List[List[Dict[str, Any]]] = []
+    for row in rows:
+        normalized = row[:column_count] + [""] * max(0, column_count - len(row))
+        slack_row: List[Dict[str, Any]] = []
+        for cell in normalized:
+            text = _strip_markdown_for_slack_table_cell(cell)
+            total_chars += len(text)
+            if total_chars > remaining_cell_chars:
+                return None
+            slack_row.append({"type": "raw_text", "text": text})
+        slack_rows.append(slack_row)
+
+    column_settings: List[Dict[str, Any]] = []
+    for idx in range(column_count):
+        align = alignments[idx] if idx < len(alignments) else "left"
+        setting: Dict[str, Any] = {"is_wrapped": True}
+        if align != "left":
+            setting["align"] = align
+        column_settings.append(setting)
+
+    return {
+        "type": "table",
+        "rows": slack_rows,
+        "column_settings": column_settings,
+    }, total_chars
+
+
+def _slack_blocks_with_native_tables(content: str, formatter) -> Optional[List[Dict[str, Any]]]:
+    """Convert Markdown pipe tables in content to Slack table blocks.
+
+    Returns None when there are no safe, in-limit table blocks to emit; the
+    caller should then fall back to the existing text+mrkdwn path.
+    """
+    if not content or "|" not in content:
+        return None
+
+    lines = content.splitlines()
+    segments: List[Tuple[str, Any]] = []
+    text_buffer: List[str] = []
+    found_table = False
+    in_fence = False
+    i = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_fence = not in_fence
+            text_buffer.append(line)
+            i += 1
+            continue
+
+        if not in_fence and i + 1 < len(lines) and "|" in line and "|" in lines[i + 1]:
+            header_cells = _split_markdown_table_row(line)
+            alignments = _parse_markdown_table_alignment(
+                _split_markdown_table_row(lines[i + 1])
+            )
+            if alignments and len(header_cells) >= 2:
+                rows = [header_cells]
+                j = i + 2
+                while j < len(lines):
+                    candidate = lines[j]
+                    if not candidate.strip() or "|" not in candidate:
+                        break
+                    if candidate.strip().startswith("```"):
+                        break
+                    cells = _split_markdown_table_row(candidate)
+                    if len(cells) < 2:
+                        break
+                    rows.append(cells)
+                    j += 1
+
+                if len(rows) > 1:
+                    if text_buffer:
+                        segments.append(("text", "\n".join(text_buffer)))
+                        text_buffer = []
+                    segments.append(("table", (rows, alignments)))
+                    found_table = True
+                    i = j
+                    continue
+
+        text_buffer.append(line)
+        i += 1
+
+    if text_buffer:
+        segments.append(("text", "\n".join(text_buffer)))
+    if not found_table:
+        return None
+
+    blocks: List[Dict[str, Any]] = []
+    table_cell_chars = 0
+    for kind, payload in segments:
+        if kind == "text":
+            blocks.extend(_section_blocks_for_slack_text(payload, formatter))
+        else:
+            rows, alignments = payload
+            table_result = _table_block_from_markdown_rows(
+                rows,
+                alignments,
+                remaining_cell_chars=(
+                    _SLACK_TABLE_CELL_TEXT_TOTAL_MAX - table_cell_chars
+                ),
+            )
+            if table_result is None:
+                return None
+            table_block, cell_chars = table_result
+            table_cell_chars += cell_chars
+            blocks.append(table_block)
+        if len(blocks) > _SLACK_MESSAGE_BLOCK_MAX:
+            return None
+
+    return blocks or None
 
 
 # Map Slack audio mimetypes to the file extension that matches the actual
@@ -801,11 +1043,16 @@ class SlackAdapter(BasePlatformAdapter):
         # possible.  Long responses are rare for command replies.
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         text = chunks[0] if chunks else formatted
-        payload = {
+        table_blocks = None
+        if len(formatted) <= self.MAX_MESSAGE_LENGTH:
+            table_blocks = _slack_blocks_with_native_tables(content, self.format_message)
+        payload: Dict[str, Any] = {
             "response_type": "ephemeral",
             "replace_original": True,
             "text": text,
         }
+        if table_blocks:
+            payload["blocks"] = table_blocks
         try:
             async with aiohttp.ClientSession(trust_env=True) as session:
                 async with session.post(
@@ -1249,9 +1496,16 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Convert standard markdown → Slack mrkdwn
             formatted = self.format_message(content)
+            table_blocks = None
+            if len(formatted) <= self.MAX_MESSAGE_LENGTH:
+                table_blocks = _slack_blocks_with_native_tables(content, self.format_message)
 
-            # Split long messages, preserving code block boundaries
-            chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+            # Split long messages, preserving code block boundaries. Native
+            # table blocks are sent as a single Block Kit message; if conversion
+            # is unsafe/over limit, fall back to the existing text chunker.
+            chunks = [formatted] if table_blocks else self.truncate_message(
+                formatted, self.MAX_MESSAGE_LENGTH
+            )
 
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
             last_result = None
@@ -1261,11 +1515,13 @@ class SlackAdapter(BasePlatformAdapter):
             broadcast = self.config.extra.get("reply_broadcast", False)
 
             for i, chunk in enumerate(chunks):
-                kwargs = {
+                kwargs: Dict[str, Any] = {
                     "channel": chat_id,
                     "text": chunk,
                     "mrkdwn": True,
                 }
+                if table_blocks and i == 0:
+                    kwargs["blocks"] = table_blocks
                 if thread_ts:
                     kwargs["thread_ts"] = thread_ts
                     # Only broadcast the first chunk of the first reply
@@ -1317,13 +1573,18 @@ class SlackAdapter(BasePlatformAdapter):
 
         try:
             formatted = self.format_message(content)
+            table_blocks = None
+            if len(formatted) <= self.MAX_MESSAGE_LENGTH:
+                table_blocks = _slack_blocks_with_native_tables(content, self.format_message)
             thread_ts = self._resolve_thread_ts(reply_to, metadata)
-            kwargs = {
+            kwargs: Dict[str, Any] = {
                 "channel": chat_id,
                 "user": user_id,
                 "text": formatted,
                 "mrkdwn": True,
             }
+            if table_blocks:
+                kwargs["blocks"] = table_blocks
             if thread_ts:
                 kwargs["thread_ts"] = thread_ts
 
@@ -1350,11 +1611,16 @@ class SlackAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
         try:
             formatted = self.format_message(content)
-            await self._get_client(chat_id).chat_update(
-                channel=chat_id,
-                ts=message_id,
-                text=formatted,
-            )
+            table_blocks = None
+            if len(formatted) <= self.MAX_MESSAGE_LENGTH:
+                table_blocks = _slack_blocks_with_native_tables(content, self.format_message)
+            kwargs: Dict[str, Any] = {
+                "channel": chat_id,
+                "ts": message_id,
+                "text": formatted,
+                "blocks": table_blocks or [],
+            }
+            await self._get_client(chat_id).chat_update(**kwargs)
             if finalize:
                 await self.stop_typing(chat_id)
             return SendResult(success=True, message_id=message_id)
@@ -4038,10 +4304,15 @@ async def _standalone_send(
         return {"error": "Slack send failed: SLACK_BOT_TOKEN not configured"}
 
     formatted = message
+    table_blocks = None
     if message:
         try:
             _fmt_adapter = SlackAdapter.__new__(SlackAdapter)
             formatted = _fmt_adapter.format_message(message)
+            if len(formatted) <= SlackAdapter.MAX_MESSAGE_LENGTH:
+                table_blocks = _slack_blocks_with_native_tables(
+                    message, _fmt_adapter.format_message
+                )
         except Exception:
             logger.debug(
                 "Failed to apply Slack mrkdwn formatting in _standalone_send",
@@ -4066,7 +4337,9 @@ async def _standalone_send(
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30), **_sess_kw
         ) as session:
-            payload = {"channel": chat_id, "text": formatted, "mrkdwn": True}
+            payload: Dict[str, Any] = {"channel": chat_id, "text": formatted, "mrkdwn": True}
+            if table_blocks:
+                payload["blocks"] = table_blocks
             if thread_id:
                 payload["thread_ts"] = thread_id
             async with session.post(

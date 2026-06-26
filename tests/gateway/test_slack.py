@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import os
 import sys
+import types
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
@@ -1049,6 +1050,151 @@ class TestSendPrivateNotice:
             mrkdwn=True,
             thread_ts="1234567890.123456",
         )
+
+
+# ---------------------------------------------------------------------------
+# TestSlackNativeTables
+# ---------------------------------------------------------------------------
+
+
+class TestSlackNativeTables:
+    @pytest.mark.asyncio
+    async def test_send_converts_markdown_table_to_native_slack_block(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "123.456"})
+        content = "\n".join(
+            [
+                "Verdict by repo",
+                "",
+                "| Repo | Decision |",
+                "|---|---:|",
+                "| `ponytail` | **Already adopted** |",
+                "| headroom | [Adopted](https://example.com) |",
+                "",
+                "Done.",
+            ]
+        )
+
+        result = await adapter.send("C123", content)
+
+        assert result.success
+        adapter._app.client.chat_postMessage.assert_awaited_once()
+        await_args = adapter._app.client.chat_postMessage.await_args
+        assert await_args is not None
+        kwargs = await_args.kwargs
+        assert kwargs["channel"] == "C123"
+        assert kwargs["text"] == adapter.format_message(content)
+        assert kwargs["mrkdwn"] is True
+        blocks = kwargs["blocks"]
+        assert blocks[0] == {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "Verdict by repo"},
+        }
+        table = blocks[1]
+        assert table["type"] == "table"
+        assert table["column_settings"][1] == {"is_wrapped": True, "align": "right"}
+        assert table["rows"][0] == [
+            {"type": "raw_text", "text": "Repo"},
+            {"type": "raw_text", "text": "Decision"},
+        ]
+        assert table["rows"][1] == [
+            {"type": "raw_text", "text": "ponytail"},
+            {"type": "raw_text", "text": "Already adopted"},
+        ]
+        assert table["rows"][2][1] == {
+            "type": "raw_text",
+            "text": "Adopted (https://example.com)",
+        }
+        assert blocks[2] == {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "Done."},
+        }
+
+    @pytest.mark.asyncio
+    async def test_send_does_not_convert_tables_inside_code_fences(self, adapter):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "123.456"})
+        content = "```\n| A | B |\n|---|---|\n| 1 | 2 |\n```"
+
+        result = await adapter.send("C123", content)
+
+        assert result.success
+        await_args = adapter._app.client.chat_postMessage.await_args
+        assert await_args is not None
+        kwargs = await_args.kwargs
+        assert "blocks" not in kwargs
+        assert kwargs["text"] == content
+
+    @pytest.mark.asyncio
+    async def test_send_falls_back_when_multiple_tables_exceed_cell_char_limit(
+        self, adapter
+    ):
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "123.456"})
+        content = "\n\n".join(
+            [
+                f"| A | B |\n|---|---|\n| {'x' * 5000} | ok |",
+                f"| A | B |\n|---|---|\n| {'y' * 5000} | ok |",
+            ]
+        )
+
+        result = await adapter.send("C123", content)
+
+        assert result.success
+        await_args = adapter._app.client.chat_postMessage.await_args
+        assert await_args is not None
+        kwargs = await_args.kwargs
+        assert "blocks" not in kwargs
+        assert kwargs["text"] == content
+
+    @pytest.mark.asyncio
+    async def test_standalone_send_uses_native_table_blocks(self, monkeypatch):
+        requests = []
+
+        class _FakeResponse:
+            status = 200
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def json(self):
+                return {"ok": True, "ts": "123.456"}
+
+            async def text(self):
+                return "ok"
+
+        class _FakeSession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, headers=None, json=None, **kwargs):
+                requests.append(json)
+                return _FakeResponse()
+
+        fake_aiohttp = types.SimpleNamespace(
+            ClientSession=_FakeSession,
+            ClientTimeout=lambda total=None: None,
+        )
+        monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
+
+        result = await _slack_mod._standalone_send(
+            PlatformConfig(enabled=True, token="xoxb-fake"),
+            "C123",
+            "| A | B |\n|---|---|\n| 1 | 2 |",
+        )
+
+        assert result["success"] is True
+        assert requests[0]["blocks"][0]["type"] == "table"
+        assert requests[0]["blocks"][0]["rows"][1] == [
+            {"type": "raw_text", "text": "1"},
+            {"type": "raw_text", "text": "2"},
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -2135,6 +2281,7 @@ class TestSendTyping:
             channel="C123",
             ts="reply_ts",
             text="done",
+            blocks=[],
         )
         adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
             channel_id="C123",
@@ -2445,6 +2592,26 @@ class TestEditMessage:
         await adapter.edit_message("C123", "1234.5678", "AT&T < 5 > 3")
         kwargs = adapter._app.client.chat_update.call_args.kwargs
         assert kwargs["text"] == "AT&amp;T &lt; 5 &gt; 3"
+
+    @pytest.mark.asyncio
+    async def test_edit_message_clears_blocks_without_table(self, adapter):
+        """chat.update must clear prior Block Kit blocks when new text has no table."""
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        await adapter.edit_message("C123", "1234.5678", "plain update")
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["text"] == "plain update"
+        assert kwargs["blocks"] == []
+
+    @pytest.mark.asyncio
+    async def test_edit_message_sends_native_table_blocks(self, adapter):
+        adapter._app.client.chat_update = AsyncMock(return_value={"ok": True})
+        await adapter.edit_message("C123", "1234.5678", "| A | B |\n|---|---|\n| 1 | 2 |")
+        kwargs = adapter._app.client.chat_update.call_args.kwargs
+        assert kwargs["blocks"][0]["type"] == "table"
+        assert kwargs["blocks"][0]["rows"][1] == [
+            {"type": "raw_text", "text": "1"},
+            {"type": "raw_text", "text": "2"},
+        ]
 
 
 # ---------------------------------------------------------------------------

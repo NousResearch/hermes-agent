@@ -315,6 +315,23 @@ In channels, always @mention the bot to start a conversation. Once the bot is ac
 
 ---
 
+## Message Formatting
+
+Hermes sends normal Slack responses as Slack `mrkdwn`, so bold, inline code, links, and fenced code blocks render in Slack. When a response contains a standard Markdown pipe table, Hermes converts it to Slack's native Block Kit `table` block when it fits Slack's limits.
+
+Example input that renders as a native Slack table:
+
+```markdown
+| Repo | Decision |
+|---|---|
+| mattpocock/skills | Adopted principles |
+| headroom | Adopted principle |
+```
+
+Slack table limits still apply: up to 100 rows, 20 columns, and 10,000 total table-cell characters per message. Tables inside fenced code blocks stay literal, and oversized/invalid tables fall back to normal text rendering.
+
+---
+
 ## Configuration Options
 
 Beyond the required environment variables from Step 8, you can customize Slack bot behavior through `~/.hermes/config.yaml`.

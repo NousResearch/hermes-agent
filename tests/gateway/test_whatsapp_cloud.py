@@ -957,6 +957,77 @@ class TestSendImage:
         assert payload["image"]["caption"] == "cute cat"
 
     @pytest.mark.asyncio
+    async def test_send_image_caption_records_reply_context(self, monkeypatch, tmp_path):
+        from gateway import rich_sent_store
+        from gateway.platforms import whatsapp_cloud as wac
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.IMAGE"}]}
+            )
+        )
+        record = MagicMock(wraps=wac.rich_sent_store.record)
+        monkeypatch.setattr(wac.rich_sent_store, "record", record)
+
+        result = await adapter.send_image(
+            "15551234567", "https://cdn.example.com/cat.jpg", caption="cute cat"
+        )
+
+        assert result.success and result.message_id == "wamid.IMAGE"
+        record.assert_called_once_with("15551234567", "wamid.IMAGE", "cute cat")
+        assert rich_sent_store.lookup("15551234567", "wamid.IMAGE") == "cute cat"
+
+    @pytest.mark.asyncio
+    async def test_send_image_without_caption_does_not_record_empty_context(self, monkeypatch, tmp_path):
+        from gateway import rich_sent_store
+        from gateway.platforms import whatsapp_cloud as wac
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.NO_CAPTION"}]}
+            )
+        )
+        record = MagicMock(wraps=wac.rich_sent_store.record)
+        monkeypatch.setattr(wac.rich_sent_store, "record", record)
+
+        result = await adapter.send_image(
+            "15551234567", "https://cdn.example.com/cat.jpg"
+        )
+
+        assert result.success and result.message_id == "wamid.NO_CAPTION"
+        record.assert_not_called()
+        assert rich_sent_store.lookup("15551234567", "wamid.NO_CAPTION") is None
+
+    @pytest.mark.asyncio
+    async def test_send_image_caption_index_failure_does_not_fail_send(self, monkeypatch):
+        from gateway.platforms import whatsapp_cloud as wac
+
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.STORE_FAIL"}]}
+            )
+        )
+        monkeypatch.setattr(
+            wac.rich_sent_store,
+            "record",
+            MagicMock(side_effect=RuntimeError("disk unavailable")),
+        )
+
+        result = await adapter.send_image(
+            "15551234567", "https://cdn.example.com/cat.jpg", caption="cute cat"
+        )
+
+        assert result.success and result.message_id == "wamid.STORE_FAIL"
+
+    @pytest.mark.asyncio
     async def test_send_image_oversize_rejected_locally(self):
         """Don't round-trip to Graph just to be told the file's too big."""
         adapter = _make_adapter()
@@ -1022,6 +1093,30 @@ class TestSendVideo:
         assert payload["type"] == "video"
         assert payload["video"]["link"] == "https://cdn.example.com/v.mp4"
         assert payload["video"]["caption"] == "clip"
+
+    @pytest.mark.asyncio
+    async def test_send_video_caption_records_reply_context(self, monkeypatch, tmp_path):
+        from gateway import rich_sent_store
+        from gateway.platforms import whatsapp_cloud as wac
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(
+            return_value=_mock_httpx_response(
+                200, {"messages": [{"id": "wamid.VIDEO"}]}
+            )
+        )
+        record = MagicMock(wraps=wac.rich_sent_store.record)
+        monkeypatch.setattr(wac.rich_sent_store, "record", record)
+
+        result = await adapter.send_video(
+            "15551234567", "https://cdn.example.com/v.mp4", caption="clip"
+        )
+
+        assert result.success and result.message_id == "wamid.VIDEO"
+        record.assert_called_once_with("15551234567", "wamid.VIDEO", "clip")
+        assert rich_sent_store.lookup("15551234567", "wamid.VIDEO") == "clip"
 
 
 class TestSendMethodsAcceptBaseClassKwargs:
@@ -1126,6 +1221,32 @@ class TestSendDocument:
             assert send_payload["document"]["filename"] == "report.pdf"
         finally:
             _os.unlink(path)
+
+    @pytest.mark.asyncio
+    async def test_send_document_caption_records_reply_context(self, monkeypatch, tmp_path):
+        from gateway import rich_sent_store
+        from gateway.platforms import whatsapp_cloud as wac
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()
+        adapter._http_client.post = AsyncMock(side_effect=[
+            _mock_upload_response("doc_id"),
+            _mock_httpx_response(200, {"messages": [{"id": "wamid.DOC"}]}),
+        ])
+        record = MagicMock(wraps=wac.rich_sent_store.record)
+        monkeypatch.setattr(wac.rich_sent_store, "record", record)
+        path = _tmpfile(".pdf", content=b"%PDF-1.4 ...")
+        try:
+            result = await adapter.send_document(
+                "15551234567", path, caption="Q3 report", file_name="report.pdf"
+            )
+        finally:
+            _os.unlink(path)
+
+        assert result.success and result.message_id == "wamid.DOC"
+        record.assert_called_once_with("15551234567", "wamid.DOC", "Q3 report")
+        assert rich_sent_store.lookup("15551234567", "wamid.DOC") == "Q3 report"
 
 
 class TestSendVoice:
@@ -2422,4 +2543,3 @@ class TestReplyContextResolution:
             rich_sent_store.lookup("15551234567", "wamid.OUT")
             == "here is your answer"
         )
-

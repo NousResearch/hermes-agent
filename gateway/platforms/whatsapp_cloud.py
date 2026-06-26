@@ -1014,6 +1014,11 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             wamid = ids[0].get("id") if ids else None
         except Exception:
             wamid = None
+        if wamid and caption and media_kind in {"image", "video", "document"}:
+            try:
+                rich_sent_store.record(chat_id, wamid, caption)
+            except Exception:
+                logger.debug("[whatsapp_cloud] rich sent index update failed", exc_info=True)
         return SendResult(success=True, message_id=wamid)
 
     async def _send_media_from_path_or_link(

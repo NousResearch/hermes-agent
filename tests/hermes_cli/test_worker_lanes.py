@@ -165,6 +165,32 @@ def test_dispatch_honors_lane_max_concurrency(kanban_home):
     assert len(res.skipped_per_profile_capped) == 2
 
 
+def test_dispatch_honors_lane_max_concurrency_real_run(kanban_home):
+    # Non-dry-run regression guard (#21582): the lane's max_concurrency must be
+    # enforced on the REAL spawn path, not just under dry_run. The seed and the
+    # post-spawn increment used to gate on the global per-profile cap
+    # (_per_profile_cap) while the cap check and dry-run increment moved to the
+    # effective, lane-aware cap (_eff_cap). With only a lane cap set (no global
+    # cap), the real-run counter never incremented, so `current` stayed 0 and
+    # every task spawned — the cap was silently bypassed outside dry_run. With
+    # the bug this spawns all three; once the real-run increment is gated on
+    # _eff_cap it spawns exactly one.
+    calls: list[str] = []
+    wl.register_worker_lane(_stub_lane("junie-x", max_concurrency=1, calls=calls))
+    with kb.connect() as conn:
+        for i in range(3):
+            kb.create_task(conn, title=f"t{i}", assignee="junie-x")
+    with kb.connect() as conn:
+        res = kb.dispatch_once(conn)  # real run — no dry_run
+
+    # Exactly one task actually reached the lane's spawn_fn …
+    assert len(res.spawned) == 1
+    assert len(calls) == 1
+    assert calls[0] == res.spawned[0][0]
+    # … and the other two were held back by the lane cap.
+    assert len(res.skipped_per_profile_capped) == 2
+
+
 def test_unregistered_lane_assignee_is_skipped(kanban_home):
     # No lane registered → the same assignee is non-spawnable.
     with kb.connect() as conn:

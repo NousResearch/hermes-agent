@@ -7087,13 +7087,19 @@ def _dispatch_once_locked(
         and max_in_progress_per_profile > 0
     ) else None
     _per_profile_running: dict[str, int] = {}
-    if _per_profile_cap is not None:
-        for prow in conn.execute(
-            "SELECT assignee, COUNT(*) AS n FROM tasks "
-            "WHERE status = 'running' AND assignee IS NOT NULL "
-            "GROUP BY assignee"
-        ):
-            _per_profile_running[prow["assignee"]] = int(prow["n"])
+    # Seed the in-flight counter unconditionally. A per-lane max_concurrency
+    # (resolved per-row below as part of _eff_cap) can impose an effective cap
+    # even when the global per-profile cap is unset, so the counter must
+    # reflect workers already running from earlier ticks regardless of
+    # _per_profile_cap. Gating this seed on _per_profile_cap let a lane-only
+    # cap leak across ticks (#21582). The query is a single grouped COUNT over
+    # the (small) running set, so running it every tick is cheap.
+    for prow in conn.execute(
+        "SELECT assignee, COUNT(*) AS n FROM tasks "
+        "WHERE status = 'running' AND assignee IS NOT NULL "
+        "GROUP BY assignee"
+    ):
+        _per_profile_running[prow["assignee"]] = int(prow["n"])
     # Normalize default_assignee once: empty/whitespace string → None so the
     # rest of the loop can use ``if default_assignee:`` as a single check.
     # We also resolve profile_exists once here for the same reason.
@@ -7273,10 +7279,14 @@ def _dispatch_once_locked(
             # complete_task).
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
-            # Track the new in-flight count for this profile so later
-            # iterations in this same tick respect the per-profile cap
-            # (#21582). Subsequent ticks re-query from the DB.
-            if _per_profile_cap is not None and claimed.assignee:
+            # Track the new in-flight count for this assignee so later
+            # iterations in this same tick respect the effective cap — the
+            # global per-profile cap OR a per-lane max_concurrency (#21582).
+            # Gating on _eff_cap (not just _per_profile_cap) keeps the real
+            # spawn path consistent with the cap check above and the dry-run
+            # increment; gating on the global cap alone let a lane-only cap be
+            # bypassed outside dry-run. Subsequent ticks re-query from the DB.
+            if _eff_cap is not None and claimed.assignee:
                 _per_profile_running[claimed.assignee] = (
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )

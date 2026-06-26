@@ -373,11 +373,13 @@ def _canonical_skills(skill: Optional[str] = None, skills: Optional[Any] = None)
 
 
 
-def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
+def _resolve_model_override(model_obj: Optional[Dict[str, Any]], *, action: Optional[str] = None) -> tuple:
     """Resolve a model override object into (provider, model) for job storage.
 
-    If provider is omitted, pins the current main provider from config so the
-    job doesn't drift when the user later changes their default via hermes model.
+    If provider is omitted on creation, pins the current main provider from
+    config so the job doesn't drift when the user later changes their default
+    via hermes model. On update, leaves provider unpinned so it doesn't
+    silently overwrite the job's existing provider.
 
     Returns (provider_str_or_none, model_str_or_none).
     """
@@ -403,15 +405,18 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
         except Exception:
             provider_name = None
     if model_name and not provider_name:
-        # Pin to the current main provider so the job is stable
-        try:
-            from hermes_cli.config import load_config
-            cfg = load_config()
-            model_cfg = cfg.get("model", {})
-            if isinstance(model_cfg, dict):
-                provider_name = model_cfg.get("provider") or None
-        except Exception:
-            pass  # Best-effort; provider stays None
+        # Only pin the current main provider at creation time so the job
+        # stays stable. During update, leave provider unpinned to preserve
+        # the job's existing provider when the user only specifies a model.
+        if action == "create":
+            try:
+                from hermes_cli.config import load_config
+                cfg = load_config()
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    provider_name = model_cfg.get("provider") or None
+            except Exception:
+                pass  # Best-effort; provider stays None
     return (provider_name, model_name)
 
 
@@ -1005,7 +1010,7 @@ registry.register(
     name="cronjob",
     toolset="cronjob",
     schema=CRONJOB_SCHEMA,
-    handler=lambda args, **kw: (lambda _mo=_resolve_model_override(args.get("model")): cronjob(
+    handler=lambda args, **kw: (lambda _mo=_resolve_model_override(args.get("model"), action=args.get("action")): cronjob(
         action=args.get("action", ""),
         job_id=args.get("job_id"),
         prompt=args.get("prompt"),

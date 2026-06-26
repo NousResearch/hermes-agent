@@ -486,7 +486,8 @@ class TestResolveModelOverride:
             cfg_mod, "load_config", lambda: {"model": {"provider": "openai-codex"}}
         )
         provider, model = _resolve_model_override(
-            {"provider": "custom", "model": "gpt-5.4"}
+            {"provider": "custom", "model": "gpt-5.4"},
+            action="create",
         )
         # No matching custom entry → fall back to pinning the main provider.
         assert provider == "openai-codex"
@@ -499,9 +500,26 @@ class TestResolveModelOverride:
         # form is never stripped or pinned.
         monkeypatch.setattr(rp_mod, "has_named_custom_provider", lambda name: False)
         provider, model = _resolve_model_override(
-            {"provider": "custom:cliproxy", "model": "gpt-5.4"}
+            {"provider": "custom:cliproxy", "model": "gpt-5.4"},
         )
         assert provider == "custom:cliproxy"
+        assert model == "gpt-5.4"
+
+    def test_update_does_not_pin_provider(self, monkeypatch):
+        """On update, provider must stay None so the job's existing provider
+        is not overwritten when the user only specifies a model name."""
+        import hermes_cli.config as cfg_mod
+
+        monkeypatch.setattr(
+            cfg_mod, "load_config", lambda: {"model": {"provider": "openai-codex"}}
+        )
+        provider, model = _resolve_model_override(
+            {"model": "gpt-5.4"},
+            action="update",
+        )
+        # Provider should stay None — the current config provider must NOT
+        # overwrite the job's existing provider during an update.
+        assert provider is None
         assert model == "gpt-5.4"
 
 

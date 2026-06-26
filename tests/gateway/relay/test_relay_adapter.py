@@ -104,6 +104,21 @@ def _make_event(chat_id="chan-1", guild_id="guild-9"):
     return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
 
 
+def _make_dm_event(chat_id="dm-1", user_id="user-42"):
+    """An inbound DM: no guild_id, carries the authentic author user_id."""
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    src = SessionSource(
+        platform=Platform.RELAY,
+        chat_id=chat_id,
+        chat_type="dm",
+        guild_id=None,
+        user_id=user_id,
+    )
+    return MessageEvent(text="hi", source=src, message_type=MessageType.TEXT)
+
+
 @pytest.mark.asyncio
 async def test_send_reattaches_guild_id_from_inbound_scope():
     """The connector's egress guard resolves the owning tenant from
@@ -140,6 +155,57 @@ async def test_send_preserves_explicit_guild_id():
     a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
     await a.send("chan-1", "hi", metadata={"guild_id": "explicit-1"})
     assert t.sent["metadata"]["guild_id"] == "explicit-1"
+
+
+@pytest.mark.asyncio
+async def test_send_reattaches_dm_user_id_from_inbound_scope():
+    """A DM reply has no guild_id, so the connector resolves the tenant from the
+    recipient's author binding — it needs metadata.user_id. The adapter must
+    re-attach the authentic author id learned from the inbound DM. Regression for
+    live 'discord egress declined: target not routed to an onboarded tenant' on
+    DM replies (the connector-side fix is gateway-gateway #67)."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a._capture_scope(_make_dm_event(chat_id="dm-1", user_id="user-42"))
+
+    await a.send("dm-1", "the reply")
+
+    assert t.sent["metadata"].get("user_id") == "user-42"
+    # A DM carries no guild_id — only the author discriminator.
+    assert "guild_id" not in t.sent["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_send_dm_does_not_invent_user_id_for_unknown_chat():
+    """A chat we never saw inbound gets neither discriminator — no-op."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    await a.send("unknown-dm", "hi")
+    assert "user_id" not in t.sent["metadata"]
+    assert "guild_id" not in t.sent["metadata"]
+
+
+@pytest.mark.asyncio
+async def test_send_preserves_explicit_user_id():
+    """An explicitly-provided metadata.user_id is never overwritten."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a._capture_scope(_make_dm_event(chat_id="dm-1", user_id="user-42"))
+    await a.send("dm-1", "hi", metadata={"user_id": "explicit-user"})
+    assert t.sent["metadata"]["user_id"] == "explicit-user"
+
+
+@pytest.mark.asyncio
+async def test_guild_reply_does_not_carry_user_id():
+    """A guild reply resolves by guild_id and must NOT carry a DM user_id even if
+    the same chat_id was somehow seen — guild capture wins and user_id stays out
+    (guild_id is the discriminator; user_id is the DM-only fallback)."""
+    t = _CaptureTransport()
+    a = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=t)
+    a._capture_scope(_make_event(chat_id="chan-1", guild_id="guild-9"))
+    await a.send("chan-1", "hi")
+    assert t.sent["metadata"].get("guild_id") == "guild-9"
+    assert "user_id" not in t.sent["metadata"]
 
 
 # ── Phase 7 Unit 7d-B: terminal auth revocation → clean "relay disabled" ─────

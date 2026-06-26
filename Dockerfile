@@ -290,6 +290,19 @@ ENV HERMES_TUI_DIR=/opt/hermes/ui-tui
 ENV HERMES_HOME=/opt/data
 ENV HERMES_WRITE_SAFE_ROOT=/opt/data
 ENV HERMES_DISABLE_LAZY_INSTALLS=1
+# The published image seals /opt/hermes (root-owned, read-only) so a runtime
+# lazy install can't mutate the agent's own venv and brick it. But opt-in
+# backends (Firecrawl web search, Exa, Feishu, …) keep their SDKs in
+# tools/lazy_deps.py — deliberately NOT baked into [all] (see pyproject.toml
+# policy 2026-05-12: one quarantined release must not break every install).
+# Redirect those lazy installs to a writable dir on the durable data volume.
+# lazy_deps appends this dir to the END of sys.path, so a package installed
+# here can only ADD modules — it can never shadow or downgrade a core module,
+# so the sealed-venv guarantee holds even with installs re-enabled. The dir
+# is seeded + chowned to the hermes user by docker/stage2-hook.sh and lives
+# on the /opt/data volume, so it persists across container recreates / image
+# updates (an ABI stamp invalidates it if a rebuild bumps the interpreter).
+ENV HERMES_LAZY_INSTALL_TARGET=/opt/data/lazy-packages
 
 # `docker exec` privilege-drop shim. When operators run
 # `docker exec <c> hermes ...` they default to root, and any file the

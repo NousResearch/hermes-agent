@@ -45,6 +45,9 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "8180647+herbalizer404@users.noreply.github.com": "herbalizer404",  # PR #49076 + #51835 salvage (auxiliary compression fallback: 403/session-usage payment errors + honor fallback chain when aux provider auth unavailable)
+    "pyxl-dev@users.noreply.github.com": "pyxl-dev",  # PR #52230 salvage (include rate-limit in auxiliary capacity-error fallback gate; #52228)
+    "benbenwyb@gmail.com": "benbenlijie",  # PR #47205 salvage (named custom-provider extra_body + Z.AI Coding overload adaptive backoff; #50663)
     "dana@added-value.co.il": "Danamove",  # PR #46726 salvage (kill venv-resident pythonw gateway before recreating venv on Windows; #47036/#47557/#47910)
     "145739220+wgu9@users.noreply.github.com": "wgu9",  # PR #51468 salvage (WSL/no-systemd orphan gateway tracking, #51325)
     "165020384+uperLu@users.noreply.github.com": "uperLu",  # PR #50958 salvage (rename plugins/cron → plugins/cron_providers; #50872)
@@ -65,6 +68,7 @@ AUTHOR_MAP = {
     "96944678+sweetcornna@users.noreply.github.com": "sweetcornna",  # cron ticker-liveness salvage co-author (#33849)
     "izumi0uu@gmail.com": "izumi0uu",  # PR #49544 salvage (native rich reply echo; #49534)
     "dev@pixlmedia.no": "texhy",  # PR #27435 salvage (few-but-huge preflight compression gate; #27405)
+    "qdaszx@naver.com": "qdaszx",  # PR #29190 salvage (non-blocking OSV malware preflight; #29184)
     "w31rdm4ch1n3z@protonmail.com": "w31rdm4ch1nZ",
     "xtpeeps@gmail.com": "x7peeps",
     "ahmad@madsgency.com": "ahmadashfq",
@@ -76,6 +80,10 @@ AUTHOR_MAP = {
     "87440198+JoaoMarcos44@users.noreply.github.com": "JoaoMarcos44",
     "joaomarcosdias444@gmail.com": "JoaoMarcos44",
     "286497132+srojk34@users.noreply.github.com": "srojk34",
+    "srojk34@users.noreply.github.com": "srojk34",  # legacy prefix-less noreply (PR #50098 salvage; #38763)
+    "pinkiilqwq@users.noreply.github.com": "PINKIIILQWQ",  # PR #45035 salvage (resume-to-tip; #38763)
+    "pink@PinkdeMacBook-Air.local": "PINKIIILQWQ",  # PR #45035 local git identity (resume-to-tip; #38763)
+    "ailang323@163.com": "ailang323",  # PR #48682 salvage (compression-tip predicate; #38763)
     "59806492+sitkarev@users.noreply.github.com": "sitkarev",
     "zheng@omegasys.eu": "omegazheng",
     "220877172+james47kjv@users.noreply.github.com": "james47kjv",

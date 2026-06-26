@@ -40,6 +40,13 @@ import {
 } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
+// After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
+// raise a recoverable boot error. Otherwise a dropped remote gateway loops the
+// backoff forever behind the fullscreen CONNECTING overlay with no way to reach
+// Settings / sign in / switch to local — the "lost connection breaks the app"
+// dead end. The next successful reconnect clears it.
+const RECONNECT_ESCALATE_AFTER = 6
+
 interface GatewayBootOptions {
   handleGatewayEvent: (event: RpcEvent) => void
   onConnectionReady: (
@@ -105,6 +112,10 @@ export function useGatewayBoot({
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
     let reauthNotified = false
+    // Raised once the reconnect loop crosses RECONNECT_ESCALATE_AFTER so the
+    // recovery overlay replaces the dead-end CONNECTING screen. Reset on a clean
+    // open or a manual/wake-driven reconnect.
+    let escalated = false
 
     // Wrap the live getter in a call so TS control-flow analysis doesn't narrow
     // `connectionState` to a constant across the early-return guards (the state
@@ -171,6 +182,11 @@ export function useGatewayBoot({
         reconnecting = false
 
         if (!cancelled && !gatewayOpen()) {
+          if (reconnectAttempt >= RECONNECT_ESCALATE_AFTER && !escalated) {
+            escalated = true
+            failDesktopBoot(translateNow('boot.errors.gatewayConnectionLost'))
+          }
+
           scheduleReconnect()
         }
       }
@@ -197,6 +213,7 @@ export function useGatewayBoot({
 
       clearReconnectTimer()
       reconnectAttempt = 0
+      escalated = false
       reconnectSecondaryGateways()
 
       if (!gatewayOpen()) {
@@ -230,6 +247,7 @@ export function useGatewayBoot({
       if (st === 'open') {
         reconnectAttempt = 0
         reauthNotified = false
+        escalated = false
         clearReconnectTimer()
 
         // A revalidate-driven reconnect can rebuild the backend in place when the

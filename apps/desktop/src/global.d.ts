@@ -276,6 +276,7 @@ export interface DesktopUpdateCommit {
 
 export interface DesktopUpdateStatus {
   supported: boolean
+  updateAvailable?: boolean
   branch?: string
   currentBranch?: string
   reason?: string

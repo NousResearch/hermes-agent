@@ -199,9 +199,29 @@ describe('checkBackendUpdates', () => {
 
     expect(checkHermesUpdateSpy).toHaveBeenCalled()
     expect(result?.behind).toBe(2)
+    expect(result?.updateAvailable).toBe(true)
     expect(result?.commits?.[0]?.sha).toBe('abc1234')
     expect(result?.supported).toBe(true)
     expect($backendUpdateStatus.get()?.commits?.[0]?.summary).toBe('feat: x')
+  })
+
+  it('preserves backend update_available when the backend cannot count commits', async () => {
+    setRemote(true)
+    checkHermesUpdateSpy.mockResolvedValue({
+      install_method: 'nixos',
+      current_version: '0.16.0',
+      behind: -1,
+      update_available: true,
+      can_apply: false,
+      update_command: 'managed outside dashboard',
+      message: 'Update available.'
+    })
+
+    const result = await checkBackendUpdates()
+
+    expect(result?.behind).toBe(0)
+    expect(result?.updateAvailable).toBe(true)
+    expect(result?.targetSha).toBe('backend:0.16.0')
   })
 
   it('honours can_apply=false (docker/nix): not supported, carries message', async () => {

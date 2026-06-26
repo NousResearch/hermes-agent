@@ -3373,6 +3373,111 @@ def _reconfigure_simple_requirements(ts_key: str):
 
 # ─── Main Entry Point ─────────────────────────────────────────────────────────
 
+def _tools_web_reorder(config: dict) -> None:
+    """``hermes tools web reorder`` — interactively adjust web search backend priority.
+
+    Reads the current ``web.fallback_backends`` list, shows it with
+    numbered indices, lets the user enter a space-separated reorder
+    (e.g. ``3 1 2``), validates, and writes the result back to config.
+    """
+    web_cfg = config.setdefault("web", {})
+    current = web_cfg.get("fallback_backends", [])
+    if isinstance(current, str):
+        current = [b.strip() for b in current.split(",") if b.strip()]
+
+    if not current:
+        # Populate from auto-discovered providers
+        try:
+            from tools.web_tools import _get_fallback_chain
+            current = _get_fallback_chain()
+            # Strip the explicit backend if it was added by the chain helper
+            explicit = (web_cfg.get("backend") or "").lower().strip()
+            if explicit and current and current[0] == explicit:
+                current = current[1:]
+        except Exception:
+            pass
+    if not current:
+        print("No web search providers registered. Run `hermes tools` to set up web search first.")
+        return
+
+    print()
+    print(color("⚕ Web Search Provider Order", Colors.CYAN, Colors.BOLD))
+    print(color("  Current fallback order (tried left to right on failure):", Colors.DIM))
+    print()
+    for i, name in enumerate(current, 1):
+        label = _provider_display_name(name)
+        print(f"  {color(str(i), Colors.BOLD)}  {label}  {color(f'({name})', Colors.DIM)}")
+    print()
+    print(color("  Enter a new order as space-separated numbers, e.g.:  3 1 2 4 5", Colors.DIM))
+    print(color("  Press Enter to keep current order.", Colors.DIM))
+    print()
+
+    try:
+        user_input = input("  New order: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return
+
+    if not user_input:
+        print(color("  ✓ Order unchanged.", Colors.GREEN))
+        return
+
+    try:
+        indices = [int(x) for x in user_input.split()]
+    except ValueError:
+        print(color("  ✗ Invalid input — enter space-separated numbers only.", Colors.RED))
+        return
+
+    if set(indices) != set(range(1, len(current) + 1)):
+        print(color(
+            f"  ✗ Must include each number 1–{len(current)} exactly once.",
+            Colors.RED,
+        ))
+        return
+
+    reordered = [current[i - 1] for i in indices]
+    web_cfg["fallback_backends"] = reordered
+
+    # Save config
+    try:
+        from hermes_cli.config import save_config
+        save_config(config)
+    except Exception:
+        print(color("  ✗ Could not save config.", Colors.RED))
+        return
+
+    print()
+    print(color("  ✓ Updated fallback order:", Colors.GREEN))
+    for i, name in enumerate(reordered, 1):
+        label = _provider_display_name(name)
+        print(f"    {i}. {label}")
+    print()
+
+
+def _provider_display_name(name: str) -> str:
+    """Return a human-readable label for a web provider."""
+    labels = {
+        "brave-free": "Brave Search (Free)",
+        "ddgs": "DuckDuckGo",
+        "serper": "Serper (Google)",
+        "baidu": "Baidu",
+        "bocha": "Bocha (博查)",
+        "qiniu-baidu": "Qiniu Baidu",
+        "serpapi": "SerpAPI",
+        "jina": "Jina AI",
+        "google-cse": "Google CSE",
+        "sogou": "Sogou (搜狗)",
+        "360-search": "360 Search",
+        "firecrawl": "Firecrawl",
+        "tavily": "Tavily",
+        "exa": "Exa",
+        "parallel": "Parallel",
+        "searxng": "SearXNG",
+        "xai": "X (xAI)",
+    }
+    return labels.get(name, name.replace("-", " ").title())
+
+
 def tools_command(args=None, first_install: bool = False, config: dict = None):
     """Entry point for `hermes tools` and `hermes setup tools`.
 
@@ -3386,6 +3491,12 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
     """
     if config is None:
         config = load_config()
+
+    # ── Subcommand: hermes tools web reorder ──
+    if args and getattr(args, "tools_action", None) == "web":
+        if getattr(args, "web_action", None) == "reorder":
+            _tools_web_reorder(config)
+            return
     enabled_platforms = _get_enabled_platforms()
 
     print()

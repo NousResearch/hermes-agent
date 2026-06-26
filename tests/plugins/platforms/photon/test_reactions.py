@@ -72,6 +72,7 @@ def _reaction_event(
     target_id: str = "bot-msg-1",
     target_direction: Any = "outbound",
     space_type: str = "dm",
+    target_text: Any = "the bot's earlier reply",
 ) -> Dict[str, Any]:
     return {
         "messageId": "reaction-evt-1",
@@ -83,6 +84,9 @@ def _reaction_event(
             "emoji": emoji,
             "targetMessageId": target_id,
             "targetDirection": target_direction,
+            # The sidecar always emits this key (hydrated reaction target);
+            # null when the reacted-to message carried no text.
+            "targetText": target_text,
         },
         "timestamp": "2026-06-11T10:00:00.000Z",
     }
@@ -229,6 +233,30 @@ async def test_inbound_reaction_on_bot_message_routed(
     assert event.text == "reaction:added:❤️"
     assert event.message_type == MessageType.TEXT
     assert event.source.chat_id == "+15551234567"
+    # The tapback correlates to the bot message it reacted to, so the gateway
+    # can inject `[Replying to your previous message: "..."]` for context.
+    assert event.reply_to_message_id == "bot-msg-1"
+    assert event.reply_to_text == "the bot's earlier reply"
+    assert event.reply_to_is_own_message is True
+
+
+@pytest.mark.asyncio
+async def test_inbound_reaction_without_target_text_correlates_id_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tapback on an attachment-only bot message (no text) still correlates the
+    id, but leaves reply_to_text unset — the gateway then skips the reply pointer
+    (it injects only when both id and text are present)."""
+    adapter = _make_adapter(monkeypatch)
+    captured = _capture_handled(adapter, monkeypatch)
+
+    await adapter._dispatch_inbound(_reaction_event(target_text=None))
+
+    assert len(captured) == 1
+    event = captured[0]
+    assert event.reply_to_message_id == "bot-msg-1"
+    assert event.reply_to_text is None
+    assert event.reply_to_is_own_message is True
 
 
 @pytest.mark.asyncio

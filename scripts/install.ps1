@@ -1854,6 +1854,48 @@ except Exception:
         Write-Success "Baseline imports verified in venv"
     }
 
+    if (-not $NoVenv) {
+        # uv on Windows can register hermes.exe in dist-info/RECORD but fail to
+        # materialise the .exe (file lock during self-update, distlib edge case).
+        # Catch it here so a fresh install/update does not finish with a broken
+        # `hermes` command while hermes-agent.exe / hermes-acp.exe exist
+        $scriptsDir = Join-Path $InstallDir "venv\Scripts"
+        $pythonExe = Join-Path $scriptsDir "python.exe"
+        if ((Test-Path $scriptsDir) -and (Test-Path $pythonExe)) {
+            $scriptNames = & $pythonExe -c @"
+import tomllib
+with open('pyproject.toml', 'rb') as fh:
+    scripts = tomllib.load(fh).get('project', {}).get('scripts', {}) or {}
+print(','.join(scripts))
+"@ 2>$null
+            if ($LASTEXITCODE -eq 0 -and $scriptNames) {
+                $expected = @($scriptNames.Trim().Split(',') | Where-Object { $_ })
+                $missing = @()
+                foreach ($name in $expected) {
+                    $exe = Join-Path $scriptsDir "$name.exe"
+                    if (-not (Test-Path $exe)) { $missing += "$name.exe" }
+                }
+                if ($missing.Count -gt 0) {
+                    Write-Warn "Console entry point(s) missing: $($missing -join ', ')"
+                    Write-Info "Reinstalling entry points..."
+                    $env:UV_PROJECT_ENVIRONMENT = "$InstallDir\venv"
+                    Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install --reinstall -e . }
+                    $stillMissing = @()
+                    foreach ($name in $expected) {
+                        $exe = Join-Path $scriptsDir "$name.exe"
+                        if (-not (Test-Path $exe)) { $stillMissing += "$name.exe" }
+                    }
+                    if ($stillMissing.Count -gt 0) {
+                        Write-Warn "Entry points still missing after repair: $($stillMissing -join ', ')"
+                        Write-Info "Workaround: `"$pythonExe`" -m hermes_cli.main <command>"
+                    } else {
+                        Write-Success "Console entry points restored"
+                    }
+                }
+            }
+        }
+    }
+
     # Verify the dashboard deps specifically -- they're the most common thing
     # users hit and lazy-import errors from `hermes dashboard` are confusing.
     # If tier 1 failed (the common case), [web] was still picked up by tiers

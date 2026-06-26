@@ -7666,6 +7666,97 @@ def _install_python_dependencies_with_optional_fallback(
     # missing, then re-verify so the failure surfaces here instead of
     # downstream.
     _verify_core_dependencies_installed(install_cmd_prefix, env=env, group=group)
+    _verify_console_scripts_installed(install_cmd_prefix, env=env)
+
+
+def _load_console_script_names() -> list[str]:
+    """Return ``[project.scripts]`` entry-point names from pyproject.toml."""
+    try:
+        import tomllib  # Python 3.11+
+    except ImportError:  # pragma: no cover
+        return []
+
+    pyproject = PROJECT_ROOT / "pyproject.toml"
+    if not pyproject.is_file():
+        return []
+
+    try:
+        with open(pyproject, "rb") as f:
+            data = tomllib.load(f)
+        scripts = data.get("project", {}).get("scripts", {}) or {}
+        return [str(name) for name in scripts if name]
+    except Exception as e:
+        logger.debug("console script verification: failed to read pyproject.toml: %s", e)
+        return []
+
+
+def _verify_console_scripts_installed(
+    install_cmd_prefix: list[str],
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    """Ensure every declared console_script shim exists on disk after install.
+
+    On Windows, ``uv pip install -e .`` can register ``hermes.exe`` in the
+    wheel RECORD while the file never lands on disk — typically when the live
+    ``hermes.exe`` shim is locked during ``hermes update``, or when uv/distlib
+    skips a launcher write. The symptom is ``hermes-agent.exe`` and
+    ``hermes-acp.exe`` present but ``hermes.exe`` missing, so ``hermes`` drops
+    off PATH even though the install reported success (issue #52931).
+
+    If any shim is missing we reinstall with ``--reinstall -e .`` under the
+    same quarantine dance as the primary install path, then re-check.
+    """
+    if not _is_windows():
+        return
+
+    scripts_dir = _venv_scripts_dir()
+    if scripts_dir is None:
+        return
+
+    names = _load_console_script_names()
+    if not names:
+        return
+
+    def _missing() -> list[str]:
+        return [
+            name
+            for name in names
+            if not (scripts_dir / f"{name}.exe").is_file()
+        ]
+
+    missing = _missing()
+    if not missing:
+        return
+
+    print(
+        f"  ⚠ Verification: {len(missing)} console script(s) missing on disk: "
+        f"{', '.join(missing)}"
+    )
+    print("  → Reinstalling entry points with --reinstall...")
+
+    try:
+        _run_quarantined_install(
+            install_cmd_prefix + ["install", "--reinstall", "-e", "."],
+            env=env,
+            scripts_dir=scripts_dir,
+        )
+    except subprocess.CalledProcessError as e:
+        logger.warning("console script verification: repair install failed: %s", e)
+        print(
+            "  ⚠ Entry point repair failed; try `hermes update --force` after "
+            "closing other hermes processes."
+        )
+        return
+
+    still_missing = _missing()
+    if still_missing:
+        print(
+            f"  ⚠ Still missing after repair: {', '.join(still_missing)}. "
+            "Workaround: python -m hermes_cli.main <command>"
+        )
+    else:
+        print("  ✓ All console entry points restored")
 
 
 def _verify_core_dependencies_installed(

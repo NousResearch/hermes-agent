@@ -210,6 +210,23 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     # the most common local-model repair case (#12068).
     try:
         parsed = json.loads(raw_stripped, strict=False)
+        # Pattern 2 (#52740): double-serialised arguments. Some models emit
+        # the whole tool-call payload as a JSON *string* that itself encodes
+        # the arguments object (e.g. ``"{\"path\": ...}"``). Tool-call
+        # arguments are always an object/array at the top level, so a bare
+        # string is a serialisation bug — unwrap one level if it decodes to
+        # a structured value.
+        if isinstance(parsed, str):
+            try:
+                unwrapped = json.loads(parsed, strict=False)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                unwrapped = None
+            if isinstance(unwrapped, (dict, list)):
+                logger.warning(
+                    "Repaired double-serialised tool_call arguments for %s",
+                    tool_name,
+                )
+                return json.dumps(unwrapped, separators=(",", ":"))
         reserialised = json.dumps(parsed, separators=(",", ":"))
         if reserialised != raw_stripped:
             logger.warning(
@@ -217,6 +234,21 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
                 tool_name,
             )
         return reserialised
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    # Pattern 4 (#52740): trailing content after a complete JSON value. Some
+    # models append prose or a second object after the arguments object,
+    # which ``json.loads`` rejects with "Extra data". Decode the leading
+    # value and discard the trailing bytes.
+    try:
+        decoded, end = json.JSONDecoder().raw_decode(raw_stripped)
+        if isinstance(decoded, (dict, list)) and end < len(raw_stripped):
+            logger.warning(
+                "Repaired trailing content in tool_call arguments for %s",
+                tool_name,
+            )
+            return json.dumps(decoded, separators=(",", ":"))
     except (json.JSONDecodeError, TypeError, ValueError):
         pass
 

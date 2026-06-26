@@ -140,3 +140,65 @@ class TestRepairToolCallArguments:
         parsed = json.loads(result)
         assert "line" in parsed["msg"]
 
+
+class TestDeepSeekSerializationPatterns:
+    """DeepSeek tool-call JSON serialization failures (#52740).
+
+    Covers Pattern 2 (double-serialization) and Pattern 4 (trailing
+    content). Pattern 1 (truncation) is unrecoverable and falls back to
+    ``{}``; Pattern 3 (quote-escape corruption) is intentionally left to a
+    follow-up that needs the reporter's concrete samples.
+
+    Both repairs rely on the tool-call spec invariant that arguments are a
+    JSON object/array at the top level. Pattern 2 unwraps a single level of
+    double-serialization (the reported shape); deeper nesting is left as-is.
+    """
+
+    # -- Pattern 2: double-serialization --
+
+    def test_double_serialized_object_is_unwrapped(self):
+        inner = '{"path": "a.txt", "content": "hello world"}'
+        raw = json.dumps(inner)  # serialised twice
+        result = _repair_tool_call_arguments(raw, "skill_manage")
+        assert json.loads(result) == {"path": "a.txt", "content": "hello world"}
+
+    def test_double_serialized_with_inner_quotes(self):
+        inner = '{"command": "git commit -m \\"fix\\""}'
+        raw = json.dumps(inner)
+        result = _repair_tool_call_arguments(raw, "run_command")
+        assert json.loads(result) == {"command": 'git commit -m "fix"'}
+
+    def test_double_serialized_array(self):
+        raw = json.dumps('[1, 2, 3]')
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == [1, 2, 3]
+
+    def test_single_serialized_object_unaffected(self):
+        """Regression: a normal (single-serialised) object is untouched."""
+        raw = '{"path": "a.txt", "content": "hi"}'
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == {"path": "a.txt", "content": "hi"}
+
+    def test_bare_non_json_string_not_unwrapped(self):
+        """A top-level string that is not itself JSON stays as-is (no crash)."""
+        raw = json.dumps("just some text")
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == "just some text"
+
+    # -- Pattern 4: trailing content --
+
+    def test_trailing_prose_after_object(self):
+        raw = '{"command": "ls -la"}\n\nDone.'
+        result = _repair_tool_call_arguments(raw, "run_command")
+        assert json.loads(result) == {"command": "ls -la"}
+
+    def test_two_concatenated_objects_keeps_first(self):
+        raw = '{"a": 1}{"b": 2}'
+        result = _repair_tool_call_arguments(raw, "t")
+        assert json.loads(result) == {"a": 1}
+
+    def test_trailing_content_output_is_strict_valid(self):
+        raw = '{"path": "x.py"} trailing junk'
+        result = _repair_tool_call_arguments(raw, "t")
+        # must parse under strict=True
+        assert json.loads(result) == {"path": "x.py"}

@@ -57,12 +57,15 @@ class TestContextFileCwd:
         assert _captured_context_cwd(_make_agent()) == tmp_path
 
 
-def _stable_prompt(agent):
+def _stable_prompt(agent, config=None):
+    if config is None:
+        config = {}
     with (
         patch("run_agent.load_soul_md", return_value=""),
         patch("run_agent.build_nous_subscription_prompt", return_value=""),
         patch("run_agent.build_environment_hints", return_value=""),
         patch("run_agent.build_context_files_prompt", return_value=""),
+        patch("hermes_cli.config.load_config", return_value=config),
     ):
         return build_system_prompt_parts(agent)["stable"]
 
@@ -142,3 +145,75 @@ class TestTelegramRichMessagesHint:
             stable = _stable_prompt(agent)
         assert "Standard Markdown is automatically converted" in stable
         assert "lean into it" not in stable
+
+
+class TestWorkVisibilityGuidance:
+    def test_absent_by_default(self):
+        stable = _stable_prompt(_make_agent(valid_tool_names=["read_file"], platform="discord"))
+        assert "# Work visibility" not in stable
+
+    def test_injected_for_enabled_interactive_tool_sessions(self):
+        stable = _stable_prompt(
+            _make_agent(valid_tool_names=["read_file"], platform="discord"),
+            {"display": {"conversational_progress": True}},
+        )
+        assert "# Work visibility" in stable
+        assert "natural assistant updates as the primary user-facing timeline" in stable
+        assert "tool progress is supporting evidence" in stable
+
+    def test_platform_override_enables_specific_surface(self):
+        stable = _stable_prompt(
+            _make_agent(valid_tool_names=["read_file"], platform="discord"),
+            {
+                "display": {
+                    "conversational_progress": False,
+                    "platforms": {"discord": {"conversational_progress": True}},
+                }
+            },
+        )
+        assert "# Work visibility" in stable
+
+    def test_platform_override_can_disable_specific_surface(self):
+        stable = _stable_prompt(
+            _make_agent(valid_tool_names=["read_file"], platform="discord"),
+            {
+                "display": {
+                    "conversational_progress": True,
+                    "platforms": {"discord": {"conversational_progress": False}},
+                }
+            },
+        )
+        assert "# Work visibility" not in stable
+
+    def test_absent_without_tools(self):
+        stable = _stable_prompt(
+            _make_agent(valid_tool_names=[], platform="discord"),
+            {"display": {"conversational_progress": True}},
+        )
+        assert "# Work visibility" not in stable
+
+    def test_absent_for_cron(self):
+        stable = _stable_prompt(
+            _make_agent(valid_tool_names=["read_file"], platform="cron"),
+            {"display": {"conversational_progress": True}},
+        )
+        assert "# Work visibility" not in stable
+
+    def test_absent_for_delegate_subagent(self):
+        stable = _stable_prompt(
+            _make_agent(valid_tool_names=["read_file"], platform="subagent"),
+            {
+                "display": {
+                    "conversational_progress": True,
+                    "platforms": {"subagent": {"conversational_progress": True}},
+                }
+            },
+        )
+        assert "# Work visibility" not in stable
+
+    def test_absent_without_explicit_interactive_platform(self):
+        stable = _stable_prompt(
+            _make_agent(valid_tool_names=["read_file"], platform=""),
+            {"display": {"conversational_progress": True}},
+        )
+        assert "# Work visibility" not in stable

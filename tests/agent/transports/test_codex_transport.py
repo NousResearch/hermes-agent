@@ -742,6 +742,59 @@ class TestCodexNormalizeResponse:
             }
         ]
 
+    def test_commentary_message_is_visible_progress_content(self, transport):
+        """Conversational progress must stay visible when Codex also calls tools."""
+        r = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    id="msg_progress",
+                    phase="commentary",
+                    content=[
+                        SimpleNamespace(
+                            type="output_text",
+                            text="I’m checking the vault path before editing.",
+                        )
+                    ],
+                    status="completed",
+                ),
+                SimpleNamespace(
+                    type="function_call",
+                    call_id="call_read",
+                    name="read_file",
+                    arguments=json.dumps({"path": "/tmp/example.md"}),
+                    id="fc_read",
+                    status="completed",
+                ),
+            ],
+            status="completed",
+            incomplete_details=None,
+            usage=SimpleNamespace(input_tokens=10, output_tokens=20,
+                                  input_tokens_details=None, output_tokens_details=None),
+        )
+
+        nr = transport.normalize_response(r)
+
+        assert nr.finish_reason == "tool_calls"
+        assert nr.content == "I’m checking the vault path before editing."
+        assert nr.reasoning is None
+        assert nr.codex_message_items == [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "I’m checking the vault path before editing.",
+                    }
+                ],
+                "id": "msg_progress",
+                "phase": "commentary",
+            }
+        ]
+
     def test_tool_call_response(self, transport):
         """Normalize a Codex response with tool calls."""
         r = SimpleNamespace(

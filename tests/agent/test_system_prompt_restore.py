@@ -16,7 +16,7 @@ instead of rebuilding).  Covers:
 from __future__ import annotations
 
 import logging
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -31,6 +31,7 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent.model = "test-model"
     agent.provider = "openrouter"
     agent.platform = "cli"
+    agent.valid_tool_names = []
     agent._session_db = session_db
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     return agent
@@ -108,6 +109,87 @@ class TestStoredPromptReuse:
             agent.session_id, agent._cached_system_prompt
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
+
+    def test_interactive_tool_prompt_without_work_visibility_is_reused_when_enabled(self, caplog):
+        """Config flips must not mutate restored prompts mid-session."""
+        stored = (
+            "You are Hermes Agent.\n\n"
+            "Model: test-model\n"
+            "Provider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db, prebuilt_prompt="SHOULD_NOT_REBUILD")
+        agent.valid_tool_names = ["list_files"]
+        agent.platform = "discord"
+
+        with (
+            patch("hermes_cli.config.load_config", return_value={"display": {"conversational_progress": True}}),
+            caplog.at_level(logging.INFO, logger="agent.conversation_loop"),
+        ):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        db.update_system_prompt.assert_not_called()
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_interactive_tool_prompt_with_work_visibility_is_reused(self):
+        stored = (
+            "You are Hermes Agent.\n\n"
+            "# Work visibility\n"
+            "When working interactively, make progress legible.\n\n"
+            "Model: test-model\n"
+            "Provider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.valid_tool_names = ["list_files"]
+        agent.platform = "discord"
+
+        with patch("hermes_cli.config.load_config", return_value={"display": {"conversational_progress": True}}):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        db.update_system_prompt.assert_not_called()
+
+    def test_cron_tool_prompt_without_work_visibility_is_reused(self):
+        stored = (
+            "You are Hermes Agent.\n\n"
+            "Model: test-model\n"
+            "Provider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.valid_tool_names = ["list_files"]
+        agent.platform = "cron"
+
+        with patch("hermes_cli.config.load_config", return_value={"display": {"conversational_progress": True}}):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+
+    def test_interactive_tool_prompt_without_work_visibility_is_reused_when_disabled(self):
+        stored = (
+            "You are Hermes Agent.\n\n"
+            "Model: test-model\n"
+            "Provider: openrouter"
+        )
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.valid_tool_names = ["list_files"]
+        agent.platform = "discord"
+
+        with patch("hermes_cli.config.load_config", return_value={"display": {"conversational_progress": False}}):
+            _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

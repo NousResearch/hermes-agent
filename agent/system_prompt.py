@@ -43,7 +43,9 @@ from agent.prompt_builder import (
     TELEGRAM_RICH_MESSAGES_HINT,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    WORK_VISIBILITY_GUIDANCE,
     drain_truncation_warnings,
+    work_visibility_enabled_for_agent,
 )
 from agent.runtime_cwd import resolve_context_cwd
 from utils import is_truthy_value
@@ -205,6 +207,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    # Optional conversational progress for interactive surfaces: natural
+    # assistant updates can orient the user before/around tool activity.
+    if work_visibility_enabled_for_agent(agent):
+        stable_parts.append(WORK_VISIBILITY_GUIDANCE)
 
     # Universal parallel-tool-call guidance.  Tells the model to batch
     # independent tool calls into one assistant turn rather than emitting one

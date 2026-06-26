@@ -403,7 +403,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
-    """Return False when the persisted Model/Provider lines are stale."""
+    """Return False when the persisted prompt is stale for this runtime."""
 
     def line_value(label: str) -> str:
         prefix = f"{label}:"

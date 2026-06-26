@@ -1704,7 +1704,7 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
     )
 
 
-def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):
+def test_normalize_codex_response_keeps_commentary_visible_but_incomplete(monkeypatch):
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
     assistant_message, finish_reason = _normalize_codex_response(
@@ -1712,14 +1712,14 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
     )
 
     assert finish_reason == "incomplete"
-    assert (assistant_message.content or "") == ""
-    assert "inspect the repository" in (assistant_message.reasoning or "")
+    assert "inspect the repository" in (assistant_message.content or "")
+    assert (assistant_message.reasoning or "") == ""
     assert assistant_message.codex_message_items
     assert assistant_message.codex_message_items[0]["phase"] == "commentary"
     assert "inspect the repository" in assistant_message.codex_message_items[0]["content"][0]["text"]
 
 
-def test_normalize_codex_response_does_not_fallback_to_output_text_for_commentary_only(monkeypatch):
+def test_normalize_codex_response_preserves_commentary_output_text(monkeypatch):
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
 
@@ -1729,8 +1729,8 @@ def test_normalize_codex_response_does_not_fallback_to_output_text_for_commentar
     assistant_message, finish_reason = _normalize_codex_response(response)
 
     assert finish_reason == "incomplete"
-    assert (assistant_message.content or "") == ""
-    assert "call the tool" in (assistant_message.reasoning or "")
+    assert "call the tool" in (assistant_message.content or "")
+    assert (assistant_message.reasoning or "") == ""
     assert assistant_message.codex_message_items[0]["phase"] == "commentary"
 
 def test_normalize_codex_response_final_answer_overrides_top_level_incomplete(monkeypatch):

@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from gateway import rich_sent_store
 from gateway.config import Platform, PlatformConfig
 
 
@@ -830,3 +831,144 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+class TestReplyContextResolution:
+    """BlueBubbles webhook carries threadOriginatorGuid but never the quoted
+    text.  rich_sent_store resolves it so run.py can inject the disambiguation
+    prefix."""
+
+    @pytest.mark.asyncio
+    async def test_reply_to_own_earlier_message_resolves_text(self, monkeypatch):
+        """User replies to their own earlier message — text was indexed on the
+        earlier inbound, so the reply resolves it."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", lambda e: handled.append(e) or asyncio.sleep(0))
+
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-prior",
+                "text": "remind me to buy milk",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;-;+15551234567"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-reply",
+                "text": "did you?",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "threadOriginatorGuid": "msg-prior",
+                "chats": [{"guid": "iMessage;-;+15551234567"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        reply_event = handled[-1]
+        assert reply_event.reply_to_message_id == "msg-prior"
+        assert reply_event.reply_to_text == "remind me to buy milk"
+        assert reply_event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_reply_to_bot_message_marks_own(self, monkeypatch):
+        """User replies to one of the bot's messages — the guid was tracked in
+        _sent_guids on outbound, so reply_to_is_own_message is True."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", lambda e: handled.append(e) or asyncio.sleep(0))
+
+        rich_sent_store.record("iMessage;-;+15551234567", "msg-bot", "Sure, milk added.")
+        adapter._sent_guids["msg-bot"] = None
+
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-reply",
+                "text": "thanks",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "threadOriginatorGuid": "msg-bot",
+                "chats": [{"guid": "iMessage;-;+15551234567"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        reply_event = handled[-1]
+        assert reply_event.reply_to_message_id == "msg-bot"
+        assert reply_event.reply_to_text == "Sure, milk added."
+        assert reply_event.reply_to_is_own_message is True
+
+    @pytest.mark.asyncio
+    async def test_reply_to_unknown_message_id_no_text(self, monkeypatch):
+        """Quoted message we never indexed — id is surfaced, text is None."""
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", lambda e: handled.append(e) or asyncio.sleep(0))
+
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-reply",
+                "text": "what about this",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "threadOriginatorGuid": "msg-gone",
+                "chats": [{"guid": "iMessage;-;+15551234567"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        reply_event = handled[-1]
+        assert reply_event.reply_to_message_id == "msg-gone"
+        assert reply_event.reply_to_text is None
+        assert reply_event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_non_reply_message_has_no_reply_context(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+        monkeypatch.setattr(adapter, "handle_message", lambda e: handled.append(e) or asyncio.sleep(0))
+
+        await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-plain",
+                "text": "hello",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "chats": [{"guid": "iMessage;-;+15551234567"}],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        event = handled[-1]
+        assert event.reply_to_message_id is None
+        assert event.reply_to_text is None
+        assert event.reply_to_is_own_message is False
+
+    @pytest.mark.asyncio
+    async def test_send_records_outbound_text(self, monkeypatch):
+        """send() must index its guid -> text so replies to the bot resolve."""
+        adapter = _make_adapter(monkeypatch)
+
+        async def fake_resolve(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            return {"data": {"guid": "msg-out-1"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("iMessage;-;user@example.com", "here is your answer")
+        assert result.success
+        assert result.message_id == "msg-out-1"
+        assert rich_sent_store.lookup("iMessage;-;user@example.com", "msg-out-1") == "here is your answer"
+        assert "msg-out-1" in adapter._sent_guids

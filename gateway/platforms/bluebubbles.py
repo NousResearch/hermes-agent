@@ -32,6 +32,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
 )
 from gateway.platforms.helpers import strip_markdown
+from gateway import rich_sent_store
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        self._sent_guids: OrderedDict[str, None] = OrderedDict()
 
     # ------------------------------------------------------------------
     # API helpers
@@ -546,6 +548,11 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 last = SendResult(
                     success=True, message_id=str(msg_id), raw_response=res
                 )
+                if msg_id and msg_id != "ok":
+                    rich_sent_store.record(chat_id, msg_id, chunk)
+                    self._sent_guids[msg_id] = None
+                    if len(self._sent_guids) > 500:
+                        self._sent_guids.popitem(last=False)
             except Exception as exc:
                 return SendResult(success=False, error=str(exc))
         return last
@@ -1011,20 +1018,31 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             user_name=sender,
             chat_id_alt=chat_identifier,
         )
+        message_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        reply_to_id = self._value(
+            record.get("threadOriginatorGuid"),
+            record.get("associatedMessageGuid"),
+        )
+        reply_to_text = None
+        reply_to_is_own = False
+        if reply_to_id:
+            reply_to_text = rich_sent_store.lookup(session_chat_id, reply_to_id)
+            reply_to_is_own = reply_to_id in self._sent_guids
+        if text and message_id:
+            rich_sent_store.record(session_chat_id, message_id, text)
         event = MessageEvent(
             text=text,
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
-            reply_to_message_id=self._value(
-                record.get("threadOriginatorGuid"),
-                record.get("associatedMessageGuid"),
-            ),
+            message_id=message_id,
+            reply_to_message_id=reply_to_id,
+            reply_to_text=reply_to_text,
+            reply_to_is_own_message=reply_to_is_own,
             media_urls=media_urls,
             media_types=media_types,
         )

@@ -301,6 +301,53 @@ def _check_s6_supervision(issues: list[str]) -> None:
     )
 
 
+def _check_windows_gateway_launcher(issues: list[str]) -> None:
+    """Migrate a pre-#45610 Windows gateway autostart launcher to wscript/.vbs.
+
+    #45610 moved the autostart from a ``cmd.exe`` launcher to a console-less
+    ``.vbs`` run via ``wscript.exe``, but only for fresh installs. Machines
+    installed earlier and later updated keep the old ``cmd.exe`` Scheduled-Task
+    action and a legacy Startup ``.cmd``, which respawn visible console windows
+    at logon and let the half-started gateway be killed by the logon
+    console-close event. Detect and reconcile via the idempotent,
+    elevation-safe ``reconcile_autostart_launchers``.
+    """
+    if os.name != "nt":
+        return
+
+    try:
+        from hermes_cli import gateway_windows
+    except Exception as e:
+        check_warn("Windows gateway launcher", f"(could not import gateway_windows: {e})")
+        return
+
+    if not gateway_windows.is_installed():
+        return
+
+    _section("Windows Gateway Launcher")
+
+    try:
+        if not gateway_windows.has_stale_autostart_launcher():
+            check_ok("Gateway autostart uses the console-less wscript.exe/.vbs launcher")
+            return
+        changed, detail = gateway_windows.reconcile_autostart_launchers()
+    except Exception as e:
+        check_warn("Windows gateway launcher check skipped", str(e))
+        return
+
+    if changed:
+        check_ok("Migrated stale cmd.exe gateway autostart launcher to wscript.exe/.vbs", detail)
+    else:
+        issues.append(
+            "Stale Windows gateway autostart launcher — reinstall from an "
+            "elevated prompt with 'hermes gateway install'"
+        )
+        check_warn(
+            "Stale cmd.exe gateway autostart launcher could not be migrated automatically",
+            detail,
+        )
+
+
 def check_certificates() -> None:
     """Verify the certifi CA bundle is loadable.
 
@@ -1320,6 +1367,7 @@ def run_doctor(args):
 
     _check_gateway_service_linger(issues)
     _check_s6_supervision(issues)
+    _check_windows_gateway_launcher(issues)
 
     if sys.platform != "win32":
         _section("Command Installation")

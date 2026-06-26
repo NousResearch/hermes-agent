@@ -910,3 +910,136 @@ def test_drain_helper_still_waits_if_marker_write_fails(monkeypatch):
 
     # Returns True because _pid_exists immediately says "gone".
     assert gateway_windows._drain_gateway_pid(pid, drain_timeout=5.0) is True
+
+
+_STALE_TASK_XML = (
+    '<?xml version="1.0" encoding="UTF-16"?>'
+    '<Task version="1.2"><Actions Context="Author"><Exec>'
+    "<Command>cmd.exe</Command>"
+    '<Arguments>/c "C:\\Hermes\\Hermes_Gateway.cmd"</Arguments>'
+    "</Exec></Actions></Task>"
+)
+
+_CURRENT_TASK_XML = (
+    '<?xml version="1.0" encoding="UTF-16"?>'
+    '<Task version="1.4"><Actions Context="Author"><Exec>'
+    "<Command>wscript.exe</Command>"
+    '<Arguments>//B //Nologo "C:\\Hermes\\Hermes_Gateway.vbs"</Arguments>'
+    "</Exec></Actions></Task>"
+)
+
+
+class TestReconcileStaleAutostartLauncher:
+    """pre-#45610 cmd.exe autostart launchers are detected and reconciled."""
+
+    def _arrange(self, monkeypatch, tmp_path, *, task_xml, legacy_cmd_present):
+        """Wire a fake Windows install. Returns (env, calls).
+
+        ``env["state"]["task_xml"]`` is what ``/Query /XML`` returns and what a
+        ``/Create`` re-points it to, so the test can assert the action moved
+        from cmd.exe to wscript.exe.
+        """
+        script_path = tmp_path / "Hermes_Gateway.cmd"
+        vbs_path = tmp_path / "Hermes_Gateway.vbs"
+        startup_vbs = tmp_path / "startup" / "Hermes_Gateway.vbs"
+        legacy_cmd = tmp_path / "startup" / "Hermes_Gateway.cmd"
+        startup_vbs.parent.mkdir(parents=True, exist_ok=True)
+        if legacy_cmd_present:
+            legacy_cmd.write_text("@echo off\nstart Hermes_Gateway\n")
+
+        state = {"task_xml": task_xml, "task_registered": True}
+        calls: list[tuple] = []
+
+        monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
+        monkeypatch.setattr(gateway_windows, "get_task_name", lambda: "Hermes_Gateway")
+        monkeypatch.setattr(gateway_windows, "_legacy_startup_entry_path", lambda: legacy_cmd)
+        monkeypatch.setattr(gateway_windows, "get_startup_entry_path", lambda: startup_vbs)
+        monkeypatch.setattr(gateway_windows, "get_task_script_path", lambda: script_path)
+        monkeypatch.setattr(
+            gateway_windows, "is_task_registered", lambda: state["task_registered"]
+        )
+
+        def fake_write_task_script():
+            script_path.write_text("@echo off\n")
+            vbs_path.write_text("' vbs launcher\n")
+            return script_path
+
+        monkeypatch.setattr(gateway_windows, "_write_task_script", fake_write_task_script)
+
+        def fake_exec_schtasks(args):
+            calls.append(tuple(args))
+            if args[0] == "/Query":
+                if "/XML" in args:
+                    return (0, state["task_xml"], "")
+                return (0, "", "")
+            if args[0] == "/Delete":
+                return (0, "SUCCESS", "")
+            if args[0] == "/Create":
+                # The real install re-points the action at wscript.exe/.vbs.
+                state["task_xml"] = _CURRENT_TASK_XML
+                return (0, "SUCCESS", "")
+            raise AssertionError(f"unexpected schtasks args: {args}")
+
+        monkeypatch.setattr(gateway_windows, "_exec_schtasks", fake_exec_schtasks)
+        monkeypatch.setattr(gateway_windows, "_resolve_task_user", lambda: None)
+
+        return {
+            "state": state,
+            "legacy_cmd": legacy_cmd,
+            "startup_vbs": startup_vbs,
+            "vbs_path": vbs_path,
+        }, calls
+
+    def test_stale_cmd_launcher_is_detected_and_reconciled(self, monkeypatch, tmp_path):
+        env, calls = self._arrange(
+            monkeypatch, tmp_path, task_xml=_STALE_TASK_XML, legacy_cmd_present=True
+        )
+
+        assert gateway_windows.has_stale_autostart_launcher() is True
+
+        changed, _detail = gateway_windows.reconcile_autostart_launchers()
+
+        assert changed is True
+        # Legacy console-spawning Startup .cmd removed.
+        assert not env["legacy_cmd"].exists()
+        # Console-less Startup .vbs written.
+        assert env["startup_vbs"].exists()
+        # Scheduled Task action re-pointed at wscript.exe (not cmd.exe).
+        assert "wscript.exe" in env["state"]["task_xml"].lower()
+        assert "cmd.exe" not in env["state"]["task_xml"].lower()
+        assert any(c[0] == "/Create" for c in calls)
+
+    def test_reconcile_is_idempotent_no_op_when_current(self, monkeypatch, tmp_path):
+        env, _calls = self._arrange(
+            monkeypatch, tmp_path, task_xml=_STALE_TASK_XML, legacy_cmd_present=True
+        )
+
+        first_changed, _ = gateway_windows.reconcile_autostart_launchers()
+        assert first_changed is True
+
+        # Second call: launcher is now current, so nothing is stale.
+        assert gateway_windows.has_stale_autostart_launcher() is False
+        second_changed, detail = gateway_windows.reconcile_autostart_launchers()
+        assert second_changed is False
+        assert detail == "already current"
+
+    def test_current_wscript_launcher_is_not_flagged(self, monkeypatch, tmp_path):
+        env, _calls = self._arrange(
+            monkeypatch, tmp_path, task_xml=_CURRENT_TASK_XML, legacy_cmd_present=False
+        )
+
+        assert gateway_windows._scheduled_task_action_is_stale() is False
+        assert gateway_windows.has_stale_autostart_launcher() is False
+        changed, detail = gateway_windows.reconcile_autostart_launchers()
+        assert changed is False
+        assert detail == "already current"
+
+    def test_query_failure_does_not_false_positive(self, monkeypatch, tmp_path):
+        self._arrange(
+            monkeypatch, tmp_path, task_xml=_CURRENT_TASK_XML, legacy_cmd_present=False
+        )
+        # schtasks query wedges/errors -> must NOT report stale.
+        monkeypatch.setattr(
+            gateway_windows, "_exec_schtasks", lambda args: (124, "", "timed out")
+        )
+        assert gateway_windows._scheduled_task_action_is_stale() is False

@@ -1274,6 +1274,76 @@ def query_task_status() -> dict[str, str]:
     return info
 
 
+def _scheduled_task_action_is_stale() -> bool:
+    """True when the registered task's action is the legacy ``cmd.exe`` form.
+
+    #45610 migrated the Scheduled-Task action to the console-less
+    ``wscript.exe`` + ``.vbs`` launcher (see ``_build_scheduled_task_xml``).
+    Machines installed before that keep a ``cmd.exe`` / ``.cmd`` action, which
+    respawns a visible console at logon and lets the half-started gateway be
+    killed by the logon console-close event.
+
+    Detection reads the task XML directly (``/Query /XML``) and keys off the
+    action command: stale when the definition does not run ``wscript.exe`` but
+    does reference ``cmd.exe`` or a ``.cmd`` launcher. Returns ``False`` on any
+    query failure so a transient schtasks error never triggers a false repair.
+    """
+    code, out, _err = _exec_schtasks(["/Query", "/TN", get_task_name(), "/XML"])
+    if code != 0 or not out:
+        return False
+    lowered = out.lower()
+    if "wscript.exe" in lowered:
+        return False
+    return "cmd.exe" in lowered or ".cmd" in lowered
+
+
+def has_stale_autostart_launcher() -> bool:
+    """True when an installed autostart launcher is the pre-#45610 form.
+
+    Detection precedence: a legacy Startup-folder ``.cmd`` entry present >
+    a Scheduled-Task action that is not the console-less ``wscript.exe`` form.
+    """
+    if not is_installed():
+        return False
+    if _legacy_startup_entry_path().exists():
+        return True
+    return is_task_registered() and _scheduled_task_action_is_stale()
+
+
+def reconcile_autostart_launchers() -> tuple[bool, str]:
+    """Rewrite a stale pre-#45610 autostart launcher to the console-less form.
+
+    Idempotent and elevation-safe:
+      - no-op (returns ``(False, "already current")``) when nothing is stale;
+      - regenerates the ``.cmd`` wrapper + console-less ``.vbs`` launcher;
+      - re-points the Scheduled Task at ``wscript.exe``/``.vbs`` when one is
+        registered (degrades gracefully if schtasks needs elevation — the
+        Startup ``.vbs`` fallback still reconciles);
+      - rewrites the Startup ``.vbs`` entry and removes the legacy ``.cmd``.
+
+    Returns ``(changed, detail)``.
+    """
+    _assert_windows()
+    if not is_installed():
+        return (False, "gateway autostart is not installed")
+    if not has_stale_autostart_launcher():
+        return (False, "already current")
+
+    script_path = _write_task_script()
+    notes: list[str] = []
+    if is_task_registered():
+        ok, detail = _install_scheduled_task(get_task_name(), script_path)
+        if ok:
+            notes.append("re-pointed Scheduled Task at wscript.exe/.vbs")
+        else:
+            # Access-denied (no elevation) is non-fatal: the Startup .vbs
+            # fallback below still removes the console-spawning launcher.
+            notes.append(f"Scheduled Task not updated ({detail})")
+    _install_startup_entry(script_path)
+    notes.append("rewrote Startup launcher (.vbs) and removed legacy .cmd")
+    return (True, "; ".join(notes))
+
+
 def _gateway_pids() -> list[int]:
     """Reuse the cross-platform PID scanner in gateway.py."""
     from hermes_cli.gateway import find_gateway_pids

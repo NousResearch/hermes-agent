@@ -1,8 +1,9 @@
-"""Consent posture + org-policy enforcement tests.
+"""Consent gate tests.
 
-Consent is a single field (``telemetry.consent_state``); the aggregate opt-in is
-expressed by setting it to ``"aggregate"`` (via ``hermes config set`` or a managed-scope
-pin). ``allow_aggregate`` is the hard gate.
+Consent is a single config field (``telemetry.consent_state``); the aggregate opt-in
+is expressed by setting it to ``"aggregate"`` (via ``hermes config set`` or a
+managed-scope pin). ``allow_aggregate`` is the hard gate. ``policy.may_upload_aggregate``
+is the gate a future uploader must consult.
 """
 
 from __future__ import annotations
@@ -14,43 +15,27 @@ def _cfg(**telemetry):
     return {"telemetry": telemetry}
 
 
-def test_default_posture_is_local_only():
-    d = policy.resolve(_cfg(local=True, consent_state="unknown"))
-    assert d.local_enabled is True
-    assert d.aggregate_enabled is False
-    assert d.may_upload_aggregate() is False
+def test_default_posture_never_uploads():
+    # No consent recorded → unknown → never uploads.
+    assert policy.may_upload_aggregate(_cfg(local=True, consent_state="unknown")) is False
 
 
-def test_unknown_consent_never_uploads():
-    # A headless box with no choice recorded: stays unknown, never uploads.
-    d = policy.resolve(_cfg(local=True, consent_state="unknown"))
-    assert d.may_upload_aggregate() is False
+def test_missing_telemetry_block_never_uploads():
+    assert policy.may_upload_aggregate({}) is False
 
 
 def test_opted_in_uploads():
-    d = policy.resolve(_cfg(local=True, consent_state="aggregate"))
-    assert d.aggregate_enabled is True
-    assert d.may_upload_aggregate() is True
+    assert policy.may_upload_aggregate(_cfg(consent_state="aggregate")) is True
 
 
 def test_declined_does_not_upload():
-    d = policy.resolve(_cfg(local=True, consent_state="local"))
-    assert d.may_upload_aggregate() is False
+    assert policy.may_upload_aggregate(_cfg(consent_state="local")) is False
 
 
 def test_allow_aggregate_false_overrides_opt_in():
     # An admin pins telemetry.allow_aggregate: false via managed scope.
-    cfg = _cfg(local=True, consent_state="aggregate", allow_aggregate=False)
-    d = policy.resolve(cfg)
-    assert d.allow_aggregate is False
-    assert d.aggregate_enabled is False
-    assert d.may_upload_aggregate() is False  # the hard gate wins
-
-
-def test_invalid_consent_state_treated_as_unknown():
-    d = policy.resolve(_cfg(local=True, consent_state="bogus"))
-    assert d.consent_state == "unknown"
-    assert d.may_upload_aggregate() is False
+    cfg = _cfg(consent_state="aggregate", allow_aggregate=False)
+    assert policy.may_upload_aggregate(cfg) is False  # the hard gate wins
 
 
 def test_install_id_minted_when_empty_and_stable_when_set():

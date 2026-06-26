@@ -40,7 +40,7 @@ class StubConnector:
         # absent/expired capability or a tenant mismatch on the connector side.
         self.next_follow_up_result: Dict[str, Any] = {"success": True, "message_id": "f1"}
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         self.connected = True
         return True
 

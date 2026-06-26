@@ -347,7 +347,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         return super()._is_dm_allowed(sender_id)
 
     # ------------------------------------------------------------------ lifecycle
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not check_whatsapp_cloud_requirements():
             self._set_fatal_error(
                 "whatsapp_cloud_deps_missing",

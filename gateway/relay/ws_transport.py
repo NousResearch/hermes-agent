@@ -120,6 +120,14 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         guild_id=src.get("guild_id"),
         parent_chat_id=src.get("parent_chat_id"),
         message_id=src.get("message_id"),
+        # Authentic upstream-trust signal: this event arrived over the
+        # per-instance-authenticated relay WS, so the connector already resolved
+        # it to this instance's owner-bound author. ``platform`` is the
+        # UNDERLYING platform (e.g. discord), not ``relay`` — authz keys the
+        # upstream-trust decision off THIS flag, not off ``platform`` (which
+        # would miss because the relay adapter is registered under
+        # ``Platform.RELAY``). Stamped here, never read off the wire.
+        delivered_via_upstream_relay=True,
     )
     try:
         msg_type = MessageType(raw.get("message_type", "text"))
@@ -232,6 +240,23 @@ class WebSocketRelayTransport:
         self._reconnect_backoff_s = reconnect_backoff_s
         self._reconnect_max_backoff_s = reconnect_max_backoff_s
         self._supervisor: Optional[asyncio.Task[None]] = None
+        # scale-to-zero §Phase 0 (D12/F14): a DORMANT close is distinct from both
+        # disconnect() (terminal: cancels the supervisor) and an unexpected close
+        # (re-dials immediately). go_dormant() sets this True, then closes the
+        # socket WITHOUT setting _closing — so _read_loop's fall-through still
+        # kicks the reconnect supervisor (the wake path stays armed), but the
+        # supervisor waits on the longer dormant cadence instead of the fast
+        # reconnect backoff, so it does not fight the platform's suspend window.
+        # On resume (process unfrozen) the pending wait completes, the re-dial
+        # succeeds, and the connector drains this instance's buffered backlog on
+        # the new handshake. Cleared on a successful re-dial (_dial_and_start).
+        self._dormant = False
+        # The re-dial poll cadence while dormant. A suspended machine's event
+        # loop is frozen, so this timer only advances once the machine is awake;
+        # it just needs to be short enough that a freshly-woken machine re-dials
+        # promptly (the connector's wake poke is what triggers the platform
+        # autostart in the first place — §3.4(5)).
+        self._dormant_redial_s = 1.0
 
         self._ws: Any = None
         self._reader: Optional[asyncio.Task[None]] = None
@@ -268,6 +293,10 @@ class WebSocketRelayTransport:
         # A fresh handshake is coming; clear any stale descriptor so handshake()
         # awaits the new one (matters on a re-dial).
         self._descriptor = None
+        # scale-to-zero (D12): a successful (re-)dial ends any dormant state — we
+        # are live again, so a subsequent UNEXPECTED close should reconnect on the
+        # normal fast backoff, not the dormant cadence.
+        self._dormant = False
         headers = self._upgrade_headers()
         if headers:
             self._ws = await websockets.connect(self._url, additional_headers=headers)  # type: ignore[union-attr]
@@ -389,6 +418,50 @@ class WebSocketRelayTransport:
         finally:
             self._going_idle_ack = None
 
+    async def go_dormant(self, timeout_s: float = 10.0) -> bool:
+        """Quiesce this transport for a scale-to-zero suspend (D12 / Phase 0).
+
+        Distinct from BOTH ``disconnect()`` and an unexpected close (F14):
+          - ``disconnect()`` sets ``_closing=True`` and CANCELS the reconnect
+            supervisor — terminal, "shutting down for good." A machine suspended
+            after that never re-dials on wake, so its buffered backlog strands.
+          - An unexpected close re-dials IMMEDIATELY (fast backoff) — the socket
+            never stays down, so the platform proxy never sees the connection go
+            away and never suspends the machine.
+
+        ``go_dormant()`` is the third mode the suspend behaviour needs:
+          1. ``go_idle()`` → the connector flips this instance to buffered-only
+             and acks (so inbound that arrives while we sleep buffers durably and
+             replays on the next handshake).
+          2. Close the socket so the platform proxy sees load drop to zero (the
+             precondition for Fly ``autostop:"suspend"``) — but WITHOUT setting
+             ``_closing``. The reader's normal end-of-socket fall-through still
+             arms the reconnect supervisor, so the wake path stays live; the
+             ``_dormant`` flag just makes that supervisor poll on the dormant
+             cadence rather than fight the suspend window.
+
+        On resume (process unfrozen) the supervisor's pending wait completes, the
+        re-dial succeeds, and the connector drains the buffered backlog on the new
+        handshake. Returns the ``go_idle`` ack result (True on ack); the dormancy
+        close happens regardless (a missed ack at worst races one live event onto
+        a closing socket, exactly as §5.3 already tolerates).
+
+        No-op-safe: a transport that never connected (``_ws is None``) just
+        returns False without closing.
+        """
+        if self._ws is None:
+            return False
+        acked = await self.go_idle(timeout_s=timeout_s)
+        # Mark dormant BEFORE closing so the supervisor (armed by the reader's
+        # fall-through) takes the dormant cadence, and a racing live event can't
+        # flip us back to a fast reconnect.
+        self._dormant = True
+        try:
+            await self._ws.close()
+        except Exception:  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
+            logger.debug("relay go_dormant: ws.close() raised", exc_info=True)
+        return acked
+
     async def _send_inbound_ack(self, buffer_id: str) -> None:
         """Acknowledge durable receipt of a buffered inbound delivery (§5.3).
 
@@ -489,8 +562,16 @@ class WebSocketRelayTransport:
         or disconnect() is called. NET-NEW for §5.3: a re-established socket makes
         the connector replay this instance's buffered-only backlog on the new
         handshake (the delivery-leg onResume). Never raises out (a re-dial failure
-        just retries); ends when a dial succeeds (its reader takes over) or closing."""
-        backoff = self._reconnect_backoff_s
+        just retries); ends when a dial succeeds (its reader takes over) or closing.
+
+        scale-to-zero (D12): when the close was a deliberate go_dormant() rather
+        than an unexpected drop, start from the dormant poll cadence. On a
+        suspended machine the event loop is frozen, so this sleep only advances
+        once the machine is awake — it just needs to be short enough that a
+        freshly-woken machine re-dials promptly. A successful _dial_and_start()
+        clears _dormant, so any LATER unexpected drop reconnects on the normal
+        fast backoff."""
+        backoff = self._dormant_redial_s if self._dormant else self._reconnect_backoff_s
         while not self._closing:
             try:
                 await asyncio.sleep(backoff)

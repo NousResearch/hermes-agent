@@ -4249,6 +4249,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_project(args):
+    """Manage projects (named, multi-folder workspaces)."""
+    from hermes_cli.projects_cmd import projects_command
+
+    return projects_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -5404,6 +5411,34 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 
 
+def _force_adhoc_macos_signing(env: dict, *, source_mode: bool) -> bool:
+    """Stop electron-builder grabbing a random keychain identity on self-update.
+
+    The desktop self-updater rebuilds *and re-signs the .app on the end user's
+    machine* (``hermes desktop --build-only`` → electron-builder ``--dir``).
+    With ``CSC_IDENTITY_AUTO_DISCOVERY`` on (its default), electron-builder
+    signs the ``type=distribution``, hardened-runtime bundle with whatever it
+    finds in that user's keychain — typically a personal "Apple Development"
+    cert. That stalls/fails the sign step (no Developer ID + no provisioning
+    profile) or clobbers your real notarized signature with an unusable one, so
+    every post-update launch trips Gatekeeper.
+
+    Force ad-hoc signing for the local packaged rebuild instead: deterministic,
+    and exactly what ``_desktop_macos_relaunchable_fixup`` already finishes off.
+    No-op for source runs, off-macOS, when a real identity is configured
+    (``CSC_LINK`` / ``APPLE_SIGNING_IDENTITY``), or when the caller already
+    pinned the flag. Mutates ``env``; returns True when it set the flag.
+    """
+    if sys.platform != "darwin" or source_mode:
+        return False
+    if env.get("CSC_LINK") or env.get("APPLE_SIGNING_IDENTITY"):
+        return False
+    if "CSC_IDENTITY_AUTO_DISCOVERY" in env:
+        return False
+    env["CSC_IDENTITY_AUTO_DISCOVERY"] = "false"
+    return True
+
+
 def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     """Configure Electron's Linux SUID sandbox helper when required."""
     if sys.platform != "linux":
@@ -5535,6 +5570,9 @@ def cmd_gui(args: argparse.Namespace):
             build_label = "source build" if source_mode else "packaged app"
             print(f"→ Building desktop {build_label}...")
             build_script = "build" if source_mode else "pack"
+            if _force_adhoc_macos_signing(env, source_mode=source_mode):
+                print("  → No Developer ID configured; ad-hoc signing this local rebuild "
+                      "(CSC_IDENTITY_AUTO_DISCOVERY=false)")
             if not source_mode:
                 # A running desktop instance launched from release/win-unpacked
                 # holds Hermes.exe locked on Windows, so the pack can't replace
@@ -8286,13 +8324,12 @@ def _run_pre_update_backup(args) -> None:
         cfg = {}
 
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
-    # The default config ships with ``pre_update_backup: true`` (see
-    # ``hermes_cli/config.py``). Fall back to true if the key is missing
-    # (e.g. a user has an older custom config without the field). The
-    # ``False`` default from before #48200 caused silent data loss when
-    # an update step computed a wrong path — the cost of a few minutes
-    # of zip time per update is negligible compared to the alternative.
-    enabled = updates_cfg.get("pre_update_backup", True)
+    # The default config ships with ``pre_update_backup: false`` (see
+    # ``hermes_cli/config.py``). Fall back to false if the key is missing
+    # so the default behaviour matches the shipped config: zipping a large
+    # HERMES_HOME can add minutes to every update. Users who want the
+    # #48200 safety net opt in via the config knob or ``--backup``.
+    enabled = updates_cfg.get("pre_update_backup", False)
     keep = updates_cfg.get("backup_keep", 5)
 
     if not enabled and not force_backup:
@@ -9563,8 +9600,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         # Safety net: config-version migrations have been observed to leave
         # cron/jobs.json valid-but-empty, silently dropping every scheduled
-        # job (issue #34600). If the live file is now empty while the
-        # pre-update snapshot held jobs, restore it and warn loudly.
+        # job (issue #34600). The desktop scheduler can also overwrite with
+        # its own small set, causing partial loss (issue #52144). If the
+        # live file now has fewer jobs than the pre-update snapshot, restore
+        # it and warn loudly.
         try:
             from hermes_cli.backup import restore_cron_jobs_if_emptied
 
@@ -9572,7 +9611,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if cron_restore:
                 print()
                 print(
-                    "  ⚠️  cron/jobs.json was emptied during this update — "
+                    "  ⚠️  cron/jobs.json lost jobs during this update — "
                     f"restored {cron_restore['job_count']} job(s) from "
                     f"pre-update snapshot {cron_restore['snapshot_id']}."
                 )
@@ -10178,6 +10217,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # gateway doesn't support SIGUSR1 or doesn't exit within
                 # the drain budget, fall back to SIGTERM — the watcher
                 # still sees the exit and relaunches either way.
+                # Announce the drain first: this wait can hold for the full
+                # budget per gateway with no other output, and on surfaces
+                # that stream update progress (the desktop updater most of
+                # all) the silence reads as a hung update (#44515).
+                print(
+                    f"  → {proc.profile}: draining gateway PID {pid} "
+                    f"(up to {int(_drain_budget)}s)..."
+                )
                 drained = _graceful_restart_via_sigusr1(
                     pid,
                     drain_timeout=_drain_budget,
@@ -11540,8 +11587,9 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile", "proxy",
+        "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
+        "model", "pairing", "pets", "plugins", "portal", "postinstall", "profile",
+        "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -12065,6 +12113,21 @@ def main():
     # =========================================================================
     build_model_parser(subparsers, cmd_model=cmd_model)
 
+    from hermes_cli.moa_cmd import cmd_moa
+
+    moa_parser = subparsers.add_parser(
+        "moa",
+        help="Configure Mixture of Agents provider/model slots",
+        description="Configure the provider/model set used by /moa <prompt>.",
+    )
+    moa_subparsers = moa_parser.add_subparsers(dest="moa_command")
+    moa_subparsers.add_parser("list", aliases=["ls"], help="Show current MoA model slots")
+    moa_configure = moa_subparsers.add_parser("configure", aliases=["config"], help="Interactively pick MoA models")
+    moa_configure.add_argument("name", nargs="?", help="Preset name to create or update")
+    moa_delete = moa_subparsers.add_parser("delete", aliases=["rm"], help="Delete a MoA preset")
+    moa_delete.add_argument("name", help="Preset name to delete")
+    moa_parser.set_defaults(func=cmd_moa)
+
     # =========================================================================
     # fallback command — manage the fallback provider chain
     # =========================================================================
@@ -12277,6 +12340,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # project command — named, multi-folder workspaces
+    # =========================================================================
+    from hermes_cli.projects_cmd import build_parser as _build_project_parser
+
+    project_parser = _build_project_parser(subparsers)
+    project_parser.set_defaults(func=cmd_project)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

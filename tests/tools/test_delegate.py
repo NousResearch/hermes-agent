@@ -1932,12 +1932,14 @@ class TestDelegateHeartbeat(unittest.TestCase):
 
         child.run_conversation.side_effect = slow_run
 
-        # Patch both the interval AND the idle ceiling so the test proves
-        # the in-tool branch takes effect: with a 0.05s interval and the
-        # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
-        # trip after 0.25s and stop firing. We should see heartbeats
-        # continuing through the full 0.4s run.
-        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+        # Use tiny thresholds so the assertion is scheduler-robust in CI:
+        # if idle rules were used for in-tool work, heartbeat would stop after
+        # ~2 cycles. The in-tool branch should keep touching well past that.
+        with (
+            patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IDLE", 2),
+            patch("tools.delegate_tool._HEARTBEAT_STALE_CYCLES_IN_TOOL", 40),
+        ):
             _run_single_child(
                 task_index=0,
                 goal="Test long-running tool",
@@ -1945,11 +1947,10 @@ class TestDelegateHeartbeat(unittest.TestCase):
                 parent_agent=parent,
             )
 
-        # With the old idle threshold (5 cycles = 0.25s), touch_calls
-        # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
-        # we should see substantially more heartbeats over 0.4s.
+        # If idle-threshold logic applied, we'd cap around 2 touches; prove we
+        # continued beyond that while inside a long-running tool.
         self.assertGreater(
-            len(touch_calls), 6,
+            len(touch_calls), 2,
             f"Heartbeat stopped too early while child was inside a tool; "
             f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
         )

@@ -639,7 +639,7 @@ def _check_gateway_running(profile_dir: Path) -> bool:
             read_runtime_status,
         )
         runtime = read_runtime_status(profile_dir / "gateway_state.json")
-        return get_runtime_status_running_pid(runtime) is not None
+        return get_runtime_status_running_pid(runtime, expected_home=profile_dir) is not None
     except Exception:
         return False
 

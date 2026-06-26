@@ -2247,6 +2247,38 @@ class BasePlatformAdapter(ABC):
         """
         return False
 
+    @property
+    def authorization_is_upstream(self) -> bool:
+        """Whether inbound on this adapter was already authorized UPSTREAM.
+
+        Distinct from ``enforces_own_access_policy``: that flag describes an
+        adapter that enforces a LOCAL, config-driven access surface
+        (``dm_policy: allowlist`` / ``allow_from``) the gateway can mirror. This
+        flag describes an adapter whose authorization is performed by a TRUSTED
+        UPSTREAM over an authenticated transport — there is no local policy to
+        consult, and the env allowlist (``{PLATFORM}_ALLOWED_USERS``) does not
+        apply because the sender identity isn't a platform account the operator
+        configures here.
+
+        The relay adapter is the sole user: it fronts the Team Gateway
+        connector over a per-instance-authenticated WebSocket, and the connector
+        performs owner-only author-binding resolution BEFORE delivering — a
+        message only reaches this gateway because the connector resolved it to
+        THIS instance's bound user (``user_instance_binding``). The author id is
+        read off the event the connector observed, never gateway-asserted. So an
+        inbound relay event carries an authorization decision already made by a
+        trusted, authenticated upstream; default-denying it (no env allowlist ⇒
+        deny) is incorrect.
+
+        This is NOT a fail-open: it is authorization DELEGATED to a trusted
+        upstream that authenticated the transport (the relay WS secret) and
+        enforced owner-only binding, as opposed to authorization being ABSENT.
+        It only takes effect for an adapter that explicitly overrides this to
+        ``True``; every network-exposed direct adapter leaves it ``False`` and
+        the env-allowlist default-deny continues to apply unchanged.
+        """
+        return False
+
     def supports_draft_streaming(
         self,
         chat_type: Optional[str] = None,
@@ -2602,10 +2634,21 @@ class BasePlatformAdapter(ABC):
         self._session_store = session_store
     
     @abstractmethod
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         """
         Connect to the platform and start receiving messages.
-        
+
+        Args:
+            is_reconnect: False on a cold first boot (the gateway is
+                starting this platform for the first time); True when the
+                reconnect watcher is re-establishing a platform that was
+                previously running and dropped after an outage. Adapters
+                that buffer a server-side update queue (e.g. Telegram's Bot
+                API) should preserve that queue when ``is_reconnect`` is
+                True so messages sent during the outage are delivered rather
+                than silently discarded. Adapters with no such queue may
+                ignore the flag.
+
         Returns True if connection was successful.
         """
         pass

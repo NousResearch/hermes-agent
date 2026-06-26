@@ -294,6 +294,12 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             "chat_id": origin_chat_id,
             "chat_name": get_session_env("HERMES_SESSION_CHAT_NAME") or None,
             "thread_id": thread_id,
+            # Captured so an opt-in delivery mirror (cron.mirror_delivery /
+            # attach_to_session) can resolve the exact participant's session in
+            # per-user-isolated group chats — parity with interactive
+            # send_message, which passes HERMES_SESSION_USER_ID to
+            # gateway.mirror.mirror_to_session. Harmless for DMs/shared sessions.
+            "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
         }
     return None
 
@@ -576,6 +582,7 @@ def cronjob(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    attach_to_session: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -642,6 +649,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                attach_to_session=attach_to_session,
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -794,6 +802,8 @@ def cronjob(
                 updates["context_from"] = refs or None
             if enabled_toolsets is not None:
                 updates["enabled_toolsets"] = enabled_toolsets or None
+            if attach_to_session is not None:
+                updates["attach_to_session"] = bool(attach_to_session)
             if workdir is not None:
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
@@ -951,6 +961,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "workdir": {
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
+            },
+            "attach_to_session": {
+                "type": "boolean",
+                "description": "When True, this job becomes CONTINUABLE: the user can reply to its delivery and the agent has the brief in context instead of asking 'what is that?'. On thread-capable platforms (Telegram topics, Discord/Slack threads) a dedicated thread is opened for the job and its replies; on DM-only platforms (WhatsApp/Signal) the brief is mirrored into the origin DM session. Use this for conversational recurring jobs the user will reply to — daily briefings, reminders that kick off follow-up work. Leave unset for fire-and-forget alerts/watchdogs. Overrides the global cron.mirror_delivery config for this one job. Only the origin chat is touched (never fan-out targets); no effect when deliver='local'."
             },
         },
         "required": ["action"]

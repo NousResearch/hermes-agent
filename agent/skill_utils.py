@@ -97,6 +97,30 @@ def is_skill_support_path(path) -> bool:
     return False
 
 
+def rglob_follow(root: Path, pattern: str):
+    """Like ``Path.rglob(pattern)`` but follows symlinks into subdirectories.
+
+    Python's ``Path.rglob()`` intentionally does **not** descend into
+    symlinked directories (see https://bugs.python.org/issue40358).
+    This helper uses ``os.walk(followlinks=True)`` so that symlinked
+    skill directories (e.g. ``~/.hermes/skills/redpiggy -> workspace/skills``)
+    are discovered correctly.
+    """
+    import fnmatch
+
+    for dirpath, dirnames, filenames in os.walk(str(root), followlinks=True):
+        # Prune excluded dirs (same as rglob's natural traversal)
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDED_SKILL_DIRS]
+        dirpath_p = Path(dirpath)
+        for fname in filenames:
+            if fnmatch.fnmatch(fname, pattern):
+                yield dirpath_p / fname
+        # Also match the pattern against directory names if needed
+        for dname in dirnames:
+            if fnmatch.fnmatch(dname, pattern):
+                yield dirpath_p / dname
+
+
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 
 _yaml_load_fn = None

@@ -1553,6 +1553,151 @@ class TestBuildAnthropicKwargs:
 
 
 # ---------------------------------------------------------------------------
+# Bedrock application-inference-profile ARN classification
+# ---------------------------------------------------------------------------
+
+
+_PROFILE_ARN = (
+    "arn:aws:bedrock:eu-west-1:123456789012:"
+    "application-inference-profile/4jqtkehs0zy3"
+)
+
+
+def _profile_config(name):
+    return {"bedrock": {"models": {_PROFILE_ARN: {"name": name}}}}
+
+
+class TestClassificationModel:
+    """Opaque application-inference-profile ARNs embed no model family, so the
+    capability classifiers must resolve them via ``bedrock.models.<arn>.name``.
+    """
+
+    def test_canonical_slug_from_name(self):
+        from agent.anthropic_adapter import _canonical_claude_slug_from_name
+        assert _canonical_claude_slug_from_name("Opus 4.8") == "claude-opus-4-8"
+        assert _canonical_claude_slug_from_name("Sonnet 4.6") == "claude-sonnet-4-6"
+        assert _canonical_claude_slug_from_name("Haiku 4.5") == "claude-haiku-4-5"
+        # Dotted form normalises the same way.
+        assert _canonical_claude_slug_from_name("Opus 4.7") == "claude-opus-4-7"
+        # No recognised family → None.
+        assert _canonical_claude_slug_from_name("Nova Pro") is None
+
+    def test_canonical_slug_version_anchored_to_family(self):
+        """The version must be the digits that FOLLOW the family token, not
+        the first digit-pair anywhere (dates, 'rev 2', account ids)."""
+        from agent.anthropic_adapter import _canonical_claude_slug_from_name
+        assert _canonical_claude_slug_from_name("Opus rev 2 4.8") == "claude-opus-4-8"
+        assert _canonical_claude_slug_from_name("Claude Opus 4.8 (EU)") == "claude-opus-4-8"
+        # Whitespace around the separator is tolerated.
+        assert _canonical_claude_slug_from_name("OPUS 4 . 8") == "claude-opus-4-8"
+        # A family with no trailing version → bare family slug (still Claude).
+        assert _canonical_claude_slug_from_name("Opus") == "claude-opus"
+
+    def test_profile_arn_resolves_to_configured_family(self):
+        from agent.anthropic_adapter import _classification_model
+        with patch(
+            "hermes_cli.config.load_config", return_value=_profile_config("Opus 4.8")
+        ):
+            assert _classification_model(_PROFILE_ARN) == "claude-opus-4-8"
+
+    def test_unresolved_profile_arn_defaults_to_newest_claude(self):
+        from agent.anthropic_adapter import _classification_model
+        # Empty config → unknown profile ARN → assume newest Claude contract.
+        with patch("hermes_cli.config.load_config", return_value={}):
+            assert _classification_model(_PROFILE_ARN) == "claude-opus-4-8"
+
+    def test_config_load_failure_defaults_to_newest_claude(self):
+        from agent.anthropic_adapter import _classification_model
+        # A broken config must not crash request-building; fall back safely.
+        with patch(
+            "hermes_cli.config.load_config", side_effect=RuntimeError("boom")
+        ):
+            assert _classification_model(_PROFILE_ARN) == "claude-opus-4-8"
+
+    def test_non_claude_named_profile_passes_arn_through(self):
+        """A profile tagged with a non-Claude vendor must NOT be coerced to an
+        Opus slug — it routes to Converse and never builds adaptive thinking."""
+        from agent.anthropic_adapter import _classification_model
+        with patch(
+            "hermes_cli.config.load_config", return_value=_profile_config("Nova Pro")
+        ):
+            assert _classification_model(_PROFILE_ARN) == _PROFILE_ARN
+
+    def test_unrecognised_name_assumes_claude_consistent_with_routing(self):
+        """A name that maps to no family AND no known vendor (typo, internal
+        label) must classify as Claude — routing assumes Claude→SDK for it, so
+        classifying as legacy would 400. Consistency with
+        is_anthropic_bedrock_model is the invariant under test."""
+        from agent.anthropic_adapter import _classification_model
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value=_profile_config("Opuss 4.8"),  # typo
+        ):
+            assert _classification_model(_PROFILE_ARN) == "claude-opus-4-8"
+
+    def test_non_profile_models_pass_through_unchanged(self):
+        from agent.anthropic_adapter import _classification_model
+        # Native + regional-profile IDs already carry their family — untouched.
+        assert _classification_model("claude-opus-4-6") == "claude-opus-4-6"
+        assert (
+            _classification_model("eu.anthropic.claude-sonnet-4-6-20250514-v1:0")
+            == "eu.anthropic.claude-sonnet-4-6-20250514-v1:0"
+        )
+
+    def test_profile_arn_builds_adaptive_thinking_kwargs(self):
+        """End-to-end: a profile ARN for Opus 4.8 must produce
+        thinking.type:adaptive (not the legacy 'enabled' that 400s), while the
+        real ARN is still sent as the API model field."""
+        with patch(
+            "hermes_cli.config.load_config", return_value=_profile_config("Opus 4.8")
+        ):
+            kwargs = build_anthropic_kwargs(
+                model=_PROFILE_ARN,
+                messages=[{"role": "user", "content": "hi"}],
+                tools=None,
+                max_tokens=None,
+                reasoning_config={"enabled": True, "effort": "xhigh"},
+            )
+        assert kwargs["model"] == _PROFILE_ARN  # ARN still sent to the API
+        assert kwargs["thinking"] == {"type": "adaptive", "display": "summarized"}
+        assert kwargs["output_config"] == {"effort": "xhigh"}
+        assert "temperature" not in kwargs
+
+    def test_profile_arn_for_sonnet_46_downgrades_xhigh(self):
+        """A profile ARN tagged Sonnet 4.6 must downgrade xhigh→max (4.6 has
+        no xhigh level) — proving the resolved family, not the ARN, drives the
+        capability checks."""
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value=_profile_config("Sonnet 4.6"),
+        ):
+            kwargs = build_anthropic_kwargs(
+                model=_PROFILE_ARN,
+                messages=[{"role": "user", "content": "hi"}],
+                tools=None,
+                max_tokens=None,
+                reasoning_config={"enabled": True, "effort": "xhigh"},
+            )
+        assert kwargs["output_config"] == {"effort": "max"}
+
+    def test_profile_arn_for_haiku_omits_thinking(self):
+        """Haiku doesn't support extended thinking — a Haiku-tagged profile ARN
+        must omit the thinking block entirely (would otherwise 400)."""
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value=_profile_config("Haiku 4.5"),
+        ):
+            kwargs = build_anthropic_kwargs(
+                model=_PROFILE_ARN,
+                messages=[{"role": "user", "content": "hi"}],
+                tools=None,
+                max_tokens=None,
+                reasoning_config={"enabled": True, "effort": "high"},
+            )
+        assert "thinking" not in kwargs
+
+
+# ---------------------------------------------------------------------------
 # Model output limit lookup
 # ---------------------------------------------------------------------------
 

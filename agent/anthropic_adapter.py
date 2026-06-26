@@ -117,6 +117,102 @@ def _is_claude_model(model: str | None) -> bool:
     return "claude" in (model or "").lower()
 
 
+# Substrings that identify a NON-Claude vendor in a configured Bedrock model
+# name. Shared by the routing decision (bedrock_adapter.is_anthropic_bedrock_model)
+# and the capability classifier (_classification_model) so the two never drift
+# out of sync — a profile ARN that one treats as non-Claude the other must too.
+NON_CLAUDE_VENDOR_SUBSTRINGS = (
+    "nova", "llama", "deepseek", "titan", "mistral", "command", "jamba",
+)
+
+
+# Map a configured Bedrock display name ("Opus 4.8") to a canonical Claude
+# slug ("claude-opus-4-8") so the capability classifiers below can recognise
+# the model family. Application inference-profile ARNs are opaque IDs that
+# embed no family/version, so the ARN itself classifies as "not Claude" and
+# wrongly routes to the legacy manual-thinking path. We recover the family
+# from the operator-supplied bedrock.models.<arn>.name label instead.
+def _canonical_claude_slug_from_name(name: str) -> Optional[str]:
+    import re
+
+    n = (name or "").lower()
+    fam_match = re.search(r"opus|sonnet|haiku", n)
+    if fam_match is None:
+        return None
+    family = fam_match.group(0)
+    # Anchor the version to the family token so unrelated digits elsewhere in
+    # the label (dates, "v2", account ids) can't be read as a version.
+    # Tolerate whitespace around the major.minor separator ("4.8", "4 . 8").
+    m = re.search(r"\s*(\d+)\s*[.\-]\s*(\d+)", n[fam_match.end():])
+    if not m:
+        return f"claude-{family}"
+    return f"claude-{family}-{m.group(1)}-{m.group(2)}"
+
+
+def _is_inference_profile_arn(model: str | None) -> bool:
+    return "inference-profile" in (model or "").lower()
+
+
+def _classification_model(model: str | None) -> str:
+    """Return a model string usable by the capability classifiers.
+
+    For opaque Bedrock application-inference-profile ARNs (which embed no
+    model family), resolve the configured ``bedrock.models.<arn>.name`` to a
+    canonical Claude slug. Falls back to the newest Claude contract for an
+    unrecognised profile ARN, since Bedrock application inference profiles are
+    Anthropic-only in practice. All other model strings pass through verbatim,
+    so native Anthropic / regional-profile behaviour is unchanged.
+    """
+    raw = model or ""
+    if _is_claude_model(raw) or not _is_inference_profile_arn(raw):
+        return raw
+    try:
+        from hermes_cli.config import load_config
+
+        models_cfg = (load_config().get("bedrock", {}) or {}).get("models", {}) or {}
+        name = ""
+        for arn, meta in models_cfg.items():
+            if str(arn).strip().lower() == raw.strip().lower():
+                name = str((meta or {}).get("name", "")).strip()
+                break
+        if name:
+            slug = _canonical_claude_slug_from_name(name)
+            if slug:
+                return slug
+            # Name configured but maps to no Claude family. If it names a known
+            # non-Claude vendor, pass the ARN through (it routes to Converse,
+            # which never reaches this thinking path anyway). Otherwise the
+            # name is unrecognised — routing assumes Claude→SDK for it, so we
+            # MUST classify as Claude too or we'd 400 with a legacy thinking
+            # block. Stay consistent with is_anthropic_bedrock_model.
+            if any(v in name.lower() for v in NON_CLAUDE_VENDOR_SUBSTRINGS):
+                return raw
+            logger.warning(
+                "Bedrock profile ARN %s has configured name %r that maps to no "
+                "known Claude family; assuming newest Claude for classification.",
+                raw, name,
+            )
+            return "claude-opus-4-8"
+    except Exception as e:
+        logger.warning(
+            "Bedrock profile ARN %s: config lookup failed (%s); "
+            "assuming newest Claude for capability classification.",
+            raw, e,
+        )
+        return "claude-opus-4-8"
+    # Profile ARN with no config entry at all → assume the newest Claude
+    # (modern adaptive contract). Bedrock application inference profiles are
+    # Anthropic-only in practice, so this is the safe default; log it so a
+    # misconfigured ARN is diagnosable rather than silently assumed.
+    logger.warning(
+        "Bedrock profile ARN %s not found in bedrock.models config; "
+        "assuming newest Claude for capability classification. Add a "
+        "bedrock.models.<arn>.name entry to classify it explicitly.",
+        raw,
+    )
+    return "claude-opus-4-8"
+
+
 _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 
 # ── Max output token limits per Anthropic model ───────────────────────
@@ -2381,12 +2477,18 @@ def build_anthropic_kwargs(
     anthropic_tools = convert_tools_to_anthropic(tools) if tools else []
 
     model = normalize_model_name(model, preserve_dots=preserve_dots)
+    # Classification string for capability checks. For opaque Bedrock
+    # inference-profile ARNs this resolves to a canonical Claude slug; for
+    # every other model it is just ``model``. The real ``model`` (the ARN) is
+    # still sent as the API model field below — only the feature classifiers
+    # use ``clf_model``.
+    clf_model = _classification_model(model)
     # effective_max_tokens = output cap for this call (≠ total context window)
     # Use the resolver helper so non-positive values (negative ints,
     # fractional floats, NaN, non-numeric) fail locally with a clear error
     # rather than 400-ing at the Anthropic API. See openclaw/openclaw#66664.
     effective_max_tokens = _resolve_anthropic_messages_max_tokens(
-        max_tokens, model, context_length=context_length
+        max_tokens, clf_model, context_length=context_length
     )
 
     # Clamp output cap to fit inside the total context window.
@@ -2510,10 +2612,10 @@ def build_anthropic_kwargs(
     # 4.6 behavior and preserving the activity-feed UX during long tool runs.
     _is_kimi_coding = _is_kimi_family_endpoint(base_url, model)
     if reasoning_config and isinstance(reasoning_config, dict) and not _is_kimi_coding:
-        if reasoning_config.get("enabled") is not False and "haiku" not in model.lower():
+        if reasoning_config.get("enabled") is not False and "haiku" not in clf_model.lower():
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
-            if _supports_adaptive_thinking(model):
+            if _supports_adaptive_thinking(clf_model):
                 kwargs["thinking"] = {
                     "type": "adaptive",
                     "display": "summarized",
@@ -2521,7 +2623,7 @@ def build_anthropic_kwargs(
                 adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
                 # Downgrade xhigh→max on models that don't list xhigh as a
                 # supported level (Opus/Sonnet 4.6). Opus 4.7+ keeps xhigh.
-                if adaptive_effort == "xhigh" and not _supports_xhigh_effort(model):
+                if adaptive_effort == "xhigh" and not _supports_xhigh_effort(clf_model):
                     adaptive_effort = "max"
                 kwargs["output_config"] = {
                     "effort": adaptive_effort,
@@ -2537,7 +2639,7 @@ def build_anthropic_kwargs(
     # Callers (auxiliary_client, etc.) may set these for older models;
     # drop them here as a safety net so upstream 4.6 → 4.7 migrations
     # don't require coordinated edits everywhere.
-    if _forbids_sampling_params(model):
+    if _forbids_sampling_params(clf_model):
         for _sampling_key in ("temperature", "top_p", "top_k"):
             kwargs.pop(_sampling_key, None)
 

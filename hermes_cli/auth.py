@@ -6481,6 +6481,7 @@ def _prompt_model_selection(
     confirm_provider: str = "",
     confirm_base_url: str = "",
     confirm_api_key: str = "",
+    model_labels: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
     """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
 
@@ -6489,7 +6490,12 @@ def _prompt_model_selection(
 
     If *unavailable_models* is provided, those models are shown grayed out
     and unselectable, with an upgrade link to *portal_url*.
+
+    If *model_labels* is provided (``{model_id: human_label}``), the label is
+    shown alongside an otherwise-opaque model id (e.g. a Bedrock
+    application-inference-profile ARN whose id carries no model name).
     """
+    _labels = model_labels or {}
     from hermes_cli.models import _format_price_per_mtok
 
     _unavailable = unavailable_models or []
@@ -6551,6 +6557,10 @@ def _prompt_model_selection(
             if has_cache:
                 price_part += f"  {cache:>{cache_col}}"
             base = f"{mid:<{name_col}}{price_part}"
+        elif _labels.get(mid):
+            # Opaque ids (e.g. Bedrock profile ARNs): lead with the human
+            # label and append a short id tail to disambiguate.
+            base = f"{_labels[mid]}  ({mid.rsplit('/', 1)[-1]})"
         else:
             base = mid
         if mid == current_model:

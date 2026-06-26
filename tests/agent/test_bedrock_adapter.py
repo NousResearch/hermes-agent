@@ -326,8 +326,7 @@ class TestConvertMessagesToConverse:
         from agent.bedrock_adapter import convert_messages_to_converse
         messages = [{"role": "user", "content": ""}]
         system, msgs = convert_messages_to_converse(messages)
-        # Empty string should get a space placeholder
-        assert msgs[0]["content"][0]["text"].strip() != "" or msgs[0]["content"][0]["text"] == " "
+        assert msgs[0]["content"][0]["text"].strip()
 
     def test_image_data_url_converted(self):
         from agent.bedrock_adapter import convert_messages_to_converse
@@ -707,6 +706,60 @@ class TestBuildConverseKwargs:
 
 class TestDiscoverBedrockModels:
     """Test Bedrock model discovery with mocked AWS API calls."""
+
+    def test_uses_configured_models_when_discovery_disabled(self):
+        from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
+        reset_discovery_cache()
+
+        configured = [
+            "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/opus",
+            "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/sonnet",
+        ]
+
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "bedrock": {
+                    "discovery": {"enabled": False},
+                    "models": configured,
+                }
+            },
+        ), patch("agent.bedrock_adapter._get_bedrock_control_client") as client:
+            models = discover_bedrock_models("eu-west-1")
+
+        assert [m["id"] for m in models] == configured
+        client.assert_not_called()
+
+    def test_uses_configured_model_labels_when_discovery_disabled(self):
+        from agent.bedrock_adapter import (
+            configured_bedrock_model_labels,
+            discover_bedrock_models,
+            reset_discovery_cache,
+        )
+        reset_discovery_cache()
+
+        opus = "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/opus"
+        sonnet = "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/sonnet"
+        config = {
+            "bedrock": {
+                "discovery": {"enabled": False},
+                "models": {
+                    opus: {"name": "Opus 4.8"},
+                    sonnet: {"name": "Sonnet 4.6"},
+                },
+            }
+        }
+
+        with patch("hermes_cli.config.load_config", return_value=config), patch(
+            "agent.bedrock_adapter._get_bedrock_control_client"
+        ) as client:
+            models = discover_bedrock_models("eu-west-1")
+            labels = configured_bedrock_model_labels()
+
+        assert [m["id"] for m in models] == [opus, sonnet]
+        assert [m["name"] for m in models] == ["Opus 4.8", "Sonnet 4.6"]
+        assert labels == {opus: "Opus 4.8", sonnet: "Sonnet 4.6"}
+        client.assert_not_called()
 
     def test_discovers_foundation_models(self):
         from agent.bedrock_adapter import discover_bedrock_models, reset_discovery_cache
@@ -1304,28 +1357,129 @@ class TestIsAnthropicBedrockModel:
         assert is_anthropic_bedrock_model("eu.anthropic.claude-sonnet-4-6") is True
 
 
-class TestEmptyTextBlockFix:
-    """Test that empty text blocks are replaced with space placeholders."""
+_PROFILE_ARN = (
+    "arn:aws:bedrock:eu-west-1:123456789012:"
+    "application-inference-profile/4jqtkehs0zy3"
+)
 
-    def test_none_content_gets_space(self):
+
+class TestIsAnthropicBedrockModelProfileArns:
+    """Routing for opaque application-inference-profile ARNs, which embed no
+    model family and must be classified via bedrock.models.<arn>.name.
+
+    This is the cost/correctness-critical branch: a wrong answer routes a
+    Claude model to the Converse API (no prompt caching → re-bills the full
+    system prompt every turn) or sends Anthropic-shaped JSON to a non-Claude
+    model.
+    """
+
+    def _with_config(self, name):
+        cfg = (
+            {"bedrock": {"models": {_PROFILE_ARN: {"name": name}}}}
+            if name is not None
+            else {}
+        )
+        return patch("hermes_cli.config.load_config", return_value=cfg)
+
+    def test_claude_named_profile_routes_to_sdk(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        with self._with_config("Opus 4.8"):
+            assert is_anthropic_bedrock_model(_PROFILE_ARN) is True
+
+    def test_nova_named_profile_routes_to_converse(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        with self._with_config("Nova Pro"):
+            assert is_anthropic_bedrock_model(_PROFILE_ARN) is False
+
+    def test_unconfigured_profile_assumes_claude(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        with self._with_config(None):  # empty config — ARN not present
+            assert is_anthropic_bedrock_model(_PROFILE_ARN) is True
+
+    def test_unrecognised_name_assumes_claude(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        with self._with_config("some-internal-label"):
+            assert is_anthropic_bedrock_model(_PROFILE_ARN) is True
+
+    def test_config_load_failure_assumes_claude(self):
+        from agent.bedrock_adapter import is_anthropic_bedrock_model
+        with patch(
+            "hermes_cli.config.load_config", side_effect=RuntimeError("boom")
+        ):
+            assert is_anthropic_bedrock_model(_PROFILE_ARN) is True
+
+
+class TestEmptyTextBlockFix:
+    """Test that Bedrock Converse payloads never contain whitespace-only text."""
+
+    def _assert_no_whitespace_text_blocks(self, value):
+        if isinstance(value, dict):
+            if "text" in value:
+                assert str(value["text"]).strip()
+            for child in value.values():
+                self._assert_no_whitespace_text_blocks(child)
+        elif isinstance(value, list):
+            for child in value:
+                self._assert_no_whitespace_text_blocks(child)
+
+    def test_none_content_gets_non_whitespace_placeholder(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse(None)
-        assert blocks[0]["text"] == " "
+        self._assert_no_whitespace_text_blocks(blocks)
 
-    def test_empty_string_gets_space(self):
+    def test_empty_string_gets_non_whitespace_placeholder(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("")
-        assert blocks[0]["text"] == " "
+        self._assert_no_whitespace_text_blocks(blocks)
 
-    def test_whitespace_only_gets_space(self):
+    def test_whitespace_only_gets_non_whitespace_placeholder(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("   ")
-        assert blocks[0]["text"] == " "
+        self._assert_no_whitespace_text_blocks(blocks)
+
+    def test_content_list_whitespace_parts_get_non_whitespace_placeholder(self):
+        from agent.bedrock_adapter import _convert_content_to_converse
+        blocks = _convert_content_to_converse([
+            "   ",
+            {"type": "text", "text": "\n\t"},
+        ])
+        self._assert_no_whitespace_text_blocks(blocks)
+
+    def test_message_conversion_sanitizes_all_text_blocks(self):
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [
+            {"role": "system", "content": [{"type": "text", "text": "  "}]},
+            {"role": "assistant", "content": ""},
+            {"role": "tool", "tool_call_id": "call_1", "content": "\n"},
+        ]
+        system, msgs = convert_messages_to_converse(messages)
+        self._assert_no_whitespace_text_blocks(system)
+        self._assert_no_whitespace_text_blocks(msgs)
 
     def test_real_text_preserved(self):
         from agent.bedrock_adapter import _convert_content_to_converse
         blocks = _convert_content_to_converse("Hello")
         assert blocks[0]["text"] == "Hello"
+
+    def test_sanitizes_nested_tool_result_content(self):
+        """The recursion exists specifically to reach whitespace text nested
+        inside toolResult.content (Bedrock rejects empty text there too)."""
+        from agent.bedrock_adapter import (
+            _BEDROCK_EMPTY_TEXT_PLACEHOLDER,
+            _sanitize_converse_text_blocks,
+        )
+        payload = [
+            {
+                "role": "user",
+                "content": [
+                    {"toolResult": {"toolUseId": "t1", "content": [{"text": "  "}]}}
+                ],
+            }
+        ]
+        _sanitize_converse_text_blocks(payload)
+        nested = payload[0]["content"][0]["toolResult"]["content"][0]["text"]
+        assert nested == _BEDROCK_EMPTY_TEXT_PLACEHOLDER
+        assert nested.strip()
 
 
 # ---------------------------------------------------------------------------

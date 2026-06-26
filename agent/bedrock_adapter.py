@@ -445,6 +445,14 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
       - ``us.anthropic.claude-*`` (US inference profiles)
       - ``global.anthropic.claude-*`` (global inference profiles)
       - ``eu.anthropic.claude-*`` (EU inference profiles)
+      - ``application-inference-profile`` ARNs whose configured
+        ``bedrock.models.<arn>.name`` resolves to a Claude model
+        (e.g. "Opus 4.8", "Sonnet 4.6", "Haiku 4.5"). Application
+        inference-profile ARNs are opaque IDs that don't embed the
+        provider, so we consult the config mapping to recover it.
+        Falls back to treating any application-inference-profile ARN as
+        Claude, since Bedrock application inference profiles are
+        Anthropic-only in practice.
     """
     model_lower = model_id.lower()
     # Strip regional prefix if present
@@ -452,12 +460,87 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
         if model_lower.startswith(prefix):
             model_lower = model_lower[len(prefix):]
             break
-    return model_lower.startswith("anthropic.claude")
+    if model_lower.startswith("anthropic.claude"):
+        return True
+
+    # Application inference-profile ARNs are opaque (e.g.
+    # ``arn:aws:bedrock:...:application-inference-profile/4jqtkehs0zy3``)
+    # and do NOT embed the provider/model family. Without this branch a
+    # Claude model behind a profile ARN is misrouted to the Converse API
+    # path, silently disabling prompt caching and thinking budgets and
+    # re-billing the full (large) system prompt on every API call.
+    if "application-inference-profile" in model_lower or "inference-profile" in model_lower:
+        try:
+            from hermes_cli.config import load_config
+
+            models_cfg = (load_config().get("bedrock", {}) or {}).get("models", {}) or {}
+            name = ""
+            for arn, meta in models_cfg.items():
+                if str(arn).strip().lower() == model_id.strip().lower():
+                    name = str((meta or {}).get("name", "")).strip().lower()
+                    break
+            if name:
+                # Recognised Claude family names map to the SDK path.
+                if any(fam in name for fam in ("opus", "sonnet", "haiku", "claude")):
+                    return True
+                # A name that clearly names another provider → not Claude.
+                from agent.anthropic_adapter import NON_CLAUDE_VENDOR_SUBSTRINGS
+                if any(other in name for other in NON_CLAUDE_VENDOR_SUBSTRINGS):
+                    return False
+                logger.warning(
+                    "Bedrock profile ARN %s has configured name %r matching no "
+                    "known vendor; assuming Claude (AnthropicBedrock SDK path).",
+                    model_id, name,
+                )
+            else:
+                logger.warning(
+                    "Bedrock profile ARN %s not found in bedrock.models config; "
+                    "assuming Claude (AnthropicBedrock SDK path). Add a "
+                    "bedrock.models.<arn>.name entry to route it explicitly.",
+                    model_id,
+                )
+        except Exception as e:
+            logger.warning(
+                "Bedrock profile ARN %s: config lookup failed (%s); "
+                "assuming Claude (AnthropicBedrock SDK path).",
+                model_id, e,
+            )
+        # Default: Bedrock application inference profiles are Anthropic-only
+        # in practice → route to the AnthropicBedrock SDK path.
+        return True
+
+    return False
 
 
 # ---------------------------------------------------------------------------
 # Message format conversion: OpenAI → Bedrock Converse
 # ---------------------------------------------------------------------------
+
+_BEDROCK_EMPTY_TEXT_PLACEHOLDER = "[empty]"
+
+
+def _non_whitespace_text(value: Any) -> str:
+    """Return Bedrock-safe text for Converse text content blocks."""
+    text = "" if value is None else str(value)
+    return text if text.strip() else _BEDROCK_EMPTY_TEXT_PLACEHOLDER
+
+
+def _sanitize_converse_text_blocks(value: Any) -> Any:
+    """Replace empty/whitespace Converse text fields recursively.
+
+    Bedrock rejects any ``{"text": ""}`` or whitespace-only text field,
+    including nested ``toolResult.content`` entries.
+    """
+    if isinstance(value, dict):
+        if "text" in value:
+            value["text"] = _non_whitespace_text(value.get("text"))
+        for child in value.values():
+            _sanitize_converse_text_blocks(child)
+    elif isinstance(value, list):
+        for child in value:
+            _sanitize_converse_text_blocks(child)
+    return value
+
 
 def convert_tools_to_converse(tools: List[Dict]) -> List[Dict]:
     """Convert OpenAI-format tool definitions to Bedrock Converse ``toolConfig``.
@@ -497,26 +580,26 @@ def _convert_content_to_converse(content) -> List[Dict]:
       - Plain text strings → [{"text": "..."}]
       - Content arrays with text/image_url parts → mixed text/image blocks
 
-    Filters out empty text blocks — Bedrock's Converse API rejects messages
-    where a text content block has an empty ``text`` field (ValidationException:
+    Sanitizes empty text blocks — Bedrock's Converse API rejects messages
+    where a text content block is empty or whitespace-only (ValidationException:
     "text content blocks must be non-empty"). Ref: issue #9486.
     """
     if content is None:
-        return [{"text": " "}]
+        return [{"text": _BEDROCK_EMPTY_TEXT_PLACEHOLDER}]
     if isinstance(content, str):
-        return [{"text": content}] if content.strip() else [{"text": " "}]
+        return [{"text": _non_whitespace_text(content)}]
     if isinstance(content, list):
         blocks = []
         for part in content:
             if isinstance(part, str):
-                blocks.append({"text": part})
+                blocks.append({"text": _non_whitespace_text(part)})
                 continue
             if not isinstance(part, dict):
                 continue
             part_type = part.get("type", "")
             if part_type == "text":
                 text = part.get("text", "")
-                blocks.append({"text": text if text else " "})
+                blocks.append({"text": _non_whitespace_text(text)})
             elif part_type == "image_url":
                 image_url = part.get("image_url", {})
                 url = image_url.get("url", "") if isinstance(image_url, dict) else ""
@@ -538,8 +621,8 @@ def _convert_content_to_converse(content) -> List[Dict]:
                     # Remote URL — Converse doesn't support URLs directly,
                     # include as text reference for the model.
                     blocks.append({"text": f"[Image: {url}]"})
-        return blocks if blocks else [{"text": " "}]
-    return [{"text": str(content)}]
+        return blocks if blocks else [{"text": _BEDROCK_EMPTY_TEXT_PLACEHOLDER}]
+    return [{"text": _non_whitespace_text(content)}]
 
 
 def convert_messages_to_converse(
@@ -587,7 +670,7 @@ def convert_messages_to_converse(
             tool_result_block = {
                 "toolResult": {
                     "toolUseId": tool_call_id,
-                    "content": [{"text": result_content}],
+                    "content": [{"text": _non_whitespace_text(result_content)}],
                 }
             }
             # In Converse, tool results go in a "user" role message
@@ -626,7 +709,7 @@ def convert_messages_to_converse(
                 })
 
             if not content_blocks:
-                content_blocks = [{"text": " "}]
+                content_blocks = [{"text": _BEDROCK_EMPTY_TEXT_PLACEHOLDER}]
 
             # Merge with previous assistant message if needed (strict alternation)
             if converse_msgs and converse_msgs[-1]["role"] == "assistant":
@@ -652,11 +735,14 @@ def convert_messages_to_converse(
 
     # Converse requires the first message to be from the user
     if converse_msgs and converse_msgs[0]["role"] != "user":
-        converse_msgs.insert(0, {"role": "user", "content": [{"text": " "}]})
+        converse_msgs.insert(0, {"role": "user", "content": [{"text": _BEDROCK_EMPTY_TEXT_PLACEHOLDER}]})
 
     # Converse requires the last message to be from the user
     if converse_msgs and converse_msgs[-1]["role"] != "user":
-        converse_msgs.append({"role": "user", "content": [{"text": " "}]})
+        converse_msgs.append({"role": "user", "content": [{"text": _BEDROCK_EMPTY_TEXT_PLACEHOLDER}]})
+
+    _sanitize_converse_text_blocks(system_blocks)
+    _sanitize_converse_text_blocks(converse_msgs)
 
     return (system_blocks if system_blocks else None, converse_msgs)
 
@@ -1092,6 +1178,89 @@ def reset_discovery_cache():
     _discovery_cache.clear()
 
 
+def _configured_bedrock_model_name(model_id: str, metadata: Any = None) -> str:
+    """Return the configured display name for a Bedrock model ID."""
+    if isinstance(metadata, str) and metadata.strip():
+        return metadata.strip()
+    if isinstance(metadata, dict):
+        for key in ("name", "label", "display_name", "display"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return model_id.rsplit("/", 1)[-1]
+
+
+def _configured_bedrock_model_entries() -> Optional[List[Dict[str, Any]]]:
+    """Return explicit Bedrock model entries when live discovery is disabled."""
+    try:
+        from hermes_cli.config import load_config
+
+        bedrock_cfg = load_config().get("bedrock", {})
+    except Exception:
+        return None
+    if not isinstance(bedrock_cfg, dict):
+        return None
+
+    discovery_cfg = bedrock_cfg.get("discovery", {})
+    if not isinstance(discovery_cfg, dict):
+        discovery_cfg = {}
+    if discovery_cfg.get("enabled", True) is not False:
+        return None
+
+    raw_models = bedrock_cfg.get("models") or discovery_cfg.get("models")
+    entries: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _append(model_id: Any, metadata: Any = None) -> None:
+        model_id_str = str(model_id or "").strip()
+        if not model_id_str or model_id_str in seen:
+            return
+        seen.add(model_id_str)
+        entries.append(
+            {
+                "id": model_id_str,
+                "name": _configured_bedrock_model_name(model_id_str, metadata),
+                "provider": "configured",
+                "input_modalities": ["TEXT", "IMAGE"],
+                "output_modalities": ["TEXT"],
+                "streaming": True,
+            }
+        )
+
+    if isinstance(raw_models, dict):
+        for model_id, metadata in raw_models.items():
+            _append(model_id, metadata)
+    elif isinstance(raw_models, list):
+        for item in raw_models:
+            if isinstance(item, str):
+                _append(item)
+            elif isinstance(item, dict):
+                model_id = item.get("id") or item.get("model") or item.get("model_id")
+                _append(model_id, item)
+
+    return entries or None
+
+
+def configured_bedrock_model_labels() -> Dict[str, str]:
+    """Return configured Bedrock model display labels keyed by model ID."""
+    entries = _configured_bedrock_model_entries() or []
+    return {
+        str(entry["id"]): str(entry.get("name") or entry["id"])
+        for entry in entries
+        if entry.get("id")
+    }
+
+
+def _configured_bedrock_models_or_none() -> Optional[List[Dict[str, Any]]]:
+    """Return explicit Bedrock models when live discovery is disabled.
+
+    ``bedrock.discovery.enabled: false`` lets operators keep Hermes' picker
+    aligned with a managed model set such as Claude Code's pinned Bedrock
+    application inference profiles.
+    """
+    return _configured_bedrock_model_entries()
+
+
 def discover_bedrock_models(
     region: str,
     provider_filter: Optional[List[str]] = None,
@@ -1111,6 +1280,10 @@ def discover_bedrock_models(
     Mirrors OpenClaw's ``discoverBedrockModels()`` in
     ``extensions/amazon-bedrock/discovery.ts``.
     """
+    configured = _configured_bedrock_models_or_none()
+    if configured is not None:
+        return configured
+
     import time
 
     cache_key = f"{region}:{','.join(sorted(provider_filter or []))}"

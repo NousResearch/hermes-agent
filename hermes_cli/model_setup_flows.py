@@ -2090,6 +2090,8 @@ def _model_flow_bedrock(config, current_model=""):
     print("    2. Bedrock API Key")
     print("       Enter your Bedrock API Key directly — also supports")
     print("       team scenarios where an admin distributes keys")
+    print("    3. Application inference profiles (enter ARNs manually)")
+    print("       For opaque profile ARNs that don't appear in discovery")
     print()
     try:
         auth_choice = input("  Choice [1]: ").strip()
@@ -2099,6 +2101,10 @@ def _model_flow_bedrock(config, current_model=""):
 
     if auth_choice == "2":
         _model_flow_bedrock_api_key(config, region, current_model)
+        return
+
+    if auth_choice == "3":
+        _model_flow_bedrock_inference_profiles(config, region, current_model)
         return
 
     # 3. Model discovery — try live API first, fall back to static list
@@ -2219,6 +2225,159 @@ def _model_flow_bedrock(config, current_model=""):
         print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
     else:
         print("  No change.")
+
+
+# Known Claude families selectable for an application-inference-profile ARN.
+# The label is stored as ``bedrock.models.<arn>.name`` and resolved back to a
+# canonical model slug by the adapters (is_anthropic_bedrock_model for routing,
+# _classification_model for thinking config). Keep newest-first.
+_BEDROCK_PROFILE_FAMILIES = [
+    "Opus 4.8",
+    "Opus 4.7",
+    "Opus 4.6",
+    "Sonnet 4.6",
+    "Haiku 4.5",
+]
+
+
+def _model_flow_bedrock_inference_profiles(config, region, current_model=""):
+    """Register AWS Bedrock application-inference-profile ARNs manually.
+
+    Application inference profiles are opaque ARNs (e.g.
+    ``arn:aws:bedrock:...:application-inference-profile/abc123``) that don't
+    appear in ``bedrock:ListFoundationModels`` discovery and embed no model
+    family. The user enters each ARN and picks which Claude model it is; the
+    mapping is stored as ``bedrock.models.<arn>.name`` so the adapters can
+    route correctly (AnthropicBedrock SDK vs Converse) and send the right
+    thinking config.
+    """
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import load_config, save_config
+
+    print()
+    print("  Enter one or more application inference profile ARNs.")
+    print("  For each, choose which model the profile points to.")
+    print()
+
+    models: dict[str, dict] = {}
+    while True:
+        try:
+            arn = input("  Inference profile ARN: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            return
+        if not arn:
+            print("  ⚠ Empty ARN — skipping.")
+        else:
+            if "inference-profile" not in arn.lower():
+                print("  ⚠ ARN does not contain 'inference-profile' — continuing anyway.")
+
+            print()
+            for idx, fam in enumerate(_BEDROCK_PROFILE_FAMILIES, start=1):
+                print(f"    {idx}. {fam}")
+            print(f"    {len(_BEDROCK_PROFILE_FAMILIES) + 1}. Other / type a name")
+            try:
+                fam_choice = input(f"  Model [{_BEDROCK_PROFILE_FAMILIES[0]}]: ").strip()
+            except (KeyboardInterrupt, EOFError):
+                print()
+                return
+
+            family = _BEDROCK_PROFILE_FAMILIES[0]
+            if not fam_choice:
+                pass  # blank → accept the default (shown in the prompt)
+            elif fam_choice.isdigit():
+                pick = int(fam_choice)
+                if 1 <= pick <= len(_BEDROCK_PROFILE_FAMILIES):
+                    family = _BEDROCK_PROFILE_FAMILIES[pick - 1]
+                elif pick == len(_BEDROCK_PROFILE_FAMILIES) + 1:
+                    try:
+                        typed = input("  Model name: ").strip()
+                    except (KeyboardInterrupt, EOFError):
+                        print()
+                        return
+                    if typed:
+                        family = typed
+                    else:
+                        print(f"  ⚠ Empty name — defaulting to {family}.")
+                else:
+                    print(f"  ⚠ '{fam_choice}' out of range — defaulting to {family}.")
+            else:
+                print(f"  ⚠ '{fam_choice}' is not a valid choice — defaulting to {family}.")
+
+            if arn in models:
+                print(
+                    f"  ⚠ Replacing previous mapping for this ARN "
+                    f"({models[arn]['name']} → {family})."
+                )
+            models[arn] = {"name": family}
+            print(f"  ✓ {arn.rsplit('/', 1)[-1]} → {family}")
+            print()
+
+        try:
+            again = input("  Add another ARN? (y/n) [n]: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            again = "n"
+        if again not in ("y", "yes"):
+            break
+
+    if not models:
+        print("  No change.")
+        return
+
+    # Choose which ARN is the default model.
+    arn_list = list(models)
+    if len(arn_list) == 1:
+        selected = arn_list[0]
+    else:
+        selected = _prompt_model_selection(
+            arn_list,
+            current_model=current_model,
+            model_labels={a: models[a]["name"] for a in arn_list},
+            confirm_provider="bedrock",
+            confirm_base_url=f"https://bedrock-runtime.{region}.amazonaws.com",
+        )
+        if not selected:
+            selected = arn_list[0]
+
+    _save_model_choice(selected)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+    model["provider"] = "bedrock"
+    model["default"] = selected
+    model["base_url"] = f"https://bedrock-runtime.{region}.amazonaws.com"
+    model.pop("api_mode", None)  # bedrock_converse is auto-detected
+    clear_model_endpoint_credentials(model, clear_api_mode=False)
+
+    bedrock_cfg = cfg.get("bedrock", {})
+    if not isinstance(bedrock_cfg, dict):
+        bedrock_cfg = {}
+    bedrock_cfg["region"] = region
+    bedrock_cfg["models"] = models
+    # Manual ARN list is authoritative — don't let live discovery overwrite it.
+    discovery_cfg = bedrock_cfg.get("discovery")
+    if not isinstance(discovery_cfg, dict):
+        discovery_cfg = {}
+    discovery_cfg["enabled"] = False
+    bedrock_cfg["discovery"] = discovery_cfg
+    cfg["bedrock"] = bedrock_cfg
+
+    save_config(cfg)
+    deactivate_provider()
+
+    print(
+        f"  Default model set to: {models[selected]['name']} "
+        f"(via AWS Bedrock, {region})"
+    )
+
 
 def _select_zai_endpoint(current_base: str) -> str:
     """Present a picker for Z.AI endpoint selection during setup.

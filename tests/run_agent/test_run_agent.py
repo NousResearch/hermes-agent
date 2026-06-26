@@ -4125,6 +4125,54 @@ class TestRunConversation:
         assert result["final_response"] == "Fresh partial content from this turn"
         assert result["api_calls"] == 1
 
+    def test_interrupt_during_stream_preserves_partial_assistant_text(self, agent):
+        """Stopping mid-response keeps the streamed reply in history (not 'forgotten')."""
+        self._setup_agent(agent)
+
+        def _fake_api_call(api_kwargs):
+            # Model streamed some visible text, then the user hit stop.
+            agent._current_streamed_assistant_text = "Sure, here's how to do it: first"
+            raise InterruptedError("Agent interrupted during streaming API call")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("how do I do X")
+
+        assert result["interrupted"] is True
+        # Partial reply is surfaced and persisted as an assistant turn so the
+        # next turn remembers what the model said.
+        assert result["final_response"] == "Sure, here's how to do it: first"
+        assert result["messages"][-1] == {
+            "role": "assistant",
+            "content": "Sure, here's how to do it: first",
+        }
+
+    def test_interrupt_before_any_stream_keeps_sentinel(self, agent):
+        """An interrupt with no streamed text falls back to the metadata sentinel."""
+        from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
+
+        self._setup_agent(agent)
+
+        def _fake_api_call(api_kwargs):
+            agent._current_streamed_assistant_text = ""
+            raise InterruptedError("Agent interrupted during streaming API call")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hi")
+
+        assert result["interrupted"] is True
+        assert result["final_response"].startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+        assert result["messages"][-1]["role"] == "user"
+
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
         agent.provider = "nous"

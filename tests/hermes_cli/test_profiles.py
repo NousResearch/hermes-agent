@@ -906,6 +906,35 @@ class TestFindAliasForProfile:
         assert info.alias_path is not None
         assert info.alias_path.name == "qiaobusi"
 
+    def test_overlapping_prefix_does_not_cross_match_posix(self, profile_env, monkeypatch):
+        # erp-dev is a prefix of erp-devops; a substring search for
+        # "hermes -p erp-dev" wrongly matches the erp-devops wrapper body
+        # (exec hermes -p erp-devops "$@"). Each profile must resolve to its
+        # own wrapper. See https://github.com/NousResearch/hermes-agent/issues/52838
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
+        create_wrapper_script("erp-dev")
+        create_wrapper_script("erp-devops")
+        assert find_alias_for_profile("erp-dev") == "erp-dev"
+        assert find_alias_for_profile("erp-devops") == "erp-devops"
+
+    def test_overlapping_prefix_does_not_cross_match_windows(self, profile_env, monkeypatch):
+        monkeypatch.setattr("sys.platform", "win32")
+        from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
+        create_wrapper_script("erp-dev")
+        create_wrapper_script("erp-devops")
+        assert find_alias_for_profile("erp-dev") == "erp-dev"
+        assert find_alias_for_profile("erp-devops") == "erp-devops"
+
+    def test_overlapping_prefix_custom_alias_only_for_longer(self, profile_env, monkeypatch):
+        # A custom alias on erp-devops must not be reported as erp-dev's alias.
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile
+        create_wrapper_script("erp-dev")
+        create_wrapper_script("ops", target="erp-devops")
+        assert find_alias_for_profile("erp-dev") == "erp-dev"
+        assert find_alias_for_profile("erp-devops") == "ops"
+
 
 # ===================================================================
 # TestRenameProfile

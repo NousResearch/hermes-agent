@@ -504,7 +504,16 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
         return None
     canon = normalize_profile_name(profile_name)
     is_windows = sys.platform == "win32"
-    needle = f"hermes -p {canon}"
+    # Match the profile token exactly, not as a substring: a bare
+    # ``f"hermes -p {canon}" in content`` check lets ``erp-dev`` match the
+    # ``erp-devops`` wrapper (whose body is ``hermes -p erp-devops "$@"``),
+    # because one profile name is a prefix of the other. Require a whitespace
+    # (or end-of-string) boundary after the name so only the exact argv token
+    # matches. Both wrapper forms always follow the profile with a space:
+    # ``-p <profile> "$@"`` (POSIX) and ``-p <profile> %*`` (Windows). The
+    # ``hermes`` executable may be an absolute path (``/usr/bin/hermes``), so
+    # we don't anchor before ``hermes``.
+    needle = re.compile(rf"hermes -p {re.escape(canon)}(?=\s|$)")
 
     custom: Optional[str] = None
     profile_named: Optional[str] = None
@@ -520,7 +529,7 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
             content = entry.read_text()
         except (OSError, UnicodeDecodeError):
             continue
-        if needle not in content:
+        if not needle.search(content):
             continue
         alias = entry.stem if is_windows else entry.name
         if alias == canon:

@@ -102,6 +102,14 @@ class TestIsTimeoutError:
     def test_write_timeout(self):
         assert _StubAdapter._is_timeout_error("WriteTimeout: send stalled")
 
+    def test_timeout_prefix_is_flagged(self):
+        """Some adapters (e.g. WeCom) surface "Timeout sending message ..."
+        which contains neither "timed out" nor a "*timeout" substring matched
+        by the read/write checks. It must still be treated as a delivery-
+        ambiguous timeout so plain-text fallback (possible double-send) is
+        skipped. (#14071)"""
+        assert _StubAdapter._is_timeout_error("Timeout sending message to WeCom")
+
     def test_connect_timeout_not_flagged(self):
         """ConnectTimeout is a connection error, not a delivery-ambiguous timeout."""
         assert not _StubAdapter._is_timeout_error("ConnectTimeout: host unreachable")

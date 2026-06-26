@@ -3745,7 +3745,15 @@ class BasePlatformAdapter(ABC):
         if not error:
             return False
         lowered = error.lower()
-        return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
+        return (
+            "timed out" in lowered
+            or "readtimeout" in lowered
+            or "writetimeout" in lowered
+            # Some adapters (e.g. WeCom) surface "Timeout sending message ..."
+            # which contains neither "timed out" nor "*timeout" as a substring
+            # match above — catch the leading-"timeout" phrasing too.
+            or lowered.startswith("timeout")
+        )
 
     def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
         """Unwrap a handler response into (text, ttl_seconds).

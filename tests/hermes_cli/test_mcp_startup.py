@@ -81,11 +81,58 @@ def test_prepare_agent_startup_backgrounds_blocking_mcp_for_chat(monkeypatch):
         main_mod._prepare_agent_startup(_agent_args())
         elapsed = time.monotonic() - start
         assert elapsed < 0.2
+        deadline = time.monotonic() + 1.0
+        while calls["mcp"] == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
         assert calls["mcp"] == 1
         assert mcp_startup._mcp_discovery_thread is not None
         assert mcp_startup._mcp_discovery_thread.is_alive()
     finally:
         stop.set()
+
+
+def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
+    state = {"active": False, "during_discover": None}
+
+    class SuppressInteractiveOAuth:
+        def __enter__(self):
+            state["active"] = True
+
+        def __exit__(self, *_exc):
+            state["active"] = False
+
+    def _discover():
+        state["during_discover"] = state["active"]
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"url": "https://mcp.example.test/mcp"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(
+            suppress_interactive_oauth=lambda: SuppressInteractiveOAuth(),
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_tool",
+        types.SimpleNamespace(discover_mcp_tools=_discover),
+    )
+
+    mcp_startup.start_background_mcp_discovery(
+        logger=types.SimpleNamespace(debug=lambda *_a, **_k: None),
+        thread_name="test-mcp-discovery",
+    )
+    assert mcp_startup._mcp_discovery_thread is not None
+    mcp_startup._mcp_discovery_thread.join(timeout=1.0)
+
+    assert state["during_discover"] is True
+    assert state["active"] is False
 
 
 def test_prepare_agent_startup_skips_mcp_bootstrap_for_tui_chat(monkeypatch):

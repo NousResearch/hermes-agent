@@ -22,7 +22,7 @@ Cron jobs can:
 All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
 :::tip
-Cron jobs use whatever provider `hermes model` selected. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
+At creation, an unpinned job (one you don't give an explicit `provider`/`model`) follows the global default selected by `hermes model` — and Hermes **snapshots** that provider and model on the job. If the global default later changes, the job **fails closed**: it skips the run, makes no inference call, and sends an alert telling you to pin the provider/model explicitly (`cronjob action=update job_id=… provider=… model=…`) to proceed. This prevents an unattended job from silently inheriting a switch to a paid provider/model and spending money you didn't intend (#44585). To make a job deliberately track your global default, pin it to the new values after changing them. `hermes setup --portal` is the lowest-friction option for unattended runs since OAuth refresh is automatic. See [Nous Portal](/integrations/nous-portal).
 :::
 
 :::warning
@@ -298,6 +298,39 @@ cron:
   wrap_response: false
 ```
 
+### Continuable jobs (reply to a cron delivery)
+
+By default a cron delivery is fire-and-forget: the message is sent, but it does
+not live in the chat's conversation history, so if you reply to it the agent
+has no record of what it said. Set a job **continuable** and the delivered brief
+becomes a conversation you can reply into — the agent has the brief in context
+instead of asking "what is Task #2?".
+
+Opt-in, **default off**. Enable globally in config, or per-job via the `cronjob`
+tool's `attach_to_session` (which overrides the global setting for that one job):
+
+```yaml
+# ~/.hermes/config.yaml
+cron:
+  mirror_delivery: false   # set true to make cron deliveries continuable
+```
+
+Behaviour is **thread-preferred**, scoped to the job's origin chat:
+
+- **Thread-capable platforms** (Telegram topics, Discord/Slack threads): each
+  delivery opens its own dedicated thread and the brief is seeded into that
+  thread's session, so a reply in-thread continues with full context. A
+  recurring job (e.g. a daily brief) opens a fresh thread per run, keeping each
+  delivery's follow-up discussion isolated.
+- **DM-only platforms** (WhatsApp, Signal, SMS): no threads exist, so the brief
+  is mirrored into the origin DM session instead — the DM itself is the
+  continuation surface.
+
+Only the origin chat is ever touched: fan-out / broadcast targets (`all`,
+explicit other-chat deliveries) are never made continuable. The mirror is
+written as a labelled user turn (`[Cron delivery: <task name>]`), which keeps
+the conversation history alternation-safe across all model providers.
+
 ### Silent suppression
 
 If the agent's final response contains `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.
@@ -519,7 +552,7 @@ cronjob(action="create", name="weekly-news-summary",
         prompt="Summarize this week's AI news: ...")
 ```
 
-When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. This matters for cost control: carrying `moa`, `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
+When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. This matters for cost control: carrying `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
 
 ### Skipping the agent entirely: `wakeAgent`
 

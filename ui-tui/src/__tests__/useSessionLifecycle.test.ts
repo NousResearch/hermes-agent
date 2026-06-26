@@ -34,7 +34,6 @@ describe('writeActiveSessionFile', () => {
   })
 })
 
-
 describe('live session activation in-flight state', () => {
   beforeEach(() => {
     resetUiState()

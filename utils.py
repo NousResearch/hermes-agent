@@ -177,6 +177,22 @@ def atomic_json_write(
         raise
 
 
+class IndentDumper(yaml.SafeDumper):
+    """PyYAML dumper that indents list items under mapping keys (2-space).
+
+    Default PyYAML emits "indentless" sequences — list items start at the
+    same column as their parent mapping key.  ``ruamel.yaml`` (used by
+    :func:`atomic_roundtrip_yaml_update`) emits 2-space-indented sequences.
+    Mixing both styles in the same ``config.yaml`` produces a file that
+    stricter parsers like ``js-yaml`` reject with ``bad indentation of a
+    mapping entry``.  Forcing ``indentless=False`` aligns the two
+    serializers so all write paths emit byte-identical layouts (#31999).
+    """
+
+    def increase_indent(self, flow=False, indentless=False):  # noqa: ARG002
+        return super().increase_indent(flow, False)
+
+
 def atomic_yaml_write(
     path: Union[str, Path],
     data: Any,
@@ -211,7 +227,21 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
+            # allow_unicode=True writes emoji/kaomoji (e.g. personalities, skin
+            # cursors) as real UTF-8 instead of fragile escape sequences. Without
+            # it, PyYAML emits astral-plane chars as `\UXXXXXXXX` (8-digit) escapes
+            # inside multi-line double-quoted strings wrapped with `\`
+            # continuations — a structure that stricter/non-PyYAML parsers and
+            # hand-edits routinely break into unclosed quotes, corrupting the whole
+            # config (GitHub #51356).
+            yaml.dump(
+                data,
+                f,
+                Dumper=IndentDumper,
+                default_flow_style=default_flow_style,
+                sort_keys=sort_keys,
+                allow_unicode=True,
+            )
             if extra_content:
                 f.write(extra_content)
             f.flush()

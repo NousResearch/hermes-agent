@@ -768,9 +768,14 @@ def _map_normalized_positions(original: str, normalized: str,
         else:
             orig_end = orig_start + (norm_end - norm_start)
         
-        # Expand to include trailing whitespace that was normalized
-        while orig_end < len(original) and original[orig_end] in ' \t':
-            orig_end += 1
+        # Expand to include trailing whitespace that was normalized,
+        # but only when the normalized match itself ended with whitespace.
+        # When the match ends with a non-space character, the first
+        # whitespace in the original is a word boundary and must not be
+        # consumed.  See https://github.com/NousResearch/hermes-agent/issues/52491
+        if norm_end < len(normalized) and normalized[norm_end - 1] == ' ':
+            while orig_end < len(original) and original[orig_end] in ' \t':
+                orig_end += 1
         
         original_matches.append((orig_start, min(orig_end, len(original))))
     

@@ -263,6 +263,29 @@ class TestWebServerEndpoints:
         import hermes_cli.web_server as web_server
 
         monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+        # A docker install inside a container should be managed externally.
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
+
+        assert web_server._dashboard_local_update_managed_externally() is True
+
+    def test_dashboard_update_capability_allows_git_in_container(self, monkeypatch):
+        """A git checkout inside a container (e.g. bind-mounted in hermes-webui)
+        should still offer dashboard updates — the checkout is self-managed."""
+        import hermes_constants
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "git")
+
+        assert web_server._dashboard_local_update_managed_externally() is False
+
+    def test_dashboard_update_capability_blocks_pip_in_container(self, monkeypatch):
+        """A pip install inside a container is still managed externally."""
+        import hermes_constants
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "pip")
 
         assert web_server._dashboard_local_update_managed_externally() is True
 
@@ -369,6 +392,36 @@ class TestWebServerEndpoints:
         assert fields["api_key"]["is_set"] is True
         assert fields["api_key"]["value"] == ""
         assert "secret-value" not in json.dumps(data)
+
+    def test_get_moa_models_returns_provider_model_slots(self):
+        resp = self.client.get("/api/model/moa")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["reference_models"]
+        assert all(set(slot) == {"provider", "model"} for slot in data["reference_models"])
+        assert set(data["aggregator"]) == {"provider", "model"}
+
+    def test_put_moa_models_persists_provider_model_slots(self):
+        from hermes_cli.config import load_config
+
+        payload = {
+            "reference_models": [
+                {"provider": "openai-codex", "model": "gpt-5.5"},
+                {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+            ],
+            "aggregator": {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+            "reference_temperature": 0.6,
+            "aggregator_temperature": 0.4,
+            "max_tokens": 4096,
+            "enabled": True,
+        }
+
+        resp = self.client.put("/api/model/moa", json=payload)
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        cfg = load_config()
+        assert cfg["moa"]["reference_models"] == payload["reference_models"]
+        assert cfg["moa"]["aggregator"] == payload["aggregator"]
 
     # ── GET /api/media (remote image display) ───────────────────────────
 
@@ -1011,6 +1064,8 @@ class TestWebServerEndpoints:
             spawned = True
             raise AssertionError("docker update guard should not spawn hermes update")
 
+        # Bypass the managed-externally gate so we reach the docker install check.
+        monkeypatch.setattr(web_server, "_dashboard_local_update_managed_externally", lambda: False)
         monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
         monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
         web_server._ACTION_PROCS.pop("hermes-update", None)

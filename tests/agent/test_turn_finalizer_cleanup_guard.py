@@ -100,7 +100,13 @@ class _StubAgent:
         pass
 
 
-def _run(agent):
+def _run(
+    agent,
+    *,
+    final_response=None,
+    api_call_count=3,
+    turn_exit_reason="unknown",
+):
     messages = [
         {"role": "user", "content": "do a thing"},
         {
@@ -114,8 +120,8 @@ def _run(agent):
     ]
     return finalize_turn(
         agent,
-        final_response=None,  # forces the max-iterations summary path
-        api_call_count=3,
+        final_response=final_response,
+        api_call_count=api_call_count,
         interrupted=False,
         failed=False,
         messages=messages,
@@ -125,7 +131,7 @@ def _run(agent):
         user_message="do a thing",
         original_user_message="do a thing",
         _should_review_memory=False,
-        _turn_exit_reason="unknown",
+        _turn_exit_reason=turn_exit_reason,
     )
 
 
@@ -162,4 +168,17 @@ def test_clean_turn_has_no_cleanup_errors_key():
     agent = _StubAgent(raise_in=())
     result = _run(agent)
     assert result["final_response"] == "PARTIAL SUMMARY FROM MODEL"
+    assert result["completed"] is False
     assert "cleanup_errors" not in result
+
+
+def test_text_response_on_last_allowed_call_is_completed():
+    agent = _StubAgent(raise_in=())
+    result = _run(
+        agent,
+        final_response="final report",
+        api_call_count=agent.max_iterations,
+        turn_exit_reason="text_response(finish_reason=stop)",
+    )
+    assert result["final_response"] == "final report"
+    assert result["completed"] is True

@@ -16,7 +16,6 @@ on:
   # reports a status (path-gated workflows leave checks "pending" forever
   # when no matching files change, which blocks merge).
   pull_request:
-    branches: [main]
 
   release:
     types: [published]
@@ -56,13 +55,21 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
+      # The image build + smoke test + integration tests run ONLY on
+      # push-to-main and release — never on PRs. They are the heaviest jobs
+      # in CI (~15-45 min) and a broken build surfaces on the main push (and
+      # is gated pre-merge by docker-lint + uv-lockfile-check). Every step
+      # below is skipped on PRs, so the job still reports green and the
+      # required check never hangs.
       - name: Set up Docker Buildx
+        if: github.event_name != 'pull_request'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
       # Build once, load into the local daemon for smoke testing.  Cached
       # to gha with a per-arch scope; the push step below reuses every
       # layer from this build.
       - name: Build image (amd64, smoke test)
+        if: github.event_name != 'pull_request'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
           context: .
@@ -76,6 +83,7 @@ jobs:
           cache-to: type=gha,mode=max,scope=docker-amd64
 
       - name: Smoke test image
+        if: github.event_name != 'pull_request'
         uses: ./.github/actions/hermes-smoke-test
         with:
           image: ${{ env.IMAGE_NAME }}:test
@@ -102,12 +110,15 @@ jobs:
       # cheapest path to coverage on every PR that touches docker code.
       # ---------------------------------------------------------------------
       - name: Install uv (for docker tests)
+        if: github.event_name != 'pull_request'
         uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
 
       - name: Set up Python 3.11 (for docker tests)
+        if: github.event_name != 'pull_request'
         run: uv python install 3.11
 
       - name: Install Python dependencies (for docker tests)
+        if: github.event_name != 'pull_request'
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
@@ -118,6 +129,7 @@ jobs:
           uv pip install -e ".[dev]"
 
       - name: Run docker integration tests
+        if: github.event_name != 'pull_request'
         env:
           # Skip rebuild; use the image already loaded by the build step.
           HERMES_TEST_IMAGE: ${{ env.IMAGE_NAME }}:test
@@ -190,7 +202,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
 
+      # arm64 build runs only on push-to-main and release (see build-amd64).
       - name: Set up Docker Buildx
+        if: github.event_name != 'pull_request'
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
       # Log in to ghcr.io so the registry-backed build cache below can be
@@ -201,41 +215,21 @@ jobs:
       # crashed the build before the smoke test (the reason the gha cache
       # was removed from arm64 PRs in the first place).
       - name: Log in to ghcr.io (build cache)
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build once, load into the local daemon for smoke testing.
-      #
-      # PR builds use the registry-backed cache READ-ONLY (cache-from only):
-      # they pull warm layers pushed by the most recent main build but never
-      # write, so rapid PR pushes don't race on cache writes or pollute the
-      # cache ref.  This restores warm-cache speed to arm64 PR builds (which
-      # were running fully uncached and were ~45% slower than amd64, making
-      # them the job most often cancelled on supersede).
+      # Build once, load into the local daemon for smoke testing, then push
+      # by digest below. Reads AND writes the registry-backed cache so the
+      # push reuses layers from this build and the next build starts warm.
       #
       # Registry cache (type=registry on ghcr.io) is used instead of the gha
       # cache that previously broke here: its credential is the job-lifetime
       # GITHUB_TOKEN, not a short-lived SAS token, so the cold-build-outlives-
       # token failure mode cannot recur.
-      - name: Build image (arm64, smoke test, cache read-only PR)
-        if: github.event_name == 'pull_request'
-        uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
-        with:
-          context: .
-          file: Dockerfile
-          load: true
-          platforms: linux/arm64
-          tags: ${{ env.IMAGE_NAME }}:test
-          build-args: |
-            HERMES_GIT_SHA=${{ github.sha }}
-          cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
-
-      # Main/release builds read AND write the registry cache so the digest
-      # push below reuses layers from this smoke-test build, and so the next
-      # PR/main build starts warm.
       - name: Build image (arm64, smoke test, cached publish)
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
@@ -251,6 +245,7 @@ jobs:
           cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
 
       - name: Smoke test image
+        if: github.event_name != 'pull_request'
         uses: ./.github/actions/hermes-smoke-test
         with:
           image: ${{ env.IMAGE_NAME }}:test

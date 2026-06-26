@@ -2795,13 +2795,20 @@ def run_setup_wizard(args):
         print_info(f"Available sections: {', '.join(k for k, _, _ in SETUP_SECTIONS)}")
         return
 
-    # Check if this is an existing installation with a provider configured
-    from hermes_cli.auth import get_active_provider
+    # Check if this is an existing installation with a provider configured.
+    # Walk PROVIDER_REGISTRY so every API-key provider (Anthropic, Z.AI,
+    # MiniMax, Kimi, Copilot, …) is recognised — previously only
+    # OPENROUTER_API_KEY / OPENAI_BASE_URL / OAuth were checked, which
+    # misclassified many perfectly-configured installs as first-time.
+    from hermes_cli.auth import get_active_provider, PROVIDER_REGISTRY
 
     active_provider = get_active_provider()
+    provider_env_vars: set[str] = {"OPENROUTER_API_KEY", "OPENAI_API_KEY", "OPENAI_BASE_URL"}
+    for pconfig in PROVIDER_REGISTRY.values():
+        if pconfig.auth_type == "api_key":
+            provider_env_vars.update(pconfig.api_key_env_vars)
     is_existing = (
-        bool(get_env_value("OPENROUTER_API_KEY"))
-        or bool(get_env_value("OPENAI_BASE_URL"))
+        any(get_env_value(v) for v in provider_env_vars)
         or active_provider is not None
     )
 

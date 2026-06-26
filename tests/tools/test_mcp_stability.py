@@ -3,7 +3,7 @@
 import asyncio
 import os
 import signal
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
@@ -574,7 +574,15 @@ class TestMCPInitialConnectionRetry:
                 call_count += 1
                 raise ConnectionError("DNS resolution failed")
 
-            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio):
+            # Skip the real exponential backoff sleeps. With 6 retries the
+            # cumulative wait is 1+2+4+8+16+32 = 63s, which exceeds the
+            # conftest 30s per-test timeout; the delays add nothing to what
+            # this test asserts (total attempt count).
+            async def _fast_sleep(_seconds, *args, **kwargs):
+                return
+
+            with patch.object(MCPServerTask, '_run_stdio', fake_run_stdio), \
+                 patch("tools.mcp_tool.asyncio.sleep", _fast_sleep):
                 task = asyncio.ensure_future(server.run({"command": "fake"}))
                 await server._ready.wait()
 
@@ -587,6 +595,33 @@ class TestMCPInitialConnectionRetry:
                 await task
 
         asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_initial_retry_window_covers_vm_warmup(self):
+        """Regression for #11646: the initial-connect retry budget must cover a
+        realistic reverse-proxy / DNS warmup window (~30s) on a freshly-booted
+        VM, not just the old 7s window.
+
+        The cumulative backoff before giving up is the sum of the per-attempt
+        sleeps: 1+2+4+...+2**(N-1) == 2**N - 1 seconds (capped by
+        _MAX_BACKOFF_SECONDS, which is 60 and not hit below N=6). With the old
+        value 3 this is only 7s (fails); with 6 it is 63s (passes).
+        """
+        from tools.mcp_tool import (
+            _MAX_INITIAL_CONNECT_RETRIES,
+            _MAX_BACKOFF_SECONDS,
+        )
+
+        backoff = 1
+        cumulative = 0
+        for _ in range(_MAX_INITIAL_CONNECT_RETRIES):
+            cumulative += backoff
+            backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
+
+        assert cumulative >= 30, (
+            f"initial-connect retry budget is only {cumulative}s "
+            f"(_MAX_INITIAL_CONNECT_RETRIES={_MAX_INITIAL_CONNECT_RETRIES}); "
+            "too short to cover a ~30s VM warmup window"
+        )
 
     def test_initial_connect_retry_respects_shutdown(self):
         """Shutdown during initial retry backoff aborts cleanly."""

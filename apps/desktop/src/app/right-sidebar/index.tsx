@@ -31,7 +31,9 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   const r = t.rightSidebar
   const panesFlipped = useStore($panesFlipped)
   const currentCwd = useStore($currentCwd).trim()
-  const hasCwd = currentCwd.length > 0
+  // The file tree is simply "browse the session's working directory". If the
+  // session has a cwd — a repo, a sibling worktree, or any folder — show it.
+  const hasCwd = Boolean(currentCwd)
 
   const {
     collapseAll,

@@ -4386,6 +4386,41 @@ class FeishuAdapter(BasePlatformAdapter):
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 
+    @staticmethod
+    def _get_audio_duration_ms(file_path: str) -> int:
+        """Extract OGG/Opus audio duration in milliseconds (pure Python, no deps).
+
+        Parses the OGG container to find the last granule position and divides
+        by the Opus sample rate (48000 Hz). Returns 0 for non-OGG files or on error.
+        """
+        import struct
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+            pos = 0
+            last_granule = 0
+            while pos < len(data) - 27:
+                idx = data.find(b"OggS", pos)
+                if idx == -1:
+                    break
+                pos = idx
+                if pos + 27 > len(data):
+                    break
+                granule = struct.unpack_from("<q", data, pos + 6)[0]
+                num_segments = data[pos + 26]
+                if granule > 0:
+                    last_granule = granule
+                segment_end = pos + 27 + num_segments
+                if segment_end > len(data):
+                    break
+                page_size = num_segments
+                for i in range(num_segments):
+                    page_size += data[pos + 27 + i]
+                pos += page_size
+            return int(last_granule / 48000 * 1000) if last_granule > 0 else 0
+        except Exception:
+            return 0
+
     async def _send_uploaded_file_message(
         self,
         *,
@@ -4408,11 +4443,15 @@ class FeishuAdapter(BasePlatformAdapter):
             requested_message_type=outbound_message_type,
         )
         try:
+            duration_ms = 0
+            if upload_file_type == "opus":
+                duration_ms = self._get_audio_duration_ms(file_path)
             with open(file_path, "rb") as file_obj:
                 body = self._build_file_upload_body(
                     file_type=upload_file_type,
                     file_name=display_name,
                     file=file_obj,
+                    duration=duration_ms,
                 )
                 request = self._build_file_upload_request(body)
                 upload_response = await asyncio.to_thread(self._client.im.v1.file.create, request)
@@ -4445,10 +4484,62 @@ class FeishuAdapter(BasePlatformAdapter):
                     reply_to=reply_to,
                     metadata=metadata,
                 )
+                # Audio messages may fail with 99992402 when using thread_id routing.
+                # Try replying to the last message in the thread, then fall back to chat_id.
+                if (not self._response_succeeded(message_response)
+                        and getattr(message_response, "code", None) == 99992402
+                        and resolved_message_type == "audio"
+                        and (metadata or {}).get("thread_id")):
+                    # Try reply API with thread_id as reply anchor
+                    thread_msg_id = (metadata or {}).get("reply_to_message_id")
+                    if not thread_msg_id:
+                        thread_msg_id = await self._fetch_last_message_in_thread(
+                            (metadata or {}).get("thread_id")
+                        )
+                    if thread_msg_id:
+                        logger.info("[Feishu] Audio: retrying via reply API in thread")
+                        message_response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=resolved_message_type,
+                            payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
+                            reply_to=thread_msg_id,
+                            metadata=metadata,
+                        )
+                    if not self._response_succeeded(message_response):
+                        logger.warning("[Feishu] Audio send failed in thread, retrying with chat_id")
+                        message_response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=resolved_message_type,
+                            payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
+                            reply_to=None,
+                            metadata=None,
+                        )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _fetch_last_message_in_thread(self, thread_id: str) -> Optional[str]:
+        """Fetch the last message_id in a thread for reply-based routing."""
+        if not self._client or not thread_id:
+            return None
+        try:
+            from lark_oapi.api.im.v1 import ListMessageRequest
+            request = (
+                ListMessageRequest.builder()
+                .container_id_type("thread")
+                .container_id(thread_id)
+                .page_size(1)
+                .build()
+            )
+            response = await asyncio.to_thread(self._client.im.v1.message.list, request)
+            if response and getattr(response, "success", lambda: False)():
+                items = getattr(getattr(response, "data", None), "items", None)
+                if items and len(items) > 0:
+                    return getattr(items[0], "message_id", None)
+        except Exception as exc:
+            logger.debug("[Feishu] Failed to fetch last message in thread %s: %s", thread_id, exc)
+        return None
 
     async def _send_raw_message(
         self,
@@ -4832,16 +4923,18 @@ class FeishuAdapter(BasePlatformAdapter):
         return SimpleNamespace(request_body=request_body)
 
     @staticmethod
-    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any) -> Any:
+    def _build_file_upload_body(*, file_type: str, file_name: str, file: Any, duration: int = 0) -> Any:
         if "CreateFileRequestBody" in globals():
-            return (
+            builder = (
                 CreateFileRequestBody.builder()
                 .file_type(file_type)
                 .file_name(file_name)
                 .file(file)
-                .build()
             )
-        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file)
+            if duration > 0:
+                builder = builder.duration(duration)
+            return builder.build()
+        return SimpleNamespace(file_type=file_type, file_name=file_name, file=file, duration=duration)
 
     @staticmethod
     def _build_file_upload_request(request_body: Any) -> Any:

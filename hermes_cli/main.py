@@ -14328,7 +14328,8 @@ def cmd_telemetry(args):
     consent_state = tel.get("consent_state", policy.CONSENT_UNKNOWN)
     if consent_state not in policy.VALID_CONSENT_STATES:
         consent_state = policy.CONSENT_UNKNOWN
-    aggregate_enabled = allow_aggregate and consent_state == policy.CONSENT_AGGREGATE
+    aggregate_enabled = (local_enabled and allow_aggregate
+                         and consent_state == policy.CONSENT_AGGREGATE)
     install_id = policy.ensure_install_id(config)
 
     def _persist_install_id():
@@ -14343,7 +14344,9 @@ def cmd_telemetry(args):
               f"(telemetry.local)")
         print(f"  Aggregate metrics: {'on' if aggregate_enabled else 'off'} "
               f"(opt-in; consent_state={consent_state})")
-        if consent_state != policy.CONSENT_AGGREGATE and allow_aggregate:
+        if consent_state == policy.CONSENT_AGGREGATE and not local_enabled:
+            print("                     ⚠ inert: local telemetry is off — nothing to aggregate")
+        elif consent_state != policy.CONSENT_AGGREGATE and allow_aggregate:
             print("                     opt in: hermes config set telemetry.consent_state aggregate")
         if not allow_aggregate:
             print("                     ⚠ allow_aggregate is false (egress hard-disabled)")

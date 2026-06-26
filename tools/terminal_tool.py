@@ -49,6 +49,8 @@ from utils import env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+_HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
+
 
 # ---------------------------------------------------------------------------
 # Global interrupt event: set by the agent when a user interrupt arrives.
@@ -1338,6 +1340,30 @@ def _get_env_config() -> Dict[str, Any]:
     }
 
 
+def _kanban_worker_forced_github_env() -> Dict[str, str]:
+    """Return trusted GitHub CLI credential overrides for Kanban workers only.
+
+    Terminal subprocesses intentionally strip Hermes-managed provider/tool
+    credentials by default, including GitHub tokens. Dispatched Kanban workers
+    still need private-repo ``gh issue`` / ``gh pr`` reconciliation. The worker
+    process has already loaded its profile ``.env``; this narrowly forwards
+    only standard ``gh`` CLI token variables, and only while
+    ``HERMES_KANBAN_TASK`` indicates the process is a task-scoped worker. Provider
+    tokens such as ``COPILOT_GITHUB_TOKEN`` stay blocked unless a separate
+    capability explicitly proves that wider boundary. Values go through the
+    existing internal ``_HERMES_FORCE_`` escape hatch, so ordinary sessions keep
+    the default terminal sandbox stripping behavior.
+    """
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return {}
+    forced: Dict[str, str] = {}
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        value = os.environ.get(name)
+        if value:
+            forced[f"{_HERMES_PROVIDER_ENV_FORCE_PREFIX}{name}"] = value
+    return forced
+
+
 def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
     """Resolve direct vs managed Modal backend selection."""
     return resolve_modal_backend_state(
@@ -1380,7 +1406,13 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     docker_extra_args = cc.get("docker_extra_args", [])
 
     if env_type == "local":
-        return _LocalEnvironment(cwd=cwd, timeout=timeout)
+        lc = local_config or {}
+        force_env = lc.get("force_env")
+        return _LocalEnvironment(
+            cwd=cwd,
+            timeout=timeout,
+            env=force_env if isinstance(force_env, dict) else {},
+        )
     
     elif env_type == "docker":
         # One-shot orphan reaper: clean up labeled containers left behind by
@@ -2177,6 +2209,7 @@ def terminal_tool(
                         if env_type == "local":
                             local_config = {
                                 "persistent": config.get("local_persistent", False),
+                                "force_env": _kanban_worker_forced_github_env(),
                             }
 
                         new_env = _create_environment(

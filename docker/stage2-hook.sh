@@ -180,6 +180,19 @@ done
 #
 # The canonical list of hermes-owned subdirs is the same one the s6-setuidgid
 # mkdir -p block below seeds. Keep them in sync if the seed list changes.
+chown_hermes_tree() {
+    target="$1"
+    if [ ! -e "$target" ]; then
+        return 0
+    fi
+    if [ -L "$target" ]; then
+        echo "[stage2] Skipping recursive chown of symlinked path $target"
+        return 0
+    fi
+    find -P "$target" ! -type l -exec chown hermes:hermes {} + 2>/dev/null || \
+        echo "[stage2] Warning: chown $target failed (rootless container?) — continuing"
+}
+
 actual_hermes_uid=$(id -u hermes)
 needs_chown=false
 if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
@@ -200,10 +213,7 @@ if [ "$needs_chown" = true ]; then
     # created and managed exclusively by hermes (see the s6-setuidgid mkdir
     # -p block below for the canonical list).
     for sub in cron sessions logs hooks memories skills skins plans workspace home profiles pairing platforms/pairing lazy-packages; do
-        if [ -e "$HERMES_HOME/$sub" ]; then
-            chown -R hermes:hermes "$HERMES_HOME/$sub" 2>/dev/null || \
-                echo "[stage2] Warning: chown $HERMES_HOME/$sub failed (rootless container?) — continuing"
-        fi
+        chown_hermes_tree "$HERMES_HOME/$sub"
     done
 fi
 
@@ -234,7 +244,7 @@ fi
 # the profiles dir. Idempotent; skipped on rootless containers where
 # chown would fail.
 if [ -d "$HERMES_HOME/profiles" ]; then
-    chown -R hermes:hermes "$HERMES_HOME/profiles" 2>/dev/null || true
+    chown_hermes_tree "$HERMES_HOME/profiles"
 fi
 
 # Always reset ownership of $HERMES_HOME/cron on every boot for the same
@@ -242,7 +252,7 @@ fi
 # (jobs.json) must stay readable by the unprivileged hermes runtime even
 # after root-context maintenance commands or scheduler writes.
 if [ -d "$HERMES_HOME/cron" ]; then
-    chown -R hermes:hermes "$HERMES_HOME/cron" 2>/dev/null || true
+    chown_hermes_tree "$HERMES_HOME/cron"
 fi
 
 # Reset ownership of hermes-owned top-level state files on every boot.

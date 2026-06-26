@@ -5426,6 +5426,7 @@ class TestPtyWebSocket:
         # its own fake argv via ``ws._resolve_chat_argv``.
         self.ws_module = ws
         monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+        ws.app.state.pty_active_session_files = {}
         self.token = ws._SESSION_TOKEN
         self.client = TestClient(ws.app)
 
@@ -5453,6 +5454,22 @@ class TestPtyWebSocket:
         assert env["HERMES_TUI_DASHBOARD"] == "1"
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
+
+    def test_resolve_chat_argv_sets_active_session_file_env(self, monkeypatch):
+        """Dashboard chat gives the TUI a breadcrumb file for reconnect resume."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv(
+            active_session_file="/tmp/hermes-active-session.json"
+        )
+
+        assert env["HERMES_TUI_ACTIVE_SESSION_FILE"] == "/tmp/hermes-active-session.json"
 
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home
@@ -5755,14 +5772,84 @@ class TestPtyWebSocket:
                 pass
         assert captured.get("resume") == "sess-42"
 
+    def test_channel_reconnect_resumes_active_session_file(self, monkeypatch):
+        """A new /api/pty socket on the same channel resumes the last TUI sid."""
+        script = (
+            "import json, os, sys; "
+            "resume = os.environ.get('HERMES_TUI_RESUME', ''); "
+            "active = os.environ.get('HERMES_TUI_ACTIVE_SESSION_FILE', ''); "
+            "sys.stdout.write(f'resume={resume}\\n'); sys.stdout.flush(); "
+            "active and not resume and open(active, 'w').write(json.dumps({'session_id': 'sess-live'}))"
+        )
+
+        def fake_resolve(resume=None, sidecar_url=None, profile=None, active_session_file=None):
+            env = {}
+            if active_session_file:
+                env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
+            if resume:
+                env["HERMES_TUI_RESUME"] = resume
+            return ([sys.executable, "-c", script], None, env)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+
+        def drain_until(conn, needle: bytes) -> bytes:
+            buf = b""
+            import time
+
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                try:
+                    frame = conn.receive_bytes()
+                except Exception:
+                    break
+                if frame:
+                    buf += frame
+                if needle in buf:
+                    break
+            return buf
+
+        with self.client.websocket_connect(self._url(channel="reconnect-chan")) as conn:
+            assert b"resume=" in drain_until(conn, b"resume=")
+
+        with self.client.websocket_connect(self._url(channel="reconnect-chan")) as conn:
+            assert b"resume=sess-live" in drain_until(conn, b"resume=sess-live")
+
+    def test_fresh_param_ignores_channel_active_session_file(self, monkeypatch):
+        """Explicit fresh starts must not resurrect the prior channel session."""
+        channel = "fresh-chan"
+        active_file = self.ws_module._active_session_file_for_channel(
+            self.ws_module.app,
+            channel,
+        )
+        active_file.write_text(json.dumps({"session_id": "sess-old"}), encoding="utf-8")
+        captured: dict = {}
+
+        def fake_resolve(resume=None, sidecar_url=None, profile=None, active_session_file=None):
+            captured["resume"] = resume
+            captured["active_session_file"] = active_session_file
+            return (["/bin/sh", "-c", "printf fresh-ok"], None, None)
+
+        monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
+
+        with self.client.websocket_connect(self._url(channel=channel, fresh="1")) as conn:
+            try:
+                conn.receive_bytes()
+            except Exception:
+                pass
+
+        assert captured["resume"] is None
+        assert captured["active_session_file"] == str(active_file)
+        assert not active_file.exists()
+
     def test_channel_param_propagates_sidecar_url(self, monkeypatch):
         """When /api/pty is opened with ?channel=, the PTY child gets a
         HERMES_TUI_SIDECAR_URL env var pointing back at /api/pub on the
         same channel — which is how tool events reach the dashboard sidebar."""
         captured: dict = {}
 
-        def fake_resolve(resume=None, sidecar_url=None, profile=None):
+        def fake_resolve(resume=None, sidecar_url=None, profile=None, active_session_file=None):
             captured["sidecar_url"] = sidecar_url
+            captured["active_session_file"] = active_session_file
             return (["/bin/sh", "-c", "printf sidecar-ok"], None, None)
 
         monkeypatch.setattr(self.ws_module, "_resolve_chat_argv", fake_resolve)
@@ -5786,6 +5873,7 @@ class TestPtyWebSocket:
         assert url.startswith("ws://127.0.0.1:9119/api/pub?")
         assert "channel=abc-123" in url
         assert "token=" in url
+        assert captured["active_session_file"]
 
     def test_pub_broadcasts_to_events_subscribers(self):
         """A frame handed to _broadcast_event is sent verbatim to every

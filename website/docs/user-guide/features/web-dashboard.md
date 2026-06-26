@@ -299,7 +299,7 @@ Browse, search, and toggle installed skills and toolsets, and install new ones f
 
 ### MCP
 
-Manage [MCP](/integrations/mcp) servers without the CLI. The same `mcp_servers`
+Manage [MCP](./mcp.md) servers without the CLI. The same `mcp_servers`
 block in `config.yaml` that `hermes mcp` reads from.
 
 **Your MCP servers:**

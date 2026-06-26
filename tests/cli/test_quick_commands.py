@@ -246,3 +246,52 @@ class TestGatewayQuickCommands:
         event = self._make_event("limits")
         result = await runner._handle_message(event)
         assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_gateway_supports_legacy_slash_prefixed_quick_command_key(self):
+        """Telegram get_command() strips '/', so legacy '/name' config keys must still resolve."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"/limits": {"type": "exec", "command": "echo ok"}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("limits")
+        result = await runner._handle_message(event)
+        assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_gateway_supports_string_alias_shorthand(self):
+        """Older configs used shorthand strings; keep them as alias targets."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {
+            "quick_commands": {
+                "hermes_os": "limits",
+                "limits": {"type": "exec", "command": "echo ok"},
+            }
+        }
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("hermes_os")
+        result = await runner._handle_message(event)
+        assert result == "ok"
+
+    @pytest.mark.asyncio
+    async def test_gateway_rejects_malformed_quick_command_definition(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"quick_commands": {"bad": ["not", "a", "mapping"]}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("bad")
+        result = await runner._handle_message(event)
+        assert "unsupported definition" in result

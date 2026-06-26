@@ -2257,6 +2257,39 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
         filtered.append(msg)
     messages = filtered
 
+    # --- Strip tool_calls whose function.name is empty/missing ---
+    # Some providers (and partially-streamed responses) emit a tool_call with
+    # id="call_xxx" but function.name="". Downstream Responses-API adapters
+    # silently drop such function_call items while still emitting the matching
+    # function_call_output, producing the gateway's HTTP 400
+    # "No tool call found for function call output with call_id ...". Drop the
+    # malformed call here so the orphan-result logic below removes its (now
+    # unpaired) tool result.
+    for msg in messages:
+        if msg.get("role") != "assistant":
+            continue
+        tcs = msg.get("tool_calls") or []
+        if not tcs:
+            continue
+        cleaned = []
+        for tc in tcs:
+            if isinstance(tc, dict):
+                fn = tc.get("function") or {}
+                name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+            else:
+                fn = getattr(tc, "function", None)
+                name = getattr(fn, "name", None) if fn else None
+            if not isinstance(name, str) or not name.strip():
+                _ra().logger.warning(
+                    "Pre-call sanitizer: dropping tool_call with empty "
+                    "function.name (id=%s)",
+                    _ra().AIAgent._get_tool_call_id_static(tc),
+                )
+                continue
+            cleaned.append(tc)
+        if len(cleaned) != len(tcs):
+            msg["tool_calls"] = cleaned
+
     surviving_call_ids: set = set()
     for msg in messages:
         if msg.get("role") == "assistant":

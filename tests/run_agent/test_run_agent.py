@@ -3659,6 +3659,43 @@ class TestHandleMaxIterations:
             "call_123"
         ]
 
+    def test_api_sanitizer_drops_tool_call_with_empty_function_name(self, agent):
+        """A tool_call with id but empty function.name makes the Responses-API
+        adapter drop the function_call while keeping its function_call_output,
+        causing the gateway's HTTP 400 'No tool call found for function call
+        output ...'. The sanitizer must drop the malformed call AND its now-
+        orphaned tool result. (#12807)"""
+        messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_good",
+                        "type": "function",
+                        "function": {"name": "web_search", "arguments": "{}"},
+                    },
+                    {
+                        "id": "call_bad",
+                        "type": "function",
+                        "function": {"name": "", "arguments": "{}"},
+                    },
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_good", "content": "ok"},
+            {"role": "tool", "tool_call_id": "call_bad", "content": "orphan"},
+        ]
+
+        sanitized = agent._sanitize_api_messages(messages)
+
+        # The malformed call is gone; the good one survives.
+        assistant = next(m for m in sanitized if m.get("role") == "assistant")
+        names = [tc["function"]["name"] for tc in assistant["tool_calls"]]
+        assert names == ["web_search"]
+        # Its now-orphaned tool result is dropped; the good result remains.
+        tool_ids = [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"]
+        assert tool_ids == ["call_good"]
+
 
 class TestRunConversation:
     """Tests for the main run_conversation method.

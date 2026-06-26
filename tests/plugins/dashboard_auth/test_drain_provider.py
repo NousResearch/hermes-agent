@@ -109,14 +109,18 @@ class TestProvider:
         p = drain.DrainSecretProvider(secret=_strong_secret())
         assert p.verify_session(access_token="anything") is None
 
-    def test_interactive_methods_raise(self, drain):
+    def test_refresh_session_returns_none_not_raises(self, drain):
+        # Regression: a raise here 500s every cookie refresh in the gate's
+        # _attempt_refresh loop. Must return None to stack harmlessly.
+        p = drain.DrainSecretProvider(secret=_strong_secret())
+        assert p.refresh_session(refresh_token="anything") is None
+
+    def test_interactive_login_methods_raise(self, drain):
         p = drain.DrainSecretProvider(secret=_strong_secret())
         with pytest.raises(NotImplementedError):
             p.start_login(redirect_uri="r")
         with pytest.raises(NotImplementedError):
             p.complete_login(code="c", state="s", code_verifier="v", redirect_uri="r")
-        with pytest.raises(NotImplementedError):
-            p.refresh_session(refresh_token="r")
 
 
 # ---------------------------------------------------------------------------

@@ -323,16 +323,45 @@ class TestDepletedFreeModelSuppression:
         restored = [n for n in to_show if n.key == "credits.restored"]
         assert len(restored) == 1
 
-    def test_free_flag_does_not_affect_other_notices(self):
-        """Usage-band and grant notices are independent of the model-free gate."""
+    def test_usage_gauge_suppressed_on_free_model(self):
+        """A free model is $0 and can't move the subscription cap, so the usage
+        gauge is suppressed there — mirroring the depleted-notice suppression.
+        (Replaces the old 'free flag does not affect other notices' behaviour,
+        where the gauge fired on free models and drove the billing-confusion
+        report.)"""
         latch = fresh_latch()
         evaluate_credits_notices(state_with_fraction(0.10), latch, model_is_free=True)
         to_show, _ = evaluate_credits_notices(
             state_with_fraction(0.95, paid_access=False), latch, model_is_free=True
         )
         keys = [n.key for n in to_show]
-        assert "credits.usage" in keys
+        assert "credits.usage" not in keys
         assert "credits.depleted" not in keys
+
+    def test_switch_to_free_model_clears_usage_gauge(self):
+        """A gauge showing on a paid model is cleared when the user switches to a
+        free model (target_band → None clears the active line)."""
+        latch = fresh_latch()
+        evaluate_credits_notices(state_with_fraction(0.10), latch)
+        evaluate_credits_notices(state_with_fraction(0.95), latch)  # band 90 shows
+        assert "credits.usage" in latch["active"]
+        to_show, to_clear = evaluate_credits_notices(
+            state_with_fraction(0.95), latch, model_is_free=True
+        )
+        assert "credits.usage" in to_clear
+        assert "credits.usage" not in latch["active"]
+        assert all(n.key != "credits.usage" for n in to_show)
+
+    def test_usage_gauge_shows_on_paid_model_with_monthly_framing(self):
+        """On a paid model the gauge fires and frames the cap as a monthly total
+        (the 'Monthly credits …' clarification), with no free-model copy."""
+        latch = fresh_latch()
+        evaluate_credits_notices(state_with_fraction(0.10), latch)
+        to_show, _ = evaluate_credits_notices(state_with_fraction(0.95), latch)
+        usage = [n for n in to_show if n.key == "credits.usage"]
+        assert len(usage) == 1
+        assert "Monthly credits" in usage[0].text
+        assert "free model" not in usage[0].text
 
 
 # ── Scenario 5c: is_free_tier_model (local-data-only check) ──────────────────

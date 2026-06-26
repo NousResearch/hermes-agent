@@ -194,10 +194,11 @@ class DrainSecretProvider(DashboardAuthProvider):
         # stacks harmlessly in the cookie-verify loop.
         return None
 
-    def refresh_session(self, *, refresh_token: str) -> Session:
-        raise NotImplementedError(
-            "DrainSecretProvider is a non-interactive service credential."
-        )
+    def refresh_session(self, *, refresh_token: str) -> Optional[Session]:
+        # Never minted a session, so it can't refresh one. Return None (don't
+        # raise) so it stacks harmlessly in middleware's _attempt_refresh loop,
+        # same as verify_session above.
+        return None
 
     def revoke_session(self, *, refresh_token: str) -> None:
         return None

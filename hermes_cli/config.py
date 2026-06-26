@@ -5328,9 +5328,29 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 config["mcp_servers"] = raw_mcp_servers
                 save_config(config)
 
+    # ── Always: validate platform_toolsets after migration ──
+    # A migration (or hand-edit) that leaves an invalid toolset name in
+    # platform_toolsets silently disables the affected tools — resolve_toolset()
+    # returns [] for an unknown name, so the agent quietly loses tools with no
+    # error or warning. Surface it loudly instead. See #38798.
+    try:
+        from toolsets import validate_toolset
+        from hermes_cli.toolset_validation import validate_platform_toolsets
+
+        ts_warnings = validate_platform_toolsets(
+            read_raw_config().get("platform_toolsets"), validate_toolset
+        )
+        for w in ts_warnings:
+            results["warnings"].append(w)
+            if not quiet:
+                print(f"  ⚠ {w}")
+    except Exception as _ts_val_err:
+        # best-effort; never block migration on validation
+        logger.debug("platform_toolsets validation skipped: %s", _ts_val_err)
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
-    
+
     # Check for missing required env vars
     missing_env = get_missing_env_vars(required_only=True)
     

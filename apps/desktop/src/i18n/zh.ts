@@ -2198,10 +2198,8 @@ export const zh: Translations = {
       loadingQuestion: '正在加载问题…',
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
-      shortcutSuffix: ' 发送',
-      back: '返回',
       skip: '跳过',
-      send: '发送'
+      continueLabel: '继续'
     },
     tool: {
       code: '代码',

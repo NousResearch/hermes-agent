@@ -2151,10 +2151,8 @@ export const ja = defineLocale({
       loadingQuestion: '質問を読み込み中…',
       other: 'その他（回答を入力）',
       placeholder: '回答を入力…',
-      shortcutSuffix: ' で送信',
-      back: '戻る',
       skip: 'スキップ',
-      send: '送信'
+      continueLabel: '続行'
     },
     tool: {
       code: 'コード',

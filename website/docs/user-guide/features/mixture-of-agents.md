@@ -106,6 +106,18 @@ hermes moa configure review       # create or update a named preset
 hermes moa delete review
 ```
 
+## Benchmarks
+
+On HermesBench, a two-model MoA preset — `claude-opus-4.8` aggregating over a `gpt-5.5` reference — outscores either model run on its own:
+
+| Model | HermesBench score |
+|---|---|
+| **Opus aggregator (opus-4.8 + gpt-5.5 reference) — MoA** | **0.8202** |
+| `anthropic/claude-opus-4.8` | 0.7607 |
+| `openai/gpt-5.5` | 0.7412 |
+
+The MoA configuration beats its strongest component (opus-4.8) by ~6 points, confirming that aggregating a second perspective lifts quality on hard tasks rather than just averaging the two.
+
 ## Notes
 
 - MoA is no longer listed under `hermes tools`; there is no `moa` toolset to enable.

@@ -55,6 +55,11 @@ _MAX_PATHS_PER_AGENT = 4096
 # Global last-writer map cap.  Same policy.
 _MAX_GLOBAL_WRITERS = 4096
 
+# Non-local terminal backends use paths that may not exist on the host.  We
+# still track read/write ordering for sibling-agent warnings, but cannot do
+# host mtime drift checks for those paths.
+_UNKNOWN_MTIME = -1.0
+
 
 class FileStateRegistry:
     """Process-wide coordinator for cross-agent file edits."""
@@ -104,7 +109,7 @@ class FileStateRegistry:
             try:
                 mtime = os.path.getmtime(resolved)
             except OSError:
-                return
+                mtime = _UNKNOWN_MTIME
         now = time.time()
         with self._state_lock:
             agent_reads = self._reads[task_id]
@@ -130,7 +135,7 @@ class FileStateRegistry:
             try:
                 mtime = os.path.getmtime(resolved)
             except OSError:
-                return
+                mtime = _UNKNOWN_MTIME
         now = time.time()
         with self._state_lock:
             self._last_writer[resolved] = (task_id, now)
@@ -163,12 +168,6 @@ class FileStateRegistry:
         if stamp is None and last_writer is None:
             return None
 
-        try:
-            current_mtime = os.path.getmtime(resolved)
-        except OSError:
-            # File doesn't exist — write will create it; not stale.
-            return None
-
         # Case 1: sibling subagent modified after our last read.
         if last_writer is not None:
             writer_tid, writer_ts = last_writer
@@ -192,12 +191,17 @@ class FileStateRegistry:
         # Case 2: external / unknown modification (mtime drifted).
         if stamp is not None:
             read_mtime, _read_ts, partial = stamp
-            if current_mtime != read_mtime:
-                return (
-                    f"{resolved} was modified since you last read it "
-                    "on disk (external edit or unrecorded writer). "
-                    "Re-read the file before writing."
-                )
+            if read_mtime != _UNKNOWN_MTIME:
+                try:
+                    current_mtime = os.path.getmtime(resolved)
+                except OSError:
+                    current_mtime = None
+                if current_mtime is not None and current_mtime != read_mtime:
+                    return (
+                        f"{resolved} was modified since you last read it "
+                        "on disk (external edit or unrecorded writer). "
+                        "Re-read the file before writing."
+                    )
             if partial:
                 return (
                     f"{resolved} was last read with offset/limit pagination "

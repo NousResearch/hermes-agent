@@ -2,10 +2,12 @@
 """File Tools Module - LLM agent file manipulation tools."""
 
 import errno
+import inspect
 import json
 import logging
 import os
 import posixpath
+import re
 import sys
 import threading
 from pathlib import Path, PurePosixPath
@@ -269,6 +271,23 @@ def _registered_task_cwd_override(task_id: str = "default") -> str | None:
     return _sentinel_free_abs_cwd(overrides.get("cwd"))
 
 
+def _registered_task_cwd_override_lexical(task_id: str = "default") -> str | None:
+    """Return a POSIX absolute cwd override for non-local backend paths."""
+    try:
+        from tools.terminal_tool import resolve_task_overrides
+
+        overrides = resolve_task_overrides(task_id)
+    except Exception:
+        return None
+
+    raw = str(overrides.get("cwd") or "").strip()
+    if raw.lower() in _TERMINAL_CWD_SENTINELS:
+        return None
+    if raw.startswith("~") or not posixpath.isabs(raw):
+        return None
+    return posixpath.normpath(raw)
+
+
 def _live_cwd_if_owned(env, task_id: str) -> str | None:
     """The env's live cwd, but only when THIS session owns it.
 
@@ -464,6 +483,180 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path | Pu
     return resolved.resolve()
 
 
+def _lexical_path_for_task(
+    filepath: str,
+    task_id: str = "default",
+    file_ops=None,
+) -> str:
+    """Resolve *filepath* without dereferencing host symlinks.
+
+    Non-local file operations run inside a terminal backend (Docker, SSH,
+    Modal, Daytona, etc.).  A backend path like ``/home/user/file`` must not be
+    canonicalized through the host filesystem first: on macOS, for example,
+    ``/home`` is a host symlink to ``/System/Volumes/Data/home`` even though the
+    remote Linux backend expects the literal ``/home`` path.
+    """
+    raw = str(filepath or "")
+    if raw.startswith("~"):
+        return raw
+    if posixpath.isabs(raw):
+        return posixpath.normpath(raw)
+
+    env = getattr(file_ops, "env", None)
+    root = _live_cwd_if_owned(env, task_id) if env is not None else None
+    if not root:
+        root = _registered_task_cwd_override_lexical(task_id)
+    if not root:
+        root = getattr(file_ops, "cwd", None) if file_ops is not None else None
+    if root and not str(root).startswith("~") and posixpath.isabs(str(root)):
+        return posixpath.normpath(posixpath.join(str(root), raw))
+    return posixpath.normpath(raw)
+
+
+def _container_mirror_tilde_target(
+    filepath: str,
+    mirror_prefix: str | None,
+) -> str | None:
+    """Return the backend-expanded path for ``~`` under a container mirror."""
+    if not mirror_prefix:
+        return None
+    raw = str(filepath or "")
+    if raw == "~":
+        return mirror_prefix
+    if raw.startswith("~/"):
+        return posixpath.normpath(posixpath.join(mirror_prefix, raw[2:]))
+    return None
+
+
+def _file_ops_static_env(file_ops) -> tuple[bool, object | None]:
+    """Return a declared ``file_ops.env`` without triggering dynamic mocks."""
+    try:
+        inspect.getattr_static(file_ops, "env")
+    except AttributeError:
+        return False, None
+    return True, getattr(file_ops, "env", None)
+
+
+def _file_ops_uses_host_paths(file_ops) -> bool:
+    """Return True when *file_ops* points at the local host filesystem."""
+    _has_env, env = _file_ops_static_env(file_ops)
+    if env is None:
+        return True
+    try:
+        from tools.environments.local import LocalEnvironment
+    except ImportError:
+        return True
+    return isinstance(env, LocalEnvironment)
+
+
+def _resolve_path_for_file_ops(
+    filepath: str,
+    task_id: str = "default",
+    file_ops=None,
+) -> str:
+    """Return the path that should be passed to ``file_ops``.
+
+    Local backends keep the historical host-canonical path.  Non-local
+    backends receive a lexical backend path so host symlinks and host-only
+    mount aliases cannot rewrite remote absolute paths.
+    """
+    if file_ops is not None:
+        has_env, _env = _file_ops_static_env(file_ops)
+        if not has_env:
+            return str(filepath)
+    if file_ops is not None and not _file_ops_uses_host_paths(file_ops):
+        return _lexical_path_for_task(filepath, task_id, file_ops)
+    return str(_resolve_path_for_task(filepath, task_id))
+
+
+_V4A_FILE_HEADER_RE = re.compile(
+    r"^(\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*)(.+)$"
+)
+_V4A_MOVE_HEADER_RE = re.compile(
+    r"^(\*\*\*\s*Move\s+File:\s*)(.+?)(\s*->\s*)(.+)$"
+)
+
+
+def _rewrite_v4a_patch_paths_for_file_ops(
+    patch: str,
+    task_id: str,
+    file_ops,
+) -> str:
+    """Rewrite remote V4A path headers to backend-safe lexical paths."""
+    if _file_ops_uses_host_paths(file_ops):
+        return patch
+
+    rewritten: list[str] = []
+    for line in patch.split("\n"):
+        file_match = _V4A_FILE_HEADER_RE.match(line)
+        if file_match:
+            rewritten.append(
+                file_match.group(1)
+                + _resolve_path_for_file_ops(file_match.group(2).strip(), task_id, file_ops)
+            )
+            continue
+
+        move_match = _V4A_MOVE_HEADER_RE.match(line)
+        if move_match:
+            src = _resolve_path_for_file_ops(move_match.group(2).strip(), task_id, file_ops)
+            dst = _resolve_path_for_file_ops(move_match.group(4).strip(), task_id, file_ops)
+            rewritten.append(
+                f"{move_match.group(1)}{src}{move_match.group(3)}{dst}"
+            )
+            continue
+
+        rewritten.append(line)
+    return "\n".join(rewritten)
+
+
+def _resolved_v4a_report_paths(
+    patch: str,
+    path_to_resolved: dict[str, str | None],
+) -> list[str]:
+    """Return resolved V4A paths while preserving move ``src -> dst`` shape."""
+    reported: list[str] = []
+    for line in patch.split("\n"):
+        file_match = _V4A_FILE_HEADER_RE.match(line)
+        if file_match:
+            path = file_match.group(2).strip()
+            reported.append(path_to_resolved.get(path) or path)
+            continue
+
+        move_match = _V4A_MOVE_HEADER_RE.match(line)
+        if move_match:
+            src = move_match.group(2).strip()
+            dst = move_match.group(4).strip()
+            reported.append(
+                f"{path_to_resolved.get(src) or src} -> "
+                f"{path_to_resolved.get(dst) or dst}"
+            )
+    return reported
+
+
+def _resolved_v4a_internal_paths(
+    patch: str,
+    path_to_resolved: dict[str, str | None],
+) -> list[str]:
+    """Return resolved V4A paths as individual filesystem paths."""
+    reported: list[str] = []
+    for line in patch.split("\n"):
+        file_match = _V4A_FILE_HEADER_RE.match(line)
+        if file_match:
+            path = file_match.group(2).strip()
+            reported.append(path_to_resolved.get(path) or path)
+            continue
+
+        move_match = _V4A_MOVE_HEADER_RE.match(line)
+        if move_match:
+            src = move_match.group(2).strip()
+            dst = move_match.group(4).strip()
+            reported.extend([
+                path_to_resolved.get(src) or src,
+                path_to_resolved.get(dst) or dst,
+            ])
+    return reported
+
+
 def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "default") -> str | None:
     """Warn when a relative path resolved OUTSIDE the task's workspace root.
 
@@ -503,6 +696,18 @@ def _path_resolution_warning(filepath: str, resolved: Path, task_id: str = "defa
             )
     except Exception:
         return None
+
+
+def _path_resolution_warning_for_file_ops(
+    filepath: str,
+    resolved: str,
+    task_id: str,
+    file_ops,
+) -> str | None:
+    """Return workspace-divergence warnings only for host-backed file paths."""
+    if not _file_ops_uses_host_paths(file_ops):
+        return None
+    return _path_resolution_warning(filepath, Path(resolved), task_id)
 
 
 def _is_blocked_device_path(path: str) -> bool:
@@ -777,10 +982,22 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     if warning is not None:
         return warning
 
-    return get_container_mirror_warning(
+    mirror_prefix = _get_container_mirror_prefix_for_task(task_id)
+    warning = get_container_mirror_warning(
         resolved,
-        mirror_prefix=_get_container_mirror_prefix_for_task(task_id),
+        mirror_prefix=mirror_prefix,
     )
+    if warning is not None:
+        return warning
+
+    tilde_target = _container_mirror_tilde_target(filepath, mirror_prefix)
+    if tilde_target is not None:
+        return get_container_mirror_warning(
+            tilde_target,
+            mirror_prefix=mirror_prefix,
+        )
+
+    return None
 
 
 def _is_expected_write_exception(exc: Exception) -> bool:
@@ -1218,20 +1435,64 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
-        _resolved = _resolve_path_for_task(path, task_id)
-
-        # ── Structured-document extraction ────────────────────────────
-        # Try before the binary-extension guard so .docx/.xlsx can render as text.
-        # Malformed documents fall through to the normal path/binary guard.
         from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
 
-        if is_extractable_document(str(_resolved)):
+        extractable_document = is_extractable_document(str(path))
+
+        # ── Binary file guard ─────────────────────────────────────────
+        # Block binary files by extension (no I/O). Extractable documents
+        # continue below so local backends can render them as text and remote
+        # backends can still read the backend path without starting up just to
+        # reject obvious binaries.
+        if has_binary_extension(str(path)) and not extractable_document:
+            _ext = Path(str(path)).suffix.lower()
+            return json.dumps({
+                "error": (
+                    f"Cannot read binary file '{path}' ({_ext}). "
+                    "Use vision_analyze for images, or terminal to inspect binary files."
+                ),
+            })
+
+        file_ops = _get_file_ops(task_id)
+        uses_host_paths = _file_ops_uses_host_paths(file_ops)
+
+        if uses_host_paths:
+            _resolved = _resolve_path_for_task(path, task_id)
+            extractable_document = is_extractable_document(str(_resolved))
+
+            # ── Hermes internal path guard ────────────────────────────────
+            # Prevent prompt injection via catalog or hub metadata files,
+            # and block credential stores under HERMES_HOME.  Pass the
+            # already-resolved path so a relative-path read against
+            # TERMINAL_CWD == HERMES_HOME (e.g. "auth.json") still hits the
+            # denylist — get_read_block_error's own resolve() runs against
+            # the Python process cwd, which can differ.
+            block_error = get_read_block_error(str(_resolved))
+            if block_error:
+                return json.dumps({"error": block_error})
+        else:
+            _resolved = None
+
+        try:
+            resolved_str = _resolve_path_for_file_ops(path, task_id, file_ops)
+        except Exception:
+            if uses_host_paths:
+                resolved_str = str(_resolved)
+            else:
+                try:
+                    resolved_str = _lexical_path_for_task(path, task_id, file_ops)
+                except Exception:
+                    resolved_str = path
+
+        # ── Structured-document extraction ────────────────────────────
+        # Try before the normal read so .docx/.xlsx can render as text on local
+        # files.  Malformed documents fall through to the normal backend read.
+        if uses_host_paths and extractable_document:
             try:
                 extracted_text = extract_document_text(str(_resolved))
             except ExtractionError:
                 logger.debug("document extraction failed for %s", path, exc_info=True)
             else:
-                file_ops = _get_file_ops(task_id)
                 lines = extracted_text.splitlines()
                 total_lines = len(lines)
                 end_line = offset + limit - 1
@@ -1279,33 +1540,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                     result_dict["content"] = redact_sensitive_text(result_dict["content"], file_read=True)
                 return json.dumps(result_dict, ensure_ascii=False)
 
-        # ── Binary file guard ─────────────────────────────────────────
-        # Block binary files by extension (no I/O).
-        if has_binary_extension(str(_resolved)):
-            _ext = _resolved.suffix.lower()
-            return json.dumps({
-                "error": (
-                    f"Cannot read binary file '{path}' ({_ext}). "
-                    "Use vision_analyze for images, or terminal to inspect binary files."
-                ),
-            })
-
-        # ── Hermes internal path guard ────────────────────────────────
-        # Prevent prompt injection via catalog or hub metadata files,
-        # and block credential stores under HERMES_HOME.  Pass the
-        # already-resolved path so a relative-path read against
-        # TERMINAL_CWD == HERMES_HOME (e.g. "auth.json") still hits the
-        # denylist — get_read_block_error's own resolve() runs against
-        # the Python process cwd, which can differ.
-        block_error = get_read_block_error(str(_resolved))
-        if block_error:
-            return json.dumps({"error": block_error})
-
         # ── Dedup check ───────────────────────────────────────────────
         # If we already read this exact (path, offset, limit) and the
         # file hasn't been modified since, return a lightweight stub
         # instead of re-sending the same content.  Saves context tokens.
-        resolved_str = str(_resolved)
         dedup_key = (resolved_str, offset, limit)
         with _read_tracker_lock:
             task_data = _read_tracker.setdefault(task_id, {
@@ -1322,7 +1560,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
-        if cached_mtime is not None:
+        if uses_host_paths and cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
@@ -1362,8 +1600,8 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 pass  # stat failed — fall through to full read
 
         # ── Perform the read ──────────────────────────────────────────
-        file_ops = _get_file_ops(task_id)
-        result = file_ops.read_file(path, offset, limit)
+        read_target = resolved_str if not uses_host_paths else path
+        result = file_ops.read_file(read_target, offset, limit)
         result_dict = result.to_dict()
 
         # ── Character-count guard ─────────────────────────────────────
@@ -1449,12 +1687,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             # 1. Dedup: skip identical re-reads of unchanged files.
             # 2. Staleness: warn on write/patch if the file changed since
             #    the agent last read it (external edit, concurrent agent, etc.).
-            try:
-                _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
-                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            except OSError:
-                pass  # Can't stat — skip tracking for this entry
+            if uses_host_paths:
+                try:
+                    _mtime_now = os.path.getmtime(resolved_str)
+                    task_data["dedup"][dedup_key] = _mtime_now
+                    task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+                except OSError:
+                    pass  # Can't stat — skip tracking for this entry
 
             # Bound the per-task containers so a long CLI session doesn't
             # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
@@ -1467,11 +1706,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # truncated (large file with more content than limit covered).
         # Outside the _read_tracker_lock so the registry's own locking
         # isn't nested under ours.
-        try:
-            _partial = (offset > 1) or bool(result_dict.get("truncated"))
-            file_state.record_read(task_id, resolved_str, partial=_partial)
-        except Exception:
-            logger.debug("file_state.record_read failed", exc_info=True)
+        if not result_dict.get("error"):
+            try:
+                _partial = (offset > 1) or bool(result_dict.get("truncated"))
+                file_state.record_read(task_id, resolved_str, partial=_partial)
+            except Exception:
+                logger.debug("file_state.record_read failed", exc_info=True)
 
         if count >= 4:
             # Hard block: stop returning content to break the loop
@@ -1545,7 +1785,13 @@ def notify_other_tool_call(task_id: str = "default"):
                 task_data["dedup_hits"].clear()
 
 
-def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
+def _invalidate_dedup_for_path(
+    filepath: str,
+    task_id: str,
+    *,
+    resolved_path: str | None = None,
+    uses_host_paths: bool = True,
+) -> None:
     """Remove all dedup cache entries whose resolved path matches *filepath*.
 
     Called after write_file and patch so that a subsequent read_file on
@@ -1558,8 +1804,10 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
     Must be called with ``_read_tracker_lock`` **not** held — acquires it
     internally.
     """
+    if not uses_host_paths:
+        return
     try:
-        resolved = str(_resolve_path(filepath))
+        resolved = resolved_path or str(_resolve_path(filepath, task_id))
     except (OSError, ValueError):
         return
     with _read_tracker_lock:
@@ -1575,7 +1823,13 @@ def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:
             del dedup[k]
 
 
-def _update_read_timestamp(filepath: str, task_id: str) -> None:
+def _update_read_timestamp(
+    filepath: str,
+    task_id: str,
+    *,
+    resolved_path: str | None = None,
+    uses_host_paths: bool = True,
+) -> None:
     """Record the file's current modification time after a successful write.
 
     Called after write_file and patch so that consecutive edits by the
@@ -1586,9 +1840,16 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     subsequent reads return fresh content (fixes #13144).
     """
     # Invalidate dedup first (before acquiring lock for timestamp update).
-    _invalidate_dedup_for_path(filepath, task_id)
+    _invalidate_dedup_for_path(
+        filepath,
+        task_id,
+        resolved_path=resolved_path,
+        uses_host_paths=uses_host_paths,
+    )
+    if not uses_host_paths:
+        return
     try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
+        resolved = resolved_path or str(_resolve_path_for_task(filepath, task_id))
         current_mtime = os.path.getmtime(resolved)
     except (OSError, ValueError):
         return
@@ -1599,15 +1860,23 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
             _cap_read_tracker_data(task_data)
 
 
-def _check_file_staleness(filepath: str, task_id: str) -> str | None:
+def _check_file_staleness(
+    filepath: str,
+    task_id: str,
+    *,
+    resolved_path: str | None = None,
+    uses_host_paths: bool = True,
+) -> str | None:
     """Check whether a file was modified since the agent last read it.
 
     Returns a warning string if the file is stale (mtime changed since
     the last read_file call for this task), or None if the file is fresh
     or was never read.  Does not block — the write still proceeds.
     """
+    if not uses_host_paths:
+        return None
     try:
-        resolved = str(_resolve_path_for_task(filepath, task_id))
+        resolved = resolved_path or str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         return None
     with _read_tracker_lock:
@@ -1689,24 +1958,33 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             "file contents before writing."
         )
     try:
+        file_ops = _get_file_ops(task_id)
+        uses_host_paths = _file_ops_uses_host_paths(file_ops)
         # Resolve once for the registry lock + stale check.  Failures here
         # fall back to the legacy path — write proceeds, per-task staleness
         # check below still runs.
         try:
-            _resolved = str(_resolve_path_for_task(path, task_id))
+            _resolved = _resolve_path_for_file_ops(path, task_id, file_ops)
         except Exception:
             _resolved = None
 
         if _resolved is None:
-            stale_warning = _check_file_staleness(path, task_id)
-            file_ops = _get_file_ops(task_id)
+            stale_warning = _check_file_staleness(
+                path,
+                task_id,
+                uses_host_paths=uses_host_paths,
+            )
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
             if stale_warning:
                 result_dict["_warning"] = stale_warning
             if not result_dict.get("error"):
                 _mark_verification_stale(task_id, [path], session_id=session_id)
-            _update_read_timestamp(path, task_id)
+            _update_read_timestamp(
+                path,
+                task_id,
+                uses_host_paths=uses_host_paths,
+            )
             return json.dumps(result_dict, ensure_ascii=False)
 
         # Serialize the read→modify→write region per-path so concurrent
@@ -1716,11 +1994,20 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # Cross-agent staleness wins over per-task warning when both
             # fire — its message names the sibling subagent.
             cross_warning = file_state.check_stale(task_id, _resolved)
-            stale_warning = _check_file_staleness(path, task_id)
+            stale_warning = _check_file_staleness(
+                path,
+                task_id,
+                resolved_path=_resolved,
+                uses_host_paths=uses_host_paths,
+            )
             # Workspace-divergence warning: relative path resolving outside the
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
-            cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
-            file_ops = _get_file_ops(task_id)
+            cwd_warning = _path_resolution_warning_for_file_ops(
+                path,
+                _resolved,
+                task_id,
+                file_ops,
+            )
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
             effective_warning = cross_warning or stale_warning or cwd_warning
@@ -1735,7 +2022,12 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 _mark_verification_stale(task_id, [_resolved], session_id=session_id)
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.
-            _update_read_timestamp(path, task_id)
+            _update_read_timestamp(
+                path,
+                task_id,
+                resolved_path=_resolved,
+                uses_host_paths=uses_host_paths,
+            )
             if not result_dict.get("error"):
                 file_state.note_write(task_id, _resolved)
         return json.dumps(result_dict, ensure_ascii=False)
@@ -1763,7 +2055,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _paths_to_check.append(path)
     if mode == "patch" and patch:
         import re as _re
+
         from tools.path_security import has_traversal_component
+
         def _reject_v4a_traversal(v4a_path: str) -> str | None:
             # V4A path headers come from patch CONTENT, not the explicit
             # ``path=`` arg — so they're more attacker-influenceable (skill
@@ -1811,6 +2105,8 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             if cross_warning:
                 return tool_error(cross_warning)
     try:
+        file_ops = _get_file_ops(task_id)
+        uses_host_paths = _file_ops_uses_host_paths(file_ops)
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
         # multi-file V4A patches.
@@ -1818,7 +2114,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _seen: set[str] = set()
         for _p in _paths_to_check:
             try:
-                _r = str(_resolve_path_for_task(_p, task_id))
+                _r = _resolve_path_for_file_ops(_p, task_id, file_ops)
             except Exception:
                 _r = None
             if _r and _r not in _seen:
@@ -1837,23 +2133,31 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # Collect warnings — cross-agent registry first (names sibling),
             # then per-task tracker as a fallback.
             stale_warnings: list[str] = []
-            _path_to_resolved: dict[str, str] = {}
+            _path_to_resolved: dict[str, str | None] = {}
             for _p in _paths_to_check:
                 try:
-                    _r = str(_resolve_path_for_task(_p, task_id))
+                    _r = _resolve_path_for_file_ops(_p, task_id, file_ops)
                 except Exception:
                     _r = None
                 _path_to_resolved[_p] = _r
                 _cross = file_state.check_stale(task_id, _r) if _r else None
-                _sw = _cross or _check_file_staleness(_p, task_id)
+                _sw = _cross or _check_file_staleness(
+                    _p,
+                    task_id,
+                    resolved_path=_r,
+                    uses_host_paths=uses_host_paths,
+                )
                 if not _sw and _r:
                     # Workspace-divergence warning (worktree-cwd bug): relative
                     # path resolving outside the terminal's cwd.
-                    _sw = _path_resolution_warning(_p, Path(_r), task_id)
+                    _sw = _path_resolution_warning_for_file_ops(
+                        _p,
+                        _r,
+                        task_id,
+                        file_ops,
+                    )
                 if _sw:
                     stale_warnings.append(_sw)
-
-            file_ops = _get_file_ops(task_id)
 
             if mode == "replace":
                 if not path:
@@ -1870,7 +2174,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             elif mode == "patch":
                 if not patch:
                     return tool_error("patch content required")
-                result = file_ops.patch_v4a(patch)
+                patch_for_ops = _rewrite_v4a_patch_paths_for_file_ops(
+                    patch,
+                    task_id,
+                    file_ops,
+                )
+                result = file_ops.patch_v4a(patch_for_ops)
             else:
                 return tool_error(f"Unknown mode: {mode}")
 
@@ -1880,19 +2189,35 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # Report the ABSOLUTE path(s) actually patched so a wrong-cwd
             # mismatch (e.g. a worktree session editing the main checkout) is
             # visible in the response instead of silently landing elsewhere.
-            _resolved_modified = [
-                _path_to_resolved.get(_p) or _p for _p in _paths_to_check
-            ]
+            if mode == "patch" and patch:
+                _resolved_modified = _resolved_v4a_report_paths(
+                    patch,
+                    _path_to_resolved,
+                )
+                _internal_modified = _resolved_v4a_internal_paths(
+                    patch,
+                    _path_to_resolved,
+                )
+            else:
+                _resolved_modified = [
+                    _path_to_resolved.get(_p) or _p for _p in _paths_to_check
+                ]
+                _internal_modified = _resolved_modified
             # Refresh stored timestamps for all successfully-patched paths so
             # consecutive edits by this task don't trigger false warnings.
             if not result_dict.get("error"):
                 result_dict["files_modified"] = _resolved_modified
                 if len(_resolved_modified) == 1:
                     result_dict["resolved_path"] = _resolved_modified[0]
-                _mark_verification_stale(task_id, _resolved_modified, session_id=session_id)
+                _mark_verification_stale(task_id, _internal_modified, session_id=session_id)
                 for _p in _paths_to_check:
-                    _update_read_timestamp(_p, task_id)
                     _r = _path_to_resolved.get(_p)
+                    _update_read_timestamp(
+                        _p,
+                        task_id,
+                        resolved_path=_r,
+                        uses_host_paths=uses_host_paths,
+                    )
                     if _r:
                         file_state.note_write(task_id, _r)
                 # Successful patch: clear any prior consecutive-failure
@@ -1992,8 +2317,14 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             return json.dumps({"error": block_error}, ensure_ascii=False)
 
         file_ops = _get_file_ops(task_id)
+        search_path = path
+        if not _file_ops_uses_host_paths(file_ops):
+            try:
+                search_path = _resolve_path_for_file_ops(path, task_id, file_ops)
+            except Exception:
+                search_path = path
         result = file_ops.search(
-            pattern=pattern, path=path, target=target, file_glob=file_glob,
+            pattern=pattern, path=search_path, target=target, file_glob=file_glob,
             limit=limit, offset=offset, output_mode=output_mode, context=context
         )
         omitted = _filter_read_blocked_search_results(result, task_id)

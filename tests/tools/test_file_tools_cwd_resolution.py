@@ -1,4 +1,4 @@
-"""Regression tests for file-tool path resolution base correctness.
+"""Regression tests for file-tool path resolution correctness.
 
 The bug (observed in a worktree dev session, May 2026): when the resolution
 base for a relative path is itself RELATIVE — e.g. ``TERMINAL_CWD="."`` from a
@@ -13,9 +13,15 @@ Core invariant these tests pin:
   The resolution base for a relative path MUST always be absolute. A relative
   ``TERMINAL_CWD`` (``.``, ``./sub``, ``..``) must be anchored deterministically,
   never left to resolve against whatever the process cwd happens to be.
+
+Remote backend invariant these tests pin:
+  Paths passed to non-local file backends MUST stay backend-lexical. Host
+  canonicalization, host mtime tracking, and host ``~`` expansion must not leak
+  into Docker/SSH/Modal/Daytona file operations.
 """
 
 import os
+import ntpath
 from pathlib import Path, PurePosixPath
 
 import pytest
@@ -398,6 +404,65 @@ class _FakeOwnedEnv:
         self.cwd_owner = cwd_owner
 
 
+class _FakeRemoteFileOps:
+    """FileOperations stand-in whose env is deliberately not LocalEnvironment."""
+
+    env = object()
+
+    def __init__(self):
+        self.read_paths: list[str] = []
+        self.write_paths: list[str] = []
+        self.patch_paths: list[str] = []
+        self.patch_payloads: list[str] = []
+        self.search_paths: list[str] = []
+
+    def read_file(self, path: str, offset: int = 1, limit: int = 500):
+        from tools.file_operations import ReadResult
+
+        self.read_paths.append(path)
+        return ReadResult(content="1|old", total_lines=1, file_size=3)
+
+    def write_file(self, path: str, content: str):
+        from tools.file_operations import WriteResult
+
+        self.write_paths.append(path)
+        return WriteResult(bytes_written=len(content))
+
+    def patch_replace(
+        self,
+        path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ):
+        from tools.file_operations import PatchResult
+
+        self.patch_paths.append(path)
+        return PatchResult(success=True, files_modified=[path])
+
+    def patch_v4a(self, patch: str):
+        from tools.file_operations import PatchResult
+
+        self.patch_payloads.append(patch)
+        return PatchResult(success=True, files_modified=[])
+
+    def search(
+        self,
+        pattern: str,
+        path: str = ".",
+        target: str = "content",
+        file_glob: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+        output_mode: str = "content",
+        context: int = 0,
+    ):
+        from tools.file_operations import SearchResult
+
+        self.search_paths.append(path)
+        return SearchResult(matches=[])
+
+
 @pytest.fixture
 def _two_worktree_sessions(tmp_path, monkeypatch):
     """Two worktree sessions sharing one terminal env owned by session B."""
@@ -485,3 +550,564 @@ def test_preserved_cwd_does_not_override_non_owning_sessions_worktree(
     resolved_a = ft._resolve_path_for_task("target.py", task_id="sess-a")
     assert resolved_a == (wt_a / "target.py")
     assert not str(resolved_a).startswith(str(wt_b))
+
+
+def test_remote_write_file_preserves_backend_absolute_path(monkeypatch):
+    """Remote absolute paths must not be canonicalized through host symlinks."""
+    import json
+
+    ops = _FakeRemoteFileOps()
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+    # macOS 10.15+ resolves host /home through /System/Volumes/Data/home.  The
+    # terminal backend still expects the literal remote /home path.
+    monkeypatch.setattr(
+        ft,
+        "_resolve_path_for_task",
+        lambda filepath, task_id="default": Path(
+            "/System/Volumes/Data/home/myuser/now.txt"
+        ),
+    )
+
+    out = json.loads(
+        ft.write_file_tool(
+            "/home/myuser/now.txt",
+            "stamp\n",
+            task_id="remote-task",
+        )
+    )
+
+    assert not out.get("error"), out
+    assert "_warning" not in out
+    assert ops.write_paths == ["/home/myuser/now.txt"]
+    assert out["resolved_path"] == "/home/myuser/now.txt"
+    assert out["files_modified"] == ["/home/myuser/now.txt"]
+
+
+def test_remote_patch_replace_preserves_backend_absolute_path(monkeypatch):
+    """replace-mode patch should pass backend paths through like write_file."""
+    import json
+
+    ops = _FakeRemoteFileOps()
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+    monkeypatch.setattr(
+        ft,
+        "_resolve_path_for_task",
+        lambda filepath, task_id="default": Path(
+            "/System/Volumes/Data/home/myuser/app.py"
+        ),
+    )
+
+    out = json.loads(
+        ft.patch_tool(
+            mode="replace",
+            path="/home/myuser/app.py",
+            old_string="old",
+            new_string="new",
+            task_id="remote-task",
+        )
+    )
+
+    assert not out.get("error"), out
+    assert "_warning" not in out
+    assert ops.patch_paths == ["/home/myuser/app.py"]
+    assert out["resolved_path"] == "/home/myuser/app.py"
+    assert out["files_modified"] == ["/home/myuser/app.py"]
+
+
+def test_remote_write_file_uses_backend_cwd_without_host_resolve(monkeypatch):
+    """Relative remote paths are joined lexically to the backend cwd."""
+    import json
+
+    ops = _FakeRemoteFileOps()
+    ops.cwd = "/home/myuser/project"
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+    monkeypatch.setattr(
+        ft,
+        "_resolve_path_for_task",
+        lambda filepath, task_id="default": Path(
+            "/System/Volumes/Data/home/myuser/project/nested/now.txt"
+        ),
+    )
+
+    out = json.loads(
+        ft.write_file_tool(
+            "nested/now.txt",
+            "stamp\n",
+            task_id="remote-task",
+        )
+    )
+
+    expected = "/home/myuser/project/nested/now.txt"
+    assert not out.get("error"), out
+    assert "_warning" not in out
+    assert ops.write_paths == [expected]
+    assert out["resolved_path"] == expected
+    assert out["files_modified"] == [expected]
+
+
+def test_remote_relative_without_backend_root_does_not_use_host_cwd(monkeypatch, tmp_path):
+    """Without a remote root, relative paths stay relative rather than host-anchored."""
+    host_cwd = tmp_path / "host-project"
+    host_cwd.mkdir()
+    monkeypatch.chdir(host_cwd)
+    ops = _FakeRemoteFileOps()
+
+    assert (
+        ft._lexical_path_for_task("nested/app.py", "remote-task", ops)
+        == "nested/app.py"
+    )
+
+
+def test_remote_read_and_write_use_same_backend_file_state_key(monkeypatch):
+    """Remote reads and writes must share the same cross-agent file-state path."""
+    import json
+
+    ops = _FakeRemoteFileOps()
+    recorded: list[str] = []
+    checked: list[str] = []
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+    monkeypatch.setattr(
+        ft,
+        "_resolve_path_for_task",
+        lambda filepath, task_id="default": Path("/System/Volumes/Data/home/u/app.py"),
+    )
+    monkeypatch.setattr(
+        ft.file_state,
+        "record_read",
+        lambda task_id, path, partial=False: recorded.append(path),
+    )
+    monkeypatch.setattr(
+        ft.file_state,
+        "check_stale",
+        lambda task_id, path: checked.append(path) or None,
+    )
+
+    assert not json.loads(
+        ft.read_file_tool("/home/u/app.py", task_id="remote-task")
+    ).get("error")
+    assert not json.loads(
+        ft.write_file_tool("/home/u/app.py", "new", task_id="remote-task")
+    ).get("error")
+
+    assert ops.read_paths == ["/home/u/app.py"]
+    assert ops.write_paths == ["/home/u/app.py"]
+    assert recorded == ["/home/u/app.py"]
+    assert checked == ["/home/u/app.py"]
+
+
+def test_remote_read_docx_does_not_use_host_extractor(monkeypatch, tmp_path):
+    """Host document extraction should not run for non-local backend paths."""
+    import json
+    import tools.read_extract as read_extract
+
+    ops = _FakeRemoteFileOps()
+    calls: list[str] = []
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+    monkeypatch.setattr(
+        ft,
+        "_resolve_path_for_task",
+        lambda filepath, task_id="default": tmp_path / "remote.docx",
+    )
+
+    def host_extract(path: str):
+        calls.append(path)
+        raise read_extract.ExtractionError("host extractor should not run")
+
+    monkeypatch.setattr(read_extract, "extract_document_text", host_extract)
+
+    out = json.loads(ft.read_file_tool("/home/u/remote.docx", task_id="remote-task"))
+
+    assert not out.get("error"), out
+    assert calls == []
+    assert ops.read_paths == ["/home/u/remote.docx"]
+
+
+def test_remote_file_state_records_backend_paths_with_real_registry(monkeypatch):
+    """The registry should track backend paths even when host stat cannot see them."""
+    import json
+
+    ft.file_state.get_registry().clear()
+    ops = _FakeRemoteFileOps()
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+
+    out = json.loads(ft.read_file_tool("/remote/shared.txt", task_id="agent-a"))
+    ft.file_state.note_write("agent-b", "/remote/shared.txt")
+    warn = ft.file_state.check_stale("agent-a", "/remote/shared.txt")
+
+    assert not out.get("error"), out
+    assert "/remote/shared.txt" in ft.file_state.known_reads("agent-a")
+    assert warn is not None
+    assert "sibling subagent" in warn
+
+
+def test_file_ops_without_real_env_are_host_backed():
+    """MagicMock-style fakes should not fabricate a remote backend env."""
+    from unittest.mock import MagicMock
+
+    ops = MagicMock()
+
+    assert ft._file_ops_uses_host_paths(ops)
+    assert ft._resolve_path_for_file_ops("/tmp/out.txt", "default", ops) == "/tmp/out.txt"
+
+
+def test_file_state_does_not_record_failed_remote_read(monkeypatch):
+    """Failed backend reads must not become stale-write baselines."""
+    import json
+    from tools.file_operations import ReadResult
+
+    class FailingRemoteOps(_FakeRemoteFileOps):
+        def read_file(self, path: str, offset: int = 1, limit: int = 500):
+            self.read_paths.append(path)
+            return ReadResult(error=f"File not found: {path}")
+
+    ft.file_state.get_registry().clear()
+    ops = FailingRemoteOps()
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+
+    out = json.loads(ft.read_file_tool("/remote/missing.txt", task_id="agent-a"))
+
+    assert "error" in out
+    assert ops.read_paths == ["/remote/missing.txt"]
+    assert "/remote/missing.txt" not in ft.file_state.known_reads("agent-a")
+
+
+def test_remote_read_does_not_host_resolve_before_backend_detection(monkeypatch):
+    """Remote reads should classify paths after backend detection, not host resolve."""
+    import json
+
+    ops = _FakeRemoteFileOps()
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+
+    def host_resolve_should_not_run(filepath, task_id="default"):
+        raise AssertionError("remote read should not host-resolve before backend detection")
+
+    monkeypatch.setattr(ft, "_resolve_path_for_task", host_resolve_should_not_run)
+
+    out = json.loads(ft.read_file_tool("/home/u/app.py", task_id="remote-task"))
+
+    assert not out.get("error"), out
+    assert ops.read_paths == ["/home/u/app.py"]
+
+
+def test_remote_write_after_remote_write_ignores_host_mtime(monkeypatch, tmp_path):
+    """Remote writes must not seed per-task stale checks from host mtimes."""
+    import json
+
+    with ft._read_tracker_lock:
+        ft._read_tracker.clear()
+    ft.file_state.get_registry().clear()
+
+    host_path = tmp_path / "home" / "u" / "app.py"
+    host_path.parent.mkdir(parents=True)
+    host_path.write_text("host v1\n")
+
+    ops = _FakeRemoteFileOps()
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+    monkeypatch.setattr(
+        ft,
+        "_resolve_path_for_task",
+        lambda filepath, task_id="default": host_path,
+    )
+
+    assert not json.loads(
+        ft.write_file_tool("/home/u/app.py", "remote v1\n", task_id="remote-task")
+    ).get("error")
+
+    new_ts = host_path.stat().st_mtime + 10
+    os.utime(host_path, (new_ts, new_ts))
+
+    out = json.loads(
+        ft.write_file_tool("/home/u/app.py", "remote v2\n", task_id="remote-task")
+    )
+
+    assert not out.get("error"), out
+    assert "_warning" not in out
+    assert ops.write_paths == ["/home/u/app.py", "/home/u/app.py"]
+
+
+def test_read_binary_extension_does_not_create_backend(monkeypatch):
+    """Cheap binary read rejection should not start a remote backend."""
+    import json
+
+    calls = []
+    monkeypatch.setattr(
+        ft,
+        "_get_file_ops",
+        lambda task_id="default": calls.append(task_id) or _FakeRemoteFileOps(),
+    )
+
+    out = json.loads(ft.read_file_tool("/tmp/picture.png", task_id="remote-task"))
+
+    assert "binary file" in out["error"]
+    assert calls == []
+
+
+def test_remote_tilde_hermes_path_hits_container_mirror_guard(monkeypatch):
+    """Remote '~/.hermes' writes should hit the Docker mirror soft guard."""
+    import json
+
+    calls = []
+    monkeypatch.setattr(
+        ft,
+        "_get_file_ops",
+        lambda task_id="default": calls.append(task_id) or _FakeRemoteFileOps(),
+    )
+    monkeypatch.setattr(
+        ft,
+        "_get_container_mirror_prefix_for_task",
+        lambda task_id="default": "/root/.hermes",
+    )
+    monkeypatch.setattr(
+        ft,
+        "_expand_tilde",
+        lambda path: path.replace("~", "/Users/host", 1),
+    )
+
+    out = json.loads(
+        ft.write_file_tool("~/.hermes/SOUL.md", "x", task_id="remote-task")
+    )
+
+    assert "Sandbox-mirror write blocked" in out["error"]
+    assert calls == []
+
+
+def test_remote_lexical_paths_stay_posix_on_windows_host(monkeypatch):
+    """Remote lexical resolution must not inherit host path semantics."""
+    ops = _FakeRemoteFileOps()
+    ops.cwd = "/home/myuser/project"
+    monkeypatch.setattr(ft.os, "path", ntpath)
+
+    assert (
+        ft._lexical_path_for_task("/home/myuser/app.py", "remote-task", ops)
+        == "/home/myuser/app.py"
+    )
+    assert (
+        ft._lexical_path_for_task("nested/app.py", "remote-task", ops)
+        == "/home/myuser/project/nested/app.py"
+    )
+
+
+def test_remote_lexical_prefers_registered_cwd_when_live_cwd_owned_by_other_session(monkeypatch):
+    """A stale shared backend cwd from another session must not shadow this session."""
+    ops = _FakeRemoteFileOps()
+    ops.env = _FakeOwnedEnv("/home/b/project", "sess-b")
+    ops.cwd = "/home/b/project"
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    terminal_tool.register_task_env_overrides("sess-a", {"cwd": "/home/a/project"})
+
+    assert (
+        ft._lexical_path_for_task("nested/app.py", "sess-a", ops)
+        == "/home/a/project/nested/app.py"
+    )
+
+
+def test_remote_registered_posix_cwd_survives_windows_host(monkeypatch):
+    """A Linux backend cwd remains absolute even when the host path module is Windows."""
+    ops = _FakeRemoteFileOps()
+    ops.env = _FakeOwnedEnv("/home/b/project", "sess-b")
+    ops.cwd = "/home/b/project"
+    monkeypatch.setattr(ft.os, "path", ntpath)
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    terminal_tool.register_task_env_overrides("sess-a", {"cwd": "/home/a/project"})
+
+    assert (
+        ft._lexical_path_for_task("nested/app.py", "sess-a", ops)
+        == "/home/a/project/nested/app.py"
+    )
+
+
+def test_remote_search_uses_registered_cwd_when_live_cwd_owned_by_other_session(monkeypatch):
+    """search_files should not inherit another session's shared backend cwd."""
+    import json
+
+    ops = _FakeRemoteFileOps()
+    ops.env = _FakeOwnedEnv("/home/b/project", "sess-b")
+    ops.cwd = "/home/b/project"
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    terminal_tool.register_task_env_overrides("sess-a", {"cwd": "/home/a/project"})
+
+    out = json.loads(
+        ft.search_tool(
+            pattern="needle",
+            path="nested",
+            task_id="sess-a",
+        )
+    )
+
+    assert not out.get("error"), out
+    assert ops.search_paths == ["/home/a/project/nested"]
+
+
+def test_local_search_keeps_caller_relative_path(monkeypatch, tmp_path):
+    """Host-backed search preserves the caller path shape for local results."""
+    import json
+    from tools.environments.local import LocalEnvironment
+
+    class RecordingLocalOps(_FakeRemoteFileOps):
+        def __init__(self):
+            super().__init__()
+            self.env = LocalEnvironment(cwd=str(tmp_path))
+
+    (tmp_path / "nested").mkdir()
+    monkeypatch.chdir(tmp_path)
+    ops = RecordingLocalOps()
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+
+    out = json.loads(ft.search_tool(pattern="needle", path="nested", task_id="default"))
+
+    assert not out.get("error"), out
+    assert ops.search_paths == ["nested"]
+
+
+def test_remote_write_file_does_not_expand_tilde_to_host_home(monkeypatch):
+    """Remote '~' paths should be expanded by the backend, not the host."""
+    import json
+
+    ops = _FakeRemoteFileOps()
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+    monkeypatch.setattr(ft, "_expand_tilde", lambda path: path.replace("~", "/Users/host", 1))
+
+    out = json.loads(
+        ft.write_file_tool(
+            "~/now.txt",
+            "stamp\n",
+            task_id="remote-task",
+        )
+    )
+
+    assert not out.get("error"), out
+    assert "_warning" not in out
+    assert ops.write_paths == ["~/now.txt"]
+    assert out["resolved_path"] == "~/now.txt"
+    assert out["files_modified"] == ["~/now.txt"]
+
+
+def test_remote_lexical_tilde_paths_are_left_for_backend_expansion():
+    """Do not normalize '~' paths; normpath can collapse them to non-tilde paths."""
+    ops = _FakeRemoteFileOps()
+
+    assert ft._lexical_path_for_task("~/../x", "remote-task", ops) == "~/../x"
+    assert ft._lexical_path_for_task("~/a/../b", "remote-task", ops) == "~/a/../b"
+
+
+def test_remote_patch_v4a_rewrites_relative_headers_to_backend_cwd(monkeypatch):
+    """V4A headers are rewritten before reaching a non-local backend."""
+    import json
+
+    ops = _FakeRemoteFileOps()
+    ops.cwd = "/home/myuser/project"
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+
+    out = json.loads(
+        ft.patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Update File: nested/app.py\n"
+                "@@\n"
+                "-old\n"
+                "+new\n"
+                "*** End Patch\n"
+            ),
+            task_id="remote-task",
+        )
+    )
+
+    assert not out.get("error"), out
+    assert len(ops.patch_payloads) == 1
+    assert "*** Update File: /home/myuser/project/nested/app.py" in ops.patch_payloads[0]
+    assert out["files_modified"] == ["/home/myuser/project/nested/app.py"]
+
+
+def test_remote_patch_v4a_reports_move_as_resolved_pair(monkeypatch):
+    """Successful V4A moves should preserve the parser's 'src -> dst' shape."""
+    import json
+
+    ops = _FakeRemoteFileOps()
+    ops.cwd = "/home/myuser/project"
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+
+    out = json.loads(
+        ft.patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Move File: old.py -> nested/new.py\n"
+                "*** End Patch\n"
+            ),
+            task_id="remote-task",
+        )
+    )
+
+    assert not out.get("error"), out
+    assert len(ops.patch_payloads) == 1
+    assert (
+        "*** Move File: /home/myuser/project/old.py -> "
+        "/home/myuser/project/nested/new.py"
+    ) in ops.patch_payloads[0]
+    assert out["files_modified"] == [
+        "/home/myuser/project/old.py -> /home/myuser/project/nested/new.py"
+    ]
+
+
+def test_remote_patch_v4a_move_marks_individual_paths_stale(monkeypatch):
+    """Internal stale markers should receive real paths, not display strings."""
+    import json
+
+    ops = _FakeRemoteFileOps()
+    ops.cwd = "/home/myuser/project"
+    marked: list[str] = []
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+    monkeypatch.setattr(
+        ft,
+        "_mark_verification_stale",
+        lambda task_id, paths, session_id=None: marked.extend(paths),
+    )
+
+    out = json.loads(
+        ft.patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Move File: old.py -> nested/new.py\n"
+                "*** End Patch\n"
+            ),
+            task_id="remote-task",
+        )
+    )
+
+    assert not out.get("error"), out
+    assert out["files_modified"] == [
+        "/home/myuser/project/old.py -> /home/myuser/project/nested/new.py"
+    ]
+    assert marked == [
+        "/home/myuser/project/old.py",
+        "/home/myuser/project/nested/new.py",
+    ]
+
+
+def test_patch_v4a_rejects_traversal_in_move_header(monkeypatch):
+    """Traversal in either side of a V4A Move header must be blocked."""
+    import json
+    from unittest.mock import MagicMock
+
+    ops = MagicMock()
+    ops.env = object()
+    monkeypatch.setattr(ft, "_get_file_ops", lambda task_id="default": ops)
+
+    out = json.loads(
+        ft.patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Move File: ../../../etc/shadow -> safe.txt\n"
+                "*** End Patch\n"
+            ),
+            task_id="remote-task",
+        )
+    )
+
+    assert "error" in out
+    assert "traversal" in out["error"].lower()
+    ops.patch_v4a.assert_not_called()

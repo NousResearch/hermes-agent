@@ -116,7 +116,7 @@ gateway:
     denied_singular: ❌ கட்டளை மறுக்கப்பட்டது.
     denied_plural: ❌ கட்டளைகள் மறுக்கப்பட்டன ({count} கட்டளைகள்).
   fast:
-    not_supported: (சந்தா சேர்க்கப்பட்டது - {task_id} முடிந்ததும் அல்லது தடுக்கப்படும்போது உங்களுக்கு அறிவிக்கப்படும்)
+    not_supported: முன்னுரிமை செயலாக்கத்தை ஆதரிக்கும் OpenAI மாடல்களுக்கு மட்டுமே ⚡ /fast கிடைக்கும்.
     status: '⚡ Priority Processing
 
 
@@ -328,12 +328,18 @@ gateway:
     no_named_sessions: 'No named sessions found.
 
       Use `/title My Session` to name your current session, then `/resume My Session` to return to it later.'
-    list_header: செயல்பாட்டில் உள்ள முகவர்கள் மற்றும் பணிகள்
+    list_header: '📋 **Named Sessions**
+
+      '
     list_item: • **{title}**{preview_part}
     list_item_numbered: '{index}. **{title}**{preview_part}'
     list_preview_suffix: — _{preview}_
-    list_footer: கட்டளைகள் அங்கீகரிக்கப்பட்டன (இந்த அமர்வுக்கான அமைப்புமுறை அங்கீகரிக்கப்பட்டது) ({count} கட்டளைகள்). முகவர் மீண்டும் செயல்படத் தொடங்குகிறது...
-    list_footer_numbered: கட்டளைகள் முழுமையாக அங்கீகரிக்கப்பட்டன ({count} கட்டளைகள்). முகவர் மீண்டும் செயல்படத் தொடங்குகிறது...
+    list_footer: '
+
+      Usage: `/resume <session name>`'
+    list_footer_numbered: '
+
+      Usage: `/resume <session name>` or `/resume <number>` (e.g. `/resume 1` for the most recent)'
     list_failed: 'அமர்வுகளை பட்டியலிட முடியவில்லை: {error}'
     out_of_range: 'Resume index {index} is out of range.
 
@@ -342,15 +348,14 @@ gateway:
 
       Use `/resume` with no arguments to see available sessions.'
     already_on: 📌 Already on session **{name}**.
-    switch_failed: 'திறன் கட்டளைகள்:'
+    switch_failed: அமர்வை மாற்ற முடியவில்லை.
     resumed_one: ↻ Resumed session **{title}** ({count} message). Conversation restored.
     resumed_many: ↻ Resumed session **{title}** ({count} messages). Conversation restored.
     resumed_no_count: ↻ Resumed session **{title}**. Conversation restored.
   retry:
-    no_previous: '{model} failed ({error}). Recovered using your main model — context is intact — but you may want to check auxiliary.compression.model in config.yaml. அமைக்கப்பட்ட சுருக்க மாதிரி {model}
-      தோல்வியடைந்தது ({error}). உங்கள் முதன்மை மாதிரியைப் பயன்படுத்தி மீட்கப்பட்டது — சூழல் அப்படியே உள்ளது — ஆனால் நீங்கள் config.yaml-இல் உள்ள auxiliary.compression.model என்பதைச் சரிபார்க்கலாம்.'
+    no_previous: மீண்டும் முயற்சிக்க முந்தைய செய்தி எதுவும் இல்லை.
   rollback:
-    not_enabled: பிழைத்திருத்த அறிக்கை பதிவேற்றப்பட்டது
+    not_enabled: "Checkpoints are not enabled.\nEnable in config.yaml:\n```\ncheckpoints:\n  enabled: true\n```"
     none_found: '{cwd}க்கான சோதனைச் சாவடிகள் எதுவும் இல்லை'
     invalid_number: தவறான சோதனைச் சாவடி எண்.1-{max} ஐப் பயன்படுத்தவும்.
     restored: '✅ Restored to checkpoint {hash}: {reason}
@@ -363,9 +368,8 @@ gateway:
 
       Cron jobs and cross-platform messages will be delivered here.'
   status:
-    header: 'Example: {preview} உதாரனம் {preview}'
-    matrix_scope_header: 'Send any message to continue, or wait — I''ll take the next step on the next turn. இலக்கு மீண்டும் தொடங்கப்பட்டது: {goal} தொடர ஏதேனும் செய்தியை அனுப்பவும் அல்லது காத்திருக்கவும்
-      — அடுத்த கட்டத்தில் நான் அடுத்த நடவடிக்கையை மேற்கொள்வேன்.'
+    header: 📊 **Hermes Gateway Status**
+    matrix_scope_header: '**Matrix scope:**'
     matrix_scope_room: 'அறை: {room}'
     matrix_scope_room_id: 'room_id: {room_id}'
     matrix_scope_thread: 'thread_id: {thread_id}'
@@ -381,29 +385,20 @@ gateway:
     context_used: '**Context:** ~{used} tokens'
     tokens: '**Cumulative API tokens (re-sent each call):** {tokens}'
     agent_running: '**Agent Running:** {state}'
-    state_yes: 'பகுப்பாய்வுத் தகவல் காட்சி: {platform}-க்கு OFF செய்யப்பட்டது'
-    state_no: /reasoning reset --global is not supported. Use /reasoning <level> --global to change the global default. /reasoning reset --global என்பது ஆதரிக்கப்படவில்லை. பொதுவான இயல்புநிலையை (global default)
-      மாற்ற, /reasoning <level> --global என்பதைப் பயன்படுத்தவும்.
+    state_yes: ஆம் ⚡
+    state_no: இல்லை
     queued: '**Queued follow-ups:** {count}'
     platforms: '**Connected Platforms:** {platforms}'
   stop:
-    stopped_pending: '{effort} (session only — config save failed) _(takes effect on next message)_ பகுப்பாய்வு முயற்சி (reasoning effort) இவ்வாறு அமைக்கப்பட்டது: {effort} (இந்த அமர்வுக்கு மட்டும் — அமைப்பில்
-      சேமிக்க முடியவில்லை) _(அடுத்த செய்தியில் இது நடைமுறைக்கு வரும்)_'
-    stopped: '{effort} (session only — add --global to persist) _(takes effect on next message)_ பகுப்பாய்வு முயற்சி (reasoning effort) இவ்வாறு அமைக்கப்பட்டது: {effort} (இந்த அமர்வுக்கு மட்டும் — நிரந்தரமாக்க
-      --global என்பதைச் சேர்க்கவும்) _(அடுத்த செய்தியில் இது நடைமுறைக்கு வரும்)_'
-    no_active: '/reload-mcp calls will run without confirmation. Re-enable via approvals.mcp_reload_confirm: true in config.yaml. இனிவரும் /reload-mcp அழைப்புகள் உறுதிப்படுத்தல் இல்லாமலேயே இயங்கும். மீண்டும்
-      செயல்படுத்த, config.yaml-இல் approvals.mcp_reload_confirm: true என்பதை அமைக்கவும்.'
+    stopped_pending: ⚡ நிறுத்தப்பட்டது.முகவர் இன்னும் தொடங்கவில்லை - இந்த அமர்வை நீங்கள் தொடரலாம்.
+    stopped: ⚡ நிறுத்தப்பட்டது.இந்த அமர்வை நீங்கள் தொடரலாம்.
+    no_active: நிறுத்த செயலில் பணி இல்லை.
   title:
-    db_unavailable: 'Reloading MCP servers rebuilds the tool set for this session and invalidates the provider prompt cache — the next message will re-send full input tokens. On long-context or high-reasoning
-      models this can be expensive. Choose: • Approve Once — reload now (5/7) • Always Approve — reload now and silence this prompt permanently • Cancel — leave MCP tools unchanged _Text fallback: reply
-      /approve , /always , or /cancel ._ /reload-mcp-ஐ உறுதிப்படுத்தவும் MCP சேவையகங்களை மீண்டும் ஏற்றும்போது (reload), இந்த அமர்வுக்கான கருவிகளின் தொகுப்பு (tool set) புதிதாக உருவாக்கப்படும் மற்றும் வழங்குநரின்
-      ''prompt cache'' செல்லாததாக்கப்படும் — அடுத்த செய்தியில் முழு உள்ளீட்டு டோக்கன்களும் (input tokens) மீண்டும் அனுப்பப்படும். நீண்ட சூழல் (long-context) அல்லது அதிக பகுத்தறிவுத் திறன் கொண்ட மாதிரிகளில்
-      (high-reasoning models) இது அதிக செலவு பிடிக்கக்கூடியதாக (அதாவது அதிக டோக்கன்களைப் பயன்படுத்துவதாக) இருக்கலாம். தேர்வு செய்யவும்: • ஒருமுறை அனுமதி — இப்போதே மீண்டும் ஏற்றவும் (5/7) • எப்போதும் அனுமதி
-      — இப்போதே மீண்டும் ஏற்றவும், இனி இந்தக் குறிப்பை (prompt) காட்ட வேண்டாம் • ரத்துசெய் — MCP கருவிகளை மாற்றாமல் அப்படியே விடவும் _மாற்று வழி: பதிலளிக்கவும்_ /approve , /always , அல்லது /cancel ._'
+    db_unavailable: அமர்வு தரவுத்தளம் கிடைக்கவில்லை.
     warn_prefix: ⚠️ {error}
-    empty_after_clean: 🔧 {tools} tool(s) available from {servers} server(s) servers} சேவையக(ங்)களிலிருந்து {tools} கருவி(கள்) கிடைக்கின்றன
+    empty_after_clean: ⚠️ சுத்தம் செய்த பிறகு தலைப்பு காலியாக உள்ளது.அச்சிடக்கூடிய எழுத்துக்களைப் பயன்படுத்தவும்.
     set_to: '✏️ Session title set: **{title}**'
-    not_found: 📚 {count} skill(s) available {count} திறன்(கள்) கிடைக்கின்றன
+    not_found: தரவுத்தளத்தில் அமர்வு காணப்படவில்லை.
     current_with_title: '📌 Session: `{session_id}`
 
       Title: **{title}**'
@@ -411,14 +406,32 @@ gateway:
 
       No title set. Usage: `/title My Session Name`'
   topic:
-    not_telegram_dm: '⚠️ Title rejected: {error} தலைப்பு நிராகரிக்கப்பட்டது: {error}'
-    no_session_db: ⚠️ {error} — session started untitled. {error} — அமர்வு தலைப்பு இல்லாமல் தொடங்கப்பட்டது.
-    unauthorized: ⚠️ Title is empty after cleanup — session started untitled. சுத்திகரிப்புக்குப் பிறகு தலைப்பு காலியாக உள்ளது — அமர்வு பெயரிடப்படாமல் தொடங்கப்பட்டது.
-    restore_needs_topic: '✦ Tip: {tip} குறிப்பு: {tip}'
-    topics_disabled: 'hermes gateway restart . கேட்வே (gateway) மறுதொடக்கம் செய்யப்படுகிறது. 60 வினாடிகளுக்குள் உங்களுக்கு அறிவிப்பு வரவில்லை என்றால், கன்சோலில் இருந்து பின்வரும் கட்டளையைப் பயன்படுத்தி
-      மறுதொடக்கம் செய்யவும்: hermes gateway restart'
-    topics_user_disallowed: '/resume arguments: {error}. Use quotes around titles with spaces, for example: /resume "Project A Plan" . /resume கட்டளையின் அளபுருக்களைப் (arguments) பகுப்பாய்வு செய்ய முடியவில்லை:
-      {error}. இடைவெளிகளைக் கொண்ட தலைப்புகளை மேற்கோள் குறிகளுக்குள் (quotes) குறிப்பிடவும், உதாரணமாக: /resume "Project A Plan"'
+    not_telegram_dm: டெலிகிராம் தனிப்பட்ட அரட்டைகளில் மட்டுமே /topic கட்டளை கிடைக்கும்.
+    no_session_db: அமர்வு தரவுத்தளம் கிடைக்கவில்லை.
+    unauthorized: இந்த போட்டில் / தலைப்பைப் பயன்படுத்த உங்களுக்கு அங்கீகாரம் இல்லை.
+    restore_needs_topic: To restore a session, first create or open a Telegram topic, then send /topic <session-id> inside that topic. To create a new topic, open All Messages and send any message there.
+    topics_disabled: 'Telegram topics are not enabled for this bot yet.
+
+
+      How to enable them:
+
+      1. Open @BotFather.
+
+      2. Choose your bot.
+
+      3. Open Bot Settings → Threads Settings.
+
+      4. Turn on Threaded Mode and make sure users are allowed to create new threads.
+
+
+      Then send /topic again.'
+    topics_user_disallowed: 'Telegram topics are enabled, but users are not allowed to create topics.
+
+
+      Open @BotFather → choose your bot → Bot Settings → Threads Settings, then turn off ''Disallow users to create new threads''.
+
+
+      Then send /topic again.'
     enable_failed: 'டெலிகிராம் தலைப்பு பயன்முறையை இயக்க முடியவில்லை: {error}'
     bound_status: 'This topic is linked to:
 
@@ -430,13 +443,13 @@ gateway:
       Use /new to replace this topic with a fresh session.
 
       For parallel work, open All Messages and send a message there to create another topic.'
-    thread_ready: '/resume --cross-room {name} if you intentionally want to resume it here. Matrix /resume தடுக்கப்பட்டது: பெயரிடப்பட்ட இந்த அமர்வுக்குப் பதிவுசெய்யப்பட்ட அறைத் தொடக்கம் (origin) எதுவும்
-      இல்லை, எனவே Hermes இயல்பாகவே தற்போதைய அறைக்குள் அதை மீண்டும் தொடங்காது. அறை எல்லைகளைத் தாண்டிச் செயல்பட நீங்கள் விரும்பினால் /resume --cross-room {name} என்பதைப் பயன்படுத்தவும்.'
-    untitled_session: 'Future messages in this room will use that transcript until /reset or another /resume . அறை-தாண்டிய (Cross-room) மறுதொடக்கம்: Matrix அறை {room}-க்குள் {title} மீண்டும் தொடங்கப்பட்டது.
-      /reset அல்லது மற்றொரு /resume கட்டளை வரும் வரை, இந்த அறையில் உள்ள எதிர்காலச் செய்திகள் அந்தப் பதிவையே (transcript) பயன்படுத்தும்.'
+    thread_ready: 'Telegram multi-session topics are enabled.
+
+
+      This topic will be used as an independent Hermes session. Use /new to replace this topic''s current session. For parallel work, open All Messages and send a message there to create another topic.'
+    untitled_session: பெயரிடப்படாத அமர்வு
   undo:
-    nothing: Use /title My Session to name your current session, then /resume My Session to return to it later. பெயரிடப்பட்ட அமர்வுகள் எதுவும் காணப்படவில்லை. உங்கள் தற்போதைய அமர்வுக்குப் பெயரிட /title My
-      Session என்பதையும், பின்னர் அதை மீண்டும் தொடர /resume My Session என்பதையும் பயன்படுத்தவும்.
+    nothing: செயல்தவிர்க்க எதுவும் இல்லை.
     removed: '↩️ Undid {turns} turn(s) ({count} message(s)).
 
       Backed up to: "{preview}"
@@ -444,16 +457,15 @@ gateway:
       Copy/edit the text above and send it to re-prompt from here.'
     invalid_count: தவறான எண்ணிக்கை "{arg}" — பயன்படுத்து /undo அல்லது /undo N.
   update:
-    platform_not_messaging: (Keep as is)
-    not_git_repo: 'Usage: /resume <session name> ???'
-    hermes_cmd_not_found: 'Usage: /resume <session name> or /resume <number> (e.g. /resume 1 for the most recent) பயன்பாடு: /resume <session name> அல்லது /resume <number> (எ.கா. /resume 1 மிகச் சமீபத்திய
-      அமர்வுக்கு)'
+    platform_not_messaging: ✗ /update is only available from messaging platforms. Run `hermes update` from the terminal.
+    not_git_repo: ✗ ஜிட் களஞ்சியம் அல்ல - புதுப்பிக்க முடியாது.
+    hermes_cmd_not_found: ✗ Could not locate the `hermes` command. Hermes is running, but the update command could not find the executable on PATH or via the current Python interpreter. Try running `hermes
+      update` manually in your terminal.
     start_failed: '✗ புதுப்பிப்பைத் தொடங்குவதில் தோல்வி: {error}'
-    starting: Use /resume with no arguments to see available sessions. '{name}' உடன் பொருந்தக்கூடிய அமர்வு எதுவும் கண்டறியப்படவில்லை. கிடைக்கக்கூடிய அமர்வுகளைப் பார்க்க, எந்தக் கூடுதல் அளபுருக்களும் (arguments)
-      இல்லாமல் /resume என்பதைப் பயன்படுத்தவும்.
+    starting: ⚕ ஹெர்ம்ஸ் புதுப்பிப்பைத் தொடங்குகிறேன்... முன்னேற்றத்தை இங்கே ஸ்ட்ரீம் செய்கிறேன்.
   usage:
     rate_limits: ⏱️ **Rate Limits:** {state}
-    header_session: '{title} என்ற அமர்வு மீண்டும் தொடங்கப்பட்டது ({count} செய்தி). உரையாடல் மீட்டமைக்கப்பட்டது.'
+    header_session: 📊 **Session Token Usage**
     label_model: 'மாதிரி: `{model}`'
     label_input_tokens: 'உள்ளீடு டோக்கன்கள்: {count}'
     label_cache_read: 'கேச் ரீட் டோக்கன்கள்: {count}'
@@ -462,22 +474,22 @@ gateway:
     label_total: 'மொத்தம்: {count}'
     label_api_calls: 'API அழைப்புகள்: {count}'
     label_cost: 'விலை: {prefix}${amount}'
-    label_cost_included: 'தலைப்பு: {title}'
+    label_cost_included: 'செலவு: சேர்க்கப்பட்டுள்ளது'
     label_context: 'சூழல்: {used} / {total} ({pct}%)'
     label_compressions: 'சுருக்கங்கள்: {count}'
-    header_session_info: '{model} மாதிரி (Model): {model}'
+    header_session_info: 📊 **Session Info**
     label_messages: 'செய்திகள்: {count}'
     label_estimated_context: 'மதிப்பிடப்பட்ட சூழல்: ~{count} டோக்கன்கள்'
-    detailed_after_first: 'சூழல் (Context): ~{used} டோக்கன்கள்'
-    no_data: 'ஒட்டுமொத்த API டோக்கன்கள் (ஒவ்வொரு அழைப்பிலும் மீண்டும் அனுப்பப்படுபவை): {tokens}'
+    detailed_after_first: _(முதல் முகவர் பதிலுக்குப் பிறகு விரிவான பயன்பாடு கிடைக்கும்)_
+    no_data: இந்த அமர்வுக்கான பயன்பாட்டுத் தரவு எதுவும் இல்லை.
   credits:
-    not_logged_in: 'ஏஜென்ட் இயங்குகிறது: {state}'
+    not_logged_in: Nous போர்ட்டலில் உள்நுழையவில்லை.உங்கள் கிரெடிட் பேலன்ஸ் மற்றும் டாப் அப் பார்க்க உள்நுழையவும்.
   verbose:
-    not_enabled: 'வரிசையில் உள்ள நடவடிக்கைகள்: {count}'
-    mode_off: 'இணைக்கப்பட்ட தளங்கள்: {platforms}'
-    mode_new: 'அமர்வு தலைப்பு அமைக்கப்பட்டது: {title}'
-    mode_all: '{session_id} Title: {title} (6/7) அமர்வு: {session_id} தலைப்பு: {title} (6/7)'
-    mode_verbose: '{session_id} No title set. Usage: /title My Session Name அமர்வு: {session_id}'
+    not_enabled: "The `/verbose` command is not enabled for messaging platforms.\n\nEnable it in `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
+    mode_off: '⚙️ Tool progress: **OFF** — no tool activity shown.'
+    mode_new: '⚙️ Tool progress: **NEW** — shown when tool changes (preview length: `display.tool_preview_length`, default 40).'
+    mode_all: '⚙️ Tool progress: **ALL** — every tool call shown (preview length: `display.tool_preview_length`, default 40).'
+    mode_verbose: '⚙️ Tool progress: **VERBOSE** — every tool call with full arguments.'
     saved_suffix: _(saved for **{platform}** — takes effect on next message)_
     save_failed: '_(கட்டமைப்பில் சேமிக்க முடியவில்லை: {error})_'
   voice:

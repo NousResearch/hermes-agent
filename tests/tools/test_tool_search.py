@@ -536,3 +536,143 @@ class TestRegression_ToolsetScoping:
         # core tools are never deferrable
         assert "terminal" not in names
 
+
+# ---------------------------------------------------------------------------
+# defer_core=True paths
+# ---------------------------------------------------------------------------
+
+
+class TestDeferCoreTrue:
+    """Tests for the defer_core=True configuration paths.
+
+    When defer_core=True, tools listed in _HERMES_DEFERRABLE_CORE_TOOLS
+    become eligible for deferral, while tools in _HERMES_ALWAYS_CORE_TOOLS
+    remain permanently visible.
+    """
+
+    @staticmethod
+    def _defer_core_config():
+        from tools.tool_search import ToolSearchConfig
+        return ToolSearchConfig.from_raw({"enabled": "on", "defer_core": True})
+
+    def test_is_deferrable_with_defer_core_true_deferrable_core_tool(self):
+        """A tool in _HERMES_DEFERRABLE_CORE_TOOLS returns True when defer_core=True."""
+        from tools.tool_search import is_deferrable_tool_name
+        from toolsets import _HERMES_DEFERRABLE_CORE_TOOLS
+        cfg = self._defer_core_config()
+        # write_file is in _HERMES_DEFERRABLE_CORE_TOOLS (not in _HERMES_ALWAYS_CORE_TOOLS)
+        # Without a registry entry it won't be deferrable (registry returns False for unknowns),
+        # but register it first so the registry check passes.
+        from tools.registry import registry
+
+        def _handler(args, task_id=None, **kw):
+            import json
+            return json.dumps({"ok": True})
+
+        registry.register(
+            name="write_file",
+            handler=_handler,
+            schema=_td("write_file", "Write a file"),
+            toolset="file",
+        )
+        assert is_deferrable_tool_name("write_file", config=cfg), (
+            "write_file (in _HERMES_DEFERRABLE_CORE_TOOLS) must be deferrable when defer_core=True"
+        )
+
+    def test_is_deferrable_with_defer_core_true_always_core_tool(self):
+        """A tool in _HERMES_ALWAYS_CORE_TOOLS returns False even when defer_core=True."""
+        from tools.tool_search import is_deferrable_tool_name
+        cfg = self._defer_core_config()
+        # memory is in _HERMES_ALWAYS_CORE_TOOLS
+        assert not is_deferrable_tool_name("memory", config=cfg), (
+            "memory (in _HERMES_ALWAYS_CORE_TOOLS) must NEVER be deferrable"
+        )
+
+    def test_classify_tools_defer_core_true(self):
+        """With defer_core=True, deferrable-core tools appear in the deferrable bucket."""
+        from tools.tool_search import classify_tools
+        from tools.registry import registry
+        import json
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True})
+
+        # Register write_file as a non-MCP tool (simulates deferrable-core tool)
+        registry.register(
+            name="write_file",
+            handler=_handler,
+            schema=_td("write_file", "Write a file"),
+            toolset="file",
+        )
+
+        cfg = self._defer_core_config()
+        defs = [
+            _td("memory", "Persistent memory"),   # always-core → must stay visible
+            _td("write_file", "Write a file"),     # deferrable-core → deferrable with defer_core=True
+        ]
+        visible, deferrable = classify_tools(defs, config=cfg)
+
+        visible_names = {(t.get("function") or {}).get("name") for t in visible}
+        deferrable_names = {(t.get("function") or {}).get("name") for t in deferrable}
+
+        assert "memory" in visible_names, "always-core tool 'memory' must be in visible bucket"
+        assert "write_file" in deferrable_names, (
+            "deferrable-core tool 'write_file' must be in deferrable bucket when defer_core=True"
+        )
+
+    def test_resolve_underlying_call_allows_deferrable_core_tool_with_defer_core_true(self):
+        """With defer_core=True, resolve_underlying_call allows a deferrable-core tool through."""
+        from tools.tool_search import resolve_underlying_call
+        from tools.registry import registry
+        import json
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True})
+
+        registry.register(
+            name="write_file",
+            handler=_handler,
+            schema=_td("write_file", "Write a file"),
+            toolset="file",
+        )
+
+        cfg = self._defer_core_config()
+        name, args, err = resolve_underlying_call(
+            {"name": "write_file", "arguments": {"path": "/tmp/x", "content": "hi"}},
+            config=cfg,
+        )
+        assert err is None, (
+            f"resolve_underlying_call should NOT return an error for deferrable-core tool "
+            f"with defer_core=True, got: {err!r}"
+        )
+        assert name == "write_file"
+
+    def test_scoped_deferrable_names_defer_core_true(self):
+        """With defer_core=True, deferrable-core tools appear in the scoped set."""
+        from tools.tool_search import scoped_deferrable_names
+        from tools.registry import registry
+        import model_tools
+        import json
+
+        def _handler(args, task_id=None, **kw):
+            return json.dumps({"ok": True})
+
+        registry.register(
+            name="write_file",
+            handler=_handler,
+            schema=_td("write_file", "Write a file"),
+            toolset="file",
+        )
+
+        cfg = self._defer_core_config()
+        defs = [
+            _td("memory", "Persistent memory"),
+            _td("write_file", "Write a file"),
+        ]
+        names = scoped_deferrable_names(defs, config=cfg)
+        assert "write_file" in names, (
+            "deferrable-core tool 'write_file' must appear in scoped set when defer_core=True"
+        )
+        assert "memory" not in names, (
+            "always-core tool 'memory' must NOT appear in scoped set even with defer_core=True"
+        )

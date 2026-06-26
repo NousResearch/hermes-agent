@@ -66,11 +66,11 @@ _HERMES_ALWAYS_CORE_TOOLS = [
 
 _HERMES_DEFERRABLE_CORE_TOOLS = [
     # Terminal & process management
-    "terminal", "process", "read_terminal",
+    "process", "read_terminal",
     # Close agent's read-only terminal tab (gated on HERMES_DESKTOP via check_fn)
     "close_terminal",
     # File manipulation
-    "read_file", "write_file", "patch", "search_files",
+    "write_file", "patch",
     # Skills management
     "skills_list", "skill_view", "skill_manage",
     # Code execution

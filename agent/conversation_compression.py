@@ -165,6 +165,12 @@ def check_compression_model_feasibility(agent: Any) -> None:
             custom_providers=agent._custom_providers,
         )
 
+        # Store the aux model's context length so compress() can proactively
+        # fall back to the main model when the session exceeds it — the aux
+        # model cannot summarise content larger than its own context window.
+        # (#53008)
+        agent.context_compressor._aux_compression_context_length = aux_context or 0
+
         # Hard floor: the auxiliary compression model must have at least
         # MINIMUM_CONTEXT_LENGTH (64K) tokens of context.  The main model
         # is already required to meet this floor (checked earlier in
@@ -239,6 +245,10 @@ def check_compression_model_feasibility(agent: Any) -> None:
                 f"{old_threshold:,} tokens. "
                 f"Auto-lowered this session's threshold to "
                 f"{new_threshold:,} tokens so compression can run.\n"
+                f"  If the compression window (middle turns sent to the "
+                f"summariser) grows beyond {aux_context:,} tokens, the "
+                f"compression model cannot process it — Hermes will "
+                f"automatically use the main model for those passes instead.\n"
                 f"  To make this permanent, edit config.yaml — either:\n"
                 f"  1. Use a larger compression model:\n"
                 f"       auxiliary:\n"

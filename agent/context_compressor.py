@@ -638,6 +638,8 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self._post_compression_rough_tokens = 0
+        self._aux_context_overflow_warned = False
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
@@ -713,6 +715,8 @@ class ContextCompressor(ContextEngine):
         self.last_compression_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._ineffective_compression_count = 0
+        self._post_compression_rough_tokens = 0
+        self._aux_context_overflow_warned = False
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
     # window, compacting at the percentage (50% → 32K of a 64K window) wastes
@@ -869,6 +873,19 @@ class ContextCompressor(ContextEngine):
         # Anti-thrashing: track whether last compression was effective
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
+        # Aux compression model's context length, set by
+        # check_compression_model_feasibility().  When the session exceeds
+        # this, compress() proactively falls back to the main model instead
+        # of sending content the aux model cannot process.  (#53008)
+        self._aux_compression_context_length: int = 0
+        self._aux_context_overflow_warned: bool = False
+        # Rough token estimate immediately after the last compression pass.
+        # should_compress() uses this to avoid re-triggering when the last
+        # pass left the session at or above the threshold — the compression
+        # model may be too small to reduce the session below the (possibly
+        # auto-lowered) threshold, so re-triggering every turn loops
+        # indefinitely with near-zero effectiveness. (#53008)
+        self._post_compression_rough_tokens: int = 0
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
         # When summary generation fails and a static fallback is inserted,
@@ -967,6 +984,14 @@ class ContextCompressor(ContextEngine):
         Includes anti-thrashing protection: if the last two compressions
         each saved less than 10%, skip compression to avoid infinite loops
         where each pass removes only 1-2 messages.
+
+        Also includes a post-compression re-trigger guard (#53008): if the
+        last compression pass left the session at or above the threshold,
+        do not re-trigger until enough new content arrives.  This prevents
+        an infinite loop when the compression model's context is smaller
+        than the session — the aux model cannot summarise content larger
+        than its own context, so each pass is near-zero effective but the
+        session remains above the (possibly auto-lowered) threshold.
         """
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
@@ -981,6 +1006,27 @@ class ContextCompressor(ContextEngine):
                     self._ineffective_compression_count,
                 )
             return False
+        # Post-compression re-trigger guard (#53008): if the last pass left
+        # the session at or above the threshold, the compression model could
+        # not reduce it enough (e.g. the aux model's context is smaller than
+        # the session).  Re-triggering immediately would loop with near-zero
+        # effectiveness.  Wait until at least 20% of the threshold in new
+        # content arrives before attempting another pass.
+        _post = self._post_compression_rough_tokens
+        if _post > 0 and _post >= self.threshold_tokens:
+            _growth = tokens - _post
+            _growth_floor = max(self.threshold_tokens // 5, 4096)
+            if _growth < _growth_floor:
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression skipped — last pass left ~%d tokens "
+                        "(>= threshold %d) with only ~%d new tokens since. "
+                        "The compression model may be too small for this "
+                        "session; consider /new, /compress <topic>, or a "
+                        "larger compression model.",
+                        _post, self.threshold_tokens, _growth,
+                    )
+                return False
         return True
 
     # ------------------------------------------------------------------
@@ -2443,6 +2489,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             # re-triggers a no-op compression loop.  (#40803)
             self._ineffective_compression_count += 1
             self._last_compression_savings_pct = 0.0
+            # Record the post-compression estimate (unchanged) so the
+            # re-trigger guard in should_compress() also fires. (#53008)
+            self._post_compression_rough_tokens = int(display_tokens)
             if not self.quiet_mode:
                 logger.warning(
                     "Compression skipped: compress_start (%d) >= compress_end (%d) "
@@ -2503,7 +2552,49 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         # Phase 3: Generate structured summary
         summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
+
+        # Proactive main-model fallback (#53008): if the compression window
+        # (the middle turns sent to the summariser) exceeds the aux model's
+        # context window, the aux model cannot process it — the API call
+        # will either error out (context too long) or be silently truncated
+        # to a near-useless summary.  Fall back to the main model for this
+        # pass instead.  The aux model is restored afterwards so future
+        # passes (on a smaller post-compression session) can use it again.
+        #
+        # We compare the actual window size (turns_to_summarize), NOT the
+        # full session — the tail (protected recent messages) and head
+        # (system prompt + first exchange) are never sent to the summariser,
+        # so a session can be larger than the aux context while the window
+        # still fits.
+        _window_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+        _saved_summary_model = ""
+        if (
+            self._aux_compression_context_length > 0
+            and _window_tokens > self._aux_compression_context_length
+            and self.summary_model
+        ):
+            _saved_summary_model = self.summary_model
+            self.summary_model = ""
+            if not self._aux_context_overflow_warned:
+                self._aux_context_overflow_warned = True
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression window (~%d tokens) exceeds the "
+                        "auxiliary compression model's context window "
+                        "(%d tokens) — using the main model for this "
+                        "compression pass. Consider a larger compression "
+                        "model or /new to start a fresh session.",
+                        _window_tokens,
+                        self._aux_compression_context_length,
+                    )
+
         summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
+
+        # Restore the aux summary model for future passes — after
+        # compression the session may be small enough for the aux model
+        # again. (#53008)
+        if _saved_summary_model:
+            self.summary_model = _saved_summary_model
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
@@ -2536,6 +2627,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._last_summary_dropped_count = 0  # nothing actually dropped
             self._last_summary_fallback_used = False
             self._last_compress_aborted = True
+            # Record the post-compression estimate (unchanged — session
+            # was preserved) so the re-trigger guard fires. (#53008)
+            self._post_compression_rough_tokens = int(display_tokens)
             if not self.quiet_mode:
                 if self._last_summary_auth_failure:
                     logger.warning(
@@ -2669,6 +2763,12 @@ This compaction should PRIORITISE preserving all information related to the focu
             self._ineffective_compression_count += 1
         else:
             self._ineffective_compression_count = 0
+
+        # Record the post-compression rough estimate so should_compress()
+        # can avoid re-triggering when this pass left the session at or
+        # above the threshold (the compression model may be too small).
+        # (#53008)
+        self._post_compression_rough_tokens = new_estimate
 
         if not self.quiet_mode:
             logger.info(

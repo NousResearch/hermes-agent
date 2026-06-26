@@ -64,6 +64,9 @@ def _make_compressor():
     c.last_compression_rough_tokens = 0
     c.last_rough_tokens_when_real_prompt_fit = 0
     c.awaiting_real_usage_after_compression = False
+    c._aux_compression_context_length = 0
+    c._aux_context_overflow_warned = False
+    c._post_compression_rough_tokens = 0
     return c
 
 

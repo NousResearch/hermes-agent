@@ -69,9 +69,7 @@ export async function fetchRuntimeReadinessSignals(
   requestGateway: RuntimeReadinessRequester,
   requestedProvider?: string
 ): Promise<RuntimeReadinessSignals> {
-  const runtimeParams = requestedProvider?.trim()
-    ? { provider: requestedProvider.trim() }
-    : undefined
+  const runtimeParams = requestedProvider?.trim() ? { provider: requestedProvider.trim() } : undefined
 
   const [setup, runtime] = await Promise.all([
     requestWithFallback<SetupStatusSnapshot>(requestGateway, 'setup.status'),

@@ -1005,17 +1005,18 @@ def restore_cron_jobs_if_emptied(
 
     Config-version migrations have been observed to leave ``cron/jobs.json``
     valid-but-empty after an update, silently dropping every scheduled job
-    (issue #34600). The existing malformed-shape guards in ``cron/jobs.py``
-    don't catch this case because ``{"jobs": []}`` is perfectly valid JSON.
+    (issue #34600). The desktop scheduler can also overwrite the file with its
+    own small set of internally-tracked crons, causing partial loss (issue
+    #52144).
 
     This compares the *current* job count against the pre-update snapshot. If
-    the live file now has **zero** jobs while the snapshot captured **one or
-    more**, the snapshot copy of ``cron/jobs.json`` is restored in place.
+    the live file now has **fewer** jobs than the snapshot, the snapshot copy
+    of ``cron/jobs.json`` is restored in place.
 
     The check is deliberately conservative — it only ever restores when there
-    is unambiguous evidence of loss (snapshot had jobs, live file has none),
-    so a user who genuinely deleted all their jobs during/after the update is
-    never second-guessed, and an unreadable live file (count ``None``) is left
+    is unambiguous evidence of loss (snapshot had more jobs than live file),
+    so a user who genuinely deleted jobs during/after the update is never
+    second-guessed, and an unreadable live file (count ``None``) is left
     untouched so real corruption still surfaces.
 
     Args:
@@ -1035,15 +1036,21 @@ def restore_cron_jobs_if_emptied(
     live_path = home / _CRON_JOBS_REL
 
     live_count = _count_cron_jobs(live_path)
-    # Only act when the live file is readable AND empty. ``None`` (missing or
-    # unparseable) is intentionally left alone — that's a different failure
-    # mode the user should see rather than have papered over.
-    if live_count is None or live_count > 0:
+    # ``None`` (missing or unparseable) is intentionally left alone — that's a
+    # different failure mode the user should see rather than have papered over.
+    if live_count is None:
         return None
 
     snap_path = _quick_snapshot_root(home) / snapshot_id / _CRON_JOBS_REL
     snap_count = _count_cron_jobs(snap_path)
     if not snap_count:  # None or 0 — nothing worth restoring
+        return None
+
+    # Restore when live has FEWER jobs than the pre-update snapshot.
+    # Catches both total loss (0 vs N) and partial loss (1 vs 19) — the
+    # desktop scheduler can overwrite jobs.json with its own small set of
+    # internally-tracked crons after an update/restart.
+    if live_count >= snap_count:
         return None
 
     try:
@@ -1057,9 +1064,11 @@ def restore_cron_jobs_if_emptied(
 
     logger.warning(
         "Restored %d cron job(s) from pre-update snapshot %s "
-        "(cron/jobs.json was emptied during migration)",
+        "(live file had %d job(s), snapshot had %d — jobs were lost during migration)",
         snap_count,
         snapshot_id,
+        live_count,
+        snap_count,
     )
     return {"restored": True, "job_count": snap_count, "snapshot_id": snapshot_id}
 

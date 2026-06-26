@@ -334,7 +334,7 @@ class PhotonAdapter(BasePlatformAdapter):
 
     # -- Connection lifecycle ---------------------------------------------
 
-    async def connect(self) -> bool:
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
         if not HTTPX_AVAILABLE:
             self._set_fatal_error(
                 "MISSING_DEP", "httpx not installed", retryable=False

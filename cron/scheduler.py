@@ -2563,7 +2563,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # value is intentionally re-read from storage every tick so a
         # ``cronjob action=update model=...`` after a failed run takes effect
         # on the next tick — there is no in-memory cache.
-        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        env_model = os.getenv("HERMES_MODEL") or ""
+        model = job.get("model") or env_model or ""
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -2584,16 +2585,21 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     pass
                 _cfg = _expand_env_vars(_cfg)
                 # Coerce null/missing to {} so a falsy default never
-                # clobbers an already-resolved env value with ``None``.
+                # clobbers an already-resolved job/env value with ``None``.
+                _cron_cfg = _cfg.get("cron") or {}
                 _model_cfg = _cfg.get("model") or {}
-                if not job.get("model"):
+                if not job.get("model") and not env_model:
+                    if isinstance(_cron_cfg, dict):
+                        _cron_default = _cron_cfg.get("model") or _cron_cfg.get("default")
+                        if _cron_default:
+                            model = _cron_default
                     if isinstance(_model_cfg, str):
-                        model = _model_cfg
+                        model = model or _model_cfg
                     elif isinstance(_model_cfg, dict):
                         # Mirror the CLI/oneshot resolution: prefer ``default``,
                         # accept a ``model`` alias, overwrite only when truthy.
                         _default = _model_cfg.get("default") or _model_cfg.get("model")
-                        if _default:
+                        if _default and not model:
                             model = _default
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
@@ -2675,8 +2681,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             # no explicit provider is requested. Passing the env var here short-
             # circuits that precedence and can resurrect old providers (for
             # example DeepSeek) for cron jobs that do not pin provider/model.
+            _cron_provider = ""
+            _cron_cfg = _cfg.get("cron") or {}
+            if isinstance(_cron_cfg, dict):
+                _cron_provider = str(_cron_cfg.get("provider") or "").strip() or ""
             runtime_kwargs = {
-                "requested": job.get("provider"),
+                "requested": job.get("provider") or _cron_provider or None,
             }
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")

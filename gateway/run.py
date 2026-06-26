@@ -3645,17 +3645,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return model, runtime_kwargs
 
-    def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
+    def _resolve_turn_agent_config(
+        self,
+        user_message: str,
+        model: str,
+        runtime_kwargs: dict,
+        platform: str | None = None,
+    ) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        Uses the session's primary model/provider unless optional
+        ``smart_model_routing`` config selects a platform-specific route for
+        this turn.  If `/fast` is enabled and the selected model supports
+        Priority Processing / Anthropic fast mode, attach ``request_overrides``
+        so the API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
-        runtime = {
+        primary = {
+            "model": model,
             "api_key": runtime_kwargs.get("api_key"),
             "base_url": runtime_kwargs.get("base_url"),
             "provider": runtime_kwargs.get("provider"),
@@ -3665,18 +3673,45 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "credential_pool": runtime_kwargs.get("credential_pool"),
             "max_tokens": runtime_kwargs.get("max_tokens"),
         }
-        route = {
-            "model": model,
-            "runtime": runtime,
-            "signature": (
-                model,
-                runtime["provider"],
-                runtime["base_url"],
-                runtime["api_mode"],
-                runtime["command"],
-                tuple(runtime["args"]),
-            ),
-        }
+
+        route = None
+        try:
+            from hermes_cli.config import load_config
+            from agent.smart_model_routing import resolve_turn_route
+
+            cfg = load_config()
+            route = resolve_turn_route(
+                user_message,
+                cfg.get("smart_model_routing"),
+                primary,
+                platform=platform,
+            )
+        except Exception:
+            route = None
+
+        if not route:
+            runtime = {
+                "api_key": primary.get("api_key"),
+                "base_url": primary.get("base_url"),
+                "provider": primary.get("provider"),
+                "api_mode": primary.get("api_mode"),
+                "command": primary.get("command"),
+                "args": list(primary.get("args") or []),
+                "credential_pool": primary.get("credential_pool"),
+                "max_tokens": primary.get("max_tokens"),
+            }
+            route = {
+                "model": model,
+                "runtime": runtime,
+                "signature": (
+                    model,
+                    runtime["provider"],
+                    runtime["base_url"],
+                    runtime["api_mode"],
+                    runtime["command"],
+                    tuple(runtime["args"]),
+                ),
+            }
 
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
@@ -12599,7 +12634,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
-            turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                prompt,
+                model,
+                runtime_kwargs,
+                platform=platform_key,
+            )
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -16921,7 +16961,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     log_message="interim_assistant_callback scheduling error",
                 )
 
-            turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            turn_route = self._resolve_turn_agent_config(
+                message,
+                model,
+                runtime_kwargs,
+                platform=platform_key,
+            )
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool

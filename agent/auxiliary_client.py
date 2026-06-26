@@ -2268,11 +2268,16 @@ def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optiona
         return None, None
 
     pool_present, entry = _select_pool_entry("anthropic")
-    if pool_present:
-        if entry is None:
-            return None, None
+    if pool_present and entry is not None:
         token = explicit_api_key or _pool_runtime_api_key(entry)
     else:
+        # Pool absent, OR present but no entry currently available (e.g. the
+        # only entry is an OAuth credential transiently marked "exhausted" by
+        # earlier 429s). Fall back to the resolved OAuth/setup token so
+        # auxiliary tasks (title generation, vision, compression, …) keep
+        # working off the subscription instead of failing with "no API key
+        # found". Without this fallback a single 429 disables all auxiliary
+        # anthropic calls until the pool status is manually reset.
         entry = None
         token = explicit_api_key or resolve_anthropic_token()
     if not token:

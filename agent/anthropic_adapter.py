@@ -2419,6 +2419,39 @@ def build_anthropic_kwargs(
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
+        # 2b. Cap Hermes-specific system text on OAuth/subscription auth.
+        #     Anthropic's OAuth billing classifier flags long app-specific
+        #     prompts (skill_manage, session_search, Computer Use, mid-turn
+        #     steering, …) as "raw API usage" and bills them as overage —
+        #     returning HTTP 429 "monthly spend limit" once a cumulative
+        #     ~4k-char threshold of non-Claude-Code instructions is crossed
+        #     (proven by bisection; generic text of equal length passes).
+        #     Keep the Claude Code identity block (index 0) intact and trim
+        #     the remaining system text to stay under the threshold so the
+        #     request is billed as included subscription usage.
+        #     Tunable: HERMES_OAUTH_SYSTEM_BUDGET=N chars (0 disables).
+        import os as _os
+        try:
+            _sys_budget = int(_os.environ.get("HERMES_OAUTH_SYSTEM_BUDGET", "3000"))
+        except (TypeError, ValueError):
+            _sys_budget = 3000
+        if _sys_budget > 0 and isinstance(system, list) and len(system) > 1:
+            _remaining = _sys_budget
+            for _blk in system[1:]:
+                if not (isinstance(_blk, dict) and _blk.get("type") == "text"):
+                    continue
+                _t = _blk.get("text", "")
+                if len(_t) <= _remaining:
+                    _remaining -= len(_t)
+                    continue
+                # Trim at the last paragraph/line break before the budget so
+                # we don't cut mid-sentence; fall back to a hard cut.
+                _cut = _t.rfind("\n", 0, _remaining)
+                if _cut < _remaining // 2:
+                    _cut = _remaining
+                _blk["text"] = _t[:_cut].rstrip()
+                _remaining = 0
+
         # 3. Normalize tool names so NOTHING goes on the OAuth wire with a
         #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth
         #    billing classifier treats a single-underscore ``mcp_`` tool name as

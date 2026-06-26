@@ -283,6 +283,9 @@ export interface ModelOptionProvider {
 export interface ModelCapabilities {
   fast: boolean
   reasoning: boolean
+  /** Canonical effort values this specific provider/model exposes. Values are
+   *  Hermes wire enums; `xhigh` renders as user-facing Extra High. */
+  reasoning_efforts?: string[]
 }
 
 export interface ModelOptionsResponse {

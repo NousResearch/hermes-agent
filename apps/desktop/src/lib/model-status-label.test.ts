@@ -17,7 +17,7 @@ describe('model-status-label', () => {
 
   it('maps reasoning effort to compact labels', () => {
     expect(reasoningEffortLabel('high')).toBe('High')
-    expect(reasoningEffortLabel('xhigh')).toBe('Max')
+    expect(reasoningEffortLabel('xhigh')).toBe('Extra High')
     expect(reasoningEffortLabel('')).toBe('')
   })
 

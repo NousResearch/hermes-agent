@@ -8,6 +8,9 @@ import pytest
 import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
+    is_codex_gpt55_model,
+    normalize_reasoning_effort_for_model,
+    reasoning_efforts_for_model,
     agent_browser_runnable,
     find_hermes_node_executable,
     find_node_executable,
@@ -335,6 +338,24 @@ class TestParseReasoningEffort:
         """
         documented = {"minimal", "low", "medium", "high", "xhigh"}
         assert documented.issubset(set(VALID_REASONING_EFFORTS))
+
+    def test_codex_gpt55_effort_surface_matches_official_levels(self):
+        """GPT-5.5 over the Codex OAuth provider has no minimal/off surface.
+
+        UI/gateway pickers expose Low, Medium, High, and Extra High only;
+        Hermes stores Extra High as the canonical ``xhigh`` wire enum.
+        """
+        assert is_codex_gpt55_model("openai-codex", "gpt-5.5") is True
+        assert is_codex_gpt55_model("codex", "openai/gpt-5.5-fast") is True
+        assert is_codex_gpt55_model("anthropic", "gpt-5.5") is False
+        assert reasoning_efforts_for_model("openai-codex", "gpt-5.5") == (
+            "low",
+            "medium",
+            "high",
+            "xhigh",
+        )
+        assert normalize_reasoning_effort_for_model("Extra High", "openai-codex", "gpt-5.5") == "xhigh"
+        assert normalize_reasoning_effort_for_model("minimal", "openai-codex", "gpt-5.5") is None
 
 
 class TestSecureParentDir:

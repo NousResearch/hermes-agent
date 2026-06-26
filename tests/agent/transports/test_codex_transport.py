@@ -75,6 +75,28 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("reasoning", {}).get("effort") == "high"
 
+    @pytest.mark.parametrize(
+        "requested, expected",
+        [
+            ("low", "low"),
+            ("medium", "medium"),
+            ("high", "high"),
+            ("xhigh", "xhigh"),
+            ("extra high", "xhigh"),
+            ("minimal", "low"),
+        ],
+    )
+    def test_gpt55_codex_reasoning_effort_serialization(self, transport, requested, expected):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            reasoning_config={"effort": requested},
+            is_codex_backend=True,
+        )
+        assert kw.get("reasoning", {}).get("effort") == expected
+
     def test_reasoning_disabled(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

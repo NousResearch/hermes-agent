@@ -2311,7 +2311,8 @@ class GatewaySlashCommandsMixin:
             /reasoning show|on               Show model reasoning in responses
             /reasoning hide|off              Hide model reasoning from responses
         """
-        from gateway.run import _hermes_home, _platform_config_key
+        from gateway.run import _hermes_home, _platform_config_key, _load_gateway_config
+        from hermes_constants import normalize_reasoning_effort_for_model, reasoning_efforts_for_model
         import yaml
 
         raw_args = event.get_command_args().strip()
@@ -2327,6 +2328,24 @@ class GatewaySlashCommandsMixin:
             source=event.source,
             session_key=session_key,
         )
+
+        current_model = ""
+        current_provider = "openrouter"
+        try:
+            cfg = _load_gateway_config()
+            model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+            if isinstance(model_cfg, dict):
+                current_model = str(model_cfg.get("default", "") or "")
+                current_provider = str(model_cfg.get("provider", current_provider) or current_provider)
+        except Exception:
+            pass
+        model_override = self._session_model_overrides.get(session_key, {})
+        if model_override:
+            current_model = str(model_override.get("model", current_model) or current_model)
+            current_provider = str(model_override.get("provider", current_provider) or current_provider)
+
+        valid_efforts = reasoning_efforts_for_model(current_provider, current_model)
+        valid_levels = ", ".join(valid_efforts)
 
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""
@@ -2373,6 +2392,7 @@ class GatewaySlashCommandsMixin:
                 level=level,
                 scope=scope,
                 display=display_state,
+                levels=valid_levels,
             )
 
         # Display toggle (per-platform)
@@ -2397,14 +2417,23 @@ class GatewaySlashCommandsMixin:
             self._evict_cached_agent(session_key)
             return t("gateway.reasoning.reset_done")
         if effort == "none":
+            if "none" not in valid_efforts and current_provider == "openai-codex":
+                return t(
+                    "gateway.reasoning.unknown_arg",
+                    arg=effort or raw_args.lower(),
+                    levels=valid_levels,
+                )
             parsed = {"enabled": False}
-        elif effort in {"minimal", "low", "medium", "high", "xhigh"}:
-            parsed = {"enabled": True, "effort": effort}
         else:
-            return t(
-                "gateway.reasoning.unknown_arg",
-                arg=effort or raw_args.lower(),
-            )
+            normalized_effort = normalize_reasoning_effort_for_model(effort, current_provider, current_model)
+            if normalized_effort is None:
+                return t(
+                    "gateway.reasoning.unknown_arg",
+                    arg=effort or raw_args.lower(),
+                    levels=valid_levels,
+                )
+            effort = normalized_effort
+            parsed = {"enabled": True, "effort": effort}
 
         self._reasoning_config = parsed
         if persist_global:

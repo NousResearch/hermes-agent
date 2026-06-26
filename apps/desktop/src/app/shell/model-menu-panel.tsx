@@ -19,6 +19,7 @@ import type { HermesGateway } from '@/hermes'
 import { getGlobalModelOptions, getMoaModels } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { currentPickerSelection, displayModelName, modelDisplayParts, reasoningEffortLabel } from '@/lib/model-status-label'
+import { normalizeReasoningEffortForRequest } from '@/lib/reasoning-efforts'
 import { cn } from '@/lib/utils'
 import { $modelPresets, applyModelPreset, modelPresetKey } from '@/store/model-presets'
 import {
@@ -168,7 +169,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
 
     await applyModelPreset(
       {
-        effort: (caps?.reasoning ?? true) ? (preset.effort ?? 'medium') : undefined,
+        effort: (caps?.reasoning ?? true) ? normalizeReasoningEffortForRequest(preset.effort ?? 'medium', caps?.reasoning_efforts) : undefined,
         fast: (caps?.fast ?? false) ? (preset.fast ?? false) : undefined
       },
       { failMessage: t.shell.modelOptions.updateFailed, request: requestGateway, sessionId: activeSessionId }
@@ -305,6 +306,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                       onSelectModel={nextModel => switchTo(nextModel, group.provider.slug)}
                       provider={group.provider.slug}
                       reasoning={caps?.reasoning ?? true}
+                      reasoningEfforts={caps?.reasoning_efforts}
                       requestGateway={requestGateway}
                     />
                   </DropdownMenuSub>

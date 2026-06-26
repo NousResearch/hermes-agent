@@ -240,6 +240,7 @@ def _apply_capabilities(rows: list[dict]) -> None:
     uncatalogued model is the worse failure.
     """
     from hermes_cli.models import model_supports_fast_mode
+    from hermes_constants import reasoning_efforts_for_model
 
     try:
         from agent.models_dev import get_model_capabilities
@@ -263,6 +264,7 @@ def _apply_capabilities(rows: list[dict]) -> None:
             caps[model] = {
                 "fast": bool(model_supports_fast_mode(model)),
                 "reasoning": reasoning,
+                "reasoning_efforts": list(reasoning_efforts_for_model(slug, model)) if reasoning else [],
             }
 
         row["capabilities"] = caps

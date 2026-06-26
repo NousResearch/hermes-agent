@@ -321,6 +321,30 @@ def test_include_unconfigured_skips_already_present_slugs():
     assert or_rows[0]["models"] == ["m1"]  # the authenticated row, not skeleton
 
 
+def test_build_models_payload_capabilities_include_model_specific_efforts():
+    rows = [
+        {"slug": "openai-codex", "name": "Codex", "models": ["gpt-5.5"],
+         "total_models": 1, "is_current": True, "is_user_defined": False,
+         "source": "built-in"},
+        {"slug": "openrouter", "name": "OpenRouter", "models": ["anthropic/claude-sonnet-4.8"],
+         "total_models": 1, "is_current": False, "is_user_defined": False,
+         "source": "built-in"},
+    ]
+    ctx = _empty_ctx(provider="openai-codex", model="gpt-5.5", base_url="")
+    with _list_auth_returning(rows):
+        payload = build_models_payload(ctx, capabilities=True)
+
+    codex = next(row for row in payload["providers"] if row["slug"] == "openai-codex")
+    codex_caps = codex["capabilities"]["gpt-5.5"]
+    assert codex_caps["reasoning"] is True
+    assert codex_caps["reasoning_efforts"] == ["low", "medium", "high", "xhigh"]
+    assert "minimal" not in codex_caps["reasoning_efforts"]
+
+    legacy = next(row for row in payload["providers"] if row["slug"] == "openrouter")
+    legacy_caps = legacy["capabilities"]["anthropic/claude-sonnet-4.8"]
+    assert legacy_caps["reasoning_efforts"] == ["minimal", "low", "medium", "high", "xhigh"]
+
+
 # ─── picker_hints ──────────────────────────────────────────────────────
 
 

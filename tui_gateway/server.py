@@ -9746,7 +9746,11 @@ def _(rid, params: dict) -> dict:
 
     if key == "reasoning":
         try:
-            from hermes_constants import parse_reasoning_effort
+            from hermes_constants import (
+                is_codex_gpt55_model,
+                normalize_reasoning_effort_for_model,
+                parse_reasoning_effort,
+            )
 
             arg = str(value or "").strip().lower()
             if arg in {"show", "on"}:
@@ -9825,9 +9829,23 @@ def _(rid, params: dict) -> dict:
                 _save_cfg(cfg)
                 return _ok(rid, {"key": key, "value": "clamp"})
 
-            parsed = parse_reasoning_effort(arg)
+            agent = session.get("agent") if session else None
+            if agent is not None:
+                target_model = str(getattr(agent, "model", "") or "")
+                target_provider = str(getattr(agent, "provider", "") or "")
+            else:
+                target_model, target_provider = _config_model_target()
+
+            normalized = normalize_reasoning_effort_for_model(arg, target_provider, target_model)
+            if normalized is not None:
+                arg = normalized
+                parsed = {"enabled": True, "effort": arg}
+            elif is_codex_gpt55_model(target_provider, target_model):
+                return _err(rid, 4002, f"unknown reasoning value for current model: {value}")
+            else:
+                parsed = parse_reasoning_effort(arg)
             if parsed is None:
-                return _err(rid, 4002, f"unknown reasoning value: {value}")
+                return _err(rid, 4002, f"unknown reasoning value for current model: {value}")
             _write_config_key("agent.reasoning_effort", arg)
             if session and session.get("agent") is not None:
                 session["agent"].reasoning_config = parsed

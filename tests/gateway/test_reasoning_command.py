@@ -34,6 +34,7 @@ def _make_runner():
     runner._prefill_messages = []
     runner._reasoning_config = None
     runner._session_reasoning_overrides = {}
+    runner._session_model_overrides = {}
     runner._show_reasoning = False
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -147,6 +148,33 @@ class TestReasoningCommand:
         assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "high"}
         assert runner._reasoning_config == {"enabled": True, "effort": "high"}
         assert "session only" in result
+
+    @pytest.mark.asyncio
+    async def test_reasoning_command_rejects_minimal_for_codex_gpt55_session(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "model:\n  provider: openai-codex\n  default: gpt-5.5\n"
+            "agent:\n  reasoning_effort: medium\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+        runner = _make_runner()
+        event = _make_event("/reasoning minimal")
+        session_key = runner._session_key_for_source(event.source)
+        runner._session_model_overrides[session_key] = {"provider": "openai-codex", "model": "gpt-5.5"}
+
+        bad = await runner._handle_reasoning_command(event)
+        assert "Unknown argument" in bad
+        assert "low, medium, high, xhigh" in bad
+        assert session_key not in runner._session_reasoning_overrides
+
+        good = await runner._handle_reasoning_command(_make_event("/reasoning extra high"))
+        assert runner._session_reasoning_overrides[session_key] == {"enabled": True, "effort": "xhigh"}
+        assert "`xhigh`" in good
 
     @pytest.mark.asyncio
     async def test_reasoning_global_clears_existing_session_override(self, tmp_path, monkeypatch):

@@ -2419,6 +2419,42 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_config_set_reasoning_rejects_minimal_for_codex_gpt55(tmp_path, monkeypatch):
+    import yaml
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(yaml.safe_dump({"model": {"provider": "openai-codex", "default": "gpt-5.5"}}))
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    server._cfg_cache = None
+    server._cfg_mtime = None
+    server._cfg_path = None
+
+    try:
+        bad = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"key": "reasoning", "value": "minimal"},
+            }
+        )
+        assert bad["error"]["code"] == 4002
+        assert "current model" in bad["error"]["message"]
+
+        good = server.handle_request(
+            {
+                "id": "2",
+                "method": "config.set",
+                "params": {"key": "reasoning", "value": "extra high"},
+            }
+        )
+        assert good["result"] == {"key": "reasoning", "value": "xhigh"}
+        assert yaml.safe_load(cfg_path.read_text())["agent"]["reasoning_effort"] == "xhigh"
+    finally:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+
+
 def test_config_set_yolo_toggles_session_scope():
     from tools.approval import clear_session, is_session_yolo_enabled
 

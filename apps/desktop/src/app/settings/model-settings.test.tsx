@@ -18,6 +18,8 @@ const getRecommendedDefaultModel = vi.fn()
 const setEnvVar = vi.fn()
 const getHermesConfigRecord = vi.fn()
 const saveHermesConfig = vi.fn()
+const getMoaModels = vi.fn()
+const saveMoaModels = vi.fn()
 const startManualProviderOAuth = vi.fn()
 
 vi.mock('@/hermes', () => ({
@@ -28,7 +30,9 @@ vi.mock('@/hermes', () => ({
   getRecommendedDefaultModel: (slug: string) => getRecommendedDefaultModel(slug),
   setEnvVar: (key: string, value: string) => setEnvVar(key, value),
   getHermesConfigRecord: () => getHermesConfigRecord(),
-  saveHermesConfig: (config: unknown) => saveHermesConfig(config)
+  saveHermesConfig: (config: unknown) => saveHermesConfig(config),
+  getMoaModels: () => getMoaModels(),
+  saveMoaModels: (config: unknown) => saveMoaModels(config)
 }))
 
 vi.mock('@/store/onboarding', () => ({
@@ -47,7 +51,7 @@ beforeEach(() => {
         capabilities: { 'hermes-4': { reasoning: true, fast: true } }
       },
       // An unconfigured api_key provider — surfaced by the full-universe payload.
-      { name: 'DeepSeek', slug: 'deepseek', models: [], authenticated: false, auth_type: 'api_key', key_env: 'DEEPSEEK_API_KEY' }
+      { name: 'DeepSeek', slug: 'deepseek', models: [], authenticated: false, auth_type: 'api_key', key_env: 'DEEPSEEK_API_KEY', warning: 'set up required' }
     ]
   })
   getAuxiliaryModels.mockResolvedValue({
@@ -59,6 +63,8 @@ beforeEach(() => {
   setEnvVar.mockResolvedValue({ ok: true })
   getHermesConfigRecord.mockResolvedValue({ agent: { reasoning_effort: 'medium', service_tier: 'normal' } })
   saveHermesConfig.mockResolvedValue({ ok: true })
+  getMoaModels.mockResolvedValue({ default_preset: 'default', presets: {} })
+  saveMoaModels.mockImplementation(async (config: unknown) => config)
 })
 
 afterEach(() => {
@@ -85,10 +91,9 @@ describe('ModelSettings', () => {
     fireEvent.click(triggers[0])
 
     // "Nous" shows in both the trigger and the open list; the unconfigured
-    // provider + its setup hint are the unique signal of the full universe.
+    // provider itself is the unique signal of the full universe.
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
     expect(await screen.findByText(/DeepSeek/)).toBeTruthy()
-    expect(await screen.findByText(/set up/)).toBeTruthy()
   })
 
   it('activates an unconfigured api_key provider inline by saving its key', async () => {
@@ -135,6 +140,36 @@ describe('ModelSettings', () => {
     await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
 
     expect(screen.queryByRole('switch')).toBeNull()
+  })
+
+  it('limits profile-default reasoning modes to the current provider/model capability surface', async () => {
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'openai-codex', model: 'gpt-5.5' })
+    getGlobalModelOptions.mockResolvedValueOnce({
+      providers: [
+        {
+          name: 'OpenAI Codex',
+          slug: 'openai-codex',
+          models: ['gpt-5.5'],
+          authenticated: true,
+          capabilities: {
+            'gpt-5.5': { reasoning: true, fast: true, reasoning_efforts: ['low', 'medium', 'high', 'xhigh'] }
+          }
+        }
+      ]
+    })
+
+    await renderModelSettings()
+    await waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalled())
+
+    const selects = await screen.findAllByRole('combobox')
+    fireEvent.click(selects[2])
+
+    expect(screen.queryByText('Off')).toBeNull()
+    expect(screen.queryByText('Minimal')).toBeNull()
+    expect(await screen.findByText('Low')).toBeTruthy()
+    expect(screen.getAllByText('Medium').length).toBeGreaterThan(0)
+    expect(screen.getByText('High')).toBeTruthy()
+    expect(screen.getByText('Extra High')).toBeTruthy()
   })
 
   it('renders the auxiliary task rows', async () => {

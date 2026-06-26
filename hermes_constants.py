@@ -549,12 +549,77 @@ def apply_subprocess_home_env(env: dict[str, str]) -> None:
 
 
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+CODEX_GPT55_REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+_REASONING_ALIASES = {
+    "extra_high": "xhigh",
+    "extra-high": "xhigh",
+    "extra high": "xhigh",
+}
+
+
+def _normalize_model_id_for_reasoning(model: str) -> str:
+    """Return a provider-prefix/variant-stripped model id for effort lookup."""
+    value = str(model or "").strip().lower()
+    if "/" in value:
+        value = value.rsplit("/", 1)[-1]
+    # Fast/latest/preview are delivery/snapshot variants, not separate effort
+    # surfaces.  Keep this narrow so real base ids are not over-normalized.
+    for suffix in ("-fast", "-latest", "-preview"):
+        if value.endswith(suffix):
+            value = value[: -len(suffix)]
+            break
+    value = value.replace("_", "-")
+    return value
+
+
+def is_codex_gpt55_model(provider: str | None, model: str | None) -> bool:
+    """True for GPT-5.5 on the ChatGPT Codex/OAuth provider.
+
+    GPT-5.5's public effort surface is Low / Medium / High / Extra High.
+    Hermes stores Extra High as the wire-compatible ``xhigh`` enum.
+    """
+    provider_value = str(provider or "").strip().lower()
+    if provider_value not in {"openai-codex", "codex"}:
+        return False
+    model_value = _normalize_model_id_for_reasoning(str(model or ""))
+    return model_value == "gpt-5.5" or model_value.startswith("gpt-5.5-")
+
+
+def reasoning_efforts_for_model(provider: str | None = None, model: str | None = None) -> tuple[str, ...]:
+    """Return the selectable reasoning efforts for a provider/model pair.
+
+    The global Hermes config enum remains broad for legacy/provider surfaces.
+    UI and gateway pickers should call this helper to avoid advertising levels
+    a specific backend does not actually expose.
+    """
+    if is_codex_gpt55_model(provider, model):
+        return CODEX_GPT55_REASONING_EFFORTS
+    return VALID_REASONING_EFFORTS
+
+
+def normalize_reasoning_effort_for_model(
+    effort: str,
+    provider: str | None = None,
+    model: str | None = None,
+) -> str | None:
+    """Normalize and validate an effort for a provider/model pair.
+
+    Returns the canonical stored/wire value, or ``None`` when unavailable.
+    ``xhigh`` is the canonical value for the user-facing "Extra High" tier.
+    """
+    value = str(effort or "").strip().lower()
+    value = _REASONING_ALIASES.get(value, value)
+    if value in reasoning_efforts_for_model(provider, model):
+        return value
+    return None
 
 
 def parse_reasoning_effort(effort: str) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 
-    Valid levels: "none", "minimal", "low", "medium", "high", "xhigh".
+    Valid global levels: "none", "minimal", "low", "medium", "high", "xhigh".
+    Provider/model-specific UIs may expose a narrower set via
+    ``reasoning_efforts_for_model``.
     Returns None when the input is empty or unrecognized (caller uses default).
     Returns {"enabled": False} for "none".
     Returns {"enabled": True, "effort": <level>} for valid effort levels.
@@ -562,6 +627,7 @@ def parse_reasoning_effort(effort: str) -> dict | None:
     if not effort or not effort.strip():
         return None
     effort = effort.strip().lower()
+    effort = _REASONING_ALIASES.get(effort, effort)
     if effort == "none":
         return {"enabled": False}
     if effort in VALID_REASONING_EFFORTS:

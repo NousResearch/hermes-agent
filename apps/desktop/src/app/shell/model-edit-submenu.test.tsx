@@ -25,7 +25,12 @@ afterEach(() => {
 })
 
 // Render the submenu inside an open menu/sub so its content (switches) mounts.
-function renderSubmenu(opts: { fastControl: FastControl; reasoning: boolean; requestGateway: () => Promise<unknown> }) {
+function renderSubmenu(opts: {
+  fastControl: FastControl
+  reasoning: boolean
+  reasoningEfforts?: string[]
+  requestGateway: () => Promise<unknown>
+}) {
   return render(
     <DropdownMenu open>
       <DropdownMenuContent>
@@ -39,6 +44,7 @@ function renderSubmenu(opts: { fastControl: FastControl; reasoning: boolean; req
             onSelectModel={vi.fn()}
             provider="p1"
             reasoning={opts.reasoning}
+            reasoningEfforts={opts.reasoningEfforts}
             requestGateway={opts.requestGateway as never}
           />
         </DropdownMenuSub>
@@ -80,5 +86,22 @@ describe('ModelEditSubmenu no-session guard', () => {
     fireEvent.click(screen.getByRole('switch'))
 
     expect(requestGateway).toHaveBeenCalledWith('config.set', { key: 'fast', session_id: 'sess1', value: 'fast' })
+  })
+
+  it('Codex GPT-5.5 capabilities expose only Low/Medium/High/Extra High and no off toggle', () => {
+    const requestGateway = vi.fn().mockResolvedValue({})
+    renderSubmenu({
+      fastControl: { kind: 'none' },
+      reasoning: true,
+      reasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+      requestGateway
+    })
+
+    expect(screen.queryByText('Thinking')).toBeNull()
+    expect(screen.queryByText('Minimal')).toBeNull()
+    expect(screen.getByText('Low')).toBeTruthy()
+    expect(screen.getByText('Medium')).toBeTruthy()
+    expect(screen.getByText('High')).toBeTruthy()
+    expect(screen.getByText('Extra High')).toBeTruthy()
   })
 })

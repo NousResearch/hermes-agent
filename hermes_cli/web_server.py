@@ -1088,6 +1088,10 @@ _FS_READDIR_HIDDEN = {
 _FS_DATA_URL_MAX_BYTES = 16 * 1024 * 1024
 _FS_TEXT_SOURCE_MAX_BYTES = 64 * 1024 * 1024
 _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
+# Upper bound for the in-app spot editor's save. The editor only opens
+# non-truncated text (<= the preview cap), so this is a safety ceiling against
+# a pasted-in megablob, not the expected payload size.
+_FS_TEXT_WRITE_MAX_BYTES = 8 * 1024 * 1024
 _FS_PREVIEW_LANGUAGE_BY_EXT = {
     ".c": "c",
     ".conf": "ini",
@@ -1790,6 +1794,58 @@ async def fs_read_text(path: str):
         "text": data.decode("utf-8", errors="replace"),
         "truncated": st.st_size > _FS_TEXT_PREVIEW_MAX_BYTES,
     }
+
+
+class FsWriteText(BaseModel):
+    path: str
+    content: str
+
+
+@app.post("/api/fs/write-text")
+async def fs_write_text(payload: FsWriteText):
+    """Overwrite (or create) a UTF-8 text file for the in-app spot editor.
+
+    Mirrors the local Electron ``hermes:fs:writeText`` hardening: the path is
+    resolved + validated by ``_fs_path``, the parent directory must already
+    exist (we never build directory trees), only regular files may be replaced,
+    and the payload is size-capped. The write is staged to a sibling temp file
+    and ``os.replace``-d into place so a crash mid-write can't truncate the
+    original. Stale-on-disk detection is the client's job (re-read before save),
+    so both transports behave identically.
+    """
+    target = _fs_path(payload.path)
+    text = payload.content or ""
+    if len(text.encode("utf-8")) > _FS_TEXT_WRITE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Content too large")
+
+    try:
+        st: Optional[os.stat_result] = target.stat()
+    except FileNotFoundError:
+        st = None
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="File is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=str(exc) or "Invalid path")
+
+    if st is not None and stat.S_ISDIR(st.st_mode):
+        raise HTTPException(status_code=400, detail="Path points to a directory")
+    if st is not None and not stat.S_ISREG(st.st_mode):
+        raise HTTPException(status_code=400, detail="Only regular files can be written")
+    if not target.parent.is_dir():
+        raise HTTPException(status_code=400, detail="Parent directory does not exist")
+
+    tmp = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, target)
+    except PermissionError:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status_code=403, detail="File is not writable")
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+
+    return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
 
 @app.get("/api/fs/read-data-url")

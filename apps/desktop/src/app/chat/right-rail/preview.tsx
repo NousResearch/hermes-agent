@@ -31,6 +31,7 @@ import {
   closeRightRailTabsToRight,
   type PreviewTarget
 } from '@/store/preview'
+import { $dirtyPreviewUrls } from '@/store/preview-edit'
 
 import { PreviewPane } from './preview-pane'
 
@@ -70,6 +71,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
   const panesFlipped = useStore($panesFlipped)
   const filePreviewTabs = useStore($filePreviewTabs)
   const previewTarget = useStore($previewTarget)
+  const dirtyPreviewUrls = useStore($dirtyPreviewUrls)
 
   const tabs = useMemo<readonly RailTab[]>(
     () => [
@@ -109,6 +111,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
             const active = tab.id === activeTab.id
             const hasOthers = tabs.length > 1
             const hasTabsToRight = index < tabs.length - 1
+            const dirty = Boolean(dirtyPreviewUrls[tab.target.url])
 
             return (
               <ContextMenu key={tab.id}>
@@ -155,6 +158,16 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                       aria-hidden="true"
                       className="pointer-events-none absolute inset-y-0 right-0 w-9 bg-[linear-gradient(to_right,transparent,var(--tab-bg)_55%)] opacity-0 transition-opacity group-hover/tab:opacity-100 group-focus-within/tab:opacity-100"
                     />
+                    {dirty && (
+                      <span
+                        aria-hidden="true"
+                        className="pointer-events-none absolute right-1.5 top-1/2 grid size-4 -translate-y-1/2 place-items-center opacity-100 transition-opacity group-hover/tab:opacity-0 group-focus-within/tab:opacity-0"
+                      >
+                        {/* Amber (our warn color); a tab-bg ring + soft drop keeps it
+                            legible where it overlaps the filename. */}
+                        <span className="size-2 rounded-full bg-amber-500 shadow-[0_0_0_2px_var(--tab-bg),0_1px_2px_rgba(0,0,0,0.45)] dark:bg-amber-400" />
+                      </span>
+                    )}
                     <button
                       aria-label={t.preview.closeTab(tab.label)}
                       className="pointer-events-none absolute right-1.5 top-1/2 grid size-4 -translate-y-1/2 place-items-center rounded-sm text-(--ui-text-tertiary) opacity-0 transition-[background-color,color,opacity] hover:bg-(--ui-bg-secondary) hover:text-foreground focus-visible:pointer-events-auto focus-visible:opacity-100 group-hover/tab:pointer-events-auto group-hover/tab:opacity-100 group-focus-within/tab:pointer-events-auto group-focus-within/tab:opacity-100"

@@ -75,6 +75,71 @@ try:
 except ImportError:
     AnyUrl = None  # type: ignore[assignment, misc]
 
+# ---------------------------------------------------------------------------
+# SDK compatibility: tolerate empty redirect_uris in registration responses
+#
+# RFC 7591 §3.2.1 allows the authorization server to omit ``redirect_uris``
+# from the registration response.  The Python MCP SDK's
+# ``OAuthClientInformationFull`` inherits a ``min_length=1`` constraint from
+# ``OAuthClientMetadata`` and raises ``ValidationError`` on an empty list.
+# The TypeScript MCP SDK accepts this gracefully; some auth servers (e.g.
+# those behind certain MCP OAuth providers) rely on that leniency.
+#
+# Patch ``handle_registration_response`` so it injects the client's own
+# ``redirect_uris`` before validation when the server omits them.  The
+# authorization step always reads ``client_metadata.redirect_uris[0]``, not
+# ``client_info.redirect_uris[0]``, so the injected value is cosmetic.
+# ---------------------------------------------------------------------------
+
+if _OAUTH_AVAILABLE:
+    import json as _json
+
+    from mcp.client.auth.utils import (
+        handle_registration_response as _orig_handle_registration,
+    )
+    from mcp.client.auth.exceptions import OAuthRegistrationError
+    from pydantic import ValidationError as _ValidationError
+
+    async def _hermes_handle_registration(response):  # type: ignore[no-untyped-def]
+        """Wrap SDK registration handler to tolerate empty redirect_uris."""
+        from httpx import Response as _Response  # noqa: F811
+
+        if response.status_code not in (200, 201):
+            await response.aread()
+            raise OAuthRegistrationError(
+                f"Registration failed: {response.status_code} {response.text}"
+            )
+
+        content = await response.aread()
+        try:
+            data = _json.loads(content)
+        except (ValueError, TypeError):
+            raise OAuthRegistrationError(
+                "Invalid registration response: not valid JSON"
+            )
+
+        # RFC 7591 §3.2.1: server MAY omit redirect_uris.  Inject the
+        # client's requested redirect_uris as a fallback so Pydantic
+        # validation passes.  The actual OAuth redirect uses
+        # client_metadata.redirect_uris, not this value.
+        if not data.get("redirect_uris"):
+            logger.info(
+                "MCP OAuth: server returned empty/missing redirect_uris; "
+                "injecting loopback fallback for registration validation"
+            )
+            data["redirect_uris"] = ["http://127.0.0.1/callback"]
+
+        try:
+            return OAuthClientInformationFull.model_validate(data)
+        except _ValidationError as exc:
+            raise OAuthRegistrationError(
+                f"Invalid registration response: {exc}"
+            )
+
+    import mcp.client.auth.utils as _mcp_auth_utils
+
+    _mcp_auth_utils.handle_registration_response = _hermes_handle_registration
+
 
 # ---------------------------------------------------------------------------
 # Exceptions

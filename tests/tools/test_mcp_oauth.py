@@ -827,3 +827,94 @@ class TestWaitForCallbackSkipIntegration:
                 asyncio.run(_wait_for_callback())
         err = capsys.readouterr().err
         assert "skip" in err.lower()
+
+
+# ---------------------------------------------------------------------------
+# Monkey-patched handle_registration_response (RFC 7591 empty redirect_uris)
+# ---------------------------------------------------------------------------
+
+
+class TestHandleRegistrationResponsePatch:
+    """The patched handle_registration_response tolerates empty redirect_uris."""
+
+    @pytest.fixture(autouse=True)
+    def _import_patched(self):
+        """Ensure the monkey-patch is applied (it runs at module import)."""
+        import mcp.client.auth.utils as mod
+        from tools.mcp_oauth import _hermes_handle_registration
+        # The patch is applied at import time; verify it's in place.
+        assert mod.handle_registration_response is _hermes_handle_registration
+
+    @staticmethod
+    def _make_response(status_code: int, body: dict | str) -> MagicMock:
+        """Build a mock httpx Response with async aread()."""
+        resp = MagicMock()
+        resp.status_code = status_code
+        if isinstance(body, dict):
+            body = json.dumps(body)
+        resp.text = body
+
+        async def _aread():
+            return body.encode()
+
+        resp.aread = _aread
+        return resp
+
+    def test_empty_redirect_uris_injected(self):
+        """Server returns empty redirect_uris → injects loopback fallback."""
+        from tools.mcp_oauth import _hermes_handle_registration
+
+        body = {
+            "client_id": "test-123",
+            "redirect_uris": [],
+            "grant_types": ["authorization_code"],
+        }
+        resp = self._make_response(200, body)
+        result = asyncio.run(_hermes_handle_registration(resp))
+        assert result.client_id == "test-123"
+        assert len(result.redirect_uris) == 1
+
+    def test_missing_redirect_uris_injected(self):
+        """Server omits redirect_uris entirely → injects loopback fallback."""
+        from tools.mcp_oauth import _hermes_handle_registration
+
+        body = {
+            "client_id": "test-456",
+            "grant_types": ["authorization_code"],
+        }
+        resp = self._make_response(200, body)
+        result = asyncio.run(_hermes_handle_registration(resp))
+        assert result.client_id == "test-456"
+        assert len(result.redirect_uris) == 1
+
+    def test_valid_redirect_uris_preserved(self):
+        """Server returns valid redirect_uris → no modification."""
+        from tools.mcp_oauth import _hermes_handle_registration
+
+        body = {
+            "client_id": "test-789",
+            "redirect_uris": ["http://127.0.0.1:9999/callback"],
+            "grant_types": ["authorization_code"],
+        }
+        resp = self._make_response(200, body)
+        result = asyncio.run(_hermes_handle_registration(resp))
+        assert result.client_id == "test-789"
+        assert str(result.redirect_uris[0]) == "http://127.0.0.1:9999/callback"
+
+    def test_non_200_raises_error(self):
+        """Non-200 response raises OAuthRegistrationError."""
+        from tools.mcp_oauth import _hermes_handle_registration
+        from mcp.client.auth.exceptions import OAuthRegistrationError
+
+        resp = self._make_response(400, {"error": "invalid_client"})
+        with pytest.raises(OAuthRegistrationError, match="Registration failed"):
+            asyncio.run(_hermes_handle_registration(resp))
+
+    def test_invalid_json_raises_error(self):
+        """Non-JSON response raises OAuthRegistrationError."""
+        from tools.mcp_oauth import _hermes_handle_registration
+        from mcp.client.auth.exceptions import OAuthRegistrationError
+
+        resp = self._make_response(200, "not json")
+        with pytest.raises(OAuthRegistrationError, match="not valid JSON"):
+            asyncio.run(_hermes_handle_registration(resp))
